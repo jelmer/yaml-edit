@@ -600,7 +600,7 @@ impl Document {
             builder.token(SyntaxKind::WHITESPACE.into(), " ");
 
             // Add value
-            builder.start_node(SyntaxKind::SCALAR.into());
+            builder.start_node(SyntaxKind::VALUE.into());
             builder.token(SyntaxKind::VALUE.into(), value);
             builder.finish_node();
         }
@@ -648,14 +648,22 @@ impl Mapping {
                             Some(Scalar(scalar_node))
                         };
 
-                        // Look for the next VALUE node
+                        // Look for the next VALUE node (skip whitespace/other tokens)
                         let mut value_node = None;
-                        if self.index + 1 < self.children.len() && self.children[self.index + 1].kind() == SyntaxKind::VALUE {
-                            // Extract the actual content from within the VALUE node, or use the VALUE node itself
-                            value_node = self.children[self.index + 1]
-                                .children()
-                                .next()
-                                .or_else(|| Some(self.children[self.index + 1].clone()));
+                        for j in (self.index + 1)..self.children.len() {
+                            let child_kind = self.children[j].kind();
+                            if child_kind == SyntaxKind::VALUE {
+                                // Extract the actual content from within the VALUE node, or use the VALUE node itself
+                                value_node = self.children[j]
+                                    .children()
+                                    .next()
+                                    .or_else(|| Some(self.children[j].clone()));
+                                break;
+                            } else if child_kind == SyntaxKind::KEY {
+                                // Hit another key, stop searching
+                                break;
+                            }
+                            // Continue searching past whitespace, tokens, etc.
                         }
 
                         self.index += 2; // Skip both KEY and VALUE nodes
@@ -699,7 +707,7 @@ impl Mapping {
 
     /// Get all keys in the mapping
     pub fn keys(&self) -> impl Iterator<Item = String> + '_ {
-        self.pairs().filter_map(|(k, _)| k.map(|s| s.value()))
+        self.pairs().filter_map(|(k, _)| k.map(|s| s.as_string()))
     }
 
     /// Check if the mapping is empty
@@ -1684,24 +1692,22 @@ impl Mapping {
         builder.start_node(SyntaxKind::MAPPING.into());
 
         for (key_scalar, value_node) in pairs {
-            // Create key token
+            // Create KEY node
+            builder.start_node(SyntaxKind::KEY.into());
             builder.token(SyntaxKind::VALUE.into(), &key_scalar.value());
+            builder.finish_node();
+
             builder.token(SyntaxKind::COLON.into(), ":");
             builder.token(SyntaxKind::WHITESPACE.into(), " ");
 
-            // Add value
+            // Create VALUE node containing the actual value content
+            builder.start_node(SyntaxKind::VALUE.into());
             if value_node.kind() == SyntaxKind::SCALAR {
-                builder.start_node(SyntaxKind::SCALAR.into());
-                // Extract the VALUE token from the scalar node
-                for token in value_node.children_with_tokens() {
-                    if let Some(token) = token.as_token() {
-                        if token.kind() == SyntaxKind::VALUE {
-                            builder.token(SyntaxKind::VALUE.into(), token.text());
-                        }
-                    }
-                }
-                builder.finish_node();
+                // Extract the text from the scalar node and add it as VALUE token
+                let value_text = value_node.text().to_string();
+                builder.token(SyntaxKind::VALUE.into(), &value_text);
             }
+            builder.finish_node();
 
             builder.token(SyntaxKind::NEWLINE.into(), "\n");
         }

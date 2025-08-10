@@ -1010,10 +1010,25 @@ impl Parser {
             self.parse_document();
             self.skip_ws_and_newlines();
 
-            // Only parse additional documents if we see a document separator
-            while self.current() == Some(SyntaxKind::DOC_START) {
-                self.parse_document();
-                self.skip_ws_and_newlines();
+            // Parse additional documents (can have directives before each)
+            while self.current() == Some(SyntaxKind::DOC_START)
+                || self.current() == Some(SyntaxKind::DIRECTIVE)
+            {
+                // Parse any directives before this document
+                while self.current() == Some(SyntaxKind::DIRECTIVE) {
+                    self.parse_directive();
+                    self.skip_ws_and_newlines();
+                }
+
+                // Parse the document if we have content
+                if self.current() == Some(SyntaxKind::DOC_START)
+                    || (self.current().is_some() && self.current() != Some(SyntaxKind::EOF))
+                {
+                    self.parse_document();
+                    self.skip_ws_and_newlines();
+                } else {
+                    break;
+                }
             }
         }
 
@@ -3655,6 +3670,84 @@ version: "1.0"
 "#;
         let parsed2 = Yaml::from_str(yaml2).unwrap();
         assert_eq!(parsed2.to_string(), yaml2);
+    }
+
+    #[test]
+    fn test_document_stream_features() {
+        // Test 1: Multi-document with end markers
+        let yaml1 = "---\ndoc1: first\n---\ndoc2: second\n...\n";
+        let parsed1 = Yaml::from_str(yaml1).unwrap();
+        assert_eq!(parsed1.documents().count(), 2);
+        assert_eq!(parsed1.to_string(), yaml1);
+
+        // Test 2: Single document with explicit markers
+        let yaml2 = "---\nkey: value\n...\n";
+        let parsed2 = Yaml::from_str(yaml2).unwrap();
+        assert_eq!(parsed2.documents().count(), 1);
+        assert_eq!(parsed2.to_string(), yaml2);
+
+        // Test 3: Document with only end marker
+        let yaml3 = "key: value\n...\n";
+        let parsed3 = Yaml::from_str(yaml3).unwrap();
+        assert_eq!(parsed3.documents().count(), 1);
+        assert_eq!(parsed3.to_string(), yaml3);
+    }
+
+    #[test]
+    fn test_document_level_directives() {
+        // Test document-level directives with multi-document stream
+        let yaml = "%YAML 1.2\n%TAG ! tag:example.com,2000:app/\n---\nfirst: doc\n...\n%YAML 1.2\n---\nsecond: doc\n...\n";
+        let parsed = Yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed.documents().count(), 2);
+        assert_eq!(parsed.to_string(), yaml);
+    }
+
+    #[test]
+    fn test_empty_documents_in_stream() {
+        // Test empty documents in multi-document stream
+        let yaml = "---\n---\nkey: value\n---\n...\n";
+        let parsed = Yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed.documents().count(), 3);
+        assert_eq!(parsed.to_string(), yaml);
+    }
+
+    #[test]
+    fn test_mixed_document_end_markers() {
+        // Test documents with mixed end marker usage
+        let yaml = "---\nfirst: doc\n...\n---\nsecond: doc\n---\nthird: doc\n...\n";
+        let parsed = Yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed.documents().count(), 3);
+        assert_eq!(parsed.to_string(), yaml);
+    }
+
+    #[test]
+    fn test_complex_document_stream() {
+        let yaml = r#"%YAML 1.2
+%TAG ! tag:example.com,2000:app/
+---
+template: &anchor
+  key: !custom value
+instance:
+  <<: *anchor
+  extra: data
+...
+%YAML 1.2
+---
+- item1
+- item2: nested
+...
+---
+literal: |
+  Block content
+  Multiple lines
+folded: >
+  Folded content
+  on multiple lines
+...
+"#;
+        let parsed = Yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed.documents().count(), 3);
+        assert_eq!(parsed.to_string(), yaml);
     }
 
     #[test]

@@ -76,10 +76,10 @@ Major features recently implemented:
 ## Low Priority (Advanced/Rare Features)
 
 ### 10. Document Stream Features
-- [ ] Document end marker (`...`) - currently only handles start marker
-- [ ] Explicit document markers in single document
-- [ ] Proper multi-document stream handling with all markers
-- [ ] Document-level tags and directives
+- [x] Document end marker (`...`) - complete parsing and preservation
+- [x] Explicit document markers in single document
+- [x] Proper multi-document stream handling with all markers
+- [x] Document-level tags and directives
 
 ### 11. Comments
 - [ ] Mid-line comments (currently only handles end-of-line)

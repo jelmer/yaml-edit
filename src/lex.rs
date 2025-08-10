@@ -126,7 +126,7 @@ pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
         let token_start = start_idx;
 
         match ch {
-            // Single character tokens
+            // Context-aware hyphen handling
             '-' => {
                 if let Some((_, '-')) = chars.peek() {
                     chars.next(); // consume second -
@@ -139,7 +139,45 @@ pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
                         tokens.push((DASH, &input[start_idx + 1..start_idx + 2]));
                     }
                 } else {
-                    tokens.push((DASH, &input[token_start..start_idx + 1]));
+                    // Check if this hyphen should be treated as a sequence marker
+                    // It's a sequence marker if:
+                    // 1. It's at the beginning of a line (after optional indentation)
+                    // 2. It's followed by whitespace or end of input
+                    let is_sequence_marker = {
+                        // Check if preceded only by whitespace from start of line
+                        let line_start_pos = input[..token_start]
+                            .rfind('\n')
+                            .map(|pos| pos + 1)
+                            .unwrap_or(0);
+                        let before_dash = &input[line_start_pos..token_start];
+                        let only_whitespace_before =
+                            before_dash.chars().all(|c| c == ' ' || c == '\t');
+
+                        // Check if followed by whitespace or end of input
+                        let followed_by_whitespace_or_end = chars
+                            .peek()
+                            .map_or(true, |(_, next_ch)| next_ch.is_whitespace());
+
+                        only_whitespace_before && followed_by_whitespace_or_end
+                    };
+
+                    if is_sequence_marker {
+                        tokens.push((DASH, &input[token_start..start_idx + 1]));
+                    } else {
+                        // This hyphen is part of a scalar value, treat as regular character
+                        // Continue reading until we hit whitespace or actual YAML special chars
+                        let mut end_idx = start_idx + 1;
+                        while let Some((idx, ch)) = chars.peek() {
+                            if ch.is_whitespace() || is_yaml_special_excluding_hyphen(*ch) {
+                                break;
+                            }
+                            end_idx = *idx + ch.len_utf8();
+                            chars.next();
+                        }
+                        let text = &input[token_start..end_idx];
+                        let token_kind = classify_scalar(text);
+                        tokens.push((token_kind, text));
+                    }
                 }
             }
             '+' => tokens.push((PLUS, &input[token_start..start_idx + 1])),
@@ -303,9 +341,36 @@ pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
             _ => {
                 let mut end_idx = start_idx + ch.len_utf8();
                 while let Some((idx, ch)) = chars.peek() {
-                    if ch.is_whitespace() || is_yaml_special(*ch) {
+                    if ch.is_whitespace() || is_yaml_special_excluding_hyphen(*ch) {
                         break;
                     }
+                    // Special handling for hyphens - only break if it's a sequence marker
+                    if *ch == '-' {
+                        // Check if this hyphen is a sequence marker
+                        // For scalars, we're more permissive - only break if it's clearly a sequence marker
+                        let hyphen_pos = *idx;
+
+                        // Check if preceded only by whitespace from start of line
+                        let line_start_pos = input[..hyphen_pos]
+                            .rfind('\n')
+                            .map(|pos| pos + 1)
+                            .unwrap_or(0);
+                        let before_dash = &input[line_start_pos..hyphen_pos];
+                        let only_whitespace_before =
+                            before_dash.chars().all(|c| c == ' ' || c == '\t');
+
+                        // Since we can't easily peek ahead without borrowing issues,
+                        // and we're inside scalar parsing, be conservative:
+                        // Only treat as sequence marker if it's at start of line
+                        // (a hyphen in the middle of a scalar is very likely part of the scalar)
+                        if only_whitespace_before && hyphen_pos == end_idx {
+                            // This is the first character we're looking at and it's at line start
+                            // This is likely a sequence marker
+                            break;
+                        }
+                        // Otherwise, treat hyphen as part of the scalar
+                    }
+
                     end_idx = *idx + ch.len_utf8();
                     chars.next();
                 }
@@ -350,6 +415,31 @@ fn is_yaml_special(ch: char) -> bool {
         ch,
         ':' | '-'
             | '+'
+            | '?'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | ','
+            | '|'
+            | '>'
+            | '&'
+            | '*'
+            | '!'
+            | '%'
+            | '@'
+            | '`'
+            | '"'
+            | '\''
+            | '#'
+    )
+}
+
+/// Check if character is YAML special, excluding hyphen (for context-aware hyphen parsing)
+fn is_yaml_special_excluding_hyphen(ch: char) -> bool {
+    matches!(
+        ch,
+        ':' | '+'
             | '?'
             | '['
             | ']'
@@ -428,6 +518,56 @@ mod tests {
         assert_eq!(tokens[4], (SyntaxKind::DASH, "-"));
         assert_eq!(tokens[5], (SyntaxKind::WHITESPACE, " "));
         assert_eq!(tokens[6], (SyntaxKind::STRING, "item2"));
+    }
+
+    #[test]
+    fn test_hyphen_in_scalars() {
+        // Test hyphens in scalar values should not be treated as sequence markers
+        let input = "Name: example-project";
+        let tokens = lex(input);
+
+        println!("Hyphen test tokens:");
+        for (i, (kind, text)) in tokens.iter().enumerate() {
+            println!("  {}: {:?} = {:?}", i, kind, text);
+        }
+
+        // Should get: STRING("Name"), COLON(":"), WHITESPACE(" "), STRING("example-project")
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "Name"));
+        assert_eq!(tokens[1], (SyntaxKind::COLON, ":"));
+        assert_eq!(tokens[2], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[3], (SyntaxKind::STRING, "example-project"));
+    }
+
+    #[test]
+    fn test_hyphen_sequence_vs_scalar() {
+        // Test that sequence markers are still recognized correctly
+        let sequence_input = "- example-item";
+        let tokens = lex(sequence_input);
+
+        println!("Sequence hyphen tokens:");
+        for (i, (kind, text)) in tokens.iter().enumerate() {
+            println!("  {}: {:?} = {:?}", i, kind, text);
+        }
+
+        // Should get: DASH("-"), WHITESPACE(" "), STRING("example-item")
+        assert_eq!(tokens[0], (SyntaxKind::DASH, "-"));
+        assert_eq!(tokens[1], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[2], (SyntaxKind::STRING, "example-item"));
+
+        // Test scalar with hyphens in different contexts
+        let scalar_input = "package-name: my-awesome-package";
+        let tokens = lex(scalar_input);
+
+        println!("Package hyphen tokens:");
+        for (i, (kind, text)) in tokens.iter().enumerate() {
+            println!("  {}: {:?} = {:?}", i, kind, text);
+        }
+
+        // Should get: STRING("package-name"), COLON(":"), WHITESPACE(" "), STRING("my-awesome-package")
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "package-name"));
+        assert_eq!(tokens[3], (SyntaxKind::STRING, "my-awesome-package"));
     }
 
     #[test]

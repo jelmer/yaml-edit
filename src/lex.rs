@@ -147,8 +147,44 @@ pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
             ',' => tokens.push((COMMA, &input[token_start..start_idx + 1])),
             '|' => tokens.push((PIPE, &input[token_start..start_idx + 1])),
             '>' => tokens.push((GREATER, &input[token_start..start_idx + 1])),
-            '&' => tokens.push((AMPERSAND, &input[token_start..start_idx + 1])),
-            '*' => tokens.push((ASTERISK, &input[token_start..start_idx + 1])),
+            '&' => {
+                // Check if this is an anchor definition
+                let mut end_idx = start_idx + 1;
+                let mut has_anchor_name = false;
+                while let Some((idx, ch)) = chars.peek() {
+                    if ch.is_whitespace() || is_yaml_special(*ch) {
+                        break;
+                    }
+                    has_anchor_name = true;
+                    end_idx = *idx + ch.len_utf8();
+                    chars.next();
+                }
+
+                if has_anchor_name {
+                    tokens.push((ANCHOR, &input[token_start..end_idx]));
+                } else {
+                    tokens.push((AMPERSAND, &input[token_start..start_idx + 1]));
+                }
+            }
+            '*' => {
+                // Check if this is an alias reference
+                let mut end_idx = start_idx + 1;
+                let mut has_reference_name = false;
+                while let Some((idx, ch)) = chars.peek() {
+                    if ch.is_whitespace() || is_yaml_special(*ch) {
+                        break;
+                    }
+                    has_reference_name = true;
+                    end_idx = *idx + ch.len_utf8();
+                    chars.next();
+                }
+
+                if has_reference_name {
+                    tokens.push((REFERENCE, &input[token_start..end_idx]));
+                } else {
+                    tokens.push((ASTERISK, &input[token_start..start_idx + 1]));
+                }
+            }
             '"' => tokens.push((QUOTE, &input[token_start..start_idx + 1])),
             '\'' => tokens.push((SINGLE_QUOTE, &input[token_start..start_idx + 1])),
 
@@ -483,5 +519,48 @@ mod tests {
         let tokens = lex(input);
         println!("Empty input tokens: {:?}", tokens);
         assert_eq!(tokens.len(), 0);
+    }
+
+    #[test]
+    fn test_anchors_and_aliases() {
+        // Test anchor definition
+        let input = "key: &anchor_name value";
+        let tokens = lex(input);
+        println!("Anchor tokens: {:?}", tokens);
+
+        let anchors: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::ANCHOR)
+            .collect();
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0].1, "&anchor_name");
+
+        // Test alias reference
+        let input = "key: *reference_name";
+        let tokens = lex(input);
+        println!("Reference tokens: {:?}", tokens);
+
+        let references: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::REFERENCE)
+            .collect();
+        assert_eq!(references.len(), 1);
+        assert_eq!(references[0].1, "*reference_name");
+
+        // Test bare ampersand and asterisk (should not be treated as anchors/references)
+        let input = "key: & *";
+        let tokens = lex(input);
+
+        let ampersands: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::AMPERSAND)
+            .collect();
+        assert_eq!(ampersands.len(), 1);
+
+        let asterisks: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::ASTERISK)
+            .collect();
+        assert_eq!(asterisks.len(), 1);
     }
 }

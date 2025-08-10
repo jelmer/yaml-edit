@@ -136,7 +136,7 @@ fn read_scalar_from<'a>(
 pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
     use SyntaxKind::*;
 
-    let mut tokens = Vec::new();
+    let mut tokens = Vec::with_capacity(input.len() / 8); // Pre-allocate based on estimate
     let mut chars = input.char_indices().peekable();
     let bytes = input.as_bytes();
 

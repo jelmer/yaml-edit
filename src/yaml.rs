@@ -265,7 +265,6 @@ impl Document {
         self.0.text().to_string()
     }
 
-
     /// Check if the document contains a key (assumes document is a mapping)
     pub fn contains_key(&self, key: &str) -> bool {
         self.as_mapping().is_some_and(|m| m.contains_key(key))
@@ -288,10 +287,13 @@ impl Document {
             for (existing_key, existing_value) in mapping.pairs() {
                 if let Some(existing_key_scalar) = existing_key {
                     let existing_key_str = existing_key_scalar.value();
-                    if existing_key_str != *key_str {
+                    if existing_key_str != key_str {
                         // Keep this pair
                         if let Some(value_node) = existing_value {
-                            pairs.push((existing_key_str, value_node.text().to_string()));
+                            pairs.push((
+                                existing_key_str.to_string(),
+                                value_node.text().to_string(),
+                            ));
                         }
                     }
                 }
@@ -698,10 +700,12 @@ impl Mapping {
     /// Fields not in the order list will appear after the ordered fields
     pub fn reorder_fields(&mut self, order: &[&str]) {
         // Collect all current key-value pairs
-        let mut all_pairs: Vec<(String, String)> = Vec::new();
-        for (key_opt, value_opt) in self.pairs() {
+        let pairs_iter = self.pairs();
+        let mut all_pairs: Vec<(String, String)> = Vec::with_capacity(16); // Pre-allocate reasonable size
+        for (key_opt, value_opt) in pairs_iter {
             if let (Some(key), Some(value)) = (key_opt, value_opt) {
-                all_pairs.push((key.value(), value.text().to_string().trim().to_string()));
+                let value_text = value.text().to_string();
+                all_pairs.push((key.value(), value_text.trim().to_string()));
             }
         }
 
@@ -766,7 +770,12 @@ impl Mapping {
 impl Sequence {
     /// Get all items in this sequence
     pub fn items(&self) -> impl Iterator<Item = SyntaxNode> {
-        self.0.children().filter(|child| matches!(child.kind(), SyntaxKind::SCALAR | SyntaxKind::MAPPING | SyntaxKind::SEQUENCE))
+        self.0.children().filter(|child| {
+            matches!(
+                child.kind(),
+                SyntaxKind::SCALAR | SyntaxKind::MAPPING | SyntaxKind::SEQUENCE
+            )
+        })
     }
 }
 

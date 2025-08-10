@@ -42,16 +42,19 @@ impl YamlValue {
     }
 
     /// Check if this is a scalar
+    #[inline]
     pub fn is_scalar(&self) -> bool {
         matches!(self, YamlValue::Scalar(_))
     }
 
     /// Check if this is a sequence
+    #[inline]
     pub fn is_sequence(&self) -> bool {
         matches!(self, YamlValue::Sequence(_))
     }
 
     /// Check if this is a mapping
+    #[inline]
     pub fn is_mapping(&self) -> bool {
         matches!(self, YamlValue::Mapping(_))
     }

@@ -110,9 +110,7 @@ impl ScalarValue {
                                     result.push('\\');
                                     result.push('x');
                                     for &hex_char in hex_chars.iter().take(count) {
-                                        result.push(
-                                            char::from_digit(hex_char as u32, 16).unwrap(),
-                                        );
+                                        result.push(char::from_digit(hex_char as u32, 16).unwrap());
                                     }
                                     result.push(ch);
                                     break;

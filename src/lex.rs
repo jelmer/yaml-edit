@@ -164,19 +164,31 @@ pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
                     if is_sequence_marker {
                         tokens.push((DASH, &input[token_start..start_idx + 1]));
                     } else {
-                        // This hyphen is part of a scalar value, treat as regular character
-                        // Continue reading until we hit whitespace or actual YAML special chars
-                        let mut end_idx = start_idx + 1;
-                        while let Some((idx, ch)) = chars.peek() {
-                            if ch.is_whitespace() || is_yaml_special_excluding_hyphen(*ch) {
-                                break;
+                        // Check if this is a special context where hyphen should remain a token
+                        // (e.g., after block scalar indicators like | or >)
+                        let prev_token = tokens.last();
+                        let is_after_block_indicator = prev_token
+                            .map(|(kind, _)| matches!(kind, SyntaxKind::PIPE | SyntaxKind::GREATER))
+                            .unwrap_or(false);
+                        
+                        if is_after_block_indicator {
+                            // This is a chomping indicator, keep as DASH
+                            tokens.push((DASH, &input[token_start..start_idx + 1]));
+                        } else {
+                            // This hyphen is part of a scalar value, treat as regular character
+                            // Continue reading until we hit whitespace or actual YAML special chars
+                            let mut end_idx = start_idx + 1;
+                            while let Some((idx, ch)) = chars.peek() {
+                                if ch.is_whitespace() || is_yaml_special_excluding_hyphen(*ch) {
+                                    break;
+                                }
+                                end_idx = *idx + ch.len_utf8();
+                                chars.next();
                             }
-                            end_idx = *idx + ch.len_utf8();
-                            chars.next();
+                            let text = &input[token_start..end_idx];
+                            let token_kind = classify_scalar(text);
+                            tokens.push((token_kind, text));
                         }
-                        let text = &input[token_start..end_idx];
-                        let token_kind = classify_scalar(text);
-                        tokens.push((token_kind, text));
                     }
                 }
             }
@@ -768,10 +780,13 @@ mod tests {
         let input = "line with - and + and : characters";
         let tokens = lex(input);
 
-        // Should tokenize each special character separately
+        // With context-aware hyphen parsing, the standalone hyphen with spaces
+        // is treated as a string because it's not a sequence marker
         assert!(tokens
             .iter()
-            .any(|(kind, text)| *kind == SyntaxKind::DASH && *text == "-"));
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "-"));
+        
+        // Plus and colon are still tokenized as special characters
         assert!(tokens
             .iter()
             .any(|(kind, text)| *kind == SyntaxKind::PLUS && *text == "+"));
@@ -813,7 +828,9 @@ mod tests {
         assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::PLUS)); // "+"
         assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::NEWLINE)); // "\n"
         assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::INDENT)); // "  "
-        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::DASH)); // "-"
+        
+        // With context-aware hyphen parsing, the hyphen in content is now part of a STRING
+        assert!(tokens.iter().any(|(kind, text)| *kind == SyntaxKind::STRING && text.contains("-")));
         assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::GREATER)); // ">"
     }
 }

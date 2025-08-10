@@ -90,6 +90,8 @@ pub enum SyntaxKind {
     ANCHOR,
     /// YAML reference like '*reference'
     REFERENCE,
+    /// YAML merge key '<<'
+    MERGE_KEY,
     /// YAML directive like '%YAML 1.2'
     DIRECTIVE,
 
@@ -204,6 +206,26 @@ pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
             ',' => tokens.push((COMMA, &input[token_start..start_idx + 1])),
             '|' => tokens.push((PIPE, &input[token_start..start_idx + 1])),
             '>' => tokens.push((GREATER, &input[token_start..start_idx + 1])),
+            '<' => {
+                // Check if this is a merge key '<<'
+                if let Some((_, '<')) = chars.peek() {
+                    chars.next(); // consume second <
+                    tokens.push((MERGE_KEY, &input[token_start..start_idx + 2]));
+                } else {
+                    // Single '<' is not a special YAML character, treat as scalar
+                    let mut end_idx = start_idx + 1;
+                    while let Some((idx, ch)) = chars.peek() {
+                        if ch.is_whitespace() || is_yaml_special(*ch) {
+                            break;
+                        }
+                        end_idx = *idx + ch.len_utf8();
+                        chars.next();
+                    }
+                    let text = &input[token_start..end_idx];
+                    let token_kind = classify_scalar(text);
+                    tokens.push((token_kind, text));
+                }
+            }
             '&' => {
                 // Check if this is an anchor definition
                 let name = read_scalar_from(&mut chars, input, start_idx + 1, is_yaml_special);
@@ -672,6 +694,30 @@ mod tests {
             .filter(|(kind, _)| *kind == SyntaxKind::ASTERISK)
             .collect();
         assert_eq!(asterisks.len(), 1);
+    }
+
+    #[test]
+    fn test_merge_key_token() {
+        // Test merge key '<<'
+        let input = "<<: *defaults";
+        let tokens = lex(input);
+
+        let merge_keys: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::MERGE_KEY)
+            .collect();
+        assert_eq!(merge_keys.len(), 1);
+        assert_eq!(merge_keys[0].1, "<<");
+
+        // Test single '<' is not a merge key
+        let input2 = "key: < value";
+        let tokens2 = lex(input2);
+
+        let merge_keys2: Vec<_> = tokens2
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::MERGE_KEY)
+            .collect();
+        assert_eq!(merge_keys2.len(), 0, "Single < should not be a merge key");
     }
 
     #[test]

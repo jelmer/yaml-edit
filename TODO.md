@@ -8,7 +8,7 @@ Major features recently implemented:
 - ✅ **Anchors & Aliases** - Full support for anchor definitions and alias references with preservation
 - ✅ **Escape Sequences** - Complete implementation including Unicode escapes, control characters, and line folding
 - ✅ **YAML Directives** - Support for YAML version and TAG directives with preservation
-- ✅ **Merge Keys** - Basic parsing and preservation of merge key syntax (`<<:`)
+- ✅ **Merge Keys** - Full support for merge key syntax (`<<:`) with circular reference detection
 - ✅ **Tags and Explicit Typing** - Complete support for local tags, global tags, non-specific tags, and custom tags with safe value extraction
 
 ## High Priority (Common YAML Features)
@@ -17,7 +17,8 @@ Major features recently implemented:
 - [x] Anchor definitions (`&anchor_name`)
 - [x] Alias references (`*anchor_name`)
 - [x] Preserve anchors/aliases during editing
-- [ ] Handle circular references safely
+- [x] Handle circular references safely
+- [x] Merge keys (`<<`) for key merging with full support
 
 ### 2. Multi-line Scalar Styles
 - [x] Literal block scalar (`|`) - proper parsing and preservation
@@ -57,7 +58,6 @@ Major features recently implemented:
 - [x] Preserve directives during editing
 
 ### 7. Special Collections
-- [x] Merge keys (`<<`) for key merging (basic parsing/preservation)
 - [ ] Sets (`!!set`)
 - [ ] Ordered mappings (`!!omap`)
 - [ ] Pairs (`!!pairs`)

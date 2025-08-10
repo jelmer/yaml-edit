@@ -1476,18 +1476,18 @@ impl Parser {
         self.builder.start_node(SyntaxKind::SEQUENCE.into());
 
         self.bump(); // consume [
-        self.skip_whitespace();
+        self.skip_ws_and_newlines(); // Support comments and newlines in flow sequences
 
         let prev_flow = self.in_flow_context;
         self.in_flow_context = true;
 
         while self.current() != Some(SyntaxKind::RIGHT_BRACKET) && self.current().is_some() {
             self.parse_value();
-            self.skip_whitespace();
+            self.skip_ws_and_newlines(); // Support comments after values
 
             if self.current() == Some(SyntaxKind::COMMA) {
                 self.bump();
-                self.skip_whitespace();
+                self.skip_ws_and_newlines(); // Support comments after commas
             }
         }
 
@@ -1506,7 +1506,7 @@ impl Parser {
         self.builder.start_node(SyntaxKind::MAPPING.into());
 
         self.bump(); // consume {
-        self.skip_whitespace();
+        self.skip_ws_and_newlines(); // Support comments and newlines in flow mappings
 
         let prev_flow = self.in_flow_context;
         self.in_flow_context = true;
@@ -1514,21 +1514,21 @@ impl Parser {
         while self.current() != Some(SyntaxKind::RIGHT_BRACE) && self.current().is_some() {
             // Parse key
             self.parse_value();
-            self.skip_whitespace();
+            self.skip_ws_and_newlines(); // Support comments after keys
 
             if self.current() == Some(SyntaxKind::COLON) {
                 self.bump();
-                self.skip_whitespace();
+                self.skip_ws_and_newlines(); // Support comments after colons
                 self.parse_value();
             } else {
                 self.add_error("Expected ':' in flow mapping".to_string());
             }
 
-            self.skip_whitespace();
+            self.skip_ws_and_newlines(); // Support comments after values
 
             if self.current() == Some(SyntaxKind::COMMA) {
                 self.bump();
-                self.skip_whitespace();
+                self.skip_ws_and_newlines(); // Support comments after commas
             }
         }
 
@@ -3749,113 +3749,69 @@ folded: >
         assert_eq!(parsed.documents().count(), 3);
         assert_eq!(parsed.to_string(), yaml);
     }
-}
 
+    #[test]
+    fn test_enhanced_comment_support() {
+        // Test improvements: mid-line comments, comments in flow collections,
+        // and better comment positioning preservation
 
-impl YamlValue {
-    /// Returns true if the value is null
-    pub fn is_null(&self) -> bool {
-        matches!(self, YamlValue::Scalar(scalar) if scalar.is_null())
-    }
+        // Test 1: Comments in flow sequences
+        let yaml1 = r#"flow_seq: [
+    item1, # comment after item1
+    item2, # comment after item2
+    item3  # comment after item3
+]"#;
+        let parsed1 = Yaml::from_str(yaml1).unwrap();
+        let output1 = parsed1.to_string();
+        assert!(output1.contains("# comment after item1"));
+        assert!(output1.contains("# comment after item2"));
+        assert!(output1.contains("# comment after item3"));
 
-    /// Returns a string slice if the value is a string
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            YamlValue::Scalar(scalar) => scalar.as_str(),
-            _ => None,
-        }
-    }
+        // Test 2: Comments in flow mappings
+        let yaml2 = r#"flow_map: {
+    key1: val1, # comment after first pair
+    key2: val2, # comment after second pair
+    key3: val3  # comment after third pair
+}"#;
+        let parsed2 = Yaml::from_str(yaml2).unwrap();
+        let output2 = parsed2.to_string();
+        assert!(output2.contains("# comment after first pair"));
+        assert!(output2.contains("# comment after second pair"));
+        assert!(output2.contains("# comment after third pair"));
 
-    /// Returns true if the value is a string
-    pub fn is_string(&self) -> bool {
-        self.as_str().is_some()
-    }
+        // Test 3: Mixed nested structures with comments
+        let yaml3 = r#"config:
+  servers: [
+    {name: web1, port: 80},   # Web server 1
+    {name: web2, port: 80},   # Web server 2
+    {name: db1, port: 5432}   # Database server
+  ] # End servers array"#;
+        let parsed3 = Yaml::from_str(yaml3).unwrap();
+        let output3 = parsed3.to_string();
+        assert!(output3.contains("# Web server 1"));
+        assert!(output3.contains("# Web server 2"));
+        assert!(output3.contains("# Database server"));
+        assert!(output3.contains("# End servers array"));
 
-    /// Returns an iterator over array items if the value is an array
-    pub fn sequence_items(&self) -> Vec<YamlValue> {
-        match self {
-            YamlValue::Sequence(seq) => seq.items(),
-            _ => Vec::new(),
-        }
-    }
+        // Test 4: Comments between sequence items (block style)
+        let yaml4 = r#"items:
+  - first   # First item comment
+  - second  # Second item comment
+  # Comment between items
+  - third   # Third item comment"#;
+        let parsed4 = Yaml::from_str(yaml4).unwrap();
+        let output4 = parsed4.to_string();
+        assert!(output4.contains("# First item comment"));
+        assert!(output4.contains("# Second item comment"));
+        assert!(output4.contains("# Comment between items"));
+        assert!(output4.contains("# Third item comment"));
 
-    /// Returns true if the value is an array
-    pub fn is_sequence(&self) -> bool {
-        matches!(self, YamlValue::Sequence(_))
-    }
-
-    /// Returns an iterator over mapping items if the value is a mapping
-    pub fn mapping_items(&self) -> Vec<(YamlValue, YamlValue)> {
-        match self {
-            YamlValue::Mapping(map) => map.items(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// Returns true if the value is a mapping
-    pub fn is_mapping(&self) -> bool {
-        matches!(self, YamlValue::Mapping(_))
-    }
-
-    /// Attempts to parse the value as a boolean
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            YamlValue::Scalar(scalar) => scalar.as_bool(),
-            _ => None,
-        }
-    }
-
-    /// Returns true if the value is a boolean
-    pub fn is_bool(&self) -> bool {
-        self.as_bool().is_some()
-    }
-
-    /// Attempts to parse the value as an integer
-    pub fn as_i64(&self) -> Option<i64> {
-        match self {
-            YamlValue::Scalar(scalar) => scalar.as_i64(),
-            _ => None,
-        }
-    }
-
-    /// Attempts to parse the value as a float
-    pub fn as_f64(&self) -> Option<f64> {
-        match self {
-            YamlValue::Scalar(scalar) => scalar.as_f64(),
-            _ => None,
-        }
-    }
-
-    /// Returns true if the value is a number (integer or float)
-    pub fn is_number(&self) -> bool {
-        self.as_i64().is_some() || self.as_f64().is_some()
-    }
-
-    /// Get value as a vector of strings if it's a sequence of strings
-    pub fn as_string_sequence(&self) -> Option<Vec<String>> {
-        if let YamlValue::Sequence(_seq) = self {
-            let items: Vec<String> = self
-                .sequence_items()
-                .into_iter()
-                .filter_map(|item| item.as_str().map(|s| s.to_string()))
-                .collect();
-            Some(items)
-        } else {
-            None
-        }
-    }
-
-    /// Get value as a vector of strings if it's a sequence of strings
-    pub fn as_string_sequence_ref(&self) -> Option<Vec<&str>> {
-        if let YamlValue::Sequence(_seq) = self {
-            let items: Vec<&str> = self
-                .sequence_items()
-                .into_iter()
-                .filter_map(|item| item.as_str())
-                .collect();
-            Some(items)
-        } else {
-            None
+        // Test 5: Round-trip preservation
+        for yaml in [yaml1, yaml2, yaml3, yaml4] {
+            let parsed = Yaml::from_str(yaml).unwrap();
+            let output = parsed.to_string();
+            let reparsed = Yaml::from_str(&output);
+            assert!(reparsed.is_ok(), "Round-trip parsing should succeed");
         }
     }
 }

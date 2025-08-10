@@ -600,7 +600,7 @@ impl Document {
             builder.token(SyntaxKind::WHITESPACE.into(), " ");
 
             // Add value
-            builder.start_node(SyntaxKind::SCALAR.into());
+            builder.start_node(SyntaxKind::VALUE.into());
             builder.token(SyntaxKind::VALUE.into(), value);
             builder.finish_node();
         }
@@ -634,27 +634,40 @@ impl Mapping {
             fn next(&mut self) -> Option<Self::Item> {
                 while self.index < self.children.len() {
                     if self.children[self.index].kind() == SyntaxKind::KEY {
-                        let key_text = self.children[self.index].text().to_string();
-                        let key_scalar = Scalar(create_scalar_node(&key_text));
+                        // Create a scalar from the KEY node's text - if it has SCALAR children, use those,
+                        // otherwise create a scalar from the KEY node's direct text
+                        let key_scalar = if let Some(scalar_child) = self.children[self.index]
+                            .children()
+                            .find(|child| child.kind() == SyntaxKind::SCALAR)
+                        {
+                            Scalar::cast(scalar_child)
+                        } else {
+                            // Create a scalar from the KEY node's text content
+                            let key_text = self.children[self.index].text().to_string();
+                            let scalar_node = create_scalar_node(&key_text);
+                            Some(Scalar(scalar_node))
+                        };
 
-                        // Look for the next value node
+                        // Look for the next VALUE node (skip whitespace/other tokens)
                         let mut value_node = None;
-                        let mut j = self.index + 1;
-                        while j < self.children.len() {
-                            let kind = self.children[j].kind();
-                            if kind == SyntaxKind::SCALAR
-                                || kind == SyntaxKind::VALUE
-                                || kind == SyntaxKind::SEQUENCE
-                                || kind == SyntaxKind::MAPPING
-                            {
-                                value_node = Some(self.children[j].clone());
+                        for j in (self.index + 1)..self.children.len() {
+                            let child_kind = self.children[j].kind();
+                            if child_kind == SyntaxKind::VALUE {
+                                // Extract the actual content from within the VALUE node, or use the VALUE node itself
+                                value_node = self.children[j]
+                                    .children()
+                                    .next()
+                                    .or_else(|| Some(self.children[j].clone()));
+                                break;
+                            } else if child_kind == SyntaxKind::KEY {
+                                // Hit another key, stop searching
                                 break;
                             }
-                            j += 1;
+                            // Continue searching past whitespace, tokens, etc.
                         }
 
-                        self.index = j + 1;
-                        return Some((Some(key_scalar), value_node));
+                        self.index += 2; // Skip both KEY and VALUE nodes
+                        return Some((key_scalar, value_node));
                     }
                     self.index += 1;
                 }
@@ -672,7 +685,7 @@ impl Mapping {
     /// Get the value for a specific key
     pub fn get(&self, key: &str) -> Option<SyntaxNode> {
         self.pairs()
-            .find(|(k, _)| k.as_ref().map(|s| s.value()) == Some(key.to_string()))
+            .find(|(k, _)| k.as_ref().map(|s| s.as_string()) == Some(key.to_string()))
             .and_then(|(_, v)| v)
     }
 
@@ -689,12 +702,12 @@ impl Mapping {
     /// Check if the mapping contains a specific key
     pub fn contains_key(&self, key: &str) -> bool {
         self.pairs()
-            .any(|(k, _)| k.as_ref().map(|s| s.value()) == Some(key.to_string()))
+            .any(|(k, _)| k.as_ref().map(|s| s.as_string()) == Some(key.to_string()))
     }
 
     /// Get all keys in the mapping
     pub fn keys(&self) -> impl Iterator<Item = String> + '_ {
-        self.pairs().filter_map(|(k, _)| k.map(|s| s.value()))
+        self.pairs().filter_map(|(k, _)| k.map(|s| s.as_string()))
     }
 
     /// Check if the mapping is empty
@@ -830,14 +843,11 @@ impl TaggedScalar {
 
     /// Extract the deepest string value, handling nested tag structures
     fn extract_deepest_string_value(&self) -> Option<String> {
-        self.find_string_token_recursive(&self.0)
+        Self::find_string_token_recursive(&self.0)
     }
 
     /// Recursively search for the first STRING token in the tree
-    fn find_string_token_recursive(
-        &self,
-        node: &rowan::SyntaxNode<crate::yaml::Lang>,
-    ) -> Option<String> {
+    fn find_string_token_recursive(node: &rowan::SyntaxNode<crate::yaml::Lang>) -> Option<String> {
         // Check tokens first
         for child in node.children_with_tokens() {
             if let rowan::NodeOrToken::Token(token) = child {
@@ -849,7 +859,7 @@ impl TaggedScalar {
 
         // Then check child nodes recursively
         for child in node.children() {
-            if let Some(result) = self.find_string_token_recursive(&child) {
+            if let Some(result) = Self::find_string_token_recursive(&child) {
                 return Some(result);
             }
         }
@@ -866,17 +876,12 @@ impl Scalar {
 
     /// Get the string representation of this scalar, properly unquoted and unescaped
     pub fn as_string(&self) -> String {
-        // Check if this scalar contains TAG tokens (mixed content)
-        if self.contains_tag_tokens() {
-            return self.extract_string_tokens_only();
-        }
-
         let text = self.value();
 
         // Handle quoted strings
         if text.starts_with('"') && text.ends_with('"') {
             // Double-quoted string - handle escape sequences
-            self.parse_double_quoted(&text[1..text.len() - 1])
+            ScalarValue::parse_escape_sequences(&text[1..text.len() - 1])
         } else if text.starts_with('\'') && text.ends_with('\'') {
             // Single-quoted string - only handle '' -> '
             text[1..text.len() - 1].replace("''", "'")
@@ -884,45 +889,6 @@ impl Scalar {
             // Plain string
             text
         }
-    }
-
-    /// Check if this scalar contains TAG tokens mixed with content
-    fn contains_tag_tokens(&self) -> bool {
-        for child in self.0.children_with_tokens() {
-            if let rowan::NodeOrToken::Token(token) = child {
-                if token.kind() == SyntaxKind::TAG {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Extract only value tokens (STRING, INT, FLOAT, BOOL, NULL) from a scalar that contains mixed TAG and value tokens
-    fn extract_string_tokens_only(&self) -> String {
-        let mut result = String::new();
-
-        for child in self.0.children_with_tokens() {
-            if let rowan::NodeOrToken::Token(token) = child {
-                match token.kind() {
-                    SyntaxKind::STRING
-                    | SyntaxKind::INT
-                    | SyntaxKind::FLOAT
-                    | SyntaxKind::BOOL
-                    | SyntaxKind::NULL => {
-                        result.push_str(token.text());
-                    }
-                    _ => {} // Skip TAG, WHITESPACE, etc.
-                }
-            }
-        }
-
-        result
-    }
-
-    /// Parse double-quoted string with escape sequences
-    fn parse_double_quoted(&self, content: &str) -> String {
-        ScalarValue::parse_escape_sequences(content)
     }
 
     /// Check if this scalar is quoted
@@ -1106,8 +1072,8 @@ impl Parser {
         if self.current() == Some(SyntaxKind::ANCHOR) {
             if let Some((_, token_text)) = self.tokens.last() {
                 // Extract anchor name from "&anchor_name" format
-                if token_text.starts_with('&') {
-                    anchor_name = Some(token_text[1..].to_string());
+                if let Some(name) = token_text.strip_prefix('&') {
+                    anchor_name = Some(name.to_string());
                 }
             }
             self.bump(); // consume anchor token
@@ -1142,8 +1108,8 @@ impl Parser {
         if self.current() == Some(SyntaxKind::REFERENCE) {
             if let Some((_, token_text)) = self.tokens.last() {
                 // Extract alias name from "*alias_name" format
-                if token_text.starts_with('*') {
-                    alias_name = Some(token_text[1..].to_string());
+                if let Some(name) = token_text.strip_prefix('*') {
+                    alias_name = Some(name.to_string());
                 }
             }
         }
@@ -1512,14 +1478,21 @@ impl Parser {
         self.in_flow_context = true;
 
         while self.current() != Some(SyntaxKind::RIGHT_BRACE) && self.current().is_some() {
-            // Parse key
+            // Parse key - wrap in KEY node
+            self.builder.start_node(SyntaxKind::KEY.into());
             self.parse_value();
+            self.builder.finish_node();
+
             self.skip_ws_and_newlines(); // Support comments after keys
 
             if self.current() == Some(SyntaxKind::COLON) {
                 self.bump();
                 self.skip_ws_and_newlines(); // Support comments after colons
+
+                // Parse value - wrap in VALUE node
+                self.builder.start_node(SyntaxKind::VALUE.into());
                 self.parse_value();
+                self.builder.finish_node();
             } else {
                 self.add_error("Expected ':' in flow mapping".to_string());
             }
@@ -1719,24 +1692,22 @@ impl Mapping {
         builder.start_node(SyntaxKind::MAPPING.into());
 
         for (key_scalar, value_node) in pairs {
-            // Create key token
+            // Create KEY node
+            builder.start_node(SyntaxKind::KEY.into());
             builder.token(SyntaxKind::VALUE.into(), &key_scalar.value());
+            builder.finish_node();
+
             builder.token(SyntaxKind::COLON.into(), ":");
             builder.token(SyntaxKind::WHITESPACE.into(), " ");
 
-            // Add value
+            // Create VALUE node containing the actual value content
+            builder.start_node(SyntaxKind::VALUE.into());
             if value_node.kind() == SyntaxKind::SCALAR {
-                builder.start_node(SyntaxKind::SCALAR.into());
-                // Extract the VALUE token from the scalar node
-                for token in value_node.children_with_tokens() {
-                    if let Some(token) = token.as_token() {
-                        if token.kind() == SyntaxKind::VALUE {
-                            builder.token(SyntaxKind::VALUE.into(), token.text());
-                        }
-                    }
-                }
-                builder.finish_node();
+                // Extract the text from the scalar node and add it as VALUE token
+                let value_text = value_node.text().to_string();
+                builder.token(SyntaxKind::VALUE.into(), &value_text);
             }
+            builder.finish_node();
 
             builder.token(SyntaxKind::NEWLINE.into(), "\n");
         }
@@ -1961,6 +1932,41 @@ impl Sequence {
             .splice_children(insert_pos..insert_pos, syntax_elements);
     }
 
+    /// Replace an item at a specific position  
+    pub fn set(&mut self, index: usize, value: &str) -> bool {
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        let mut item_count = 0;
+
+        for (i, child) in children.iter().enumerate() {
+            if let Some(token) = child.as_token() {
+                if token.kind() == SyntaxKind::DASH {
+                    if item_count == index {
+                        // Find the value node after this dash (skip whitespace)
+                        let mut value_index = None;
+                        for (j, next_child) in children.iter().enumerate().skip(i + 1) {
+                            if let Some(node) = next_child.as_node() {
+                                if node.kind() == SyntaxKind::SCALAR {
+                                    value_index = Some(j);
+                                    break;
+                                }
+                            }
+                        }
+
+                        if let Some(val_idx) = value_index {
+                            // Replace just the value node
+                            let new_value_node =
+                                SyntaxNode::new_root_mut(create_scalar_green(value));
+                            self.0
+                                .splice_children(val_idx..val_idx + 1, vec![new_value_node.into()]);
+                            return true;
+                        }
+                    }
+                    item_count += 1;
+                }
+            }
+        }
+        false
+    }
     /// Remove an item at a specific position
     pub fn remove(&mut self, index: usize) -> Option<String> {
         let children: Vec<_> = self.0.children().collect();
@@ -2059,42 +2065,6 @@ impl Sequence {
         let scalar_value = value.into();
         self.set(index, &scalar_value.to_string())
     }
-
-    /// Replace an item at a specific position  
-    pub fn set(&mut self, index: usize, value: &str) -> bool {
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        let mut item_count = 0;
-
-        for (i, child) in children.iter().enumerate() {
-            if let Some(token) = child.as_token() {
-                if token.kind() == SyntaxKind::DASH {
-                    if item_count == index {
-                        // Find the value node after this dash (skip whitespace)
-                        let mut value_index = None;
-                        for (j, next_child) in children.iter().enumerate().skip(i + 1) {
-                            if let Some(node) = next_child.as_node() {
-                                if node.kind() == SyntaxKind::SCALAR {
-                                    value_index = Some(j);
-                                    break;
-                                }
-                            }
-                        }
-
-                        if let Some(val_idx) = value_index {
-                            // Replace just the value node
-                            let new_value_node =
-                                SyntaxNode::new_root_mut(create_scalar_green(value));
-                            self.0
-                                .splice_children(val_idx..val_idx + 1, vec![new_value_node.into()]);
-                            return true;
-                        }
-                    }
-                    item_count += 1;
-                }
-            }
-        }
-        false
-    }
 }
 
 // Editing methods for Scalar
@@ -2124,8 +2094,11 @@ impl Directive {
     /// Get the directive name (e.g., "YAML" from "%YAML 1.2")
     pub fn name(&self) -> Option<String> {
         let text = self.text();
-        if text.starts_with('%') {
-            text[1..].split_whitespace().next().map(|s| s.to_string())
+        if let Some(directive_content) = text.strip_prefix('%') {
+            directive_content
+                .split_whitespace()
+                .next()
+                .map(|s| s.to_string())
         } else {
             None
         }
@@ -2134,8 +2107,8 @@ impl Directive {
     /// Get the directive value (e.g., "1.2" from "%YAML 1.2")
     pub fn value(&self) -> Option<String> {
         let text = self.text();
-        if text.starts_with('%') {
-            let parts: Vec<&str> = text[1..].split_whitespace().collect();
+        if let Some(directive_content) = text.strip_prefix('%') {
+            let parts: Vec<&str> = directive_content.split_whitespace().collect();
             if parts.len() > 1 {
                 Some(parts[1..].join(" "))
             } else {

@@ -3,7 +3,7 @@
 /// Lexical analysis: the variants are different kinds of "tokens".
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u16)]
-#[allow(non_camel_case_types)]
+#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
 pub enum SyntaxKind {
     // Structural
     /// Root node of the syntax tree

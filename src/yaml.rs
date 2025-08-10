@@ -199,6 +199,9 @@ impl Document {
     pub fn new() -> Document {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::DOCUMENT.into());
+        // Add the document start marker "---"
+        builder.token(SyntaxKind::DOC_START.into(), "---");
+        builder.token(SyntaxKind::WHITESPACE.into(), "\n");
         builder.finish_node();
         Document(SyntaxNode::new_root_mut(builder.finish()))
     }
@@ -207,6 +210,9 @@ impl Document {
     pub fn new_mapping() -> Document {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::DOCUMENT.into());
+        // Add the document start marker "---"
+        builder.token(SyntaxKind::DOC_START.into(), "---");
+        builder.token(SyntaxKind::WHITESPACE.into(), "\n");
         builder.start_node(SyntaxKind::MAPPING.into());
         builder.finish_node(); // End MAPPING
         builder.finish_node(); // End DOCUMENT
@@ -231,7 +237,12 @@ impl Document {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, self.to_yaml_string())?;
+        let mut content = self.to_yaml_string();
+        // Ensure the file ends with a newline
+        if !content.ends_with('\n') {
+            content.push('\n');
+        }
+        std::fs::write(path, content)?;
         Ok(())
     }
 
@@ -423,8 +434,8 @@ impl Document {
                     // Single-quoted string - only handle '' -> '
                     text[1..text.len() - 1].replace("''", "'")
                 } else {
-                    // Plain string
-                    text
+                    // Plain string - trim trailing newlines that might have been added by save_to_file
+                    text.trim_end_matches('\n').to_string()
                 }
             } else if let Some(tagged_scalar) = TaggedScalar::cast(node.clone()) {
                 // TAGGED_SCALAR nodes - return just the value part
@@ -433,8 +444,8 @@ impl Document {
                 // SCALAR nodes need to be processed
                 scalar.value()
             } else {
-                // For other node types, use raw text
-                node.text().to_string()
+                // For other node types, use raw text - trim trailing newlines
+                node.text().to_string().trim_end_matches('\n').to_string()
             }
         })
     }
@@ -568,6 +579,9 @@ impl Document {
     fn create_mapping_with_all_entries(&self, pairs: Vec<(String, String)>) -> SyntaxNode {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::DOCUMENT.into());
+        // Add the document start marker "---"
+        builder.token(SyntaxKind::DOC_START.into(), "---");
+        builder.token(SyntaxKind::WHITESPACE.into(), "\n");
         builder.start_node(SyntaxKind::MAPPING.into());
 
         for (i, (key, value)) in pairs.iter().enumerate() {

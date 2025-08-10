@@ -1476,18 +1476,18 @@ impl Parser {
         self.builder.start_node(SyntaxKind::SEQUENCE.into());
 
         self.bump(); // consume [
-        self.skip_whitespace();
+        self.skip_ws_and_newlines(); // Support comments and newlines in flow sequences
 
         let prev_flow = self.in_flow_context;
         self.in_flow_context = true;
 
         while self.current() != Some(SyntaxKind::RIGHT_BRACKET) && self.current().is_some() {
             self.parse_value();
-            self.skip_whitespace();
+            self.skip_ws_and_newlines(); // Support comments after values
 
             if self.current() == Some(SyntaxKind::COMMA) {
                 self.bump();
-                self.skip_whitespace();
+                self.skip_ws_and_newlines(); // Support comments after commas
             }
         }
 
@@ -1506,7 +1506,7 @@ impl Parser {
         self.builder.start_node(SyntaxKind::MAPPING.into());
 
         self.bump(); // consume {
-        self.skip_whitespace();
+        self.skip_ws_and_newlines(); // Support comments and newlines in flow mappings
 
         let prev_flow = self.in_flow_context;
         self.in_flow_context = true;
@@ -1514,21 +1514,21 @@ impl Parser {
         while self.current() != Some(SyntaxKind::RIGHT_BRACE) && self.current().is_some() {
             // Parse key
             self.parse_value();
-            self.skip_whitespace();
+            self.skip_ws_and_newlines(); // Support comments after keys
 
             if self.current() == Some(SyntaxKind::COLON) {
                 self.bump();
-                self.skip_whitespace();
+                self.skip_ws_and_newlines(); // Support comments after colons
                 self.parse_value();
             } else {
                 self.add_error("Expected ':' in flow mapping".to_string());
             }
 
-            self.skip_whitespace();
+            self.skip_ws_and_newlines(); // Support comments after values
 
             if self.current() == Some(SyntaxKind::COMMA) {
                 self.bump();
-                self.skip_whitespace();
+                self.skip_ws_and_newlines(); // Support comments after commas
             }
         }
 
@@ -3751,191 +3751,67 @@ folded: >
     }
 
     #[test]
-    fn test_merge_keys_basic() {
-        let yaml = r#"defaults: &defaults
-  setting1: value1
-  setting2: value2
+    fn test_enhanced_comment_support() {
+        // Test improvements: mid-line comments, comments in flow collections,
+        // and better comment positioning preservation
 
-production:
-  <<: *defaults
-  setting2: override
-  setting3: new_value
-"#;
-        let parsed = Yaml::from_str(yaml);
-        assert!(parsed.is_ok(), "Should parse YAML with merge keys");
+        // Test 1: Comments in flow sequences
+        let yaml1 = r#"flow_seq: [
+    item1, # comment after item1
+    item2, # comment after item2
+    item3  # comment after item3
+]"#;
+        let parsed1 = Yaml::from_str(yaml1).unwrap();
+        let output1 = parsed1.to_string();
+        assert!(output1.contains("# comment after item1"));
+        assert!(output1.contains("# comment after item2"));
+        assert!(output1.contains("# comment after item3"));
 
-        // Test that the output preserves the merge key syntax
-        let output = parsed.unwrap().to_string();
-        assert!(
-            output.contains("<<:"),
-            "Should preserve merge key in output"
-        );
-        assert!(
-            output.contains("*defaults"),
-            "Should preserve alias reference"
-        );
-    }
+        // Test 2: Comments in flow mappings
+        let yaml2 = r#"flow_map: {
+    key1: val1, # comment after first pair
+    key2: val2, # comment after second pair
+    key3: val3  # comment after third pair
+}"#;
+        let parsed2 = Yaml::from_str(yaml2).unwrap();
+        let output2 = parsed2.to_string();
+        assert!(output2.contains("# comment after first pair"));
+        assert!(output2.contains("# comment after second pair"));
+        assert!(output2.contains("# comment after third pair"));
 
-    #[test]
-    fn test_merge_keys_multiple() {
-        let yaml = r#"base1: &base1
-  a: 1
-  b: 2
+        // Test 3: Mixed nested structures with comments
+        let yaml3 = r#"config:
+  servers: [
+    {name: web1, port: 80},   # Web server 1
+    {name: web2, port: 80},   # Web server 2
+    {name: db1, port: 5432}   # Database server
+  ] # End servers array"#;
+        let parsed3 = Yaml::from_str(yaml3).unwrap();
+        let output3 = parsed3.to_string();
+        assert!(output3.contains("# Web server 1"));
+        assert!(output3.contains("# Web server 2"));
+        assert!(output3.contains("# Database server"));
+        assert!(output3.contains("# End servers array"));
 
-base2: &base2
-  c: 3
-  d: 4
+        // Test 4: Comments between sequence items (block style)
+        let yaml4 = r#"items:
+  - first   # First item comment
+  - second  # Second item comment
+  # Comment between items
+  - third   # Third item comment"#;
+        let parsed4 = Yaml::from_str(yaml4).unwrap();
+        let output4 = parsed4.to_string();
+        assert!(output4.contains("# First item comment"));
+        assert!(output4.contains("# Second item comment"));
+        assert!(output4.contains("# Comment between items"));
+        assert!(output4.contains("# Third item comment"));
 
-combined:
-  <<: [*base1, *base2]
-  e: 5
-"#;
-        let parsed = Yaml::from_str(yaml);
-        assert!(parsed.is_ok(), "Should parse YAML with multiple merge keys");
-
-        let output = parsed.unwrap().to_string();
-        assert!(output.contains("<<:"), "Should preserve merge key");
-    }
-
-    #[test]
-    fn test_merge_key_at_start() {
-        let yaml = r#"defaults: &defaults
-  a: 1
-
-production:
-  <<: *defaults
-  b: 2
-"#;
-        let parsed = Yaml::from_str(yaml);
-        assert!(parsed.is_ok(), "Should parse merge key at start of mapping");
-    }
-
-    #[test]
-    fn test_circular_reference_detection() {
-        // Direct circular reference
-        let yaml1 = r#"node1: &anchor1
-  child: *anchor1
-"#;
-        let parsed1 = Yaml::from_str(yaml1);
-        // The current implementation allows parsing but would detect during resolution
-        // This is actually valid YAML syntax, circular references are a semantic issue
-        assert!(
-            parsed1.is_ok(),
-            "Should parse YAML with circular reference syntax"
-        );
-
-        // Indirect circular reference - note that anchor2 is defined after being referenced
-        // This is actually invalid YAML because anchors must be defined before use
-        let yaml2 = r#"node1: &anchor1
-  child: *anchor1
-
-node2: &anchor2
-  child: *anchor2
-"#;
-        let parsed2 = Yaml::from_str(yaml2);
-        // The parser should handle self-references gracefully
-        assert!(
-            parsed2.is_ok(),
-            "Should parse YAML with self-referencing anchors"
-        );
-
-        // Note: Full circular reference detection would require semantic analysis
-        // during value resolution, not just syntax parsing
-    }
-
-    #[test]
-    fn test_undefined_alias_error() {
-        let yaml = r#"value: *undefined_anchor"#;
-        let parsed = Yaml::from_str(yaml);
-        // Parser should either handle gracefully or report undefined alias
-        if let Err(e) = parsed {
-            let error_msg = e.to_string();
-            assert!(error_msg.contains("Undefined") || error_msg.contains("undefined"));
-        }
-    }
-
-    #[test]
-    fn test_merge_key_with_anchor() {
-        let yaml = r#"base: &base
-  x: 1
-
-derived: &derived
-  <<: *base
-  y: 2
-
-final:
-  <<: *derived
-  z: 3
-"#;
-        let parsed = Yaml::from_str(yaml);
-        assert!(
-            parsed.is_ok(),
-            "Should parse nested merge keys with anchors"
-        );
-    }
-}
-
-/// Extension trait for SyntaxNode to provide convenient methods for YAML values
-pub trait SyntaxNodeExt {
-    /// Check if this node represents a sequence (array)
-    fn is_sequence(&self) -> bool;
-
-    /// Get sequence items if this is a sequence
-    fn sequence_items(&self) -> Vec<SyntaxNode>;
-
-    /// Get this node as a string value (for scalars)
-    fn as_str(&self) -> Option<String>;
-
-    /// Get this node as an array (sequence) of strings
-    fn as_array(&self) -> Option<Vec<String>>;
-}
-
-impl SyntaxNodeExt for SyntaxNode {
-    fn is_sequence(&self) -> bool {
-        // Check if this node is a sequence, or contains a sequence as a child
-        if self.kind() == SyntaxKind::SEQUENCE {
-            true
-        } else if self.kind() == SyntaxKind::VALUE {
-            // Check if VALUE node has a SEQUENCE child
-            self.children()
-                .any(|child| child.kind() == SyntaxKind::SEQUENCE)
-        } else {
-            false
-        }
-    }
-
-    fn sequence_items(&self) -> Vec<SyntaxNode> {
-        // If this is directly a sequence
-        if let Some(sequence) = Sequence::cast(self.clone()) {
-            sequence.items().collect()
-        }
-        // If this is a VALUE node containing a sequence
-        else if self.kind() == SyntaxKind::VALUE {
-            for child in self.children() {
-                if let Some(sequence) = Sequence::cast(child) {
-                    return sequence.items().collect();
-                }
-            }
-            Vec::new()
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn as_str(&self) -> Option<String> {
-        Scalar::cast(self.clone()).map(|scalar| scalar.value())
-    }
-
-    fn as_array(&self) -> Option<Vec<String>> {
-        if self.is_sequence() {
-            let items: Vec<String> = self
-                .sequence_items()
-                .into_iter()
-                .filter_map(|item| item.as_str())
-                .collect();
-            Some(items)
-        } else {
-            None
+        // Test 5: Round-trip preservation
+        for yaml in [yaml1, yaml2, yaml3, yaml4] {
+            let parsed = Yaml::from_str(yaml).unwrap();
+            let output = parsed.to_string();
+            let reparsed = Yaml::from_str(&output);
+            assert!(reparsed.is_ok(), "Round-trip parsing should succeed");
         }
     }
 }

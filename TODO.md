@@ -11,11 +11,11 @@ This document lists YAML 1.2 specification features that are not yet implemented
 - [ ] Handle circular references safely
 
 ### 2. Multi-line Scalar Styles
-- [ ] Literal block scalar (`|`) - proper parsing and preservation
-- [ ] Folded block scalar (`>`) - proper parsing and preservation
-- [ ] Block chomping indicators (`-`, `+`)
-- [ ] Explicit indentation indicators (`|2`, `>3`)
-- [ ] Block scalar content parsing with proper line break handling
+- [x] Literal block scalar (`|`) - proper parsing and preservation
+- [x] Folded block scalar (`>`) - proper parsing and preservation
+- [x] Block chomping indicators (`-`, `+`)
+- [x] Explicit indentation indicators (`|2`, `>3`)
+- [x] Block scalar content parsing with proper line break handling
 
 ### 3. Tags and Explicit Typing
 - [ ] Local tags (`!custom`)
@@ -26,11 +26,11 @@ This document lists YAML 1.2 specification features that are not yet implemented
 - [ ] Custom tag support
 
 ### 4. Escape Sequences in Strings
-- [ ] Unicode escapes (`\xNN`, `\uNNNN`, `\UNNNNNNNN`)
-- [ ] Control character escapes (`\n`, `\r`, `\t`, `\b`, etc.)
-- [ ] Escaped quotes in quoted strings
-- [ ] Line folding in double-quoted strings
-- [ ] Escaped line breaks
+- [x] Unicode escapes (`\xNN`, `\uNNNN`, `\UNNNNNNNN`)
+- [x] Control character escapes (`\n`, `\r`, `\t`, `\b`, etc.)
+- [x] Escaped quotes in quoted strings
+- [x] Line folding in double-quoted strings
+- [x] Escaped line breaks
 
 ## Medium Priority (Less Common Features)
 
@@ -41,11 +41,11 @@ This document lists YAML 1.2 specification features that are not yet implemented
 - [ ] Proper parsing and editing of complex keys
 
 ### 6. Directives
-- [ ] YAML version directive (`%YAML 1.2`)
-- [ ] TAG directives (`%TAG ! prefix`)
+- [x] YAML version directive (`%YAML 1.2`)
+- [x] TAG directives (`%TAG ! prefix`)
 - [ ] Reserved directives
-- [ ] Directive end marker (`---`)
-- [ ] Preserve directives during editing
+- [x] Directive end marker (`---`)
+- [x] Preserve directives during editing
 
 ### 7. Special Collections
 - [ ] Merge keys (`<<`) for key merging

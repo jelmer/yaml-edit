@@ -611,6 +611,16 @@ impl Mapping {
             .and_then(|(_, v)| v)
     }
 
+    /// Get a value as a Mapping if it is one
+    pub fn get_mapping(&self, key: &str) -> Option<Mapping> {
+        self.get(key).and_then(Mapping::cast)
+    }
+
+    /// Get a value as a Sequence if it is one
+    pub fn get_sequence(&self, key: &str) -> Option<Sequence> {
+        self.get(key).and_then(Sequence::cast)
+    }
+
     /// Check if the mapping contains a specific key
     pub fn contains_key(&self, key: &str) -> bool {
         self.pairs()
@@ -3262,8 +3272,14 @@ fn create_sequence_item_green(
 
 // Editing methods for Sequence
 impl Sequence {
-    /// Add an item to the end of the sequence
-    pub fn push(&mut self, value: &str) {
+    /// Add an item to the end of the sequence (generic version)
+    pub fn push<T: Into<ScalarValue>>(&mut self, value: T) {
+        let scalar_value = value.into();
+        self.push_str(&scalar_value.to_string());
+    }
+
+    /// Add a string item to the end of the sequence
+    pub fn push_str(&mut self, value: &str) {
         let new_item_tokens = create_sequence_item_green(value);
         let child_count = self.0.children_with_tokens().count();
         // Convert green nodes/tokens to syntax nodes/tokens
@@ -3328,6 +3344,29 @@ impl Sequence {
             .collect();
         self.0
             .splice_children(insert_pos..insert_pos, syntax_elements);
+    }
+
+    /// Get an item at a specific position
+    pub fn get_item(&self, index: usize) -> Option<SyntaxNode> {
+        let mut item_count = 0;
+        for child in self.0.children() {
+            if matches!(
+                child.kind(),
+                SyntaxKind::SCALAR | SyntaxKind::MAPPING | SyntaxKind::SEQUENCE
+            ) {
+                if item_count == index {
+                    return Some(child);
+                }
+                item_count += 1;
+            }
+        }
+        None
+    }
+
+    /// Set an item at a specific position (generic version)
+    pub fn set_item<T: Into<ScalarValue>>(&mut self, index: usize, value: T) -> bool {
+        let scalar_value = value.into();
+        self.set(index, &scalar_value.to_string())
     }
 
     /// Replace an item at a specific position  

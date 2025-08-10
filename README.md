@@ -12,42 +12,45 @@ A Rust library for parsing and editing YAML files while preserving all whitespac
 
 ## Examples
 
-### Lossless Editing - Modify YAML while preserving all formatting and comments
+### Basic Editing - Update values while preserving formatting
 
 ```rust
 use yaml_edit::Yaml;
 use std::str::FromStr;
 
-let original = r#"# Application configuration
-name: old-project
-version: 1.0.0
+let original = r#"# Server configuration
+host: localhost
+port: 8080
+debug: true
+timeout: 30
 
-# Features list
-features:
-  - auth
-  - logging
-
-# Database config
+# Database settings
 database:
-  host: localhost
-  port: 5432
+  name: dev_db
+  user: admin
+  max_connections: 10
 "#;
 
-let yaml = Yaml::from_str(original).unwrap();
+let mut yaml = Yaml::from_str(original).unwrap();
 
 if let Some(doc) = yaml.document() {
     if let Some(mut mapping) = doc.as_mapping() {
-        // Update existing fields
-        mapping.set("name", "awesome-project");
-
-        // Add new fields
-        mapping.set("license", "MIT");
-
-        // Rename keys while preserving values
-        mapping.rename_key("version", "app_version");
-
-        // Remove fields
-        mapping.remove("features");
+        // Update string values
+        mapping.set("host", "0.0.0.0");
+        
+        // Update numeric values
+        mapping.set("port", 3000);
+        mapping.set("timeout", 60);
+        
+        // Update boolean values
+        mapping.set("debug", false);
+        
+        // Update nested values
+        if let Some(mut db) = mapping.get_mapping("database") {
+            db.set("name", "prod_db");
+            db.set("password", "secret123");
+            db.set("max_connections", 50);
+        }
     }
 }
 
@@ -55,137 +58,163 @@ if let Some(doc) = yaml.document() {
 println!("{}", yaml);
 ```
 
-### Working with YAML Tags
+### Add and Remove Fields
 
 ```rust
 use yaml_edit::Yaml;
 use std::str::FromStr;
 
-let yaml_with_tags = r#"# Custom tagged values
-timestamp: !!timestamp 2024-01-15T10:30:00Z
-binary_data: !!binary "SGVsbG8gV29ybGQh"
-custom_type: !MyType {id: 123, name: "test"}
+let original = r#"name: my-app
+version: 1.0.0
+author: Alice
+year: 2023
 
-# Schema-specific tags
-port: !!int 8080
-enabled: !!bool true
-ratio: !!float 0.95
+features:
+  - logging
+  - auth
 "#;
 
-let yaml = Yaml::from_str(yaml_with_tags).unwrap();
+let mut yaml = Yaml::from_str(original).unwrap();
 
 if let Some(doc) = yaml.document() {
-    // Tags are preserved in the output when round-tripping YAML
-    // Note: Direct tag manipulation is not yet implemented
-    println!("{}", yaml);  // Tags like !!timestamp are preserved
-}
-```
-
-### Advanced Field Manipulation
-
-```rust
-use yaml_edit::{Yaml, YamlValue, ScalarValue};
-use std::str::FromStr;
-
-let yaml_str = r#"
-services:
-  web:
-    image: nginx:latest
-    ports:
-      - 80:80
-
-  database:
-    image: postgres:13
-    environment:
-      POSTGRES_DB: myapp
-"#;
-
-let yaml = Yaml::from_str(yaml_str).unwrap();
-
-if let Some(doc) = yaml.document() {
-    if let Some(mut root) = doc.as_mapping() {
-        // Reorder fields according to a specific order
-        root.reorder_fields(&["database", "web"]);
-
-        // Set complex values
-        let monitoring = YamlValue::Mapping(vec![
-            ("enabled".into(), YamlValue::from(true)),
-            ("interval".into(), YamlValue::from(30)),
-            ("endpoints".into(), YamlValue::Sequence(vec![
-                YamlValue::from("/health"),
-                YamlValue::from("/metrics"),
-            ])),
-        ].into_iter().collect());
-
-        root.set_value("monitoring", monitoring);
+    if let Some(mut mapping) = doc.as_mapping() {
+        // Add new string field
+        mapping.set("license", "MIT");
+        
+        // Add new boolean field
+        mapping.set("published", true);
+        
+        // Add new numeric field
+        mapping.set("downloads", 1000);
+        
+        // Remove a field
+        mapping.remove("author");
+        
+        // Rename a field (preserves the value)
+        mapping.rename_key("version", "app_version");
+        
+        // Update existing numeric field
+        mapping.set("year", 2024);
     }
 }
+
+println!("{}", yaml);
 ```
 
-### Error Recovery and Partial Parsing
+### Working with Lists
 
 ```rust
 use yaml_edit::Yaml;
 use std::str::FromStr;
 
-let invalid_yaml = r#"
-valid_key: valid_value
+let original = r#"team:
+  - Alice
+  - Bob
+  - Charlie
 
-# This section has syntax errors
-broken_section:
-  - item1
-  - item2
-    nested_without_dash: oops  # Invalid nesting
+scores:
+  - 95
+  - 87
+  - 92
 
-# But parsing continues!
-another_valid_key: another_value
+config:
+  enabled: true
+  retries: 3
+  servers:
+    - host1
+    - host2
 "#;
 
-match Yaml::from_str(invalid_yaml) {
-    Ok(yaml) => {
-        // The parser recovers from errors and continues
-        if let Some(doc) = yaml.document() {
-            // You can still access valid parts
-            if let Some(value) = doc.get_string("valid_key") {
-                println!("Found valid value: {}", value);
-            }
-            if let Some(value) = doc.get_string("another_valid_key") {
-                println!("Found another valid value: {}", value);
+let mut yaml = Yaml::from_str(original).unwrap();
+
+if let Some(doc) = yaml.document() {
+    if let Some(mut mapping) = doc.as_mapping() {
+        // Modify a string list
+        if let Some(mut team) = mapping.get_sequence("team") {
+            team.push("Diana");
+            team.set_item(1, "Robert");  // Change Bob to Robert
+        }
+        
+        // Modify a numeric list
+        if let Some(mut scores) = mapping.get_sequence("scores") {
+            scores.push(98);
+            scores.set_item(0, 100);  // Update first score
+        }
+        
+        // Work with nested structures
+        if let Some(mut config) = mapping.get_mapping("config") {
+            // Update values
+            config.set("enabled", false);
+            config.set("retries", 5);
+            
+            // Modify nested list
+            if let Some(mut servers) = config.get_sequence("servers") {
+                servers.push("host3");
+                servers.set_item(0, "primary-host");
             }
         }
     }
-    Err(e) => {
-        // Error contains position information
-        println!("Parse errors: {}", e);
-    }
 }
+
+println!("{}", yaml);
 ```
 
-### Multi-line String Preservation
+### Update Package Configuration
+
+```rust,no_run
+use yaml_edit::Document;
+
+// Load a package.yaml file
+let mut doc = Document::load_from_file("package.yaml").unwrap();
+
+if let Some(mut root) = doc.as_mapping() {
+    // Update version
+    root.set("version", "2.0.0");
+    
+    // Add or update dependencies
+    if let Some(mut deps) = root.get_mapping("dependencies") {
+        deps.set("serde", "1.0");
+        deps.set("tokio", "1.35");
+        deps.remove("deprecated-lib");
+    }
+}
+
+// Save back to file preserving all formatting
+doc.save_to_file("package.yaml").unwrap();
+```
+
+### Format-Preserving Edits
 
 ```rust
 use yaml_edit::Yaml;
 use std::str::FromStr;
 
-let yaml_with_multiline = r#"
-description: |
-  This is a literal block scalar.
-  All line breaks are preserved.
-  Including this one.
+let original = r#"# This is my config file
+# It has very specific formatting
 
-script: >
-  This is a folded block scalar.
-  Line breaks are folded into spaces
-  unless there's an empty line.
+app:    my-application    # Extra spaces preserved
+version:  "1.0.0"         # Aligned with spaces
 
-  Like this one above.
-
-quoted: "This is a\nmulti-line\nquoted string"
+settings:
+  # These settings are important
+  timeout:   30    # seconds
+  retries:   3     # attempts
 "#;
 
-let yaml = Yaml::from_str(yaml_with_multiline).unwrap();
+let mut yaml = Yaml::from_str(original).unwrap();
 
-// All multi-line string styles are preserved exactly as written
+if let Some(doc) = yaml.document() {
+    if let Some(mut root) = doc.as_mapping() {
+        // Updates preserve the original spacing and comments
+        root.set("version", "2.0.0");
+        
+        if let Some(mut settings) = root.get_mapping("settings") {
+            settings.set("timeout", 60);
+        }
+    }
+}
+
+// Original formatting and all comments are preserved!
 println!("{}", yaml);
 ```
 

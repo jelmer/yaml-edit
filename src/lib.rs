@@ -19,7 +19,9 @@ pub use parse::Parse;
 pub use rowan::TextRange;
 pub use scalar::{ScalarStyle, ScalarValue};
 pub use value::YamlValue;
-pub use yaml::{Directive, Document, Lang, Mapping, Scalar, Sequence, SyntaxNodeExt, TaggedScalar, Yaml};
+pub use yaml::{
+    Directive, Document, Lang, Mapping, Scalar, Sequence, SyntaxNodeExt, TaggedScalar, Yaml,
+};
 
 /// A positioned parse error containing location information.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

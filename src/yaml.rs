@@ -405,7 +405,7 @@ impl Document {
                 // Check if VALUE node contains a TAGGED_SCALAR child
                 for child in node.children() {
                     if let Some(tagged_scalar) = TaggedScalar::cast(child) {
-                        return tagged_scalar.as_string().unwrap_or_default();
+                        return tagged_scalar.value().map(|s| s.value()).unwrap_or_default();
                     }
                 }
 
@@ -425,10 +425,10 @@ impl Document {
                 }
             } else if let Some(tagged_scalar) = TaggedScalar::cast(node.clone()) {
                 // TAGGED_SCALAR nodes - return just the value part
-                tagged_scalar.as_string().unwrap_or_default()
+                tagged_scalar.value().map(|s| s.value()).unwrap_or_default()
             } else if let Some(scalar) = Scalar::cast(node.clone()) {
                 // SCALAR nodes need to be processed
-                scalar.as_string()
+                scalar.value()
             } else {
                 // For other node types, use raw text
                 node.text().to_string()
@@ -460,7 +460,7 @@ impl Document {
                     if let Some(sequence) = Sequence::cast(node.clone()) {
                         sequence.items().next().and_then(|first_item| {
                             if first_item.kind() == SyntaxKind::SCALAR {
-                                Scalar::cast(first_item).map(|scalar| scalar.as_string())
+                                Scalar::cast(first_item).map(|scalar| scalar.value())
                             } else {
                                 // For complex first items, return a simple representation
                                 Some(first_item.text().to_string().trim().to_string())
@@ -753,11 +753,12 @@ impl Mapping {
 impl Sequence {
     /// Get all items in this sequence
     pub fn items(&self) -> impl Iterator<Item = SyntaxNode> {
-        self.0.children().filter(|child| child.kind() == SyntaxKind::SCALAR)
+        self.0
+            .children()
+            .filter(|child| child.kind() == SyntaxKind::SCALAR)
     }
 }
 
-impl Scalar {
 impl TaggedScalar {
     /// Get the tag part of this tagged scalar (e.g., "!custom" from "!custom value")
     pub fn tag(&self) -> Option<String> {
@@ -786,7 +787,7 @@ impl TaggedScalar {
     /// Get the string value of this tagged scalar (just the value part)
     pub fn as_string(&self) -> Option<String> {
         if let Some(scalar) = self.value() {
-            Some(scalar.as_string())
+            Some(scalar.value())
         } else {
             // Handle cases where the value might be nested deeper
             self.extract_deepest_string_value()
@@ -823,6 +824,7 @@ impl TaggedScalar {
     }
 }
 
+impl Scalar {
     /// Get the string value of this scalar
     pub fn value(&self) -> String {
         self.0.text().to_string()
@@ -3643,7 +3645,7 @@ impl SyntaxNodeExt for SyntaxNode {
     }
 
     fn as_str(&self) -> Option<String> {
-        Scalar::cast(self.clone()).map(|scalar| scalar.as_string())
+        Scalar::cast(self.clone()).map(|scalar| scalar.value())
     }
 
     fn as_array(&self) -> Option<Vec<String>> {

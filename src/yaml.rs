@@ -405,7 +405,7 @@ impl Document {
                 // Check if VALUE node contains a TAGGED_SCALAR child
                 for child in node.children() {
                     if let Some(tagged_scalar) = TaggedScalar::cast(child) {
-                        return tagged_scalar.as_string().unwrap_or_default();
+                        return tagged_scalar.value().map(|s| s.value()).unwrap_or_default();
                     }
                 }
 
@@ -425,10 +425,10 @@ impl Document {
                 }
             } else if let Some(tagged_scalar) = TaggedScalar::cast(node.clone()) {
                 // TAGGED_SCALAR nodes - return just the value part
-                tagged_scalar.as_string().unwrap_or_default()
+                tagged_scalar.value().map(|s| s.value()).unwrap_or_default()
             } else if let Some(scalar) = Scalar::cast(node.clone()) {
                 // SCALAR nodes need to be processed
-                scalar.as_string()
+                scalar.value()
             } else {
                 // For other node types, use raw text
                 node.text().to_string()
@@ -460,7 +460,7 @@ impl Document {
                     if let Some(sequence) = Sequence::cast(node.clone()) {
                         sequence.items().next().and_then(|first_item| {
                             if first_item.kind() == SyntaxKind::SCALAR {
-                                Scalar::cast(first_item).map(|scalar| scalar.as_string())
+                                Scalar::cast(first_item).map(|scalar| scalar.value())
                             } else {
                                 // For complex first items, return a simple representation
                                 Some(first_item.text().to_string().trim().to_string())
@@ -516,6 +516,42 @@ impl Document {
         // This is a placeholder implementation
         // In a real implementation, you might need to traverse up to find parent directives
         Vec::new()
+    }
+
+    /// Set the field ordering for the document (assumes document is a mapping)
+    /// Fields will be reordered according to the provided order. Any fields not
+    /// in the order list will be placed at the end in their original order.
+    pub fn set_field_order(&mut self, field_order: &[&str]) {
+        if let Some(mapping) = self.as_mapping() {
+            // Collect all existing key-value pairs
+            let mut all_pairs: Vec<(String, String)> = Vec::new();
+            for (key, value) in mapping.pairs() {
+                if let Some(key_scalar) = key {
+                    let key_str = key_scalar.value();
+                    if let Some(value_node) = value {
+                        all_pairs.push((key_str, value_node.text().to_string().trim().to_string()));
+                    }
+                }
+            }
+
+            // Create ordered pairs according to field_order
+            let mut ordered_pairs: Vec<(String, String)> = Vec::new();
+
+            // First, add fields in the specified order
+            for &field_name in field_order {
+                if let Some(pos) = all_pairs.iter().position(|(k, _)| k == field_name) {
+                    ordered_pairs.push(all_pairs.remove(pos));
+                }
+            }
+
+            // Then add any remaining fields in their original order
+            ordered_pairs.extend(all_pairs);
+
+            // Rebuild the document with ordered fields
+            if !ordered_pairs.is_empty() {
+                self.0 = self.create_mapping_with_all_entries(ordered_pairs);
+            }
+        }
     }
 
     /// Add a directive to the beginning of the parent YAML
@@ -717,10 +753,9 @@ impl Mapping {
 impl Sequence {
     /// Get all items in this sequence
     pub fn items(&self) -> impl Iterator<Item = SyntaxNode> {
-        self.0.children().filter(|child| match child.kind() {
-            SyntaxKind::SCALAR | SyntaxKind::MAPPING | SyntaxKind::SEQUENCE => true,
-            _ => false,
-        })
+        self.0
+            .children()
+            .filter(|child| child.kind() == SyntaxKind::SCALAR)
     }
 }
 
@@ -752,7 +787,7 @@ impl TaggedScalar {
     /// Get the string value of this tagged scalar (just the value part)
     pub fn as_string(&self) -> Option<String> {
         if let Some(scalar) = self.value() {
-            Some(scalar.as_string())
+            Some(scalar.value())
         } else {
             // Handle cases where the value might be nested deeper
             self.extract_deepest_string_value()
@@ -3559,5 +3594,70 @@ impl Directive {
         builder.token(SyntaxKind::DIRECTIVE.into(), &directive_text);
         builder.finish_node();
         Directive(SyntaxNode::new_root_mut(builder.finish()))
+    }
+}
+
+/// Extension trait for SyntaxNode to provide convenient methods for YAML values
+pub trait SyntaxNodeExt {
+    /// Check if this node represents a sequence (array)
+    fn is_sequence(&self) -> bool;
+
+    /// Get sequence items if this is a sequence
+    fn sequence_items(&self) -> Vec<SyntaxNode>;
+
+    /// Get this node as a string value (for scalars)
+    fn as_str(&self) -> Option<String>;
+
+    /// Get this node as an array (sequence) of strings
+    fn as_array(&self) -> Option<Vec<String>>;
+}
+
+impl SyntaxNodeExt for SyntaxNode {
+    fn is_sequence(&self) -> bool {
+        // Check if this node is a sequence, or contains a sequence as a child
+        if self.kind() == SyntaxKind::SEQUENCE {
+            true
+        } else if self.kind() == SyntaxKind::VALUE {
+            // Check if VALUE node has a SEQUENCE child
+            self.children()
+                .any(|child| child.kind() == SyntaxKind::SEQUENCE)
+        } else {
+            false
+        }
+    }
+
+    fn sequence_items(&self) -> Vec<SyntaxNode> {
+        // If this is directly a sequence
+        if let Some(sequence) = Sequence::cast(self.clone()) {
+            sequence.items().collect()
+        }
+        // If this is a VALUE node containing a sequence
+        else if self.kind() == SyntaxKind::VALUE {
+            for child in self.children() {
+                if let Some(sequence) = Sequence::cast(child) {
+                    return sequence.items().collect();
+                }
+            }
+            Vec::new()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn as_str(&self) -> Option<String> {
+        Scalar::cast(self.clone()).map(|scalar| scalar.value())
+    }
+
+    fn as_array(&self) -> Option<Vec<String>> {
+        if self.is_sequence() {
+            let items: Vec<String> = self
+                .sequence_items()
+                .into_iter()
+                .filter_map(|item| item.as_str())
+                .collect();
+            Some(items)
+        } else {
+            None
+        }
     }
 }

@@ -1,6 +1,5 @@
 //! Parser types and utilities.
 
-use crate::lex::SyntaxKind;
 use rowan::GreenNode;
 
 /// The result of a parse operation.

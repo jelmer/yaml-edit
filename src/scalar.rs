@@ -91,6 +91,15 @@ impl ScalarValue {
         Self::with_style(value, ScalarStyle::Folded)
     }
 
+    /// Create a null scalar
+    pub fn null() -> Self {
+        Self {
+            value: "null".to_string(),
+            style: ScalarStyle::Plain,
+            scalar_type: ScalarType::Null,
+        }
+    }
+
     /// Get the raw value
     pub fn value(&self) -> &str {
         &self.value
@@ -414,5 +423,12 @@ mod tests {
 
         let scalar = ScalarValue::new("[array]");
         assert_eq!(scalar.to_yaml_string(), "'[array]'");
+    }
+
+    #[test]
+    fn test_null_scalar() {
+        let scalar = ScalarValue::null();
+        assert_eq!(scalar.to_yaml_string(), "null");
+        assert_eq!(scalar.scalar_type, ScalarType::Null);
     }
 }

@@ -1,6 +1,6 @@
 //! Value wrapper that can represent any YAML value type (scalar, sequence, mapping).
 
-use crate::scalar::{ScalarStyle, ScalarValue};
+use crate::scalar::ScalarValue;
 use std::collections::BTreeMap;
 use std::fmt;
 

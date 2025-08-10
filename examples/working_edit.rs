@@ -18,7 +18,7 @@ features:
     println!("{}", original);
 
     // Parse it
-    let mut yaml = match Yaml::from_str(original) {
+    let yaml = match Yaml::from_str(original) {
         Ok(y) => y,
         Err(e) => {
             println!("Parse error: {}", e);

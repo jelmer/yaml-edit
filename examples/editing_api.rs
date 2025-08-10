@@ -20,36 +20,32 @@ features:
     println!("=== ORIGINAL ===");
     println!("{}", original);
 
-    let mut yaml = Yaml::from_str(original).unwrap();
+    let yaml = Yaml::from_str(original).unwrap();
 
-    // This shows the clean API design (no Mut suffixes!)
-    if let Some(doc) = yaml.document() {
-        if let Some(mapping) = doc.as_mapping() {
-            println!("\n=== CLEAN EDITING API (TO BE IMPLEMENTED) ===");
-            println!("// Simple value changes");
-            println!("mapping.set(\"name\", \"new-app\");");
-            println!("mapping.set(\"version\", \"2.0.0\");");
+    // Actually execute editing operations that are currently implemented
+    if let Some(mut doc) = yaml.document() {
+        println!("\n=== EXECUTING AVAILABLE EDITING OPERATIONS ===");
 
-            println!("\n// Key renaming");
-            println!("mapping.rename(\"name\", \"app_name\");");
+        // Simple value changes
+        println!("Setting name to 'new-app'...");
+        doc.set_string("name", "new-app");
 
-            println!("\n// Nested path editing");
-            println!("mapping.set_path(\"database.host\", \"prod.db.com\");");
-            println!("mapping.set_path(\"database.timeout\", \"30s\");");
+        println!("Setting version to '2.0.0'...");
+        doc.set_string("version", "2.0.0");
 
-            println!("\n// List operations");
-            println!("if let Some(features) = mapping.get_sequence(\"features\") {{");
-            println!("    features.push(\"metrics\");");
-            println!("    features.insert(1, \"caching\");");
-            println!("    features.set(0, \"authentication\");");
-            println!("}}");
+        // Test getting values
+        println!("Current name: {:?}", doc.get_string("name"));
+        println!("Current version: {:?}", doc.get_string("version"));
 
-            println!("\n// Recursive operations");
-            println!("if let Some(db) = mapping.get_mapping(\"database\") {{");
-            println!("    db.set(\"ssl\", \"true\");");
-            println!("    db.remove(\"port\");");
-            println!("}}");
-        }
+        println!("\n=== CURRENT RESULT ===");
+        println!("{}", doc.to_yaml_string());
+
+        // Show what's not yet implemented
+        println!("\n=== OPERATIONS TO BE IMPLEMENTED ===");
+        println!("// Key renaming: doc.rename_key(\"name\", \"app_name\")");
+        println!("// Nested path editing: doc.set_path(\"database.host\", \"prod.db.com\")");
+        println!("// Advanced list operations on sequences");
+        println!("// Recursive editing of nested structures");
     }
 
     println!("\n=== EXPECTED RESULT ===");

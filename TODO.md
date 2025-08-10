@@ -69,9 +69,9 @@ Major features recently implemented:
 - [ ] Type casting/coercion
 
 ### 9. JSON Compatibility
-- [ ] Full JSON compatibility (JSON is valid YAML)
-- [ ] JSON-style escape sequences
-- [ ] Proper number format compatibility
+- [x] Full JSON compatibility (JSON is valid YAML)
+- [x] JSON-style escape sequences
+- [x] Proper number format compatibility
 
 ## Low Priority (Advanced/Rare Features)
 

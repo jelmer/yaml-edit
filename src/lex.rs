@@ -22,6 +22,8 @@ pub enum SyntaxKind {
     // Tokens
     /// Dash character '-'
     DASH,
+    /// Plus character '+'
+    PLUS,
     /// Colon character ':'
     COLON,
     /// Question mark '?'
@@ -138,6 +140,7 @@ pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
                     tokens.push((DASH, &input[token_start..start_idx + 1]));
                 }
             }
+            '+' => tokens.push((PLUS, &input[token_start..start_idx + 1])),
             ':' => tokens.push((COLON, &input[token_start..start_idx + 1])),
             '?' => tokens.push((QUESTION, &input[token_start..start_idx + 1])),
             '[' => tokens.push((LEFT_BRACKET, &input[token_start..start_idx + 1])),
@@ -344,6 +347,7 @@ fn is_yaml_special(ch: char) -> bool {
     matches!(
         ch,
         ':' | '-'
+            | '+'
             | '?'
             | '['
             | ']'
@@ -562,5 +566,112 @@ mod tests {
             .filter(|(kind, _)| *kind == SyntaxKind::ASTERISK)
             .collect();
         assert_eq!(asterisks.len(), 1);
+    }
+
+    #[test]
+    fn test_plus_token() {
+        // Test plus as standalone token
+        let input = "key: |+ value";
+        let tokens = lex(input);
+
+        let plus_tokens: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::PLUS)
+            .collect();
+        assert_eq!(plus_tokens.len(), 1);
+        assert_eq!(plus_tokens[0].1, "+");
+    }
+
+    #[test]
+    fn test_block_scalar_indicators() {
+        // Test literal with chomping indicators
+        let input1 = "key: |+ content";
+        let tokens1 = lex(input1);
+
+        assert!(tokens1
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::PIPE && *text == "|"));
+        assert!(tokens1
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::PLUS && *text == "+"));
+
+        // Test folded with chomping indicators
+        let input2 = "key: >- content";
+        let tokens2 = lex(input2);
+
+        assert!(tokens2
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::GREATER && *text == ">"));
+        assert!(tokens2
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::DASH && *text == "-"));
+
+        // Test with explicit indentation
+        let input3 = "key: |2+ content";
+        let tokens3 = lex(input3);
+
+        assert!(tokens3
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::PIPE && *text == "|"));
+        assert!(tokens3
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::INT && *text == "2"));
+        assert!(tokens3
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::PLUS && *text == "+"));
+    }
+
+    #[test]
+    fn test_special_characters_in_block_content() {
+        let input = "line with - and + and : characters";
+        let tokens = lex(input);
+
+        // Should tokenize each special character separately
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::DASH && *text == "-"));
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::PLUS && *text == "+"));
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::COLON && *text == ":"));
+
+        // Should also have the word tokens
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "line"));
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "with"));
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "and"));
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "characters"));
+    }
+
+    #[test]
+    fn test_comprehensive_token_recognition() {
+        let input = "key: |2+ \n  content with - and : and > chars\n  more content";
+        let tokens = lex(input);
+
+        // Print tokens for debugging
+        println!("Comprehensive tokens:");
+        for (i, (kind, text)) in tokens.iter().enumerate() {
+            println!("  {}: {:?} = {:?}", i, kind, text);
+        }
+
+        // Verify all expected tokens are present
+        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::STRING)); // "key"
+        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::COLON)); // ":"
+        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::PIPE)); // "|"
+        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::INT)); // "2"
+        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::PLUS)); // "+"
+        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::NEWLINE)); // "\n"
+        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::INDENT)); // "  "
+        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::DASH)); // "-"
+        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::GREATER)); // ">"
     }
 }

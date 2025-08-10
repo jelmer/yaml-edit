@@ -16,6 +16,8 @@ pub enum SyntaxKind {
     MAPPING,
     /// A YAML scalar value
     SCALAR,
+    /// A YAML tagged scalar (tag + value)
+    TAGGED_SCALAR,
     /// Parse error marker
     ERROR,
 

@@ -97,6 +97,11 @@ ast_node!(Document, DOCUMENT, "A single YAML document");
 ast_node!(Sequence, SEQUENCE, "A YAML sequence (list)");
 ast_node!(Mapping, MAPPING, "A YAML mapping (key-value pairs)");
 ast_node!(Scalar, SCALAR, "A YAML scalar value");
+ast_node!(
+    TaggedScalar,
+    TAGGED_SCALAR,
+    "A YAML tagged scalar (tag + value)"
+);
 ast_node!(Directive, DIRECTIVE, "A YAML directive like %YAML 1.2");
 
 impl Default for Yaml {
@@ -212,11 +217,7 @@ impl Document {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> YamlResult<Document> {
         let content = std::fs::read_to_string(path)?;
         let parsed = Yaml::parse(&content);
-        Ok(parsed
-            .tree()
-            .documents()
-            .next()
-            .unwrap_or_else(Document::new))
+        Ok(parsed.tree().documents().next().unwrap_or_default())
     }
 
     /// Load a document from a file (alias for load_from_file)
@@ -266,7 +267,7 @@ impl Document {
 
     /// Check if the document contains a key (assumes document is a mapping)
     pub fn contains_key(&self, key: &str) -> bool {
-        self.as_mapping().map_or(false, |m| m.contains_key(key))
+        self.as_mapping().is_some_and(|m| m.contains_key(key))
     }
 
     /// Get a value from the document (assumes document is a mapping)
@@ -363,7 +364,7 @@ impl Document {
 
     /// Check if the document is empty
     pub fn is_empty(&self) -> bool {
-        self.as_mapping().map_or(true, |m| m.is_empty())
+        self.as_mapping().is_none_or(|m| m.is_empty())
     }
 
     /// Create a document from a mapping
@@ -374,7 +375,7 @@ impl Document {
         // Copy all key-value pairs from the mapping
         for (key_opt, value_opt) in mapping.pairs() {
             if let (Some(key), Some(value)) = (key_opt, value_opt) {
-                doc.set_raw(&key.value(), &value.text().to_string().trim());
+                doc.set_raw(&key.value(), value.text().to_string().trim());
             }
         }
         doc
@@ -401,8 +402,16 @@ impl Document {
     pub fn get_string(&self, key: &str) -> Option<String> {
         self.get(key).map(|node| {
             if node.kind() == SyntaxKind::VALUE {
-                // VALUE nodes contain the raw text, parse it like a scalar
+                // Check if VALUE node contains a TAGGED_SCALAR child
+                for child in node.children() {
+                    if let Some(tagged_scalar) = TaggedScalar::cast(child) {
+                        return tagged_scalar.as_string().unwrap_or_default();
+                    }
+                }
+
+                // Fallback: VALUE nodes contain raw text, parse it like a scalar
                 let text = node.text().to_string();
+
                 // Use the same parsing logic as Scalar::as_string()
                 if text.starts_with('"') && text.ends_with('"') {
                     // Double-quoted string - handle escape sequences
@@ -414,6 +423,9 @@ impl Document {
                     // Plain string
                     text
                 }
+            } else if let Some(tagged_scalar) = TaggedScalar::cast(node.clone()) {
+                // TAGGED_SCALAR nodes - return just the value part
+                tagged_scalar.as_string().unwrap_or_default()
             } else if let Some(scalar) = Scalar::cast(node.clone()) {
                 // SCALAR nodes need to be processed
                 scalar.as_string()
@@ -533,6 +545,12 @@ impl Document {
         builder.finish_node(); // DOCUMENT
 
         SyntaxNode::new_root(builder.finish())
+    }
+}
+
+impl Default for Mapping {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -683,6 +701,71 @@ impl Sequence {
     }
 }
 
+impl TaggedScalar {
+    /// Get the tag part of this tagged scalar (e.g., "!custom" from "!custom value")
+    pub fn tag(&self) -> Option<String> {
+        // Find the tag token in the children
+        for child in self.0.children_with_tokens() {
+            if let rowan::NodeOrToken::Token(token) = child {
+                if token.kind() == SyntaxKind::TAG {
+                    return Some(token.text().to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Get the value part of this tagged scalar (without the tag)
+    pub fn value(&self) -> Option<Scalar> {
+        // Find the nested SCALAR node
+        for child in self.0.children() {
+            if child.kind() == SyntaxKind::SCALAR {
+                return Scalar::cast(child);
+            }
+        }
+        None
+    }
+
+    /// Get the string value of this tagged scalar (just the value part)
+    pub fn as_string(&self) -> Option<String> {
+        if let Some(scalar) = self.value() {
+            Some(scalar.as_string())
+        } else {
+            // Handle cases where the value might be nested deeper
+            self.extract_deepest_string_value()
+        }
+    }
+
+    /// Extract the deepest string value, handling nested tag structures
+    fn extract_deepest_string_value(&self) -> Option<String> {
+        self.find_string_token_recursive(&self.0)
+    }
+
+    /// Recursively search for the first STRING token in the tree
+    fn find_string_token_recursive(
+        &self,
+        node: &rowan::SyntaxNode<crate::yaml::Lang>,
+    ) -> Option<String> {
+        // Check tokens first
+        for child in node.children_with_tokens() {
+            if let rowan::NodeOrToken::Token(token) = child {
+                if token.kind() == SyntaxKind::STRING {
+                    return Some(token.text().to_string());
+                }
+            }
+        }
+
+        // Then check child nodes recursively
+        for child in node.children() {
+            if let Some(result) = self.find_string_token_recursive(&child) {
+                return Some(result);
+            }
+        }
+
+        None
+    }
+}
+
 impl Scalar {
     /// Get the string value of this scalar
     pub fn value(&self) -> String {
@@ -691,6 +774,11 @@ impl Scalar {
 
     /// Get the string representation of this scalar, properly unquoted and unescaped
     pub fn as_string(&self) -> String {
+        // Check if this scalar contains TAG tokens (mixed content)
+        if self.contains_tag_tokens() {
+            return self.extract_string_tokens_only();
+        }
+
         let text = self.value();
 
         // Handle quoted strings
@@ -704,6 +792,40 @@ impl Scalar {
             // Plain string
             text
         }
+    }
+
+    /// Check if this scalar contains TAG tokens mixed with content
+    fn contains_tag_tokens(&self) -> bool {
+        for child in self.0.children_with_tokens() {
+            if let rowan::NodeOrToken::Token(token) = child {
+                if token.kind() == SyntaxKind::TAG {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Extract only value tokens (STRING, INT, FLOAT, BOOL, NULL) from a scalar that contains mixed TAG and value tokens
+    fn extract_string_tokens_only(&self) -> String {
+        let mut result = String::new();
+
+        for child in self.0.children_with_tokens() {
+            if let rowan::NodeOrToken::Token(token) = child {
+                match token.kind() {
+                    SyntaxKind::STRING
+                    | SyntaxKind::INT
+                    | SyntaxKind::FLOAT
+                    | SyntaxKind::BOOL
+                    | SyntaxKind::NULL => {
+                        result.push_str(token.text());
+                    }
+                    _ => {} // Skip TAG, WHITESPACE, etc.
+                }
+            }
+        }
+
+        result
     }
 
     /// Parse double-quoted string with escape sequences
@@ -839,6 +961,7 @@ impl Parser {
             Some(SyntaxKind::DASH) if !self.in_flow_context => self.parse_sequence(),
             Some(SyntaxKind::ANCHOR) => self.parse_anchored_value(),
             Some(SyntaxKind::REFERENCE) => self.parse_alias(),
+            Some(SyntaxKind::TAG) => self.parse_tagged_value(),
             Some(SyntaxKind::PIPE) => self.parse_literal_block_scalar(),
             Some(SyntaxKind::GREATER) => self.parse_folded_block_scalar(),
             Some(
@@ -981,6 +1104,164 @@ impl Parser {
         }
 
         self.builder.finish_node();
+    }
+
+    fn parse_tagged_value(&mut self) {
+        self.builder.start_node(SyntaxKind::TAGGED_SCALAR.into());
+
+        // Consume the tag token - this becomes part of the tagged scalar
+        self.bump(); // TAG token
+
+        // Skip any whitespace after the tag
+        while matches!(self.current(), Some(SyntaxKind::WHITESPACE)) {
+            self.bump();
+        }
+
+        // Parse the value that follows the tag as a nested scalar
+        self.builder.start_node(SyntaxKind::SCALAR.into());
+        self.parse_tagged_scalar_content();
+        self.builder.finish_node();
+
+        self.builder.finish_node();
+    }
+
+    fn parse_tagged_scalar_content(&mut self) {
+        // Parse the actual value after the tag
+        match self.current() {
+            Some(SyntaxKind::QUOTE | SyntaxKind::SINGLE_QUOTE) => {
+                // Handle quoted strings
+                let quote_type = self.current().unwrap();
+                self.bump(); // opening quote
+
+                while self.current().is_some() && self.current() != Some(quote_type) {
+                    self.bump();
+                }
+
+                if self.current() == Some(quote_type) {
+                    self.bump(); // closing quote
+                } else {
+                    self.add_error("Unterminated quoted string".to_string());
+                }
+            }
+            Some(
+                SyntaxKind::STRING
+                | SyntaxKind::INT
+                | SyntaxKind::FLOAT
+                | SyntaxKind::BOOL
+                | SyntaxKind::NULL,
+            ) => {
+                // Handle typed literals
+                self.bump();
+            }
+            _ => {
+                // Handle plain scalars - consume until we hit structure or newline
+                while let Some(kind) = self.current() {
+                    if matches!(
+                        kind,
+                        SyntaxKind::NEWLINE
+                            | SyntaxKind::COLON
+                            | SyntaxKind::DASH
+                            | SyntaxKind::COMMENT
+                            | SyntaxKind::DOC_START
+                            | SyntaxKind::DOC_END
+                            | SyntaxKind::COMMA
+                            | SyntaxKind::RIGHT_BRACKET
+                            | SyntaxKind::RIGHT_BRACE
+                    ) {
+                        break;
+                    }
+                    self.bump();
+                }
+            }
+        }
+    }
+
+    fn parse_literal_block_scalar(&mut self) {
+        self.builder.start_node(SyntaxKind::SCALAR.into());
+
+        // Consume the '|' indicator
+        self.bump(); // PIPE token
+
+        // Handle block scalar header (chomping and indentation indicators)
+        self.parse_block_scalar_header();
+
+        // Parse the block scalar content
+        self.parse_block_scalar_content();
+
+        self.builder.finish_node();
+    }
+
+    fn parse_folded_block_scalar(&mut self) {
+        self.builder.start_node(SyntaxKind::SCALAR.into());
+
+        // Consume the '>' indicator
+        self.bump(); // GREATER token
+
+        // Handle block scalar header (chomping and indentation indicators)
+        self.parse_block_scalar_header();
+
+        // Parse the block scalar content
+        self.parse_block_scalar_content();
+
+        self.builder.finish_node();
+    }
+
+    fn parse_block_scalar_header(&mut self) {
+        // TODO: Handle explicit indentation indicators (1-9) and chomping indicators (+, -)
+        // For now, just consume any following characters on the same line
+        while let Some(kind) = self.current() {
+            match kind {
+                SyntaxKind::NEWLINE | SyntaxKind::COMMENT => break,
+                _ => self.bump(),
+            }
+        }
+
+        // Consume the newline after the header
+        if self.current() == Some(SyntaxKind::NEWLINE) {
+            self.bump();
+        }
+    }
+
+    fn parse_block_scalar_content(&mut self) {
+        // Consume all indented content that follows
+        while let Some(kind) = self.current() {
+            match kind {
+                // Stop at document markers or unindented content
+                SyntaxKind::DOC_START | SyntaxKind::DOC_END => break,
+                // Continue consuming content and whitespace
+                _ => self.bump(),
+            }
+
+            // Check if we've reached unindented content (end of block scalar)
+            if self.is_at_unindented_content() {
+                break;
+            }
+        }
+    }
+
+    fn is_at_unindented_content(&self) -> bool {
+        // Simple heuristic: if we see a newline followed by a non-whitespace character
+        // at the beginning of a line, we've reached unindented content
+        if self.current() == Some(SyntaxKind::NEWLINE) {
+            // Look ahead to the next token
+            let mut i = self.current_token_index + 1;
+            while i < self.tokens.len() {
+                match self.tokens[i].0 {
+                    SyntaxKind::WHITESPACE | SyntaxKind::INDENT => {
+                        i += 1;
+                        continue;
+                    }
+                    SyntaxKind::NEWLINE => return false, // Empty line, continue
+                    SyntaxKind::COMMENT => return false, // Comment line, continue
+                    _ => {
+                        // Check if this is indented content by looking at the token text
+                        let token_text = &self.tokens[i].1;
+                        return !token_text.starts_with("  ") && !token_text.starts_with("\t");
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn parse_mapping(&mut self) {
@@ -1139,175 +1420,6 @@ impl Parser {
         self.builder.finish_node();
     }
 
-    fn parse_literal_block_scalar(&mut self) {
-        self.builder.start_node(SyntaxKind::SCALAR.into());
-
-        // Consume the '|' token
-        if self.current() == Some(SyntaxKind::PIPE) {
-            self.bump();
-        }
-
-        // Parse block scalar indicators (chomping and indentation)
-        self.parse_block_scalar_indicators();
-
-        // Skip to content after newline
-        self.skip_whitespace();
-        if self.current() == Some(SyntaxKind::NEWLINE) {
-            self.bump();
-        }
-
-        // Parse the block content
-        self.parse_block_scalar_content();
-
-        self.builder.finish_node();
-    }
-
-    fn parse_folded_block_scalar(&mut self) {
-        self.builder.start_node(SyntaxKind::SCALAR.into());
-
-        // Consume the '>' token
-        if self.current() == Some(SyntaxKind::GREATER) {
-            self.bump();
-        }
-
-        // Parse block scalar indicators (chomping and indentation)
-        self.parse_block_scalar_indicators();
-
-        // Skip to content after newline
-        self.skip_whitespace();
-        if self.current() == Some(SyntaxKind::NEWLINE) {
-            self.bump();
-        }
-
-        // Parse the block content
-        self.parse_block_scalar_content();
-
-        self.builder.finish_node();
-    }
-
-    fn parse_block_scalar_indicators(&mut self) {
-        // Parse explicit indentation indicator (e.g., |2, >3)
-        if matches!(self.current(), Some(SyntaxKind::INT)) {
-            self.bump(); // consume the indentation number
-        }
-
-        // Parse chomping indicator (+, -)
-        if matches!(self.current(), Some(SyntaxKind::PLUS | SyntaxKind::DASH)) {
-            self.bump(); // consume the chomping indicator
-        }
-    }
-
-    fn parse_block_scalar_content(&mut self) {
-        let mut base_indent_level = None;
-
-        // Continue parsing lines until we hit non-indented content or EOF
-        while self.current().is_some() {
-            // Check if we're at a non-indented line that would end the block
-            if self.current() == Some(SyntaxKind::NEWLINE) {
-                // Peek ahead to see what's after the newline
-                let next_token = self.upcoming_tokens().next();
-                if next_token == Some(SyntaxKind::DASH)
-                    || next_token == Some(SyntaxKind::DOC_START)
-                    || next_token == Some(SyntaxKind::DOC_END)
-                {
-                    // Next line starts a new structure, end block scalar
-                    break;
-                }
-
-                // Check if the next token is a non-indented scalar that would be a new mapping key
-                if let Some(next_kind) = self.upcoming_tokens().next() {
-                    if matches!(
-                        next_kind,
-                        SyntaxKind::STRING
-                            | SyntaxKind::INT
-                            | SyntaxKind::FLOAT
-                            | SyntaxKind::BOOL
-                            | SyntaxKind::NULL
-                    ) {
-                        // Look ahead further to see if there's a colon (indicating a mapping key)
-                        let upcoming: Vec<_> = self.upcoming_tokens().collect();
-                        let mut lookahead = 1; // Start from 1 since we already checked index 0
-                        while lookahead < upcoming.len() {
-                            let kind = upcoming[lookahead];
-                            if kind == SyntaxKind::COLON {
-                                // This is a new mapping key, end block scalar
-                                return;
-                            } else if matches!(kind, SyntaxKind::WHITESPACE) {
-                                lookahead += 1;
-                                continue;
-                            } else {
-                                // Not a mapping key, continue with block scalar
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Handle indentation tracking
-            if self.current() == Some(SyntaxKind::INDENT) {
-                let indent_text = if let Some((_, text)) = self.tokens.last() {
-                    text.clone()
-                } else {
-                    String::new()
-                };
-
-                // Set base indentation level from first indented line
-                if base_indent_level.is_none() {
-                    base_indent_level = Some(indent_text.len());
-                }
-
-                // Check if this line has enough indentation to be part of the block
-                if let Some(base_level) = base_indent_level {
-                    if indent_text.len() < base_level {
-                        // Less indented than expected, end the block scalar
-                        break;
-                    }
-                }
-
-                self.bump(); // consume indent
-            }
-
-            // Consume content tokens that are part of the block scalar
-            if matches!(
-                self.current(),
-                Some(
-                    SyntaxKind::STRING
-                        | SyntaxKind::INT
-                        | SyntaxKind::FLOAT
-                        | SyntaxKind::BOOL
-                        | SyntaxKind::NULL
-                        | SyntaxKind::WHITESPACE
-                        | SyntaxKind::NEWLINE
-                        | SyntaxKind::COMMENT
-                )
-            ) {
-                self.bump();
-            } else if matches!(
-                self.current(),
-                Some(SyntaxKind::DOC_START | SyntaxKind::DOC_END)
-            ) {
-                // These tokens indicate end of block scalar
-                break;
-            } else if self.current() == Some(SyntaxKind::DASH) {
-                // Only treat DASH as end-of-block if it appears at the start of a line (after indent)
-                // In the middle of content, it's just a hyphen character
-                // Check if the previous token was INDENT or NEWLINE (indicating start of line)
-                // For now, let's be more permissive and include it as content
-                self.bump();
-            } else if self.current() == Some(SyntaxKind::COLON) {
-                // Only treat COLON as problematic if it's part of a new mapping key
-                // In block scalar content, colons are allowed
-                self.bump();
-            } else if self.current().is_some() {
-                // Other tokens are consumed as part of the content
-                self.bump();
-            } else {
-                // EOF
-                break;
-            }
-        }
-    }
     fn is_mapping_key(&self) -> bool {
         // Look ahead to see if there's a colon after the current token
         for kind in self.upcoming_tokens() {

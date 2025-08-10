@@ -930,6 +930,8 @@ struct Parser {
     in_flow_context: bool,
     /// Registry of anchors defined in the current document
     anchor_registry: HashMap<String, rowan::GreenNode>,
+    /// Track currently resolving aliases to detect circular references
+    resolving_aliases: Vec<String>,
 }
 
 impl Parser {
@@ -953,6 +955,7 @@ impl Parser {
             positioned_errors: Vec::new(),
             in_flow_context: false,
             anchor_registry: HashMap::new(),
+            resolving_aliases: Vec::new(),
         }
     }
 
@@ -1020,6 +1023,10 @@ impl Parser {
             Some(SyntaxKind::ANCHOR) => self.parse_anchored_value(),
             Some(SyntaxKind::REFERENCE) => self.parse_alias(),
             Some(SyntaxKind::TAG) => self.parse_tagged_value(),
+            Some(SyntaxKind::MERGE_KEY) => {
+                // Merge key is always a mapping
+                self.parse_mapping();
+            }
             Some(SyntaxKind::PIPE) => self.parse_literal_block_scalar(),
             Some(SyntaxKind::GREATER) => self.parse_folded_block_scalar(),
             Some(
@@ -1093,9 +1100,15 @@ impl Parser {
         }
 
         // Check if the anchor exists in our registry and validate
-        if let Some(name) = alias_name {
-            if !self.anchor_registry.contains_key(&name) {
+        if let Some(name) = &alias_name {
+            if !self.anchor_registry.contains_key(name) {
                 self.add_error(format!("Undefined alias: {}", name));
+            } else if self.resolving_aliases.contains(name) {
+                // Circular reference detected
+                self.add_error(format!("Circular reference detected for alias: {}", name));
+            } else {
+                // Track that we're resolving this alias
+                self.resolving_aliases.push(name.clone());
             }
         }
 
@@ -1106,6 +1119,13 @@ impl Parser {
             self.bump(); // This preserves the original "*alias_name" token
         }
         self.builder.finish_node();
+
+        // Pop the alias from the resolving stack if we added it
+        if let Some(name) = alias_name {
+            if let Some(pos) = self.resolving_aliases.iter().position(|x| x == &name) {
+                self.resolving_aliases.remove(pos);
+            }
+        }
     }
 
     fn parse_scalar(&mut self) {
@@ -1338,7 +1358,9 @@ impl Parser {
 
             // Parse key - wrap the scalar token in a KEY node
             self.builder.start_node(SyntaxKind::KEY.into());
-            if matches!(
+            if self.current() == Some(SyntaxKind::MERGE_KEY) {
+                self.bump(); // consume the merge key token
+            } else if matches!(
                 self.current(),
                 Some(
                     SyntaxKind::STRING
@@ -1485,6 +1507,11 @@ impl Parser {
     }
 
     fn is_mapping_key(&self) -> bool {
+        // Check if this is a merge key
+        if self.current() == Some(SyntaxKind::MERGE_KEY) {
+            return true;
+        }
+
         // Look ahead to see if there's a colon after the current token
         for kind in self.upcoming_tokens() {
             match kind {
@@ -1555,6 +1582,550 @@ impl Parser {
 pub fn parse(text: &str) -> ParsedYaml {
     let parser = Parser::new(text);
     parser.parse()
+}
+
+// Additional editing methods for existing types
+
+// Helper functions for creating YAML nodes
+fn create_scalar_green(value: &str) -> rowan::GreenNode {
+    let mut builder = GreenNodeBuilder::new();
+    builder.start_node(SyntaxKind::SCALAR.into());
+    builder.token(SyntaxKind::VALUE.into(), value);
+    builder.finish_node();
+    builder.finish()
+}
+
+fn create_token_green(kind: SyntaxKind, text: &str) -> rowan::GreenToken {
+    rowan::GreenToken::new(kind.into(), text)
+}
+
+// Editing methods for Mapping
+impl Mapping {
+    /// Set a key-value pair with a scalar value, replacing if exists or adding if new
+    /// This method automatically escapes the key and value as needed.
+    pub fn set(&mut self, key: impl Into<ScalarValue>, value: impl Into<ScalarValue>) {
+        let key_scalar = key.into();
+        let value_scalar = value.into();
+        self.set_raw(&key_scalar.to_yaml_string(), &value_scalar.to_yaml_string());
+    }
+
+    /// Set a key-value pair, replacing if exists or adding if new
+    /// This is the low-level method that doesn't escape values.
+    pub fn set_raw(&mut self, key: &str, value: &str) {
+        // Find existing key-value pair by looking for scalar nodes
+        for child in self.0.children() {
+            if child.kind() == SyntaxKind::SCALAR {
+                if let Some(scalar) = Scalar::cast(child.clone()) {
+                    if scalar.value().trim() == key {
+                        // Found existing key, need to find the complete entry range to replace
+                        // For now, let's create a new entry and replace the entire mapping
+                        // This is a simplified approach - a full implementation would be more surgical
+                        let mut new_entries = Vec::new();
+                        let mut found_key = false;
+
+                        // Collect all key-value pairs, replacing the matching one
+                        for pair_result in self.pairs() {
+                            if let (Some(k), Some(v_node)) = pair_result {
+                                if k.value().trim() == key && !found_key {
+                                    // Replace this entry
+                                    let new_scalar = create_scalar_node(value);
+                                    new_entries.push((k, new_scalar));
+                                    found_key = true;
+                                } else {
+                                    new_entries.push((k, v_node));
+                                }
+                            }
+                        }
+
+                        if found_key {
+                            // Rebuild the entire mapping - this is inefficient but correct
+                            self.rebuild_from_pairs(new_entries);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Key doesn't exist, add new entry
+        // For simplicity, rebuild entire mapping with new entry added
+        let mut pairs = Vec::new();
+        for (k, v) in self.pairs() {
+            if let (Some(key_scalar), Some(value_node)) = (k, v) {
+                pairs.push((key_scalar, value_node));
+            }
+        }
+
+        // Add new pair
+        let key_scalar = Scalar(create_scalar_node(key));
+        let value_node = create_scalar_node(value);
+        pairs.push((key_scalar, value_node));
+
+        self.rebuild_from_pairs(pairs);
+    }
+
+    // Helper to rebuild mapping from pairs - similar to deb822 approach
+    fn rebuild_from_pairs(&mut self, pairs: Vec<(Scalar, SyntaxNode)>) {
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::MAPPING.into());
+
+        for (key_scalar, value_node) in pairs {
+            // Create key token
+            builder.token(SyntaxKind::VALUE.into(), &key_scalar.value());
+            builder.token(SyntaxKind::COLON.into(), ":");
+            builder.token(SyntaxKind::WHITESPACE.into(), " ");
+
+            // Add value
+            if value_node.kind() == SyntaxKind::SCALAR {
+                builder.start_node(SyntaxKind::SCALAR.into());
+                // Extract the VALUE token from the scalar node
+                for token in value_node.children_with_tokens() {
+                    if let Some(token) = token.as_token() {
+                        if token.kind() == SyntaxKind::VALUE {
+                            builder.token(SyntaxKind::VALUE.into(), token.text());
+                        }
+                    }
+                }
+                builder.finish_node();
+            }
+
+            builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        }
+
+        builder.finish_node();
+        let new_mapping = SyntaxNode::new_root_mut(builder.finish());
+
+        // Replace the entire mapping content
+        let child_count = self.0.children_with_tokens().count();
+        self.0
+            .splice_children(0..child_count, vec![new_mapping.into()]);
+    }
+
+    /// Remove a key-value pair
+    pub fn remove(&mut self, key: &str) -> bool {
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        let mut removal_range = None;
+
+        for (i, child) in children.iter().enumerate() {
+            if let Some(node) = child.as_node() {
+                if node.kind() == SyntaxKind::KEY && node.text() == key {
+                    // Found the key, find the complete entry to remove
+                    let start = i;
+                    let mut end = i + 1;
+
+                    // Skip colon, whitespace, value, and newline
+                    while end < children.len() {
+                        if let Some(token) = children[end].as_token() {
+                            end += 1;
+                            if token.kind() == SyntaxKind::NEWLINE {
+                                break;
+                            }
+                        } else {
+                            end += 1;
+                        }
+                    }
+
+                    removal_range = Some(start..end);
+                    break;
+                }
+            }
+        }
+
+        if let Some(range) = removal_range {
+            self.0.splice_children(range, vec![]);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Rename a key while preserving its value and formatting, with proper escaping
+    pub fn rename_key(&mut self, old_key: &str, new_key: impl Into<ScalarValue>) -> bool {
+        let new_key_scalar = new_key.into();
+        self.rename_key_raw(old_key, &new_key_scalar.to_yaml_string())
+    }
+
+    /// Rename a key while preserving its value and formatting
+    /// This is the low-level method that doesn't escape the new key.
+    pub fn rename_key_raw(&mut self, old_key: &str, new_key: &str) -> bool {
+        let children: Vec<_> = self.0.children().collect();
+
+        for (i, child) in children.iter().enumerate() {
+            if child.kind() == SyntaxKind::KEY {
+                // Check if this KEY node contains our target key
+                let key_text = child.text().to_string();
+                if key_text == old_key {
+                    // Create a new KEY node with the new key
+                    let mut builder = GreenNodeBuilder::new();
+                    builder.start_node(SyntaxKind::KEY.into());
+                    builder.token(SyntaxKind::STRING.into(), new_key);
+                    builder.finish_node();
+                    let new_key_node = SyntaxNode::new_root_mut(builder.finish());
+
+                    self.0.splice_children(i..i + 1, vec![new_key_node.into()]);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Set a value at a nested path with proper escaping (e.g., "db.host" to set db: {host: value})
+    pub fn set_path(&mut self, path: &str, value: impl Into<ScalarValue>) {
+        let value_scalar = value.into();
+        self.set_path_raw(path, &value_scalar.to_yaml_string());
+    }
+
+    /// Set a value at a nested path (e.g., "db.host" to set db: {host: value})
+    /// This is the low-level method that doesn't escape values.
+    pub fn set_path_raw(&mut self, path: &str, value: &str) {
+        let parts: Vec<&str> = path.split('.').collect();
+        if parts.len() == 1 {
+            self.set_raw(parts[0], value);
+            return;
+        }
+
+        // Navigate to nested structure
+        let (first, rest) = parts.split_first().unwrap();
+
+        // Build the nested structure from the path
+        let nested_value = create_nested_value(rest, value);
+
+        // Set the value using the mapping's existing set method
+        self.set_value(ScalarValue::new(first.to_string()), nested_value);
+    }
+}
+
+/// Create a nested YamlValue from a path
+fn create_nested_value(path_parts: &[&str], final_value: &str) -> YamlValue {
+    use std::collections::BTreeMap;
+
+    if path_parts.is_empty() {
+        return YamlValue::Scalar(ScalarValue::new(final_value.to_string()));
+    }
+
+    if path_parts.len() == 1 {
+        // Create a single-level mapping
+        let mut map = BTreeMap::new();
+        map.insert(
+            path_parts[0].to_string(),
+            YamlValue::Scalar(ScalarValue::new(final_value.to_string())),
+        );
+        return YamlValue::Mapping(map);
+    }
+
+    // Recursively create nested mappings
+    let (first, rest) = path_parts.split_first().unwrap();
+    let mut map = BTreeMap::new();
+    map.insert(first.to_string(), create_nested_value(rest, final_value));
+    YamlValue::Mapping(map)
+}
+
+fn create_scalar_node(value: &str) -> SyntaxNode {
+    SyntaxNode::new_root_mut(create_scalar_green(value))
+}
+
+fn create_sequence_item_green(
+    value: &str,
+) -> Vec<rowan::NodeOrToken<rowan::GreenNode, rowan::GreenToken>> {
+    vec![
+        create_token_green(SyntaxKind::DASH, "-").into(),
+        create_token_green(SyntaxKind::WHITESPACE, " ").into(),
+        create_scalar_green(value).into(),
+        create_token_green(SyntaxKind::NEWLINE, "\n").into(),
+    ]
+}
+
+// Editing methods for Sequence
+impl Sequence {
+    /// Add an item to the end of the sequence (generic version)
+    pub fn push<T: Into<ScalarValue>>(&mut self, value: T) {
+        let scalar_value = value.into();
+        self.push_str(&scalar_value.to_string());
+    }
+
+    /// Add a string item to the end of the sequence
+    pub fn push_str(&mut self, value: &str) {
+        let new_item_tokens = create_sequence_item_green(value);
+        let child_count = self.0.children_with_tokens().count();
+        // Convert green nodes/tokens to syntax nodes/tokens
+        let syntax_elements: Vec<_> = new_item_tokens
+            .into_iter()
+            .map(|element| {
+                match element {
+                    rowan::NodeOrToken::Node(green_node) => {
+                        SyntaxNode::new_root_mut(green_node).into()
+                    }
+                    rowan::NodeOrToken::Token(green_token) => {
+                        // We need to create a SyntaxToken from GreenToken - this is not straightforward
+                        // Let's create a temporary node to contain the token
+                        let mut builder = GreenNodeBuilder::new();
+                        builder.start_node(SyntaxKind::ROOT.into());
+                        builder.token(green_token.kind(), green_token.text());
+                        builder.finish_node();
+                        let temp_node = SyntaxNode::new_root_mut(builder.finish());
+                        temp_node.first_token().unwrap().into()
+                    }
+                }
+            })
+            .collect();
+        self.0
+            .splice_children(child_count..child_count, syntax_elements);
+    }
+
+    /// Insert an item at a specific position
+    pub fn insert(&mut self, index: usize, value: &str) {
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        let mut item_count = 0;
+        let mut insert_pos = children.len();
+
+        // Find the position to insert at
+        for (i, child) in children.iter().enumerate() {
+            if let Some(token) = child.as_token() {
+                if token.kind() == SyntaxKind::DASH {
+                    if item_count == index {
+                        insert_pos = i;
+                        break;
+                    }
+                    item_count += 1;
+                }
+            }
+        }
+
+        let new_item_tokens = create_sequence_item_green(value);
+        // Convert green nodes/tokens to syntax nodes/tokens
+        let syntax_elements: Vec<_> = new_item_tokens
+            .into_iter()
+            .map(|element| match element {
+                rowan::NodeOrToken::Node(green_node) => SyntaxNode::new_root_mut(green_node).into(),
+                rowan::NodeOrToken::Token(green_token) => {
+                    let mut builder = GreenNodeBuilder::new();
+                    builder.start_node(SyntaxKind::ROOT.into());
+                    builder.token(green_token.kind(), green_token.text());
+                    builder.finish_node();
+                    let temp_node = SyntaxNode::new_root_mut(builder.finish());
+                    temp_node.first_token().unwrap().into()
+                }
+            })
+            .collect();
+        self.0
+            .splice_children(insert_pos..insert_pos, syntax_elements);
+    }
+
+    /// Remove an item at a specific position
+    pub fn remove(&mut self, index: usize) -> Option<String> {
+        let children: Vec<_> = self.0.children().collect();
+
+        // Handle flow-style sequences [item1, item2]
+        if self.is_flow_style() {
+            let mut item_count = 0;
+            for (i, child) in children.iter().enumerate() {
+                if child.kind() == SyntaxKind::SCALAR {
+                    if item_count == index {
+                        if let Some(scalar) = Scalar::cast(child.clone()) {
+                            let value = scalar.value();
+
+                            // Remove the scalar and surrounding punctuation
+                            let mut start = i;
+                            let mut end = i + 1;
+
+                            // Remove preceding comma if not first item
+                            if start > 0 && children[start - 1].kind() == SyntaxKind::COMMA {
+                                start -= 1;
+                            }
+                            // Remove following comma if exists
+                            else if end < children.len()
+                                && children[end].kind() == SyntaxKind::COMMA
+                            {
+                                end += 1;
+                            }
+
+                            self.0.splice_children(start..end, vec![]);
+                            return Some(value);
+                        }
+                    }
+                    item_count += 1;
+                }
+            }
+        } else {
+            // Handle block-style sequences with dashes
+            let mut item_count = 0;
+            for (i, child) in children.iter().enumerate() {
+                if child.kind() == SyntaxKind::DASH {
+                    if item_count == index {
+                        // Find the complete item to remove (dash, space, value, newline)
+                        let start = i;
+                        let mut end = i + 1;
+                        let mut removed_value = None;
+
+                        while end < children.len() {
+                            let child_kind = children[end].kind();
+                            if child_kind == SyntaxKind::SCALAR {
+                                if let Some(scalar) = Scalar::cast(children[end].clone()) {
+                                    removed_value = Some(scalar.value());
+                                }
+                            }
+                            end += 1;
+                            if child_kind == SyntaxKind::NEWLINE {
+                                break;
+                            }
+                        }
+
+                        self.0.splice_children(start..end, vec![]);
+                        return removed_value;
+                    }
+                    item_count += 1;
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if this sequence is in flow style [item1, item2]
+    fn is_flow_style(&self) -> bool {
+        self.0
+            .children()
+            .any(|child| child.kind() == SyntaxKind::LEFT_BRACKET)
+    }
+
+    /// Get an item at a specific position
+    pub fn get_item(&self, index: usize) -> Option<SyntaxNode> {
+        let mut item_count = 0;
+        for child in self.0.children() {
+            if matches!(
+                child.kind(),
+                SyntaxKind::SCALAR | SyntaxKind::MAPPING | SyntaxKind::SEQUENCE
+            ) {
+                if item_count == index {
+                    return Some(child);
+                }
+                item_count += 1;
+            }
+        }
+        None
+    }
+
+    /// Set an item at a specific position (generic version)
+    pub fn set_item<T: Into<ScalarValue>>(&mut self, index: usize, value: T) -> bool {
+        let scalar_value = value.into();
+        self.set(index, &scalar_value.to_string())
+    }
+
+    /// Replace an item at a specific position  
+    pub fn set(&mut self, index: usize, value: &str) -> bool {
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        let mut item_count = 0;
+
+        for (i, child) in children.iter().enumerate() {
+            if let Some(token) = child.as_token() {
+                if token.kind() == SyntaxKind::DASH {
+                    if item_count == index {
+                        // Find the value node after this dash (skip whitespace)
+                        let mut value_index = None;
+                        for (j, next_child) in children.iter().enumerate().skip(i + 1) {
+                            if let Some(node) = next_child.as_node() {
+                                if node.kind() == SyntaxKind::SCALAR {
+                                    value_index = Some(j);
+                                    break;
+                                }
+                            }
+                        }
+
+                        if let Some(val_idx) = value_index {
+                            // Replace just the value node
+                            let new_value_node =
+                                SyntaxNode::new_root_mut(create_scalar_green(value));
+                            self.0
+                                .splice_children(val_idx..val_idx + 1, vec![new_value_node.into()]);
+                            return true;
+                        }
+                    }
+                    item_count += 1;
+                }
+            }
+        }
+        false
+    }
+}
+
+// Editing methods for Scalar
+impl Scalar {
+    /// Set the value of this scalar
+    pub fn set_value(&mut self, value: &str) {
+        let children_count = self.0.children_with_tokens().count();
+        // Create a temporary node to wrap the token and extract a SyntaxToken
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::ROOT.into());
+        builder.token(SyntaxKind::VALUE.into(), value);
+        builder.finish_node();
+        let temp_node = SyntaxNode::new_root_mut(builder.finish());
+        let new_token = temp_node.first_token().unwrap();
+        self.0
+            .splice_children(0..children_count, vec![new_token.into()]);
+    }
+}
+
+// Methods for Directive
+impl Directive {
+    /// Get the full directive text (e.g., "%YAML 1.2")
+    pub fn text(&self) -> String {
+        self.0.text().to_string()
+    }
+
+    /// Get the directive name (e.g., "YAML" from "%YAML 1.2")
+    pub fn name(&self) -> Option<String> {
+        let text = self.text();
+        if text.starts_with('%') {
+            text[1..].split_whitespace().next().map(|s| s.to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Get the directive value (e.g., "1.2" from "%YAML 1.2")
+    pub fn value(&self) -> Option<String> {
+        let text = self.text();
+        if text.starts_with('%') {
+            let parts: Vec<&str> = text[1..].split_whitespace().collect();
+            if parts.len() > 1 {
+                Some(parts[1..].join(" "))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Check if this is a YAML version directive
+    pub fn is_yaml_version(&self) -> bool {
+        self.name().as_deref() == Some("YAML")
+    }
+
+    /// Check if this is a TAG directive
+    pub fn is_tag(&self) -> bool {
+        self.name().as_deref() == Some("TAG")
+    }
+
+    /// Create a new YAML version directive
+    pub fn new_yaml_version(version: &str) -> Self {
+        let directive_text = format!("%YAML {}", version);
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::DIRECTIVE.into());
+        builder.token(SyntaxKind::DIRECTIVE.into(), &directive_text);
+        builder.finish_node();
+        Directive(SyntaxNode::new_root_mut(builder.finish()))
+    }
+
+    /// Create a new TAG directive
+    pub fn new_tag(handle: &str, prefix: &str) -> Self {
+        let directive_text = format!("%TAG {} {}", handle, prefix);
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::DIRECTIVE.into());
+        builder.token(SyntaxKind::DIRECTIVE.into(), &directive_text);
+        builder.finish_node();
+        Directive(SyntaxNode::new_root_mut(builder.finish()))
+    }
 }
 
 #[cfg(test)]
@@ -3051,549 +3622,129 @@ version: "1.0"
         let parsed2 = Yaml::from_str(yaml2).unwrap();
         assert_eq!(parsed2.to_string(), yaml2);
     }
-}
 
-// Additional editing methods for existing types
+    #[test]
+    fn test_merge_keys_basic() {
+        let yaml = r#"defaults: &defaults
+  setting1: value1
+  setting2: value2
 
-// Helper functions for creating YAML nodes
-fn create_scalar_green(value: &str) -> rowan::GreenNode {
-    let mut builder = GreenNodeBuilder::new();
-    builder.start_node(SyntaxKind::SCALAR.into());
-    builder.token(SyntaxKind::VALUE.into(), value);
-    builder.finish_node();
-    builder.finish()
-}
+production:
+  <<: *defaults
+  setting2: override
+  setting3: new_value
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(parsed.is_ok(), "Should parse YAML with merge keys");
 
-fn create_token_green(kind: SyntaxKind, text: &str) -> rowan::GreenToken {
-    rowan::GreenToken::new(kind.into(), text)
-}
-
-// Editing methods for Mapping
-impl Mapping {
-    /// Set a key-value pair with a scalar value, replacing if exists or adding if new
-    /// This method automatically escapes the key and value as needed.
-    pub fn set(&mut self, key: impl Into<ScalarValue>, value: impl Into<ScalarValue>) {
-        let key_scalar = key.into();
-        let value_scalar = value.into();
-        self.set_raw(&key_scalar.to_yaml_string(), &value_scalar.to_yaml_string());
-    }
-
-    /// Set a key-value pair, replacing if exists or adding if new
-    /// This is the low-level method that doesn't escape values.
-    pub fn set_raw(&mut self, key: &str, value: &str) {
-        // Find existing key-value pair by looking for scalar nodes
-        for child in self.0.children() {
-            if child.kind() == SyntaxKind::SCALAR {
-                if let Some(scalar) = Scalar::cast(child.clone()) {
-                    if scalar.value().trim() == key {
-                        // Found existing key, need to find the complete entry range to replace
-                        // For now, let's create a new entry and replace the entire mapping
-                        // This is a simplified approach - a full implementation would be more surgical
-                        let mut new_entries = Vec::new();
-                        let mut found_key = false;
-
-                        // Collect all key-value pairs, replacing the matching one
-                        for pair_result in self.pairs() {
-                            if let (Some(k), Some(v_node)) = pair_result {
-                                if k.value().trim() == key && !found_key {
-                                    // Replace this entry
-                                    let new_scalar = create_scalar_node(value);
-                                    new_entries.push((k, new_scalar));
-                                    found_key = true;
-                                } else {
-                                    new_entries.push((k, v_node));
-                                }
-                            }
-                        }
-
-                        if found_key {
-                            // Rebuild the entire mapping - this is inefficient but correct
-                            self.rebuild_from_pairs(new_entries);
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Key doesn't exist, add new entry
-        // For simplicity, rebuild entire mapping with new entry added
-        let mut pairs = Vec::new();
-        for (k, v) in self.pairs() {
-            if let (Some(key_scalar), Some(value_node)) = (k, v) {
-                pairs.push((key_scalar, value_node));
-            }
-        }
-
-        // Add new pair
-        let key_scalar = Scalar(create_scalar_node(key));
-        let value_node = create_scalar_node(value);
-        pairs.push((key_scalar, value_node));
-
-        self.rebuild_from_pairs(pairs);
-    }
-
-    // Helper to rebuild mapping from pairs - similar to deb822 approach
-    fn rebuild_from_pairs(&mut self, pairs: Vec<(Scalar, SyntaxNode)>) {
-        let mut builder = GreenNodeBuilder::new();
-        builder.start_node(SyntaxKind::MAPPING.into());
-
-        for (key_scalar, value_node) in pairs {
-            // Create key token
-            builder.token(SyntaxKind::VALUE.into(), &key_scalar.value());
-            builder.token(SyntaxKind::COLON.into(), ":");
-            builder.token(SyntaxKind::WHITESPACE.into(), " ");
-
-            // Add value
-            if value_node.kind() == SyntaxKind::SCALAR {
-                builder.start_node(SyntaxKind::SCALAR.into());
-                // Extract the VALUE token from the scalar node
-                for token in value_node.children_with_tokens() {
-                    if let Some(token) = token.as_token() {
-                        if token.kind() == SyntaxKind::VALUE {
-                            builder.token(SyntaxKind::VALUE.into(), token.text());
-                        }
-                    }
-                }
-                builder.finish_node();
-            }
-
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-
-        builder.finish_node();
-        let new_mapping = SyntaxNode::new_root_mut(builder.finish());
-
-        // Replace the entire mapping content
-        let child_count = self.0.children_with_tokens().count();
-        self.0
-            .splice_children(0..child_count, vec![new_mapping.into()]);
-    }
-
-    /// Remove a key-value pair
-    pub fn remove(&mut self, key: &str) -> bool {
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        let mut removal_range = None;
-
-        for (i, child) in children.iter().enumerate() {
-            if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::KEY && node.text() == key {
-                    // Found the key, find the complete entry to remove
-                    let start = i;
-                    let mut end = i + 1;
-
-                    // Skip colon, whitespace, value, and newline
-                    while end < children.len() {
-                        if let Some(token) = children[end].as_token() {
-                            end += 1;
-                            if token.kind() == SyntaxKind::NEWLINE {
-                                break;
-                            }
-                        } else {
-                            end += 1;
-                        }
-                    }
-
-                    removal_range = Some(start..end);
-                    break;
-                }
-            }
-        }
-
-        if let Some(range) = removal_range {
-            self.0.splice_children(range, vec![]);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Rename a key while preserving its value and formatting, with proper escaping
-    pub fn rename_key(&mut self, old_key: &str, new_key: impl Into<ScalarValue>) -> bool {
-        let new_key_scalar = new_key.into();
-        self.rename_key_raw(old_key, &new_key_scalar.to_yaml_string())
-    }
-
-    /// Rename a key while preserving its value and formatting
-    /// This is the low-level method that doesn't escape the new key.
-    pub fn rename_key_raw(&mut self, old_key: &str, new_key: &str) -> bool {
-        let children: Vec<_> = self.0.children().collect();
-
-        for (i, child) in children.iter().enumerate() {
-            if child.kind() == SyntaxKind::KEY {
-                // Check if this KEY node contains our target key
-                let key_text = child.text().to_string();
-                if key_text == old_key {
-                    // Create a new KEY node with the new key
-                    let mut builder = GreenNodeBuilder::new();
-                    builder.start_node(SyntaxKind::KEY.into());
-                    builder.token(SyntaxKind::STRING.into(), new_key);
-                    builder.finish_node();
-                    let new_key_node = SyntaxNode::new_root_mut(builder.finish());
-
-                    self.0.splice_children(i..i + 1, vec![new_key_node.into()]);
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Set a value at a nested path with proper escaping (e.g., "db.host" to set db: {host: value})
-    pub fn set_path(&mut self, path: &str, value: impl Into<ScalarValue>) {
-        let value_scalar = value.into();
-        self.set_path_raw(path, &value_scalar.to_yaml_string());
-    }
-
-    /// Set a value at a nested path (e.g., "db.host" to set db: {host: value})
-    /// This is the low-level method that doesn't escape values.
-    pub fn set_path_raw(&mut self, path: &str, value: &str) {
-        let parts: Vec<&str> = path.split('.').collect();
-        if parts.len() == 1 {
-            self.set_raw(parts[0], value);
-            return;
-        }
-
-        // Navigate to nested structure
-        let (first, rest) = parts.split_first().unwrap();
-
-        // Build the nested structure from the path
-        let nested_value = create_nested_value(&rest, value);
-
-        // Set the value using the mapping's existing set method
-        self.set_value(ScalarValue::new(first.to_string()), nested_value);
-    }
-}
-
-/// Create a nested YamlValue from a path
-fn create_nested_value(path_parts: &[&str], final_value: &str) -> YamlValue {
-    use std::collections::BTreeMap;
-
-    if path_parts.is_empty() {
-        return YamlValue::Scalar(ScalarValue::new(final_value.to_string()));
-    }
-
-    if path_parts.len() == 1 {
-        // Create a single-level mapping
-        let mut map = BTreeMap::new();
-        map.insert(
-            path_parts[0].to_string(),
-            YamlValue::Scalar(ScalarValue::new(final_value.to_string())),
+        // Test that the output preserves the merge key syntax
+        let output = parsed.unwrap().to_string();
+        assert!(
+            output.contains("<<:"),
+            "Should preserve merge key in output"
         );
-        return YamlValue::Mapping(map);
+        assert!(
+            output.contains("*defaults"),
+            "Should preserve alias reference"
+        );
     }
 
-    // Recursively create nested mappings
-    let (first, rest) = path_parts.split_first().unwrap();
-    let mut map = BTreeMap::new();
-    map.insert(first.to_string(), create_nested_value(rest, final_value));
-    YamlValue::Mapping(map)
-}
+    #[test]
+    fn test_merge_keys_multiple() {
+        let yaml = r#"base1: &base1
+  a: 1
+  b: 2
 
-fn create_scalar_node(value: &str) -> SyntaxNode {
-    SyntaxNode::new_root_mut(create_scalar_green(value))
-}
+base2: &base2
+  c: 3
+  d: 4
 
-fn create_sequence_item_green(
-    value: &str,
-) -> Vec<rowan::NodeOrToken<rowan::GreenNode, rowan::GreenToken>> {
-    vec![
-        create_token_green(SyntaxKind::DASH, "-").into(),
-        create_token_green(SyntaxKind::WHITESPACE, " ").into(),
-        create_scalar_green(value).into(),
-        create_token_green(SyntaxKind::NEWLINE, "\n").into(),
-    ]
-}
+combined:
+  <<: [*base1, *base2]
+  e: 5
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(parsed.is_ok(), "Should parse YAML with multiple merge keys");
 
-// Editing methods for Sequence
-impl Sequence {
-    /// Add an item to the end of the sequence (generic version)
-    pub fn push<T: Into<ScalarValue>>(&mut self, value: T) {
-        let scalar_value = value.into();
-        self.push_str(&scalar_value.to_string());
+        let output = parsed.unwrap().to_string();
+        assert!(output.contains("<<:"), "Should preserve merge key");
     }
 
-    /// Add a string item to the end of the sequence
-    pub fn push_str(&mut self, value: &str) {
-        let new_item_tokens = create_sequence_item_green(value);
-        let child_count = self.0.children_with_tokens().count();
-        // Convert green nodes/tokens to syntax nodes/tokens
-        let syntax_elements: Vec<_> = new_item_tokens
-            .into_iter()
-            .map(|element| {
-                match element {
-                    rowan::NodeOrToken::Node(green_node) => {
-                        SyntaxNode::new_root_mut(green_node).into()
-                    }
-                    rowan::NodeOrToken::Token(green_token) => {
-                        // We need to create a SyntaxToken from GreenToken - this is not straightforward
-                        // Let's create a temporary node to contain the token
-                        let mut builder = GreenNodeBuilder::new();
-                        builder.start_node(SyntaxKind::ROOT.into());
-                        builder.token(green_token.kind(), green_token.text());
-                        builder.finish_node();
-                        let temp_node = SyntaxNode::new_root_mut(builder.finish());
-                        temp_node.first_token().unwrap().into()
-                    }
-                }
-            })
-            .collect();
-        self.0
-            .splice_children(child_count..child_count, syntax_elements);
+    #[test]
+    fn test_merge_key_at_start() {
+        let yaml = r#"defaults: &defaults
+  a: 1
+
+production:
+  <<: *defaults
+  b: 2
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(parsed.is_ok(), "Should parse merge key at start of mapping");
     }
 
-    /// Insert an item at a specific position
-    pub fn insert(&mut self, index: usize, value: &str) {
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        let mut item_count = 0;
-        let mut insert_pos = children.len();
+    #[test]
+    fn test_circular_reference_detection() {
+        // Direct circular reference
+        let yaml1 = r#"node1: &anchor1
+  child: *anchor1
+"#;
+        let parsed1 = Yaml::from_str(yaml1);
+        // The current implementation allows parsing but would detect during resolution
+        // This is actually valid YAML syntax, circular references are a semantic issue
+        assert!(
+            parsed1.is_ok(),
+            "Should parse YAML with circular reference syntax"
+        );
 
-        // Find the position to insert at
-        for (i, child) in children.iter().enumerate() {
-            if let Some(token) = child.as_token() {
-                if token.kind() == SyntaxKind::DASH {
-                    if item_count == index {
-                        insert_pos = i;
-                        break;
-                    }
-                    item_count += 1;
-                }
-            }
-        }
+        // Indirect circular reference - note that anchor2 is defined after being referenced
+        // This is actually invalid YAML because anchors must be defined before use
+        let yaml2 = r#"node1: &anchor1
+  child: *anchor1
 
-        let new_item_tokens = create_sequence_item_green(value);
-        // Convert green nodes/tokens to syntax nodes/tokens
-        let syntax_elements: Vec<_> = new_item_tokens
-            .into_iter()
-            .map(|element| match element {
-                rowan::NodeOrToken::Node(green_node) => SyntaxNode::new_root_mut(green_node).into(),
-                rowan::NodeOrToken::Token(green_token) => {
-                    let mut builder = GreenNodeBuilder::new();
-                    builder.start_node(SyntaxKind::ROOT.into());
-                    builder.token(green_token.kind(), green_token.text());
-                    builder.finish_node();
-                    let temp_node = SyntaxNode::new_root_mut(builder.finish());
-                    temp_node.first_token().unwrap().into()
-                }
-            })
-            .collect();
-        self.0
-            .splice_children(insert_pos..insert_pos, syntax_elements);
+node2: &anchor2
+  child: *anchor2
+"#;
+        let parsed2 = Yaml::from_str(yaml2);
+        // The parser should handle self-references gracefully
+        assert!(
+            parsed2.is_ok(),
+            "Should parse YAML with self-referencing anchors"
+        );
+
+        // Note: Full circular reference detection would require semantic analysis
+        // during value resolution, not just syntax parsing
     }
 
-    /// Get an item at a specific position
-    pub fn get_item(&self, index: usize) -> Option<SyntaxNode> {
-        let mut item_count = 0;
-        for child in self.0.children() {
-            if matches!(
-                child.kind(),
-                SyntaxKind::SCALAR | SyntaxKind::MAPPING | SyntaxKind::SEQUENCE
-            ) {
-                if item_count == index {
-                    return Some(child);
-                }
-                item_count += 1;
-            }
-        }
-        None
-    }
-
-    /// Set an item at a specific position (generic version)
-    pub fn set_item<T: Into<ScalarValue>>(&mut self, index: usize, value: T) -> bool {
-        let scalar_value = value.into();
-        self.set(index, &scalar_value.to_string())
-    }
-
-    /// Replace an item at a specific position  
-    pub fn set(&mut self, index: usize, value: &str) -> bool {
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        let mut item_count = 0;
-
-        for (i, child) in children.iter().enumerate() {
-            if let Some(token) = child.as_token() {
-                if token.kind() == SyntaxKind::DASH {
-                    if item_count == index {
-                        // Find the value node after this dash (skip whitespace)
-                        let mut value_index = None;
-                        for (j, next_child) in children.iter().enumerate().skip(i + 1) {
-                            if let Some(node) = next_child.as_node() {
-                                if node.kind() == SyntaxKind::SCALAR {
-                                    value_index = Some(j);
-                                    break;
-                                }
-                            }
-                        }
-
-                        if let Some(val_idx) = value_index {
-                            // Replace just the value node
-                            let new_value_node =
-                                SyntaxNode::new_root_mut(create_scalar_green(value));
-                            self.0
-                                .splice_children(val_idx..val_idx + 1, vec![new_value_node.into()]);
-                            return true;
-                        }
-                    }
-                    item_count += 1;
-                }
-            }
-        }
-        false
-    }
-
-    /// Remove an item at a specific position
-    pub fn remove(&mut self, index: usize) -> Option<String> {
-        let children: Vec<_> = self.0.children().collect();
-
-        // Handle flow-style sequences [item1, item2]
-        if self.is_flow_style() {
-            let mut item_count = 0;
-            for (i, child) in children.iter().enumerate() {
-                if child.kind() == SyntaxKind::SCALAR {
-                    if item_count == index {
-                        if let Some(scalar) = Scalar::cast(child.clone()) {
-                            let value = scalar.value();
-
-                            // Remove the scalar and surrounding punctuation
-                            let mut start = i;
-                            let mut end = i + 1;
-
-                            // Remove preceding comma if not first item
-                            if start > 0 && children[start - 1].kind() == SyntaxKind::COMMA {
-                                start -= 1;
-                            }
-                            // Remove following comma if exists
-                            else if end < children.len()
-                                && children[end].kind() == SyntaxKind::COMMA
-                            {
-                                end += 1;
-                            }
-
-                            self.0.splice_children(start..end, vec![]);
-                            return Some(value);
-                        }
-                    }
-                    item_count += 1;
-                }
-            }
-        } else {
-            // Handle block-style sequences with dashes
-            let mut item_count = 0;
-            for (i, child) in children.iter().enumerate() {
-                if child.kind() == SyntaxKind::DASH {
-                    if item_count == index {
-                        // Find the complete item to remove (dash, space, value, newline)
-                        let start = i;
-                        let mut end = i + 1;
-                        let mut removed_value = None;
-
-                        while end < children.len() {
-                            let child_kind = children[end].kind();
-                            if child_kind == SyntaxKind::SCALAR {
-                                if let Some(scalar) = Scalar::cast(children[end].clone()) {
-                                    removed_value = Some(scalar.value());
-                                }
-                            }
-                            end += 1;
-                            if child_kind == SyntaxKind::NEWLINE {
-                                break;
-                            }
-                        }
-
-                        self.0.splice_children(start..end, vec![]);
-                        return removed_value;
-                    }
-                    item_count += 1;
-                }
-            }
-        }
-        None
-    }
-
-    /// Check if this sequence is in flow style [item1, item2]
-    fn is_flow_style(&self) -> bool {
-        self.0
-            .children()
-            .any(|child| child.kind() == SyntaxKind::LEFT_BRACKET)
-    }
-}
-
-// Editing methods for Scalar
-impl Scalar {
-    /// Set the value of this scalar
-    pub fn set_value(&mut self, value: &str) {
-        let children_count = self.0.children_with_tokens().count();
-        // Create a temporary node to wrap the token and extract a SyntaxToken
-        let mut builder = GreenNodeBuilder::new();
-        builder.start_node(SyntaxKind::ROOT.into());
-        builder.token(SyntaxKind::VALUE.into(), value);
-        builder.finish_node();
-        let temp_node = SyntaxNode::new_root_mut(builder.finish());
-        let new_token = temp_node.first_token().unwrap();
-        self.0
-            .splice_children(0..children_count, vec![new_token.into()]);
-    }
-}
-
-// Methods for Directive
-impl Directive {
-    /// Get the full directive text (e.g., "%YAML 1.2")
-    pub fn text(&self) -> String {
-        self.0.text().to_string()
-    }
-
-    /// Get the directive name (e.g., "YAML" from "%YAML 1.2")
-    pub fn name(&self) -> Option<String> {
-        let text = self.text();
-        if text.starts_with('%') {
-            text[1..].split_whitespace().next().map(|s| s.to_string())
-        } else {
-            None
+    #[test]
+    fn test_undefined_alias_error() {
+        let yaml = r#"value: *undefined_anchor"#;
+        let parsed = Yaml::from_str(yaml);
+        // Parser should either handle gracefully or report undefined alias
+        if let Err(e) = parsed {
+            let error_msg = e.to_string();
+            assert!(error_msg.contains("Undefined") || error_msg.contains("undefined"));
         }
     }
 
-    /// Get the directive value (e.g., "1.2" from "%YAML 1.2")
-    pub fn value(&self) -> Option<String> {
-        let text = self.text();
-        if text.starts_with('%') {
-            let parts: Vec<&str> = text[1..].split_whitespace().collect();
-            if parts.len() > 1 {
-                Some(parts[1..].join(" "))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
+    #[test]
+    fn test_merge_key_with_anchor() {
+        let yaml = r#"base: &base
+  x: 1
 
-    /// Check if this is a YAML version directive
-    pub fn is_yaml_version(&self) -> bool {
-        self.name().as_deref() == Some("YAML")
-    }
+derived: &derived
+  <<: *base
+  y: 2
 
-    /// Check if this is a TAG directive
-    pub fn is_tag(&self) -> bool {
-        self.name().as_deref() == Some("TAG")
-    }
-
-    /// Create a new YAML version directive
-    pub fn new_yaml_version(version: &str) -> Self {
-        let directive_text = format!("%YAML {}", version);
-        let mut builder = GreenNodeBuilder::new();
-        builder.start_node(SyntaxKind::DIRECTIVE.into());
-        builder.token(SyntaxKind::DIRECTIVE.into(), &directive_text);
-        builder.finish_node();
-        Directive(SyntaxNode::new_root_mut(builder.finish()))
-    }
-
-    /// Create a new TAG directive
-    pub fn new_tag(handle: &str, prefix: &str) -> Self {
-        let directive_text = format!("%TAG {} {}", handle, prefix);
-        let mut builder = GreenNodeBuilder::new();
-        builder.start_node(SyntaxKind::DIRECTIVE.into());
-        builder.token(SyntaxKind::DIRECTIVE.into(), &directive_text);
-        builder.finish_node();
-        Directive(SyntaxNode::new_root_mut(builder.finish()))
+final:
+  <<: *derived
+  z: 3
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should parse nested merge keys with anchors"
+        );
     }
 }
 

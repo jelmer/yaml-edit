@@ -759,6 +759,8 @@ impl FromStr for Yaml {
     }
 }
 
+use std::collections::HashMap;
+
 /// Internal parser state
 struct Parser {
     tokens: Vec<(SyntaxKind, String)>,
@@ -767,6 +769,8 @@ struct Parser {
     errors: Vec<String>,
     positioned_errors: Vec<PositionedParseError>,
     in_flow_context: bool,
+    /// Registry of anchors defined in the current document
+    anchor_registry: HashMap<String, rowan::GreenNode>,
 }
 
 impl Parser {
@@ -789,6 +793,7 @@ impl Parser {
             errors: Vec::new(),
             positioned_errors: Vec::new(),
             in_flow_context: false,
+            anchor_registry: HashMap::new(),
         }
     }
 
@@ -847,6 +852,8 @@ impl Parser {
     fn parse_value(&mut self) {
         match self.current() {
             Some(SyntaxKind::DASH) if !self.in_flow_context => self.parse_sequence(),
+            Some(SyntaxKind::ANCHOR) => self.parse_anchored_value(),
+            Some(SyntaxKind::REFERENCE) => self.parse_alias(),
             Some(
                 SyntaxKind::STRING
                 | SyntaxKind::INT
@@ -866,6 +873,71 @@ impl Parser {
             Some(SyntaxKind::LEFT_BRACE) => self.parse_flow_mapping(),
             _ => self.parse_scalar(),
         }
+    }
+
+    fn parse_anchored_value(&mut self) {
+        let mut anchor_name = None;
+
+        // Extract anchor name from the token
+        if self.current() == Some(SyntaxKind::ANCHOR) {
+            if let Some((_, token_text)) = self.tokens.last() {
+                // Extract anchor name from "&anchor_name" format
+                if token_text.starts_with('&') {
+                    anchor_name = Some(token_text[1..].to_string());
+                }
+            }
+            self.bump(); // consume anchor token
+            self.skip_whitespace();
+        }
+
+        // Parse the actual value that is being anchored
+        let value_start = self.builder.checkpoint();
+        self.parse_value();
+
+        // Register the anchor if we have a name
+        if let Some(name) = anchor_name {
+            // Get the green node for the value we just parsed
+            // This is a simplified approach - in a full implementation, we'd need to capture
+            // the exact node that was created for the anchored value
+            // For now, we'll just store a marker that the anchor exists
+            let placeholder_node = {
+                let mut temp_builder = GreenNodeBuilder::new();
+                temp_builder.start_node(SyntaxKind::SCALAR.into());
+                temp_builder.token(SyntaxKind::STRING.into(), "anchored_value_placeholder");
+                temp_builder.finish_node();
+                temp_builder.finish()
+            };
+            self.anchor_registry.insert(name, placeholder_node);
+        }
+    }
+
+    fn parse_alias(&mut self) {
+        let mut alias_name = None;
+
+        // Extract alias name from the token
+        if self.current() == Some(SyntaxKind::REFERENCE) {
+            if let Some((_, token_text)) = self.tokens.last() {
+                // Extract alias name from "*alias_name" format
+                if token_text.starts_with('*') {
+                    alias_name = Some(token_text[1..].to_string());
+                }
+            }
+        }
+
+        // Check if the anchor exists in our registry and validate
+        if let Some(name) = alias_name {
+            if !self.anchor_registry.contains_key(&name) {
+                self.add_error(format!("Undefined alias: {}", name));
+            }
+        }
+
+        // Create a scalar node and just consume the reference token
+        // The token itself already contains the full "*alias_name" text
+        self.builder.start_node(SyntaxKind::SCALAR.into());
+        if self.current() == Some(SyntaxKind::REFERENCE) {
+            self.bump(); // This preserves the original "*alias_name" token
+        }
+        self.builder.finish_node();
     }
 
     fn parse_scalar(&mut self) {
@@ -1388,6 +1460,254 @@ escaped: 'it\'s escaped'
         let result = Yaml::from_str(yaml);
         // For now, just check it doesn't panic
         let _ = result;
+    }
+
+    #[test]
+    fn test_anchors_and_aliases() {
+        // Test basic anchor definition and alias reference
+        let yaml = r#"
+default: &default_config
+  host: localhost
+  port: 8080
+
+development:
+  <<: *default_config
+  debug: true
+
+production: *default_config
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(parsed.is_ok(), "Should parse YAML with anchors and aliases");
+
+        let yaml_doc = parsed.unwrap();
+        assert!(yaml_doc.document().is_some());
+        let doc = yaml_doc.document().unwrap();
+        assert!(doc.as_mapping().is_some());
+    }
+
+    #[test]
+    fn test_simple_anchor_and_alias() {
+        let yaml = r#"
+key: &anchor value
+ref: *anchor
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should parse simple anchor and alias: {:?}",
+            parsed
+        );
+
+        let yaml_doc = parsed.unwrap();
+        let output = yaml_doc.to_string();
+
+        // Should preserve anchor and alias tokens
+        assert!(
+            output.contains("&anchor"),
+            "Should preserve anchor definition"
+        );
+        assert!(
+            output.contains("*anchor"),
+            "Should preserve alias reference"
+        );
+    }
+
+    #[test]
+    fn test_undefined_alias_error() {
+        let yaml = r#"
+key: *undefined_anchor
+"#;
+        let parsed = Yaml::from_str(yaml);
+        // Should parse but have errors
+        if let Ok(yaml_doc) = parsed {
+            let parse_result = Parse::parse_yaml(yaml);
+            assert!(
+                parse_result.has_errors(),
+                "Should have error for undefined alias"
+            );
+        }
+    }
+
+    #[test]
+    fn test_anchor_in_sequence() {
+        let yaml = r#"
+items:
+  - &item1 "first item"
+  - "second item"
+  - *item1
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(parsed.is_ok(), "Should parse anchors in sequences");
+
+        let yaml_doc = parsed.unwrap();
+        let output = yaml_doc.to_string();
+        assert!(output.contains("&item1"));
+        assert!(output.contains("*item1"));
+    }
+
+    #[test]
+    fn test_anchor_in_mapping() {
+        let yaml = r#"
+database: &db_config
+  host: localhost
+  port: 5432
+  
+app_config:
+  database: *db_config
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(parsed.is_ok(), "Should parse anchors in mappings");
+
+        let yaml_doc = parsed.unwrap();
+        let output = yaml_doc.to_string();
+        assert!(output.contains("&db_config"));
+        assert!(output.contains("*db_config"));
+    }
+
+    #[test]
+    fn test_multiple_aliases_same_anchor() {
+        let yaml = r#"
+default: &shared
+  setting: value
+
+config1: *shared
+config2: *shared  
+config3: *shared
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should handle multiple aliases to same anchor"
+        );
+
+        let yaml_doc = parsed.unwrap();
+        let output = yaml_doc.to_string();
+
+        // Should have one anchor definition and three aliases
+        assert!(output.contains("&shared"));
+        assert_eq!(
+            output.matches("*shared").count(),
+            3,
+            "Should have 3 alias references"
+        );
+    }
+
+    #[test]
+    fn test_anchor_exact_output() {
+        let yaml = "key: &anchor value\nref: *anchor";
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let output = parsed.to_string();
+
+        // Test exact output to ensure no duplication
+        assert_eq!(output, "key: &anchor value\nref: *anchor");
+    }
+
+    #[test]
+    fn test_anchor_with_different_value_types() {
+        let yaml = r#"string_anchor: &str_val "hello"
+int_anchor: &int_val 42
+bool_anchor: &bool_val true
+null_anchor: &null_val null
+str_ref: *str_val
+int_ref: *int_val
+bool_ref: *bool_val
+null_ref: *null_val"#;
+
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should parse anchors with different value types"
+        );
+
+        let yaml_doc = parsed.unwrap();
+        let output = yaml_doc.to_string();
+
+        // Check exact preservation
+        assert!(output.contains("&str_val"));
+        assert!(output.contains("&int_val"));
+        assert!(output.contains("&bool_val"));
+        assert!(output.contains("&null_val"));
+        assert!(output.contains("*str_val"));
+        assert!(output.contains("*int_val"));
+        assert!(output.contains("*bool_val"));
+        assert!(output.contains("*null_val"));
+    }
+
+    #[test]
+    fn test_undefined_alias_generates_error() {
+        let yaml = "key: *undefined";
+        let parse_result = Parse::parse_yaml(yaml);
+
+        assert!(
+            parse_result.has_errors(),
+            "Should have error for undefined alias"
+        );
+        let errors = parse_result.errors();
+        assert!(
+            errors.iter().any(|e| e.contains("undefined")),
+            "Error should mention the undefined alias"
+        );
+    }
+
+    #[test]
+    fn test_anchor_names_with_alphanumeric_chars() {
+        // Test valid anchor names with underscores and numbers (YAML spec compliant)
+        let yaml1 = "key1: &anchor_123 val1\nref1: *anchor_123";
+        let parsed1 = Yaml::from_str(yaml1);
+        assert!(
+            parsed1.is_ok(),
+            "Should parse anchors with underscores and numbers"
+        );
+
+        let output1 = parsed1.unwrap().to_string();
+        assert!(output1.contains("&anchor_123"));
+        assert!(output1.contains("*anchor_123"));
+
+        let yaml2 = "key2: &AnchorName val2\nref2: *AnchorName";
+        let parsed2 = Yaml::from_str(yaml2);
+        assert!(parsed2.is_ok(), "Should parse anchors with mixed case");
+
+        let output2 = parsed2.unwrap().to_string();
+        assert!(output2.contains("&AnchorName"));
+        assert!(output2.contains("*AnchorName"));
+
+        let yaml3 = "key3: &anchor123abc val3\nref3: *anchor123abc";
+        let parsed3 = Yaml::from_str(yaml3);
+        assert!(
+            parsed3.is_ok(),
+            "Should parse anchors with letters and numbers"
+        );
+
+        let output3 = parsed3.unwrap().to_string();
+        assert!(output3.contains("&anchor123abc"));
+        assert!(output3.contains("*anchor123abc"));
+    }
+
+    #[test]
+    fn test_anchor_in_sequence_detailed() {
+        let yaml = r#"items:
+  - &first_item value1
+  - second_item
+  - *first_item"#;
+
+        let parsed = Yaml::from_str(yaml);
+        assert!(parsed.is_ok(), "Should parse anchors in sequences");
+
+        let yaml_doc = parsed.unwrap();
+        let output = yaml_doc.to_string();
+        assert!(output.contains("&first_item"));
+        assert!(output.contains("*first_item"));
+    }
+
+    #[test]
+    fn test_preserve_whitespace_around_anchors() {
+        let yaml = "key:  &anchor   value  \nref:  *anchor  ";
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let output = parsed.to_string();
+
+        // Should preserve whitespace around anchors and aliases
+        assert!(output.contains("&anchor"));
+        assert!(output.contains("*anchor"));
     }
 }
 

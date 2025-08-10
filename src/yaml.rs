@@ -1961,6 +1961,41 @@ impl Sequence {
             .splice_children(insert_pos..insert_pos, syntax_elements);
     }
 
+    /// Replace an item at a specific position  
+    pub fn set(&mut self, index: usize, value: &str) -> bool {
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        let mut item_count = 0;
+
+        for (i, child) in children.iter().enumerate() {
+            if let Some(token) = child.as_token() {
+                if token.kind() == SyntaxKind::DASH {
+                    if item_count == index {
+                        // Find the value node after this dash (skip whitespace)
+                        let mut value_index = None;
+                        for (j, next_child) in children.iter().enumerate().skip(i + 1) {
+                            if let Some(node) = next_child.as_node() {
+                                if node.kind() == SyntaxKind::SCALAR {
+                                    value_index = Some(j);
+                                    break;
+                                }
+                            }
+                        }
+
+                        if let Some(val_idx) = value_index {
+                            // Replace just the value node
+                            let new_value_node =
+                                SyntaxNode::new_root_mut(create_scalar_green(value));
+                            self.0
+                                .splice_children(val_idx..val_idx + 1, vec![new_value_node.into()]);
+                            return true;
+                        }
+                    }
+                    item_count += 1;
+                }
+            }
+        }
+        false
+    }
     /// Remove an item at a specific position
     pub fn remove(&mut self, index: usize) -> Option<String> {
         let children: Vec<_> = self.0.children().collect();
@@ -2058,42 +2093,6 @@ impl Sequence {
     pub fn set_item<T: Into<ScalarValue>>(&mut self, index: usize, value: T) -> bool {
         let scalar_value = value.into();
         self.set(index, &scalar_value.to_string())
-    }
-
-    /// Replace an item at a specific position  
-    pub fn set(&mut self, index: usize, value: &str) -> bool {
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        let mut item_count = 0;
-
-        for (i, child) in children.iter().enumerate() {
-            if let Some(token) = child.as_token() {
-                if token.kind() == SyntaxKind::DASH {
-                    if item_count == index {
-                        // Find the value node after this dash (skip whitespace)
-                        let mut value_index = None;
-                        for (j, next_child) in children.iter().enumerate().skip(i + 1) {
-                            if let Some(node) = next_child.as_node() {
-                                if node.kind() == SyntaxKind::SCALAR {
-                                    value_index = Some(j);
-                                    break;
-                                }
-                            }
-                        }
-
-                        if let Some(val_idx) = value_index {
-                            // Replace just the value node
-                            let new_value_node =
-                                SyntaxNode::new_root_mut(create_scalar_green(value));
-                            self.0
-                                .splice_children(val_idx..val_idx + 1, vec![new_value_node.into()]);
-                            return true;
-                        }
-                    }
-                    item_count += 1;
-                }
-            }
-        }
-        false
     }
 }
 

@@ -647,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn test_escape_sequences_unicode_U() {
+    fn test_escape_sequences_unicode_u_uppercase() {
         // Test \UNNNNNNNN escape sequences
         assert_eq!(ScalarValue::parse_escape_sequences("\\U00000041"), "A"); // 0x00000041 = 'A'
         assert_eq!(ScalarValue::parse_escape_sequences("\\U0001F603"), "😃"); // Smiley emoji

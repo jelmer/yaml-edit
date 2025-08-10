@@ -502,16 +502,6 @@ impl Document {
         Err("Directives must be added to the root YAML node, not individual documents")
     }
 
-    /// Parse a double-quoted string, handling escape sequences
-    #[deprecated(note = "Use ScalarValue::parse_escape_sequences instead")]
-    fn parse_double_quoted_static(text: &str) -> String {
-        if !text.starts_with('"') || !text.ends_with('"') || text.len() < 2 {
-            return text.to_string();
-        }
-
-        ScalarValue::parse_escape_sequences(&text[1..text.len() - 1])
-    }
-
     /// Create a new document syntax node with a mapping containing multiple entries
     fn create_mapping_with_all_entries(&self, pairs: Vec<(String, String)>) -> SyntaxNode {
         let mut builder = GreenNodeBuilder::new();
@@ -849,6 +839,8 @@ impl Parser {
             Some(SyntaxKind::DASH) if !self.in_flow_context => self.parse_sequence(),
             Some(SyntaxKind::ANCHOR) => self.parse_anchored_value(),
             Some(SyntaxKind::REFERENCE) => self.parse_alias(),
+            Some(SyntaxKind::PIPE) => self.parse_literal_block_scalar(),
+            Some(SyntaxKind::GREATER) => self.parse_folded_block_scalar(),
             Some(
                 SyntaxKind::STRING
                 | SyntaxKind::INT
@@ -1147,6 +1139,175 @@ impl Parser {
         self.builder.finish_node();
     }
 
+    fn parse_literal_block_scalar(&mut self) {
+        self.builder.start_node(SyntaxKind::SCALAR.into());
+
+        // Consume the '|' token
+        if self.current() == Some(SyntaxKind::PIPE) {
+            self.bump();
+        }
+
+        // Parse block scalar indicators (chomping and indentation)
+        self.parse_block_scalar_indicators();
+
+        // Skip to content after newline
+        self.skip_whitespace();
+        if self.current() == Some(SyntaxKind::NEWLINE) {
+            self.bump();
+        }
+
+        // Parse the block content
+        self.parse_block_scalar_content();
+
+        self.builder.finish_node();
+    }
+
+    fn parse_folded_block_scalar(&mut self) {
+        self.builder.start_node(SyntaxKind::SCALAR.into());
+
+        // Consume the '>' token
+        if self.current() == Some(SyntaxKind::GREATER) {
+            self.bump();
+        }
+
+        // Parse block scalar indicators (chomping and indentation)
+        self.parse_block_scalar_indicators();
+
+        // Skip to content after newline
+        self.skip_whitespace();
+        if self.current() == Some(SyntaxKind::NEWLINE) {
+            self.bump();
+        }
+
+        // Parse the block content
+        self.parse_block_scalar_content();
+
+        self.builder.finish_node();
+    }
+
+    fn parse_block_scalar_indicators(&mut self) {
+        // Parse explicit indentation indicator (e.g., |2, >3)
+        if matches!(self.current(), Some(SyntaxKind::INT)) {
+            self.bump(); // consume the indentation number
+        }
+
+        // Parse chomping indicator (+, -)
+        if matches!(self.current(), Some(SyntaxKind::PLUS | SyntaxKind::DASH)) {
+            self.bump(); // consume the chomping indicator
+        }
+    }
+
+    fn parse_block_scalar_content(&mut self) {
+        let mut base_indent_level = None;
+
+        // Continue parsing lines until we hit non-indented content or EOF
+        while self.current().is_some() {
+            // Check if we're at a non-indented line that would end the block
+            if self.current() == Some(SyntaxKind::NEWLINE) {
+                // Peek ahead to see what's after the newline
+                let next_token = self.upcoming_tokens().next();
+                if next_token == Some(SyntaxKind::DASH)
+                    || next_token == Some(SyntaxKind::DOC_START)
+                    || next_token == Some(SyntaxKind::DOC_END)
+                {
+                    // Next line starts a new structure, end block scalar
+                    break;
+                }
+
+                // Check if the next token is a non-indented scalar that would be a new mapping key
+                if let Some(next_kind) = self.upcoming_tokens().next() {
+                    if matches!(
+                        next_kind,
+                        SyntaxKind::STRING
+                            | SyntaxKind::INT
+                            | SyntaxKind::FLOAT
+                            | SyntaxKind::BOOL
+                            | SyntaxKind::NULL
+                    ) {
+                        // Look ahead further to see if there's a colon (indicating a mapping key)
+                        let upcoming: Vec<_> = self.upcoming_tokens().collect();
+                        let mut lookahead = 1; // Start from 1 since we already checked index 0
+                        while lookahead < upcoming.len() {
+                            let kind = upcoming[lookahead];
+                            if kind == SyntaxKind::COLON {
+                                // This is a new mapping key, end block scalar
+                                return;
+                            } else if matches!(kind, SyntaxKind::WHITESPACE) {
+                                lookahead += 1;
+                                continue;
+                            } else {
+                                // Not a mapping key, continue with block scalar
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Handle indentation tracking
+            if self.current() == Some(SyntaxKind::INDENT) {
+                let indent_text = if let Some((_, text)) = self.tokens.last() {
+                    text.clone()
+                } else {
+                    String::new()
+                };
+
+                // Set base indentation level from first indented line
+                if base_indent_level.is_none() {
+                    base_indent_level = Some(indent_text.len());
+                }
+
+                // Check if this line has enough indentation to be part of the block
+                if let Some(base_level) = base_indent_level {
+                    if indent_text.len() < base_level {
+                        // Less indented than expected, end the block scalar
+                        break;
+                    }
+                }
+
+                self.bump(); // consume indent
+            }
+
+            // Consume content tokens that are part of the block scalar
+            if matches!(
+                self.current(),
+                Some(
+                    SyntaxKind::STRING
+                        | SyntaxKind::INT
+                        | SyntaxKind::FLOAT
+                        | SyntaxKind::BOOL
+                        | SyntaxKind::NULL
+                        | SyntaxKind::WHITESPACE
+                        | SyntaxKind::NEWLINE
+                        | SyntaxKind::COMMENT
+                )
+            ) {
+                self.bump();
+            } else if matches!(
+                self.current(),
+                Some(SyntaxKind::DOC_START | SyntaxKind::DOC_END)
+            ) {
+                // These tokens indicate end of block scalar
+                break;
+            } else if self.current() == Some(SyntaxKind::DASH) {
+                // Only treat DASH as end-of-block if it appears at the start of a line (after indent)
+                // In the middle of content, it's just a hyphen character
+                // Check if the previous token was INDENT or NEWLINE (indicating start of line)
+                // For now, let's be more permissive and include it as content
+                self.bump();
+            } else if self.current() == Some(SyntaxKind::COLON) {
+                // Only treat COLON as problematic if it's part of a new mapping key
+                // In block scalar content, colons are allowed
+                self.bump();
+            } else if self.current().is_some() {
+                // Other tokens are consumed as part of the content
+                self.bump();
+            } else {
+                // EOF
+                break;
+            }
+        }
+    }
     fn is_mapping_key(&self) -> bool {
         // Look ahead to see if there's a colon after the current token
         for kind in self.upcoming_tokens() {
@@ -1689,6 +1850,1253 @@ null_ref: *null_val"#;
         assert!(output.contains("%YAML 1.2"));
         assert!(output.contains("%TAG ! tag:example.com,2000:app/"));
         assert!(output.contains("key: value"));
+    }
+
+    #[test]
+    fn test_literal_block_scalar_basic() {
+        let yaml = r#"literal: |
+  Line 1
+  Line 2
+  Line 3
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(parsed.is_ok(), "Should parse basic literal block scalar");
+
+        let yaml_doc = parsed.unwrap();
+        let output = yaml_doc.to_string();
+
+        // Should preserve the literal block scalar format exactly
+        assert_eq!(output, yaml);
+    }
+
+    #[test]
+    fn test_folded_block_scalar_basic() {
+        let yaml = r#"folded: >
+  This is a very long line that will be folded
+  into a single line in the output
+  but preserves paragraph breaks.
+
+  This is a new paragraph.
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(parsed.is_ok(), "Should parse basic folded block scalar");
+
+        let yaml_doc = parsed.unwrap();
+        let output = yaml_doc.to_string();
+
+        // Should preserve the folded block scalar format exactly
+        assert_eq!(output, yaml);
+    }
+
+    #[test]
+    fn test_literal_block_scalar_with_chomping_indicators() {
+        // Test strip indicator (-)
+        let yaml1 = r#"strip: |-
+  Line 1
+  Line 2
+
+"#;
+        let parsed1 = Yaml::from_str(yaml1);
+        assert!(
+            parsed1.is_ok(),
+            "Should parse literal block scalar with strip indicator"
+        );
+
+        let output1 = parsed1.unwrap().to_string();
+        assert!(output1.contains("|-"));
+
+        // Test keep indicator (+)
+        let yaml2 = r#"keep: |+
+  Line 1
+  Line 2
+
+"#;
+        let parsed2 = Yaml::from_str(yaml2);
+        assert!(
+            parsed2.is_ok(),
+            "Should parse literal block scalar with keep indicator"
+        );
+
+        let output2 = parsed2.unwrap().to_string();
+        assert!(output2.contains("|+"));
+    }
+
+    #[test]
+    fn test_folded_block_scalar_with_chomping_indicators() {
+        // Test strip indicator (-)
+        let yaml1 = r#"strip: >-
+  Folded content that should
+  be stripped of final newlines
+"#;
+        let parsed1 = Yaml::from_str(yaml1);
+        assert!(
+            parsed1.is_ok(),
+            "Should parse folded block scalar with strip indicator"
+        );
+
+        let output1 = parsed1.unwrap().to_string();
+        assert!(output1.contains(">-"));
+
+        // Test keep indicator (+)
+        let yaml2 = r#"keep: >+
+  Folded content that should
+  keep all final newlines
+
+"#;
+        let parsed2 = Yaml::from_str(yaml2);
+        assert!(
+            parsed2.is_ok(),
+            "Should parse folded block scalar with keep indicator"
+        );
+
+        let output2 = parsed2.unwrap().to_string();
+        assert!(output2.contains(">+"));
+    }
+
+    #[test]
+    fn test_block_scalar_with_explicit_indentation() {
+        let yaml1 = r#"explicit: |2
+    Two space indent
+    Another line
+"#;
+        let parsed1 = Yaml::from_str(yaml1);
+        assert!(
+            parsed1.is_ok(),
+            "Should parse literal block scalar with explicit indentation"
+        );
+
+        let output1 = parsed1.unwrap().to_string();
+        assert!(output1.contains("|2"));
+
+        let yaml2 = r#"folded_explicit: >3
+      Three space indent
+      Another folded line
+"#;
+        let parsed2 = Yaml::from_str(yaml2);
+        assert!(
+            parsed2.is_ok(),
+            "Should parse folded block scalar with explicit indentation"
+        );
+
+        let output2 = parsed2.unwrap().to_string();
+        assert!(output2.contains(">3"));
+    }
+
+    #[test]
+    fn test_block_scalar_in_mapping() {
+        let yaml = r#"description: |
+  This is a multi-line
+  description that should
+  preserve line breaks.
+  
+  It can have multiple paragraphs too.
+
+summary: >
+  This is a summary that
+  should be folded into
+  a single line.
+
+version: "1.0"
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should parse block scalars in mapping context"
+        );
+
+        let yaml_doc = parsed.unwrap();
+        let output = yaml_doc.to_string();
+
+        assert!(output.contains("|"));
+        assert!(output.contains(">"));
+        assert!(output.contains("This is a multi-line"));
+        assert!(output.contains("This is a summary"));
+        assert!(output.contains("version: \"1.0\""));
+    }
+
+    #[test]
+    fn test_mixed_block_and_regular_scalars() {
+        let yaml = r#"config:
+  name: "My App"
+  description: |
+    This application does many things:
+    - Feature 1
+    - Feature 2
+    - Feature 3
+  summary: >
+    A brief summary that spans
+    multiple lines but should
+    be folded together.
+  version: 1.0
+  enabled: true
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should parse mixed block and regular scalars"
+        );
+
+        let yaml_doc = parsed.unwrap();
+        let output = yaml_doc.to_string();
+
+        // Check for all different scalar types
+        assert!(output.contains("\"My App\"")); // quoted string
+        assert!(output.contains("|")); // literal block
+        assert!(output.contains(">")); // folded block
+        assert!(output.contains("1.0")); // number
+        assert!(output.contains("true")); // boolean
+    }
+
+    #[test]
+    fn test_block_scalar_edge_cases() {
+        // Empty block scalar
+        let yaml1 = r#"empty_literal: |
+empty_folded: >
+"#;
+        let parsed1 = Yaml::from_str(yaml1);
+        assert!(parsed1.is_ok(), "Should parse empty block scalars");
+
+        // Block scalar with only whitespace
+        let yaml2 = r#"whitespace: |
+  
+  
+"#;
+        let parsed2 = Yaml::from_str(yaml2);
+        assert!(
+            parsed2.is_ok(),
+            "Should parse block scalar with only whitespace"
+        );
+
+        // Block scalar followed immediately by another key
+        let yaml3 = r#"first: |
+  Content
+second: value
+"#;
+        let parsed3 = Yaml::from_str(yaml3);
+        assert!(
+            parsed3.is_ok(),
+            "Should parse block scalar followed by other keys"
+        );
+
+        let output3 = parsed3.unwrap().to_string();
+        assert!(output3.contains("first"));
+        assert!(output3.contains("second"));
+    }
+
+    #[test]
+    fn test_literal_block_scalar_advanced_formatting() {
+        let yaml = r#"poem: |
+  Roses are red,
+  Violets are blue,
+  YAML is great,
+  And so are you!
+
+  This is another stanza
+  with different content.
+    And this line has extra indentation.
+  Back to normal indentation.
+
+  Final stanza.
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(parsed.is_ok(), "Should parse complex literal block scalar");
+
+        let output = parsed.unwrap().to_string();
+
+        // Verify all content is preserved
+        assert!(output.contains("Roses are red,"));
+        assert!(output.contains("Violets are blue,"));
+        assert!(output.contains("This is another stanza"));
+        assert!(output.contains("    And this line has extra indentation."));
+        assert!(output.contains("Back to normal indentation."));
+        assert!(output.contains("Final stanza."));
+
+        // Verify the literal block scalar marker is preserved
+        assert!(output.contains("poem: |"));
+    }
+
+    #[test]
+    fn test_folded_block_scalar_paragraph_handling() {
+        let yaml = r#"description: >
+  This is the first paragraph that should
+  be folded into a single line when processed
+  by a YAML parser.
+
+  This is a second paragraph that should
+  also be folded but kept separate from
+  the first paragraph.
+
+
+  This is a third paragraph after
+  multiple blank lines.
+
+  Final paragraph.
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should parse folded block scalar with paragraphs"
+        );
+
+        let output = parsed.unwrap().to_string();
+
+        // All content should be preserved as-is (lossless)
+        assert!(output.contains("This is the first paragraph"));
+        assert!(output.contains("This is a second paragraph"));
+        assert!(output.contains("This is a third paragraph"));
+        assert!(output.contains("Final paragraph."));
+        assert!(output.contains("description: >"));
+    }
+
+    #[test]
+    fn test_block_scalars_with_special_characters() {
+        let yaml = r#"special_chars: |
+  Line with colons: key: value
+  Line with dashes - and more - dashes
+  Line with quotes "double" and 'single'
+  Line with brackets [array] and braces {object}
+  Line with pipes | and greater than >
+  Line with at @ and hash # symbols
+  Line with percent % and exclamation !
+  
+backslash_test: >
+  This line has a backslash \ in it
+  And this line has multiple \\ backslashes
+  
+unicode_test: |
+  This line has unicode: 你好世界
+  And emojis: 🚀 🎉 ✨
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should parse block scalars with special characters"
+        );
+
+        let output = parsed.unwrap().to_string();
+
+        // Verify special characters are preserved
+        assert!(output.contains("key: value"));
+        assert!(output.contains("- and more -"));
+        assert!(output.contains("\"double\" and 'single'"));
+        assert!(output.contains("[array] and braces {object}"));
+        assert!(output.contains("pipes | and greater than >"));
+        assert!(output.contains("backslash \\ in it"));
+        assert!(output.contains("multiple \\\\ backslashes"));
+        assert!(output.contains("你好世界"));
+        assert!(output.contains("🚀 🎉 ✨"));
+    }
+
+    #[test]
+    fn test_block_scalars_in_nested_structures() {
+        let yaml = r#"config:
+  database:
+    connection_string: |
+      host=localhost
+      port=5432
+      dbname=myapp
+      user=admin
+      password=secret
+    
+    migration_script: >
+      This is a long migration script that
+      spans multiple lines but should be
+      treated as a single folded string.
+  
+  logging:
+    format: |
+      [%timestamp%] %level%: %message%
+      Additional context: %context%
+    
+    rules:
+      - name: "Error Rule"
+        pattern: >
+          This pattern matches error messages
+          that span multiple lines in the log file.
+      
+      - name: "Warning Rule"  
+        pattern: |
+          ^WARNING:.*
+          (.*continuation.*)*
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should parse nested structures with block scalars"
+        );
+
+        let output = parsed.unwrap().to_string();
+
+        // Verify nested structure is preserved
+        assert!(output.contains("config:"));
+        assert!(output.contains("database:"));
+        assert!(output.contains("connection_string: |"));
+        assert!(output.contains("host=localhost"));
+        assert!(output.contains("migration_script: >"));
+        assert!(output.contains("logging:"));
+        assert!(output.contains("format: |"));
+        assert!(output.contains("[%timestamp%] %level%"));
+        assert!(output.contains("rules:"));
+        assert!(output.contains("- name: \"Error Rule\""));
+        assert!(output.contains("pattern: >"));
+        assert!(output.contains("^WARNING:.*"));
+    }
+
+    #[test]
+    fn test_block_scalar_chomping_detailed() {
+        // Test clip indicator (default - no explicit indicator)
+        let yaml_clip = r#"clip: |
+  Line 1
+  Line 2
+
+"#;
+        let parsed_clip = Yaml::from_str(yaml_clip);
+        assert!(
+            parsed_clip.is_ok(),
+            "Should parse block scalar with default clipping"
+        );
+
+        // Test strip indicator (-)
+        let yaml_strip = r#"strip: |-
+  Line 1
+  Line 2
+
+
+
+"#;
+        let parsed_strip = Yaml::from_str(yaml_strip);
+        assert!(
+            parsed_strip.is_ok(),
+            "Should parse block scalar with strip indicator"
+        );
+
+        // Test keep indicator (+)
+        let yaml_keep = r#"keep: |+
+  Line 1
+  Line 2
+
+
+
+"#;
+        let parsed_keep = Yaml::from_str(yaml_keep);
+        assert!(
+            parsed_keep.is_ok(),
+            "Should parse block scalar with keep indicator"
+        );
+
+        // Verify indicators are preserved
+        let output_clip = parsed_clip.unwrap().to_string();
+        let output_strip = parsed_strip.unwrap().to_string();
+        let output_keep = parsed_keep.unwrap().to_string();
+
+        assert!(output_clip.contains("clip: |"));
+        assert!(output_strip.contains("strip: |-"));
+        assert!(output_keep.contains("keep: |+"));
+    }
+
+    #[test]
+    fn test_block_scalar_explicit_indentation_detailed() {
+        // Test individual cases to isolate the issue
+        let yaml1 = r#"indent1: |1
+ Single space indent
+"#;
+        let parsed1 = Yaml::from_str(yaml1);
+        assert!(parsed1.is_ok(), "Should parse |1 block scalar");
+        let output1 = parsed1.unwrap().to_string();
+        assert_eq!(output1, yaml1);
+
+        let yaml2 = r#"indent2: |2
+  Two space indent
+"#;
+        let parsed2 = Yaml::from_str(yaml2);
+        assert!(parsed2.is_ok(), "Should parse |2 block scalar");
+        let output2 = parsed2.unwrap().to_string();
+        assert_eq!(output2, yaml2);
+
+        let yaml3 = r#"folded_indent: >2
+  Two space folded
+  content spans lines
+"#;
+        let parsed3 = Yaml::from_str(yaml3);
+        assert!(parsed3.is_ok(), "Should parse >2 folded block scalar");
+        let output3 = parsed3.unwrap().to_string();
+        assert_eq!(output3, yaml3);
+    }
+
+    #[test]
+    fn test_block_scalar_combined_indicators() {
+        let yaml = r#"strip_with_indent: |2-
+  Content with explicit indent
+  and strip chomping
+
+
+keep_with_indent: >3+
+   Content with explicit indent
+   and keep chomping
+
+
+
+folded_strip: >-
+  Folded content
+  with strip indicator
+
+literal_keep: |+
+  Literal content
+  with keep indicator
+
+
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should parse block scalars with combined indicators"
+        );
+
+        let output = parsed.unwrap().to_string();
+
+        assert!(output.contains("strip_with_indent: |2-"));
+        assert!(output.contains("keep_with_indent: >3+"));
+        assert!(output.contains("folded_strip: >-"));
+        assert!(output.contains("literal_keep: |+"));
+    }
+
+    #[test]
+    fn test_block_scalar_edge_cases_comprehensive() {
+        // Block scalar with only whitespace lines
+        let yaml1 = r#"whitespace_only: |
+  
+    
+  
+"#;
+        let parsed1 = Yaml::from_str(yaml1);
+        assert!(
+            parsed1.is_ok(),
+            "Should handle block scalar with only whitespace"
+        );
+
+        // Block scalar with mixed indentation
+        let yaml2 = r#"mixed_indent: |
+  Normal line
+    Indented line
+  Back to normal
+      More indented
+  Normal again
+"#;
+        let parsed2 = Yaml::from_str(yaml2);
+        assert!(parsed2.is_ok(), "Should handle mixed indentation levels");
+
+        // Block scalar followed immediately by another mapping
+        let yaml3 = r#"first: |
+  Content
+immediate: value
+another: |
+  More content
+final: end
+"#;
+        let parsed3 = Yaml::from_str(yaml3);
+        assert!(
+            parsed3.is_ok(),
+            "Should handle multiple block scalars in mapping"
+        );
+
+        let output3 = parsed3.unwrap().to_string();
+        assert!(output3.contains("first: |"));
+        assert!(output3.contains("immediate: value"));
+        assert!(output3.contains("another: |"));
+        assert!(output3.contains("final: end"));
+    }
+
+    #[test]
+    fn test_block_scalar_with_comments() {
+        let yaml = r#"# Main configuration
+config: |  # This is a literal block
+  # This comment is inside the block
+  line1: value1
+  # Another internal comment
+  line2: value2
+  
+# Outside comment
+other: >  # Folded block comment
+  This content spans
+  # This hash is part of the content, not a comment
+  multiple lines
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(parsed.is_ok(), "Should parse block scalars with comments");
+
+        let output = parsed.unwrap().to_string();
+        assert!(output.contains("# Main configuration"));
+        assert!(output.contains("config: |"));
+        assert!(output.contains("# This comment is inside the block"));
+        assert!(output.contains("# Outside comment"));
+        assert!(output.contains("other: >"));
+        assert!(output.contains("# This hash is part of the content"));
+    }
+
+    #[test]
+    fn test_block_scalar_sequence_interaction() {
+        let yaml = r#"items:
+  - description: |
+      This is a multi-line
+      description for the first item.
+      
+      It has multiple paragraphs.
+    
+    value: 123
+  
+  - description: >
+      This is a folded description
+      for the second item that
+      should be on one line.
+    
+    value: 456
+
+  - simple_value
+
+  - |
+    A literal block scalar
+    as a sequence item directly.
+    
+  - >
+    A folded block scalar
+    as a sequence item directly.
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(parsed.is_ok(), "Should parse block scalars in sequences");
+
+        let output = parsed.unwrap().to_string();
+        assert!(output.contains("items:"));
+        assert!(output.contains("- description: |"));
+        assert!(output.contains("This is a multi-line"));
+        assert!(output.contains("- description: >"));
+        assert!(output.contains("This is a folded description"));
+        assert!(output.contains("- simple_value"));
+        assert!(output.contains("- |"));
+        assert!(output.contains("A literal block scalar"));
+        assert!(output.contains("- >"));
+        assert!(output.contains("A folded block scalar"));
+    }
+
+    #[test]
+    fn test_block_scalar_empty_and_minimal() {
+        let yaml = r#"empty_literal: |
+
+empty_folded: >
+
+minimal_literal: |
+  x
+
+minimal_folded: >
+  y
+
+just_newlines: |
+
+
+
+just_spaces: |
+   
+   
+   
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should handle empty and minimal block scalars"
+        );
+
+        let output = parsed.unwrap().to_string();
+        assert!(output.contains("empty_literal: |"));
+        assert!(output.contains("empty_folded: >"));
+        assert!(output.contains("minimal_literal: |"));
+        assert!(output.contains("minimal_folded: >"));
+        assert!(output.contains("just_newlines: |"));
+        assert!(output.contains("just_spaces: |"));
+    }
+
+    #[test]
+    fn test_block_scalar_with_document_markers() {
+        let yaml = r#"---
+doc1: |
+  This is the first document
+  with a literal block scalar.
+
+next_key: value
+---
+doc2: >
+  This is the second document
+  with a folded block scalar.
+
+another_key: another_value
+...
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should parse block scalars with document markers"
+        );
+
+        let output = parsed.unwrap().to_string();
+        assert!(output.contains("---"));
+        assert!(output.contains("doc1: |"));
+        assert!(output.contains("This is the first document"));
+        assert!(output.contains("doc2: >"));
+        assert!(output.contains("This is the second document"));
+        assert!(output.contains("..."));
+    }
+
+    #[test]
+    fn test_block_scalar_formatting_preservation() {
+        let original = r#"preserve_me: |
+  Line with    multiple    spaces
+  Line with	tabs	here
+  Line with trailing spaces   
+  
+  Empty line above and below
+  
+  Final line
+"#;
+        let parsed = Yaml::from_str(original);
+        assert!(parsed.is_ok(), "Should preserve exact formatting");
+
+        let output = parsed.unwrap().to_string();
+
+        // The output should be identical to input (lossless)
+        assert!(output.contains("Line with    multiple    spaces"));
+        assert!(output.contains("Line with	tabs	here"));
+        assert!(output.contains("Line with trailing spaces   "));
+        assert!(output.contains("Final line"));
+    }
+
+    #[test]
+    fn test_block_scalar_complex_yaml_content() {
+        let yaml = r#"yaml_content: |
+  # This block contains YAML-like content
+  nested:
+    - item: value
+    - item: another
+  
+  mapping:
+    key1: |
+      Even more nested literal content
+    key2: value
+    
+  anchors: &anchor
+    anchor_content: data
+    
+  reference: *anchor
+  
+quoted_yaml: >
+  This folded block contains
+  YAML structures: {key: value, array: [1, 2, 3]}
+  that should be treated as plain text.
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should parse block scalars containing YAML-like structures"
+        );
+
+        let output = parsed.unwrap().to_string();
+        assert!(output.contains("yaml_content: |"));
+        assert!(output.contains("# This block contains YAML-like content"));
+        assert!(output.contains("nested:"));
+        assert!(output.contains("- item: value"));
+        assert!(output.contains("anchors: &anchor"));
+        assert!(output.contains("reference: *anchor"));
+        assert!(output.contains("quoted_yaml: >"));
+        assert!(output.contains("{key: value, array: [1, 2, 3]}"));
+    }
+
+    #[test]
+    fn test_block_scalar_performance_large_content() {
+        // Test with a reasonably large block scalar
+        let mut large_content = String::new();
+        for i in 1..=100 {
+            large_content.push_str(&format!(
+                "  Line number {} with some content that makes it longer\n",
+                i
+            ));
+        }
+
+        let yaml = format!(
+            "large_literal: |\n{}\nlarge_folded: >\n{}\n",
+            large_content, large_content
+        );
+
+        let parsed = Yaml::parse(&yaml);
+        assert!(
+            !parsed.has_errors(),
+            "Should parse large block scalars without errors"
+        );
+
+        let output = parsed.tree().to_string();
+        assert!(output.contains("large_literal: |"));
+        assert!(output.contains("large_folded: >"));
+        assert!(output.contains("Line number 1"));
+        assert!(output.contains("Line number 50"));
+        assert!(output.contains("Line number 100"));
+    }
+
+    #[test]
+    fn test_block_scalar_error_recovery() {
+        // Test that parser can recover from malformed block scalars
+        let yaml = r#"good_key: value
+bad_block: |
+incomplete_key
+another_good: works
+"#;
+        let parsed = Yaml::parse(yaml);
+
+        // Should still parse the valid parts
+        let output = parsed.tree().to_string();
+        assert!(output.contains("good_key: value"));
+        assert!(output.contains("another_good: works"));
+    }
+
+    #[test]
+    fn test_block_scalar_with_flow_structures() {
+        let yaml = r#"mixed_styles: |
+  This literal block contains:
+  - A flow sequence: [1, 2, 3]
+  - A flow mapping: {key: value, other: data}
+  - Mixed content: [a, {nested: true}, c]
+
+flow_then_block:
+  flow_seq: [item1, item2]
+  block_literal: |
+    This comes after flow style
+    and should work fine.
+  flow_map: {after: block}
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(parsed.is_ok(), "Should parse mixed flow and block styles");
+
+        let output = parsed.unwrap().to_string();
+        assert!(output.contains("mixed_styles: |"));
+        assert!(output.contains("[1, 2, 3]"));
+        assert!(output.contains("{key: value, other: data}"));
+        assert!(output.contains("flow_seq: [item1, item2]"));
+        assert!(output.contains("block_literal: |"));
+        assert!(output.contains("flow_map: {after: block}"));
+    }
+
+    #[test]
+    fn test_block_scalar_indentation_edge_cases() {
+        // Test with no content after block indicator
+        let yaml1 = r#"empty: |
+next: value"#;
+        let parsed1 = Yaml::from_str(yaml1);
+        assert!(parsed1.is_ok(), "Should handle empty block followed by key");
+
+        // Test with inconsistent indentation that should still work
+        let yaml2 = r#"inconsistent: |
+  normal indent
+    more indent  
+  back to normal
+      even more
+  normal
+"#;
+        let parsed2 = Yaml::from_str(yaml2);
+        assert!(
+            parsed2.is_ok(),
+            "Should handle inconsistent but valid indentation"
+        );
+
+        // Test with tab characters (should work in block scalars)
+        let yaml3 = "tabs: |\n\tTab indented line\n\tAnother tab line\n";
+        let parsed3 = Yaml::from_str(yaml3);
+        assert!(
+            parsed3.is_ok(),
+            "Should handle tab characters in block scalars"
+        );
+    }
+
+    #[test]
+    fn test_block_scalar_with_anchors_and_aliases() {
+        let yaml = r#"template: &template |
+  This is a template
+  with multiple lines
+  that can be referenced.
+
+instance1: *template
+
+instance2: 
+  content: *template
+  other: value
+
+modified: |
+  <<: *template
+  Additional content here
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should parse block scalars with anchors and aliases"
+        );
+
+        let output = parsed.unwrap().to_string();
+        assert!(output.contains("template: &template |"));
+        assert!(output.contains("instance1: *template"));
+        assert!(output.contains("content: *template"));
+        assert!(output.contains("<<: *template"));
+    }
+
+    #[test]
+    fn test_block_scalar_newline_variations() {
+        // Test with different newline styles
+        let yaml_unix = "unix: |\n  Line 1\n  Line 2\n";
+        let parsed_unix = Yaml::from_str(yaml_unix);
+        assert!(parsed_unix.is_ok(), "Should handle Unix newlines");
+
+        let yaml_windows = "windows: |\r\n  Line 1\r\n  Line 2\r\n";
+        let parsed_windows = Yaml::from_str(yaml_windows);
+        assert!(parsed_windows.is_ok(), "Should handle Windows newlines");
+
+        // Verify content is preserved
+        let output_unix = parsed_unix.unwrap().to_string();
+        let output_windows = parsed_windows.unwrap().to_string();
+
+        assert!(output_unix.contains("unix: |"));
+        assert!(output_windows.contains("windows: |"));
+        assert!(output_unix.contains("Line 1"));
+        assert!(output_windows.contains("Line 1"));
+    }
+
+    #[test]
+    fn test_block_scalar_boundary_detection() {
+        // Test that block scalars properly end at mapping boundaries
+        let yaml = r#"config:
+  description: |
+    This is a configuration
+    with multiple lines.
+  
+  name: "MyApp"
+  version: 1.0
+  
+  settings: >
+    These are settings that
+    span multiple lines too.
+  
+  debug: true
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should properly detect block scalar boundaries"
+        );
+
+        let output = parsed.unwrap().to_string();
+        assert!(output.contains("description: |"));
+        assert!(output.contains("This is a configuration"));
+        assert!(output.contains("name: \"MyApp\""));
+        assert!(output.contains("version: 1.0"));
+        assert!(output.contains("settings: >"));
+        assert!(output.contains("These are settings"));
+        assert!(output.contains("debug: true"));
+    }
+
+    #[test]
+    fn test_block_scalar_with_numeric_content() {
+        let yaml = r#"numbers_as_text: |
+  123
+  45.67
+  -89
+  +100
+  0xFF
+  1e5
+  true
+  false
+  null
+
+calculations: >
+  The result is: 2 + 2 = 4
+  And 10 * 5 = 50
+  Also: 100% complete
+"#;
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should parse numeric content as text in block scalars"
+        );
+
+        let output = parsed.unwrap().to_string();
+        assert!(output.contains("numbers_as_text: |"));
+        assert!(output.contains("123"));
+        assert!(output.contains("45.67"));
+        assert!(output.contains("+100"));
+        assert!(output.contains("calculations: >"));
+        assert!(output.contains("2 + 2 = 4"));
+        assert!(output.contains("100% complete"));
+    }
+
+    #[test]
+    fn test_block_scalar_stress_test() {
+        // Create a complex nested structure with many block scalars
+        let yaml = r#"
+app:
+  name: "Complex App"
+  
+  documentation:
+    overview: >
+      This application demonstrates complex
+      YAML structures with multiple block
+      scalar styles and nested content.
+    
+    installation: |
+      Step 1: Download the package
+      Step 2: Extract to /opt/app
+      Step 3: Run ./install.sh
+      
+      Note: Requires sudo privileges.
+    
+    examples:
+      - name: "Basic Usage"
+        code: |
+          import app
+          
+          client = app.Client()
+          client.connect()
+          result = client.process(data)
+      
+      - name: "Advanced Usage"  
+        description: >
+          This example shows advanced features
+          including error handling and logging.
+        code: |
+          import app
+          import logging
+          
+          logging.basicConfig(level=logging.INFO)
+          
+          try:
+              client = app.Client(
+                  host="localhost",
+                  port=8080,
+                  timeout=30
+              )
+              
+              with client:
+                  for item in data:
+                      result = client.process(item)
+                      print(f"Processed: {result}")
+                      
+          except app.ConnectionError as e:
+              logging.error(f"Connection failed: {e}")
+          except Exception as e:
+              logging.error(f"Unexpected error: {e}")
+
+  configuration:
+    database: |
+      # Database Configuration
+      host: localhost
+      port: 5432
+      database: myapp
+      
+      pool:
+        min_connections: 5
+        max_connections: 20
+        timeout: 30
+    
+    logging: |+
+      version: 1
+      
+      formatters:
+        default:
+          format: '[%(asctime)s] %(levelname)s: %(message)s'
+      
+      handlers:
+        console:
+          class: logging.StreamHandler
+          formatter: default
+          level: INFO
+          
+        file:
+          class: logging.FileHandler
+          filename: app.log
+          formatter: default
+          level: DEBUG
+      
+      root:
+        level: DEBUG
+        handlers: [console, file]
+
+
+"#;
+
+        let parsed = Yaml::from_str(yaml);
+        assert!(
+            parsed.is_ok(),
+            "Should parse complex nested structure with many block scalars"
+        );
+
+        let output = parsed.unwrap().to_string();
+
+        // Verify key structure elements
+        assert!(output.contains("app:"));
+        assert!(output.contains("documentation:"));
+        assert!(output.contains("overview: >"));
+        assert!(output.contains("installation: |"));
+        assert!(output.contains("examples:"));
+        assert!(output.contains("- name: \"Basic Usage\""));
+        assert!(output.contains("code: |"));
+        assert!(output.contains("import app"));
+        assert!(output.contains("configuration:"));
+        assert!(output.contains("database: |"));
+        assert!(output.contains("logging: |+"));
+        assert!(output.contains("# Database Configuration"));
+        assert!(output.contains("version: 1"));
+
+        // Verify complex content is preserved
+        assert!(output.contains("client.connect()"));
+        assert!(output.contains("logging.error"));
+        assert!(output.contains("max_connections: 20"));
+        assert!(output.contains("handlers: [console, file]"));
+    }
+
+    #[test]
+    fn test_block_scalar_exact_preservation() {
+        // Test that block scalars are preserved exactly as written (lossless)
+        let test_cases = vec![
+            // Simple literal block
+            r#"simple: |
+  Hello World
+"#,
+            // Simple folded block
+            r#"folded: >
+  Hello World
+"#,
+            // With chomping indicators
+            r#"strip: |-
+  Content
+
+keep: |+
+  Content
+
+"#,
+            // With explicit indentation
+            r#"explicit: |2
+  Two space indent
+"#,
+            // Complex real-world example
+            r#"config:
+  script: |
+    #!/bin/bash
+    echo "Starting deployment"
+    
+    for service in api web worker; do
+        echo "Deploying $service"
+        kubectl apply -f $service.yaml
+    done
+  
+  description: >
+    This configuration defines a deployment
+    script that will be executed during
+    the CI/CD pipeline.
+"#,
+        ];
+
+        for (i, yaml) in test_cases.iter().enumerate() {
+            let parsed = Yaml::from_str(yaml);
+            assert!(parsed.is_ok(), "Test case {} should parse successfully", i);
+
+            let output = parsed.unwrap().to_string();
+            assert_eq!(
+                output, *yaml,
+                "Test case {} should preserve exact formatting",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_block_scalar_chomping_exact() {
+        let yaml_strip = r#"strip: |-
+  Content
+"#;
+        let parsed_strip = Yaml::from_str(yaml_strip).unwrap();
+        assert_eq!(parsed_strip.to_string(), yaml_strip);
+
+        let yaml_keep = r#"keep: |+
+  Content
+
+"#;
+        let parsed_keep = Yaml::from_str(yaml_keep).unwrap();
+        assert_eq!(parsed_keep.to_string(), yaml_keep);
+
+        let yaml_folded_strip = r#"folded: >-
+  Content
+"#;
+        let parsed_folded_strip = Yaml::from_str(yaml_folded_strip).unwrap();
+        assert_eq!(parsed_folded_strip.to_string(), yaml_folded_strip);
+    }
+
+    #[test]
+    fn test_block_scalar_indentation_exact() {
+        let yaml1 = r#"indent1: |1
+ Single space
+"#;
+        let parsed1 = Yaml::from_str(yaml1).unwrap();
+        assert_eq!(parsed1.to_string(), yaml1);
+
+        let yaml2 = r#"indent2: |2
+  Two spaces
+"#;
+        let parsed2 = Yaml::from_str(yaml2).unwrap();
+        assert_eq!(parsed2.to_string(), yaml2);
+
+        let yaml3 = r#"combined: |3+
+   Content with keep
+
+"#;
+        let parsed3 = Yaml::from_str(yaml3).unwrap();
+        assert_eq!(parsed3.to_string(), yaml3);
+    }
+
+    #[test]
+    fn test_block_scalar_mapping_exact() {
+        let yaml = r#"description: |
+  Line 1
+  Line 2
+
+summary: >
+  Folded content
+
+version: "1.0"
+"#;
+        let parsed = Yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed.to_string(), yaml);
+    }
+
+    #[test]
+    fn test_block_scalar_sequence_exact() {
+        let yaml = r#"items:
+  - |
+    First item content
+    with multiple lines
+  
+  - >
+    Second item folded
+    content
+  
+  - regular_item
+"#;
+        let parsed = Yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed.to_string(), yaml);
+    }
+
+    #[test]
+    fn test_block_scalar_empty_exact() {
+        let yaml1 = r#"empty: |
+
+"#;
+        let parsed1 = Yaml::from_str(yaml1).unwrap();
+        assert_eq!(parsed1.to_string(), yaml1);
+
+        let yaml2 = r#"empty_folded: >
+
+"#;
+        let parsed2 = Yaml::from_str(yaml2).unwrap();
+        assert_eq!(parsed2.to_string(), yaml2);
     }
 }
 

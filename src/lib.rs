@@ -1,5 +1,9 @@
 #![deny(missing_docs)]
 #![allow(clippy::type_complexity)]
+#![warn(clippy::unnecessary_to_owned)]
+#![warn(clippy::redundant_clone)]
+#![warn(clippy::inefficient_to_string)]
+#![warn(clippy::manual_string_new)]
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 
 //! A lossless YAML parser and editor.

@@ -59,7 +59,7 @@ impl ScalarValue {
 
     /// Parse escape sequences in a double-quoted string
     pub fn parse_escape_sequences(text: &str) -> String {
-        let mut result = String::new();
+        let mut result = String::with_capacity(text.len()); // Pre-allocate
         let mut chars = text.chars().peekable();
 
         while let Some(ch) = chars.next() {
@@ -99,21 +99,35 @@ impl ScalarValue {
                         // Unicode escapes
                         'x' => {
                             // \xNN - 2-digit hex
-                            let hex_digits: String = chars.by_ref().take(2).collect();
-                            if hex_digits.len() == 2 {
-                                if let Ok(code) = u8::from_str_radix(&hex_digits, 16) {
-                                    result.push(code as char);
+                            let mut hex_chars = [0u8; 2];
+                            let mut count = 0;
+                            for (i, ch) in chars.by_ref().take(2).enumerate() {
+                                if let Some(digit) = ch.to_digit(16) {
+                                    hex_chars[i] = digit as u8;
+                                    count += 1;
                                 } else {
-                                    // Invalid hex, keep literal
+                                    // Put back invalid char
                                     result.push('\\');
                                     result.push('x');
-                                    result.push_str(&hex_digits);
+                                    for &hex_char in hex_chars.iter().take(count) {
+                                        result.push(
+                                            char::from_digit(hex_char as u32, 16).unwrap(),
+                                        );
+                                    }
+                                    result.push(ch);
+                                    break;
                                 }
-                            } else {
+                            }
+                            if count == 2 {
+                                let code = hex_chars[0] * 16 + hex_chars[1];
+                                result.push(code as char);
+                            } else if count > 0 {
                                 // Incomplete hex escape
                                 result.push('\\');
                                 result.push('x');
-                                result.push_str(&hex_digits);
+                                for &hex_char in hex_chars.iter().take(count) {
+                                    result.push(char::from_digit(hex_char as u32, 16).unwrap());
+                                }
                             }
                         }
                         'u' => {

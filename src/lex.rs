@@ -114,6 +114,24 @@ impl From<SyntaxKind> for rowan::SyntaxKind {
     }
 }
 
+/// Helper to read a scalar value starting from current position
+fn read_scalar_from<'a>(
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
+    input: &'a str,
+    start_idx: usize,
+    special_check: fn(char) -> bool,
+) -> &'a str {
+    let mut end_idx = start_idx;
+    while let Some((idx, ch)) = chars.peek() {
+        if ch.is_whitespace() || special_check(*ch) {
+            break;
+        }
+        end_idx = *idx + ch.len_utf8();
+        chars.next();
+    }
+    &input[start_idx..end_idx]
+}
+
 /// Tokenize YAML input
 pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
     use SyntaxKind::*;
@@ -163,19 +181,16 @@ pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
                     if is_sequence_marker {
                         tokens.push((DASH, &input[token_start..start_idx + 1]));
                     } else {
-                        // This hyphen is part of a scalar value, treat as regular character
-                        // Continue reading until we hit whitespace or actual YAML special chars
-                        let mut end_idx = start_idx + 1;
-                        while let Some((idx, ch)) = chars.peek() {
-                            if ch.is_whitespace() || is_yaml_special_excluding_hyphen(*ch) {
-                                break;
-                            }
-                            end_idx = *idx + ch.len_utf8();
-                            chars.next();
-                        }
-                        let text = &input[token_start..end_idx];
-                        let token_kind = classify_scalar(text);
-                        tokens.push((token_kind, text));
+                        // This hyphen is part of a scalar value
+                        let text = read_scalar_from(
+                            &mut chars,
+                            input,
+                            start_idx + 1,
+                            is_yaml_special_excluding_hyphen,
+                        );
+                        let full_text = &input[token_start..token_start + 1 + text.len()];
+                        let token_kind = classify_scalar(full_text);
+                        tokens.push((token_kind, full_text));
                     }
                 }
             }
@@ -191,38 +206,18 @@ pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
             '>' => tokens.push((GREATER, &input[token_start..start_idx + 1])),
             '&' => {
                 // Check if this is an anchor definition
-                let mut end_idx = start_idx + 1;
-                let mut has_anchor_name = false;
-                while let Some((idx, ch)) = chars.peek() {
-                    if ch.is_whitespace() || is_yaml_special(*ch) {
-                        break;
-                    }
-                    has_anchor_name = true;
-                    end_idx = *idx + ch.len_utf8();
-                    chars.next();
-                }
-
-                if has_anchor_name {
-                    tokens.push((ANCHOR, &input[token_start..end_idx]));
+                let name = read_scalar_from(&mut chars, input, start_idx + 1, is_yaml_special);
+                if !name.is_empty() {
+                    tokens.push((ANCHOR, &input[token_start..start_idx + 1 + name.len()]));
                 } else {
                     tokens.push((AMPERSAND, &input[token_start..start_idx + 1]));
                 }
             }
             '*' => {
                 // Check if this is an alias reference
-                let mut end_idx = start_idx + 1;
-                let mut has_reference_name = false;
-                while let Some((idx, ch)) = chars.peek() {
-                    if ch.is_whitespace() || is_yaml_special(*ch) {
-                        break;
-                    }
-                    has_reference_name = true;
-                    end_idx = *idx + ch.len_utf8();
-                    chars.next();
-                }
-
-                if has_reference_name {
-                    tokens.push((REFERENCE, &input[token_start..end_idx]));
+                let name = read_scalar_from(&mut chars, input, start_idx + 1, is_yaml_special);
+                if !name.is_empty() {
+                    tokens.push((REFERENCE, &input[token_start..start_idx + 1 + name.len()]));
                 } else {
                     tokens.push((ASTERISK, &input[token_start..start_idx + 1]));
                 }
@@ -232,37 +227,24 @@ pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
 
             // Document end
             '.' => {
-                if let Some((_, '.')) = chars.peek() {
+                // Check for three dots (document end marker)
+                if chars.peek() == Some(&(start_idx + 1, '.')) {
                     chars.next(); // consume second .
-                    if let Some((_, '.')) = chars.peek() {
+                    if chars.peek() == Some(&(start_idx + 2, '.')) {
                         chars.next(); // consume third .
                         tokens.push((DOC_END, &input[token_start..start_idx + 3]));
                     } else {
-                        // Just dots, treat as string
-                        let mut end_idx = start_idx + 1;
-                        while let Some((idx, _)) = chars.peek() {
-                            if bytes[*idx] == b'.' {
-                                end_idx = *idx + 1;
-                                chars.next();
-                            } else {
-                                break;
-                            }
-                        }
-                        let text = &input[token_start..end_idx];
+                        // Two dots - continue as scalar
+                        let rest =
+                            read_scalar_from(&mut chars, input, start_idx + 2, is_yaml_special);
+                        let text = &input[token_start..start_idx + 2 + rest.len()];
                         let token_kind = classify_scalar(text);
                         tokens.push((token_kind, text));
                     }
                 } else {
                     // Single dot - part of scalar
-                    let mut end_idx = start_idx + 1;
-                    while let Some((idx, ch)) = chars.peek() {
-                        if ch.is_whitespace() || is_yaml_special(*ch) {
-                            break;
-                        }
-                        end_idx = *idx + ch.len_utf8();
-                        chars.next();
-                    }
-                    let text = &input[token_start..end_idx];
+                    let rest = read_scalar_from(&mut chars, input, start_idx + 1, is_yaml_special);
+                    let text = &input[token_start..start_idx + 1 + rest.len()];
                     let token_kind = classify_scalar(text);
                     tokens.push((token_kind, text));
                 }
@@ -281,17 +263,10 @@ pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
                 tokens.push((COMMENT, &input[token_start..end_idx]));
             }
 
-            // Tags and directives
+            // Tags
             '!' => {
-                let mut end_idx = start_idx + 1;
-                while let Some((idx, ch)) = chars.peek() {
-                    if ch.is_whitespace() || is_yaml_special(*ch) {
-                        break;
-                    }
-                    end_idx = *idx + ch.len_utf8();
-                    chars.next();
-                }
-                tokens.push((TAG, &input[token_start..end_idx]));
+                let rest = read_scalar_from(&mut chars, input, start_idx + 1, is_yaml_special);
+                tokens.push((TAG, &input[token_start..start_idx + 1 + rest.len()]));
             }
 
             '%' => {
@@ -339,43 +314,33 @@ pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
             // Everything else is scalar content
             _ => {
                 let mut end_idx = start_idx + ch.len_utf8();
-                while let Some((idx, ch)) = chars.peek() {
-                    if ch.is_whitespace() || is_yaml_special_excluding_hyphen(*ch) {
+
+                // Read the rest of the scalar, including embedded hyphens
+                while let Some((idx, next_ch)) = chars.peek() {
+                    if next_ch.is_whitespace() || is_yaml_special_excluding_hyphen(*next_ch) {
                         break;
                     }
-                    // Special handling for hyphens - only break if it's a sequence marker
-                    if *ch == '-' {
-                        // Check if this hyphen is a sequence marker
-                        // For scalars, we're more permissive - only break if it's clearly a sequence marker
-                        let hyphen_pos = *idx;
 
-                        // Check if preceded only by whitespace from start of line
-                        let line_start_pos = input[..hyphen_pos]
-                            .rfind('\n')
-                            .map(|pos| pos + 1)
-                            .unwrap_or(0);
-                        let before_dash = &input[line_start_pos..hyphen_pos];
-                        let only_whitespace_before =
-                            before_dash.chars().all(|c| c == ' ' || c == '\t');
+                    // Special case: check if hyphen is a sequence marker
+                    if *next_ch == '-' {
+                        // A hyphen is only a sequence marker if it's at line start
+                        // and this scalar is already complete (we're at a word boundary)
+                        let line_start = input[..(*idx)].rfind('\n').map(|p| p + 1).unwrap_or(0);
+                        let before_hyphen = &input[line_start..*idx];
 
-                        // Since we can't easily peek ahead without borrowing issues,
-                        // and we're inside scalar parsing, be conservative:
-                        // Only treat as sequence marker if it's at start of line
-                        // (a hyphen in the middle of a scalar is very likely part of the scalar)
-                        if only_whitespace_before && hyphen_pos == end_idx {
-                            // This is the first character we're looking at and it's at line start
-                            // This is likely a sequence marker
+                        // If there's only whitespace before the hyphen, it might be a sequence marker
+                        // Break here to let the main loop handle it
+                        if before_hyphen.chars().all(|c| c == ' ' || c == '\t') && *idx == end_idx {
                             break;
                         }
-                        // Otherwise, treat hyphen as part of the scalar
                     }
 
-                    end_idx = *idx + ch.len_utf8();
+                    end_idx = *idx + next_ch.len_utf8();
                     chars.next();
                 }
+
                 let text = &input[token_start..end_idx];
-                let token_kind = classify_scalar(text);
-                tokens.push((token_kind, text));
+                tokens.push((classify_scalar(text), text));
             }
         }
     }

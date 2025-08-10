@@ -8,7 +8,7 @@ use crate::{
     PositionedParseError,
 };
 use rowan::ast::AstNode;
-use rowan::{GreenNodeBuilder, TextRange};
+use rowan::GreenNodeBuilder;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -37,7 +37,6 @@ impl rowan::Language for Lang {
 }
 
 type SyntaxNode = rowan::SyntaxNode<Lang>;
-type SyntaxToken = rowan::SyntaxToken<Lang>;
 
 /// A macro to create AST node wrappers.
 macro_rules! ast_node {
@@ -158,6 +157,12 @@ impl Yaml {
     }
 }
 
+impl Default for Document {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Document {
     /// Create a new document
     pub fn new() -> Document {
@@ -191,19 +196,6 @@ impl Document {
     pub fn as_scalar(&self) -> Option<Scalar> {
         self.root_node().and_then(Scalar::cast)
     }
-}
-
-/// Check if a SyntaxKind represents a scalar token
-fn is_scalar_token(kind: SyntaxKind) -> bool {
-    matches!(
-        kind,
-        SyntaxKind::STRING
-            | SyntaxKind::INT
-            | SyntaxKind::FLOAT
-            | SyntaxKind::BOOL
-            | SyntaxKind::NULL
-            | SyntaxKind::VALUE
-    )
 }
 
 impl Mapping {
@@ -297,7 +289,6 @@ struct Parser {
     builder: GreenNodeBuilder<'static>,
     errors: Vec<String>,
     positioned_errors: Vec<PositionedParseError>,
-    token_positions: Vec<(SyntaxKind, rowan::TextSize, rowan::TextSize)>,
     in_flow_context: bool,
 }
 
@@ -305,17 +296,9 @@ impl Parser {
     fn new(text: &str) -> Self {
         let lexed = lex(text);
         let mut tokens = Vec::new();
-        let mut token_positions = Vec::new();
-        let mut offset = rowan::TextSize::from(0);
 
         for (kind, token_text) in lexed {
-            let start = offset;
-            let len = rowan::TextSize::from(token_text.len() as u32);
-            let end = start + len;
-
             tokens.push((kind, token_text.to_string()));
-            token_positions.push((kind, start, end));
-            offset = end;
         }
 
         // Reverse tokens so we can use pop() to get the next token
@@ -328,7 +311,6 @@ impl Parser {
             builder: GreenNodeBuilder::new(),
             errors: Vec::new(),
             positioned_errors: Vec::new(),
-            token_positions,
             in_flow_context: false,
         }
     }
@@ -663,16 +645,6 @@ impl Parser {
         self.tokens.last().map(|(kind, _)| *kind)
     }
 
-    /// Peek at the nth token ahead (0 = current, 1 = next, etc.)
-    fn nth(&self, n: usize) -> Option<SyntaxKind> {
-        if n >= self.tokens.len() {
-            None
-        } else {
-            let idx = self.tokens.len() - 1 - n;
-            Some(self.tokens[idx].0)
-        }
-    }
-
     /// Iterator over upcoming tokens starting from the next token (not current)
     fn upcoming_tokens(&self) -> impl Iterator<Item = SyntaxKind> + '_ {
         (1..self.tokens.len()).map(move |i| {
@@ -957,34 +929,6 @@ fn create_token_green(kind: SyntaxKind, text: &str) -> rowan::GreenToken {
     rowan::GreenToken::new(kind.into(), text)
 }
 
-fn create_mapping_entry_green(
-    key: &str,
-    value: &str,
-) -> Vec<rowan::NodeOrToken<rowan::GreenNode, rowan::GreenToken>> {
-    vec![
-        create_scalar_green(key).into(),
-        create_token_green(SyntaxKind::COLON, ":").into(),
-        create_token_green(SyntaxKind::WHITESPACE, " ").into(),
-        create_scalar_green(value).into(),
-        create_token_green(SyntaxKind::NEWLINE, "\n").into(),
-    ]
-}
-
-// Helper to create complete mapping entries like deb822-lossless Entry::new
-fn create_mapping_entry(key: &str, value: &str) -> SyntaxNode {
-    let mut builder = GreenNodeBuilder::new();
-    // Note: We don't wrap in a MAPPING_ENTRY node, just create the sequence of tokens
-    // This creates: KEY + COLON + WHITESPACE + SCALAR + NEWLINE
-    builder.token(SyntaxKind::VALUE.into(), key); // Key as VALUE token
-    builder.token(SyntaxKind::COLON.into(), ":");
-    builder.token(SyntaxKind::WHITESPACE.into(), " ");
-    builder.start_node(SyntaxKind::SCALAR.into());
-    builder.token(SyntaxKind::VALUE.into(), value);
-    builder.finish_node();
-    builder.token(SyntaxKind::NEWLINE.into(), "\n");
-    SyntaxNode::new_root_mut(builder.finish())
-}
-
 // Editing methods for Mapping
 impl Mapping {
     /// Set a key-value pair with a scalar value, replacing if exists or adding if new
@@ -1007,7 +951,7 @@ impl Mapping {
     /// This is the low-level method that doesn't escape values.
     pub fn set_raw(&mut self, key: &str, value: &str) {
         // Find existing key-value pair by looking for scalar nodes
-        for (i, child) in self.0.children().enumerate() {
+        for child in self.0.children() {
             if child.kind() == SyntaxKind::SCALAR {
                 if let Some(scalar) = Scalar::cast(child.clone()) {
                     if scalar.value().trim() == key {
@@ -1102,27 +1046,25 @@ impl Mapping {
 
         for (i, child) in children.iter().enumerate() {
             if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::KEY {
-                    if node.text() == key {
-                        // Found the key, find the complete entry to remove
-                        let start = i;
-                        let mut end = i + 1;
+                if node.kind() == SyntaxKind::KEY && node.text() == key {
+                    // Found the key, find the complete entry to remove
+                    let start = i;
+                    let mut end = i + 1;
 
-                        // Skip colon, whitespace, value, and newline
-                        while end < children.len() {
-                            if let Some(token) = children[end].as_token() {
-                                end += 1;
-                                if token.kind() == SyntaxKind::NEWLINE {
-                                    break;
-                                }
-                            } else {
-                                end += 1;
+                    // Skip colon, whitespace, value, and newline
+                    while end < children.len() {
+                        if let Some(token) = children[end].as_token() {
+                            end += 1;
+                            if token.kind() == SyntaxKind::NEWLINE {
+                                break;
                             }
+                        } else {
+                            end += 1;
                         }
-
-                        removal_range = Some(start..end);
-                        break;
                     }
+
+                    removal_range = Some(start..end);
+                    break;
                 }
             }
         }

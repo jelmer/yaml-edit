@@ -19,6 +19,10 @@ mod value;
 mod yaml;
 
 pub use error::{YamlError, YamlResult};
+pub use lex::{
+    lex_with_validation, lex_with_validation_config, ValidationConfig, WhitespaceError,
+    WhitespaceErrorCategory,
+};
 pub use parse::Parse;
 pub use rowan::TextRange;
 pub use scalar::{ScalarStyle, ScalarValue};

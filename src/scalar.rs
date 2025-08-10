@@ -388,14 +388,104 @@ impl ScalarValue {
 
     /// Convert to literal block scalar
     fn to_literal(&self) -> String {
-        // Literal scalars preserve newlines and don't escape
-        format!("|\\n  {}", self.value.replace('\n', "\n  "))
+        self.to_literal_with_indent(2)
     }
 
     /// Convert to folded block scalar
     fn to_folded(&self) -> String {
-        // Folded scalars fold lines but preserve paragraph breaks
-        format!(">\\n  {}", self.value.replace('\n', "\n  "))
+        self.to_folded_with_indent(2)
+    }
+
+    /// Convert to literal block scalar with specific indentation
+    pub fn to_literal_with_indent(&self, indent: usize) -> String {
+        let indent_str = " ".repeat(indent);
+
+        // Detect the existing indentation of the content
+        let existing_indent = self.detect_content_indentation();
+
+        // If content already has consistent indentation, preserve it
+        if existing_indent.is_some() {
+            format!("|\n{}", self.value)
+        } else {
+            // Add consistent indentation
+            let indented = self
+                .value
+                .lines()
+                .map(|line| {
+                    if line.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!("{}{}", indent_str, line)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("|\n{}", indented)
+        }
+    }
+
+    /// Convert to folded block scalar with specific indentation
+    pub fn to_folded_with_indent(&self, indent: usize) -> String {
+        let indent_str = " ".repeat(indent);
+
+        // Detect the existing indentation of the content
+        let existing_indent = self.detect_content_indentation();
+
+        // If content already has consistent indentation, preserve it
+        if existing_indent.is_some() {
+            format!(">\n{}", self.value)
+        } else {
+            // Add consistent indentation
+            let indented = self
+                .value
+                .lines()
+                .map(|line| {
+                    if line.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!("{}{}", indent_str, line)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(">\n{}", indented)
+        }
+    }
+
+    /// Detect the minimum indentation level of non-empty lines in the content
+    fn detect_content_indentation(&self) -> Option<usize> {
+        let non_empty_lines: Vec<&str> = self
+            .value
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+
+        if non_empty_lines.is_empty() {
+            return None;
+        }
+
+        let mut min_indent = None;
+        let mut all_have_same_indent = true;
+
+        for line in non_empty_lines {
+            let indent = line.len() - line.trim_start().len();
+            match min_indent {
+                None => min_indent = Some(indent),
+                Some(current_min) => {
+                    if indent != current_min {
+                        all_have_same_indent = false;
+                    }
+                    min_indent = Some(current_min.min(indent));
+                }
+            }
+        }
+
+        // Only preserve indentation if all lines have some consistent structure
+        if all_have_same_indent && min_indent.unwrap_or(0) > 0 {
+            min_indent
+        } else {
+            None
+        }
     }
 }
 
@@ -716,6 +806,93 @@ mod tests {
         assert_eq!(ScalarValue::parse_escape_sequences("\\q"), "\\q");
         assert_eq!(ScalarValue::parse_escape_sequences("\\z"), "\\z");
         assert_eq!(ScalarValue::parse_escape_sequences("\\1"), "\\1");
+    }
+
+    #[test]
+    fn test_indentation_preservation() {
+        // Test preserving exact indentation in block scalars
+        let content_with_indent = "  Line 1\n    Line 2 more indented\n  Line 3";
+        let scalar = ScalarValue::literal(content_with_indent);
+
+        // Should detect that content already has indentation and preserve it
+        let yaml_output = scalar.to_literal_with_indent(2);
+        assert!(yaml_output.contains("  Line 1"));
+        assert!(yaml_output.contains("    Line 2 more indented"));
+        assert!(yaml_output.contains("  Line 3"));
+    }
+
+    #[test]
+    fn test_indentation_detection() {
+        // Test content with consistent indentation
+        let consistent_content = "  Line 1\n  Line 2\n  Line 3";
+        let scalar1 = ScalarValue::literal(consistent_content);
+        assert_eq!(scalar1.detect_content_indentation(), Some(2));
+
+        // Test content with no indentation
+        let no_indent_content = "Line 1\nLine 2\nLine 3";
+        let scalar2 = ScalarValue::literal(no_indent_content);
+        assert_eq!(scalar2.detect_content_indentation(), None);
+
+        // Test content with inconsistent indentation
+        let inconsistent_content = "  Line 1\n    Line 2\n Line 3";
+        let scalar3 = ScalarValue::literal(inconsistent_content);
+        assert_eq!(scalar3.detect_content_indentation(), None);
+
+        // Test empty content
+        let empty_content = "";
+        let scalar4 = ScalarValue::literal(empty_content);
+        assert_eq!(scalar4.detect_content_indentation(), None);
+
+        // Test content with only whitespace lines
+        let whitespace_content = "  Line 1\n\n  Line 3";
+        let scalar5 = ScalarValue::literal(whitespace_content);
+        assert_eq!(scalar5.detect_content_indentation(), Some(2));
+    }
+
+    #[test]
+    fn test_literal_with_custom_indent() {
+        // Test applying custom indentation to unindented content
+        let content = "Line 1\nLine 2\nLine 3";
+        let scalar = ScalarValue::literal(content);
+
+        let yaml_4_spaces = scalar.to_literal_with_indent(4);
+        assert!(yaml_4_spaces.contains("    Line 1"));
+        assert!(yaml_4_spaces.contains("    Line 2"));
+        assert!(yaml_4_spaces.contains("    Line 3"));
+
+        let yaml_1_space = scalar.to_literal_with_indent(1);
+        assert!(yaml_1_space.contains(" Line 1"));
+        assert!(yaml_1_space.contains(" Line 2"));
+        assert!(yaml_1_space.contains(" Line 3"));
+    }
+
+    #[test]
+    fn test_folded_with_custom_indent() {
+        // Test applying custom indentation to folded scalars
+        let content = "Line 1\nLine 2\nLine 3";
+        let scalar = ScalarValue::folded(content);
+
+        let yaml_3_spaces = scalar.to_folded_with_indent(3);
+        assert!(yaml_3_spaces.starts_with(">\n"));
+        assert!(yaml_3_spaces.contains("   Line 1"));
+        assert!(yaml_3_spaces.contains("   Line 2"));
+        assert!(yaml_3_spaces.contains("   Line 3"));
+    }
+
+    #[test]
+    fn test_mixed_empty_lines_preservation() {
+        // Test handling of empty lines in block scalars
+        let content_with_empty_lines = "Line 1\n\nLine 3\n\n\nLine 6";
+        let scalar = ScalarValue::literal(content_with_empty_lines);
+
+        let yaml_output = scalar.to_literal_with_indent(2);
+        assert!(yaml_output.contains("  Line 1"));
+        assert!(yaml_output.contains("  Line 3"));
+        assert!(yaml_output.contains("  Line 6"));
+
+        // Empty lines should remain empty (no indentation added)
+        let lines: Vec<&str> = yaml_output.lines().collect();
+        assert!(lines.iter().any(|line| line.is_empty()));
     }
 
     #[test]

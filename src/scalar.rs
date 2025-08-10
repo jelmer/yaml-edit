@@ -57,6 +57,135 @@ impl ScalarValue {
         }
     }
 
+    /// Parse escape sequences in a double-quoted string
+    pub fn parse_escape_sequences(text: &str) -> String {
+        let mut result = String::new();
+        let mut chars = text.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                if let Some(&escaped) = chars.peek() {
+                    chars.next(); // consume the escaped character
+                    match escaped {
+                        // Standard escape sequences
+                        'n' => result.push('\n'),
+                        't' => result.push('\t'),
+                        'r' => result.push('\r'),
+                        'b' => result.push('\x08'),
+                        'f' => result.push('\x0C'),
+                        'a' => result.push('\x07'), // bell
+                        'e' => result.push('\x1B'), // escape
+                        'v' => result.push('\x0B'), // vertical tab
+                        '0' => result.push('\0'),   // null
+                        '\\' => result.push('\\'),
+                        '"' => result.push('"'),
+                        '\'' => result.push('\''),
+                        '/' => result.push('/'),
+                        // Line break escape (YAML specific)
+                        ' ' => {
+                            // Escaped space followed by line break - line folding
+                            if let Some(&'\n') = chars.peek() {
+                                chars.next(); // consume the newline
+                                              // In YAML, escaped line breaks are folded to nothing
+                                continue;
+                            } else {
+                                result.push(' ');
+                            }
+                        }
+                        '\n' => {
+                            // Escaped line break - removes the line break
+                            continue;
+                        }
+                        // Unicode escapes
+                        'x' => {
+                            // \xNN - 2-digit hex
+                            let hex_digits: String = chars.by_ref().take(2).collect();
+                            if hex_digits.len() == 2 {
+                                if let Ok(code) = u8::from_str_radix(&hex_digits, 16) {
+                                    result.push(code as char);
+                                } else {
+                                    // Invalid hex, keep literal
+                                    result.push('\\');
+                                    result.push('x');
+                                    result.push_str(&hex_digits);
+                                }
+                            } else {
+                                // Incomplete hex escape
+                                result.push('\\');
+                                result.push('x');
+                                result.push_str(&hex_digits);
+                            }
+                        }
+                        'u' => {
+                            // \uNNNN - 4-digit hex
+                            let hex_digits: String = chars.by_ref().take(4).collect();
+                            if hex_digits.len() == 4 {
+                                if let Ok(code) = u16::from_str_radix(&hex_digits, 16) {
+                                    if let Some(unicode_char) = char::from_u32(code as u32) {
+                                        result.push(unicode_char);
+                                    } else {
+                                        // Invalid Unicode code point
+                                        result.push('\\');
+                                        result.push('u');
+                                        result.push_str(&hex_digits);
+                                    }
+                                } else {
+                                    // Invalid hex
+                                    result.push('\\');
+                                    result.push('u');
+                                    result.push_str(&hex_digits);
+                                }
+                            } else {
+                                // Incomplete hex escape
+                                result.push('\\');
+                                result.push('u');
+                                result.push_str(&hex_digits);
+                            }
+                        }
+                        'U' => {
+                            // \UNNNNNNNN - 8-digit hex
+                            let hex_digits: String = chars.by_ref().take(8).collect();
+                            if hex_digits.len() == 8 {
+                                if let Ok(code) = u32::from_str_radix(&hex_digits, 16) {
+                                    if let Some(unicode_char) = char::from_u32(code) {
+                                        result.push(unicode_char);
+                                    } else {
+                                        // Invalid Unicode code point
+                                        result.push('\\');
+                                        result.push('U');
+                                        result.push_str(&hex_digits);
+                                    }
+                                } else {
+                                    // Invalid hex
+                                    result.push('\\');
+                                    result.push('U');
+                                    result.push_str(&hex_digits);
+                                }
+                            } else {
+                                // Incomplete hex escape
+                                result.push('\\');
+                                result.push('U');
+                                result.push_str(&hex_digits);
+                            }
+                        }
+                        // Unknown escape sequence - preserve as literal
+                        _ => {
+                            result.push('\\');
+                            result.push(escaped);
+                        }
+                    }
+                } else {
+                    // Backslash at end of string
+                    result.push('\\');
+                }
+            } else {
+                result.push(ch);
+            }
+        }
+
+        result
+    }
+
     /// Create a new scalar with a specific style
     pub fn with_style(value: impl Into<String>, style: ScalarStyle) -> Self {
         Self {
@@ -222,8 +351,21 @@ impl ScalarValue {
                 '\t' => result.push_str("\\t"),
                 '\x08' => result.push_str("\\b"),
                 '\x0C' => result.push_str("\\f"),
-                c if c.is_control() => {
-                    result.push_str(&format!("\\x{:02x}", c as u32));
+                '\x07' => result.push_str("\\a"), // bell
+                '\x1B' => result.push_str("\\e"), // escape
+                '\x0B' => result.push_str("\\v"), // vertical tab
+                '\0' => result.push_str("\\0"),   // null
+                '/' => result.push_str("\\/"),    // forward slash (optional in YAML)
+                c if c.is_control() || (c as u32) > 0x7F => {
+                    // Handle Unicode characters and control characters
+                    let code_point = c as u32;
+                    if code_point <= 0xFF {
+                        result.push_str(&format!("\\x{:02X}", code_point));
+                    } else if code_point <= 0xFFFF {
+                        result.push_str(&format!("\\u{:04X}", code_point));
+                    } else {
+                        result.push_str(&format!("\\U{:08X}", code_point));
+                    }
                 }
                 c => result.push(c),
             }
@@ -430,5 +572,179 @@ mod tests {
         let scalar = ScalarValue::null();
         assert_eq!(scalar.to_yaml_string(), "null");
         assert_eq!(scalar.scalar_type, ScalarType::Null);
+    }
+
+    #[test]
+    fn test_escape_sequences_basic() {
+        // Test basic escape sequences
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("hello\\nworld"),
+            "hello\nworld"
+        );
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("tab\\there"),
+            "tab\there"
+        );
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("quote\\\"test"),
+            "quote\"test"
+        );
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("back\\\\slash"),
+            "back\\slash"
+        );
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("return\\rtest"),
+            "return\rtest"
+        );
+    }
+
+    #[test]
+    fn test_escape_sequences_control_chars() {
+        // Test control character escapes
+        assert_eq!(ScalarValue::parse_escape_sequences("bell\\a"), "bell\x07");
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("backspace\\b"),
+            "backspace\x08"
+        );
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("formfeed\\f"),
+            "formfeed\x0C"
+        );
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("escape\\e"),
+            "escape\x1B"
+        );
+        assert_eq!(ScalarValue::parse_escape_sequences("vtab\\v"), "vtab\x0B");
+        assert_eq!(ScalarValue::parse_escape_sequences("null\\0"), "null\0");
+        assert_eq!(ScalarValue::parse_escape_sequences("slash\\/"), "slash/");
+    }
+
+    #[test]
+    fn test_escape_sequences_unicode_x() {
+        // Test \xNN escape sequences
+        assert_eq!(ScalarValue::parse_escape_sequences("\\x41"), "A"); // 0x41 = 'A'
+        assert_eq!(ScalarValue::parse_escape_sequences("\\x7A"), "z"); // 0x7A = 'z'
+        assert_eq!(ScalarValue::parse_escape_sequences("\\x20"), " "); // 0x20 = space
+        assert_eq!(ScalarValue::parse_escape_sequences("\\xFF"), "\u{FF}"); // 0xFF = ÿ
+
+        // Test invalid hex sequences
+        assert_eq!(ScalarValue::parse_escape_sequences("\\xGH"), "\\xGH"); // Invalid hex
+        assert_eq!(ScalarValue::parse_escape_sequences("\\x4"), "\\x4"); // Incomplete
+    }
+
+    #[test]
+    fn test_escape_sequences_unicode_u() {
+        // Test \uNNNN escape sequences
+        assert_eq!(ScalarValue::parse_escape_sequences("\\u0041"), "A"); // 0x0041 = 'A'
+        assert_eq!(ScalarValue::parse_escape_sequences("\\u03B1"), "α"); // Greek alpha
+        assert_eq!(ScalarValue::parse_escape_sequences("\\u2603"), "☃"); // Snowman
+        assert_eq!(ScalarValue::parse_escape_sequences("\\u4E2D"), "中"); // Chinese character
+
+        // Test invalid sequences
+        assert_eq!(ScalarValue::parse_escape_sequences("\\uGHIJ"), "\\uGHIJ"); // Invalid hex
+        assert_eq!(ScalarValue::parse_escape_sequences("\\u041"), "\\u041"); // Incomplete
+    }
+
+    #[test]
+    fn test_escape_sequences_unicode_U() {
+        // Test \UNNNNNNNN escape sequences
+        assert_eq!(ScalarValue::parse_escape_sequences("\\U00000041"), "A"); // 0x00000041 = 'A'
+        assert_eq!(ScalarValue::parse_escape_sequences("\\U0001F603"), "😃"); // Smiley emoji
+        assert_eq!(ScalarValue::parse_escape_sequences("\\U0001F4A9"), "💩"); // Pile of poo emoji
+
+        // Test invalid sequences
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("\\UGHIJKLMN"),
+            "\\UGHIJKLMN"
+        ); // Invalid hex
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("\\U0000004"),
+            "\\U0000004"
+        ); // Incomplete
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("\\UFFFFFFFF"),
+            "\\UFFFFFFFF"
+        ); // Invalid code point
+    }
+
+    #[test]
+    fn test_escape_sequences_line_folding() {
+        // Test line folding with escaped spaces and newlines
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("line\\ \nfolding"),
+            "linefolding"
+        );
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("escaped\\nline\\nbreak"),
+            "escaped\nline\nbreak"
+        );
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("remove\\\nline\\nbreak"),
+            "removeline\nbreak"
+        );
+    }
+
+    #[test]
+    fn test_escape_sequences_mixed() {
+        // Test mixed escape sequences
+        let input = "Hello\\nWorld\\u0021\\x20\\U0001F44D";
+        let expected = "Hello\nWorld! 👍";
+        assert_eq!(ScalarValue::parse_escape_sequences(input), expected);
+
+        // Test with quotes and backslashes
+        let input = "Quote\\\"back\\\\slash\\ttab";
+        let expected = "Quote\"back\\slash\ttab";
+        assert_eq!(ScalarValue::parse_escape_sequences(input), expected);
+    }
+
+    #[test]
+    fn test_escape_sequences_unknown() {
+        // Test unknown escape sequences are preserved
+        assert_eq!(ScalarValue::parse_escape_sequences("\\q"), "\\q");
+        assert_eq!(ScalarValue::parse_escape_sequences("\\z"), "\\z");
+        assert_eq!(ScalarValue::parse_escape_sequences("\\1"), "\\1");
+    }
+
+    #[test]
+    fn test_escape_sequences_edge_cases() {
+        // Test edge cases
+        assert_eq!(ScalarValue::parse_escape_sequences(""), "");
+        assert_eq!(ScalarValue::parse_escape_sequences("\\"), "\\");
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("no escapes"),
+            "no escapes"
+        );
+        assert_eq!(ScalarValue::parse_escape_sequences("\\\\\\\\"), "\\\\");
+    }
+
+    #[test]
+    fn test_double_quoted_with_escapes() {
+        // Test that double-quoted scalars properly escape and unescape
+        let original = "Hello\nWorld\t😃";
+        let scalar = ScalarValue::double_quoted(original);
+        let yaml_string = scalar.to_yaml_string();
+
+        // Should contain escaped sequences
+        assert!(yaml_string.contains("\\n"));
+        assert!(yaml_string.contains("\\t"));
+        assert!(yaml_string.contains("\\U"));
+
+        // Parse it back
+        let parsed = ScalarValue::parse_escape_sequences(&yaml_string[1..yaml_string.len() - 1]);
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn test_unicode_output_formatting() {
+        // Test that Unicode characters are properly formatted in output
+        let scalar = ScalarValue::double_quoted("Hello 世界 🌍");
+        let yaml_string = scalar.to_yaml_string();
+
+        // Should escape non-ASCII characters
+        assert!(yaml_string.contains("\\u") || yaml_string.contains("\\U"));
+
+        // But the internal value should remain unchanged
+        assert_eq!(scalar.value(), "Hello 世界 🌍");
     }
 }

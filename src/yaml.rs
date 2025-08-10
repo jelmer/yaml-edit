@@ -1,6 +1,7 @@
 //! Lossless YAML parser and editor.
 
 use crate::{
+    error::YamlResult,
     lex::{lex, SyntaxKind},
     parse::Parse,
     scalar::ScalarValue,
@@ -172,6 +173,42 @@ impl Document {
         Document(SyntaxNode::new_root_mut(builder.finish()))
     }
 
+    /// Create a new document with an empty mapping
+    pub fn new_mapping() -> Document {
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::DOCUMENT.into());
+        builder.start_node(SyntaxKind::MAPPING.into());
+        builder.finish_node(); // End MAPPING
+        builder.finish_node(); // End DOCUMENT
+        Document(SyntaxNode::new_root_mut(builder.finish()))
+    }
+
+    /// Load a document from a file
+    pub fn load_from_file<P: AsRef<Path>>(path: P) -> YamlResult<Document> {
+        let content = std::fs::read_to_string(path)?;
+        let parsed = Yaml::parse(&content);
+        Ok(parsed
+            .tree()
+            .documents()
+            .next()
+            .unwrap_or_else(Document::new))
+    }
+
+    /// Load a document from a file (alias for load_from_file)
+    pub fn from_file<P: AsRef<Path>>(path: P) -> YamlResult<Document> {
+        Self::load_from_file(path)
+    }
+
+    /// Save the document to a file, creating directories as needed
+    pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> YamlResult<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, self.to_yaml_string())?;
+        Ok(())
+    }
+
     /// Get the root node of this document (could be mapping, sequence, or scalar)
     pub fn root_node(&self) -> Option<SyntaxNode> {
         self.0.children().find(|child| {
@@ -196,6 +233,303 @@ impl Document {
     pub fn as_scalar(&self) -> Option<Scalar> {
         self.root_node().and_then(Scalar::cast)
     }
+
+    /// Convert the document to a YAML string
+    pub fn to_yaml_string(&self) -> String {
+        self.0.text().to_string()
+    }
+
+    /// Check if the document contains a key (assumes document is a mapping)
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.as_mapping().map_or(false, |m| m.contains_key(key))
+    }
+
+    /// Get a value from the document (assumes document is a mapping)
+    pub fn get(&self, key: &str) -> Option<SyntaxNode> {
+        self.as_mapping().and_then(|m| m.get(key))
+    }
+
+    /// Set a scalar value in the document (assumes document is a mapping)
+    pub fn set(&mut self, key: impl Into<ScalarValue>, value: impl Into<ScalarValue>) {
+        let key_scalar = key.into();
+        let value_scalar = value.into();
+        let key_str = key_scalar.value();
+
+        // Collect existing key-value pairs, excluding the key we're setting
+        let mut pairs = Vec::new();
+        if let Some(mapping) = self.as_mapping() {
+            for (existing_key, existing_value) in mapping.pairs() {
+                if let Some(existing_key_scalar) = existing_key {
+                    let existing_key_str = existing_key_scalar.value();
+                    if existing_key_str != key_str {
+                        // Keep this pair
+                        if let Some(value_node) = existing_value {
+                            pairs.push((existing_key_str, value_node.text().to_string()));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add the new key-value pair
+        pairs.push((key_str.to_string(), value_scalar.value().to_string()));
+
+        // Rebuild the document with all pairs
+        self.0 = self.create_mapping_with_all_entries(pairs);
+    }
+
+    /// Set a raw string value in the document (no escaping)
+    pub fn set_raw(&mut self, key: &str, value: &str) {
+        if let Some(mut mapping) = self.as_mapping() {
+            mapping.set_raw(key, value);
+        } else {
+            // Create a new mapping if document is empty
+            let mut mapping = Mapping::new();
+            mapping.set_raw(key, value);
+            *self = Self::from_mapping(mapping);
+        }
+    }
+
+    /// Remove a key from the document (assumes document is a mapping)
+    pub fn remove(&mut self, key: &str) -> bool {
+        if let Some(mapping) = self.as_mapping() {
+            // Check if the key exists
+            let key_exists = mapping
+                .pairs()
+                .any(|(k, _)| k.as_ref().map(|s| s.value()) == Some(key.to_string()));
+
+            if !key_exists {
+                return false;
+            }
+
+            // Collect remaining key-value pairs, excluding the key we're removing
+            let mut pairs = Vec::new();
+            for (existing_key, existing_value) in mapping.pairs() {
+                if let Some(existing_key_scalar) = existing_key {
+                    let existing_key_str = existing_key_scalar.value();
+                    if existing_key_str != key {
+                        // Keep this pair
+                        if let Some(value_node) = existing_value {
+                            pairs.push((existing_key_str, value_node.text().to_string()));
+                        }
+                    }
+                }
+            }
+
+            // Rebuild the document without the removed key
+            if pairs.is_empty() {
+                // Create empty document
+                *self = Document::new();
+            } else {
+                self.0 = self.create_mapping_with_all_entries(pairs);
+            }
+
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get all keys from the document (assumes document is a mapping)
+    pub fn keys(&self) -> Vec<String> {
+        self.as_mapping()
+            .map_or_else(Vec::new, |m| m.keys().collect())
+    }
+
+    /// Check if the document is empty
+    pub fn is_empty(&self) -> bool {
+        self.as_mapping().map_or(true, |m| m.is_empty())
+    }
+
+    /// Create a document from a mapping
+    pub fn from_mapping(mapping: Mapping) -> Self {
+        // For now, create a new document and copy the mapping content
+        // This is a simplified implementation
+        let mut doc = Document::new();
+        // Copy all key-value pairs from the mapping
+        for (key_opt, value_opt) in mapping.pairs() {
+            if let (Some(key), Some(value)) = (key_opt, value_opt) {
+                doc.set_raw(&key.value(), &value.text().to_string().trim());
+            }
+        }
+        doc
+    }
+
+    /// Set a string value (convenient method)
+    pub fn set_string(&mut self, key: &str, value: &str) {
+        self.set(key, ScalarValue::new(value));
+    }
+
+    /// Set a value of any YAML type (scalar, sequence, mapping)
+    pub fn set_value(&mut self, key: impl Into<ScalarValue>, value: YamlValue) {
+        if let Some(mut mapping) = self.as_mapping() {
+            mapping.set_value(key, value);
+        } else {
+            // Create a new mapping if document is empty
+            let mut mapping = Mapping::new();
+            mapping.set_value(key, value);
+            *self = Self::from_mapping(mapping);
+        }
+    }
+
+    /// Get a string value for a key (returns None if not found)
+    pub fn get_string(&self, key: &str) -> Option<String> {
+        self.get(key).map(|node| {
+            if node.kind() == SyntaxKind::VALUE {
+                // VALUE nodes contain the raw text, parse it like a scalar
+                let text = node.text().to_string();
+                // Use the same parsing logic as Scalar::as_string()
+                if text.starts_with('"') && text.ends_with('"') {
+                    // Double-quoted string - handle escape sequences
+                    Document::parse_double_quoted_static(&text[1..text.len() - 1])
+                } else if text.starts_with('\'') && text.ends_with('\'') {
+                    // Single-quoted string - only handle '' -> '
+                    text[1..text.len() - 1].replace("''", "'")
+                } else {
+                    // Plain string
+                    text
+                }
+            } else if let Some(scalar) = Scalar::cast(node.clone()) {
+                // SCALAR nodes need to be processed
+                scalar.as_string()
+            } else {
+                // For other node types, use raw text
+                node.text().to_string()
+            }
+        })
+    }
+
+    /// Check if a key's value is an array/sequence
+    pub fn is_array(&self, key: &str) -> bool {
+        self.get(key)
+            .map(|node| node.kind() == SyntaxKind::SEQUENCE)
+            .unwrap_or(false)
+    }
+
+    /// Get the first element of an array as a string (for array to string conversion)
+    pub fn get_array_first_string(&self, key: &str) -> Option<String> {
+        self.get(key).and_then(|node| {
+            if node.kind() == SyntaxKind::SEQUENCE {
+                // Try to extract first element from sequence
+                // This is a simplified implementation
+                let text = node.text().to_string();
+                if text.trim().starts_with('[') && text.trim().ends_with(']') {
+                    // Flow style array [item1, item2]
+                    let inner = text.trim().strip_prefix('[')?.strip_suffix(']')?;
+                    let first_item = inner.split(',').next()?.trim();
+                    Some(first_item.trim_matches('"').trim_matches('\'').to_string())
+                } else {
+                    // Block style array
+                    None // TODO: Implement block style array parsing
+                }
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Reorder fields in the document according to the specified order
+    /// Fields not in the order list will appear after the ordered fields
+    pub fn reorder_fields(&mut self, order: &[&str]) {
+        if let Some(mapping) = self.as_mapping() {
+            // Collect all existing key-value pairs
+            let mut all_pairs = Vec::new();
+            for (key, value) in mapping.pairs() {
+                if let Some(key_scalar) = key {
+                    if let Some(value_node) = value {
+                        all_pairs.push((key_scalar.value(), value_node.text().to_string()));
+                    }
+                }
+            }
+
+            // Build ordered pairs according to the specified order
+            let mut ordered_pairs = Vec::new();
+
+            // First, add pairs in the specified order
+            for &ordered_key in order {
+                if let Some(pos) = all_pairs.iter().position(|(k, _)| k == ordered_key) {
+                    ordered_pairs.push(all_pairs.remove(pos));
+                }
+            }
+
+            // Then, add remaining pairs that weren't in the order list
+            ordered_pairs.extend(all_pairs);
+
+            // Rebuild the document with the reordered pairs
+            if !ordered_pairs.is_empty() {
+                self.0 = self.create_mapping_with_all_entries(ordered_pairs);
+            }
+        }
+    }
+
+    /// Parse a double-quoted string, handling escape sequences
+    fn parse_double_quoted_static(text: &str) -> String {
+        if !text.starts_with('"') || !text.ends_with('"') || text.len() < 2 {
+            return text.to_string();
+        }
+
+        let inner = &text[1..text.len() - 1];
+        let mut result = String::new();
+        let mut chars = inner.chars();
+
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                if let Some(escaped) = chars.next() {
+                    match escaped {
+                        'n' => result.push('\n'),
+                        't' => result.push('\t'),
+                        'r' => result.push('\r'),
+                        '\\' => result.push('\\'),
+                        '"' => result.push('"'),
+                        '\'' => result.push('\''),
+                        _ => {
+                            result.push('\\');
+                            result.push(escaped);
+                        }
+                    }
+                } else {
+                    result.push('\\');
+                }
+            } else {
+                result.push(ch);
+            }
+        }
+
+        result
+    }
+
+    /// Create a new document syntax node with a mapping containing multiple entries
+    fn create_mapping_with_all_entries(&self, pairs: Vec<(String, String)>) -> SyntaxNode {
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::DOCUMENT.into());
+        builder.start_node(SyntaxKind::MAPPING.into());
+
+        for (i, (key, value)) in pairs.iter().enumerate() {
+            if i > 0 {
+                // Add newline between entries
+                builder.token(SyntaxKind::WHITESPACE.into(), "\n");
+            }
+
+            // Add key
+            builder.start_node(SyntaxKind::KEY.into());
+            builder.token(SyntaxKind::VALUE.into(), key);
+            builder.finish_node();
+
+            // Add colon and space
+            builder.token(SyntaxKind::COLON.into(), ":");
+            builder.token(SyntaxKind::WHITESPACE.into(), " ");
+
+            // Add value
+            builder.start_node(SyntaxKind::SCALAR.into());
+            builder.token(SyntaxKind::VALUE.into(), value);
+            builder.finish_node();
+        }
+
+        builder.finish_node(); // MAPPING
+        builder.finish_node(); // DOCUMENT
+
+        SyntaxNode::new_root(builder.finish())
+    }
 }
 
 impl Mapping {
@@ -212,11 +546,15 @@ impl Mapping {
                 let key_text = children[i].text().to_string();
                 let key_scalar = Scalar(create_scalar_node(&key_text));
 
-                // Look for the next VALUE node
+                // Look for the next value node (SCALAR, VALUE, SEQUENCE, or MAPPING)
                 let mut value_node = None;
                 let mut j = i + 1;
                 while j < children.len() {
-                    if children[j].kind() == SyntaxKind::VALUE {
+                    if children[j].kind() == SyntaxKind::SCALAR
+                        || children[j].kind() == SyntaxKind::VALUE
+                        || children[j].kind() == SyntaxKind::SEQUENCE
+                        || children[j].kind() == SyntaxKind::MAPPING
+                    {
                         value_node = Some(children[j].clone());
                         break;
                     }
@@ -239,6 +577,98 @@ impl Mapping {
             .find(|(k, _)| k.as_ref().map(|s| s.value()) == Some(key.to_string()))
             .and_then(|(_, v)| v)
     }
+
+    /// Check if the mapping contains a specific key
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.pairs()
+            .any(|(k, _)| k.as_ref().map(|s| s.value()) == Some(key.to_string()))
+    }
+
+    /// Get all keys in the mapping
+    pub fn keys(&self) -> impl Iterator<Item = String> + '_ {
+        self.pairs().filter_map(|(k, _)| k.map(|s| s.value()))
+    }
+
+    /// Check if the mapping is empty
+    pub fn is_empty(&self) -> bool {
+        self.pairs().next().is_none()
+    }
+
+    /// Create a new empty mapping
+    pub fn new() -> Self {
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::MAPPING.into());
+        builder.finish_node();
+        Mapping(SyntaxNode::new_root_mut(builder.finish()))
+    }
+
+    /// Reorder fields according to the specified order
+    /// Fields not in the order list will appear after the ordered fields
+    pub fn reorder_fields(&mut self, order: &[&str]) {
+        // Collect all current key-value pairs
+        let mut all_pairs: Vec<(String, String)> = Vec::new();
+        for (key_opt, value_opt) in self.pairs() {
+            if let (Some(key), Some(value)) = (key_opt, value_opt) {
+                all_pairs.push((key.value(), value.text().to_string().trim().to_string()));
+            }
+        }
+
+        // Clear current mapping and rebuild in order
+        *self = Self::new();
+
+        // First add fields in the specified order
+        for &field_name in order {
+            if let Some(pos) = all_pairs.iter().position(|(k, _)| k == field_name) {
+                let (_, value) = all_pairs.remove(pos);
+                self.set_raw(field_name, &value);
+            }
+        }
+
+        // Then add any remaining fields that weren't in the order list
+        for (key, value) in all_pairs {
+            self.set_raw(&key, &value);
+        }
+    }
+
+    /// Set a value of any YAML type (scalar, sequence, mapping)
+    pub fn set_value(&mut self, key: impl Into<ScalarValue>, value: YamlValue) {
+        match value {
+            YamlValue::Scalar(scalar) => {
+                self.set(key, scalar);
+            }
+            YamlValue::Sequence(items) => {
+                // Create a flow-style sequence for now
+                let items_str: Vec<String> = items
+                    .into_iter()
+                    .map(|item| match item {
+                        YamlValue::Scalar(s) => s.to_yaml_string(),
+                        YamlValue::Sequence(_) => "[...]".to_string(), // Nested sequences
+                        YamlValue::Mapping(_) => "{...}".to_string(),  // Nested mappings
+                    })
+                    .collect();
+                let sequence_yaml = format!("[{}]", items_str.join(", "));
+                let key_str = key.into().to_yaml_string();
+                self.set_raw(&key_str, &sequence_yaml);
+            }
+            YamlValue::Mapping(map) => {
+                // Create a flow-style mapping for now
+                let pairs: Vec<String> = map
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let value_str = match v {
+                            YamlValue::Scalar(s) => s.to_yaml_string(),
+                            YamlValue::Sequence(_) => "[...]".to_string(),
+                            YamlValue::Mapping(_) => "{...}".to_string(),
+                        };
+                        format!("{}: {}", k, value_str)
+                    })
+                    .collect();
+                let mapping_yaml = format!("{{{}}}", pairs.join(", "));
+                let key_str = key.into().to_yaml_string();
+                self.set_raw(&key_str, &mapping_yaml);
+            }
+        }
+    }
 }
 
 impl Sequence {
@@ -253,6 +683,53 @@ impl Scalar {
     /// Get the string value of this scalar
     pub fn value(&self) -> String {
         self.0.text().to_string()
+    }
+
+    /// Get the string representation of this scalar, properly unquoted and unescaped
+    pub fn as_string(&self) -> String {
+        let text = self.value();
+
+        // Handle quoted strings
+        if text.starts_with('"') && text.ends_with('"') {
+            // Double-quoted string - handle escape sequences
+            self.parse_double_quoted(&text[1..text.len() - 1])
+        } else if text.starts_with('\'') && text.ends_with('\'') {
+            // Single-quoted string - only handle '' -> '
+            text[1..text.len() - 1].replace("''", "'")
+        } else {
+            // Plain string
+            text
+        }
+    }
+
+    /// Parse double-quoted string with escape sequences
+    fn parse_double_quoted(&self, content: &str) -> String {
+        let mut result = String::new();
+        let mut chars = content.chars();
+
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                if let Some(escaped) = chars.next() {
+                    match escaped {
+                        'n' => result.push('\n'),
+                        'r' => result.push('\r'),
+                        't' => result.push('\t'),
+                        '\\' => result.push('\\'),
+                        '"' => result.push('"'),
+                        _ => {
+                            result.push('\\');
+                            result.push(escaped);
+                        }
+                    }
+                } else {
+                    result.push('\\');
+                }
+            } else {
+                result.push(ch);
+            }
+        }
+
+        result
     }
 
     /// Check if this scalar is quoted
@@ -937,14 +1414,6 @@ impl Mapping {
         let key_scalar = key.into();
         let value_scalar = value.into();
         self.set_raw(&key_scalar.to_yaml_string(), &value_scalar.to_yaml_string());
-    }
-
-    /// Set a key-value pair with any YAML value type (scalar, sequence, mapping)
-    pub fn set_value(&mut self, key: impl Into<ScalarValue>, value: YamlValue) {
-        let key_scalar = key.into();
-        // TODO: Implement proper handling for non-scalar values
-        // For now, convert to string representation
-        self.set_raw(&key_scalar.to_yaml_string(), &value.to_yaml_string(0));
     }
 
     /// Set a key-value pair, replacing if exists or adding if new

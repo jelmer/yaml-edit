@@ -7,12 +7,14 @@
 //! This library provides a lossless parser for YAML files, preserving
 //! all whitespace, comments, and formatting. It is based on the [rowan] library.
 
+mod error;
 mod lex;
 mod parse;
 mod scalar;
 mod value;
 mod yaml;
 
+pub use error::{YamlError, YamlResult};
 pub use parse::Parse;
 pub use rowan::TextRange;
 pub use scalar::{ScalarStyle, ScalarValue};

@@ -2,12 +2,21 @@
 
 This document lists YAML 1.2 specification features that are not yet implemented in yaml-edit.
 
+## Recent Progress (Updated 2025-08-10)
+
+Major features recently implemented:
+- ✅ **Anchors & Aliases** - Full support for anchor definitions and alias references with preservation
+- ✅ **Escape Sequences** - Complete implementation including Unicode escapes, control characters, and line folding
+- ✅ **YAML Directives** - Support for YAML version and TAG directives with preservation
+- ✅ **Merge Keys** - Basic parsing and preservation of merge key syntax (`<<:`)
+- ✅ **Tags and Explicit Typing** - Complete support for local tags, global tags, non-specific tags, and custom tags with safe value extraction
+
 ## High Priority (Common YAML Features)
 
 ### 1. Anchors & Aliases
-- [ ] Anchor definitions (`&anchor_name`)
-- [ ] Alias references (`*anchor_name`)
-- [ ] Preserve anchors/aliases during editing
+- [x] Anchor definitions (`&anchor_name`)
+- [x] Alias references (`*anchor_name`)
+- [x] Preserve anchors/aliases during editing
 - [ ] Handle circular references safely
 
 ### 2. Multi-line Scalar Styles
@@ -18,12 +27,12 @@ This document lists YAML 1.2 specification features that are not yet implemented
 - [x] Block scalar content parsing with proper line break handling
 
 ### 3. Tags and Explicit Typing
-- [ ] Local tags (`!custom`)
-- [ ] Global tags (`!!str`, `!!int`, `!!float`, `!!bool`, `!!null`)
-- [ ] Tag shorthand declarations
-- [ ] Non-specific tags (`!` and `!!`)
-- [ ] Preserve tags during editing
-- [ ] Custom tag support
+- [x] Local tags (`!custom`)
+- [x] Global tags (`!!str`, `!!int`, `!!float`, `!!bool`, `!!null`)
+- [x] Tag shorthand declarations (via TAG directives)
+- [x] Non-specific tags (`!` and `!!`)
+- [x] Preserve tags during editing
+- [x] Custom tag support
 
 ### 4. Escape Sequences in Strings
 - [x] Unicode escapes (`\xNN`, `\uNNNN`, `\UNNNNNNNN`)
@@ -48,7 +57,7 @@ This document lists YAML 1.2 specification features that are not yet implemented
 - [x] Preserve directives during editing
 
 ### 7. Special Collections
-- [ ] Merge keys (`<<`) for key merging
+- [x] Merge keys (`<<`) for key merging (basic parsing/preservation)
 - [ ] Sets (`!!set`)
 - [ ] Ordered mappings (`!!omap`)
 - [ ] Pairs (`!!pairs`)

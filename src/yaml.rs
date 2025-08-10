@@ -406,7 +406,7 @@ impl Document {
                 // Use the same parsing logic as Scalar::as_string()
                 if text.starts_with('"') && text.ends_with('"') {
                     // Double-quoted string - handle escape sequences
-                    Document::parse_double_quoted_static(&text[1..text.len() - 1])
+                    ScalarValue::parse_escape_sequences(&text[1..text.len() - 1])
                 } else if text.starts_with('\'') && text.ends_with('\'') {
                     // Single-quoted string - only handle '' -> '
                     text[1..text.len() - 1].replace("''", "'")
@@ -503,39 +503,13 @@ impl Document {
     }
 
     /// Parse a double-quoted string, handling escape sequences
+    #[deprecated(note = "Use ScalarValue::parse_escape_sequences instead")]
     fn parse_double_quoted_static(text: &str) -> String {
         if !text.starts_with('"') || !text.ends_with('"') || text.len() < 2 {
             return text.to_string();
         }
 
-        let inner = &text[1..text.len() - 1];
-        let mut result = String::new();
-        let mut chars = inner.chars();
-
-        while let Some(ch) = chars.next() {
-            if ch == '\\' {
-                if let Some(escaped) = chars.next() {
-                    match escaped {
-                        'n' => result.push('\n'),
-                        't' => result.push('\t'),
-                        'r' => result.push('\r'),
-                        '\\' => result.push('\\'),
-                        '"' => result.push('"'),
-                        '\'' => result.push('\''),
-                        _ => {
-                            result.push('\\');
-                            result.push(escaped);
-                        }
-                    }
-                } else {
-                    result.push('\\');
-                }
-            } else {
-                result.push(ch);
-            }
-        }
-
-        result
+        ScalarValue::parse_escape_sequences(&text[1..text.len() - 1])
     }
 
     /// Create a new document syntax node with a mapping containing multiple entries
@@ -744,32 +718,7 @@ impl Scalar {
 
     /// Parse double-quoted string with escape sequences
     fn parse_double_quoted(&self, content: &str) -> String {
-        let mut result = String::new();
-        let mut chars = content.chars();
-
-        while let Some(ch) = chars.next() {
-            if ch == '\\' {
-                if let Some(escaped) = chars.next() {
-                    match escaped {
-                        'n' => result.push('\n'),
-                        'r' => result.push('\r'),
-                        't' => result.push('\t'),
-                        '\\' => result.push('\\'),
-                        '"' => result.push('"'),
-                        _ => {
-                            result.push('\\');
-                            result.push(escaped);
-                        }
-                    }
-                } else {
-                    result.push('\\');
-                }
-            } else {
-                result.push(ch);
-            }
-        }
-
-        result
+        ScalarValue::parse_escape_sequences(content)
     }
 
     /// Check if this scalar is quoted
@@ -1519,7 +1468,6 @@ escaped: 'it\'s escaped'
         // For now, just check it doesn't panic
         let _ = result;
     }
-
 
     // Directive tests
     #[test]

@@ -25,21 +25,21 @@ features:
     // Actually execute editing operations that are currently implemented
     if let Some(mut doc) = yaml.document() {
         println!("\n=== EXECUTING AVAILABLE EDITING OPERATIONS ===");
-        
+
         // Simple value changes
         println!("Setting name to 'new-app'...");
         doc.set_string("name", "new-app");
-        
+
         println!("Setting version to '2.0.0'...");
         doc.set_string("version", "2.0.0");
-        
+
         // Test getting values
         println!("Current name: {:?}", doc.get_string("name"));
         println!("Current version: {:?}", doc.get_string("version"));
-        
+
         println!("\n=== CURRENT RESULT ===");
         println!("{}", doc.to_yaml_string());
-        
+
         // Show what's not yet implemented
         println!("\n=== OPERATIONS TO BE IMPLEMENTED ===");
         println!("// Key renaming: doc.rename_key(\"name\", \"app_name\")");

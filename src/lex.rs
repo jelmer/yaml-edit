@@ -822,4 +822,275 @@ mod tests {
             .any(|(kind, text)| *kind == SyntaxKind::STRING && text.contains("-")));
         assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::GREATER)); // ">"
     }
+
+    #[test]
+    fn test_dash_handling_comprehensive() {
+        // Test 1: Document start marker
+        let input = "---\nkey: value";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::DOC_START, "---"));
+
+        // Test 2: Document with just three dashes
+        let input = "---";
+        let tokens = lex(input);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], (SyntaxKind::DOC_START, "---"));
+
+        // Test 3: Two dashes (not a document marker)
+        let input = "--";
+        let tokens = lex(input);
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0], (SyntaxKind::DASH, "-"));
+        assert_eq!(tokens[1], (SyntaxKind::DASH, "-"));
+
+        // Test 4: Four dashes
+        let input = "----";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::DOC_START, "---"));
+        assert_eq!(tokens[1], (SyntaxKind::STRING, "-"));
+    }
+
+    #[test]
+    fn test_dash_in_different_scalar_contexts() {
+        // Test kebab-case identifiers
+        let input = "package-name: my-awesome-package-v2";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "package-name"));
+        assert_eq!(tokens[1], (SyntaxKind::COLON, ":"));
+        assert_eq!(tokens[2], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[3], (SyntaxKind::STRING, "my-awesome-package-v2"));
+
+        // Test UUID-like strings
+        let input = "id: 123e4567-e89b-12d3-a456-426614174000";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "id"));
+        assert_eq!(
+            tokens[3],
+            (SyntaxKind::STRING, "123e4567-e89b-12d3-a456-426614174000")
+        );
+
+        // Test command-line arguments
+        let input = "args: --verbose --log-level=debug";
+        let tokens = lex(input);
+        // Double dashes are tokenized as two DASH tokens
+        assert!(tokens.windows(3).any(|w| w[0] == (SyntaxKind::DASH, "-")
+            && w[1] == (SyntaxKind::DASH, "-")
+            && w[2] == (SyntaxKind::STRING, "verbose")));
+
+        // Test negative numbers
+        let input = "temperature: -40";
+        let tokens = lex(input);
+        // Negative numbers are tokenized as INT tokens
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::INT && *text == "-40"));
+
+        // Test ranges
+        let input = "range: 1-10";
+        let tokens = lex(input);
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "1-10"));
+    }
+
+    #[test]
+    fn test_sequence_markers_with_indentation() {
+        // Test basic sequence
+        let input = "- item1\n- item2";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::DASH, "-"));
+        assert_eq!(tokens[1], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[2], (SyntaxKind::STRING, "item1"));
+
+        // Test indented sequence
+        let input = "  - item1\n  - item2";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::INDENT, "  "));
+        assert_eq!(tokens[1], (SyntaxKind::DASH, "-"));
+
+        // Test nested sequences
+        let input = "- item1\n  - nested1\n  - nested2\n- item2";
+        let tokens = lex(input);
+        let dash_tokens: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::DASH)
+            .collect();
+        assert_eq!(dash_tokens.len(), 4); // Four sequence markers
+
+        // Test sequence with hyphenated values
+        let input = "- first-item\n- second-item";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::DASH, "-"));
+        assert_eq!(tokens[2], (SyntaxKind::STRING, "first-item"));
+        assert_eq!(tokens[4], (SyntaxKind::DASH, "-"));
+        assert_eq!(tokens[6], (SyntaxKind::STRING, "second-item"));
+    }
+
+    #[test]
+    fn test_dash_after_colon() {
+        // Test hyphen immediately after colon
+        let input = "key:-value";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "key"));
+        assert_eq!(tokens[1], (SyntaxKind::COLON, ":"));
+        assert_eq!(tokens[2], (SyntaxKind::STRING, "-value"));
+
+        // Test with space
+        let input = "key: -value";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "key"));
+        assert_eq!(tokens[1], (SyntaxKind::COLON, ":"));
+        assert_eq!(tokens[2], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[3], (SyntaxKind::STRING, "-value"));
+    }
+
+    #[test]
+    fn test_block_scalar_with_chomping() {
+        // Test literal block scalar with strip chomping
+        let input = "text: |-\n  content";
+        let tokens = lex(input);
+        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::PIPE));
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "-"));
+
+        // Test literal block scalar with keep chomping
+        let input = "text: |+\n  content";
+        let tokens = lex(input);
+        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::PIPE));
+        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::PLUS));
+
+        // Test folded block scalar with strip chomping
+        let input = "text: >-\n  content";
+        let tokens = lex(input);
+        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::GREATER));
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "-"));
+
+        // Test with explicit indentation and chomping
+        let input = "text: |2-\n  content";
+        let tokens = lex(input);
+        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::PIPE));
+        // The "2-" after pipe gets read as one token because hyphens in scalars are included
+        assert!(tokens
+            .iter()
+            .any(
+                |(kind, text)| (*kind == SyntaxKind::STRING || *kind == SyntaxKind::INT)
+                    && text.contains("2")
+            ));
+    }
+
+    #[test]
+    fn test_dash_edge_cases() {
+        // Test trailing hyphen
+        let input = "value-";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "value-"));
+
+        // Test leading hyphen (not a sequence marker)
+        let input = "-value";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "-value"));
+
+        // Test multiple consecutive hyphens in scalar
+        let input = "key: a---b";
+        let tokens = lex(input);
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "a---b"));
+
+        // Test hyphen at end of line
+        let input = "key: value-\nnext: item";
+        let tokens = lex(input);
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "value-"));
+
+        // Test mix of dashes and underscores
+        let input = "snake_case-with-dash_mix";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "snake_case-with-dash_mix"));
+    }
+
+    #[test]
+    fn test_dash_in_flow_collections() {
+        // Test dash in flow sequence
+        let input = "[item-one, item-two]";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::LEFT_BRACKET, "["));
+        assert_eq!(tokens[1], (SyntaxKind::STRING, "item-one"));
+        assert_eq!(tokens[2], (SyntaxKind::COMMA, ","));
+        assert_eq!(tokens[4], (SyntaxKind::STRING, "item-two"));
+        assert_eq!(tokens[5], (SyntaxKind::RIGHT_BRACKET, "]"));
+
+        // Test dash in flow mapping
+        let input = "{kebab-key: kebab-value}";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::LEFT_BRACE, "{"));
+        assert_eq!(tokens[1], (SyntaxKind::STRING, "kebab-key"));
+        assert_eq!(tokens[2], (SyntaxKind::COLON, ":"));
+        assert_eq!(tokens[4], (SyntaxKind::STRING, "kebab-value"));
+        assert_eq!(tokens[5], (SyntaxKind::RIGHT_BRACE, "}"));
+    }
+
+    #[test]
+    fn test_dash_with_quotes() {
+        // Quoted strings should preserve everything inside
+        let input = r#"key: "- not a sequence marker""#;
+        let tokens = lex(input);
+        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::QUOTE));
+        // The dash inside quotes becomes part of a string token
+
+        let input = r#"key: '- also not a sequence marker'"#;
+        let tokens = lex(input);
+        assert!(tokens
+            .iter()
+            .any(|(kind, _)| *kind == SyntaxKind::SINGLE_QUOTE));
+    }
+
+    #[test]
+    fn test_dash_in_multiline_values() {
+        // Test multiline with dashes
+        let input = "description: This is a multi-\n  line value with dashes";
+        let tokens = lex(input);
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "multi-"));
+
+        // Test continuation with sequence-like line
+        let input = "text: value\n  - but this is not a sequence";
+        let tokens = lex(input);
+        // The dash after indentation should be treated as a sequence marker
+        let indent_dash: Vec<_> = tokens
+            .windows(2)
+            .filter(|w| w[0].0 == SyntaxKind::INDENT && w[1].0 == SyntaxKind::DASH)
+            .collect();
+        assert_eq!(indent_dash.len(), 1);
+    }
+
+    #[test]
+    fn test_dash_special_yaml_values() {
+        // Test that special YAML values with dashes work
+        let input = "date: 2024-01-15";
+        let tokens = lex(input);
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "2024-01-15"));
+
+        // Test ISO timestamp - gets tokenized as multiple parts due to hyphens
+        let input = "timestamp: 2024-01-15T10:30:00-05:00";
+        let tokens = lex(input);
+        // The timestamp is split into multiple tokens but parses correctly
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && text.contains("2024")));
+
+        // Test version strings
+        let input = "version: 1.0.0-beta.1";
+        let tokens = lex(input);
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "1.0.0-beta.1"));
+    }
 }

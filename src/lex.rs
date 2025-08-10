@@ -143,52 +143,39 @@ pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
                     // It's a sequence marker if:
                     // 1. It's at the beginning of a line (after optional indentation)
                     // 2. It's followed by whitespace or end of input
-                    let is_sequence_marker = {
-                        // Check if preceded only by whitespace from start of line
-                        let line_start_pos = input[..token_start]
-                            .rfind('\n')
-                            .map(|pos| pos + 1)
-                            .unwrap_or(0);
-                        let before_dash = &input[line_start_pos..token_start];
-                        let only_whitespace_before =
-                            before_dash.chars().all(|c| c == ' ' || c == '\t');
 
-                        // Check if followed by whitespace or end of input
-                        let followed_by_whitespace_or_end = chars
-                            .peek()
-                            .map_or(true, |(_, next_ch)| next_ch.is_whitespace());
+                    // Check if preceded only by whitespace from start of line
+                    let line_start_pos = input[..token_start]
+                        .rfind('\n')
+                        .map(|pos| pos + 1)
+                        .unwrap_or(0);
+                    let before_dash = &input[line_start_pos..token_start];
+                    let only_whitespace_before = before_dash.chars().all(|c| c == ' ' || c == '\t');
 
-                        only_whitespace_before && followed_by_whitespace_or_end
-                    };
+                    // Check if followed by whitespace or end of input
+                    let followed_by_whitespace_or_end = chars
+                        .peek()
+                        .map_or(true, |(_, next_ch)| next_ch.is_whitespace());
+
+                    let is_sequence_marker =
+                        only_whitespace_before && followed_by_whitespace_or_end;
 
                     if is_sequence_marker {
                         tokens.push((DASH, &input[token_start..start_idx + 1]));
                     } else {
-                        // Check if this is a special context where hyphen should remain a token
-                        // (e.g., after block scalar indicators like | or >)
-                        let prev_token = tokens.last();
-                        let is_after_block_indicator = prev_token
-                            .map(|(kind, _)| matches!(kind, SyntaxKind::PIPE | SyntaxKind::GREATER))
-                            .unwrap_or(false);
-                        
-                        if is_after_block_indicator {
-                            // This is a chomping indicator, keep as DASH
-                            tokens.push((DASH, &input[token_start..start_idx + 1]));
-                        } else {
-                            // This hyphen is part of a scalar value, treat as regular character
-                            // Continue reading until we hit whitespace or actual YAML special chars
-                            let mut end_idx = start_idx + 1;
-                            while let Some((idx, ch)) = chars.peek() {
-                                if ch.is_whitespace() || is_yaml_special_excluding_hyphen(*ch) {
-                                    break;
-                                }
-                                end_idx = *idx + ch.len_utf8();
-                                chars.next();
+                        // This hyphen is part of a scalar value, treat as regular character
+                        // Continue reading until we hit whitespace or actual YAML special chars
+                        let mut end_idx = start_idx + 1;
+                        while let Some((idx, ch)) = chars.peek() {
+                            if ch.is_whitespace() || is_yaml_special_excluding_hyphen(*ch) {
+                                break;
                             }
-                            let text = &input[token_start..end_idx];
-                            let token_kind = classify_scalar(text);
-                            tokens.push((token_kind, text));
+                            end_idx = *idx + ch.len_utf8();
+                            chars.next();
                         }
+                        let text = &input[token_start..end_idx];
+                        let token_kind = classify_scalar(text);
+                        tokens.push((token_kind, text));
                     }
                 }
             }
@@ -758,7 +745,7 @@ mod tests {
             .any(|(kind, text)| *kind == SyntaxKind::GREATER && *text == ">"));
         assert!(tokens2
             .iter()
-            .any(|(kind, text)| *kind == SyntaxKind::DASH && *text == "-"));
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "-"));
 
         // Test with explicit indentation
         let input3 = "key: |2+ content";
@@ -785,7 +772,7 @@ mod tests {
         assert!(tokens
             .iter()
             .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "-"));
-        
+
         // Plus and colon are still tokenized as special characters
         assert!(tokens
             .iter()
@@ -828,9 +815,11 @@ mod tests {
         assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::PLUS)); // "+"
         assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::NEWLINE)); // "\n"
         assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::INDENT)); // "  "
-        
+
         // With context-aware hyphen parsing, the hyphen in content is now part of a STRING
-        assert!(tokens.iter().any(|(kind, text)| *kind == SyntaxKind::STRING && text.contains("-")));
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && text.contains("-")));
         assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::GREATER)); // ">"
     }
 }

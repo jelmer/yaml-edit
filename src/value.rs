@@ -42,16 +42,19 @@ impl YamlValue {
     }
 
     /// Check if this is a scalar
+    #[inline]
     pub fn is_scalar(&self) -> bool {
         matches!(self, YamlValue::Scalar(_))
     }
 
     /// Check if this is a sequence
+    #[inline]
     pub fn is_sequence(&self) -> bool {
         matches!(self, YamlValue::Sequence(_))
     }
 
     /// Check if this is a mapping
+    #[inline]
     pub fn is_mapping(&self) -> bool {
         matches!(self, YamlValue::Mapping(_))
     }
@@ -65,7 +68,7 @@ impl YamlValue {
     }
 
     /// Get as sequence if this is a sequence
-    pub fn as_sequence(&self) -> Option<&Vec<YamlValue>> {
+    pub fn as_sequence(&self) -> Option<&[YamlValue]> {
         match self {
             YamlValue::Sequence(seq) => Some(seq),
             _ => None,
@@ -104,9 +107,11 @@ impl YamlValue {
                 if seq.is_empty() {
                     "[]".to_string()
                 } else {
-                    let mut result = String::new();
+                    let mut result = String::with_capacity(seq.len() * 20); // Pre-allocate
+                    let indent_str = " ".repeat(indent);
                     for item in seq {
-                        result.push_str(&format!("{}  - ", " ".repeat(indent)));
+                        result.push_str(&indent_str);
+                        result.push_str("  - ");
                         match item {
                             YamlValue::Scalar(s) => result.push_str(&s.to_yaml_string()),
                             _ => {
@@ -116,16 +121,20 @@ impl YamlValue {
                         }
                         result.push('\n');
                     }
-                    result.trim_end().to_string()
+                    result.truncate(result.trim_end().len());
+                    result
                 }
             }
             YamlValue::Mapping(map) => {
                 if map.is_empty() {
                     "{}".to_string()
                 } else {
-                    let mut result = String::new();
+                    let mut result = String::with_capacity(map.len() * 30); // Pre-allocate
+                    let indent_str = " ".repeat(indent);
                     for (key, value) in map {
-                        result.push_str(&format!("{}{}: ", " ".repeat(indent), key));
+                        result.push_str(&indent_str);
+                        result.push_str(key);
+                        result.push_str(": ");
                         match value {
                             YamlValue::Scalar(s) => result.push_str(&s.to_yaml_string()),
                             _ => {
@@ -135,7 +144,8 @@ impl YamlValue {
                         }
                         result.push('\n');
                     }
-                    result.trim_end().to_string()
+                    result.truncate(result.trim_end().len());
+                    result
                 }
             }
         }
@@ -202,7 +212,8 @@ where
     T: Into<YamlValue>,
 {
     fn from(vec: Vec<T>) -> Self {
-        YamlValue::Sequence(vec.into_iter().map(Into::into).collect())
+        let values: Vec<_> = vec.into_iter().map(Into::into).collect();
+        YamlValue::Sequence(values)
     }
 }
 

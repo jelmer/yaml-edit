@@ -290,7 +290,10 @@ impl Document {
                     if existing_key_str != key_str {
                         // Keep this pair
                         if let Some(value_node) = existing_value {
-                            pairs.push((existing_key_str, value_node.text().to_string()));
+                            pairs.push((
+                                existing_key_str.to_string(),
+                                value_node.text().to_string(),
+                            ));
                         }
                     }
                 }
@@ -457,7 +460,7 @@ impl Document {
                     Some(first_item.trim_matches('"').trim_matches('\'').to_string())
                 } else {
                     // Block style array - use the sequence items iterator
-                    if let Some(sequence) = Sequence::cast(node.clone()) {
+                    if let Some(sequence) = Sequence::cast(node) {
                         sequence.items().next().and_then(|first_item| {
                             if first_item.kind() == SyntaxKind::SCALAR {
                                 Scalar::cast(first_item).map(|scalar| scalar.value())
@@ -603,41 +606,53 @@ impl Default for Mapping {
 
 impl Mapping {
     /// Get all key-value pairs in this mapping
-    pub fn pairs(&self) -> impl Iterator<Item = (Option<Scalar>, Option<SyntaxNode>)> {
-        // Look for KEY nodes followed by VALUE nodes
-        let children: Vec<_> = self.0.children().collect();
-        let mut pairs = Vec::new();
-        let mut i = 0;
+    pub fn pairs(&self) -> impl Iterator<Item = (Option<Scalar>, Option<SyntaxNode>)> + '_ {
+        // Create an iterator that lazily finds key-value pairs
+        struct PairsIterator<'a> {
+            children: Vec<SyntaxNode>,
+            index: usize,
+            _marker: std::marker::PhantomData<&'a ()>,
+        }
 
-        while i < children.len() {
-            // Check if this is a KEY node
-            if children[i].kind() == SyntaxKind::KEY {
-                let key_text = children[i].text().to_string();
-                let key_scalar = Scalar(create_scalar_node(&key_text));
+        impl<'a> Iterator for PairsIterator<'a> {
+            type Item = (Option<Scalar>, Option<SyntaxNode>);
 
-                // Look for the next value node (SCALAR, VALUE, SEQUENCE, or MAPPING)
-                let mut value_node = None;
-                let mut j = i + 1;
-                while j < children.len() {
-                    if children[j].kind() == SyntaxKind::SCALAR
-                        || children[j].kind() == SyntaxKind::VALUE
-                        || children[j].kind() == SyntaxKind::SEQUENCE
-                        || children[j].kind() == SyntaxKind::MAPPING
-                    {
-                        value_node = Some(children[j].clone());
-                        break;
+            fn next(&mut self) -> Option<Self::Item> {
+                while self.index < self.children.len() {
+                    if self.children[self.index].kind() == SyntaxKind::KEY {
+                        let key_text = self.children[self.index].text().to_string();
+                        let key_scalar = Scalar(create_scalar_node(&key_text));
+
+                        // Look for the next value node
+                        let mut value_node = None;
+                        let mut j = self.index + 1;
+                        while j < self.children.len() {
+                            let kind = self.children[j].kind();
+                            if kind == SyntaxKind::SCALAR
+                                || kind == SyntaxKind::VALUE
+                                || kind == SyntaxKind::SEQUENCE
+                                || kind == SyntaxKind::MAPPING
+                            {
+                                value_node = Some(self.children[j].clone());
+                                break;
+                            }
+                            j += 1;
+                        }
+
+                        self.index = j + 1;
+                        return Some((Some(key_scalar), value_node));
                     }
-                    j += 1;
+                    self.index += 1;
                 }
-
-                pairs.push((Some(key_scalar), value_node));
-                i = j + 1;
-            } else {
-                i += 1;
+                None
             }
         }
 
-        pairs.into_iter()
+        PairsIterator {
+            children: self.0.children().collect(),
+            index: 0,
+            _marker: std::marker::PhantomData,
+        }
     }
 
     /// Get the value for a specific key
@@ -685,10 +700,12 @@ impl Mapping {
     /// Fields not in the order list will appear after the ordered fields
     pub fn reorder_fields(&mut self, order: &[&str]) {
         // Collect all current key-value pairs
-        let mut all_pairs: Vec<(String, String)> = Vec::new();
-        for (key_opt, value_opt) in self.pairs() {
+        let pairs_iter = self.pairs();
+        let mut all_pairs: Vec<(String, String)> = Vec::with_capacity(16); // Pre-allocate reasonable size
+        for (key_opt, value_opt) in pairs_iter {
             if let (Some(key), Some(value)) = (key_opt, value_opt) {
-                all_pairs.push((key.value(), value.text().to_string().trim().to_string()));
+                let value_text = value.text().to_string();
+                all_pairs.push((key.value(), value_text.trim().to_string()));
             }
         }
 
@@ -753,9 +770,12 @@ impl Mapping {
 impl Sequence {
     /// Get all items in this sequence
     pub fn items(&self) -> impl Iterator<Item = SyntaxNode> {
-        self.0
-            .children()
-            .filter(|child| child.kind() == SyntaxKind::SCALAR)
+        self.0.children().filter(|child| {
+            matches!(
+                child.kind(),
+                SyntaxKind::SCALAR | SyntaxKind::MAPPING | SyntaxKind::SEQUENCE
+            )
+        })
     }
 }
 

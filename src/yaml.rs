@@ -97,6 +97,7 @@ ast_node!(Document, DOCUMENT, "A single YAML document");
 ast_node!(Sequence, SEQUENCE, "A YAML sequence (list)");
 ast_node!(Mapping, MAPPING, "A YAML mapping (key-value pairs)");
 ast_node!(Scalar, SCALAR, "A YAML scalar value");
+ast_node!(Directive, DIRECTIVE, "A YAML directive like %YAML 1.2");
 
 impl Default for Yaml {
     fn default() -> Self {
@@ -132,6 +133,30 @@ impl Yaml {
     /// Get the first document, if any
     pub fn document(&self) -> Option<Document> {
         self.documents().next()
+    }
+
+    /// Get all directives in this YAML file
+    pub fn directives(&self) -> impl Iterator<Item = Directive> {
+        self.0.children().filter_map(Directive::cast)
+    }
+
+    /// Add a directive to the beginning of this YAML file
+    pub fn add_directive(&mut self, directive_text: &str) {
+        let mut new_nodes = Vec::new();
+
+        // Create directive node
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::DIRECTIVE.into());
+        builder.token(SyntaxKind::DIRECTIVE.into(), directive_text);
+        builder.finish_node();
+        let directive_node = builder.finish();
+
+        new_nodes.push(directive_node.into());
+        new_nodes.push(create_token_green(SyntaxKind::NEWLINE, "\n").into());
+
+        // Insert at the beginning
+        let new_green = self.0.green().splice_children(0..0, new_nodes);
+        self.0 = SyntaxNode::new_root_mut(new_green);
     }
 
     /// Add a new document to the end of this YAML file
@@ -460,6 +485,21 @@ impl Document {
                 self.0 = self.create_mapping_with_all_entries(ordered_pairs);
             }
         }
+    }
+
+    /// Get directives that may be associated with this document
+    /// Note: In YAML, directives typically appear at the file level, not document level
+    pub fn get_parent_directives(&self) -> Vec<Directive> {
+        // This is a placeholder implementation
+        // In a real implementation, you might need to traverse up to find parent directives
+        Vec::new()
+    }
+
+    /// Add a directive to the beginning of the parent YAML
+    /// This is a convenience method that operates on the document's parent if available
+    pub fn add_directive(&mut self, _directive_text: &str) -> Result<(), &'static str> {
+        // This is a placeholder - in practice, directives should be added to the root YAML node
+        Err("Directives must be added to the root YAML node, not individual documents")
     }
 
     /// Parse a double-quoted string, handling escape sequences
@@ -802,9 +842,15 @@ impl Parser {
 
         self.skip_ws_and_newlines();
 
+        // Parse any directives at the beginning
+        while self.current() == Some(SyntaxKind::DIRECTIVE) {
+            self.parse_directive();
+            self.skip_ws_and_newlines();
+        }
+
         // Parse documents
         // Always parse at least one document
-        if self.current().is_some() {
+        if self.current().is_some() && self.current() != Some(SyntaxKind::EOF) {
             self.parse_document();
             self.skip_ws_and_newlines();
 
@@ -1140,6 +1186,18 @@ impl Parser {
         self.builder.finish_node();
     }
 
+    fn parse_directive(&mut self) {
+        self.builder.start_node(SyntaxKind::DIRECTIVE.into());
+
+        if self.current() == Some(SyntaxKind::DIRECTIVE) {
+            self.bump(); // consume the directive token
+        } else {
+            self.add_error("Expected directive".to_string());
+        }
+
+        self.builder.finish_node();
+    }
+
     fn is_mapping_key(&self) -> bool {
         // Look ahead to see if there's a colon after the current token
         for kind in self.upcoming_tokens() {
@@ -1462,6 +1520,7 @@ escaped: 'it\'s escaped'
         let _ = result;
     }
 
+<<<<<<< HEAD
     #[test]
     fn test_anchors_and_aliases() {
         // Test basic anchor definition and alias reference
@@ -1592,6 +1651,39 @@ config3: *shared
         );
     }
 
+    // Directive tests
+    #[test]
+    fn test_parse_yaml_version_directive() {
+        let yaml = "%YAML 1.2\n---\nkey: value";
+        let parsed = Yaml::from_str(yaml).unwrap();
+
+        let directives: Vec<_> = parsed.directives().collect();
+        assert_eq!(directives.len(), 1);
+
+        let directive = &directives[0];
+        assert!(directive.is_yaml_version());
+        assert_eq!(directive.name(), Some("YAML".to_string()));
+        assert_eq!(directive.value(), Some("1.2".to_string()));
+        assert_eq!(directive.text(), "%YAML 1.2");
+    }
+
+    #[test]
+    fn test_parse_tag_directive() {
+        let yaml = "%TAG ! tag:example.com,2000:app/\n---\nkey: value";
+        let parsed = Yaml::from_str(yaml).unwrap();
+
+        let directives: Vec<_> = parsed.directives().collect();
+        assert_eq!(directives.len(), 1);
+
+        let directive = &directives[0];
+        assert!(directive.is_tag());
+        assert_eq!(directive.name(), Some("TAG".to_string()));
+        assert_eq!(
+            directive.value(),
+            Some("! tag:example.com,2000:app/".to_string())
+        );
+    }
+
     #[test]
     fn test_anchor_exact_output() {
         let yaml = "key: &anchor value\nref: *anchor";
@@ -1708,6 +1800,77 @@ null_ref: *null_val"#;
         // Should preserve whitespace around anchors and aliases
         assert!(output.contains("&anchor"));
         assert!(output.contains("*anchor"));
+    }
+
+    #[test]
+    fn test_multiple_directives() {
+        let yaml = "%YAML 1.2\n%TAG ! tag:example.com,2000:app/\n---\nkey: value";
+        let parsed = Yaml::from_str(yaml).unwrap();
+
+        let directives: Vec<_> = parsed.directives().collect();
+        assert_eq!(directives.len(), 2);
+
+        assert!(directives[0].is_yaml_version());
+        assert!(directives[1].is_tag());
+    }
+
+    #[test]
+    fn test_create_yaml_version_directive() {
+        let directive = Directive::new_yaml_version("1.2");
+        assert!(directive.is_yaml_version());
+        assert_eq!(directive.value(), Some("1.2".to_string()));
+        assert_eq!(directive.text(), "%YAML 1.2");
+    }
+
+    #[test]
+    fn test_create_tag_directive() {
+        let directive = Directive::new_tag("!", "tag:example.com,2000:app/");
+        assert!(directive.is_tag());
+        assert_eq!(directive.text(), "%TAG ! tag:example.com,2000:app/");
+    }
+
+    #[test]
+    fn test_add_directive_to_yaml() {
+        let mut yaml = Yaml::new();
+        yaml.add_directive("%YAML 1.2");
+
+        let output = yaml.to_string();
+        assert!(output.contains("%YAML 1.2"));
+
+        let directives: Vec<_> = yaml.directives().collect();
+        assert_eq!(directives.len(), 1);
+    }
+
+    #[test]
+    fn test_yaml_with_directive_and_content() {
+        let mut yaml = Yaml::new();
+        yaml.add_directive("%YAML 1.2");
+
+        let mut doc = Document::new_mapping();
+        doc.set_string("name", "test");
+        yaml.push_document(doc);
+
+        let output = yaml.to_string();
+        assert!(output.contains("%YAML 1.2"));
+        assert!(output.contains("name: test"));
+
+        // Should have both directive and document
+        let directives: Vec<_> = yaml.directives().collect();
+        let documents: Vec<_> = yaml.documents().collect();
+        assert_eq!(directives.len(), 1);
+        assert_eq!(documents.len(), 1);
+    }
+
+    #[test]
+    fn test_directive_preservation_in_parsing() {
+        let input = "%YAML 1.2\n%TAG ! tag:example.com,2000:app/\n---\nkey: value\n";
+        let parsed = Yaml::from_str(input).unwrap();
+        let output = parsed.to_string();
+
+        // Check that directives are preserved
+        assert!(output.contains("%YAML 1.2"));
+        assert!(output.contains("%TAG ! tag:example.com,2000:app/"));
+        assert!(output.contains("key: value"));
     }
 }
 
@@ -2132,5 +2295,68 @@ impl Scalar {
         let new_token = temp_node.first_token().unwrap();
         self.0
             .splice_children(0..children_count, vec![new_token.into()]);
+    }
+}
+
+// Methods for Directive
+impl Directive {
+    /// Get the full directive text (e.g., "%YAML 1.2")
+    pub fn text(&self) -> String {
+        self.0.text().to_string()
+    }
+
+    /// Get the directive name (e.g., "YAML" from "%YAML 1.2")
+    pub fn name(&self) -> Option<String> {
+        let text = self.text();
+        if text.starts_with('%') {
+            text[1..].split_whitespace().next().map(|s| s.to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Get the directive value (e.g., "1.2" from "%YAML 1.2")
+    pub fn value(&self) -> Option<String> {
+        let text = self.text();
+        if text.starts_with('%') {
+            let parts: Vec<&str> = text[1..].split_whitespace().collect();
+            if parts.len() > 1 {
+                Some(parts[1..].join(" "))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Check if this is a YAML version directive
+    pub fn is_yaml_version(&self) -> bool {
+        self.name().as_deref() == Some("YAML")
+    }
+
+    /// Check if this is a TAG directive
+    pub fn is_tag(&self) -> bool {
+        self.name().as_deref() == Some("TAG")
+    }
+
+    /// Create a new YAML version directive
+    pub fn new_yaml_version(version: &str) -> Self {
+        let directive_text = format!("%YAML {}", version);
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::DIRECTIVE.into());
+        builder.token(SyntaxKind::DIRECTIVE.into(), &directive_text);
+        builder.finish_node();
+        Directive(SyntaxNode::new_root_mut(builder.finish()))
+    }
+
+    /// Create a new TAG directive
+    pub fn new_tag(handle: &str, prefix: &str) -> Self {
+        let directive_text = format!("%TAG {} {}", handle, prefix);
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::DIRECTIVE.into());
+        builder.token(SyntaxKind::DIRECTIVE.into(), &directive_text);
+        builder.finish_node();
+        Directive(SyntaxNode::new_root_mut(builder.finish()))
     }
 }

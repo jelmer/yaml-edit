@@ -444,8 +444,19 @@ impl Document {
                     let first_item = inner.split(',').next()?.trim();
                     Some(first_item.trim_matches('"').trim_matches('\'').to_string())
                 } else {
-                    // Block style array
-                    None // TODO: Implement block style array parsing
+                    // Block style array - use the sequence items iterator
+                    if let Some(sequence) = Sequence::cast(node.clone()) {
+                        sequence.items().next().and_then(|first_item| {
+                            if first_item.kind() == SyntaxKind::SCALAR {
+                                Scalar::cast(first_item).map(|scalar| scalar.as_string())
+                            } else {
+                                // For complex first items, return a simple representation
+                                Some(first_item.text().to_string().trim().to_string())
+                            }
+                        })
+                    } else {
+                        None
+                    }
                 }
             } else {
                 None
@@ -678,8 +689,10 @@ impl Mapping {
 impl Sequence {
     /// Get all items in this sequence
     pub fn items(&self) -> impl Iterator<Item = SyntaxNode> {
-        // TODO: Implementation for getting sequence items
-        std::iter::empty()
+        self.0.children().filter(|child| match child.kind() {
+            SyntaxKind::SCALAR | SyntaxKind::MAPPING | SyntaxKind::SEQUENCE => true,
+            _ => false,
+        })
     }
 }
 
@@ -938,9 +951,15 @@ impl Parser {
             let quote_type = self.current().unwrap();
             self.bump(); // opening quote
 
-            // TODO: Parse quoted content properly
+            // Parse quoted content by consuming the appropriate tokens
+            // For format-preserving parsing, we consume all tokens until the closing quote
             while self.current().is_some() && self.current() != Some(quote_type) {
-                self.bump();
+                // Handle content within quotes (including escape sequences)
+                match self.current() {
+                    Some(SyntaxKind::STRING) => self.bump(), // String content
+                    Some(_) => self.bump(), // Other content (escape sequences, spaces, newlines, etc.)
+                    None => break,
+                }
             }
 
             if self.current() == Some(quote_type) {
@@ -3078,12 +3097,40 @@ impl Mapping {
             return;
         }
 
-        // Navigate to nested structure - TODO: implement properly
-        let (_first, _rest) = parts.split_first().unwrap();
-        // if let Some(nested) = self.get_mapping(first) {
-        //     nested.set_path(&rest.join("."), value);
-        // }
+        // Navigate to nested structure
+        let (first, rest) = parts.split_first().unwrap();
+
+        // Build the nested structure from the path
+        let nested_value = create_nested_value(&rest, value);
+
+        // Set the value using the mapping's existing set method
+        self.set_value(ScalarValue::new(first.to_string()), nested_value);
     }
+}
+
+/// Create a nested YamlValue from a path
+fn create_nested_value(path_parts: &[&str], final_value: &str) -> YamlValue {
+    use std::collections::BTreeMap;
+
+    if path_parts.is_empty() {
+        return YamlValue::Scalar(ScalarValue::new(final_value.to_string()));
+    }
+
+    if path_parts.len() == 1 {
+        // Create a single-level mapping
+        let mut map = BTreeMap::new();
+        map.insert(
+            path_parts[0].to_string(),
+            YamlValue::Scalar(ScalarValue::new(final_value.to_string())),
+        );
+        return YamlValue::Mapping(map);
+    }
+
+    // Recursively create nested mappings
+    let (first, rest) = path_parts.split_first().unwrap();
+    let mut map = BTreeMap::new();
+    map.insert(first.to_string(), create_nested_value(rest, final_value));
+    YamlValue::Mapping(map)
 }
 
 fn create_scalar_node(value: &str) -> SyntaxNode {

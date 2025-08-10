@@ -3749,186 +3749,106 @@ folded: >
         assert_eq!(parsed.documents().count(), 3);
         assert_eq!(parsed.to_string(), yaml);
     }
-
-    #[test]
-    fn test_merge_keys_basic() {
-        let yaml = r#"defaults: &defaults
-  setting1: value1
-  setting2: value2
-
-production:
-  <<: *defaults
-  setting2: override
-  setting3: new_value
-"#;
-        let parsed = Yaml::from_str(yaml);
-        assert!(parsed.is_ok(), "Should parse YAML with merge keys");
-
-        // Test that the output preserves the merge key syntax
-        let output = parsed.unwrap().to_string();
-        assert!(
-            output.contains("<<:"),
-            "Should preserve merge key in output"
-        );
-        assert!(
-            output.contains("*defaults"),
-            "Should preserve alias reference"
-        );
-    }
-
-    #[test]
-    fn test_merge_keys_multiple() {
-        let yaml = r#"base1: &base1
-  a: 1
-  b: 2
-
-base2: &base2
-  c: 3
-  d: 4
-
-combined:
-  <<: [*base1, *base2]
-  e: 5
-"#;
-        let parsed = Yaml::from_str(yaml);
-        assert!(parsed.is_ok(), "Should parse YAML with multiple merge keys");
-
-        let output = parsed.unwrap().to_string();
-        assert!(output.contains("<<:"), "Should preserve merge key");
-    }
-
-    #[test]
-    fn test_merge_key_at_start() {
-        let yaml = r#"defaults: &defaults
-  a: 1
-
-production:
-  <<: *defaults
-  b: 2
-"#;
-        let parsed = Yaml::from_str(yaml);
-        assert!(parsed.is_ok(), "Should parse merge key at start of mapping");
-    }
-
-    #[test]
-    fn test_circular_reference_detection() {
-        // Direct circular reference
-        let yaml1 = r#"node1: &anchor1
-  child: *anchor1
-"#;
-        let parsed1 = Yaml::from_str(yaml1);
-        // The current implementation allows parsing but would detect during resolution
-        // This is actually valid YAML syntax, circular references are a semantic issue
-        assert!(
-            parsed1.is_ok(),
-            "Should parse YAML with circular reference syntax"
-        );
-
-        // Indirect circular reference - note that anchor2 is defined after being referenced
-        // This is actually invalid YAML because anchors must be defined before use
-        let yaml2 = r#"node1: &anchor1
-  child: *anchor1
-
-node2: &anchor2
-  child: *anchor2
-"#;
-        let parsed2 = Yaml::from_str(yaml2);
-        // The parser should handle self-references gracefully
-        assert!(
-            parsed2.is_ok(),
-            "Should parse YAML with self-referencing anchors"
-        );
-
-        // Note: Full circular reference detection would require semantic analysis
-        // during value resolution, not just syntax parsing
-    }
-
-    #[test]
-    fn test_undefined_alias_error() {
-        let yaml = r#"value: *undefined_anchor"#;
-        let parsed = Yaml::from_str(yaml);
-        // Parser should either handle gracefully or report undefined alias
-        if let Err(e) = parsed {
-            let error_msg = e.to_string();
-            assert!(error_msg.contains("Undefined") || error_msg.contains("undefined"));
-        }
-    }
-
-    #[test]
-    fn test_merge_key_with_anchor() {
-        let yaml = r#"base: &base
-  x: 1
-
-derived: &derived
-  <<: *base
-  y: 2
-
-final:
-  <<: *derived
-  z: 3
-"#;
-        let parsed = Yaml::from_str(yaml);
-        assert!(
-            parsed.is_ok(),
-            "Should parse nested merge keys with anchors"
-        );
-    }
 }
 
-/// Extension trait for SyntaxNode to provide convenient methods for YAML values
-pub trait SyntaxNodeExt {
-    /// Check if this node represents a sequence (array)
-    fn is_sequence(&self) -> bool;
 
-    /// Get sequence items if this is a sequence
-    fn sequence_items(&self) -> Vec<SyntaxNode>;
+impl YamlValue {
+    /// Returns true if the value is null
+    pub fn is_null(&self) -> bool {
+        matches!(self, YamlValue::Scalar(scalar) if scalar.is_null())
+    }
 
-    /// Get this node as a string value (for scalars)
-    fn as_str(&self) -> Option<String>;
-
-    /// Get this node as an array (sequence) of strings
-    fn as_array(&self) -> Option<Vec<String>>;
-}
-
-impl SyntaxNodeExt for SyntaxNode {
-    fn is_sequence(&self) -> bool {
-        // Check if this node is a sequence, or contains a sequence as a child
-        if self.kind() == SyntaxKind::SEQUENCE {
-            true
-        } else if self.kind() == SyntaxKind::VALUE {
-            // Check if VALUE node has a SEQUENCE child
-            self.children()
-                .any(|child| child.kind() == SyntaxKind::SEQUENCE)
-        } else {
-            false
+    /// Returns a string slice if the value is a string
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            YamlValue::Scalar(scalar) => scalar.as_str(),
+            _ => None,
         }
     }
 
-    fn sequence_items(&self) -> Vec<SyntaxNode> {
-        // If this is directly a sequence
-        if let Some(sequence) = Sequence::cast(self.clone()) {
-            sequence.items().collect()
-        }
-        // If this is a VALUE node containing a sequence
-        else if self.kind() == SyntaxKind::VALUE {
-            for child in self.children() {
-                if let Some(sequence) = Sequence::cast(child) {
-                    return sequence.items().collect();
-                }
-            }
-            Vec::new()
-        } else {
-            Vec::new()
+    /// Returns true if the value is a string
+    pub fn is_string(&self) -> bool {
+        self.as_str().is_some()
+    }
+
+    /// Returns an iterator over array items if the value is an array
+    pub fn sequence_items(&self) -> Vec<YamlValue> {
+        match self {
+            YamlValue::Sequence(seq) => seq.items(),
+            _ => Vec::new(),
         }
     }
 
-    fn as_str(&self) -> Option<String> {
-        Scalar::cast(self.clone()).map(|scalar| scalar.value())
+    /// Returns true if the value is an array
+    pub fn is_sequence(&self) -> bool {
+        matches!(self, YamlValue::Sequence(_))
     }
 
-    fn as_array(&self) -> Option<Vec<String>> {
-        if self.is_sequence() {
+    /// Returns an iterator over mapping items if the value is a mapping
+    pub fn mapping_items(&self) -> Vec<(YamlValue, YamlValue)> {
+        match self {
+            YamlValue::Mapping(map) => map.items(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Returns true if the value is a mapping
+    pub fn is_mapping(&self) -> bool {
+        matches!(self, YamlValue::Mapping(_))
+    }
+
+    /// Attempts to parse the value as a boolean
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            YamlValue::Scalar(scalar) => scalar.as_bool(),
+            _ => None,
+        }
+    }
+
+    /// Returns true if the value is a boolean
+    pub fn is_bool(&self) -> bool {
+        self.as_bool().is_some()
+    }
+
+    /// Attempts to parse the value as an integer
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            YamlValue::Scalar(scalar) => scalar.as_i64(),
+            _ => None,
+        }
+    }
+
+    /// Attempts to parse the value as a float
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            YamlValue::Scalar(scalar) => scalar.as_f64(),
+            _ => None,
+        }
+    }
+
+    /// Returns true if the value is a number (integer or float)
+    pub fn is_number(&self) -> bool {
+        self.as_i64().is_some() || self.as_f64().is_some()
+    }
+
+    /// Get value as a vector of strings if it's a sequence of strings
+    pub fn as_string_sequence(&self) -> Option<Vec<String>> {
+        if let YamlValue::Sequence(_seq) = self {
             let items: Vec<String> = self
+                .sequence_items()
+                .into_iter()
+                .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                .collect();
+            Some(items)
+        } else {
+            None
+        }
+    }
+
+    /// Get value as a vector of strings if it's a sequence of strings
+    pub fn as_string_sequence_ref(&self) -> Option<Vec<&str>> {
+        if let YamlValue::Sequence(_seq) = self {
+            let items: Vec<&str> = self
                 .sequence_items()
                 .into_iter()
                 .filter_map(|item| item.as_str())

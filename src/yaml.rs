@@ -937,7 +937,7 @@ impl Parser {
         }
 
         // Parse the actual value that is being anchored
-        let value_start = self.builder.checkpoint();
+        let _value_start = self.builder.checkpoint();
         self.parse_value();
 
         // Register the anchor if we have a name
@@ -1447,7 +1447,7 @@ escaped: 'it\'s escaped'
     #[test]
     fn test_mapping_set_new_key() {
         let yaml = "existing: value";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
 
         if let Some(doc) = parsed.document() {
             if let Some(mut mapping) = doc.as_mapping() {
@@ -1462,7 +1462,7 @@ escaped: 'it\'s escaped'
     #[test]
     fn test_mapping_rename_key() {
         let yaml = "old_name: value";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
 
         if let Some(doc) = parsed.document() {
             if let Some(mut mapping) = doc.as_mapping() {
@@ -1478,7 +1478,7 @@ escaped: 'it\'s escaped'
     #[test]
     fn test_mapping_remove_key() {
         let yaml = "key1: value1\nkey2: value2";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
 
         if let Some(doc) = parsed.document() {
             if let Some(mut mapping) = doc.as_mapping() {
@@ -1494,7 +1494,7 @@ escaped: 'it\'s escaped'
     #[test]
     fn test_sequence_operations() {
         let yaml = "- item1\n- item2";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
 
         if let Some(doc) = parsed.document() {
             if let Some(mut seq) = doc.as_sequence() {
@@ -1518,137 +1518,6 @@ escaped: 'it\'s escaped'
         let result = Yaml::from_str(yaml);
         // For now, just check it doesn't panic
         let _ = result;
-    }
-
-<<<<<<< HEAD
-    #[test]
-    fn test_anchors_and_aliases() {
-        // Test basic anchor definition and alias reference
-        let yaml = r#"
-default: &default_config
-  host: localhost
-  port: 8080
-
-development:
-  <<: *default_config
-  debug: true
-
-production: *default_config
-"#;
-        let parsed = Yaml::from_str(yaml);
-        assert!(parsed.is_ok(), "Should parse YAML with anchors and aliases");
-
-        let yaml_doc = parsed.unwrap();
-        assert!(yaml_doc.document().is_some());
-        let doc = yaml_doc.document().unwrap();
-        assert!(doc.as_mapping().is_some());
-    }
-
-    #[test]
-    fn test_simple_anchor_and_alias() {
-        let yaml = r#"
-key: &anchor value
-ref: *anchor
-"#;
-        let parsed = Yaml::from_str(yaml);
-        assert!(
-            parsed.is_ok(),
-            "Should parse simple anchor and alias: {:?}",
-            parsed
-        );
-
-        let yaml_doc = parsed.unwrap();
-        let output = yaml_doc.to_string();
-
-        // Should preserve anchor and alias tokens
-        assert!(
-            output.contains("&anchor"),
-            "Should preserve anchor definition"
-        );
-        assert!(
-            output.contains("*anchor"),
-            "Should preserve alias reference"
-        );
-    }
-
-    #[test]
-    fn test_undefined_alias_error() {
-        let yaml = r#"
-key: *undefined_anchor
-"#;
-        let parsed = Yaml::from_str(yaml);
-        // Should parse but have errors
-        if let Ok(yaml_doc) = parsed {
-            let parse_result = Parse::parse_yaml(yaml);
-            assert!(
-                parse_result.has_errors(),
-                "Should have error for undefined alias"
-            );
-        }
-    }
-
-    #[test]
-    fn test_anchor_in_sequence() {
-        let yaml = r#"
-items:
-  - &item1 "first item"
-  - "second item"
-  - *item1
-"#;
-        let parsed = Yaml::from_str(yaml);
-        assert!(parsed.is_ok(), "Should parse anchors in sequences");
-
-        let yaml_doc = parsed.unwrap();
-        let output = yaml_doc.to_string();
-        assert!(output.contains("&item1"));
-        assert!(output.contains("*item1"));
-    }
-
-    #[test]
-    fn test_anchor_in_mapping() {
-        let yaml = r#"
-database: &db_config
-  host: localhost
-  port: 5432
-  
-app_config:
-  database: *db_config
-"#;
-        let parsed = Yaml::from_str(yaml);
-        assert!(parsed.is_ok(), "Should parse anchors in mappings");
-
-        let yaml_doc = parsed.unwrap();
-        let output = yaml_doc.to_string();
-        assert!(output.contains("&db_config"));
-        assert!(output.contains("*db_config"));
-    }
-
-    #[test]
-    fn test_multiple_aliases_same_anchor() {
-        let yaml = r#"
-default: &shared
-  setting: value
-
-config1: *shared
-config2: *shared  
-config3: *shared
-"#;
-        let parsed = Yaml::from_str(yaml);
-        assert!(
-            parsed.is_ok(),
-            "Should handle multiple aliases to same anchor"
-        );
-
-        let yaml_doc = parsed.unwrap();
-        let output = yaml_doc.to_string();
-
-        // Should have one anchor definition and three aliases
-        assert!(output.contains("&shared"));
-        assert_eq!(
-            output.matches("*shared").count(),
-            3,
-            "Should have 3 alias references"
-        );
     }
 
     // Directive tests

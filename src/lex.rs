@@ -1,5 +1,29 @@
 //! Lexer for YAML files.
 
+/// Whitespace and formatting validation errors
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhitespaceError {
+    /// The error message
+    pub message: String,
+    /// The byte range where the error occurred
+    pub range: std::ops::Range<usize>,
+    /// Error category
+    pub category: WhitespaceErrorCategory,
+}
+
+/// Categories of whitespace errors
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WhitespaceErrorCategory {
+    /// Tab character used for indentation (forbidden in YAML)
+    TabIndentation,
+    /// Line too long according to configured limit
+    LineTooLong,
+    /// Mixed line ending styles
+    MixedLineEndings,
+    /// Invalid scalar indentation
+    InvalidIndentation,
+}
+
 /// Lexical analysis: the variants are different kinds of "tokens".
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u16)]
@@ -134,13 +158,49 @@ fn read_scalar_from<'a>(
     &input[start_idx..end_idx]
 }
 
-/// Tokenize YAML input
+/// Tokenize YAML input with whitespace validation
 pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
+    let (tokens, _) = lex_with_validation(input);
+    tokens
+}
+
+/// Configuration for whitespace and formatting validation
+pub struct ValidationConfig {
+    /// Maximum line length (None = no limit)
+    pub max_line_length: Option<usize>,
+    /// Whether to enforce consistent line endings
+    pub enforce_consistent_line_endings: bool,
+}
+
+impl Default for ValidationConfig {
+    fn default() -> Self {
+        Self {
+            max_line_length: Some(120), // Default to 120 characters
+            enforce_consistent_line_endings: true,
+        }
+    }
+}
+
+/// Tokenize YAML input with whitespace and formatting validation
+pub fn lex_with_validation(input: &str) -> (Vec<(SyntaxKind, &str)>, Vec<WhitespaceError>) {
+    lex_with_validation_config(input, &ValidationConfig::default())
+}
+
+/// Tokenize YAML input with custom validation configuration
+pub fn lex_with_validation_config<'a>(
+    input: &'a str,
+    config: &ValidationConfig,
+) -> (Vec<(SyntaxKind, &'a str)>, Vec<WhitespaceError>) {
     use SyntaxKind::*;
 
     let mut tokens = Vec::with_capacity(input.len() / 8); // Pre-allocate based on estimate
     let mut chars = input.char_indices().peekable();
+    let mut whitespace_errors = Vec::new();
     let bytes = input.as_bytes();
+
+    // Track line information for validation
+    let mut current_line_start = 0;
+    let mut detected_line_ending: Option<&str> = None;
 
     while let Some((start_idx, ch)) = chars.next() {
         let token_start = start_idx;
@@ -304,29 +364,113 @@ pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
             }
 
             // Newlines
-            '\n' => tokens.push((NEWLINE, &input[token_start..start_idx + 1])),
-            '\r' => {
-                if let Some((_, '\n')) = chars.peek() {
-                    chars.next();
-                    tokens.push((NEWLINE, &input[token_start..start_idx + 2]));
-                } else {
-                    tokens.push((NEWLINE, &input[token_start..start_idx + 1]));
+            '\n' => {
+                // Check line length before processing newline
+                if let Some(max_len) = config.max_line_length {
+                    let line_length = start_idx - current_line_start;
+                    if line_length > max_len {
+                        whitespace_errors.push(WhitespaceError {
+                            message: format!(
+                                "Line too long ({} > {} characters)",
+                                line_length, max_len
+                            ),
+                            range: current_line_start..start_idx,
+                            category: WhitespaceErrorCategory::LineTooLong,
+                        });
+                    }
                 }
+
+                // Validate line ending consistency
+                let line_ending = "\n";
+                if config.enforce_consistent_line_endings {
+                    if let Some(detected) = detected_line_ending {
+                        if detected != line_ending {
+                            whitespace_errors.push(WhitespaceError {
+                                message: "Inconsistent line endings detected".to_string(),
+                                range: token_start..start_idx + 1,
+                                category: WhitespaceErrorCategory::MixedLineEndings,
+                            });
+                        }
+                    } else {
+                        detected_line_ending = Some(line_ending);
+                    }
+                }
+
+                tokens.push((NEWLINE, &input[token_start..start_idx + 1]));
+                current_line_start = start_idx + 1;
+            }
+            '\r' => {
+                // Check line length before processing newline
+                if let Some(max_len) = config.max_line_length {
+                    let line_length = start_idx - current_line_start;
+                    if line_length > max_len {
+                        whitespace_errors.push(WhitespaceError {
+                            message: format!(
+                                "Line too long ({} > {} characters)",
+                                line_length, max_len
+                            ),
+                            range: current_line_start..start_idx,
+                            category: WhitespaceErrorCategory::LineTooLong,
+                        });
+                    }
+                }
+
+                let (line_ending, end_pos) = if let Some((_, '\n')) = chars.peek() {
+                    chars.next();
+                    ("\r\n", start_idx + 2)
+                } else {
+                    ("\r", start_idx + 1)
+                };
+
+                // Validate line ending consistency
+                if config.enforce_consistent_line_endings {
+                    if let Some(detected) = detected_line_ending {
+                        if detected != line_ending {
+                            whitespace_errors.push(WhitespaceError {
+                                message: "Inconsistent line endings detected".to_string(),
+                                range: token_start..end_pos,
+                                category: WhitespaceErrorCategory::MixedLineEndings,
+                            });
+                        }
+                    } else {
+                        detected_line_ending = Some(line_ending);
+                    }
+                }
+
+                tokens.push((NEWLINE, &input[token_start..end_pos]));
+                current_line_start = end_pos;
             }
 
             // Whitespace (spaces and tabs)
             ' ' | '\t' => {
                 let mut end_idx = start_idx + 1;
+                let mut has_tabs = ch == '\t';
+
                 while let Some((idx, ch)) = chars.peek() {
                     if *ch != ' ' && *ch != '\t' {
                         break;
+                    }
+                    if *ch == '\t' {
+                        has_tabs = true;
                     }
                     end_idx = *idx + 1;
                     chars.next();
                 }
 
                 // Determine if this is structural indentation
-                if token_start == 0 || (token_start > 0 && bytes[token_start - 1] == b'\n') {
+                let is_indentation =
+                    token_start == 0 || (token_start > 0 && bytes[token_start - 1] == b'\n');
+
+                if is_indentation {
+                    // Check for tab characters in indentation (forbidden in YAML)
+                    if has_tabs {
+                        whitespace_errors.push(WhitespaceError {
+                            message: "Tab character used for indentation (forbidden in YAML)"
+                                .to_string(),
+                            range: token_start..end_idx,
+                            category: WhitespaceErrorCategory::TabIndentation,
+                        });
+                    }
                     tokens.push((INDENT, &input[token_start..end_idx]));
                 } else {
                     tokens.push((WHITESPACE, &input[token_start..end_idx]));
@@ -367,7 +511,22 @@ pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
         }
     }
 
-    tokens
+    // Check the final line length if there's no trailing newline
+    if let Some(max_len) = config.max_line_length {
+        let final_line_length = input.len() - current_line_start;
+        if final_line_length > max_len && final_line_length > 0 {
+            whitespace_errors.push(WhitespaceError {
+                message: format!(
+                    "Line too long ({} > {} characters)",
+                    final_line_length, max_len
+                ),
+                range: current_line_start..input.len(),
+                category: WhitespaceErrorCategory::LineTooLong,
+            });
+        }
+    }
+
+    (tokens, whitespace_errors)
 }
 
 /// Classify a scalar token based on its content
@@ -1022,6 +1181,85 @@ mod tests {
         let input = "snake_case-with-dash_mix";
         let tokens = lex(input);
         assert_eq!(tokens[0], (SyntaxKind::STRING, "snake_case-with-dash_mix"));
+    }
+
+    #[test]
+    fn test_whitespace_validation_tab_indentation() {
+        // Test tab character validation
+        let input_with_tabs = "key: value\n\tindented_key: indented_value";
+        let (tokens, errors) = lex_with_validation(input_with_tabs);
+
+        // Should have detected tab indentation error
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].category, WhitespaceErrorCategory::TabIndentation);
+        assert!(errors[0]
+            .message
+            .contains("Tab character used for indentation"));
+
+        // But should still tokenize correctly
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::INDENT && text.contains('\t')));
+    }
+
+    #[test]
+    fn test_whitespace_validation_line_endings() {
+        // Test mixed line ending detection
+        let input_mixed = "line1\nline2\r\nline3\rline4";
+        let config = ValidationConfig {
+            enforce_consistent_line_endings: true,
+            max_line_length: None,
+        };
+        let (tokens, errors) = lex_with_validation_config(input_mixed, &config);
+
+        // Should detect mixed line endings
+        assert!(errors
+            .iter()
+            .any(|e| e.category == WhitespaceErrorCategory::MixedLineEndings));
+
+        // Should still tokenize all line endings
+        let newlines: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::NEWLINE)
+            .collect();
+        assert_eq!(newlines.len(), 3); // Three line endings
+        assert_eq!(newlines[0].1, "\n");
+        assert_eq!(newlines[1].1, "\r\n");
+        assert_eq!(newlines[2].1, "\r");
+    }
+
+    #[test]
+    fn test_whitespace_validation_line_length() {
+        // Test line length validation
+        let long_line = format!("key: {}", "a".repeat(150));
+        let config = ValidationConfig {
+            enforce_consistent_line_endings: false,
+            max_line_length: Some(120),
+        };
+        let (_, errors) = lex_with_validation_config(&long_line, &config);
+
+        // Should detect line too long
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].category, WhitespaceErrorCategory::LineTooLong);
+        assert!(errors[0].message.contains("Line too long"));
+    }
+
+    #[test]
+    fn test_whitespace_validation_disabled() {
+        // Test with validation disabled
+        let input_with_issues = "key: value\n\tindented: with_tabs\n";
+        let config = ValidationConfig {
+            enforce_consistent_line_endings: false,
+            max_line_length: None,
+        };
+        let (tokens, errors) = lex_with_validation_config(input_with_issues, &config);
+
+        // Should still detect tab indentation (always enforced in YAML)
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].category, WhitespaceErrorCategory::TabIndentation);
+
+        // Should tokenize normally
+        assert!(tokens.len() > 0);
     }
 
     #[test]

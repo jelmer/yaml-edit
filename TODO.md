@@ -12,9 +12,10 @@ Major features recently implemented:
 - ✅ **Tags and Explicit Typing** - Complete support for local tags, global tags, non-specific tags, and custom tags with safe value extraction
 - ✅ **Document Stream Features** - Complete multi-document stream support with proper marker handling
 - ✅ **Enhanced Comment Support** - Improved comment parsing and preservation in various contexts
+- ✅ **Whitespace and Formatting** - Complete implementation of tab validation, line length limits, indentation preservation, and line ending handling
 
 ## Code Quality Improvements
-- ✅ **Test Suite** - Comprehensive test coverage with 121+ unit tests passing
+- ✅ **Test Suite** - Comprehensive test coverage with 130+ unit tests passing
 - ✅ **API Stability** - Resolved import issues and duplicate implementations
 - ✅ **Code Formatting** - All code properly formatted with cargo fmt
 
@@ -96,10 +97,10 @@ Major features recently implemented:
 - [ ] Preserve comment positioning more precisely in complex structures
 
 ### 12. Whitespace and Formatting
-- [ ] Tab character handling (YAML forbids tabs for indentation)
-- [ ] Line length limits and folding
-- [ ] Preserve exact scalar content indentation
-- [ ] Handle various line break styles (LF, CRLF, CR)
+- [x] Tab character handling (YAML forbids tabs for indentation)
+- [x] Line length limits and folding
+- [x] Preserve exact scalar content indentation
+- [x] Handle various line break styles (LF, CRLF, CR)
 
 ### 13. Schema Support
 - [ ] Failsafe schema

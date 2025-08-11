@@ -347,8 +347,18 @@ pub fn lex_with_validation_config<'a>(
 
             // Tags
             '!' => {
-                let rest = read_scalar_from(&mut chars, input, start_idx + 1, is_yaml_special);
-                tokens.push((TAG, &input[token_start..start_idx + 1 + rest.len()]));
+                // Check if this is a global tag (starts with !!)
+                let mut tag_end = start_idx + 1;
+
+                // Handle !! prefix for global tags
+                if let Some((_, '!')) = chars.peek() {
+                    chars.next(); // consume the second !
+                    tag_end = start_idx + 2;
+                }
+
+                // Read the rest of the tag
+                let rest = read_scalar_from(&mut chars, input, tag_end, is_yaml_special);
+                tokens.push((TAG, &input[token_start..tag_end + rest.len()]));
             }
 
             '%' => {

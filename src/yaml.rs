@@ -767,6 +767,9 @@ impl Mapping {
                         YamlValue::Scalar(s) => s.to_yaml_string(),
                         YamlValue::Sequence(_) => "[...]".to_string(), // Nested sequences
                         YamlValue::Mapping(_) => "{...}".to_string(),  // Nested mappings
+                        YamlValue::Set(_) => "!!set{...}".to_string(),
+                        YamlValue::OrderedMapping(_) => "!!omap[...]".to_string(),
+                        YamlValue::Pairs(_) => "!!pairs[...]".to_string(),
                     })
                     .collect();
                 let sequence_yaml = format!("[{}]", items_str.join(", "));
@@ -782,6 +785,9 @@ impl Mapping {
                             YamlValue::Scalar(s) => s.to_yaml_string(),
                             YamlValue::Sequence(_) => "[...]".to_string(),
                             YamlValue::Mapping(_) => "{...}".to_string(),
+                            YamlValue::Set(_) => "!!set{...}".to_string(),
+                            YamlValue::OrderedMapping(_) => "!!omap[...]".to_string(),
+                            YamlValue::Pairs(_) => "!!pairs[...]".to_string(),
                         };
                         format!("{}: {}", k, value_str)
                     })
@@ -789,6 +795,24 @@ impl Mapping {
                 let mapping_yaml = format!("{{{}}}", pairs.join(", "));
                 let key_str = key.into().to_yaml_string();
                 self.set_raw(&key_str, &mapping_yaml);
+            }
+            YamlValue::Set(set) => {
+                // Convert set to YAML representation
+                let yaml_str = YamlValue::Set(set).to_yaml_string(0);
+                let key_str = key.into().to_yaml_string();
+                self.set_raw(&key_str, &yaml_str);
+            }
+            YamlValue::OrderedMapping(pairs) => {
+                // Convert ordered mapping to YAML representation
+                let yaml_str = YamlValue::OrderedMapping(pairs).to_yaml_string(0);
+                let key_str = key.into().to_yaml_string();
+                self.set_raw(&key_str, &yaml_str);
+            }
+            YamlValue::Pairs(pairs) => {
+                // Convert pairs to YAML representation
+                let yaml_str = YamlValue::Pairs(pairs).to_yaml_string(0);
+                let key_str = key.into().to_yaml_string();
+                self.set_raw(&key_str, &yaml_str);
             }
         }
     }
@@ -865,6 +889,130 @@ impl TaggedScalar {
         }
 
         None
+    }
+
+    /// Extract a set from this tagged scalar if it has a !!set tag
+    pub fn as_set(&self) -> Option<std::collections::BTreeSet<String>> {
+        if self.tag() != Some("!!set".to_string()) {
+            return None;
+        }
+
+        let mut set = std::collections::BTreeSet::new();
+
+        // Find the mapping node within this tagged scalar
+        for child in self.0.children() {
+            if let Some(mapping) = Mapping::cast(child) {
+                // Extract keys from the mapping (set members)
+                for (key_opt, _value_opt) in mapping.pairs() {
+                    if let Some(key) = key_opt {
+                        set.insert(key.as_string());
+                    }
+                }
+                break;
+            }
+        }
+
+        Some(set)
+    }
+
+    /// Extract ordered mapping from this tagged scalar if it has a !!omap tag
+    pub fn as_ordered_mapping(&self) -> Option<Vec<(String, crate::value::YamlValue)>> {
+        if self.tag() != Some("!!omap".to_string()) {
+            return None;
+        }
+
+        let mut pairs = Vec::new();
+
+        // Find the sequence node within this tagged scalar
+        for child in self.0.children() {
+            if let Some(sequence) = Sequence::cast(child) {
+                // Extract single-key mappings from the sequence
+                for item in sequence.items() {
+                    if let Some(mapping) = Mapping::cast(item) {
+                        // Each mapping should have exactly one key-value pair
+                        let mapping_pairs: Vec<_> = mapping.pairs().collect();
+                        if mapping_pairs.len() == 1 {
+                            let (key_opt, value_opt) = &mapping_pairs[0];
+                            if let (Some(key), Some(value)) = (key_opt, value_opt) {
+                                let yaml_value = self.yaml_node_to_yaml_value(value.clone());
+                                pairs.push((key.as_string(), yaml_value));
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+        }
+
+        Some(pairs)
+    }
+
+    /// Extract pairs from this tagged scalar if it has a !!pairs tag
+    pub fn as_pairs(&self) -> Option<Vec<(String, crate::value::YamlValue)>> {
+        if self.tag() != Some("!!pairs".to_string()) {
+            return None;
+        }
+
+        let mut pairs = Vec::new();
+
+        // Find the sequence node within this tagged scalar
+        for child in self.0.children() {
+            if let Some(sequence) = Sequence::cast(child) {
+                // Extract key-value pairs from the sequence
+                for item in sequence.items() {
+                    if let Some(mapping) = Mapping::cast(item) {
+                        // Each mapping should have exactly one key-value pair
+                        let mapping_pairs: Vec<_> = mapping.pairs().collect();
+                        if mapping_pairs.len() == 1 {
+                            let (key_opt, value_opt) = &mapping_pairs[0];
+                            if let (Some(key), Some(value)) = (key_opt, value_opt) {
+                                let yaml_value = self.yaml_node_to_yaml_value(value.clone());
+                                pairs.push((key.as_string(), yaml_value));
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+        }
+
+        Some(pairs)
+    }
+
+    /// Convert a YAML syntax node to a YamlValue (helper for special collections)
+    fn yaml_node_to_yaml_value(&self, node: rowan::SyntaxNode<Lang>) -> crate::value::YamlValue {
+        match node.kind() {
+            SyntaxKind::SCALAR => {
+                if let Some(scalar) = Scalar::cast(node) {
+                    crate::value::YamlValue::scalar(crate::scalar::ScalarValue::new(
+                        scalar.as_string(),
+                    ))
+                } else {
+                    crate::value::YamlValue::scalar(crate::scalar::ScalarValue::null())
+                }
+            }
+            SyntaxKind::SEQUENCE => {
+                let mut items = Vec::new();
+                if let Some(sequence) = Sequence::cast(node) {
+                    for item in sequence.items() {
+                        items.push(self.yaml_node_to_yaml_value(item));
+                    }
+                }
+                crate::value::YamlValue::from_sequence(items)
+            }
+            SyntaxKind::MAPPING => {
+                let mut map = std::collections::BTreeMap::new();
+                if let Some(mapping) = Mapping::cast(node) {
+                    for (key_opt, value_opt) in mapping.pairs() {
+                        if let (Some(key), Some(value)) = (key_opt, value_opt) {
+                            map.insert(key.as_string(), self.yaml_node_to_yaml_value(value));
+                        }
+                    }
+                }
+                crate::value::YamlValue::from_mapping(map)
+            }
+            _ => crate::value::YamlValue::scalar(crate::scalar::ScalarValue::null()),
+        }
     }
 }
 
@@ -1206,9 +1354,46 @@ impl Parser {
     }
 
     fn parse_tagged_value(&mut self) {
+        // Peek at the tag to determine what kind of collection to parse
+        let tag_text = self.peek_tag_text();
+
+        match tag_text.as_deref() {
+            Some("!!set") => self.parse_tagged_set(),
+            Some("!!omap") => self.parse_tagged_omap(),
+            Some("!!pairs") => self.parse_tagged_pairs(),
+            _ => {
+                // Default tagged scalar behavior
+                self.builder.start_node(SyntaxKind::TAGGED_SCALAR.into());
+                self.bump(); // TAG token
+
+                // Skip any whitespace after the tag
+                while matches!(self.current(), Some(SyntaxKind::WHITESPACE)) {
+                    self.bump();
+                }
+
+                // Parse the value that follows the tag as a nested scalar
+                self.builder.start_node(SyntaxKind::SCALAR.into());
+                self.parse_tagged_scalar_content();
+                self.builder.finish_node();
+
+                self.builder.finish_node();
+            }
+        }
+    }
+
+    fn peek_tag_text(&self) -> Option<String> {
+        if let Some((kind, text)) = self.tokens.get(self.current_token_index) {
+            if *kind == SyntaxKind::TAG {
+                return Some(text.clone());
+            }
+        }
+        None
+    }
+
+    fn parse_tagged_set(&mut self) {
         self.builder.start_node(SyntaxKind::TAGGED_SCALAR.into());
 
-        // Consume the tag token - this becomes part of the tagged scalar
+        // Consume the !!set tag
         self.bump(); // TAG token
 
         // Skip any whitespace after the tag
@@ -1216,10 +1401,63 @@ impl Parser {
             self.bump();
         }
 
-        // Parse the value that follows the tag as a nested scalar
-        self.builder.start_node(SyntaxKind::SCALAR.into());
-        self.parse_tagged_scalar_content();
+        // Parse the following mapping structure (set represented as mapping with null values)
+        match self.current() {
+            Some(SyntaxKind::LEFT_BRACE) => self.parse_flow_mapping(),
+            Some(SyntaxKind::NEWLINE) => {
+                self.bump(); // consume newline
+                self.parse_mapping();
+            }
+            _ => self.parse_mapping(),
+        }
+
         self.builder.finish_node();
+    }
+
+    fn parse_tagged_omap(&mut self) {
+        self.builder.start_node(SyntaxKind::TAGGED_SCALAR.into());
+
+        // Consume the !!omap tag
+        self.bump(); // TAG token
+
+        // Skip any whitespace after the tag
+        while matches!(self.current(), Some(SyntaxKind::WHITESPACE)) {
+            self.bump();
+        }
+
+        // Parse the following sequence structure (omap represented as sequence of single-key mappings)
+        match self.current() {
+            Some(SyntaxKind::LEFT_BRACKET) => self.parse_flow_sequence(),
+            Some(SyntaxKind::NEWLINE) => {
+                self.bump(); // consume newline
+                self.parse_sequence();
+            }
+            _ => self.parse_sequence(),
+        }
+
+        self.builder.finish_node();
+    }
+
+    fn parse_tagged_pairs(&mut self) {
+        self.builder.start_node(SyntaxKind::TAGGED_SCALAR.into());
+
+        // Consume the !!pairs tag
+        self.bump(); // TAG token
+
+        // Skip any whitespace after the tag
+        while matches!(self.current(), Some(SyntaxKind::WHITESPACE)) {
+            self.bump();
+        }
+
+        // Parse the following sequence structure (pairs represented as sequence of key-value pairs)
+        match self.current() {
+            Some(SyntaxKind::LEFT_BRACKET) => self.parse_flow_sequence(),
+            Some(SyntaxKind::NEWLINE) => {
+                self.bump(); // consume newline
+                self.parse_sequence();
+            }
+            _ => self.parse_sequence(),
+        }
 
         self.builder.finish_node();
     }

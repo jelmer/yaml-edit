@@ -25,7 +25,7 @@ pub use lex::{
 };
 pub use parse::Parse;
 pub use rowan::TextRange;
-pub use scalar::{ScalarStyle, ScalarValue};
+pub use scalar::{ScalarStyle, ScalarType, ScalarValue};
 pub use value::YamlValue;
 pub use yaml::{Directive, Document, Lang, Mapping, Scalar, Sequence, TaggedScalar, Yaml};
 

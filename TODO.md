@@ -2,7 +2,7 @@
 
 This document lists YAML 1.2 specification features that are not yet implemented in yaml-edit.
 
-## Recent Progress (Updated 2025-08-10)
+## Recent Progress (Updated 2025-08-11)
 
 Major features recently implemented:
 - ✅ **Anchors & Aliases** - Full support for anchor definitions and alias references with preservation
@@ -18,6 +18,19 @@ Major features recently implemented:
 - ✅ **Test Suite** - Comprehensive test coverage with 130+ unit tests passing
 - ✅ **API Stability** - Resolved import issues and duplicate implementations
 - ✅ **Code Formatting** - All code properly formatted with cargo fmt
+
+## Known Bugs and Issues
+
+### Critical Bugs
+1. **Complex Keys**: Explicit key indicator (`?`) doesn't properly parse complex sequences/mappings as keys
+2. **Plain Scalars**: Email addresses and URLs with special characters (@ and :) are incorrectly truncated
+3. **Timestamp Parsing**: Timestamps with spaces fail to parse (e.g., `2001-12-14 21:59:43.10 -5`)
+4. **Special Collections**: `!!set`, `!!omap`, and `!!pairs` parse but lose their content
+5. **Binary Data**: `!!binary` tag parses but the base64 content is lost
+
+### Minor Issues
+1. **Octal Numbers**: Legacy octal format (0755) works but modern format (0o755) may not be recognized correctly
+2. **Complex Key Values**: When using mappings or sequences as keys, only partial content is preserved
 
 ## High Priority (Common YAML Features)
 
@@ -53,8 +66,8 @@ Major features recently implemented:
 ## Medium Priority (Less Common Features)
 
 ### 5. Complex Mapping Keys
-- [ ] Explicit key indicator (`?`)
-- [ ] Non-scalar keys (sequences/mappings as keys)
+- [ ] Explicit key indicator (`?`) - *Partially broken: complex keys are truncated*
+- [ ] Non-scalar keys (sequences/mappings as keys) - *Broken: only partial content preserved*
 - [ ] Multi-line keys
 - [ ] Proper parsing and editing of complex keys
 
@@ -66,13 +79,13 @@ Major features recently implemented:
 - [x] Preserve directives during editing
 
 ### 7. Special Collections
-- [ ] Sets (`!!set`)
-- [ ] Ordered mappings (`!!omap`)
-- [ ] Pairs (`!!pairs`)
+- [ ] Sets (`!!set`) - *Currently broken: content is lost after parsing*
+- [ ] Ordered mappings (`!!omap`) - *Currently broken: content is lost after parsing*
+- [ ] Pairs (`!!pairs`) - *Currently broken: content is lost after parsing*
 
 ### 8. Binary and Special Data Types
-- [ ] Binary data (`!!binary` with base64 encoding)
-- [ ] Timestamps (`!!timestamp`)
+- [ ] Binary data (`!!binary` with base64 encoding) - *Currently broken: content is lost*
+- [ ] Timestamps (`!!timestamp`) - *Partially broken: space-separated format fails*
 - [ ] Regular expressions
 - [ ] Type casting/coercion
 
@@ -93,7 +106,6 @@ Major features recently implemented:
 - [x] End-of-line comments (fully supported)
 - [x] Comments in flow collections (enhanced support)
 - [x] Comments between sequence/mapping items (improved)
-- [ ] Mid-line comments 
 - [ ] Preserve comment positioning more precisely in complex structures
 
 ### 12. Whitespace and Formatting
@@ -145,6 +157,33 @@ Major features recently implemented:
 - [ ] Usage examples for each feature
 - [ ] Migration guide from other YAML libraries
 - [ ] Best practices guide
+
+## Additional Missing Features (Discovered via Testing)
+
+### Number Formats
+- [ ] Modern octal notation (`0o777`) - may not be recognized as octal
+- [ ] Binary notation (`0b101010`)
+- [ ] Hexadecimal with uppercase (`0xDEADBEEF`)
+- [ ] Scientific notation (`6.02e23`)
+
+### Special Float Values
+- [x] Infinity (`.inf`, `-.inf`) - works correctly
+- [x] Not-a-number (`.nan`) - works correctly
+
+### Plain Scalar Edge Cases
+- [ ] URLs with colons (`http://example.com`) - colon causes truncation
+- [ ] Email addresses (`user@example.com`) - @ causes truncation  
+- [ ] Time values (`12:34:56`) - colons cause issues
+
+### Flow Collection Features
+- [x] Trailing commas - supported correctly
+- [x] Empty collections - supported correctly
+- [x] Nested empty collections - supported correctly
+
+### YAML 1.1 vs 1.2 Differences
+- [ ] Boolean values (`yes`, `no`, `on`, `off`) - should be strings in 1.2 when quoted
+- [ ] Octal notation changes (0755 vs 0o755)
+- [ ] Merge key behavior differences
 
 ## Notes
 

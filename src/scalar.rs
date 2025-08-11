@@ -767,9 +767,8 @@ impl ScalarValue {
         // Check for special characters that require quoting
         for ch in value.chars() {
             match ch {
-                ':' | '#' | '&' | '*' | '!' | '|' | '>' | '\'' | '"' | '%' | '@' | '`' => {
-                    return true
-                }
+                ':' | '#' | '&' | '*' | '!' | '|' | '>' | '\'' | '"' | '%' => return true,
+                // Note: @ and ` are reserved but allowed in plain scalars in YAML 1.2
                 _ => {}
             }
         }

@@ -572,12 +572,11 @@ fn is_yaml_special(ch: char) -> bool {
             | '*'
             | '!'
             | '%'
-            | '@'
-            | '`'
             | '"'
             | '\''
             | '#'
     )
+    // Note: @ and ` are reserved in YAML but don't terminate plain scalars
 }
 
 /// Check if character is YAML special, excluding hyphen (for context-aware hyphen parsing)
@@ -597,12 +596,11 @@ fn is_yaml_special_excluding_hyphen(ch: char) -> bool {
             | '*'
             | '!'
             | '%'
-            | '@'
-            | '`'
             | '"'
             | '\''
             | '#'
     )
+    // Note: @ and ` are reserved in YAML but don't terminate plain scalars
 }
 
 #[cfg(test)]

@@ -34,6 +34,7 @@ This document lists YAML 1.2 specification features that are not yet implemented
 ## Medium Priority Features
 
 ### 4. Comments
+- [ ] Mid-line comments 
 - [ ] Preserve comment positioning more precisely in complex structures
 
 ### 5. Schema Support

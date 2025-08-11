@@ -23,10 +23,14 @@ Major features recently implemented:
 
 ### Critical Bugs
 1. **Complex Keys**: Explicit key indicator (`?`) doesn't properly parse complex sequences/mappings as keys
-2. **Plain Scalars**: Email addresses and URLs with special characters (@ and :) are incorrectly truncated
+   - *Root cause*: Parser doesn't handle QUESTION token; requires significant refactoring to support non-scalar keys
+2. ~~**Plain Scalars**: Email addresses and URLs with special characters (@ and :) are incorrectly truncated~~ **FIXED**
 3. **Timestamp Parsing**: Timestamps with spaces fail to parse (e.g., `2001-12-14 21:59:43.10 -5`)
+   - *Root cause*: Space-separated timestamps look like mapping syntax; needs special handling
 4. **Special Collections**: `!!set`, `!!omap`, and `!!pairs` parse but lose their content
+   - *Root cause*: Tags are preserved but special collection semantics not implemented
 5. **Binary Data**: `!!binary` tag parses but the base64 content is lost
+   - *Root cause*: Block scalar content after tags not properly associated
 
 ### Minor Issues
 1. **Octal Numbers**: Legacy octal format (0755) works but modern format (0o755) may not be recognized correctly

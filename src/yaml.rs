@@ -1202,8 +1202,8 @@ impl Parser {
                 self.parse_mapping();
             }
             Some(SyntaxKind::QUESTION) => {
-                // Explicit key indicator - parse complex mapping
-                self.parse_explicit_key_mapping();
+                // Explicit key indicator - parse mapping
+                self.parse_mapping();
             }
             Some(SyntaxKind::PIPE) => self.parse_literal_block_scalar(),
             Some(SyntaxKind::GREATER) => self.parse_folded_block_scalar(),
@@ -1225,7 +1225,7 @@ impl Parser {
             Some(SyntaxKind::LEFT_BRACKET) => {
                 // Check if this is a complex key in a mapping
                 if !self.in_flow_context && self.is_complex_mapping_key() {
-                    self.parse_complex_key_mapping();
+                    self.parse_mapping();
                 } else {
                     self.parse_flow_sequence();
                 }
@@ -1233,7 +1233,7 @@ impl Parser {
             Some(SyntaxKind::LEFT_BRACE) => {
                 // Check if this is a complex key in a mapping
                 if !self.in_flow_context && self.is_complex_mapping_key() {
-                    self.parse_complex_key_mapping();
+                    self.parse_mapping();
                 } else {
                     self.parse_flow_mapping();
                 }
@@ -1645,129 +1645,113 @@ impl Parser {
     fn parse_mapping(&mut self) {
         self.builder.start_node(SyntaxKind::MAPPING.into());
 
-        while self.current().is_some() {
-            if !self.is_mapping_key() && !self.is_complex_mapping_key() {
-                break;
-            }
-
-            // Check for complex keys (sequences or mappings as keys)
-            if self.current() == Some(SyntaxKind::LEFT_BRACKET)
-                || self.current() == Some(SyntaxKind::LEFT_BRACE)
-            {
-                self.builder.start_node(SyntaxKind::KEY.into());
-                if self.current() == Some(SyntaxKind::LEFT_BRACKET) {
-                    self.parse_flow_sequence();
-                } else if self.current() == Some(SyntaxKind::LEFT_BRACE) {
-                    self.parse_flow_mapping();
-                }
-                self.builder.finish_node();
-
-                self.skip_ws_and_newlines();
-
-                if self.current() == Some(SyntaxKind::COLON) {
-                    self.bump();
-                    self.skip_whitespace();
-
-                    self.builder.start_node(SyntaxKind::VALUE.into());
-                    if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                        self.parse_value();
-                    } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                        self.bump();
-                        if self.current() == Some(SyntaxKind::INDENT) {
-                            self.bump();
-                            self.parse_value();
-                        }
-                    }
-                    self.builder.finish_node();
-                } else {
-                    self.add_error("Expected ':' after complex mapping key".to_string());
-                }
-            }
-            // Check for explicit key indicator
-            else if self.current() == Some(SyntaxKind::QUESTION) {
-                // Parse explicit key
-                self.bump(); // consume '?'
-                self.skip_whitespace();
-
-                self.builder.start_node(SyntaxKind::KEY.into());
-                if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                    self.parse_value();
-                }
-                self.builder.finish_node();
-
-                self.skip_ws_and_newlines();
-
-                // Parse value if there's a colon
-                if self.current() == Some(SyntaxKind::COLON) {
-                    self.bump(); // consume ':'
-                    self.skip_whitespace();
-
-                    self.builder.start_node(SyntaxKind::VALUE.into());
-                    if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                        self.parse_value();
-                    } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                        self.bump(); // consume newline
-                        if self.current() == Some(SyntaxKind::INDENT) {
-                            self.bump(); // consume indent
-                            self.parse_value();
-                        }
-                    }
-                    self.builder.finish_node();
-                } else {
-                    // No value, just a key
-                    self.builder.start_node(SyntaxKind::VALUE.into());
-                    self.builder.finish_node();
-                }
-            } else {
-                // Parse regular key
-                self.builder.start_node(SyntaxKind::KEY.into());
-                if self.current() == Some(SyntaxKind::MERGE_KEY) {
-                    self.bump(); // consume the merge key token
-                } else if matches!(
-                    self.current(),
-                    Some(
-                        SyntaxKind::STRING
-                            | SyntaxKind::INT
-                            | SyntaxKind::FLOAT
-                            | SyntaxKind::BOOL
-                            | SyntaxKind::NULL
-                    )
-                ) {
-                    self.bump(); // consume the key token
-                }
-                self.builder.finish_node();
-
-                self.skip_whitespace();
-
-                // Expect colon
-                if self.current() == Some(SyntaxKind::COLON) {
-                    self.bump();
-                    self.skip_whitespace();
-
-                    // Parse value - wrap in VALUE node
-                    self.builder.start_node(SyntaxKind::VALUE.into());
-                    if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                        self.parse_value();
-                    } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                        // Check if next line is indented (nested content)
-                        self.bump(); // consume newline
-                        if self.current() == Some(SyntaxKind::INDENT) {
-                            self.bump(); // consume indent
-                                         // Parse the indented content as the value
-                            self.parse_value();
-                        }
-                    }
-                    // Empty VALUE node if no value present
-                    self.builder.finish_node();
-                } else {
-                    self.add_error("Expected ':' after mapping key".to_string());
-                }
-            }
-
+        while self.current().is_some() && self.is_any_mapping_key() {
+            self.parse_mapping_entry();
             self.skip_ws_and_newlines();
         }
 
         self.builder.finish_node();
+    }
+
+    fn parse_mapping_entry(&mut self) {
+        // Parse key
+        self.builder.start_node(SyntaxKind::KEY.into());
+
+        match self.current() {
+            Some(SyntaxKind::QUESTION) => {
+                // Explicit key indicator
+                self.bump(); // consume '?'
+                self.skip_whitespace();
+                if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
+                    self.parse_value();
+                }
+            }
+            Some(SyntaxKind::LEFT_BRACKET) => {
+                self.parse_flow_sequence();
+            }
+            Some(SyntaxKind::LEFT_BRACE) => {
+                self.parse_flow_mapping();
+            }
+            Some(SyntaxKind::MERGE_KEY) => {
+                self.bump();
+            }
+            Some(
+                SyntaxKind::STRING
+                | SyntaxKind::INT
+                | SyntaxKind::FLOAT
+                | SyntaxKind::BOOL
+                | SyntaxKind::NULL,
+            ) => {
+                self.bump();
+            }
+            _ => {
+                // Should not happen if is_any_mapping_key works correctly
+            }
+        }
+
+        self.builder.finish_node(); // End KEY
+
+        self.skip_ws_and_newlines();
+
+        // Parse value if colon present
+        if self.current() == Some(SyntaxKind::COLON) {
+            self.bump(); // consume ':'
+            self.skip_whitespace();
+
+            self.builder.start_node(SyntaxKind::VALUE.into());
+
+            if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
+                self.parse_value();
+            } else if self.current() == Some(SyntaxKind::NEWLINE) {
+                self.bump(); // consume newline
+                if self.current() == Some(SyntaxKind::INDENT) {
+                    self.bump(); // consume indent
+                    self.parse_value();
+                }
+            }
+
+            self.builder.finish_node(); // End VALUE
+        } else {
+            // No colon - could be explicit key without value
+            self.builder.start_node(SyntaxKind::VALUE.into());
+            self.builder.finish_node();
+        }
+    }
+
+    fn is_any_mapping_key(&self) -> bool {
+        match self.current() {
+            Some(SyntaxKind::QUESTION) => true,
+            Some(SyntaxKind::MERGE_KEY) => true,
+            Some(SyntaxKind::LEFT_BRACKET) | Some(SyntaxKind::LEFT_BRACE) => {
+                self.is_complex_mapping_key()
+            }
+            Some(
+                SyntaxKind::STRING
+                | SyntaxKind::INT
+                | SyntaxKind::FLOAT
+                | SyntaxKind::BOOL
+                | SyntaxKind::NULL,
+            ) => self.has_colon_after(),
+            _ => false,
+        }
+    }
+
+    fn has_colon_after(&self) -> bool {
+        for kind in self.upcoming_tokens() {
+            match kind {
+                SyntaxKind::COLON => return true,
+                SyntaxKind::WHITESPACE => continue,
+                SyntaxKind::NEWLINE
+                | SyntaxKind::DASH
+                | SyntaxKind::DOC_START
+                | SyntaxKind::DOC_END
+                | SyntaxKind::COMMA
+                | SyntaxKind::RIGHT_BRACKET
+                | SyntaxKind::RIGHT_BRACE => return false,
+                _ => continue,
+            }
+        }
+        false
     }
 
     fn parse_sequence(&mut self) {
@@ -1875,235 +1859,6 @@ impl Parser {
         }
 
         self.builder.finish_node();
-    }
-
-    fn parse_explicit_key_mapping(&mut self) {
-        // Parse mapping with explicit key indicator '?'
-        self.builder.start_node(SyntaxKind::MAPPING.into());
-
-        while self.current() == Some(SyntaxKind::QUESTION) {
-            // Parse explicit key
-            self.bump(); // consume '?'
-            self.skip_whitespace();
-
-            // Parse key - can be any value including sequences and mappings
-            self.builder.start_node(SyntaxKind::KEY.into());
-            if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                self.parse_value();
-            }
-            self.builder.finish_node();
-
-            self.skip_ws_and_newlines();
-
-            // Parse value if there's a colon
-            if self.current() == Some(SyntaxKind::COLON) {
-                self.bump(); // consume ':'
-                self.skip_whitespace();
-
-                self.builder.start_node(SyntaxKind::VALUE.into());
-                if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                    self.parse_value();
-                } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                    // Check if next line is indented (nested content)
-                    self.bump(); // consume newline
-                    if self.current() == Some(SyntaxKind::INDENT) {
-                        self.bump(); // consume indent
-                        self.parse_value();
-                    }
-                }
-                self.builder.finish_node();
-            } else {
-                // No value, just a key
-                self.builder.start_node(SyntaxKind::VALUE.into());
-                self.builder.finish_node();
-            }
-
-            self.skip_ws_and_newlines();
-
-            // Check if there are more entries
-            if self.current() != Some(SyntaxKind::QUESTION) && !self.is_mapping_key() {
-                break;
-            }
-        }
-
-        // Continue parsing regular mapping entries if any
-        while self.current().is_some() && self.is_mapping_key() {
-            // Parse regular key-value pairs
-            self.builder.start_node(SyntaxKind::KEY.into());
-            if self.current() == Some(SyntaxKind::MERGE_KEY) {
-                self.bump(); // consume the merge key token
-            } else if matches!(
-                self.current(),
-                Some(
-                    SyntaxKind::STRING
-                        | SyntaxKind::INT
-                        | SyntaxKind::FLOAT
-                        | SyntaxKind::BOOL
-                        | SyntaxKind::NULL
-                )
-            ) {
-                self.bump(); // consume the key token
-            }
-            self.builder.finish_node();
-
-            self.skip_whitespace();
-
-            if self.current() == Some(SyntaxKind::COLON) {
-                self.bump();
-                self.skip_whitespace();
-
-                self.builder.start_node(SyntaxKind::VALUE.into());
-                if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                    self.parse_value();
-                } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                    self.bump(); // consume newline
-                    if self.current() == Some(SyntaxKind::INDENT) {
-                        self.bump(); // consume indent
-                        self.parse_value();
-                    }
-                }
-                self.builder.finish_node();
-            }
-
-            self.skip_ws_and_newlines();
-        }
-
-        self.builder.finish_node();
-    }
-
-    fn parse_complex_key_mapping(&mut self) {
-        // Parse mapping where the key is a complex structure (sequence or mapping)
-        self.builder.start_node(SyntaxKind::MAPPING.into());
-
-        // Parse the complex key
-        self.builder.start_node(SyntaxKind::KEY.into());
-        if self.current() == Some(SyntaxKind::LEFT_BRACKET) {
-            self.parse_flow_sequence();
-        } else if self.current() == Some(SyntaxKind::LEFT_BRACE) {
-            self.parse_flow_mapping();
-        }
-        self.builder.finish_node();
-
-        self.skip_ws_and_newlines(); // Allow newlines between key and colon
-
-        // Expect colon
-        if self.current() == Some(SyntaxKind::COLON) {
-            self.bump();
-            self.skip_whitespace();
-
-            // Parse value
-            self.builder.start_node(SyntaxKind::VALUE.into());
-            if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                self.parse_value();
-            } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                self.bump(); // consume newline
-                if self.current() == Some(SyntaxKind::INDENT) {
-                    self.bump(); // consume indent
-                    self.parse_value();
-                }
-            }
-            self.builder.finish_node();
-        } else {
-            self.add_error("Expected ':' after complex mapping key".to_string());
-        }
-
-        self.skip_ws_and_newlines();
-
-        // Continue parsing more entries if they exist
-        while self.current().is_some() {
-            if self.current() == Some(SyntaxKind::QUESTION) {
-                // Switch to explicit key parsing
-                self.parse_explicit_key_entries();
-                break;
-            } else if self.is_complex_mapping_key()
-                || (self.is_mapping_key() && self.current() != Some(SyntaxKind::QUESTION))
-            {
-                // Parse another entry
-                self.builder.start_node(SyntaxKind::KEY.into());
-
-                if self.current() == Some(SyntaxKind::LEFT_BRACKET) {
-                    self.parse_flow_sequence();
-                } else if self.current() == Some(SyntaxKind::LEFT_BRACE) {
-                    self.parse_flow_mapping();
-                } else if matches!(
-                    self.current(),
-                    Some(
-                        SyntaxKind::STRING
-                            | SyntaxKind::INT
-                            | SyntaxKind::FLOAT
-                            | SyntaxKind::BOOL
-                            | SyntaxKind::NULL
-                            | SyntaxKind::MERGE_KEY
-                    )
-                ) {
-                    self.bump();
-                }
-                self.builder.finish_node();
-
-                self.skip_whitespace();
-
-                if self.current() == Some(SyntaxKind::COLON) {
-                    self.bump();
-                    self.skip_whitespace();
-
-                    self.builder.start_node(SyntaxKind::VALUE.into());
-                    if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                        self.parse_value();
-                    } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                        self.bump();
-                        if self.current() == Some(SyntaxKind::INDENT) {
-                            self.bump();
-                            self.parse_value();
-                        }
-                    }
-                    self.builder.finish_node();
-                }
-
-                self.skip_ws_and_newlines();
-            } else {
-                break;
-            }
-        }
-
-        self.builder.finish_node();
-    }
-
-    fn parse_explicit_key_entries(&mut self) {
-        // Helper to continue parsing explicit key entries within a mapping
-        while self.current() == Some(SyntaxKind::QUESTION) {
-            self.bump(); // consume '?'
-            self.skip_whitespace();
-
-            self.builder.start_node(SyntaxKind::KEY.into());
-            if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                self.parse_value();
-            }
-            self.builder.finish_node();
-
-            self.skip_ws_and_newlines();
-
-            if self.current() == Some(SyntaxKind::COLON) {
-                self.bump();
-                self.skip_whitespace();
-
-                self.builder.start_node(SyntaxKind::VALUE.into());
-                if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                    self.parse_value();
-                } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                    self.bump();
-                    if self.current() == Some(SyntaxKind::INDENT) {
-                        self.bump();
-                        self.parse_value();
-                    }
-                }
-                self.builder.finish_node();
-            } else {
-                self.builder.start_node(SyntaxKind::VALUE.into());
-                self.builder.finish_node();
-            }
-
-            self.skip_ws_and_newlines();
-        }
     }
 
     fn is_complex_mapping_key(&self) -> bool {

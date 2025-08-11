@@ -6,17 +6,41 @@ use yaml_edit::*;
 #[test]
 fn test_set_parsing() {
     let yaml_content = r#"!!set
-item1: null
-item2: null
-item3: null
+  item1: null
+  item2: null
+  item3: null
 "#;
 
     let yaml = Yaml::from_str(yaml_content).expect("Failed to parse YAML");
     let doc = yaml.document().expect("No document found");
     let root = doc.root_node().expect("No root value");
 
+    // Debug: print the structure
+    println!("Root node kind: {:?}", root.kind());
+    println!("Root node children:");
+    for child in root.children() {
+        println!("  Child kind: {:?}, text: {:?}", child.kind(), child.text());
+        // Check if it's a mapping by trying to cast it
+        if let Some(mapping) = Mapping::cast(child.clone()) {
+            println!("    Found mapping! Keys:");
+            for (key, value) in mapping.pairs() {
+                if let (Some(k), Some(v)) = (key, value) {
+                    println!("      Key: {:?}, Value: {:?}", k.value(), v.text());
+                }
+            }
+        }
+    }
+
     // Test via TaggedScalar interface
-    if let Some(tagged_scalar) = TaggedScalar::cast(root) {
+    if let Some(tagged_scalar) = TaggedScalar::cast(root.clone()) {
+        println!("Tagged scalar found!");
+        println!("Tag: {:?}", tagged_scalar.tag());
+
+        println!("Tagged scalar children:");
+        for child in tagged_scalar.syntax().children() {
+            println!("  Child kind: {:?}, text: {:?}", child.kind(), child.text());
+        }
+
         assert_eq!(tagged_scalar.tag(), Some("!!set".to_string()));
         let set = tagged_scalar.as_set().expect("Should parse as set");
         assert_eq!(set.len(), 3);
@@ -31,6 +55,15 @@ item3: null
 #[test]
 fn test_set_flow_syntax() {
     let yaml_content = "!!set { item1: null, item2: null, item3: null }";
+
+    println!("Flow syntax debug:");
+    let yaml = Yaml::from_str(yaml_content).expect("Failed to parse YAML");
+    let doc = yaml.document().expect("No document found");
+    let root = doc.root_node().expect("No root value");
+    println!("Root node text: {:?}", root.text());
+    for child in root.children() {
+        println!("  Child kind: {:?}, text: {:?}", child.kind(), child.text());
+    }
 
     let yaml = Yaml::from_str(yaml_content).expect("Failed to parse YAML");
     let doc = yaml.document().expect("No document found");

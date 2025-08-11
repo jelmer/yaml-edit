@@ -251,7 +251,10 @@ impl Document {
         self.0.children().find(|child| {
             matches!(
                 child.kind(),
-                SyntaxKind::MAPPING | SyntaxKind::SEQUENCE | SyntaxKind::SCALAR
+                SyntaxKind::MAPPING
+                    | SyntaxKind::SEQUENCE
+                    | SyntaxKind::SCALAR
+                    | SyntaxKind::TAGGED_SCALAR
             )
         })
     }
@@ -982,6 +985,14 @@ impl TaggedScalar {
     /// Convert a YAML syntax node to a YamlValue (helper for special collections)
     fn yaml_node_to_yaml_value(&self, node: rowan::SyntaxNode<Lang>) -> crate::value::YamlValue {
         match node.kind() {
+            SyntaxKind::VALUE => {
+                // VALUE nodes contain the actual value as a child
+                for child in node.children() {
+                    return self.yaml_node_to_yaml_value(child);
+                }
+                // If no child found, return null
+                crate::value::YamlValue::scalar(crate::scalar::ScalarValue::null())
+            }
             SyntaxKind::SCALAR => {
                 if let Some(scalar) = Scalar::cast(node) {
                     crate::value::YamlValue::scalar(crate::scalar::ScalarValue::new(
@@ -1382,7 +1393,7 @@ impl Parser {
     }
 
     fn peek_tag_text(&self) -> Option<String> {
-        if let Some((kind, text)) = self.tokens.get(self.current_token_index) {
+        if let Some((kind, text)) = self.tokens.last() {
             if *kind == SyntaxKind::TAG {
                 return Some(text.clone());
             }
@@ -1406,6 +1417,10 @@ impl Parser {
             Some(SyntaxKind::LEFT_BRACE) => self.parse_flow_mapping(),
             Some(SyntaxKind::NEWLINE) => {
                 self.bump(); // consume newline
+                             // Check if next token is indent (for indented content)
+                if self.current() == Some(SyntaxKind::INDENT) {
+                    self.bump(); // consume indent
+                }
                 self.parse_mapping();
             }
             _ => self.parse_mapping(),
@@ -1430,6 +1445,10 @@ impl Parser {
             Some(SyntaxKind::LEFT_BRACKET) => self.parse_flow_sequence(),
             Some(SyntaxKind::NEWLINE) => {
                 self.bump(); // consume newline
+                             // Check if next token is indent (for indented content)
+                if self.current() == Some(SyntaxKind::INDENT) {
+                    self.bump(); // consume indent
+                }
                 self.parse_sequence();
             }
             _ => self.parse_sequence(),
@@ -1454,6 +1473,10 @@ impl Parser {
             Some(SyntaxKind::LEFT_BRACKET) => self.parse_flow_sequence(),
             Some(SyntaxKind::NEWLINE) => {
                 self.bump(); // consume newline
+                             // Check if next token is indent (for indented content)
+                if self.current() == Some(SyntaxKind::INDENT) {
+                    self.bump(); // consume indent
+                }
                 self.parse_sequence();
             }
             _ => self.parse_sequence(),
@@ -1770,6 +1793,11 @@ impl Parser {
         // Check if this is a merge key
         if self.current() == Some(SyntaxKind::MERGE_KEY) {
             return true;
+        }
+
+        // If current token is a dash, this is not a mapping key
+        if self.current() == Some(SyntaxKind::DASH) {
+            return false;
         }
 
         // Look ahead to see if there's a colon after the current token

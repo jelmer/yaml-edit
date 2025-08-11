@@ -2,6 +2,165 @@
 
 use std::fmt;
 
+#[cfg(feature = "base64")]
+use base64::{engine::general_purpose, Engine as _};
+
+/// Base64 encode bytes for binary data
+#[cfg(feature = "base64")]
+fn base64_encode(input: &[u8]) -> String {
+    general_purpose::STANDARD.encode(input)
+}
+
+/// Base64 encode bytes for binary data (disabled when base64 feature is off)
+#[cfg(not(feature = "base64"))]
+fn base64_encode(_input: &[u8]) -> String {
+    panic!("Binary data support requires the 'base64' feature to be enabled")
+}
+
+/// Fallback base64 encode when base64 crate is not available
+#[allow(dead_code)]
+fn fallback_base64_encode(input: &[u8]) -> String {
+    const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::new();
+    let chunks = input.chunks_exact(3);
+    let remainder = chunks.remainder();
+
+    for chunk in chunks {
+        let b1 = chunk[0] as usize;
+        let b2 = chunk[1] as usize;
+        let b3 = chunk[2] as usize;
+
+        let combined = (b1 << 16) | (b2 << 8) | b3;
+
+        result.push(BASE64_CHARS[(combined >> 18) & 0x3F] as char);
+        result.push(BASE64_CHARS[(combined >> 12) & 0x3F] as char);
+        result.push(BASE64_CHARS[(combined >> 6) & 0x3F] as char);
+        result.push(BASE64_CHARS[combined & 0x3F] as char);
+    }
+
+    // Handle remainder
+    match remainder.len() {
+        1 => {
+            let b1 = remainder[0] as usize;
+            let combined = b1 << 16;
+            result.push(BASE64_CHARS[(combined >> 18) & 0x3F] as char);
+            result.push(BASE64_CHARS[(combined >> 12) & 0x3F] as char);
+            result.push_str("==");
+        }
+        2 => {
+            let b1 = remainder[0] as usize;
+            let b2 = remainder[1] as usize;
+            let combined = (b1 << 16) | (b2 << 8);
+            result.push(BASE64_CHARS[(combined >> 18) & 0x3F] as char);
+            result.push(BASE64_CHARS[(combined >> 12) & 0x3F] as char);
+            result.push(BASE64_CHARS[(combined >> 6) & 0x3F] as char);
+            result.push('=');
+        }
+        _ => {}
+    }
+
+    result
+}
+
+/// Base64 decode string back to bytes
+#[cfg(feature = "base64")]
+fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    general_purpose::STANDARD
+        .decode(input.trim())
+        .map_err(|e| format!("Base64 decode error: {}", e))
+}
+
+/// Base64 decode string back to bytes (disabled when base64 feature is off)
+#[cfg(not(feature = "base64"))]
+fn base64_decode(_input: &str) -> Result<Vec<u8>, String> {
+    Err("Binary data support requires the 'base64' feature to be enabled".to_string())
+}
+
+/// Fallback base64 decode when base64 crate is not available
+#[allow(dead_code)]
+fn fallback_base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Check for valid base64 length (must be multiple of 4)
+    if input.len() % 4 != 0 {
+        return Err("Invalid base64 length - must be multiple of 4".to_string());
+    }
+
+    // Count padding chars
+    let padding_count = input.chars().rev().take_while(|&c| c == '=').count();
+    if padding_count > 2 {
+        return Err("Too much padding".to_string());
+    }
+
+    // Extract the base64 content without padding
+    let content_len = input.len() - padding_count;
+    let content = &input[..content_len];
+
+    let mut result = Vec::new();
+    let mut chars = content.chars();
+
+    while let Some(c1) = chars.next() {
+        let c2 = chars.next().ok_or("Incomplete base64 group")?;
+        let c3 = chars.next();
+        let c4 = chars.next();
+
+        let b1 = base64_char_to_index(c1)?;
+        let b2 = base64_char_to_index(c2)?;
+        let b3 = c3.map(base64_char_to_index).transpose()?;
+        let b4 = c4.map(base64_char_to_index).transpose()?;
+
+        let combined = (b1 << 18) | (b2 << 12) | (b3.unwrap_or(0) << 6) | b4.unwrap_or(0);
+
+        result.push((combined >> 16) as u8);
+        if b3.is_some() {
+            result.push((combined >> 8) as u8);
+        }
+        if b4.is_some() {
+            result.push(combined as u8);
+        }
+    }
+
+    // Handle padding validation
+    match padding_count {
+        0 => {
+            // No padding - content length must be multiple of 4
+            if content_len % 4 != 0 {
+                return Err("Missing padding".to_string());
+            }
+        }
+        1 => {
+            // One padding char - content should be 3 mod 4
+            if content_len % 4 != 3 {
+                return Err("Invalid padding for length".to_string());
+            }
+        }
+        2 => {
+            // Two padding chars - content should be 2 mod 4
+            if content_len % 4 != 2 {
+                return Err("Invalid padding for length".to_string());
+            }
+        }
+        _ => return Err("Invalid padding count".to_string()),
+    }
+
+    Ok(result)
+}
+
+/// Convert base64 character to its 6-bit value
+fn base64_char_to_index(c: char) -> Result<u32, String> {
+    match c {
+        'A'..='Z' => Ok(c as u32 - 'A' as u32),
+        'a'..='z' => Ok(c as u32 - 'a' as u32 + 26),
+        '0'..='9' => Ok(c as u32 - '0' as u32 + 52),
+        '+' => Ok(62),
+        '/' => Ok(63),
+        _ => Err(format!("Invalid base64 character: {}", c)),
+    }
+}
+
 /// Style of scalar representation in YAML
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarStyle {
@@ -30,6 +189,13 @@ pub enum ScalarType {
     Boolean,
     /// Null value
     Null,
+    /// Binary data (base64 encoded)
+    #[cfg(feature = "base64")]
+    Binary,
+    /// Timestamp value
+    Timestamp,
+    /// Regular expression
+    Regex,
 }
 
 /// A scalar value with metadata about its style and content
@@ -241,6 +407,35 @@ impl ScalarValue {
         }
     }
 
+    /// Create a binary scalar from raw bytes
+    #[cfg(feature = "base64")]
+    pub fn binary(data: &[u8]) -> Self {
+        let encoded = base64_encode(data);
+        Self {
+            value: encoded,
+            style: ScalarStyle::Plain,
+            scalar_type: ScalarType::Binary,
+        }
+    }
+
+    /// Create a timestamp scalar
+    pub fn timestamp(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            style: ScalarStyle::Plain,
+            scalar_type: ScalarType::Timestamp,
+        }
+    }
+
+    /// Create a regex scalar
+    pub fn regex(pattern: impl Into<String>) -> Self {
+        Self {
+            value: pattern.into(),
+            style: ScalarStyle::Plain,
+            scalar_type: ScalarType::Regex,
+        }
+    }
+
     /// Get the raw value
     pub fn value(&self) -> &str {
         &self.value
@@ -249,6 +444,284 @@ impl ScalarValue {
     /// Get the style
     pub fn style(&self) -> ScalarStyle {
         self.style
+    }
+
+    /// Get the scalar type
+    pub fn scalar_type(&self) -> ScalarType {
+        self.scalar_type
+    }
+
+    /// Extract binary data if this is a binary scalar
+    #[cfg(feature = "base64")]
+    pub fn as_binary(&self) -> Option<Result<Vec<u8>, String>> {
+        match self.scalar_type {
+            ScalarType::Binary => Some(base64_decode(&self.value)),
+            _ => None,
+        }
+    }
+
+    /// Check if this is a binary scalar
+    #[cfg(feature = "base64")]
+    pub fn is_binary(&self) -> bool {
+        self.scalar_type == ScalarType::Binary
+    }
+
+    /// Check if this is a timestamp scalar
+    pub fn is_timestamp(&self) -> bool {
+        self.scalar_type == ScalarType::Timestamp
+    }
+
+    /// Check if this is a regex scalar
+    pub fn is_regex(&self) -> bool {
+        self.scalar_type == ScalarType::Regex
+    }
+
+    /// Try to coerce this scalar to the specified type
+    pub fn coerce_to_type(&self, target_type: ScalarType) -> Option<ScalarValue> {
+        if self.scalar_type == target_type {
+            return Some(self.clone());
+        }
+
+        match target_type {
+            ScalarType::String => Some(ScalarValue {
+                value: self.value.clone(),
+                style: ScalarStyle::Plain,
+                scalar_type: ScalarType::String,
+            }),
+            ScalarType::Integer => {
+                if let Ok(int_val) = self.value.parse::<i64>() {
+                    Some(ScalarValue::from(int_val))
+                } else {
+                    None
+                }
+            }
+            ScalarType::Float => {
+                if let Ok(float_val) = self.value.parse::<f64>() {
+                    Some(ScalarValue::from(float_val))
+                } else {
+                    None
+                }
+            }
+            ScalarType::Boolean => match self.value.to_lowercase().as_str() {
+                "true" | "yes" | "on" | "1" => Some(ScalarValue::from(true)),
+                "false" | "no" | "off" | "0" => Some(ScalarValue::from(false)),
+                _ => None,
+            },
+            ScalarType::Null => match self.value.to_lowercase().as_str() {
+                "null" | "~" | "" => Some(ScalarValue::null()),
+                _ => None,
+            },
+            #[cfg(feature = "base64")]
+            ScalarType::Binary => {
+                // Try to decode as base64 to verify it's valid binary data
+                if base64_decode(&self.value).is_ok() {
+                    Some(ScalarValue {
+                        value: self.value.clone(),
+                        style: ScalarStyle::Plain,
+                        scalar_type: ScalarType::Binary,
+                    })
+                } else {
+                    None
+                }
+            }
+            ScalarType::Timestamp => {
+                // Basic timestamp format validation
+                if self.is_valid_timestamp(&self.value) {
+                    Some(ScalarValue::timestamp(&self.value))
+                } else {
+                    None
+                }
+            }
+            ScalarType::Regex => {
+                // For regex, just convert the value
+                Some(ScalarValue::regex(&self.value))
+            }
+        }
+    }
+
+    /// Auto-detect the most appropriate scalar type from a string value
+    pub fn auto_detect_type(value: &str) -> ScalarType {
+        // Check for null values first
+        match value.to_lowercase().as_str() {
+            "null" | "~" | "" => return ScalarType::Null,
+            _ => {}
+        }
+
+        // Check for boolean values
+        match value.to_lowercase().as_str() {
+            "true" | "false" | "yes" | "no" | "on" | "off" => return ScalarType::Boolean,
+            _ => {}
+        }
+
+        // Check for numbers
+        if value.parse::<i64>().is_ok() {
+            return ScalarType::Integer;
+        }
+        if value.parse::<f64>().is_ok() {
+            return ScalarType::Float;
+        }
+
+        // Check for timestamps (basic patterns)
+        if Self::is_valid_timestamp_static(value) {
+            return ScalarType::Timestamp;
+        }
+
+        // Check for binary data (base64)
+        #[cfg(feature = "base64")]
+        if Self::looks_like_base64(value) && base64_decode(value).is_ok() {
+            return ScalarType::Binary;
+        }
+
+        // Default to string
+        ScalarType::String
+    }
+
+    /// Create a scalar with automatic type detection
+    pub fn auto_typed(value: impl Into<String>) -> Self {
+        let value = value.into();
+        let scalar_type = Self::auto_detect_type(&value);
+        let style = Self::detect_style(&value);
+
+        Self {
+            value,
+            style,
+            scalar_type,
+        }
+    }
+
+    /// Check if a string looks like base64 encoded data
+    #[cfg(feature = "base64")]
+    fn looks_like_base64(value: &str) -> bool {
+        if value.is_empty() {
+            return false;
+        }
+
+        // Must be reasonable length and contain only base64 characters
+        // Also need to check that padding is only at the end
+        if value.len() < 4 || value.len() % 4 != 0 {
+            return false;
+        }
+
+        let padding_count = value.chars().filter(|&c| c == '=').count();
+        if padding_count > 2 {
+            return false;
+        }
+
+        // Check all characters are valid base64
+        if !value
+            .chars()
+            .all(|c| matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '+' | '/' | '='))
+        {
+            return false;
+        }
+
+        // Check that padding is only at the end
+        if padding_count > 0 {
+            let padding_start = value.len() - padding_count;
+            if !value[padding_start..].chars().all(|c| c == '=') {
+                return false;
+            }
+            // Check that non-padding part doesn't contain '='
+            if value[..padding_start].contains('=') {
+                return false;
+            }
+        }
+
+        // Final validation: try to decode it to ensure it's actually valid base64
+        // This will catch cases like "SGVs" which looks valid but isn't proper base64
+        base64_decode(value).is_ok()
+    }
+
+    /// Basic timestamp format validation
+    fn is_valid_timestamp(&self, value: &str) -> bool {
+        Self::is_valid_timestamp_static(value)
+    }
+
+    /// Static version of timestamp validation
+    fn is_valid_timestamp_static(value: &str) -> bool {
+        // Basic patterns for common timestamp formats
+        // ISO 8601: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS etc.
+        if Self::matches_iso8601_pattern(value) {
+            return true;
+        }
+
+        // Unix timestamp (seconds since epoch)
+        if let Ok(timestamp) = value.parse::<u64>() {
+            // Reasonable range: between 1970 and 2100
+            return timestamp > 0 && timestamp < 4_102_444_800; // 2100-01-01
+        }
+
+        false
+    }
+
+    /// Simple pattern matching for ISO 8601 timestamps
+    fn matches_iso8601_pattern(value: &str) -> bool {
+        let chars: Vec<char> = value.chars().collect();
+
+        // Must be at least YYYY-MM-DD (10 chars)
+        if chars.len() < 10 {
+            return false;
+        }
+
+        // Check YYYY-MM-DD pattern
+        if !(chars[0..4].iter().all(|c| c.is_ascii_digit())
+            && chars[4] == '-'
+            && chars[5..7].iter().all(|c| c.is_ascii_digit())
+            && chars[7] == '-'
+            && chars[8..10].iter().all(|c| c.is_ascii_digit()))
+        {
+            return false;
+        }
+
+        // Validate month and day ranges (basic validation)
+        let month_str: String = chars[5..7].iter().collect();
+        let day_str: String = chars[8..10].iter().collect();
+
+        if let (Ok(month), Ok(day)) = (month_str.parse::<u8>(), day_str.parse::<u8>()) {
+            if month < 1 || month > 12 || day < 1 || day > 31 {
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        // If it's just YYYY-MM-DD, that's valid
+        if chars.len() == 10 {
+            return true;
+        }
+
+        // Check for time part: T or space followed by HH:MM:SS
+        if chars.len() >= 19 {
+            let sep = chars[10];
+            if (sep == 'T' || sep == ' ')
+                && chars[11..13].iter().all(|c| c.is_ascii_digit())
+                && chars[13] == ':'
+                && chars[14..16].iter().all(|c| c.is_ascii_digit())
+                && chars[16] == ':'
+                && chars[17..19].iter().all(|c| c.is_ascii_digit())
+            {
+                // Validate hour, minute, second ranges
+                let hour_str: String = chars[11..13].iter().collect();
+                let minute_str: String = chars[14..16].iter().collect();
+                let second_str: String = chars[17..19].iter().collect();
+
+                if let (Ok(hour), Ok(minute), Ok(second)) = (
+                    hour_str.parse::<u8>(),
+                    minute_str.parse::<u8>(),
+                    second_str.parse::<u8>(),
+                ) {
+                    if hour > 23 || minute > 59 || second > 59 {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Detect the appropriate style for a value
@@ -318,7 +791,16 @@ impl ScalarValue {
 
     /// Render the scalar as a YAML string with proper escaping
     pub fn to_yaml_string(&self) -> String {
-        match self.style {
+        // For special data types, always include the tag regardless of style
+        let tag_prefix = match self.scalar_type {
+            #[cfg(feature = "base64")]
+            ScalarType::Binary => "!!binary ",
+            ScalarType::Timestamp => "!!timestamp ",
+            ScalarType::Regex => "!!regex ",
+            _ => "",
+        };
+
+        let content = match self.style {
             ScalarStyle::Plain => {
                 // Check if we need to quote based on type vs content
                 match self.scalar_type {
@@ -334,14 +816,20 @@ impl ScalarValue {
                     ScalarType::Integer
                     | ScalarType::Float
                     | ScalarType::Boolean
-                    | ScalarType::Null => self.value.clone(),
+                    | ScalarType::Null
+                    | ScalarType::Timestamp
+                    | ScalarType::Regex => self.value.clone(),
+                    #[cfg(feature = "base64")]
+                    ScalarType::Binary => self.value.clone(),
                 }
             }
             ScalarStyle::SingleQuoted => self.to_single_quoted(),
             ScalarStyle::DoubleQuoted => self.to_double_quoted(),
             ScalarStyle::Literal => self.to_literal(),
             ScalarStyle::Folded => self.to_folded(),
-        }
+        };
+
+        format!("{}{}", tag_prefix, content)
     }
 
     /// Convert to single-quoted string
@@ -935,5 +1423,260 @@ mod tests {
 
         // But the internal value should remain unchanged
         assert_eq!(scalar.value(), "Hello 世界 🌍");
+    }
+
+    #[test]
+    #[cfg(feature = "base64")]
+    fn test_binary_data_encoding() {
+        // Test creating binary scalar from raw bytes
+        let data = b"Hello, World!";
+        let scalar = ScalarValue::binary(data);
+
+        assert!(scalar.is_binary());
+        assert_eq!(scalar.scalar_type(), ScalarType::Binary);
+
+        // Should produce valid base64
+        let yaml_output = scalar.to_yaml_string();
+        assert!(yaml_output.starts_with("!!binary "));
+
+        // Should be able to decode back to original data
+        if let Some(decoded_result) = scalar.as_binary() {
+            let decoded = decoded_result.expect("Should decode successfully");
+            assert_eq!(decoded, data);
+        } else {
+            panic!("Should be able to extract binary data");
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "base64")]
+    fn test_base64_encoding_decoding() {
+        // Test various byte sequences
+        let test_cases = [
+            b"".as_slice(),
+            b"A",
+            b"AB",
+            b"ABC",
+            b"ABCD",
+            b"Hello, World!",
+            &[0, 1, 2, 3, 255, 254, 253],
+        ];
+
+        for data in test_cases {
+            let encoded = base64_encode(data);
+            let decoded = base64_decode(&encoded).expect("Should decode successfully");
+            assert_eq!(decoded, data, "Failed for data: {:?}", data);
+        }
+    }
+
+    #[test]
+    fn test_timestamp_creation_and_validation() {
+        // Test various timestamp formats
+        let valid_timestamps = [
+            "2023-12-25",
+            "2023-12-25T10:30:45",
+            "2023-12-25 10:30:45",
+            "2023-12-25T10:30:45Z",
+            "1703515845", // Unix timestamp
+        ];
+
+        for ts in valid_timestamps {
+            let scalar = ScalarValue::timestamp(ts);
+            assert!(scalar.is_timestamp());
+            assert_eq!(scalar.scalar_type(), ScalarType::Timestamp);
+            assert_eq!(scalar.value(), ts);
+
+            let yaml_output = scalar.to_yaml_string();
+            assert_eq!(yaml_output, format!("!!timestamp {}", ts));
+        }
+    }
+
+    #[test]
+    fn test_regex_creation() {
+        let pattern = r"^\d{3}-\d{2}-\d{4}$";
+        let scalar = ScalarValue::regex(pattern);
+
+        assert!(scalar.is_regex());
+        assert_eq!(scalar.scalar_type(), ScalarType::Regex);
+        assert_eq!(scalar.value(), pattern);
+
+        let yaml_output = scalar.to_yaml_string();
+        assert_eq!(yaml_output, format!("!!regex {}", pattern));
+    }
+
+    #[test]
+    fn test_type_coercion() {
+        // Test coercing string to integer
+        let str_scalar = ScalarValue::new("42");
+        let int_scalar = str_scalar.coerce_to_type(ScalarType::Integer).unwrap();
+        assert_eq!(int_scalar.scalar_type(), ScalarType::Integer);
+        assert_eq!(int_scalar.value(), "42");
+
+        // Test coercing string to boolean
+        let bool_scalar = ScalarValue::new("true")
+            .coerce_to_type(ScalarType::Boolean)
+            .unwrap();
+        assert_eq!(bool_scalar.scalar_type(), ScalarType::Boolean);
+        assert_eq!(bool_scalar.value(), "true");
+
+        // Test coercing boolean string variations
+        let yes_scalar = ScalarValue::new("yes")
+            .coerce_to_type(ScalarType::Boolean)
+            .unwrap();
+        assert_eq!(yes_scalar.value(), "true");
+
+        let no_scalar = ScalarValue::new("no")
+            .coerce_to_type(ScalarType::Boolean)
+            .unwrap();
+        assert_eq!(no_scalar.value(), "false");
+
+        // Test failed coercion
+        let str_scalar = ScalarValue::new("not_a_number");
+        assert!(str_scalar.coerce_to_type(ScalarType::Integer).is_none());
+    }
+
+    #[test]
+    fn test_auto_type_detection() {
+        // Test various automatic type detections
+        assert_eq!(ScalarValue::auto_detect_type("42"), ScalarType::Integer);
+        assert_eq!(ScalarValue::auto_detect_type("3.14"), ScalarType::Float);
+        assert_eq!(ScalarValue::auto_detect_type("true"), ScalarType::Boolean);
+        assert_eq!(ScalarValue::auto_detect_type("false"), ScalarType::Boolean);
+        assert_eq!(ScalarValue::auto_detect_type("yes"), ScalarType::Boolean);
+        assert_eq!(ScalarValue::auto_detect_type("null"), ScalarType::Null);
+        assert_eq!(ScalarValue::auto_detect_type("~"), ScalarType::Null);
+        assert_eq!(ScalarValue::auto_detect_type(""), ScalarType::Null);
+        assert_eq!(
+            ScalarValue::auto_detect_type("2023-12-25"),
+            ScalarType::Timestamp
+        );
+        assert_eq!(
+            ScalarValue::auto_detect_type("2023-12-25T10:30:45"),
+            ScalarType::Timestamp
+        );
+        #[cfg(feature = "base64")]
+        assert_eq!(
+            ScalarValue::auto_detect_type("SGVsbG8gV29ybGQ="),
+            ScalarType::Binary
+        );
+        #[cfg(not(feature = "base64"))]
+        assert_eq!(
+            ScalarValue::auto_detect_type("SGVsbG8gV29ybGQ="),
+            ScalarType::String
+        );
+        assert_eq!(
+            ScalarValue::auto_detect_type("hello world"),
+            ScalarType::String
+        );
+    }
+
+    #[test]
+    fn test_auto_typed_scalar_creation() {
+        let int_scalar = ScalarValue::auto_typed("123");
+        assert_eq!(int_scalar.scalar_type(), ScalarType::Integer);
+
+        let bool_scalar = ScalarValue::auto_typed("true");
+        assert_eq!(bool_scalar.scalar_type(), ScalarType::Boolean);
+
+        let timestamp_scalar = ScalarValue::auto_typed("2023-12-25");
+        assert_eq!(timestamp_scalar.scalar_type(), ScalarType::Timestamp);
+
+        let string_scalar = ScalarValue::auto_typed("hello world");
+        assert_eq!(string_scalar.scalar_type(), ScalarType::String);
+    }
+
+    #[test]
+    fn test_timestamp_pattern_matching() {
+        // Valid patterns
+        assert!(ScalarValue::matches_iso8601_pattern("2023-12-25"));
+        assert!(ScalarValue::matches_iso8601_pattern("2023-12-25T10:30:45"));
+        assert!(ScalarValue::matches_iso8601_pattern("2023-12-25 10:30:45"));
+        assert!(ScalarValue::matches_iso8601_pattern("2023-01-01T00:00:00"));
+
+        // Invalid patterns
+        assert!(!ScalarValue::matches_iso8601_pattern("2023-13-25")); // Invalid month
+        assert!(!ScalarValue::matches_iso8601_pattern("23-12-25")); // Wrong year format
+        assert!(!ScalarValue::matches_iso8601_pattern("2023/12/25")); // Wrong separator
+        assert!(!ScalarValue::matches_iso8601_pattern("not-a-date"));
+        assert!(!ScalarValue::matches_iso8601_pattern("2023"));
+    }
+
+    #[test]
+    #[cfg(feature = "base64")]
+    fn test_base64_detection() {
+        // Valid base64 strings
+        assert!(ScalarValue::looks_like_base64("SGVsbG8=")); // "Hello"
+        assert!(ScalarValue::looks_like_base64("V29ybGQ=")); // "World"
+        assert!(ScalarValue::looks_like_base64("SGVsbG8gV29ybGQ=")); // "Hello World"
+        assert!(ScalarValue::looks_like_base64("AAAA")); // All A's
+
+        // Invalid base64 strings
+        assert!(!ScalarValue::looks_like_base64("Hello")); // No padding, wrong chars
+        assert!(!ScalarValue::looks_like_base64("SGVsbG8")); // Missing padding (7 chars, should be 8 with padding)
+        assert!(!ScalarValue::looks_like_base64("")); // Empty
+        assert!(!ScalarValue::looks_like_base64("SGV@")); // Invalid character
+        assert!(!ScalarValue::looks_like_base64("SGVsbG8g===")); // Too much padding
+    }
+
+    #[test]
+    #[cfg(feature = "base64")]
+    fn test_binary_yaml_output_with_tags() {
+        let data = b"Binary data here";
+        let scalar = ScalarValue::binary(data);
+        let yaml_output = scalar.to_yaml_string();
+
+        assert!(yaml_output.starts_with("!!binary "));
+
+        // Extract just the base64 part
+        let base64_part = &yaml_output[9..]; // Remove "!!binary "
+        let decoded = base64_decode(base64_part).expect("Should decode");
+        assert_eq!(decoded, data);
+    }
+
+    #[test]
+    #[cfg(feature = "base64")]
+    fn test_special_data_types_with_different_styles() {
+        // Binary with different styles should still include tag
+        let data = b"test";
+        let binary_scalar = ScalarValue::binary(data);
+
+        // Even if we change style, binary type should maintain tag
+        let mut styled_binary = binary_scalar.clone();
+        styled_binary.style = ScalarStyle::DoubleQuoted;
+
+        // The to_yaml_string should still respect the scalar type for tagging
+        assert!(styled_binary.to_yaml_string().contains("!!binary"));
+    }
+
+    #[test]
+    fn test_type_checking_methods() {
+        #[cfg(feature = "base64")]
+        let binary_scalar = ScalarValue::binary(b"test");
+        let timestamp_scalar = ScalarValue::timestamp("2023-12-25");
+        let regex_scalar = ScalarValue::regex(r"\d+");
+        let string_scalar = ScalarValue::new("hello");
+
+        // Test type checking methods
+        #[cfg(feature = "base64")]
+        assert!(binary_scalar.is_binary());
+        #[cfg(feature = "base64")]
+        assert!(!binary_scalar.is_timestamp());
+        #[cfg(feature = "base64")]
+        assert!(!binary_scalar.is_regex());
+
+        #[cfg(feature = "base64")]
+        assert!(!timestamp_scalar.is_binary());
+        assert!(timestamp_scalar.is_timestamp());
+        assert!(!timestamp_scalar.is_regex());
+
+        #[cfg(feature = "base64")]
+        assert!(!regex_scalar.is_binary());
+        assert!(!regex_scalar.is_timestamp());
+        assert!(regex_scalar.is_regex());
+
+        #[cfg(feature = "base64")]
+        assert!(!string_scalar.is_binary());
+        assert!(!string_scalar.is_timestamp());
+        assert!(!string_scalar.is_regex());
     }
 }

@@ -235,7 +235,7 @@ pub fn lex_with_validation_config<'a>(
                     // Check if followed by whitespace or end of input
                     let followed_by_whitespace_or_end = chars
                         .peek()
-                        .map_or(true, |(_, next_ch)| next_ch.is_whitespace());
+                        .is_none_or(|(_, next_ch)| next_ch.is_whitespace());
 
                     let is_sequence_marker =
                         only_whitespace_before && followed_by_whitespace_or_end;
@@ -347,18 +347,25 @@ pub fn lex_with_validation_config<'a>(
 
             // Tags
             '!' => {
-                // Check if this is a global tag (starts with !!)
-                let mut tag_end = start_idx + 1;
+                // Handle tag indicators - both ! and !!
+                let mut end_idx = start_idx + 1;
 
-                // Handle !! prefix for global tags
+                // Check for double exclamation (global tag)
                 if let Some((_, '!')) = chars.peek() {
                     chars.next(); // consume the second !
-                    tag_end = start_idx + 2;
+                    end_idx = start_idx + 2;
                 }
 
-                // Read the rest of the tag
-                let rest = read_scalar_from(&mut chars, input, tag_end, is_yaml_special);
-                tokens.push((TAG, &input[token_start..tag_end + rest.len()]));
+                // Read the tag name after the ! or !!
+                while let Some((idx, ch)) = chars.peek() {
+                    if ch.is_whitespace() || is_yaml_special(*ch) {
+                        break;
+                    }
+                    end_idx = *idx + ch.len_utf8();
+                    chars.next();
+                }
+
+                tokens.push((TAG, &input[token_start..end_idx]));
             }
 
             '%' => {

@@ -987,7 +987,7 @@ impl TaggedScalar {
         match node.kind() {
             SyntaxKind::VALUE => {
                 // VALUE nodes contain the actual value as a child
-                for child in node.children() {
+                if let Some(child) = node.children().next() {
                     return self.yaml_node_to_yaml_value(child);
                 }
                 // If no child found, return null
@@ -1064,7 +1064,7 @@ impl Scalar {
             // Simple unquoting - a full implementation would handle escapes
             text[1..text.len() - 1].to_string()
         } else {
-            text.to_string()
+            text
         }
     }
 }
@@ -1359,7 +1359,30 @@ impl Parser {
                         | SyntaxKind::NULL
                 )
             ) {
-                self.bump();
+                if !self.in_flow_context {
+                    // For plain scalars in block context, consume all tokens on the same line
+                    // This handles complex values like timestamps with spaces
+                    while let Some(kind) = self.current() {
+                        if matches!(kind, SyntaxKind::NEWLINE | SyntaxKind::COMMENT) {
+                            break;
+                        }
+                        // In block context, stop at flow collection delimiters
+                        if matches!(
+                            kind,
+                            SyntaxKind::LEFT_BRACKET
+                                | SyntaxKind::LEFT_BRACE
+                                | SyntaxKind::RIGHT_BRACKET
+                                | SyntaxKind::RIGHT_BRACE
+                                | SyntaxKind::COMMA
+                        ) {
+                            break;
+                        }
+                        self.bump();
+                    }
+                } else {
+                    // In flow context, only consume the current token
+                    self.bump();
+                }
             } else {
                 // Fallback: consume tokens until we hit structure
                 while let Some(kind) = self.current() {
@@ -1520,6 +1543,18 @@ impl Parser {
                 } else {
                     self.add_error("Unterminated quoted string".to_string());
                 }
+            }
+            Some(SyntaxKind::PIPE) => {
+                // Handle literal block scalar
+                self.bump(); // consume PIPE
+                self.parse_block_scalar_header();
+                self.parse_block_scalar_content();
+            }
+            Some(SyntaxKind::GREATER) => {
+                // Handle folded block scalar
+                self.bump(); // consume GREATER
+                self.parse_block_scalar_header();
+                self.parse_block_scalar_content();
             }
             Some(
                 SyntaxKind::STRING
@@ -1921,20 +1956,13 @@ impl Parser {
         }
 
         // Look ahead to see if there's a colon after the current token
+        // A valid mapping key should have a colon immediately after (with only whitespace)
         for kind in self.upcoming_tokens() {
             match kind {
                 SyntaxKind::COLON => return true,
                 SyntaxKind::WHITESPACE => continue,
-                // These tokens definitely end a potential mapping key
-                SyntaxKind::NEWLINE
-                | SyntaxKind::DASH
-                | SyntaxKind::DOC_START
-                | SyntaxKind::DOC_END
-                | SyntaxKind::COMMA
-                | SyntaxKind::RIGHT_BRACKET
-                | SyntaxKind::RIGHT_BRACE => return false,
-                // Other tokens could be part of a complex key, keep looking
-                _ => continue,
+                // Any other token means this is not a simple mapping key
+                _ => return false,
             }
         }
         false
@@ -2198,7 +2226,7 @@ impl Mapping {
         let nested_value = create_nested_value(rest, value);
 
         // Set the value using the mapping's existing set method
-        self.set_value(ScalarValue::new(first.to_string()), nested_value);
+        self.set_value(ScalarValue::new((*first).to_string()), nested_value);
     }
 }
 
@@ -2223,7 +2251,7 @@ fn create_nested_value(path_parts: &[&str], final_value: &str) -> YamlValue {
     // Recursively create nested mappings
     let (first, rest) = path_parts.split_first().unwrap();
     let mut map = BTreeMap::new();
-    map.insert(first.to_string(), create_nested_value(rest, final_value));
+    map.insert((*first).to_string(), create_nested_value(rest, final_value));
     YamlValue::Mapping(map)
 }
 

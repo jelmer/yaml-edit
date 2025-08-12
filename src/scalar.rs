@@ -678,7 +678,7 @@ impl ScalarValue {
         let day_str: String = chars[8..10].iter().collect();
 
         if let (Ok(month), Ok(day)) = (month_str.parse::<u8>(), day_str.parse::<u8>()) {
-            if month < 1 || month > 12 || day < 1 || day > 31 {
+            if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
                 return false;
             }
         } else {

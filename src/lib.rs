@@ -12,6 +12,7 @@
 //! all whitespace, comments, and formatting. It is based on the [rowan] library.
 
 mod error;
+mod error_recovery;
 mod lex;
 mod parse;
 mod scalar;

@@ -2,6 +2,7 @@
 
 use crate::{
     error::YamlResult,
+    error_recovery::{ErrorBuilder, ErrorRecoveryContext, ParseContext, RecoveryStrategy},
     lex::{lex, SyntaxKind},
     parse::Parse,
     scalar::ScalarValue,
@@ -1094,6 +1095,10 @@ struct Parser {
     anchor_registry: HashMap<String, rowan::GreenNode>,
     /// Track currently resolving aliases to detect circular references
     resolving_aliases: Vec<String>,
+    /// Error recovery context for better error messages
+    error_context: ErrorRecoveryContext,
+    /// Original text for error reporting
+    original_text: String,
 }
 
 impl Parser {
@@ -1118,6 +1123,8 @@ impl Parser {
             in_flow_context: false,
             anchor_registry: HashMap::new(),
             resolving_aliases: Vec::new(),
+            error_context: ErrorRecoveryContext::new(text.to_string()),
+            original_text: text.to_string(),
         }
     }
 
@@ -1629,6 +1636,7 @@ impl Parser {
 
     fn parse_mapping(&mut self) {
         self.builder.start_node(SyntaxKind::MAPPING.into());
+        self.error_context.push_context(ParseContext::Mapping);
 
         while self.current().is_some() {
             if !self.is_mapping_key() && !self.is_complex_mapping_key() {
@@ -1711,10 +1719,12 @@ impl Parser {
         }
 
         self.builder.finish_node();
+        self.error_context.pop_context();
     }
 
     fn parse_sequence(&mut self) {
         self.builder.start_node(SyntaxKind::SEQUENCE.into());
+        self.error_context.push_context(ParseContext::Sequence);
 
         while self.current() == Some(SyntaxKind::DASH) {
             self.bump(); // consume dash
@@ -1728,10 +1738,12 @@ impl Parser {
         }
 
         self.builder.finish_node();
+        self.error_context.pop_context();
     }
 
     fn parse_flow_sequence(&mut self) {
         self.builder.start_node(SyntaxKind::SEQUENCE.into());
+        self.error_context.push_context(ParseContext::FlowSequence);
 
         self.bump(); // consume [
         self.skip_ws_and_newlines(); // Support comments and newlines in flow sequences
@@ -1758,10 +1770,12 @@ impl Parser {
         }
 
         self.builder.finish_node();
+        self.error_context.pop_context();
     }
 
     fn parse_flow_mapping(&mut self) {
         self.builder.start_node(SyntaxKind::MAPPING.into());
+        self.error_context.push_context(ParseContext::FlowMapping);
 
         self.bump(); // consume {
         self.skip_ws_and_newlines(); // Support comments and newlines in flow mappings
@@ -1806,6 +1820,7 @@ impl Parser {
         }
 
         self.builder.finish_node();
+        self.error_context.pop_context();
     }
 
     fn parse_directive(&mut self) {
@@ -2196,11 +2211,17 @@ impl Parser {
             if self.current_token_index > 0 {
                 self.current_token_index -= 1;
             }
+            // Update error context position
+            self.error_context.advance(text.len());
         }
     }
 
     fn current(&self) -> Option<SyntaxKind> {
         self.tokens.last().map(|(kind, _)| *kind)
+    }
+    
+    fn current_text(&self) -> Option<String> {
+        self.tokens.last().map(|(_, text)| text.clone())
     }
 
     /// Iterator over upcoming tokens starting from the next token (not current)
@@ -2212,7 +2233,85 @@ impl Parser {
     }
 
     fn add_error(&mut self, message: String) {
-        self.errors.push(message);
+        // Create positioned error with line/column info
+        let token_text = self.current_text();
+        let token_len = token_text.as_ref().map(|s| s.len()).unwrap_or(1);
+        let positioned_error = self.error_context.create_error(message.clone(), token_len);
+        
+        self.errors.push(positioned_error.message.clone());
+        self.positioned_errors.push(positioned_error);
+    }
+    
+    /// Add an error with recovery
+    fn add_error_and_recover(&mut self, message: String, expected: SyntaxKind) {
+        self.add_error(message);
+        
+        // Determine recovery strategy
+        let found = self.current();
+        let strategy = self.error_context.suggest_recovery(expected, found);
+        
+        match strategy {
+            RecoveryStrategy::SkipToken => {
+                // Skip the problematic token
+                if self.current().is_some() {
+                    self.bump();
+                }
+            }
+            RecoveryStrategy::SkipUntil(target) => {
+                // Skip tokens until we find the target
+                while self.current().is_some() && self.current() != Some(target) {
+                    self.bump();
+                }
+            }
+            RecoveryStrategy::SkipToEndOfLine => {
+                // Skip to end of line
+                while self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
+                    self.bump();
+                }
+            }
+            RecoveryStrategy::InsertToken(kind) => {
+                // Insert synthetic token
+                self.builder.token(kind.into(), "");
+            }
+            RecoveryStrategy::SyncToSafePoint => {
+                // Find next safe synchronization point
+                let sync_point = self.error_context.find_sync_point(
+                    &self.tokens,
+                    self.tokens.len() - self.current_token_index,
+                );
+                let tokens_to_skip = sync_point - (self.tokens.len() - self.current_token_index);
+                for _ in 0..tokens_to_skip {
+                    if self.current().is_some() {
+                        self.bump();
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Create a detailed error message
+    fn create_detailed_error(&mut self, base_message: &str, expected: &str, found: Option<&str>) -> String {
+        let mut builder = ErrorBuilder::new(base_message);
+        builder = builder.expected(expected);
+        
+        if let Some(found_str) = found {
+            builder = builder.found(found_str);
+        } else if let Some(token) = self.current_text() {
+            builder = builder.found(format!("'{}'", token));
+        }
+        
+        // Add context
+        match self.error_context.current_context() {
+            ParseContext::Mapping => builder = builder.context("in mapping"),
+            ParseContext::Sequence => builder = builder.context("in sequence"),
+            ParseContext::FlowMapping => builder = builder.context("in flow mapping"),
+            ParseContext::FlowSequence => builder = builder.context("in flow sequence"),
+            ParseContext::BlockScalar => builder = builder.context("in block scalar"),
+            ParseContext::QuotedString => builder = builder.context("in quoted string"),
+            _ => {}
+        }
+        
+        builder.build()
     }
 }
 

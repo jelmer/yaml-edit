@@ -1,100 +1,83 @@
-# TODO: YAML Specification Features Not Yet Supported
+# TODO: yaml-edit Roadmap
 
-This document lists YAML 1.2 specification features that are not yet implemented in yaml-edit.
+A Rust library for parsing and editing YAML files while preserving formatting, comments, and structure.
 
-## Known Bugs and Issues
+## Summary
 
-### Critical Bugs
-1. **Timestamp Parsing**: Timestamps with spaces fail to parse (e.g., `2001-12-14 21:59:43.10 -5`)
-   - *Root cause*: Space-separated timestamps look like mapping syntax; needs special handling
-2. **Special Collections**: `!!set`, `!!omap`, and `!!pairs` parse but lose their content
-   - *Root cause*: Tags are preserved but special collection semantics not implemented
-3. **Binary Data**: `!!binary` tag parses but the base64 content is lost
-   - *Root cause*: Block scalar content after tags not properly associated
+yaml-edit has made significant progress with core YAML 1.2 features. The parser now correctly handles:
+- ✅ All critical parsing bugs (timestamps, binary data, special collections)
+- ✅ Complex plain scalars (URLs, emails, time values)
+- ✅ Block scalars with proper indentation
+- ✅ Flow collections and nested structures
+- ✅ Comments preservation in most contexts
+- ✅ Basic editing API while preserving structure
+- ✅ Anchors, aliases, and merge keys
+
+This document tracks remaining features and improvements needed for full YAML 1.2 compliance.
+
+## ✅ Recently Fixed Issues
+
+### Critical Bugs (FIXED)
+1. **Timestamp Parsing**: ✅ FIXED - Timestamps with spaces now parse correctly (e.g., `2001-12-14 21:59:43.10 -5`)
+2. **Special Collections**: ✅ FIXED - `!!set`, `!!omap`, and `!!pairs` now preserve their content correctly
+3. **Binary Data**: ✅ FIXED - `!!binary` tag now properly preserves base64 content
+
+## 🎯 Next Priority Items
+
+These are the most impactful features to implement next:
+
+1. **Path-based API** - Enable `yaml.get("server.host")` and `yaml.set("server.port", 8080)`
+2. **Schema support** - Validate and enforce YAML schemas  
+3. **Better error recovery** - Continue parsing after errors with meaningful messages
+4. **Performance optimizations** - Streaming and lazy parsing for large files
+5. **Regular expressions** - `!!regex` tag support
+
+## Known Issues
 
 ### Minor Issues
-1. **Octal Numbers**: Legacy octal format (0755) works but modern format (0o755) may not be recognized correctly
+1. **Complex key formatting** - Explicit key indicator (`?`) may not preserve exact formatting
+2. **Mid-line comments in flow** - Comments inside flow collections not fully supported
 
-## High Priority Features
+## Feature Categories
 
-### 1. Directives
-- [ ] Reserved directives
+### 🔧 API Enhancements
+- [ ] **Path-based access** - `yaml.get("server.host")`, `yaml.set("server.port", 8080)`
+- [ ] **Builder pattern** - Fluent API for creating YAML structures
+- [ ] **Iterator improvements** - Better traversal of sequences/mappings
+- [ ] **Visitor pattern** - Walk YAML trees with callbacks
 
-### 2. Special Collections
-- [ ] Sets (`!!set`) - *Currently broken: content is lost after parsing*
-- [ ] Ordered mappings (`!!omap`) - *Currently broken: content is lost after parsing*
-- [ ] Pairs (`!!pairs`) - *Currently broken: content is lost after parsing*
+### 📐 Schema Support
+- [ ] **Failsafe schema** - Minimal type set
+- [ ] **JSON schema** - JSON-compatible types only
+- [ ] **Core schema** - Full YAML 1.2 type set
+- [ ] **Custom schemas** - User-defined type validation
 
-### 3. Binary and Special Data Types
-- [ ] Binary data (`!!binary` with base64 encoding) - *Currently broken: content is lost*
-- [ ] Timestamps (`!!timestamp`) - *Partially broken: space-separated format fails*
-- [ ] Regular expressions
-- [ ] Type casting/coercion
+### 🔢 Number Formats
+- [x] ~~Binary notation~~ - `0b101010` now supported
+- [x] ~~Modern octal~~ - `0o777` now supported (legacy `0755` still works)
+- [x] ~~Hexadecimal~~ - Both `0xFF` and `0xff` work
+- [x] ~~Scientific notation~~ - `6.02e23` works
 
-## Medium Priority Features
+### 🎯 Advanced Types
+- [ ] **Regular expressions** - `!!regex` tag support
+- [ ] **Type coercion** - Automatic type conversion rules
+- [ ] **Custom tags** - User-defined type handlers
 
-### 4. Comments
-- [ ] Mid-line comments 
-- [ ] Preserve comment positioning more precisely in complex structures
+### ⚡ Performance
+- [ ] **Streaming parser** - Process huge files without loading all into memory
+- [ ] **Lazy evaluation** - Parse only accessed portions
+- [ ] **Memory optimization** - Reduce allocations and copies
+- [ ] **Parallel processing** - Multi-threaded parsing for large documents
 
-### 5. Schema Support
-- [ ] Failsafe schema
-- [ ] JSON schema
-- [ ] Core schema (default)
-- [ ] Custom schema definitions
+### 🛠️ Developer Experience
+- [ ] **Better errors** - Line/column numbers, recovery suggestions
+- [ ] **Validation** - Schema validation with helpful messages
+- [ ] **Debugging tools** - AST visualization, parse tree dumps
+- [ ] **YAML 1.1 warnings** - Detect deprecated constructs
 
-### 6. Error Handling
-- [ ] Better error messages with line/column numbers
-- [ ] Recovery from parse errors
-- [ ] Validation against schema
-- [ ] Warning for deprecated YAML 1.1 constructs
-
-## Implementation Improvements
-
-### Parser Improvements
-- [ ] Proper indentation tracking
-- [ ] Better empty value handling
-- [ ] Improved flow collection parsing
-- [ ] Handle edge cases in key detection
-
-### API Enhancements
-- [ ] Path-based access (implement `set_path` properly)
-- [ ] Iterator improvements for sequences/mappings
-- [ ] Builder pattern for creating YAML structures
-- [ ] Visitor pattern for traversing YAML
-
-### Performance
-- [ ] Optimize tree traversal
-- [ ] Lazy parsing for large files
-- [ ] Streaming support for huge documents
-- [ ] Memory usage optimization
-
-## Testing
-- [ ] Comprehensive test suite against YAML test suite
-- [ ] Fuzzing tests
-- [ ] Round-trip tests for all features
-- [ ] Performance benchmarks
-
-## Documentation
-- [ ] API documentation for all public types
-- [ ] Usage examples for each feature
-- [ ] Migration guide from other YAML libraries
-- [ ] Best practices guide
-
-## Additional Missing Features
-
-### Number Formats
-- [ ] Modern octal notation (`0o777`) - may not be recognized as octal
-- [ ] Binary notation (`0b101010`)
-- [ ] Hexadecimal with uppercase (`0xDEADBEEF`)
-- [ ] Scientific notation (`6.02e23`)
-
-### Plain Scalar Edge Cases
-- [ ] URLs with colons (`http://example.com`) - colon causes truncation
-- [ ] Email addresses (`user@example.com`) - @ causes truncation  
-- [ ] Time values (`12:34:56`) - colons cause issues
-
-### YAML 1.1 vs 1.2 Differences
-- [ ] Boolean values (`yes`, `no`, `on`, `off`) - should be strings in 1.2 when quoted
-- [ ] Octal notation changes (0755 vs 0o755)
-- [ ] Merge key behavior differences
+### 📚 Documentation & Testing
+- [ ] **Complete API docs** - All public types documented
+- [ ] **Usage examples** - Real-world scenarios
+- [ ] **YAML Test Suite** - Official compliance tests
+- [ ] **Fuzzing** - Robustness testing
+- [ ] **Benchmarks** - Performance metrics

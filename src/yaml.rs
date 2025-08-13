@@ -1465,7 +1465,7 @@ impl Parser {
             Some(SyntaxKind::LEFT_BRACKET) if !is_mapping => self.parse_flow_sequence(),
             Some(SyntaxKind::NEWLINE) => {
                 self.bump(); // consume newline
-                // Check if next token is indent (for indented content)
+                             // Check if next token is indent (for indented content)
                 if self.current() == Some(SyntaxKind::INDENT) {
                     self.bump(); // consume indent
                 }
@@ -2137,7 +2137,7 @@ impl Parser {
                 self.bump(); // consume newline
                 if self.current() == Some(SyntaxKind::INDENT) {
                     self.bump(); // consume indent
-                    // Parse the indented content as the value
+                                 // Parse the indented content as the value
                     self.parse_value();
                 }
             }
@@ -4295,6 +4295,68 @@ folded: >
         let parsed = Yaml::from_str(yaml).unwrap();
         assert_eq!(parsed.documents().count(), 3);
         assert_eq!(parsed.to_string(), yaml);
+    }
+
+    #[test]
+    fn test_number_format_parsing() {
+        // Test binary numbers
+        let yaml = Yaml::from_str("value: 0b1010").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0b1010");
+
+        let yaml = Yaml::from_str("value: 0B1111").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0B1111");
+
+        // Test modern octal numbers
+        let yaml = Yaml::from_str("value: 0o755").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0o755");
+
+        let yaml = Yaml::from_str("value: 0O644").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0O644");
+
+        // Test with signs
+        let yaml = Yaml::from_str("value: -0b1010").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: -0b1010");
+
+        let yaml = Yaml::from_str("value: +0o755").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: +0o755");
+
+        // Test legacy formats still work
+        let yaml = Yaml::from_str("value: 0755").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0755");
+
+        let yaml = Yaml::from_str("value: 0xFF").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0xFF");
+    }
+
+    #[test]
+    fn test_invalid_number_formats_as_strings() {
+        // Invalid formats should be preserved as strings
+        let yaml = Yaml::from_str("value: 0b2").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0b2");
+
+        let yaml = Yaml::from_str("value: 0o9").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0o9");
+
+        let yaml = Yaml::from_str("value: 0xGH").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0xGH");
+    }
+
+    #[test]
+    fn test_number_formats_in_complex_structures() {
+        let input = r#"
+config:
+  permissions: 0o755
+  flags: 0b11010
+  color: 0xFF00FF
+  count: 42"#;
+
+        let yaml = Yaml::from_str(input).unwrap();
+        let output = yaml.to_string();
+
+        assert!(output.contains("0o755"));
+        assert!(output.contains("0b11010"));
+        assert!(output.contains("0xFF00FF"));
+        assert!(output.contains("42"));
     }
 
     #[test]

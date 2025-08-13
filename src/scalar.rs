@@ -489,7 +489,7 @@ impl ScalarValue {
                 scalar_type: ScalarType::String,
             }),
             ScalarType::Integer => {
-                if let Ok(int_val) = self.value.parse::<i64>() {
+                if let Some(int_val) = Self::parse_integer(&self.value) {
                     Some(ScalarValue::from(int_val))
                 } else {
                     None
@@ -539,6 +539,43 @@ impl ScalarValue {
         }
     }
 
+    /// Parse an integer with support for various formats
+    /// Supports: decimal, hexadecimal (0x), binary (0b), octal (0o and legacy 0)
+    fn parse_integer(value: &str) -> Option<i64> {
+        let value = value.trim();
+
+        // Handle negative numbers
+        let (is_negative, value) = if value.starts_with('-') {
+            (true, &value[1..])
+        } else if value.starts_with('+') {
+            (false, &value[1..])
+        } else {
+            (false, value)
+        };
+
+        let parsed = if value.starts_with("0x") || value.starts_with("0X") {
+            // Hexadecimal
+            i64::from_str_radix(&value[2..], 16).ok()
+        } else if value.starts_with("0b") || value.starts_with("0B") {
+            // Binary
+            i64::from_str_radix(&value[2..], 2).ok()
+        } else if value.starts_with("0o") || value.starts_with("0O") {
+            // Modern octal
+            i64::from_str_radix(&value[2..], 8).ok()
+        } else if value.starts_with('0')
+            && value.len() > 1
+            && value.chars().all(|c| c.is_ascii_digit())
+        {
+            // Legacy octal (starts with 0 but not 0x, 0b, 0o)
+            i64::from_str_radix(value, 8).ok()
+        } else {
+            // Decimal
+            value.parse::<i64>().ok()
+        };
+
+        parsed.map(|n| if is_negative { -n } else { n })
+    }
+
     /// Auto-detect the most appropriate scalar type from a string value
     pub fn auto_detect_type(value: &str) -> ScalarType {
         // Check for null values first
@@ -553,8 +590,8 @@ impl ScalarValue {
             _ => {}
         }
 
-        // Check for numbers
-        if value.parse::<i64>().is_ok() {
+        // Check for numbers with various formats
+        if Self::parse_integer(value).is_some() {
             return ScalarType::Integer;
         }
         if value.parse::<f64>().is_ok() {
@@ -760,7 +797,7 @@ impl ScalarValue {
         }
 
         // Also quote things that look like numbers to preserve them as strings
-        if value.parse::<f64>().is_ok() || value.parse::<i64>().is_ok() {
+        if value.parse::<f64>().is_ok() || Self::parse_integer(value).is_some() {
             return true;
         }
 
@@ -1677,5 +1714,111 @@ mod tests {
         assert!(!string_scalar.is_binary());
         assert!(!string_scalar.is_timestamp());
         assert!(!string_scalar.is_regex());
+    }
+
+    #[test]
+    fn test_binary_number_parsing() {
+        // Test binary number parsing (0b prefix)
+        assert_eq!(ScalarValue::parse_integer("0b1010"), Some(10));
+        assert_eq!(ScalarValue::parse_integer("0b11111111"), Some(255));
+        assert_eq!(ScalarValue::parse_integer("0B101"), Some(5)); // Uppercase B
+        assert_eq!(ScalarValue::parse_integer("-0b1010"), Some(-10));
+        assert_eq!(ScalarValue::parse_integer("+0b101"), Some(5));
+
+        // Test auto-detection
+        assert_eq!(ScalarValue::auto_detect_type("0b1010"), ScalarType::Integer);
+        assert_eq!(
+            ScalarValue::auto_detect_type("0B11111111"),
+            ScalarType::Integer
+        );
+
+        // Test invalid binary
+        assert_eq!(ScalarValue::parse_integer("0b1012"), None); // Contains invalid digit
+        assert_eq!(ScalarValue::parse_integer("0b"), None); // Empty after prefix
+    }
+
+    #[test]
+    fn test_modern_octal_number_parsing() {
+        // Test modern octal number parsing (0o prefix)
+        assert_eq!(ScalarValue::parse_integer("0o755"), Some(493)); // 7*64 + 5*8 + 5
+        assert_eq!(ScalarValue::parse_integer("0o644"), Some(420)); // 6*64 + 4*8 + 4
+        assert_eq!(ScalarValue::parse_integer("0O777"), Some(511)); // Uppercase O
+        assert_eq!(ScalarValue::parse_integer("-0o755"), Some(-493));
+        assert_eq!(ScalarValue::parse_integer("+0o644"), Some(420));
+
+        // Test auto-detection
+        assert_eq!(ScalarValue::auto_detect_type("0o755"), ScalarType::Integer);
+        assert_eq!(ScalarValue::auto_detect_type("0O644"), ScalarType::Integer);
+
+        // Test invalid octal
+        assert_eq!(ScalarValue::parse_integer("0o789"), None); // Contains invalid digit
+        assert_eq!(ScalarValue::parse_integer("0o"), None); // Empty after prefix
+    }
+
+    #[test]
+    fn test_legacy_octal_number_parsing() {
+        // Test legacy octal number parsing (0 prefix)
+        assert_eq!(ScalarValue::parse_integer("0755"), Some(493));
+        assert_eq!(ScalarValue::parse_integer("0644"), Some(420));
+        assert_eq!(ScalarValue::parse_integer("0777"), Some(511));
+
+        // Test auto-detection
+        assert_eq!(ScalarValue::auto_detect_type("0755"), ScalarType::Integer);
+        assert_eq!(ScalarValue::auto_detect_type("0644"), ScalarType::Integer);
+
+        // Test edge cases
+        assert_eq!(ScalarValue::parse_integer("0"), Some(0)); // Single zero
+        assert_eq!(ScalarValue::parse_integer("00"), Some(0)); // Double zero
+
+        // Numbers starting with 0 but containing 8 or 9 should fail as octal
+        assert_eq!(ScalarValue::parse_integer("0789"), None);
+        assert_eq!(ScalarValue::parse_integer("0128"), None);
+    }
+
+    #[test]
+    fn test_hexadecimal_number_parsing() {
+        // Test hexadecimal number parsing (0x prefix) - should still work
+        assert_eq!(ScalarValue::parse_integer("0xFF"), Some(255));
+        assert_eq!(ScalarValue::parse_integer("0x1A"), Some(26));
+        assert_eq!(ScalarValue::parse_integer("0XFF"), Some(255)); // Uppercase X
+        assert_eq!(ScalarValue::parse_integer("-0xFF"), Some(-255));
+        assert_eq!(ScalarValue::parse_integer("+0x1A"), Some(26));
+
+        // Test auto-detection
+        assert_eq!(ScalarValue::auto_detect_type("0xFF"), ScalarType::Integer);
+        assert_eq!(ScalarValue::auto_detect_type("0X1A"), ScalarType::Integer);
+    }
+
+    #[test]
+    fn test_decimal_number_parsing() {
+        // Test decimal number parsing (no prefix) - should still work
+        assert_eq!(ScalarValue::parse_integer("42"), Some(42));
+        assert_eq!(ScalarValue::parse_integer("123"), Some(123));
+        assert_eq!(ScalarValue::parse_integer("-42"), Some(-42));
+        assert_eq!(ScalarValue::parse_integer("+123"), Some(123));
+
+        // Test auto-detection
+        assert_eq!(ScalarValue::auto_detect_type("42"), ScalarType::Integer);
+        assert_eq!(ScalarValue::auto_detect_type("-123"), ScalarType::Integer);
+    }
+
+    #[test]
+    fn test_number_format_yaml_output() {
+        // Test that different number formats are properly detected and output
+        let binary_scalar = ScalarValue::auto_typed("0b1010");
+        assert_eq!(binary_scalar.scalar_type(), ScalarType::Integer);
+        assert_eq!(binary_scalar.value(), "0b1010");
+
+        let octal_scalar = ScalarValue::auto_typed("0o755");
+        assert_eq!(octal_scalar.scalar_type(), ScalarType::Integer);
+        assert_eq!(octal_scalar.value(), "0o755");
+
+        let hex_scalar = ScalarValue::auto_typed("0xFF");
+        assert_eq!(hex_scalar.scalar_type(), ScalarType::Integer);
+        assert_eq!(hex_scalar.value(), "0xFF");
+
+        let legacy_octal_scalar = ScalarValue::auto_typed("0755");
+        assert_eq!(legacy_octal_scalar.scalar_type(), ScalarType::Integer);
+        assert_eq!(legacy_octal_scalar.value(), "0755");
     }
 }

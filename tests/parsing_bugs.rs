@@ -166,15 +166,15 @@ description: This is a value: with a colon
     
     // Check URL parsing
     let url = mapping.get("url").and_then(Scalar::cast).expect("url should exist");
-    assert_eq!(url.value(), "http://example.com:8080");
+    assert_eq!(url.as_string(), "http://example.com:8080");
     
     // Check time parsing
     let time = mapping.get("time").and_then(Scalar::cast).expect("time should exist");
-    assert_eq!(time.value(), "12:30:45");
+    assert_eq!(time.as_string(), "12:30:45");
     
     // Check description parsing
     let desc = mapping.get("description").and_then(Scalar::cast).expect("description should exist");
-    assert_eq!(desc.value(), "This is a value: with a colon");
+    assert_eq!(desc.as_string(), "This is a value: with a colon");
 }
 
 #[test]

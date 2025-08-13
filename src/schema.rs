@@ -925,4 +925,88 @@ users:
             println!("Error at {}: {}", error.path, error.message);
         }
     }
+
+    #[test]
+    fn test_yaml_1_2_spec_compliance() {
+        // Test that our schemas match YAML 1.2 specification requirements
+
+        // 1. Failsafe Schema - Should only allow strings, mappings, and sequences
+        let failsafe = Schema::Failsafe;
+        assert!(failsafe.allows_scalar_type(ScalarType::String));
+        assert!(!failsafe.allows_scalar_type(ScalarType::Integer));
+        assert!(!failsafe.allows_scalar_type(ScalarType::Float));
+        assert!(!failsafe.allows_scalar_type(ScalarType::Boolean));
+        assert!(!failsafe.allows_scalar_type(ScalarType::Null));
+        assert!(!failsafe.allows_scalar_type(ScalarType::Timestamp));
+
+        // 2. JSON Schema - Should allow JSON-compatible types
+        let json = Schema::Json;
+        assert!(json.allows_scalar_type(ScalarType::String));
+        assert!(json.allows_scalar_type(ScalarType::Integer));
+        assert!(json.allows_scalar_type(ScalarType::Float));
+        assert!(json.allows_scalar_type(ScalarType::Boolean));
+        assert!(json.allows_scalar_type(ScalarType::Null));
+        assert!(!json.allows_scalar_type(ScalarType::Timestamp)); // Not in JSON
+        assert!(!json.allows_scalar_type(ScalarType::Regex)); // Not in JSON
+        #[cfg(feature = "base64")]
+        assert!(!json.allows_scalar_type(ScalarType::Binary)); // Not in JSON
+
+        // 3. Core Schema - Should allow all YAML types
+        let core = Schema::Core;
+        assert!(core.allows_scalar_type(ScalarType::String));
+        assert!(core.allows_scalar_type(ScalarType::Integer));
+        assert!(core.allows_scalar_type(ScalarType::Float));
+        assert!(core.allows_scalar_type(ScalarType::Boolean));
+        assert!(core.allows_scalar_type(ScalarType::Null));
+        assert!(core.allows_scalar_type(ScalarType::Timestamp));
+        assert!(core.allows_scalar_type(ScalarType::Regex));
+        #[cfg(feature = "base64")]
+        assert!(core.allows_scalar_type(ScalarType::Binary));
+
+        // Test schema names match spec
+        assert_eq!(failsafe.name(), "failsafe");
+        assert_eq!(json.name(), "json");
+        assert_eq!(core.name(), "core");
+    }
+
+    #[test]
+    fn test_spec_compliant_validation_examples() {
+        // Examples from YAML 1.2 specification
+
+        // Failsafe: Should accept plain strings but reject typed values
+        let failsafe_yaml = r#"
+string: hello
+number_as_string: "123"
+"#;
+        let failsafe_doc = create_test_document(failsafe_yaml);
+        let failsafe_validator = SchemaValidator::failsafe();
+        // Non-strict mode allows coercion
+        assert!(failsafe_validator.validate(&failsafe_doc).is_ok());
+
+        // JSON: Should accept JSON-compatible types
+        let json_yaml = r#"
+string: "hello"
+number: 42
+float: 3.14
+boolean: true
+null_value: null
+"#;
+        let json_doc = create_test_document(json_yaml);
+        let json_validator = SchemaValidator::json();
+        assert!(json_validator.validate(&json_doc).is_ok());
+
+        // Core: Should accept all YAML types including timestamps
+        let core_yaml = r#"
+timestamp: 2023-01-01T00:00:00Z
+regex: !!regex '[0-9]+'
+binary: !!binary "SGVsbG8gV29ybGQ="
+"#;
+        let core_doc = create_test_document(core_yaml);
+        let core_validator = SchemaValidator::core();
+        assert!(core_validator.validate(&core_doc).is_ok());
+
+        // JSON should reject YAML-specific types
+        let json_strict = SchemaValidator::json().strict();
+        assert!(json_strict.validate(&core_doc).is_err());
+    }
 }

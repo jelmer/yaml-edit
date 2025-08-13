@@ -326,8 +326,8 @@ fn test_feature(name: &str, yaml: &str) {
     println!("Testing: {}", name);
     println!(
         "Input: {}",
-        if yaml.len() > 100 {
-            format!("{}...", &yaml[..100])
+        if yaml.chars().count() > 100 {
+            format!("{}...", yaml.chars().take(100).collect::<String>())
         } else {
             yaml.to_string()
         }

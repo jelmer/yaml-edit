@@ -4298,6 +4298,156 @@ folded: >
     }
 
     #[test]
+    fn test_number_format_parsing() {
+        // Test binary numbers
+        let yaml = Yaml::from_str("value: 0b1010").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0b1010");
+
+        let yaml = Yaml::from_str("value: 0B1111").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0B1111");
+
+        // Test modern octal numbers
+        let yaml = Yaml::from_str("value: 0o755").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0o755");
+
+        let yaml = Yaml::from_str("value: 0O644").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0O644");
+
+        // Test with signs
+        let yaml = Yaml::from_str("value: -0b1010").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: -0b1010");
+
+        let yaml = Yaml::from_str("value: +0o755").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: +0o755");
+
+        // Test legacy formats still work
+        let yaml = Yaml::from_str("value: 0755").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0755");
+
+        let yaml = Yaml::from_str("value: 0xFF").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0xFF");
+    }
+
+    #[test]
+    fn test_invalid_number_formats_as_strings() {
+        // Invalid formats should be preserved as strings
+        let yaml = Yaml::from_str("value: 0b2").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0b2");
+
+        let yaml = Yaml::from_str("value: 0o9").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0o9");
+
+        let yaml = Yaml::from_str("value: 0xGH").unwrap();
+        assert_eq!(yaml.to_string().trim(), "value: 0xGH");
+    }
+
+    #[test]
+    fn test_number_formats_in_complex_structures() {
+        let input = r#"
+config:
+  permissions: 0o755
+  flags: 0b11010
+  color: 0xFF00FF
+  count: 42"#;
+
+        let yaml = Yaml::from_str(input).unwrap();
+        let output = yaml.to_string();
+
+        assert!(output.contains("0o755"));
+        assert!(output.contains("0b11010"));
+        assert!(output.contains("0xFF00FF"));
+        assert!(output.contains("42"));
+    }
+
+    #[test]
+    fn test_editing_operations() {
+        // Test basic editing operations
+        let yaml = Yaml::from_str("name: old-name\nversion: 1.0.0").unwrap();
+        if let Some(mut doc) = yaml.document() {
+            doc.set_string("name", "new-name");
+            doc.set_string("version", "2.0.0");
+
+            let output = doc.to_yaml_string();
+            assert!(output.contains("new-name"));
+            assert!(output.contains("2.0.0"));
+
+            // Verify values can be retrieved
+            assert_eq!(doc.get_string("name"), Some("new-name".to_string()));
+            assert_eq!(doc.get_string("version"), Some("2.0.0".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_timestamp_parsing_and_validation() {
+        use crate::scalar::{ScalarType, ScalarValue};
+
+        // Test various timestamp formats are recognized as timestamps
+        let test_cases = vec![
+            ("2001-12-14 21:59:43.10 -5", true), // Space-separated with timezone
+            ("2001-12-15T02:59:43.1Z", true),    // ISO 8601 with Z
+            ("2002-12-14", true),                // Date only
+            ("2001-12-14t21:59:43.10-05:00", true), // Lowercase t
+            ("2001-12-14 21:59:43.10", true),    // No timezone
+            ("2001-12-14T21:59:43", true),       // No fractional seconds
+            ("not-a-timestamp", false),          // Invalid
+            ("2001-13-14", false),               // Invalid month
+            ("2001-12-32", false),               // Invalid day
+        ];
+
+        for (timestamp_str, should_be_valid) in test_cases {
+            let scalar = ScalarValue::auto_typed(timestamp_str);
+
+            if should_be_valid {
+                assert_eq!(
+                    scalar.scalar_type(),
+                    ScalarType::Timestamp,
+                    "Failed to recognize '{}' as timestamp",
+                    timestamp_str
+                );
+                assert!(scalar.is_timestamp());
+
+                // Verify it preserves the original format
+                assert_eq!(scalar.value(), timestamp_str);
+
+                // Test YAML parsing preserves it
+                let yaml = format!("timestamp: {}", timestamp_str);
+                let parsed = Yaml::from_str(&yaml).unwrap();
+                let output = parsed.to_string();
+                assert!(
+                    output.contains(timestamp_str),
+                    "Timestamp '{}' not preserved in output",
+                    timestamp_str
+                );
+            } else {
+                assert_ne!(
+                    scalar.scalar_type(),
+                    ScalarType::Timestamp,
+                    "'{}' should not be recognized as timestamp",
+                    timestamp_str
+                );
+            }
+        }
+
+        // Test timestamp in different contexts
+        let yaml_with_timestamps = r#"
+created_at: 2001-12-14 21:59:43.10 -5
+updated_at: 2001-12-15T02:59:43.1Z
+date_only: 2002-12-14
+timestamps_in_array:
+  - 2001-12-14 21:59:43.10 -5
+  - 2001-12-15T02:59:43.1Z
+  - 2002-12-14"#;
+
+        let parsed = Yaml::from_str(yaml_with_timestamps).unwrap();
+        let output = parsed.to_string();
+
+        // All timestamps should be preserved
+        assert!(output.contains("2001-12-14 21:59:43.10 -5"));
+        assert!(output.contains("2001-12-15T02:59:43.1Z"));
+        assert!(output.contains("2002-12-14"));
+    }
+
+    #[test]
     fn test_enhanced_comment_support() {
         // Test improvements: mid-line comments, comments in flow collections,
         // and better comment positioning preservation

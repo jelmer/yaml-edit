@@ -614,6 +614,178 @@ impl Document {
 
         SyntaxNode::new_root(builder.finish())
     }
+
+    /// Validate this document against a YAML schema
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use yaml_edit::{Document, Schema, SchemaValidator};
+    ///
+    /// let yaml = r#"
+    /// name: "John"
+    /// age: 30
+    /// active: true
+    /// "#;
+    ///
+    /// let parsed = yaml.parse::<yaml_edit::Yaml>().unwrap();
+    /// let doc = parsed.document().unwrap();
+    ///
+    /// // Validate against JSON schema
+    /// let validator = SchemaValidator::json();
+    /// match doc.validate_schema(&validator) {
+    ///     Ok(_) => println!("Valid JSON schema"),
+    ///     Err(errors) => {
+    ///         for error in errors {
+    ///             println!("Validation error: {}", error);
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    pub fn validate_schema(
+        &self,
+        validator: &crate::schema::SchemaValidator,
+    ) -> crate::schema::ValidationResult<()> {
+        validator.validate(self)
+    }
+
+    /// Validate this document against the Failsafe schema (strings, mappings, sequences only)
+    ///
+    /// The Failsafe schema is the most restrictive YAML schema, allowing only
+    /// strings, mappings, and sequences. All scalars are treated as strings.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use yaml_edit::Parse;
+    ///
+    /// let yaml = r#"
+    /// name: John
+    /// items:
+    ///   - apple
+    ///   - banana
+    /// "#;
+    ///
+    /// let parsed = yaml.parse::<yaml_edit::Yaml>().unwrap();
+    /// let doc = parsed.document().unwrap();
+    ///
+    /// match doc.validate_failsafe() {
+    ///     Ok(_) => println!("Valid Failsafe schema"),
+    ///     Err(errors) => {
+    ///         for error in errors {
+    ///             println!("Validation error: {}", error);
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    pub fn validate_failsafe(&self) -> crate::schema::ValidationResult<()> {
+        let validator = crate::schema::SchemaValidator::failsafe();
+        validator.validate(self)
+    }
+
+    /// Validate this document against the JSON schema (JSON-compatible types only)
+    ///
+    /// The JSON schema allows strings, integers, floats, booleans, null values,
+    /// arrays, and objects - all types that are compatible with JSON.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use yaml_edit::Parse;
+    ///
+    /// let yaml = r#"
+    /// name: "John"
+    /// age: 30
+    /// height: 5.9
+    /// active: true
+    /// metadata: null
+    /// "#;
+    ///
+    /// let parsed = yaml.parse::<yaml_edit::Yaml>().unwrap();
+    /// let doc = parsed.document().unwrap();
+    ///
+    /// match doc.validate_json() {
+    ///     Ok(_) => println!("Valid JSON schema"),
+    ///     Err(errors) => {
+    ///         for error in errors {
+    ///             println!("Validation error: {}", error);
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    pub fn validate_json(&self) -> crate::schema::ValidationResult<()> {
+        let validator = crate::schema::SchemaValidator::json();
+        validator.validate(self)
+    }
+
+    /// Validate this document against the Core schema (all YAML 1.2 types)
+    ///
+    /// The Core schema is the most permissive YAML schema, allowing all YAML 1.2
+    /// types including timestamps, regex patterns, binary data, and more.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use yaml_edit::Parse;
+    ///
+    /// let yaml = r#"
+    /// name: "John"
+    /// created: 2023-12-25T10:30:45Z
+    /// pattern: !!regex '\d{3}-\d{4}'
+    /// data: !!binary "SGVsbG8gV29ybGQ="
+    /// "#;
+    ///
+    /// let parsed = yaml.parse::<yaml_edit::Yaml>().unwrap();
+    /// let doc = parsed.document().unwrap();
+    ///
+    /// match doc.validate_core() {
+    ///     Ok(_) => println!("Valid Core schema"),
+    ///     Err(errors) => {
+    ///         for error in errors {
+    ///             println!("Validation error: {}", error);
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    pub fn validate_core(&self) -> crate::schema::ValidationResult<()> {
+        let validator = crate::schema::SchemaValidator::core();
+        validator.validate(self)
+    }
+
+    /// Check if this document can be coerced to match a specific schema
+    ///
+    /// This method checks if the document values can be automatically converted
+    /// to match the target schema without strict type enforcement.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use yaml_edit::{Parse, SchemaValidator};
+    ///
+    /// let yaml = r#"
+    /// count: "42"     # string that looks like number
+    /// enabled: "true" # string that looks like boolean
+    /// "#;
+    ///
+    /// let parsed = yaml.parse::<yaml_edit::Yaml>().unwrap();
+    /// let doc = parsed.document().unwrap();
+    /// let json_validator = SchemaValidator::json();
+    ///
+    /// match doc.can_coerce_to_schema(&json_validator) {
+    ///     Ok(_) => println!("Document can be coerced to JSON schema"),
+    ///     Err(errors) => {
+    ///         for error in errors {
+    ///             println!("Coercion error: {}", error);
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    pub fn can_coerce_to_schema(
+        &self,
+        validator: &crate::schema::SchemaValidator,
+    ) -> crate::schema::ValidationResult<()> {
+        validator.can_coerce(self)
+    }
 }
 
 impl Default for Mapping {
@@ -4921,5 +5093,225 @@ patterns:
             let reparsed = Yaml::from_str(&output);
             assert!(reparsed.is_ok(), "Round-trip parsing should succeed");
         }
+    }
+
+    #[test]
+    fn test_document_schema_validation_api() {
+        // Test the new Document API methods for schema validation
+
+        // JSON-compatible document
+        let json_yaml = r#"
+name: "John"
+age: 30
+active: true
+items:
+  - "apple"
+  - 42
+  - true
+"#;
+        let doc = Yaml::from_str(json_yaml).unwrap().document().unwrap();
+
+        // Test JSON schema validation - should pass
+        assert!(
+            doc.validate_json().is_ok(),
+            "JSON-compatible document should pass JSON validation"
+        );
+
+        // Test Core schema validation - should pass
+        assert!(
+            doc.validate_core().is_ok(),
+            "Valid document should pass Core validation"
+        );
+
+        // Test Failsafe schema validation - should fail due to numbers and booleans (in strict mode)
+        // Note: Non-strict failsafe might allow coercion, so test strict mode
+        let failsafe_strict = crate::schema::SchemaValidator::failsafe().strict();
+        assert!(
+            doc.validate_schema(&failsafe_strict).is_err(),
+            "Document with numbers and booleans should fail strict Failsafe validation"
+        );
+
+        // YAML-specific document
+        let yaml_specific = r#"
+name: "Test"
+created: 2023-12-25T10:30:45Z
+pattern: !!regex '\d+'
+data: !!binary "SGVsbG8="
+"#;
+        let yaml_doc = Yaml::from_str(yaml_specific).unwrap().document().unwrap();
+
+        // Test Core schema - should pass
+        assert!(
+            yaml_doc.validate_core().is_ok(),
+            "YAML-specific types should pass Core validation"
+        );
+
+        // Test JSON schema - should fail due to timestamp, regex, binary
+        assert!(
+            yaml_doc.validate_json().is_err(),
+            "YAML-specific types should fail JSON validation"
+        );
+
+        // Test Failsafe schema - should fail
+        assert!(
+            yaml_doc.validate_failsafe().is_err(),
+            "YAML-specific types should fail Failsafe validation"
+        );
+
+        // String-only document
+        let string_only = r#"
+name: hello
+message: world
+items:
+  - apple
+  - banana
+nested:
+  key: value
+"#;
+        let str_doc = Yaml::from_str(string_only).unwrap().document().unwrap();
+
+        // All schemas should pass (strings are allowed in all schemas)
+        assert!(
+            str_doc.validate_failsafe().is_ok(),
+            "String-only document should pass Failsafe validation"
+        );
+        assert!(
+            str_doc.validate_json().is_ok(),
+            "String-only document should pass JSON validation"
+        );
+        assert!(
+            str_doc.validate_core().is_ok(),
+            "String-only document should pass Core validation"
+        );
+    }
+
+    #[test]
+    fn test_document_schema_coercion_api() {
+        // Test the coercion API
+        let coercion_yaml = r#"
+count: "42"
+enabled: "true"
+rate: "3.14"
+items:
+  - "100"
+  - "false"
+"#;
+        let doc = Yaml::from_str(coercion_yaml).unwrap().document().unwrap();
+        let json_validator = crate::schema::SchemaValidator::json();
+
+        // Test coercion - should pass because strings can be coerced to numbers/booleans
+        assert!(
+            doc.can_coerce_to_schema(&json_validator).is_ok(),
+            "Strings that look like numbers/booleans should be coercible to JSON types"
+        );
+
+        // Test with non-coercible types
+        let non_coercible = r#"
+timestamp: !!timestamp "2023-01-01"
+pattern: !!regex '\d+'
+"#;
+        let non_coer_doc = Yaml::from_str(non_coercible).unwrap().document().unwrap();
+
+        // Should fail coercion to JSON schema
+        assert!(
+            non_coer_doc.can_coerce_to_schema(&json_validator).is_err(),
+            "YAML-specific types should not be coercible to JSON schema"
+        );
+    }
+
+    #[test]
+    fn test_document_schema_validation_errors() {
+        // Test that error messages contain useful path information
+        let nested_yaml = r#"
+users:
+  - name: "Alice"
+    age: 25
+    metadata:
+      created: !!timestamp "2023-01-01"
+      active: true
+  - name: "Bob"
+    score: 95.5
+"#;
+        let doc = Yaml::from_str(nested_yaml).unwrap().document().unwrap();
+
+        // Test Failsafe validation with detailed error checking (strict mode)
+        let failsafe_strict = crate::schema::SchemaValidator::failsafe().strict();
+        let failsafe_result = doc.validate_schema(&failsafe_strict);
+        assert!(
+            failsafe_result.is_err(),
+            "Nested document with numbers should fail strict Failsafe validation"
+        );
+
+        let errors = failsafe_result.unwrap_err();
+        assert!(!errors.is_empty(), "Should have validation errors");
+
+        // Check that error paths are meaningful
+        let error_messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        let has_path_info = error_messages
+            .iter()
+            .any(|msg| msg.contains("root.") || msg.contains("["));
+        assert!(
+            has_path_info,
+            "Errors should contain path information: {:?}",
+            error_messages
+        );
+
+        // Test JSON validation
+        let json_result = doc.validate_json();
+        assert!(
+            json_result.is_err(),
+            "Document with timestamp should fail JSON validation"
+        );
+
+        let json_errors = json_result.unwrap_err();
+        let timestamp_error = json_errors
+            .iter()
+            .any(|e| e.message.contains("json schema"));
+        assert!(timestamp_error, "Should have JSON schema error");
+    }
+
+    #[test]
+    fn test_document_schema_validation_with_custom_validator() {
+        // Test using the general validate_schema method
+        let yaml = r#"
+name: "HelloWorld"
+count: 42
+active: true
+"#;
+        let doc = Yaml::from_str(yaml).unwrap().document().unwrap();
+
+        // Create different validators and test
+        let json_validator = crate::schema::SchemaValidator::json();
+        let core_validator = crate::schema::SchemaValidator::core();
+
+        // Test with custom validators
+        assert!(
+            doc.validate_schema(&core_validator).is_ok(),
+            "Should pass Core validation"
+        );
+        assert!(
+            doc.validate_schema(&json_validator).is_ok(),
+            "Should pass JSON validation"
+        );
+        // Non-strict failsafe might allow coercion, so test strict mode
+        let failsafe_strict = crate::schema::SchemaValidator::failsafe().strict();
+        assert!(
+            doc.validate_schema(&failsafe_strict).is_err(),
+            "Should fail strict Failsafe validation"
+        );
+
+        // Test strict mode
+        let strict_json = crate::schema::SchemaValidator::json().strict();
+        // The document contains integers and booleans which are valid in JSON schema
+        assert!(
+            doc.validate_schema(&strict_json).is_ok(),
+            "Should pass strict JSON validation (integers and booleans are JSON-compatible)"
+        );
+
+        let strict_failsafe = crate::schema::SchemaValidator::failsafe().strict();
+        assert!(
+            doc.validate_schema(&strict_failsafe).is_err(),
+            "Should fail strict Failsafe validation"
+        );
     }
 }

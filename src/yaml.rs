@@ -1979,6 +1979,45 @@ impl Parser {
                     // This handles complex values like timestamps with spaces
                     while let Some(kind) = self.current() {
                         if matches!(kind, SyntaxKind::NEWLINE | SyntaxKind::COMMENT) {
+                            // Check if the next line starts a new mapping key
+                            if kind == SyntaxKind::NEWLINE {
+                                let next_line_start_idx = self.current_token_index + 1;
+                                if next_line_start_idx < self.tokens.len() {
+                                    // Skip whitespace/indent on next line
+                                    let mut check_idx = next_line_start_idx;
+                                    while check_idx < self.tokens.len() {
+                                        let (check_kind, _) = &self.tokens[check_idx];
+                                        if matches!(check_kind, SyntaxKind::WHITESPACE | SyntaxKind::INDENT) {
+                                            check_idx += 1;
+                                            continue;
+                                        } else {
+                                            // Check if this token could start a new mapping entry
+                                            if matches!(check_kind, 
+                                                SyntaxKind::STRING | SyntaxKind::INT | SyntaxKind::FLOAT | 
+                                                SyntaxKind::BOOL | SyntaxKind::NULL
+                                            ) {
+                                                // Look ahead to see if there's a colon after this token
+                                                let mut look_ahead_idx = check_idx + 1;
+                                                while look_ahead_idx < self.tokens.len() {
+                                                    let (ahead_kind, _) = &self.tokens[look_ahead_idx];
+                                                    match ahead_kind {
+                                                        SyntaxKind::COLON => {
+                                                            // Found a mapping pattern, stop consuming
+                                                            return;
+                                                        }
+                                                        SyntaxKind::WHITESPACE => {
+                                                            look_ahead_idx += 1;
+                                                            continue;
+                                                        }
+                                                        _ => break, // Not a mapping pattern
+                                                    }
+                                                }
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                             break;
                         }
                         // In block context, stop at flow collection delimiters

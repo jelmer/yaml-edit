@@ -5,7 +5,7 @@
 //! - Recovery strategies to continue parsing after errors
 //! - Detailed error messages with context
 
-use crate::{PositionedParseError, lex::SyntaxKind};
+use crate::{lex::SyntaxKind, PositionedParseError};
 use rowan::{TextRange, TextSize};
 
 /// Error recovery strategy for the parser
@@ -91,7 +91,7 @@ impl ErrorRecoveryContext {
     pub fn advance(&mut self, bytes: usize) {
         let end = (self.position + bytes).min(self.text.len());
         let advanced_text = &self.text[self.position..end];
-        
+
         for ch in advanced_text.chars() {
             if ch == '\n' {
                 self.line += 1;
@@ -100,7 +100,7 @@ impl ErrorRecoveryContext {
                 self.column += 1;
             }
         }
-        
+
         self.position = end;
     }
 
@@ -145,7 +145,7 @@ impl ErrorRecoveryContext {
     pub fn create_error(&self, message: String, length: usize) -> PositionedParseError {
         let (line, column) = self.current_location();
         let range = self.current_range(length);
-        
+
         PositionedParseError {
             message: format!("{}:{}: {}", line, column, message),
             range,
@@ -154,19 +154,27 @@ impl ErrorRecoveryContext {
     }
 
     /// Determine the best recovery strategy for the current error
-    pub fn suggest_recovery(&self, expected: SyntaxKind, found: Option<SyntaxKind>) -> RecoveryStrategy {
+    pub fn suggest_recovery(
+        &self,
+        expected: SyntaxKind,
+        found: Option<SyntaxKind>,
+    ) -> RecoveryStrategy {
         match self.current_context() {
             ParseContext::FlowSequence => {
                 // In flow sequence, recover to comma or closing bracket
                 match found {
-                    Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACKET) => RecoveryStrategy::SkipToken,
+                    Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACKET) => {
+                        RecoveryStrategy::SkipToken
+                    }
                     _ => RecoveryStrategy::SkipUntil(SyntaxKind::RIGHT_BRACKET),
                 }
             }
             ParseContext::FlowMapping => {
                 // In flow mapping, recover to comma or closing brace
                 match found {
-                    Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACE) => RecoveryStrategy::SkipToken,
+                    Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACE) => {
+                        RecoveryStrategy::SkipToken
+                    }
                     _ => RecoveryStrategy::SkipUntil(SyntaxKind::RIGHT_BRACE),
                 }
             }
@@ -207,19 +215,25 @@ impl ErrorRecoveryContext {
     /// Find the next safe synchronization point
     pub fn find_sync_point(&self, tokens: &[(SyntaxKind, String)], current: usize) -> usize {
         let sync_tokens = match self.current_context() {
-            ParseContext::Document => vec![SyntaxKind::DOC_START, SyntaxKind::DOC_END, SyntaxKind::DIRECTIVE],
-            ParseContext::Mapping | ParseContext::Sequence => vec![SyntaxKind::DASH, SyntaxKind::NEWLINE],
+            ParseContext::Document => vec![
+                SyntaxKind::DOC_START,
+                SyntaxKind::DOC_END,
+                SyntaxKind::DIRECTIVE,
+            ],
+            ParseContext::Mapping | ParseContext::Sequence => {
+                vec![SyntaxKind::DASH, SyntaxKind::NEWLINE]
+            }
             ParseContext::FlowSequence => vec![SyntaxKind::RIGHT_BRACKET, SyntaxKind::COMMA],
             ParseContext::FlowMapping => vec![SyntaxKind::RIGHT_BRACE, SyntaxKind::COMMA],
             _ => vec![SyntaxKind::NEWLINE],
         };
-        
+
         for i in current..tokens.len() {
             if sync_tokens.contains(&tokens[i].0) {
                 return i;
             }
         }
-        
+
         tokens.len()
     }
 
@@ -227,22 +241,19 @@ impl ErrorRecoveryContext {
     pub fn get_context_snippet(&self, range: TextRange) -> String {
         let start = range.start().into();
         let end = range.end().into();
-        
+
         // Find line boundaries
-        let line_start = self.text[..start]
-            .rfind('\n')
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        
+        let line_start = self.text[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+
         let line_end = self.text[end..]
             .find('\n')
             .map(|i| end + i)
             .unwrap_or(self.text.len());
-        
+
         let line = &self.text[line_start..line_end];
         let error_start = start - line_start;
         let error_len = (end - start).min(line_end - start);
-        
+
         // Create error indicator
         let mut indicator = String::new();
         for _ in 0..error_start {
@@ -251,7 +262,7 @@ impl ErrorRecoveryContext {
         for _ in 0..error_len.max(1) {
             indicator.push('^');
         }
-        
+
         format!("{}\n{}", line, indicator)
     }
 }
@@ -304,23 +315,23 @@ impl ErrorBuilder {
     /// Build the final error message
     pub fn build(self) -> String {
         let mut parts = vec![self.message];
-        
+
         if !self.expected.is_empty() {
             parts.push(format!("Expected: {}", self.expected.join(" or ")));
         }
-        
+
         if let Some(found) = self.found {
             parts.push(format!("Found: {}", found));
         }
-        
+
         if let Some(context) = self.context {
             parts.push(format!("Context: {}", context));
         }
-        
+
         if let Some(suggestion) = self.suggestion {
             parts.push(format!("Suggestion: {}", suggestion));
         }
-        
+
         parts.join(". ")
     }
 }
@@ -332,12 +343,12 @@ mod tests {
     #[test]
     fn test_error_recovery_context() {
         let mut ctx = ErrorRecoveryContext::new("foo: bar\nbaz: qux".to_string());
-        
+
         assert_eq!(ctx.current_location(), (1, 1));
-        
+
         ctx.advance(4); // "foo:"
         assert_eq!(ctx.current_location(), (1, 5));
-        
+
         ctx.advance(5); // " bar\n"
         assert_eq!(ctx.current_location(), (2, 1));
     }
@@ -350,7 +361,7 @@ mod tests {
             .context("in mapping")
             .suggestion("add ':' after key")
             .build();
-        
+
         assert!(error.contains("Syntax error"));
         assert!(error.contains("Expected: colon"));
         assert!(error.contains("Found: newline"));
@@ -362,7 +373,7 @@ mod tests {
     fn test_context_snippet() {
         let ctx = ErrorRecoveryContext::new("foo: bar\nbaz qux\nend".to_string());
         let range = TextRange::new(TextSize::from(13), TextSize::from(16)); // "qux"
-        
+
         let snippet = ctx.get_context_snippet(range);
         assert!(snippet.contains("baz qux"));
         assert!(snippet.contains("    ^^^"));
@@ -371,13 +382,16 @@ mod tests {
     #[test]
     fn test_recovery_strategy() {
         let ctx = ErrorRecoveryContext::new("test".to_string());
-        
+
         // Test flow sequence recovery
         let mut ctx_flow = ctx.clone();
         ctx_flow.push_context(ParseContext::FlowSequence);
         let strategy = ctx_flow.suggest_recovery(SyntaxKind::COMMA, Some(SyntaxKind::COLON));
-        assert_eq!(strategy, RecoveryStrategy::SkipUntil(SyntaxKind::RIGHT_BRACKET));
-        
+        assert_eq!(
+            strategy,
+            RecoveryStrategy::SkipUntil(SyntaxKind::RIGHT_BRACKET)
+        );
+
         // Test mapping colon recovery
         let mut ctx_map = ErrorRecoveryContext::new("test".to_string());
         ctx_map.push_context(ParseContext::Mapping);

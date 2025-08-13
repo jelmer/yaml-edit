@@ -2219,7 +2219,7 @@ impl Parser {
     fn current(&self) -> Option<SyntaxKind> {
         self.tokens.last().map(|(kind, _)| *kind)
     }
-    
+
     fn current_text(&self) -> Option<String> {
         self.tokens.last().map(|(_, text)| text.clone())
     }
@@ -2237,19 +2237,19 @@ impl Parser {
         let token_text = self.current_text();
         let token_len = token_text.as_ref().map(|s| s.len()).unwrap_or(1);
         let positioned_error = self.error_context.create_error(message.clone(), token_len);
-        
+
         self.errors.push(positioned_error.message.clone());
         self.positioned_errors.push(positioned_error);
     }
-    
+
     /// Add an error with recovery
     fn add_error_and_recover(&mut self, message: String, expected: SyntaxKind) {
         self.add_error(message);
-        
+
         // Determine recovery strategy
         let found = self.current();
         let strategy = self.error_context.suggest_recovery(expected, found);
-        
+
         match strategy {
             RecoveryStrategy::SkipToken => {
                 // Skip the problematic token
@@ -2275,10 +2275,9 @@ impl Parser {
             }
             RecoveryStrategy::SyncToSafePoint => {
                 // Find next safe synchronization point
-                let sync_point = self.error_context.find_sync_point(
-                    &self.tokens,
-                    self.tokens.len() - self.current_token_index,
-                );
+                let sync_point = self
+                    .error_context
+                    .find_sync_point(&self.tokens, self.tokens.len() - self.current_token_index);
                 let tokens_to_skip = sync_point - (self.tokens.len() - self.current_token_index);
                 for _ in 0..tokens_to_skip {
                     if self.current().is_some() {
@@ -2288,18 +2287,23 @@ impl Parser {
             }
         }
     }
-    
+
     /// Create a detailed error message
-    fn create_detailed_error(&mut self, base_message: &str, expected: &str, found: Option<&str>) -> String {
+    fn create_detailed_error(
+        &mut self,
+        base_message: &str,
+        expected: &str,
+        found: Option<&str>,
+    ) -> String {
         let mut builder = ErrorBuilder::new(base_message);
         builder = builder.expected(expected);
-        
+
         if let Some(found_str) = found {
             builder = builder.found(found_str);
         } else if let Some(token) = self.current_text() {
             builder = builder.found(format!("'{}'", token));
         }
-        
+
         // Add context
         match self.error_context.current_context() {
             ParseContext::Mapping => builder = builder.context("in mapping"),
@@ -2310,7 +2314,7 @@ impl Parser {
             ParseContext::QuotedString => builder = builder.context("in quoted string"),
             _ => {}
         }
-        
+
         builder.build()
     }
 }

@@ -1094,6 +1094,10 @@ struct Parser {
     anchor_registry: HashMap<String, rowan::GreenNode>,
     /// Track currently resolving aliases to detect circular references
     resolving_aliases: Vec<String>,
+    /// Track if we're parsing a value (to prevent nested implicit mappings)
+    in_value_context: bool,
+    /// Stack of indentation levels for nested structures
+    indent_stack: Vec<String>,
 }
 
 impl Parser {
@@ -1118,6 +1122,8 @@ impl Parser {
             in_flow_context: false,
             anchor_registry: HashMap::new(),
             resolving_aliases: Vec::new(),
+            in_value_context: false,
+            indent_stack: vec!["".to_string()], // Start with root level (empty indent)
         }
     }
 
@@ -1219,7 +1225,8 @@ impl Parser {
             ) => {
                 // In flow context, always parse as scalar
                 // In block context, check if it's a mapping key
-                if !self.in_flow_context && self.is_mapping_key() {
+                // But not if we're already in a value context (prevents implicit nested mappings)
+                if !self.in_flow_context && !self.in_value_context && self.is_mapping_key() {
                     self.parse_mapping();
                 } else {
                     self.parse_scalar();
@@ -1227,7 +1234,8 @@ impl Parser {
             }
             Some(SyntaxKind::LEFT_BRACKET) => {
                 // Check if this is a complex key in a mapping
-                if !self.in_flow_context && self.is_complex_mapping_key() {
+                // But not if we're already in a value context
+                if !self.in_flow_context && !self.in_value_context && self.is_complex_mapping_key() {
                     self.parse_complex_key_mapping();
                 } else {
                     self.parse_flow_sequence();
@@ -1235,11 +1243,17 @@ impl Parser {
             }
             Some(SyntaxKind::LEFT_BRACE) => {
                 // Check if this is a complex key in a mapping
-                if !self.in_flow_context && self.is_complex_mapping_key() {
+                // But not if we're already in a value context
+                if !self.in_flow_context && !self.in_value_context && self.is_complex_mapping_key() {
                     self.parse_complex_key_mapping();
                 } else {
                     self.parse_flow_mapping();
                 }
+            }
+            Some(SyntaxKind::INDENT) => {
+                // We have an indented block - consume the indent and see what follows
+                self.bump(); // consume INDENT
+                self.parse_value(); // parse whatever comes after the indent
             }
             _ => self.parse_scalar(),
         }
@@ -1361,45 +1375,6 @@ impl Parser {
                     // This handles complex values like timestamps with spaces
                     while let Some(kind) = self.current() {
                         if matches!(kind, SyntaxKind::NEWLINE | SyntaxKind::COMMENT) {
-                            // Check if the next line starts a new mapping key
-                            if kind == SyntaxKind::NEWLINE {
-                                let next_line_start_idx = self.current_token_index + 1;
-                                if next_line_start_idx < self.tokens.len() {
-                                    // Skip whitespace/indent on next line
-                                    let mut check_idx = next_line_start_idx;
-                                    while check_idx < self.tokens.len() {
-                                        let (check_kind, _) = &self.tokens[check_idx];
-                                        if matches!(check_kind, SyntaxKind::WHITESPACE | SyntaxKind::INDENT) {
-                                            check_idx += 1;
-                                            continue;
-                                        } else {
-                                            // Check if this token could start a new mapping entry
-                                            if matches!(check_kind, 
-                                                SyntaxKind::STRING | SyntaxKind::INT | SyntaxKind::FLOAT | 
-                                                SyntaxKind::BOOL | SyntaxKind::NULL
-                                            ) {
-                                                // Look ahead to see if there's a colon after this token
-                                                let mut look_ahead_idx = check_idx + 1;
-                                                while look_ahead_idx < self.tokens.len() {
-                                                    let (ahead_kind, _) = &self.tokens[look_ahead_idx];
-                                                    match ahead_kind {
-                                                        SyntaxKind::COLON => {
-                                                            // Found a mapping pattern, stop consuming
-                                                            return;
-                                                        }
-                                                        SyntaxKind::WHITESPACE => {
-                                                            look_ahead_idx += 1;
-                                                            continue;
-                                                        }
-                                                        _ => break, // Not a mapping pattern
-                                                    }
-                                                }
-                                            }
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
                             break;
                         }
                         // In block context, stop at flow collection delimiters
@@ -1425,11 +1400,34 @@ impl Parser {
                     if matches!(
                         kind,
                         SyntaxKind::NEWLINE
-                            | SyntaxKind::COLON
                             | SyntaxKind::DASH
                             | SyntaxKind::COMMENT
                             | SyntaxKind::DOC_START
                             | SyntaxKind::DOC_END
+                    ) {
+                        break;
+                    }
+                    
+                    // In flow context, colons are allowed in scalars (for IPv6, URLs, etc.)  
+                    // In block context, stop at colons as they indicate mapping structure
+                    if kind == SyntaxKind::COLON {
+                        if self.in_flow_context {
+                            // In flow context, allow colons in scalars but stop at delimiters
+                            // No break here - continue consuming
+                        } else {
+                            // In block context, stop at colons (mapping structure)
+                            break;
+                        }
+                    }
+                    
+                    // In flow context, stop at flow collection delimiters
+                    if self.in_flow_context && matches!(
+                        kind,
+                        SyntaxKind::LEFT_BRACKET
+                            | SyntaxKind::RIGHT_BRACKET
+                            | SyntaxKind::LEFT_BRACE
+                            | SyntaxKind::RIGHT_BRACE
+                            | SyntaxKind::COMMA
                     ) {
                         break;
                     }
@@ -2182,6 +2180,27 @@ impl Parser {
             self.bump();
         }
     }
+    
+    fn skip_ws_and_newlines_preserve_indent(&mut self) {
+        // Skip whitespace, newlines, and comments, but preserve INDENT tokens
+        // for indentation-aware parsing
+        loop {
+            match self.current() {
+                Some(SyntaxKind::WHITESPACE) | Some(SyntaxKind::COMMENT) => {
+                    self.bump();
+                }
+                Some(SyntaxKind::NEWLINE) => {
+                    self.bump();
+                    // After newline, if there's an INDENT, we need to decide whether to consume it
+                    // For now, don't consume it - let the caller decide
+                    if matches!(self.current(), Some(SyntaxKind::INDENT)) {
+                        break; // Stop here, leave the INDENT for caller to handle
+                    }
+                }
+                _ => break,
+            }
+        }
+    }
 
     fn parse_mapping_key_value_pair(&mut self) {
         // Parse regular key
@@ -2244,9 +2263,11 @@ impl Parser {
 
     /// Iterator over upcoming tokens starting from the next token (not current)
     fn upcoming_tokens(&self) -> impl Iterator<Item = SyntaxKind> + '_ {
-        (1..self.tokens.len()).map(move |i| {
-            let idx = self.tokens.len() - 1 - i;
-            self.tokens[idx].0
+        // Since tokens are in reverse order (last is current), we need to iterate
+        // from the second-to-last token backwards to the beginning
+        let len = self.tokens.len();
+        (0..len.saturating_sub(1)).rev().map(move |i| {
+            self.tokens[i].0
         })
     }
 

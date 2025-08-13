@@ -257,64 +257,7 @@ pub fn lex_with_validation_config<'a>(
                 }
             }
             '+' => tokens.push((PLUS, &input[token_start..start_idx + 1])),
-            ':' => {
-                // Check if this colon is part of a URL or timestamp, or a mapping separator
-                // Look ahead to see what follows the colon
-                let mut is_mapping_colon = true;
-                
-                // Check what comes after the colon
-                if let Some((_next_idx, next_ch)) = chars.peek() {
-                    // If followed by //, it's likely a URL (http://, https://, ftp://, etc.)
-                    if *next_ch == '/' {
-                        // Look one more character ahead
-                        let mut temp_chars = chars.clone();
-                        temp_chars.next(); // skip first /
-                        if let Some((_, second_ch)) = temp_chars.peek() {
-                            if *second_ch == '/' {
-                                is_mapping_colon = false;
-                            }
-                        }
-                    }
-                    // If followed by digits and we're already in a scalar, it might be a port or time
-                    else if next_ch.is_ascii_digit() {
-                        // Check what came before the colon
-                        if token_start > 0 {
-                            let prev_char = input.chars().nth(token_start - 1);
-                            if let Some(pc) = prev_char {
-                                // If preceded by alphanumeric (like in example.com:8080), not a mapping
-                                if pc.is_alphanumeric() || pc == '.' {
-                                    is_mapping_colon = false;
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                if is_mapping_colon {
-                    tokens.push((COLON, &input[token_start..start_idx + 1]));
-                } else {
-                    // This colon is part of a larger scalar (URL, port number, etc.)
-                    // Continue reading the scalar
-                    let mut end_idx = start_idx + 1;
-                    while let Some((idx, ch)) = chars.peek() {
-                        if ch.is_whitespace() {
-                            break;
-                        }
-                        // Stop at YAML special chars, but not at colons or slashes (for URLs)
-                        if matches!(*ch, '?' | '[' | ']' | '{' | '}' | ',' | '|' | '>' | '#' | '&' | '*' | '!' | '"' | '\'') {
-                            break;
-                        }
-                        end_idx = *idx + ch.len_utf8();
-                        chars.next();
-                    }
-                    
-                    // Now we need to also capture what came before the colon if we haven't tokenized it yet
-                    // This is complex because we might have already tokenized part of it
-                    // For now, just tokenize from the colon onwards
-                    let text = &input[token_start..end_idx];
-                    tokens.push((STRING, text));
-                }
-            },
+            ':' => tokens.push((COLON, &input[token_start..start_idx + 1])),
             '?' => tokens.push((QUESTION, &input[token_start..start_idx + 1])),
             '[' => tokens.push((LEFT_BRACKET, &input[token_start..start_idx + 1])),
             ']' => tokens.push((RIGHT_BRACKET, &input[token_start..start_idx + 1])),

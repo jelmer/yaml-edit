@@ -1900,7 +1900,17 @@ impl Parser {
             if self.current() == Some(quote_type) {
                 self.bump(); // closing quote
             } else {
-                self.add_error("Unterminated quoted string".to_string());
+                let expected_quote = if quote_type == SyntaxKind::QUOTE {
+                    "\""
+                } else {
+                    "'"
+                };
+                let error_msg = self.create_detailed_error(
+                    "Unterminated quoted string",
+                    &format!("closing quote {}", expected_quote),
+                    self.current_text().as_deref(),
+                );
+                self.add_error_and_recover(error_msg, quote_type);
             }
         } else {
             // Handle typed scalar tokens from lexer
@@ -2063,7 +2073,17 @@ impl Parser {
                 if self.current() == Some(quote_type) {
                     self.bump(); // closing quote
                 } else {
-                    self.add_error("Unterminated quoted string".to_string());
+                    let expected_quote = if quote_type == SyntaxKind::QUOTE {
+                        "\""
+                    } else {
+                        "'"
+                    };
+                    let error_msg = self.create_detailed_error(
+                        "Unterminated quoted string in flow collection",
+                        &format!("closing quote {}", expected_quote),
+                        self.current_text().as_deref(),
+                    );
+                    self.add_error_and_recover(error_msg, quote_type);
                 }
             }
             Some(SyntaxKind::PIPE) => {
@@ -2224,7 +2244,12 @@ impl Parser {
                     }
                     self.builder.finish_node();
                 } else {
-                    self.add_error("Expected ':' after complex mapping key".to_string());
+                    let error_msg = self.create_detailed_error(
+                        "Missing colon in mapping",
+                        "':' after key",
+                        self.current_text().as_deref(),
+                    );
+                    self.add_error_and_recover(error_msg, SyntaxKind::COLON);
                 }
             }
             // Check for explicit key indicator
@@ -2317,7 +2342,12 @@ impl Parser {
         if self.current() == Some(SyntaxKind::RIGHT_BRACKET) {
             self.bump();
         } else {
-            self.add_error("Expected ']' to close flow sequence".to_string());
+            let error_msg = self.create_detailed_error(
+                "Unclosed flow sequence",
+                "']' to close sequence",
+                self.current_text().as_deref(),
+            );
+            self.add_error_and_recover(error_msg, SyntaxKind::RIGHT_BRACKET);
         }
 
         self.builder.finish_node();
@@ -2351,7 +2381,12 @@ impl Parser {
                 self.parse_value();
                 self.builder.finish_node();
             } else {
-                self.add_error("Expected ':' in flow mapping".to_string());
+                let error_msg = self.create_detailed_error(
+                    "Missing colon in flow mapping",
+                    "':' after key",
+                    self.current_text().as_deref(),
+                );
+                self.add_error_and_recover(error_msg, SyntaxKind::COLON);
             }
 
             self.skip_ws_and_newlines(); // Support comments after values
@@ -2367,7 +2402,12 @@ impl Parser {
         if self.current() == Some(SyntaxKind::RIGHT_BRACE) {
             self.bump();
         } else {
-            self.add_error("Expected '}' to close flow mapping".to_string());
+            let error_msg = self.create_detailed_error(
+                "Unclosed flow mapping",
+                "'}' to close mapping",
+                self.current_text().as_deref(),
+            );
+            self.add_error_and_recover(error_msg, SyntaxKind::RIGHT_BRACE);
         }
 
         self.builder.finish_node();
@@ -2477,7 +2517,12 @@ impl Parser {
             }
             self.builder.finish_node();
         } else {
-            self.add_error("Expected ':' after complex mapping key".to_string());
+            let error_msg = self.create_detailed_error(
+                "Missing colon in complex mapping",
+                "':' after complex key",
+                self.current_text().as_deref(),
+            );
+            self.add_error_and_recover(error_msg, SyntaxKind::COLON);
         }
 
         self.skip_ws_and_newlines();
@@ -2752,7 +2797,12 @@ impl Parser {
             // Empty VALUE node if no value present
             self.builder.finish_node();
         } else {
-            self.add_error("Expected ':' after mapping key".to_string());
+            let error_msg = self.create_detailed_error(
+                "Missing colon in mapping",
+                "':' after key",
+                self.current_text().as_deref(),
+            );
+            self.add_error_and_recover(error_msg, SyntaxKind::COLON);
         }
     }
 
@@ -2839,7 +2889,7 @@ impl Parser {
         }
     }
 
-    /// Create a detailed error message
+    /// Create a detailed error message with helpful suggestions
     fn create_detailed_error(
         &mut self,
         base_message: &str,
@@ -2853,20 +2903,77 @@ impl Parser {
             builder = builder.found(found_str);
         } else if let Some(token) = self.current_text() {
             builder = builder.found(format!("'{}'", token));
+        } else {
+            builder = builder.found("end of input");
         }
 
         // Add context
-        match self.error_context.current_context() {
-            ParseContext::Mapping => builder = builder.context("in mapping"),
-            ParseContext::Sequence => builder = builder.context("in sequence"),
-            ParseContext::FlowMapping => builder = builder.context("in flow mapping"),
-            ParseContext::FlowSequence => builder = builder.context("in flow sequence"),
-            ParseContext::BlockScalar => builder = builder.context("in block scalar"),
-            ParseContext::QuotedString => builder = builder.context("in quoted string"),
-            _ => {}
+        let context = match self.error_context.current_context() {
+            ParseContext::Mapping => "in mapping",
+            ParseContext::Sequence => "in sequence",
+            ParseContext::FlowMapping => "in flow mapping",
+            ParseContext::FlowSequence => "in flow sequence",
+            ParseContext::BlockScalar => "in block scalar",
+            ParseContext::QuotedString => "in quoted string",
+            _ => "at document level",
+        };
+        builder = builder.context(context);
+
+        // Add helpful suggestions based on the error type
+        let suggestion = self.get_error_suggestion(base_message, expected, found);
+        if let Some(suggestion_text) = suggestion {
+            builder = builder.suggestion(suggestion_text);
         }
 
         builder.build()
+    }
+
+    /// Generate helpful suggestions for common errors
+    fn get_error_suggestion(
+        &self,
+        base_message: &str,
+        expected: &str,
+        found: Option<&str>,
+    ) -> Option<String> {
+        if base_message.contains("Unterminated quoted string") {
+            return Some(
+                "Add closing quote or check for unescaped quotes within the string".to_string(),
+            );
+        }
+
+        if base_message.contains("Missing colon") || expected.contains("':'") {
+            return Some("Add ':' after the key, or check for proper indentation".to_string());
+        }
+
+        if base_message.contains("Unclosed flow sequence") {
+            return Some(
+                "Add ']' to close the array, or check for missing commas between elements"
+                    .to_string(),
+            );
+        }
+
+        if base_message.contains("Unclosed flow mapping") {
+            return Some(
+                "Add '}' to close the object, or check for missing commas between key-value pairs"
+                    .to_string(),
+            );
+        }
+
+        if let Some(found_text) = found {
+            if found_text.contains('\n') {
+                return Some(
+                    "Unexpected newline - check indentation and YAML structure".to_string(),
+                );
+            }
+
+            if found_text.contains('\t') {
+                return Some(
+                    "Tabs are not allowed in YAML - use spaces for indentation".to_string(),
+                );
+            }
+        }
+
+        None
     }
 }
 

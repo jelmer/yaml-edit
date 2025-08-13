@@ -257,7 +257,64 @@ pub fn lex_with_validation_config<'a>(
                 }
             }
             '+' => tokens.push((PLUS, &input[token_start..start_idx + 1])),
-            ':' => tokens.push((COLON, &input[token_start..start_idx + 1])),
+            ':' => {
+                // Check if this colon is part of a URL or timestamp, or a mapping separator
+                // Look ahead to see what follows the colon
+                let mut is_mapping_colon = true;
+                
+                // Check what comes after the colon
+                if let Some((_next_idx, next_ch)) = chars.peek() {
+                    // If followed by //, it's likely a URL (http://, https://, ftp://, etc.)
+                    if *next_ch == '/' {
+                        // Look one more character ahead
+                        let mut temp_chars = chars.clone();
+                        temp_chars.next(); // skip first /
+                        if let Some((_, second_ch)) = temp_chars.peek() {
+                            if *second_ch == '/' {
+                                is_mapping_colon = false;
+                            }
+                        }
+                    }
+                    // If followed by digits and we're already in a scalar, it might be a port or time
+                    else if next_ch.is_ascii_digit() {
+                        // Check what came before the colon
+                        if token_start > 0 {
+                            let prev_char = input.chars().nth(token_start - 1);
+                            if let Some(pc) = prev_char {
+                                // If preceded by alphanumeric (like in example.com:8080), not a mapping
+                                if pc.is_alphanumeric() || pc == '.' {
+                                    is_mapping_colon = false;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                if is_mapping_colon {
+                    tokens.push((COLON, &input[token_start..start_idx + 1]));
+                } else {
+                    // This colon is part of a larger scalar (URL, port number, etc.)
+                    // Continue reading the scalar
+                    let mut end_idx = start_idx + 1;
+                    while let Some((idx, ch)) = chars.peek() {
+                        if ch.is_whitespace() {
+                            break;
+                        }
+                        // Stop at YAML special chars, but not at colons or slashes (for URLs)
+                        if matches!(*ch, '?' | '[' | ']' | '{' | '}' | ',' | '|' | '>' | '#' | '&' | '*' | '!' | '"' | '\'') {
+                            break;
+                        }
+                        end_idx = *idx + ch.len_utf8();
+                        chars.next();
+                    }
+                    
+                    // Now we need to also capture what came before the colon if we haven't tokenized it yet
+                    // This is complex because we might have already tokenized part of it
+                    // For now, just tokenize from the colon onwards
+                    let text = &input[token_start..end_idx];
+                    tokens.push((STRING, text));
+                }
+            },
             '?' => tokens.push((QUESTION, &input[token_start..start_idx + 1])),
             '[' => tokens.push((LEFT_BRACKET, &input[token_start..start_idx + 1])),
             ']' => tokens.push((RIGHT_BRACKET, &input[token_start..start_idx + 1])),
@@ -497,29 +554,54 @@ pub fn lex_with_validation_config<'a>(
             // Everything else is scalar content
             _ => {
                 let mut end_idx = start_idx + ch.len_utf8();
-
-                // Read the rest of the scalar, including embedded hyphens
-                while let Some((idx, next_ch)) = chars.peek() {
-                    if next_ch.is_whitespace() || is_yaml_special_excluding_hyphen(*next_ch) {
-                        break;
-                    }
-
-                    // Special case: check if hyphen is a sequence marker
-                    if *next_ch == '-' {
-                        // A hyphen is only a sequence marker if it's at line start
-                        // and this scalar is already complete (we're at a word boundary)
-                        let line_start = input[..(*idx)].rfind('\n').map(|p| p + 1).unwrap_or(0);
-                        let before_hyphen = &input[line_start..*idx];
-
-                        // If there's only whitespace before the hyphen, it might be a sequence marker
-                        // Break here to let the main loop handle it
-                        if before_hyphen.chars().all(|c| c == ' ' || c == '\t') && *idx == end_idx {
+                
+                // Check if this might be the start of a URL (http://, https://, ftp://, etc.)
+                let remaining = &input[token_start..];
+                let is_url = remaining.starts_with("http://") || 
+                             remaining.starts_with("https://") || 
+                             remaining.starts_with("ftp://") ||
+                             remaining.starts_with("file://") ||
+                             remaining.starts_with("ssh://");
+                
+                if is_url {
+                    // Read the entire URL as one token
+                    while let Some((idx, next_ch)) = chars.peek() {
+                        if next_ch.is_whitespace() {
                             break;
                         }
+                        // Stop at YAML special chars, but not at colons, slashes, or common URL chars
+                        if matches!(*next_ch, '?' | '[' | ']' | '{' | '}' | ',' | '|' | '>' | '#' | '&' | '*' | '!' | '"' | '\'') {
+                            // Note: ? and & are valid in URLs but also YAML special, so we stop at them
+                            // This is a compromise - full URL parsing would be more complex
+                            break;
+                        }
+                        end_idx = *idx + next_ch.len_utf8();
+                        chars.next();
                     }
+                } else {
+                    // Read the rest of the scalar normally, including embedded hyphens
+                    while let Some((idx, next_ch)) = chars.peek() {
+                        if next_ch.is_whitespace() || is_yaml_special_excluding_hyphen(*next_ch) {
+                            break;
+                        }
 
-                    end_idx = *idx + next_ch.len_utf8();
-                    chars.next();
+                        // Special case: check if hyphen is a sequence marker
+                        if *next_ch == '-' {
+                            // A hyphen is only a sequence marker if it's at line start
+                            // and this scalar is already complete (we're at a word boundary)
+                            let line_start = input[..(*idx)].rfind('\n').map(|p| p + 1).unwrap_or(0);
+                            let before_hyphen = &input[line_start..*idx];
+
+                            // If there's only whitespace before the hyphen, it might be a sequence marker
+                            // Break here to let the main loop handle it
+                            if before_hyphen.chars().all(|c| c == ' ' || c == '\t') && *idx == end_idx {
+                                break;
+                            }
+                        }
+
+                        end_idx = *idx + next_ch.len_utf8();
+                        chars.next();
+                    }
                 }
 
                 let text = &input[token_start..end_idx];

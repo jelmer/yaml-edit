@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 /// Represents any YAML value - scalar, sequence, mapping, or special collections
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum YamlValue {
     /// A scalar value (string, number, boolean, null)
     Scalar(ScalarValue),

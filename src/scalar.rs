@@ -476,6 +476,53 @@ impl ScalarValue {
         self.scalar_type == ScalarType::Regex
     }
 
+    /// Compile and return a Regex object if this is a regex scalar
+    /// 
+    /// This method is only available when the `regex` feature is enabled.
+    /// Returns None if this is not a regex scalar or if the pattern is invalid.
+    /// 
+    /// # Example
+    /// ```
+    /// # #[cfg(feature = "regex")]
+    /// # {
+    /// use yaml_edit::ScalarValue;
+    /// 
+    /// let scalar = ScalarValue::regex(r"\d{3}-\d{4}");
+    /// let regex = scalar.as_regex().unwrap();
+    /// assert!(regex.is_match("555-1234"));
+    /// # }
+    /// ```
+    #[cfg(feature = "regex")]
+    pub fn as_regex(&self) -> Option<regex::Regex> {
+        if self.scalar_type == ScalarType::Regex {
+            regex::Regex::new(&self.value).ok()
+        } else {
+            None
+        }
+    }
+
+    /// Try to compile this scalar as a regex, regardless of its type
+    /// 
+    /// This method is only available when the `regex` feature is enabled.
+    /// This will attempt to compile the scalar value as a regex pattern,
+    /// even if it's not marked with the !!regex tag.
+    /// 
+    /// # Example
+    /// ```
+    /// # #[cfg(feature = "regex")]
+    /// # {
+    /// use yaml_edit::ScalarValue;
+    /// 
+    /// let scalar = ScalarValue::new(r"\d+");  // Plain string scalar
+    /// let regex = scalar.try_as_regex().unwrap();
+    /// assert!(regex.is_match("123"));
+    /// # }
+    /// ```
+    #[cfg(feature = "regex")]
+    pub fn try_as_regex(&self) -> Result<regex::Regex, regex::Error> {
+        regex::Regex::new(&self.value)
+    }
+
     /// Try to coerce this scalar to the specified type
     pub fn coerce_to_type(&self, target_type: ScalarType) -> Option<ScalarValue> {
         if self.scalar_type == target_type {
@@ -1081,6 +1128,13 @@ impl From<bool> for ScalarValue {
     }
 }
 
+impl From<crate::yaml::Scalar> for ScalarValue {
+    fn from(scalar: crate::yaml::Scalar) -> Self {
+        let value = scalar.as_string();
+        ScalarValue::auto_typed(&value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1621,6 +1675,71 @@ mod tests {
         assert!(regex_scalar.coerce_to_type(ScalarType::Integer).is_none());
         assert!(regex_scalar.coerce_to_type(ScalarType::Float).is_none());
         assert!(regex_scalar.coerce_to_type(ScalarType::Boolean).is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "regex")]
+    fn test_regex_compilation() {
+        
+        // Test as_regex() with a regex scalar
+        let regex_scalar = ScalarValue::regex(r"\d{3}-\d{4}");
+        let compiled = regex_scalar.as_regex().unwrap();
+        assert!(compiled.is_match("555-1234"));
+        assert!(!compiled.is_match("not-a-phone"));
+        
+        // Test as_regex() with a non-regex scalar returns None
+        let string_scalar = ScalarValue::new("not a regex");
+        assert!(string_scalar.as_regex().is_none());
+        
+        // Test try_as_regex() with any scalar type
+        let pattern_scalar = ScalarValue::new(r"^\w+@\w+\.\w+$");
+        let email_regex = pattern_scalar.try_as_regex().unwrap();
+        assert!(email_regex.is_match("test@example.com"));
+        assert!(!email_regex.is_match("not-an-email"));
+        
+        // Test with invalid regex pattern
+        let invalid_scalar = ScalarValue::regex(r"[invalid(");
+        assert!(invalid_scalar.as_regex().is_none());
+        
+        // Test try_as_regex() with invalid pattern returns error
+        let invalid_pattern = ScalarValue::new(r"[invalid(");
+        assert!(invalid_pattern.try_as_regex().is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "regex")]
+    fn test_regex_extraction_use_cases() {
+        // Test extracting and using regex for validation
+        let validation_rules = vec![
+            ScalarValue::regex(r"^\d{5}$"),  // ZIP code
+            ScalarValue::regex(r"^[A-Z]{2}$"),  // State code
+            ScalarValue::regex(r"^\(\d{3}\) \d{3}-\d{4}$"),  // Phone number
+        ];
+        
+        let test_values = vec!["12345", "CA", "(555) 123-4567"];
+        
+        for (rule, value) in validation_rules.iter().zip(test_values.iter()) {
+            let regex = rule.as_regex().unwrap();
+            assert!(regex.is_match(value), "Pattern should match {}", value);
+        }
+        
+        // Test with complex regex patterns
+        let email_regex = ScalarValue::regex(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$");
+        let compiled = email_regex.as_regex().unwrap();
+        assert!(compiled.is_match("user@example.com"));
+        assert!(compiled.is_match("test.user+tag@sub.domain.org"));
+        assert!(!compiled.is_match("invalid.email"));
+        
+        // Test extracting capture groups
+        let version_regex = ScalarValue::regex(r"^v(\d+)\.(\d+)\.(\d+)$");
+        let compiled = version_regex.as_regex().unwrap();
+        if let Some(captures) = compiled.captures("v1.2.3") {
+            assert_eq!(captures.get(1).unwrap().as_str(), "1");
+            assert_eq!(captures.get(2).unwrap().as_str(), "2");
+            assert_eq!(captures.get(3).unwrap().as_str(), "3");
+        } else {
+            panic!("Should have matched version string");
+        }
     }
 
     #[test]

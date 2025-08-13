@@ -10,12 +10,13 @@ categories = ["parser-implementations"]
 
 [dependencies]
 rowan = "0.16"
-regex = "1"
+regex = { version = "1", optional = true }
 base64 = { version = "0.22", optional = true }
 
 [features]
 default = ["binary"]
 binary = ["base64"]
+regex = ["dep:regex"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

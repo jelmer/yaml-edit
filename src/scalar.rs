@@ -1571,6 +1571,59 @@ mod tests {
     }
 
     #[test]
+    fn test_regex_edge_cases() {
+        // Test empty pattern
+        let empty_regex = ScalarValue::regex("");
+        assert!(empty_regex.is_regex());
+        assert_eq!(empty_regex.value(), "");
+        assert_eq!(empty_regex.to_yaml_string(), "!!regex ");
+
+        // Test pattern with special characters
+        let special_chars = ScalarValue::regex(r"[.*+?^${}()|[\]\\]");
+        assert!(special_chars.is_regex());
+        assert_eq!(special_chars.value(), r"[.*+?^${}()|[\]\\]");
+
+        // Test unicode patterns
+        let unicode_regex = ScalarValue::regex(r"\p{L}+");
+        assert!(unicode_regex.is_regex());
+        assert_eq!(unicode_regex.value(), r"\p{L}+");
+
+        // Test very long pattern
+        let long_pattern = "a".repeat(1000);
+        let long_regex = ScalarValue::regex(&long_pattern);
+        assert!(long_regex.is_regex());
+        assert_eq!(long_regex.value(), long_pattern);
+
+        // Test pattern with quotes and escapes
+        let quoted_regex = ScalarValue::regex(r#"'quoted' and "double quoted" with \\ backslash"#);
+        assert!(quoted_regex.is_regex());
+        assert_eq!(quoted_regex.value(), r#"'quoted' and "double quoted" with \\ backslash"#);
+    }
+
+    #[test]
+    fn test_regex_type_coercion() {
+        let regex_scalar = ScalarValue::regex(r"\d+");
+        
+        // Test coercing regex to string
+        let string_scalar = regex_scalar.coerce_to_type(ScalarType::String).unwrap();
+        assert_eq!(string_scalar.scalar_type(), ScalarType::String);
+        assert_eq!(string_scalar.value(), r"\d+");
+        assert!(!string_scalar.is_regex());
+
+        // Test coercing string to regex
+        let str_scalar = ScalarValue::new("test.*");
+        let regex_from_string = str_scalar.coerce_to_type(ScalarType::Regex).unwrap();
+        assert_eq!(regex_from_string.scalar_type(), ScalarType::Regex);
+        assert_eq!(regex_from_string.value(), "test.*");
+        assert!(regex_from_string.is_regex());
+
+        // Test that regex cannot be coerced to number types
+        assert!(regex_scalar.coerce_to_type(ScalarType::Integer).is_none());
+        assert!(regex_scalar.coerce_to_type(ScalarType::Float).is_none());
+        assert!(regex_scalar.coerce_to_type(ScalarType::Boolean).is_none());
+    }
+
+    #[test]
     fn test_type_coercion() {
         // Test coercing string to integer
         let str_scalar = ScalarValue::new("42");

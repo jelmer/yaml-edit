@@ -23,8 +23,14 @@ positive_binary: +0b101
     if let Some(doc) = yaml.document() {
         assert_eq!(doc.get_string("binary1"), Some("0b1010".to_string()));
         assert_eq!(doc.get_string("binary2"), Some("0B1111".to_string()));
-        assert_eq!(doc.get_string("negative_binary"), Some("-0b1010".to_string()));
-        assert_eq!(doc.get_string("positive_binary"), Some("+0b101".to_string()));
+        assert_eq!(
+            doc.get_string("negative_binary"),
+            Some("-0b1010".to_string())
+        );
+        assert_eq!(
+            doc.get_string("positive_binary"),
+            Some("+0b101".to_string())
+        );
     } else {
         panic!("Failed to get document");
     }
@@ -98,7 +104,7 @@ invalid_hex: 0xGH
 "#;
 
     let yaml = Yaml::from_str(yaml_str).expect("Failed to parse YAML");
-    
+
     // These should all parse successfully as strings
     if let Some(doc) = yaml.document() {
         assert_eq!(doc.get_string("empty_binary"), Some("0b".to_string()));
@@ -166,7 +172,7 @@ hex_zero: 0x0
 "#;
 
     let yaml = Yaml::from_str(yaml_str).expect("Failed to parse YAML");
-    
+
     if let Some(doc) = yaml.document() {
         assert_eq!(doc.get_string("zero"), Some("0".to_string()));
         assert_eq!(doc.get_string("double_zero"), Some("00".to_string()));

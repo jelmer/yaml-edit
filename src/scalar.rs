@@ -727,10 +727,10 @@ impl ScalarValue {
             return true;
         }
 
-        // Check for time part: T or space followed by HH:MM:SS
+        // Check for time part: T or t or space followed by HH:MM:SS
         if chars.len() >= 19 {
             let sep = chars[10];
-            if (sep == 'T' || sep == ' ')
+            if (sep == 'T' || sep == 't' || sep == ' ')
                 && chars[11..13].iter().all(|c| c.is_ascii_digit())
                 && chars[13] == ':'
                 && chars[14..16].iter().all(|c| c.is_ascii_digit())
@@ -1513,7 +1513,9 @@ mod tests {
             "2023-12-25T10:30:45",
             "2023-12-25 10:30:45",
             "2023-12-25T10:30:45Z",
-            "1703515845", // Unix timestamp
+            "2001-12-14 21:59:43.10 -5", // Space-separated with timezone
+            "2001-12-15T02:59:43.1Z",    // ISO 8601
+            "2001-12-14t21:59:43.10-05:00", // Lowercase t
         ];
 
         for ts in valid_timestamps {
@@ -1524,6 +1526,34 @@ mod tests {
 
             let yaml_output = scalar.to_yaml_string();
             assert_eq!(yaml_output, format!("!!timestamp {}", ts));
+
+            // Test auto-detection recognizes it as timestamp
+            let auto_scalar = ScalarValue::auto_typed(ts);
+            assert_eq!(
+                auto_scalar.scalar_type(),
+                ScalarType::Timestamp,
+                "Failed to auto-detect '{}' as timestamp",
+                ts
+            );
+        }
+
+        // Test invalid timestamps are not recognized
+        let invalid_timestamps = [
+            "not-a-date",
+            "2023-13-01", // Invalid month
+            "2023-12-32", // Invalid day
+            "12:34:56",   // Time only (should be String)
+            "2023/12/25", // Wrong separator
+        ];
+
+        for ts in invalid_timestamps {
+            let auto_scalar = ScalarValue::auto_typed(ts);
+            assert_ne!(
+                auto_scalar.scalar_type(),
+                ScalarType::Timestamp,
+                "'{}' should not be detected as timestamp",
+                ts
+            );
         }
     }
 
@@ -1626,8 +1656,12 @@ mod tests {
         // Valid patterns
         assert!(ScalarValue::matches_iso8601_pattern("2023-12-25"));
         assert!(ScalarValue::matches_iso8601_pattern("2023-12-25T10:30:45"));
+        assert!(ScalarValue::matches_iso8601_pattern("2023-12-25t10:30:45")); // Lowercase t
         assert!(ScalarValue::matches_iso8601_pattern("2023-12-25 10:30:45"));
         assert!(ScalarValue::matches_iso8601_pattern("2023-01-01T00:00:00"));
+        assert!(ScalarValue::matches_iso8601_pattern(
+            "2001-12-14t21:59:43.10-05:00"
+        )); // Complex with lowercase t
 
         // Invalid patterns
         assert!(!ScalarValue::matches_iso8601_pattern("2023-13-25")); // Invalid month

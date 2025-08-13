@@ -4448,6 +4448,272 @@ timestamps_in_array:
     }
 
     #[test]
+    fn test_regex_support_in_yaml() {
+        use crate::scalar::{ScalarType, ScalarValue};
+
+        // Test 1: Parse YAML with regex tags (using simpler patterns)
+        let yaml_with_regex = r#"
+patterns:
+  digits: !!regex '\d+'
+  word: !!regex '\w+'
+  simple: !!regex 'test'"#;
+
+        let parsed = Yaml::from_str(yaml_with_regex).unwrap();
+        let output = parsed.to_string();
+
+        // All regex patterns should be preserved
+        assert!(
+            output.contains("!!regex"),
+            "Output should contain regex tags"
+        );
+
+        // Count the number of regex tags to ensure all are preserved
+        let input_regex_count = yaml_with_regex.matches("!!regex").count();
+        let output_regex_count = output.matches("!!regex").count();
+        assert_eq!(
+            input_regex_count, output_regex_count,
+            "All regex tags should be preserved: input {}, output {}",
+            input_regex_count, output_regex_count
+        );
+
+        // Test 2: Verify regex scalars are correctly identified
+        let regex_scalar = ScalarValue::regex(r"^\d{4}-\d{2}-\d{2}$");
+        assert_eq!(regex_scalar.scalar_type(), ScalarType::Regex);
+        assert!(regex_scalar.is_regex());
+        assert_eq!(regex_scalar.value(), r"^\d{4}-\d{2}-\d{2}$");
+        assert_eq!(
+            regex_scalar.to_yaml_string(),
+            r"!!regex ^\d{4}-\d{2}-\d{2}$"
+        );
+
+        // Test 3: Round-trip parsing
+        let yaml_simple = "pattern: !!regex '\\d+'";
+        let parsed_simple = Yaml::from_str(yaml_simple).unwrap();
+        let output_simple = parsed_simple.to_string();
+        assert!(
+            output_simple.contains("!!regex"),
+            "Simple regex should preserve tag"
+        );
+        assert!(output_simple.contains("pattern:"), "Should preserve key");
+
+        // Test 4: Complex regex patterns
+        let complex_regex = r#"validation: !!regex '^https?://(?:[-\w.])+(?:\:[0-9]+)?'"#;
+        let parsed_complex = Yaml::from_str(complex_regex).unwrap();
+        let output_complex = parsed_complex.to_string();
+        assert!(
+            output_complex.contains("!!regex"),
+            "Complex regex should preserve tag"
+        );
+        assert!(
+            output_complex.contains("validation:"),
+            "Should preserve key"
+        );
+    }
+
+    #[test]
+    fn test_regex_in_different_contexts() {
+        // Test 1: Regex in sequences
+        let yaml_sequence = r#"
+patterns:
+  - !!regex '\d+'
+  - !!regex '[a-z]+'
+  - normal_string
+  - !!regex '.*@.*\..*'
+"#;
+
+        let parsed_seq = Yaml::from_str(yaml_sequence).unwrap();
+        let output_seq = parsed_seq.to_string();
+
+        // Should preserve all regex tags in sequence
+        assert_eq!(
+            output_seq.matches("!!regex").count(),
+            3,
+            "Should preserve 3 regex tags in sequence"
+        );
+        assert!(
+            output_seq.contains("normal_string"),
+            "Should preserve non-regex items"
+        );
+
+        // Test 2: Nested mappings with regex (using simple patterns)
+        let yaml_nested = r#"
+validation:
+  email: !!regex '[^@]+@[^@]+\.[a-z]+'
+  phone: !!regex '\d{3}-\d{3}-\d{4}'
+  config:
+    debug_pattern: !!regex 'DEBUG:.*'
+    nested:
+      deep_pattern: !!regex 'ERROR'
+"#;
+
+        let parsed_nested = Yaml::from_str(yaml_nested).unwrap();
+        let output_nested = parsed_nested.to_string();
+
+        assert_eq!(
+            output_nested.matches("!!regex").count(),
+            4,
+            "Should preserve 4 regex tags in nested structure"
+        );
+        assert!(
+            output_nested.contains("email:"),
+            "Should preserve structure"
+        );
+        assert!(
+            output_nested.contains("nested:"),
+            "Should preserve nested structure"
+        );
+
+        // Test 3: Mixed collections
+        let yaml_mixed = r#"
+mixed_collection:
+  - name: "test"
+    patterns: [!!regex '\d+', !!regex '\w+']
+  - patterns:
+      simple: !!regex 'test'
+      complex: !!regex '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$'
+"#;
+
+        let parsed_mixed = Yaml::from_str(yaml_mixed).unwrap();
+        let output_mixed = parsed_mixed.to_string();
+
+        assert_eq!(
+            output_mixed.matches("!!regex").count(),
+            4,
+            "Should preserve 4 regex tags in mixed collections"
+        );
+        assert!(
+            output_mixed.contains("mixed_collection:"),
+            "Should preserve root structure"
+        );
+
+        // Test 4: Flow style with regex
+        let yaml_flow =
+            r#"inline_patterns: {email: !!regex '[^@]+@[^@]+', phone: !!regex '\d{3}-\d{4}'}"#;
+
+        let parsed_flow = Yaml::from_str(yaml_flow).unwrap();
+        let output_flow = parsed_flow.to_string();
+
+        assert_eq!(
+            output_flow.matches("!!regex").count(),
+            2,
+            "Should preserve 2 regex tags in flow style"
+        );
+    }
+
+    #[test]
+    fn test_regex_parsing_edge_cases() {
+        // Test 1: Regex with various quote styles (step by step)
+        // Test various quote styles
+        let yaml_quotes = r#"
+patterns:
+  single_quoted: !!regex 'pattern with spaces'
+  double_quoted: !!regex "pattern_without_escapes"
+  unquoted: !!regex simple_pattern
+"#;
+
+        let parsed_quotes = Yaml::from_str(yaml_quotes).unwrap();
+        let output_quotes = parsed_quotes.to_string();
+        assert_eq!(
+            output_quotes.matches("!!regex").count(),
+            3,
+            "Should preserve all regex tags"
+        );
+
+        // Test 2: Empty and whitespace patterns
+        let yaml_empty = r#"
+empty: !!regex ''
+whitespace: !!regex '   '
+tabs: !!regex '	'
+"#;
+
+        let parsed_empty = Yaml::from_str(yaml_empty);
+        assert!(
+            parsed_empty.is_ok(),
+            "Should parse empty/whitespace regex patterns"
+        );
+        let output_empty = parsed_empty.unwrap().to_string();
+        assert_eq!(
+            output_empty.matches("!!regex").count(),
+            3,
+            "Should preserve empty regex patterns"
+        );
+
+        // Test 3: Regex with special characters (avoiding YAML conflicts)
+        let yaml_special = r#"special: !!regex 'pattern_with_underscores_and_123'"#;
+
+        let parsed_special = Yaml::from_str(yaml_special);
+        assert!(
+            parsed_special.is_ok(),
+            "Should parse regex with safe special characters"
+        );
+        let output_special = parsed_special.unwrap().to_string();
+        assert!(
+            output_special.contains("!!regex"),
+            "Should preserve regex tag"
+        );
+
+        // Test 4: Verify regex scalars maintain their properties after parsing
+        let yaml_verify = r#"test_pattern: !!regex '\d{4}-\d{2}-\d{2}'"#;
+        let parsed_verify = Yaml::from_str(yaml_verify).unwrap();
+        let output_verify = parsed_verify.to_string();
+
+        // Verify the regex pattern is preserved in output
+        assert!(
+            output_verify.contains("!!regex"),
+            "Should preserve regex tag"
+        );
+        assert!(
+            output_verify.contains(r"\d{4}-\d{2}-\d{2}"),
+            "Should preserve regex pattern"
+        );
+        assert!(
+            output_verify.contains("test_pattern:"),
+            "Should preserve key"
+        );
+
+        // Test 5: Multiple regex patterns in one document
+        let yaml_multiple = r#"
+patterns:
+  email: !!regex '^[^\s@]+@[^\s@]+\.[^\s@]+$'
+  phone: !!regex '^\+?[\d\s\-\(\)]{10,}$'
+  url: !!regex '^https?://[^\s]+$'
+  ipv4: !!regex '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$'
+  uuid: !!regex '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+"#;
+
+        let parsed_multiple = Yaml::from_str(yaml_multiple);
+        assert!(
+            parsed_multiple.is_ok(),
+            "Should parse multiple regex patterns"
+        );
+        let output_multiple = parsed_multiple.unwrap().to_string();
+        assert_eq!(
+            output_multiple.matches("!!regex").count(),
+            5,
+            "Should preserve all 5 regex patterns"
+        );
+
+        // Verify each pattern is preserved in output
+        assert!(
+            output_multiple.contains("email:"),
+            "Should preserve email key"
+        );
+        assert!(
+            output_multiple.contains("phone:"),
+            "Should preserve phone key"
+        );
+        assert!(output_multiple.contains("url:"), "Should preserve url key");
+        assert!(
+            output_multiple.contains("ipv4:"),
+            "Should preserve ipv4 key"
+        );
+        assert!(
+            output_multiple.contains("uuid:"),
+            "Should preserve uuid key"
+        );
+    }
+
+    #[test]
     fn test_enhanced_comment_support() {
         // Test improvements: mid-line comments, comments in flow collections,
         // and better comment positioning preservation

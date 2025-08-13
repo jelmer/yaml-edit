@@ -30,7 +30,6 @@ These are the most impactful features to implement next:
 2. **Schema support** - Validate and enforce YAML schemas  
 3. **Better error recovery** - Continue parsing after errors with meaningful messages
 4. **Performance optimizations** - Streaming and lazy parsing for large files
-5. **Regular expressions** - `!!regex` tag support
 
 ## Known Issues
 
@@ -59,7 +58,7 @@ These are the most impactful features to implement next:
 - [x] ~~Scientific notation~~ - `6.02e23` works
 
 ### 🎯 Advanced Types
-- [ ] **Regular expressions** - `!!regex` tag support
+- [x] ~~Regular expressions~~ - `!!regex` tag support now implemented
 - [ ] **Type coercion** - Automatic type conversion rules
 - [ ] **Custom tags** - User-defined type handlers
 

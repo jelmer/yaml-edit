@@ -653,6 +653,7 @@ impl Mapping {
 
                         // Look for the next VALUE node (skip whitespace/other tokens)
                         let mut value_node = None;
+                        let mut next_index = self.index + 1;
                         for j in (self.index + 1)..self.children.len() {
                             let child_kind = self.children[j].kind();
                             if child_kind == SyntaxKind::VALUE {
@@ -661,15 +662,17 @@ impl Mapping {
                                     .children()
                                     .next()
                                     .or_else(|| Some(self.children[j].clone()));
+                                next_index = j + 1; // Set to position after this VALUE node
                                 break;
                             } else if child_kind == SyntaxKind::KEY {
                                 // Hit another key, stop searching
+                                next_index = j; // Set to the position of this KEY node
                                 break;
                             }
                             // Continue searching past whitespace, tokens, etc.
                         }
 
-                        self.index += 2; // Skip both KEY and VALUE nodes
+                        self.index = next_index; // Move to correct position
                         return Some((key_scalar, value_node));
                     }
                     self.index += 1;
@@ -2053,6 +2056,45 @@ impl Parser {
         false
     }
 
+    fn parse_mapping_value(&mut self) {
+        // When parsing the value part of a mapping, be more conservative about
+        // interpreting content as nested mappings. Only parse as mapping if
+        // it's clearly a structured value, otherwise parse as scalar.
+        match self.current() {
+            Some(SyntaxKind::DASH) if !self.in_flow_context => self.parse_sequence(),
+            Some(SyntaxKind::ANCHOR) => self.parse_anchored_value(),
+            Some(SyntaxKind::REFERENCE) => self.parse_alias(),
+            Some(SyntaxKind::TAG) => self.parse_tagged_value(),
+            Some(SyntaxKind::QUESTION) => {
+                // Explicit key indicator - parse complex mapping
+                self.parse_explicit_key_mapping();
+            }
+            Some(SyntaxKind::PIPE) => self.parse_literal_block_scalar(),
+            Some(SyntaxKind::GREATER) => self.parse_folded_block_scalar(),
+            Some(SyntaxKind::LEFT_BRACKET) => {
+                // Check if this is a complex key in a mapping
+                if !self.in_flow_context && self.is_complex_mapping_key() {
+                    self.parse_complex_key_mapping();
+                } else {
+                    self.parse_flow_sequence();
+                }
+            }
+            Some(SyntaxKind::LEFT_BRACE) => {
+                // Check if this is a complex key in a mapping
+                if !self.in_flow_context && self.is_complex_mapping_key() {
+                    self.parse_complex_key_mapping();
+                } else {
+                    self.parse_flow_mapping();
+                }
+            }
+            _ => {
+                // For all other cases in mapping values, parse as scalar
+                // This handles URLs and other complex scalar values containing colons
+                self.parse_scalar();
+            }
+        }
+    }
+
     fn is_mapping_key(&self) -> bool {
         // Check if this is an explicit key indicator
         if self.current() == Some(SyntaxKind::QUESTION) {
@@ -2131,7 +2173,7 @@ impl Parser {
             // Parse value - wrap in VALUE node
             self.builder.start_node(SyntaxKind::VALUE.into());
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                self.parse_value();
+                self.parse_mapping_value();
             } else if self.current() == Some(SyntaxKind::NEWLINE) {
                 // Check if next line is indented (nested content)
                 self.bump(); // consume newline

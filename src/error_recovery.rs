@@ -13,8 +13,6 @@ use rowan::{TextRange, TextSize};
 pub enum RecoveryStrategy {
     /// Skip the current token and continue
     SkipToken,
-    /// Skip until a specific token is found
-    SkipUntil(SyntaxKind),
     /// Skip until end of line
     SkipToEndOfLine,
     /// Skip until a safe synchronization point
@@ -162,20 +160,40 @@ impl ErrorRecoveryContext {
         match self.current_context() {
             ParseContext::FlowSequence => {
                 // In flow sequence, recover to comma or closing bracket
-                match found {
-                    Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACKET) => {
-                        RecoveryStrategy::SkipToken
+                match expected {
+                    SyntaxKind::RIGHT_BRACKET => {
+                        // Missing closing bracket - insert it synthetically
+                        RecoveryStrategy::InsertToken(SyntaxKind::RIGHT_BRACKET)
                     }
-                    _ => RecoveryStrategy::SkipUntil(SyntaxKind::RIGHT_BRACKET),
+                    _ => match found {
+                        Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACKET) => {
+                            RecoveryStrategy::SkipToken
+                        }
+                        _ => {
+                            // Don't use SkipUntil for brackets that might not exist
+                            // Skip to next safe point instead
+                            RecoveryStrategy::SkipToEndOfLine
+                        }
+                    },
                 }
             }
             ParseContext::FlowMapping => {
                 // In flow mapping, recover to comma or closing brace
-                match found {
-                    Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACE) => {
-                        RecoveryStrategy::SkipToken
+                match expected {
+                    SyntaxKind::RIGHT_BRACE => {
+                        // Missing closing brace - insert it synthetically
+                        RecoveryStrategy::InsertToken(SyntaxKind::RIGHT_BRACE)
                     }
-                    _ => RecoveryStrategy::SkipUntil(SyntaxKind::RIGHT_BRACE),
+                    _ => match found {
+                        Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACE) => {
+                            RecoveryStrategy::SkipToken
+                        }
+                        _ => {
+                            // Don't use SkipUntil for braces that might not exist
+                            // Skip to next safe point instead
+                            RecoveryStrategy::SkipToEndOfLine
+                        }
+                    },
                 }
             }
             ParseContext::Mapping => {
@@ -387,10 +405,7 @@ mod tests {
         let mut ctx_flow = ctx.clone();
         ctx_flow.push_context(ParseContext::FlowSequence);
         let strategy = ctx_flow.suggest_recovery(SyntaxKind::COMMA, Some(SyntaxKind::COLON));
-        assert_eq!(
-            strategy,
-            RecoveryStrategy::SkipUntil(SyntaxKind::RIGHT_BRACKET)
-        );
+        assert_eq!(strategy, RecoveryStrategy::SkipToEndOfLine);
 
         // Test mapping colon recovery
         let mut ctx_map = ErrorRecoveryContext::new("test".to_string());

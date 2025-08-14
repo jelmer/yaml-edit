@@ -2328,12 +2328,37 @@ impl Parser {
         self.in_flow_context = true;
 
         while self.current() != Some(SyntaxKind::RIGHT_BRACKET) && self.current().is_some() {
+            // Check if we have a valid flow sequence element
+            // In flow sequences, we should not have bare colons or other structural elements
+            if matches!(self.current(), Some(SyntaxKind::COLON)) {
+                // This is an error - colons are not valid in flow sequences
+                let error_msg = self.create_detailed_error(
+                    "Unexpected colon in flow sequence",
+                    "comma or ']'",
+                    self.current_text().as_deref(),
+                );
+                self.add_error(error_msg);
+                // Break out of the loop to avoid infinite loop
+                break;
+            }
+
             self.parse_value();
             self.skip_ws_and_newlines(); // Support comments after values
 
             if self.current() == Some(SyntaxKind::COMMA) {
                 self.bump();
                 self.skip_ws_and_newlines(); // Support comments after commas
+            } else if self.current() != Some(SyntaxKind::RIGHT_BRACKET) && self.current().is_some()
+            {
+                // No comma found and not at closing bracket
+                // Check if we should break to avoid infinite loops
+                if matches!(
+                    self.current(),
+                    Some(SyntaxKind::COLON) | Some(SyntaxKind::DASH)
+                ) {
+                    // These tokens indicate we've likely left the flow sequence context
+                    break;
+                }
             }
         }
 
@@ -2365,6 +2390,12 @@ impl Parser {
         self.in_flow_context = true;
 
         while self.current() != Some(SyntaxKind::RIGHT_BRACE) && self.current().is_some() {
+            // Check for unexpected structural tokens that indicate we've left flow context
+            if matches!(self.current(), Some(SyntaxKind::DASH)) {
+                // Dash at this position means we've likely exited the flow mapping
+                break;
+            }
+
             // Parse key - wrap in KEY node
             self.builder.start_node(SyntaxKind::KEY.into());
             self.parse_value();
@@ -2855,12 +2886,6 @@ impl Parser {
             RecoveryStrategy::SkipToken => {
                 // Skip the problematic token
                 if self.current().is_some() {
-                    self.bump();
-                }
-            }
-            RecoveryStrategy::SkipUntil(target) => {
-                // Skip tokens until we find the target
-                while self.current().is_some() && self.current() != Some(target) {
                     self.bump();
                 }
             }

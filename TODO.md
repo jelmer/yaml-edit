@@ -44,7 +44,7 @@ These are the most impactful features to implement next:
 - [ ] **Path-based access** - `yaml.get("server.host")`, `yaml.set("server.port", 8080)`
 - [ ] **Builder pattern** - Fluent API for creating YAML structures
 - [ ] **Iterator improvements** - Better traversal of sequences/mappings
-- [ ] **Visitor pattern** - Walk YAML trees with callbacks
+- [x] ✅ **Visitor pattern** - Walk YAML trees with callbacks (IMPLEMENTED - YamlVisitor trait with accept methods)
 
 ### 📐 Schema Support
 - [x] ✅ **Failsafe schema** - Minimal type set (strings, sequences, mappings only)

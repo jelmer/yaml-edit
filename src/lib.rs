@@ -18,6 +18,7 @@ mod parse;
 mod scalar;
 mod schema;
 mod value;
+pub mod visitor;
 mod yaml;
 
 pub use error::{YamlError, YamlResult};

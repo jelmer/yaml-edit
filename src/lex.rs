@@ -257,7 +257,36 @@ pub fn lex_with_validation_config<'a>(
                 }
             }
             '+' => tokens.push((PLUS, &input[token_start..start_idx + 1])),
-            ':' => tokens.push((COLON, &input[token_start..start_idx + 1])),
+            ':' => {
+                // According to YAML spec, colon only indicates mapping if followed by whitespace
+                // Otherwise it's part of a plain scalar (e.g., URLs, timestamps)
+                if let Some((_, next_ch)) = chars.peek() {
+                    if next_ch.is_whitespace() {
+                        // This is a mapping indicator
+                        tokens.push((COLON, &input[token_start..start_idx + 1]));
+                    } else {
+                        // This colon is part of a plain scalar
+                        // Continue reading the scalar
+                        let mut end_idx = start_idx + 1;
+                        while let Some((idx, next_ch)) = chars.peek() {
+                            if next_ch.is_whitespace() {
+                                break;
+                            }
+                            // Check for special chars, but exclude colon since we're already in a scalar with colon
+                            if is_yaml_special_excluding_colon(*next_ch) {
+                                break;
+                            }
+                            end_idx = *idx + next_ch.len_utf8();
+                            chars.next();
+                        }
+                        let text = &input[token_start..end_idx];
+                        tokens.push((classify_scalar(text), text));
+                    }
+                } else {
+                    // Colon at end of input
+                    tokens.push((COLON, &input[token_start..start_idx + 1]));
+                }
+            }
             '?' => tokens.push((QUESTION, &input[token_start..start_idx + 1])),
             '[' => tokens.push((LEFT_BRACKET, &input[token_start..start_idx + 1])),
             ']' => tokens.push((RIGHT_BRACKET, &input[token_start..start_idx + 1])),
@@ -498,9 +527,34 @@ pub fn lex_with_validation_config<'a>(
             _ => {
                 let mut end_idx = start_idx + ch.len_utf8();
 
-                // Read the rest of the scalar, including embedded hyphens
+                // Read the rest of the scalar normally, including embedded hyphens
                 while let Some((idx, next_ch)) = chars.peek() {
-                    if next_ch.is_whitespace() || is_yaml_special_excluding_hyphen(*next_ch) {
+                    if next_ch.is_whitespace() {
+                        break;
+                    }
+
+                    // Check for YAML special characters
+                    // Special handling for colon: only special if followed by whitespace
+                    if *next_ch == ':' {
+                        // Peek ahead one more to check if colon is followed by whitespace
+                        let next_idx = *idx + next_ch.len_utf8();
+                        if next_idx < input.len() {
+                            let after_colon = input[next_idx..].chars().next();
+                            if let Some(after) = after_colon {
+                                if after.is_whitespace() {
+                                    // Colon followed by whitespace - stop here
+                                    break;
+                                }
+                            }
+                        }
+                        // Colon not followed by whitespace - continue as part of scalar
+                        end_idx = *idx + next_ch.len_utf8();
+                        chars.next();
+                        continue;
+                    }
+
+                    // Check other special characters (excluding hyphen and colon)
+                    if is_yaml_special_excluding_hyphen(*next_ch) && *next_ch != ':' {
                         break;
                     }
 
@@ -618,6 +672,29 @@ fn is_yaml_special_excluding_hyphen(ch: char) -> bool {
             | '#'
     )
     // Note: @ and ` are reserved in YAML but don't terminate plain scalars
+}
+
+/// Check if character is YAML special, excluding colon (for scalars that start with colon)
+fn is_yaml_special_excluding_colon(ch: char) -> bool {
+    matches!(
+        ch,
+        '-' | '+'
+            | '?'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | ','
+            | '|'
+            | '>'
+            | '&'
+            | '*'
+            | '!'
+            | '%'
+            | '"'
+            | '\''
+            | '#'
+    )
 }
 
 #[cfg(test)]
@@ -1114,19 +1191,61 @@ mod tests {
     #[test]
     fn test_dash_after_colon() {
         // Test hyphen immediately after colon
+        // According to YAML spec, "key:-value" is a single plain scalar
+        // because the colon is not followed by whitespace
         let input = "key:-value";
         let tokens = lex(input);
-        assert_eq!(tokens[0], (SyntaxKind::STRING, "key"));
-        assert_eq!(tokens[1], (SyntaxKind::COLON, ":"));
-        assert_eq!(tokens[2], (SyntaxKind::STRING, "-value"));
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "key:-value"));
 
-        // Test with space
+        // Test with space - this creates a mapping
         let input = "key: -value";
         let tokens = lex(input);
         assert_eq!(tokens[0], (SyntaxKind::STRING, "key"));
         assert_eq!(tokens[1], (SyntaxKind::COLON, ":"));
         assert_eq!(tokens[2], (SyntaxKind::WHITESPACE, " "));
         assert_eq!(tokens[3], (SyntaxKind::STRING, "-value"));
+    }
+
+    #[test]
+    fn test_yaml_spec_compliant_colon_handling() {
+        // Test that colons are handled according to YAML spec:
+        // - Colon followed by whitespace indicates mapping
+        // - Colon not followed by whitespace is part of plain scalar
+
+        // URLs should be single scalars (no space after colon)
+        let input = "http://example.com:8080/path";
+        let tokens = lex(input);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(
+            tokens[0],
+            (SyntaxKind::STRING, "http://example.com:8080/path")
+        );
+
+        // Timestamps should be single scalars
+        let input = "2024:12:31:23:59:59";
+        let tokens = lex(input);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "2024:12:31:23:59:59"));
+
+        // Key-value pairs need space after colon
+        let input = "key: value";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "key"));
+        assert_eq!(tokens[1], (SyntaxKind::COLON, ":"));
+        assert_eq!(tokens[2], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[3], (SyntaxKind::STRING, "value"));
+
+        // Without space, it's a single scalar
+        let input = "key:value";
+        let tokens = lex(input);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "key:value"));
+
+        // Multiple colons without spaces
+        let input = "a:b:c:d";
+        let tokens = lex(input);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "a:b:c:d"));
     }
 
     #[test]

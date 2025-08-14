@@ -29,7 +29,8 @@ These are the most impactful features to implement next:
 
 1. **Path-based API** - Enable `yaml.get("server.host")` and `yaml.set("server.port", 8080)`
 2. ✅ **Schema support** - Validate and enforce YAML schemas (IMPLEMENTED - failsafe, JSON, core, custom schemas)
-3. **Type coercion improvements** - More sophisticated automatic type conversion rules
+3. ✅ **Type coercion improvements** - More sophisticated automatic type conversion rules (IMPLEMENTED - enhanced cross-type coercion, thousand separators, expanded boolean/null recognition, timestamp formats)
+4. **Performance optimizations** - Streaming and lazy parsing for large files
 
 ## Known Issues
 
@@ -62,8 +63,8 @@ These are the most impactful features to implement next:
 
 ### 🎯 Advanced Types
 - [x] ~~Regular expressions~~ - `!!regex` tag support now implemented
-- [ ] **Type coercion** - Automatic type conversion rules
-- [ ] **Custom tags** - User-defined type handlers
+- [x] ✅ **Type coercion** - Automatic type conversion rules (IMPLEMENTED - sophisticated cross-type coercion with enhanced parsing)
+- [x] **Custom tags** - User-defined type handlers
 
 ### ⚡ Performance
 - [ ] **Lazy evaluation** - Parse only accessed portions

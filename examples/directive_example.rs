@@ -47,7 +47,7 @@ version: 1.0.0
 
     yaml.push_document(doc);
 
-    println!("Generated YAML:\n{}", yaml.to_string());
+    println!("Generated YAML:\n{}", yaml);
 
     // Example 3: Working with different directive types
     println!("\n3. Creating specific directive types:");
@@ -77,7 +77,7 @@ second_doc: value
 
     let parsed_complex = Yaml::from_str(complex_yaml)?;
     println!("Original:\n{}", complex_yaml);
-    println!("Parsed and serialized:\n{}", parsed_complex.to_string());
+    println!("Parsed and serialized:\n{}", parsed_complex);
 
     let dirs: Vec<_> = parsed_complex.directives().collect();
     println!("Preserved {} directives", dirs.len());

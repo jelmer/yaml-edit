@@ -20,28 +20,28 @@ fn test_json_object_parsing() {
     assert_eq!(
         mapping
             .get("name")
-            .and_then(|n| Scalar::cast(n))
+            .and_then(Scalar::cast)
             .map(|s| s.as_string()),
         Some("John".to_string())
     );
     assert_eq!(
         mapping
             .get("age")
-            .and_then(|n| Scalar::cast(n))
+            .and_then(Scalar::cast)
             .map(|s| s.value()),
         Some("30".to_string())
     );
     assert_eq!(
         mapping
             .get("active")
-            .and_then(|n| Scalar::cast(n))
+            .and_then(Scalar::cast)
             .map(|s| s.value()),
         Some("true".to_string())
     );
     assert_eq!(
         mapping
             .get("balance")
-            .and_then(|n| Scalar::cast(n))
+            .and_then(Scalar::cast)
             .map(|s| s.value()),
         Some("100.50".to_string())
     );
@@ -95,7 +95,7 @@ fn test_nested_json() {
     // Check users array
     let users = root
         .get("users")
-        .and_then(|n| Sequence::cast(n))
+        .and_then(Sequence::cast)
         .expect("Should have users array");
 
     let user_items: Vec<_> = users.items().collect();
@@ -104,13 +104,13 @@ fn test_nested_json() {
     // Check settings object
     let settings = root
         .get("settings")
-        .and_then(|n| Mapping::cast(n))
+        .and_then(Mapping::cast)
         .expect("Should have settings object");
 
     assert_eq!(
         settings
             .get("theme")
-            .and_then(|n| Scalar::cast(n))
+            .and_then(Scalar::cast)
             .map(|s| s.as_string()),
         Some("dark".to_string())
     );
@@ -134,7 +134,7 @@ fn test_json_escape_sequences() {
     // Check escape sequence handling
     let message = mapping
         .get("message")
-        .and_then(|n| Scalar::cast(n))
+        .and_then(Scalar::cast)
         .map(|s| s.as_string())
         .expect("Should have message");
 
@@ -166,21 +166,21 @@ fn test_json_numbers() {
     assert_eq!(
         mapping
             .get("integer")
-            .and_then(|n| Scalar::cast(n))
+            .and_then(Scalar::cast)
             .map(|s| s.value()),
         Some("42".to_string())
     );
     assert_eq!(
         mapping
             .get("negative")
-            .and_then(|n| Scalar::cast(n))
+            .and_then(Scalar::cast)
             .map(|s| s.value()),
         Some("-17".to_string())
     );
     assert_eq!(
         mapping
             .get("float")
-            .and_then(|n| Scalar::cast(n))
+            .and_then(Scalar::cast)
             .map(|s| s.value()),
         Some("3.14159".to_string())
     );
@@ -188,7 +188,7 @@ fn test_json_numbers() {
     // Scientific notation might need special handling
     let scientific = mapping
         .get("scientific")
-        .and_then(|n| Scalar::cast(n))
+        .and_then(Scalar::cast)
         .map(|s| s.value());
     assert!(scientific.is_some(), "Should parse scientific notation");
 }
@@ -210,17 +210,17 @@ fn test_json_special_values() {
     // Check empty string
     let empty_str = mapping
         .get("empty_string")
-        .and_then(|n| Scalar::cast(n))
+        .and_then(Scalar::cast)
         .map(|s| s.as_string());
     assert_eq!(empty_str, Some("".to_string()));
 
     // Check empty array
-    let empty_array = mapping.get("empty_array").and_then(|n| Sequence::cast(n));
+    let empty_array = mapping.get("empty_array").and_then(Sequence::cast);
     assert!(empty_array.is_some(), "Should have empty array");
     assert_eq!(empty_array.unwrap().items().count(), 0);
 
     // Check empty object
-    let empty_obj = mapping.get("empty_object").and_then(|n| Mapping::cast(n));
+    let empty_obj = mapping.get("empty_object").and_then(Mapping::cast);
     assert!(empty_obj.is_some(), "Should have empty object");
 }
 

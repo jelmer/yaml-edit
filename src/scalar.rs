@@ -1882,7 +1882,7 @@ mod tests {
         let binary_scalar = ScalarValue::binary(data);
 
         // Even if we change style, binary type should maintain tag
-        let mut styled_binary = binary_scalar.clone();
+        let mut styled_binary = binary_scalar;
         styled_binary.style = ScalarStyle::DoubleQuoted;
 
         // The to_yaml_string should still respect the scalar type for tagging

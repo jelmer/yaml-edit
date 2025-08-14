@@ -7,26 +7,132 @@ use crate::scalar::{ScalarType, ScalarValue};
 use crate::yaml::{Document, Mapping, Scalar, Sequence, TaggedScalar};
 use rowan::ast::AstNode;
 
+/// Specific type of validation error that occurred
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidationErrorKind {
+    /// A scalar type is not allowed in the current schema
+    TypeNotAllowed {
+        /// The scalar type that was found
+        found_type: ScalarType,
+        /// The types that are allowed in this schema
+        allowed_types: Vec<ScalarType>,
+    },
+    /// Custom validation constraint failed
+    CustomConstraintFailed {
+        /// The constraint that failed
+        constraint_name: String,
+        /// The actual value that failed validation
+        actual_value: String,
+    },
+    /// Type coercion failed
+    CoercionFailed {
+        /// The type that was found
+        from_type: ScalarType,
+        /// The types that coercion was attempted to
+        to_types: Vec<ScalarType>,
+    },
+}
+
 /// Error that occurs during schema validation
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationError {
-    /// Human-readable error message
-    pub message: String,
+    /// The specific kind of validation error
+    pub kind: ValidationErrorKind,
     /// Path to the node that failed validation (e.g., "root.items[0].name")
     pub path: String,
-    /// Expected type or constraint
-    pub expected: String,
-    /// Actual value that failed validation
-    pub actual: String,
+    /// Name of the schema that was being validated against
+    pub schema_name: String,
+}
+
+impl ValidationError {
+    /// Create a new type not allowed error
+    pub fn type_not_allowed(
+        path: impl Into<String>,
+        schema_name: impl Into<String>,
+        found_type: ScalarType,
+        allowed_types: Vec<ScalarType>,
+    ) -> Self {
+        Self {
+            kind: ValidationErrorKind::TypeNotAllowed {
+                found_type,
+                allowed_types,
+            },
+            path: path.into(),
+            schema_name: schema_name.into(),
+        }
+    }
+
+    /// Create a new custom constraint failed error
+    pub fn custom_constraint_failed(
+        path: impl Into<String>,
+        schema_name: impl Into<String>,
+        constraint_name: impl Into<String>,
+        actual_value: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ValidationErrorKind::CustomConstraintFailed {
+                constraint_name: constraint_name.into(),
+                actual_value: actual_value.into(),
+            },
+            path: path.into(),
+            schema_name: schema_name.into(),
+        }
+    }
+
+    /// Create a new coercion failed error
+    pub fn coercion_failed(
+        path: impl Into<String>,
+        schema_name: impl Into<String>,
+        from_type: ScalarType,
+        to_types: Vec<ScalarType>,
+    ) -> Self {
+        Self {
+            kind: ValidationErrorKind::CoercionFailed {
+                from_type,
+                to_types,
+            },
+            path: path.into(),
+            schema_name: schema_name.into(),
+        }
+    }
+
+    /// Get a human-readable error message
+    pub fn message(&self) -> String {
+        match &self.kind {
+            ValidationErrorKind::TypeNotAllowed {
+                found_type,
+                allowed_types,
+            } => {
+                format!(
+                    "type {:?} not allowed in {} schema, expected one of {:?}",
+                    found_type, self.schema_name, allowed_types
+                )
+            }
+            ValidationErrorKind::CustomConstraintFailed {
+                constraint_name,
+                actual_value,
+            } => {
+                format!(
+                    "custom constraint '{}' failed for value '{}'",
+                    constraint_name, actual_value
+                )
+            }
+            ValidationErrorKind::CoercionFailed {
+                from_type,
+                to_types,
+            } => {
+                format!(
+                    "cannot coerce {:?} to any of {:?} in {} schema",
+                    from_type, to_types, self.schema_name
+                )
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Validation error at {}: {}. Expected {}, got {}",
-            self.path, self.message, self.expected, self.actual
-        )
+        write!(f, "Validation error at {}: {}", self.path, self.message())
     }
 }
 
@@ -35,8 +141,174 @@ impl std::error::Error for ValidationError {}
 /// Result type for schema validation operations
 pub type ValidationResult<T> = Result<T, Vec<ValidationError>>;
 
+/// Result of a custom validation function
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CustomValidationResult {
+    /// Validation passed
+    Valid,
+    /// Validation failed with a specific constraint name and reason
+    Invalid {
+        /// Name of the constraint that failed (e.g., "email_format", "port_range")
+        constraint: String,
+        /// Human-readable reason for failure
+        reason: String,
+    },
+}
+
+impl CustomValidationResult {
+    /// Create a validation failure
+    pub fn invalid(constraint: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::Invalid {
+            constraint: constraint.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// Check if validation passed
+    pub fn is_valid(&self) -> bool {
+        matches!(self, Self::Valid)
+    }
+
+    /// Check if validation failed
+    pub fn is_invalid(&self) -> bool {
+        matches!(self, Self::Invalid { .. })
+    }
+}
+
+/// Custom validation function for scalar values
+///
+/// Takes (value, path) and returns CustomValidationResult
+pub type CustomValidator = Box<dyn Fn(&str, &str) -> CustomValidationResult + Send + Sync>;
+
+/// Custom schema definition with user-defined validation rules
+pub struct CustomSchema {
+    /// Schema name for error messages
+    pub name: String,
+    /// Allowed scalar types in this schema
+    pub allowed_types: Vec<ScalarType>,
+    /// Custom validation functions by type
+    pub custom_validators: std::collections::HashMap<ScalarType, CustomValidator>,
+    /// Whether to allow type coercion
+    pub allow_coercion: bool,
+}
+
+impl std::fmt::Debug for CustomSchema {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CustomSchema")
+            .field("name", &self.name)
+            .field("allowed_types", &self.allowed_types)
+            .field("allow_coercion", &self.allow_coercion)
+            .field(
+                "validators",
+                &format!("<{} validators>", self.custom_validators.len()),
+            )
+            .finish()
+    }
+}
+
+impl CustomSchema {
+    /// Create a new custom schema
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            allowed_types: Vec::new(),
+            custom_validators: std::collections::HashMap::new(),
+            allow_coercion: true,
+        }
+    }
+
+    /// Allow a specific scalar type
+    pub fn allow_type(mut self, scalar_type: ScalarType) -> Self {
+        if !self.allowed_types.contains(&scalar_type) {
+            self.allowed_types.push(scalar_type);
+        }
+        self
+    }
+
+    /// Allow multiple scalar types
+    pub fn allow_types(mut self, types: &[ScalarType]) -> Self {
+        for &scalar_type in types {
+            if !self.allowed_types.contains(&scalar_type) {
+                self.allowed_types.push(scalar_type);
+            }
+        }
+        self
+    }
+
+    /// Add a custom validator for a specific type
+    pub fn with_validator<F>(mut self, scalar_type: ScalarType, validator: F) -> Self
+    where
+        F: Fn(&str, &str) -> CustomValidationResult + Send + Sync + 'static,
+    {
+        self.custom_validators
+            .insert(scalar_type, Box::new(validator));
+        self
+    }
+
+    /// Disable type coercion for strict validation
+    pub fn strict(mut self) -> Self {
+        self.allow_coercion = false;
+        self
+    }
+
+    /// Check if a scalar type is allowed
+    pub fn allows_type(&self, scalar_type: ScalarType) -> bool {
+        self.allowed_types.contains(&scalar_type)
+    }
+
+    /// Validate a scalar value with custom rules
+    pub fn validate_scalar(&self, content: &str, path: &str) -> Result<(), ValidationError> {
+        let scalar_value = ScalarValue::auto_typed(content.trim());
+        let scalar_type = scalar_value.scalar_type();
+
+        // Check if type is allowed
+        if !self.allows_type(scalar_type) {
+            if self.allow_coercion {
+                // Try coercion to allowed types
+                let mut coerced = false;
+                for &allowed_type in &self.allowed_types {
+                    if scalar_value.coerce_to_type(allowed_type).is_some() {
+                        coerced = true;
+                        break;
+                    }
+                }
+                if !coerced {
+                    return Err(ValidationError::coercion_failed(
+                        path,
+                        &self.name,
+                        scalar_type,
+                        self.allowed_types.clone(),
+                    ));
+                }
+            } else {
+                return Err(ValidationError::type_not_allowed(
+                    path,
+                    &self.name,
+                    scalar_type,
+                    self.allowed_types.clone(),
+                ));
+            }
+        }
+
+        // Run custom validator if present
+        if let Some(validator) = self.custom_validators.get(&scalar_type) {
+            let result = validator(content.trim(), path);
+            if let CustomValidationResult::Invalid { constraint, reason } = result {
+                return Err(ValidationError::custom_constraint_failed(
+                    path,
+                    &self.name,
+                    format!("{}: {}", constraint, reason),
+                    content.trim(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// YAML Schema types as defined in YAML 1.2 specification
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Schema {
     /// Failsafe schema - only strings, sequences, and mappings
     Failsafe,
@@ -44,15 +316,30 @@ pub enum Schema {
     Json,
     /// Core schema - full YAML 1.2 type system
     Core,
+    /// User-defined custom schema
+    Custom(CustomSchema),
+}
+
+impl PartialEq for Schema {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Schema::Failsafe, Schema::Failsafe) => true,
+            (Schema::Json, Schema::Json) => true,
+            (Schema::Core, Schema::Core) => true,
+            (Schema::Custom(a), Schema::Custom(b)) => a.name == b.name,
+            _ => false,
+        }
+    }
 }
 
 impl Schema {
     /// Get the name of this schema
-    pub fn name(&self) -> &'static str {
+    pub fn name(&self) -> String {
         match self {
-            Schema::Failsafe => "failsafe",
-            Schema::Json => "json",
-            Schema::Core => "core",
+            Schema::Failsafe => "failsafe".to_string(),
+            Schema::Json => "json".to_string(),
+            Schema::Core => "core".to_string(),
+            Schema::Custom(custom) => custom.name.clone(),
         }
     }
 
@@ -69,6 +356,7 @@ impl Schema {
                     | ScalarType::Null
             ),
             Schema::Core => true, // Core schema allows all types
+            Schema::Custom(custom) => custom.allows_type(scalar_type),
         }
     }
 
@@ -94,12 +382,13 @@ impl Schema {
                 ScalarType::Timestamp,
                 ScalarType::Regex,
             ],
+            Schema::Custom(custom) => custom.allowed_types.clone(),
         }
     }
 }
 
 /// Schema validator for YAML documents
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SchemaValidator {
     schema: Schema,
     strict: bool,
@@ -129,6 +418,11 @@ impl SchemaValidator {
         Self::new(Schema::Core)
     }
 
+    /// Create a validator for a custom schema
+    pub fn custom(schema: CustomSchema) -> Self {
+        Self::new(Schema::Custom(schema))
+    }
+
     /// Enable strict mode - disallow type coercion
     pub fn strict(mut self) -> Self {
         self.strict = true;
@@ -136,8 +430,8 @@ impl SchemaValidator {
     }
 
     /// Get the schema type
-    pub fn schema(&self) -> Schema {
-        self.schema
+    pub fn schema(&self) -> &Schema {
+        &self.schema
     }
 
     /// Validate a YAML document against the schema
@@ -171,7 +465,18 @@ impl SchemaValidator {
 
     /// Validate a scalar value
     fn validate_scalar(&self, scalar: &Scalar, path: &str, errors: &mut Vec<ValidationError>) {
-        let scalar_value = ScalarValue::auto_typed(scalar.as_string().trim());
+        let content = scalar.as_string();
+
+        // Handle custom schema validation differently
+        if let Schema::Custom(custom_schema) = &self.schema {
+            if let Err(error) = custom_schema.validate_scalar(&content, path) {
+                errors.push(error);
+            }
+            return;
+        }
+
+        // Standard schema validation
+        let scalar_value = ScalarValue::auto_typed(content.trim());
         let scalar_type = scalar_value.scalar_type();
 
         if !self.schema.allows_scalar_type(scalar_type) {
@@ -188,20 +493,20 @@ impl SchemaValidator {
                 }
 
                 if !coercion_successful {
-                    errors.push(ValidationError {
-                        message: format!("type not allowed in {} schema", self.schema.name()),
-                        path: path.to_string(),
-                        expected: format!("one of {:?}", self.schema.allowed_scalar_types()),
-                        actual: format!("{:?}", scalar_type),
-                    });
+                    errors.push(ValidationError::coercion_failed(
+                        path,
+                        self.schema.name(),
+                        scalar_type,
+                        self.schema.allowed_scalar_types(),
+                    ));
                 }
             } else {
-                errors.push(ValidationError {
-                    message: format!("type not allowed in {} schema", self.schema.name()),
-                    path: path.to_string(),
-                    expected: format!("one of {:?}", self.schema.allowed_scalar_types()),
-                    actual: format!("{:?}", scalar_type),
-                });
+                errors.push(ValidationError::type_not_allowed(
+                    path,
+                    self.schema.name(),
+                    scalar_type,
+                    self.schema.allowed_scalar_types(),
+                ));
             }
         }
     }
@@ -260,17 +565,26 @@ impl SchemaValidator {
         path: &str,
         errors: &mut Vec<ValidationError>,
     ) {
-        // For tagged scalars, we need to determine the type from the tag
+        // Handle custom schema validation
+        if let Schema::Custom(custom_schema) = &self.schema {
+            let content = tagged_scalar.to_string();
+            if let Err(error) = custom_schema.validate_scalar(&content, path) {
+                errors.push(error);
+            }
+            return;
+        }
+
+        // Standard tagged scalar validation
         let scalar_type = self.get_tagged_scalar_type(tagged_scalar);
 
         if !self.schema.allows_scalar_type(scalar_type) {
             // For tagged scalars, we can't coerce them to other types since they have explicit type information
-            errors.push(ValidationError {
-                message: format!("type not allowed in {} schema", self.schema.name()),
-                path: path.to_string(),
-                expected: format!("one of {:?}", self.schema.allowed_scalar_types()),
-                actual: format!("{:?}", scalar_type),
-            });
+            errors.push(ValidationError::type_not_allowed(
+                path,
+                self.schema.name(),
+                scalar_type,
+                self.schema.allowed_scalar_types(),
+            ));
         }
     }
 
@@ -333,12 +647,12 @@ impl SchemaValidator {
                 }
 
                 if !coerced {
-                    errors.push(ValidationError {
-                        message: format!("cannot coerce type to {} schema", self.schema.name()),
-                        path: path.to_string(),
-                        expected: format!("one of {:?}", self.schema.allowed_scalar_types()),
-                        actual: format!("{:?}", scalar_type),
-                    });
+                    errors.push(ValidationError::coercion_failed(
+                        path,
+                        self.schema.name(),
+                        scalar_type,
+                        self.schema.allowed_scalar_types(),
+                    ));
                 }
             }
         } else if let Some(sequence) = document.as_sequence() {
@@ -391,12 +705,12 @@ impl SchemaValidator {
                 }
 
                 if !coerced {
-                    errors.push(ValidationError {
-                        message: format!("cannot coerce type to {} schema", self.schema.name()),
-                        path: path.to_string(),
-                        expected: format!("one of {:?}", self.schema.allowed_scalar_types()),
-                        actual: format!("{:?}", scalar_type),
-                    });
+                    errors.push(ValidationError::coercion_failed(
+                        path,
+                        self.schema.name(),
+                        scalar_type,
+                        self.schema.allowed_scalar_types(),
+                    ));
                 }
             }
         } else if let Some(tagged_scalar) = TaggedScalar::cast(node.clone()) {
@@ -404,12 +718,12 @@ impl SchemaValidator {
 
             if !self.schema.allows_scalar_type(scalar_type) {
                 // Tagged scalars generally can't be coerced since they have explicit type info
-                errors.push(ValidationError {
-                    message: format!("cannot coerce tagged type to {} schema", self.schema.name()),
-                    path: path.to_string(),
-                    expected: format!("one of {:?}", self.schema.allowed_scalar_types()),
-                    actual: format!("{:?}", scalar_type),
-                });
+                errors.push(ValidationError::type_not_allowed(
+                    path,
+                    self.schema.name(),
+                    scalar_type,
+                    self.schema.allowed_scalar_types(),
+                ));
             }
         } else if let Some(sequence) = Sequence::cast(node.clone()) {
             for (i, item) in sequence.items().enumerate() {
@@ -497,14 +811,14 @@ mod tests {
     #[test]
     fn test_validator_creation() {
         let failsafe = SchemaValidator::failsafe();
-        assert_eq!(failsafe.schema(), Schema::Failsafe);
+        assert_eq!(*failsafe.schema(), Schema::Failsafe);
         assert!(!failsafe.strict);
 
         let json = SchemaValidator::json();
-        assert_eq!(json.schema(), Schema::Json);
+        assert_eq!(*json.schema(), Schema::Json);
 
         let core = SchemaValidator::core();
-        assert_eq!(core.schema(), Schema::Core);
+        assert_eq!(*core.schema(), Schema::Core);
 
         let strict_validator = SchemaValidator::json().strict();
         assert!(strict_validator.strict);
@@ -512,18 +826,18 @@ mod tests {
 
     #[test]
     fn test_validation_error_display() {
-        let error = ValidationError {
-            message: "type mismatch".to_string(),
-            path: "root.items[0]".to_string(),
-            expected: "string".to_string(),
-            actual: "integer".to_string(),
-        };
+        let error = ValidationError::type_not_allowed(
+            "root.items[0]",
+            "test-schema",
+            ScalarType::Integer,
+            vec![ScalarType::String],
+        );
 
         let display = format!("{}", error);
         assert!(display.contains("root.items[0]"));
-        assert!(display.contains("type mismatch"));
-        assert!(display.contains("Expected string"));
-        assert!(display.contains("got integer"));
+        assert!(display.contains("Integer"));
+        assert!(display.contains("String"));
+        assert!(display.contains("test-schema"));
     }
 
     fn create_test_document(content: &str) -> Document {
@@ -598,7 +912,9 @@ active: true
         assert!(!errors.is_empty());
 
         // Should have errors for integer and boolean types
-        let has_type_error = errors.iter().any(|e| e.message.contains("failsafe schema"));
+        let has_type_error = errors
+            .iter()
+            .any(|e| e.message().contains("failsafe schema"));
         assert!(has_type_error);
     }
 
@@ -657,7 +973,7 @@ pattern: !!regex '\d+'
         assert!(!errors.is_empty());
 
         // Should have errors for timestamp and regex types
-        let has_type_error = errors.iter().any(|e| e.message.contains("json schema"));
+        let has_type_error = errors.iter().any(|e| e.message().contains("json schema"));
         assert!(has_type_error);
     }
 
@@ -710,7 +1026,7 @@ message: world
             }
             if let Err(ref errors) = strict_result {
                 for error in errors {
-                    println!("  - {}: {}", error.path, error.message);
+                    println!("  - {}: {}", error.path, error.message());
                 }
             }
         }
@@ -922,7 +1238,7 @@ users:
 
         // Print paths for debugging if needed
         for error in &errors {
-            println!("Error at {}: {}", error.path, error.message);
+            println!("Error at {}: {}", error.path, error.message());
         }
     }
 
@@ -1008,5 +1324,210 @@ binary: !!binary "SGVsbG8gV29ybGQ="
         // JSON should reject YAML-specific types
         let json_strict = SchemaValidator::json().strict();
         assert!(json_strict.validate(&core_doc).is_err());
+    }
+
+    #[test]
+    fn test_custom_schema_basic() {
+        // Create a custom schema that only allows strings and integers (strict mode to prevent coercion)
+        let custom_schema = CustomSchema::new("test")
+            .allow_types(&[ScalarType::String, ScalarType::Integer])
+            .strict(); // No coercion
+
+        let validator = SchemaValidator::custom(custom_schema);
+
+        // Test with allowed types
+        let valid_yaml = r#"
+name: hello world
+count: 42
+"#;
+        let valid_doc = create_test_document(valid_yaml);
+        let result = validator.validate(&valid_doc);
+        if let Err(ref errors) = result {
+            for error in errors {
+                println!("Valid test error: {}", error);
+            }
+        }
+        assert!(result.is_ok());
+
+        // Test with disallowed type
+        let invalid_yaml = r#"
+name: hello world
+enabled: true  # boolean not allowed
+"#;
+        let invalid_doc = create_test_document(invalid_yaml);
+        let result = validator.validate(&invalid_doc);
+        assert!(result.is_err());
+
+        let errors = result.unwrap_err();
+        assert!(!errors.is_empty());
+        assert!(errors[0].message().contains("test schema"));
+    }
+
+    #[test]
+    fn test_custom_schema_with_validators() {
+        // Create a custom schema with string validators
+        let custom_schema = CustomSchema::new("email-validation")
+            .allow_type(ScalarType::String)
+            .with_validator(ScalarType::String, |value, _path| {
+                if value.contains('@') && value.contains('.') {
+                    CustomValidationResult::Valid
+                } else {
+                    CustomValidationResult::invalid("email_format", "invalid email format")
+                }
+            });
+
+        let validator = SchemaValidator::custom(custom_schema);
+
+        // Test with valid email
+        let valid_yaml = r#"
+email: "user@example.com"
+"#;
+        let valid_doc = create_test_document(valid_yaml);
+        assert!(validator.validate(&valid_doc).is_ok());
+
+        // Test with invalid email
+        let invalid_yaml = r#"
+email: "not-an-email"
+"#;
+        let invalid_doc = create_test_document(invalid_yaml);
+        let result = validator.validate(&invalid_doc);
+        assert!(result.is_err());
+
+        let errors = result.unwrap_err();
+        assert!(!errors.is_empty());
+        assert!(errors[0].message().contains("invalid email format"));
+    }
+
+    #[test]
+    fn test_custom_schema_integer_range() {
+        // Custom schema with integer range validation
+        let custom_schema = CustomSchema::new("port-validation")
+            .allow_type(ScalarType::Integer)
+            .with_validator(ScalarType::Integer, |value, _path| {
+                if let Ok(port) = value.parse::<u16>() {
+                    if port >= 1024 && port <= 65535 {
+                        CustomValidationResult::Valid
+                    } else {
+                        CustomValidationResult::invalid(
+                            "port_range",
+                            format!("port {} must be between 1024 and 65535", port),
+                        )
+                    }
+                } else {
+                    CustomValidationResult::invalid(
+                        "integer_format",
+                        format!("invalid integer: {}", value),
+                    )
+                }
+            });
+
+        let validator = SchemaValidator::custom(custom_schema);
+
+        // Test with valid port
+        let valid_yaml = r#"
+port: 8080
+"#;
+        let valid_doc = create_test_document(valid_yaml);
+        assert!(validator.validate(&valid_doc).is_ok());
+
+        // Test with invalid port (too low)
+        let invalid_yaml = r#"
+port: 80
+"#;
+        let invalid_doc = create_test_document(invalid_yaml);
+        let result = validator.validate(&invalid_doc);
+        assert!(result.is_err());
+
+        let errors = result.unwrap_err();
+        assert!(!errors.is_empty());
+        assert!(errors[0]
+            .message()
+            .contains("must be between 1024 and 65535"));
+    }
+
+    #[test]
+    fn test_custom_schema_multiple_validators() {
+        // Schema with multiple type validators
+        let custom_schema = CustomSchema::new("config-validation")
+            .allow_types(&[ScalarType::String, ScalarType::Integer])
+            .with_validator(ScalarType::String, |value, _path| {
+                if value.len() >= 3 {
+                    CustomValidationResult::Valid
+                } else {
+                    CustomValidationResult::invalid(
+                        "string_length",
+                        format!("string too short: '{}'", value),
+                    )
+                }
+            })
+            .with_validator(ScalarType::Integer, |value, _path| {
+                if let Ok(num) = value.parse::<i32>() {
+                    if num >= 0 {
+                        CustomValidationResult::Valid
+                    } else {
+                        CustomValidationResult::invalid(
+                            "negative_number",
+                            format!("negative numbers not allowed: {}", num),
+                        )
+                    }
+                } else {
+                    CustomValidationResult::invalid(
+                        "integer_format",
+                        format!("invalid integer: {}", value),
+                    )
+                }
+            });
+
+        let validator = SchemaValidator::custom(custom_schema);
+
+        // Test with valid values
+        let valid_yaml = r#"
+name: "valid-name"
+count: 100
+"#;
+        let valid_doc = create_test_document(valid_yaml);
+        assert!(validator.validate(&valid_doc).is_ok());
+
+        // Test with invalid string (too short)
+        let invalid_yaml = r#"
+name: "ab"
+count: 100
+"#;
+        let invalid_doc = create_test_document(invalid_yaml);
+        let result = validator.validate(&invalid_doc);
+        assert!(result.is_err());
+
+        let errors = result.unwrap_err();
+        assert!(!errors.is_empty());
+        assert!(errors[0].message().contains("string too short"));
+    }
+
+    #[test]
+    fn test_custom_schema_strict_mode() {
+        let custom_schema = CustomSchema::new("strict-test")
+            .allow_type(ScalarType::String)
+            .strict();
+
+        let validator = SchemaValidator::custom(custom_schema);
+
+        // Test that even valid integers are rejected in strict mode
+        let yaml_with_int = r#"
+value: 42
+"#;
+        let doc = create_test_document(yaml_with_int);
+        let result = validator.validate(&doc);
+        assert!(result.is_err());
+
+        let errors = result.unwrap_err();
+        assert!(!errors.is_empty());
+        assert!(errors[0].message().contains("strict-test schema"));
+    }
+
+    #[test]
+    fn test_custom_schema_name() {
+        let custom_schema = CustomSchema::new("my-custom-schema").allow_type(ScalarType::String);
+        let schema = Schema::Custom(custom_schema);
+
+        assert_eq!(schema.name(), "my-custom-schema");
     }
 }

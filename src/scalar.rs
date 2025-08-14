@@ -177,7 +177,7 @@ pub enum ScalarStyle {
 }
 
 /// Type of a scalar value
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScalarType {
     /// String value
     String,

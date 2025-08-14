@@ -21,14 +21,15 @@ This document tracks remaining features and improvements needed for full YAML 1.
 1. **Timestamp Parsing**: ✅ FIXED - Timestamps with spaces now parse correctly (e.g., `2001-12-14 21:59:43.10 -5`)
 2. **Special Collections**: ✅ FIXED - `!!set`, `!!omap`, and `!!pairs` now preserve their content correctly
 3. **Binary Data**: ✅ FIXED - `!!binary` tag now properly preserves base64 content
+4. **Error Recovery**: ✅ FIXED - Infinite loops in error recovery eliminated, proper loop termination implemented
 
 ## 🎯 Next Priority Items
 
 These are the most impactful features to implement next:
 
 1. **Path-based API** - Enable `yaml.get("server.host")` and `yaml.set("server.port", 8080)`
-2. **Schema support** - Validate and enforce YAML schemas  
-3. **Better error recovery** - Continue parsing after errors with meaningful messages
+2. ✅ **Schema support** - Validate and enforce YAML schemas (IMPLEMENTED - failsafe, JSON, core, custom schemas)
+3. **Type coercion improvements** - More sophisticated automatic type conversion rules
 4. **Performance optimizations** - Streaming and lazy parsing for large files
 
 ## Known Issues
@@ -46,10 +47,13 @@ These are the most impactful features to implement next:
 - [ ] **Visitor pattern** - Walk YAML trees with callbacks
 
 ### 📐 Schema Support
-- [ ] **Failsafe schema** - Minimal type set
-- [ ] **JSON schema** - JSON-compatible types only
-- [ ] **Core schema** - Full YAML 1.2 type set
-- [ ] **Custom schemas** - User-defined type validation
+- [x] ✅ **Failsafe schema** - Minimal type set (strings, sequences, mappings only)
+- [x] ✅ **JSON schema** - JSON-compatible types only (string, number, boolean, null, array, object)  
+- [x] ✅ **Core schema** - Full YAML 1.2 type set (includes timestamps, regex, binary)
+- [x] ✅ **Schema validation API** - `doc.validate_schema()`, `doc.validate_failsafe()`, etc.
+- [x] ✅ **Type coercion** - Non-strict mode allows automatic type conversion
+- [x] ✅ **Validation errors** - Detailed error messages with paths
+- [x] ✅ **Custom schemas** - User-defined type validation and constraints with custom validators
 
 ### 🔢 Number Formats
 - [x] ~~Binary notation~~ - `0b101010` now supported
@@ -69,9 +73,11 @@ These are the most impactful features to implement next:
 - [ ] **Parallel processing** - Multi-threaded parsing for large documents
 
 ### 🛠️ Developer Experience
-- [ ] **Better errors** - Line/column numbers, recovery suggestions
-- [ ] **Validation** - Schema validation with helpful messages
-- [ ] **Debugging tools** - AST visualization, parse tree dumps
+- [x] ✅ **Better error recovery** - Robust parsing that continues after errors
+- [x] ✅ **Validation** - Schema validation with helpful messages (failsafe, JSON, core)
+- [x] ✅ **Detailed error messages** - Context-aware error reporting with suggestions
+- [ ] **Line/column numbers** - Precise error locations in source
+- [ ] **Debugging tools** - AST visualization, parse tree dumps  
 - [ ] **YAML 1.1 warnings** - Detect deprecated constructs
 
 ### 📚 Documentation & Testing

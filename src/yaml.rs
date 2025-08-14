@@ -577,45 +577,47 @@ impl Document {
         let after_key_value = after_key.into();
         let key_value = key.into();
         let value_value = value.into();
+
+        let Some(mapping) = self.as_mapping() else {
+            return false;
+        };
+
+        // Pre-convert to strings once
         let key_str = key_value.to_string();
         let value_str = value_value.to_string();
 
-        if let Some(mapping) = self.as_mapping() {
-            // Collect existing key-value pairs, inserting new one after the reference key
-            let mut pairs = Vec::new();
-            let mut found_reference = false;
+        // Collect existing key-value pairs, inserting new one after the reference key
+        let mut pairs = Vec::new();
+        let mut found_reference = false;
 
-            for (existing_key, existing_value) in mapping.pairs() {
-                if let Some(existing_key_scalar) = existing_key {
-                    let existing_key_str = existing_key_scalar.value();
-                    let existing_key_value = YamlValue::from(existing_key_str.clone());
+        for (existing_key, existing_value) in mapping.pairs() {
+            let Some(existing_key_scalar) = existing_key else {
+                continue;
+            };
 
-                    // Add the existing pair (unless it's the key we're replacing)
-                    if existing_key_value != key_value {
-                        if let Some(value_node) = existing_value {
-                            pairs.push((
-                                existing_key_str.to_string(),
-                                value_node.text().to_string(),
-                            ));
-                        }
-                    }
+            let existing_key_str = existing_key_scalar.value();
+            // Create comparison value from string slice to avoid moves
+            let existing_key_value = YamlValue::from(existing_key_str.as_str());
 
-                    // Check if this is the reference key and we haven't found it yet
-                    if existing_key_value == after_key_value && !found_reference {
-                        found_reference = true;
-                        // Insert the new pair after this one
-                        pairs.push((key_str.clone(), value_str.clone()));
-                    }
+            // Add the existing pair (unless it's the key we're replacing)
+            if existing_key_value != key_value {
+                if let Some(value_node) = existing_value {
+                    pairs.push((existing_key_str, value_node.text().to_string()));
                 }
             }
 
-            if found_reference {
-                // Rebuild the document with the new ordering
-                self.0 = self.create_mapping_with_all_entries_value(pairs);
-                true
-            } else {
-                false
+            // Check if this is the reference key and we haven't found it yet
+            if existing_key_value == after_key_value && !found_reference {
+                found_reference = true;
+                // Insert the new pair after this one
+                pairs.push((key_str.clone(), value_str.clone()));
             }
+        }
+
+        if found_reference {
+            // Rebuild the document with the new ordering
+            self.0 = self.create_mapping_with_all_entries_value(pairs);
+            true
         } else {
             false
         }
@@ -632,45 +634,47 @@ impl Document {
         let before_key_value = before_key.into();
         let key_value = key.into();
         let value_value = value.into();
+
+        let Some(mapping) = self.as_mapping() else {
+            return false;
+        };
+
+        // Pre-convert to strings once
         let key_str = key_value.to_string();
         let value_str = value_value.to_string();
 
-        if let Some(mapping) = self.as_mapping() {
-            // Collect existing key-value pairs, inserting new one before the reference key
-            let mut pairs = Vec::new();
-            let mut found_reference = false;
+        // Collect existing key-value pairs, inserting new one before the reference key
+        let mut pairs = Vec::new();
+        let mut found_reference = false;
 
-            for (existing_key, existing_value) in mapping.pairs() {
-                if let Some(existing_key_scalar) = existing_key {
-                    let existing_key_str = existing_key_scalar.value();
-                    let existing_key_value = YamlValue::from(existing_key_str.clone());
+        for (existing_key, existing_value) in mapping.pairs() {
+            let Some(existing_key_scalar) = existing_key else {
+                continue;
+            };
 
-                    // Check if this is the reference key and we haven't found it yet
-                    if existing_key_value == before_key_value && !found_reference {
-                        found_reference = true;
-                        // Insert the new pair before this one
-                        pairs.push((key_str.clone(), value_str.clone()));
-                    }
+            let existing_key_str = existing_key_scalar.value();
+            // Create comparison value from string slice to avoid moves
+            let existing_key_value = YamlValue::from(existing_key_str.as_str());
 
-                    // Add the existing pair (unless it's the key we're replacing)
-                    if existing_key_value != key_value {
-                        if let Some(value_node) = existing_value {
-                            pairs.push((
-                                existing_key_str.to_string(),
-                                value_node.text().to_string(),
-                            ));
-                        }
-                    }
+            // Check if this is the reference key and we haven't found it yet
+            if existing_key_value == before_key_value && !found_reference {
+                found_reference = true;
+                // Insert the new pair before this one
+                pairs.push((key_str.clone(), value_str.clone()));
+            }
+
+            // Add the existing pair (unless it's the key we're replacing)
+            if existing_key_value != key_value {
+                if let Some(value_node) = existing_value {
+                    pairs.push((existing_key_str, value_node.text().to_string()));
                 }
             }
+        }
 
-            if found_reference {
-                // Rebuild the document with the new ordering
-                self.0 = self.create_mapping_with_all_entries_value(pairs);
-                true
-            } else {
-                false
-            }
+        if found_reference {
+            // Rebuild the document with the new ordering
+            self.0 = self.create_mapping_with_all_entries_value(pairs);
+            true
         } else {
             false
         }
@@ -686,38 +690,41 @@ impl Document {
     ) {
         let key_value = key.into();
         let value_value = value.into();
+
+        let Some(mapping) = self.as_mapping() else {
+            return;
+        };
+
+        // Pre-convert to strings once
         let key_str = key_value.to_string();
         let value_str = value_value.to_string();
 
-        if let Some(mapping) = self.as_mapping() {
-            // Collect existing key-value pairs
-            let mut pairs = Vec::new();
+        // Collect existing key-value pairs
+        let mut pairs = Vec::new();
 
-            for (existing_key, existing_value) in mapping.pairs() {
-                if let Some(existing_key_scalar) = existing_key {
-                    let existing_key_str = existing_key_scalar.value();
-                    // Add the existing pair (unless it's the key we're replacing)
-                    if existing_key_str != key_str {
-                        if let Some(value_node) = existing_value {
-                            pairs.push((
-                                existing_key_str.to_string(),
-                                value_node.text().to_string(),
-                            ));
-                        }
-                    }
+        for (existing_key, existing_value) in mapping.pairs() {
+            let Some(existing_key_scalar) = existing_key else {
+                continue;
+            };
+
+            let existing_key_str = existing_key_scalar.value();
+            // Add the existing pair (unless it's the key we're replacing)
+            if existing_key_str != key_str {
+                if let Some(value_node) = existing_value {
+                    pairs.push((existing_key_str, value_node.text().to_string()));
                 }
             }
-
-            // Insert the new pair at the specified index
-            if index >= pairs.len() {
-                pairs.push((key_str, value_str));
-            } else {
-                pairs.insert(index, (key_str, value_str));
-            }
-
-            // Rebuild the document with the new ordering
-            self.0 = self.create_mapping_with_all_entries_value(pairs);
         }
+
+        // Insert the new pair at the specified index
+        if index >= pairs.len() {
+            pairs.push((key_str, value_str));
+        } else {
+            pairs.insert(index, (key_str, value_str));
+        }
+
+        // Rebuild the document with the new ordering
+        self.0 = self.create_mapping_with_all_entries_value(pairs);
     }
 
     /// Set a string value (convenient method)

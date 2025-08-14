@@ -28,7 +28,7 @@ pub use lex::{
 pub use parse::Parse;
 pub use rowan::TextRange;
 pub use scalar::{ScalarStyle, ScalarType, ScalarValue};
-pub use schema::{Schema, SchemaValidator, ValidationError, ValidationResult};
+pub use schema::{CustomSchema, Schema, SchemaValidator, ValidationError, ValidationResult};
 pub use value::YamlValue;
 pub use yaml::{Directive, Document, Lang, Mapping, Scalar, Sequence, TaggedScalar, Yaml};
 

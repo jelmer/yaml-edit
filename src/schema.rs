@@ -1405,7 +1405,7 @@ email: "not-an-email"
             .allow_type(ScalarType::Integer)
             .with_validator(ScalarType::Integer, |value, _path| {
                 if let Ok(port) = value.parse::<u16>() {
-                    if port >= 1024 && port <= 65535 {
+                    if (1024..=65535).contains(&port) {
                         CustomValidationResult::Valid
                     } else {
                         CustomValidationResult::invalid(

@@ -444,11 +444,11 @@ another_key: value
     // Verify each item is a mapping with the expected structure
     for (i, item) in item_vec.iter().enumerate() {
         let item_mapping =
-            Mapping::cast(item.clone()).expect(&format!("Item {} should be a mapping", i));
+            Mapping::cast(item.clone()).unwrap_or_else(|| panic!("Item {} should be a mapping", i));
         let id = item_mapping
             .get("id")
             .and_then(Scalar::cast)
-            .expect(&format!("Item {} should have id", i));
+            .unwrap_or_else(|| panic!("Item {} should have id", i));
         assert_eq!(id.as_string(), (i + 1).to_string());
     }
 

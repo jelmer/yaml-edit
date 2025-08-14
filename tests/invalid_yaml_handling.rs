@@ -1,6 +1,5 @@
-use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{Mapping, Scalar, Yaml};
+use yaml_edit::Yaml;
 
 #[test]
 fn test_invalid_colon_in_plain_scalar() {
@@ -82,7 +81,7 @@ fn test_invalid_bracket_colon_combination() {
             // This is the most spec-compliant result
             let error_str = format!("{:?}", e);
             println!("Got expected error: {}", error_str);
-            assert!(error_str.len() > 0, "Should have an error message");
+            assert!(!error_str.is_empty(), "Should have an error message");
         }
     }
 }

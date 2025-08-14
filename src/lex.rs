@@ -145,11 +145,11 @@ fn read_scalar_from<'a>(
     chars: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
     input: &'a str,
     start_idx: usize,
-    special_check: fn(char) -> bool,
+    exclude_chars: &str,
 ) -> &'a str {
     let mut end_idx = start_idx;
     while let Some((idx, ch)) = chars.peek() {
-        if ch.is_whitespace() || special_check(*ch) {
+        if ch.is_whitespace() || is_yaml_special_except(*ch, exclude_chars) {
             break;
         }
         end_idx = *idx + ch.len_utf8();
@@ -244,12 +244,7 @@ pub fn lex_with_validation_config<'a>(
                         tokens.push((DASH, &input[token_start..start_idx + 1]));
                     } else {
                         // This hyphen is part of a scalar value
-                        let text = read_scalar_from(
-                            &mut chars,
-                            input,
-                            start_idx + 1,
-                            is_yaml_special_excluding_hyphen,
-                        );
+                        let text = read_scalar_from(&mut chars, input, start_idx + 1, "-");
                         let full_text = &input[token_start..token_start + 1 + text.len()];
                         let token_kind = classify_scalar(full_text);
                         tokens.push((token_kind, full_text));
@@ -273,7 +268,7 @@ pub fn lex_with_validation_config<'a>(
                                 break;
                             }
                             // Check for special chars, but exclude colon since we're already in a scalar with colon
-                            if is_yaml_special_excluding_colon(*next_ch) {
+                            if is_yaml_special_except(*next_ch, ":") {
                                 break;
                             }
                             end_idx = *idx + next_ch.len_utf8();
@@ -317,7 +312,7 @@ pub fn lex_with_validation_config<'a>(
             }
             '&' => {
                 // Check if this is an anchor definition
-                let name = read_scalar_from(&mut chars, input, start_idx + 1, is_yaml_special);
+                let name = read_scalar_from(&mut chars, input, start_idx + 1, "");
                 if !name.is_empty() {
                     tokens.push((ANCHOR, &input[token_start..start_idx + 1 + name.len()]));
                 } else {
@@ -326,7 +321,7 @@ pub fn lex_with_validation_config<'a>(
             }
             '*' => {
                 // Check if this is an alias reference
-                let name = read_scalar_from(&mut chars, input, start_idx + 1, is_yaml_special);
+                let name = read_scalar_from(&mut chars, input, start_idx + 1, "");
                 if !name.is_empty() {
                     tokens.push((REFERENCE, &input[token_start..start_idx + 1 + name.len()]));
                 } else {
@@ -346,15 +341,14 @@ pub fn lex_with_validation_config<'a>(
                         tokens.push((DOC_END, &input[token_start..start_idx + 3]));
                     } else {
                         // Two dots - continue as scalar
-                        let rest =
-                            read_scalar_from(&mut chars, input, start_idx + 2, is_yaml_special);
+                        let rest = read_scalar_from(&mut chars, input, start_idx + 2, "");
                         let text = &input[token_start..start_idx + 2 + rest.len()];
                         let token_kind = classify_scalar(text);
                         tokens.push((token_kind, text));
                     }
                 } else {
                     // Single dot - part of scalar
-                    let rest = read_scalar_from(&mut chars, input, start_idx + 1, is_yaml_special);
+                    let rest = read_scalar_from(&mut chars, input, start_idx + 1, "");
                     let text = &input[token_start..start_idx + 1 + rest.len()];
                     let token_kind = classify_scalar(text);
                     tokens.push((token_kind, text));
@@ -554,7 +548,7 @@ pub fn lex_with_validation_config<'a>(
                     }
 
                     // Check other special characters (excluding hyphen and colon)
-                    if is_yaml_special_excluding_hyphen(*next_ch) && *next_ch != ':' {
+                    if is_yaml_special_except(*next_ch, "-:") {
                         break;
                     }
 
@@ -625,76 +619,17 @@ fn classify_scalar(text: &str) -> SyntaxKind {
     STRING
 }
 
+/// Common set of YAML special characters
+const YAML_SPECIAL_CHARS: &str = ":+-?[]{},'|>&*!%\"#";
+
 /// Check if a character has special meaning in YAML
 fn is_yaml_special(ch: char) -> bool {
-    matches!(
-        ch,
-        ':' | '-'
-            | '+'
-            | '?'
-            | '['
-            | ']'
-            | '{'
-            | '}'
-            | ','
-            | '|'
-            | '>'
-            | '&'
-            | '*'
-            | '!'
-            | '%'
-            | '"'
-            | '\''
-            | '#'
-    )
-    // Note: @ and ` are reserved in YAML but don't terminate plain scalars
+    YAML_SPECIAL_CHARS.contains(ch)
 }
 
-/// Check if character is YAML special, excluding hyphen (for context-aware hyphen parsing)
-fn is_yaml_special_excluding_hyphen(ch: char) -> bool {
-    matches!(
-        ch,
-        ':' | '+'
-            | '?'
-            | '['
-            | ']'
-            | '{'
-            | '}'
-            | ','
-            | '|'
-            | '>'
-            | '&'
-            | '*'
-            | '!'
-            | '%'
-            | '"'
-            | '\''
-            | '#'
-    )
-    // Note: @ and ` are reserved in YAML but don't terminate plain scalars
-}
-
-/// Check if character is YAML special, excluding colon (for scalars that start with colon)
-fn is_yaml_special_excluding_colon(ch: char) -> bool {
-    matches!(
-        ch,
-        '-' | '+'
-            | '?'
-            | '['
-            | ']'
-            | '{'
-            | '}'
-            | ','
-            | '|'
-            | '>'
-            | '&'
-            | '*'
-            | '!'
-            | '%'
-            | '"'
-            | '\''
-            | '#'
-    )
+/// Check if character is YAML special, with optional exclusions
+fn is_yaml_special_except(ch: char, exclude: &str) -> bool {
+    YAML_SPECIAL_CHARS.contains(ch) && !exclude.contains(ch)
 }
 
 #[cfg(test)]

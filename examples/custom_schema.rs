@@ -151,7 +151,7 @@ fn port_validation_example() {
         .allow_type(ScalarType::Integer)
         .with_validator(ScalarType::Integer, |value, _path| {
             if let Ok(port) = value.parse::<u16>() {
-                if port >= 1024 && port <= 65535 {
+                if (1024..=65535).contains(&port) {
                     CustomValidationResult::Valid
                 } else {
                     CustomValidationResult::invalid(
@@ -227,7 +227,7 @@ fn config_validation_example() {
         })
         .with_validator(ScalarType::Integer, |value, _path| {
             if let Ok(num) = value.parse::<i32>() {
-                if num >= 0 && num <= 10000 {
+                if (0..=10000).contains(&num) {
                     CustomValidationResult::Valid
                 } else {
                     CustomValidationResult::invalid(

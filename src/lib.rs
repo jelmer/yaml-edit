@@ -11,6 +11,7 @@
 //! This library provides a lossless parser for YAML files, preserving
 //! all whitespace, comments, and formatting. It is based on the [rowan] library.
 
+mod builder;
 mod error;
 mod error_recovery;
 mod lex;
@@ -20,6 +21,7 @@ mod schema;
 mod value;
 mod yaml;
 
+pub use builder::{MappingBuilder, SequenceBuilder, YamlBuilder};
 pub use error::{YamlError, YamlResult};
 pub use lex::{
     lex_with_validation, lex_with_validation_config, ValidationConfig, WhitespaceError,

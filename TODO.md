@@ -30,7 +30,6 @@ These are the most impactful features to implement next:
 1. **Path-based API** - Enable `yaml.get("server.host")` and `yaml.set("server.port", 8080)`
 2. ✅ **Schema support** - Validate and enforce YAML schemas (IMPLEMENTED - failsafe, JSON, core, custom schemas)
 3. **Type coercion improvements** - More sophisticated automatic type conversion rules
-4. **Performance optimizations** - Streaming and lazy parsing for large files
 
 ## Known Issues
 
@@ -42,7 +41,7 @@ These are the most impactful features to implement next:
 
 ### 🔧 API Enhancements
 - [ ] **Path-based access** - `yaml.get("server.host")`, `yaml.set("server.port", 8080)`
-- [ ] **Builder pattern** - Fluent API for creating YAML structures
+- [x] ✅ **Builder pattern** - Fluent API for creating YAML structures (IMPLEMENTED - YamlBuilder with fluent API)
 - [ ] **Iterator improvements** - Better traversal of sequences/mappings
 - [ ] **Visitor pattern** - Walk YAML trees with callbacks
 
@@ -67,7 +66,6 @@ These are the most impactful features to implement next:
 - [ ] **Custom tags** - User-defined type handlers
 
 ### ⚡ Performance
-- [ ] **Streaming parser** - Process huge files without loading all into memory
 - [ ] **Lazy evaluation** - Parse only accessed portions
 - [ ] **Memory optimization** - Reduce allocations and copies
 - [ ] **Parallel processing** - Multi-threaded parsing for large documents

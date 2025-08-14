@@ -1216,8 +1216,8 @@ mod tests {
         let scalar = ScalarValue::from(42);
         assert_eq!(scalar.to_yaml_string(), "42");
 
-        let scalar = ScalarValue::from(3.14);
-        assert_eq!(scalar.to_yaml_string(), "3.14");
+        let scalar = ScalarValue::from(1.234);
+        assert_eq!(scalar.to_yaml_string(), "1.234");
 
         let scalar = ScalarValue::from(true);
         assert_eq!(scalar.to_yaml_string(), "true");

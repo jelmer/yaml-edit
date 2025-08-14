@@ -7028,7 +7028,7 @@ active: true
         // Insert various scalar types
         parsed.insert_after("name", "null_value", YamlValue::from(ScalarValue::null()));
         parsed.insert_after("null_value", "empty_string", YamlValue::from(""));
-        parsed.insert_after("empty_string", "number", YamlValue::from(3.14));
+        parsed.insert_after("empty_string", "number", YamlValue::from(1.234));
         parsed.insert_after("number", "boolean", YamlValue::from(false));
 
         let output = parsed.to_string();
@@ -7038,7 +7038,7 @@ active: true
         assert!(output.contains("name: project"));
         assert!(output.contains("null_value"));
         assert!(output.contains("empty_string"));
-        assert!(output.contains("number: 3.14"));
+        assert!(output.contains("number: 1.234"));
         assert!(output.contains("boolean: false"));
 
         // Verify it's valid YAML

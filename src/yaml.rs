@@ -1683,8 +1683,6 @@ impl FromStr for Yaml {
     }
 }
 
-use std::collections::HashMap;
-
 /// Internal parser state
 struct Parser {
     tokens: Vec<(SyntaxKind, String)>,

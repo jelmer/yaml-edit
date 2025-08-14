@@ -1104,19 +1104,94 @@ impl Document {
     }
 
     /// Replace the document's content with a modified mapping
-    fn replace_with_mapping(&mut self, mapping: Mapping) {
-        // Create a new document with the mapping as its child
+    pub fn replace_with_mapping(&mut self, mapping: Mapping) {
+        // Use surgical splice_children to replace just the mapping node, preserving everything else
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        let mut mapping_position = None;
+
+        // Find the position of the existing MAPPING node
+        for (i, child) in children.iter().enumerate() {
+            if let Some(node) = child.as_node() {
+                if node.kind() == SyntaxKind::MAPPING {
+                    mapping_position = Some(i);
+                    break;
+                }
+            }
+        }
+
+        if let Some(pos) = mapping_position {
+            // Replace the existing mapping with the modified one directly
+            let new_mapping_green = mapping.0.green().into();
+            let new_elements = vec![rowan::NodeOrToken::Node(new_mapping_green)];
+
+            // Use surgical splice to replace only the mapping node
+            let new_green = self.0.green().splice_children(pos..pos + 1, new_elements);
+            self.0 = SyntaxNode::new_root_mut(new_green);
+        } else {
+            // No existing mapping found, fall back to the rebuild approach
+            // This handles edge cases where the document structure is unusual
+            self.fallback_replace_with_mapping(mapping);
+        }
+    }
+
+    /// Fallback method that rebuilds the entire document (used when surgical replacement isn't possible)
+    fn fallback_replace_with_mapping(&mut self, mapping: Mapping) {
+        // Create a new document preserving original structure but replacing the mapping
         let mut builder = rowan::GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::DOCUMENT.into());
 
-        // Add the mapping node as a child of the document
-        builder.start_node(SyntaxKind::MAPPING.into());
-        self.copy_node_content(&mut builder, &mapping.0);
-        builder.finish_node(); // MAPPING
+        let mut has_document_start = false;
+        let mut has_mapping = false;
 
-        builder.finish_node(); // DOCUMENT
+        // Copy all original document children, but replace any MAPPING nodes with the new one
+        for child in self.0.children_with_tokens() {
+            match child {
+                rowan::NodeOrToken::Node(n) => {
+                    if n.kind() == SyntaxKind::MAPPING {
+                        has_mapping = true;
+                        // Replace with the modified mapping
+                        builder.start_node(SyntaxKind::MAPPING.into());
+                        self.copy_node_content(&mut builder, &mapping.0);
+                        builder.finish_node(); // MAPPING
+                    } else {
+                        // Copy other nodes (like directives, comments) as-is
+                        builder.start_node(n.kind().into());
+                        self.copy_node_content(&mut builder, &n);
+                        builder.finish_node();
+                    }
+                }
+                rowan::NodeOrToken::Token(t) => {
+                    if t.kind() == SyntaxKind::DOC_START {
+                        has_document_start = true;
+                    }
+                    // Copy tokens (like document separators, whitespace) as-is
+                    builder.token(t.kind().into(), t.text());
+                }
+            }
+        }
 
-        self.0 = SyntaxNode::new_root_mut(builder.finish());
+        // If there was no document start marker but we have a mapping, add one
+        if !has_document_start && has_mapping {
+            // Need to rebuild with document start at the beginning
+            let _current_children = builder.finish();
+            let mut new_builder = rowan::GreenNodeBuilder::new();
+            new_builder.start_node(SyntaxKind::DOCUMENT.into());
+
+            // Add document start
+            new_builder.token(SyntaxKind::DOC_START.into(), "---");
+            new_builder.token(SyntaxKind::NEWLINE.into(), "\n");
+
+            // Add the mapping
+            new_builder.start_node(SyntaxKind::MAPPING.into());
+            self.copy_node_content(&mut new_builder, &mapping.0);
+            new_builder.finish_node(); // MAPPING
+
+            new_builder.finish_node(); // DOCUMENT
+            self.0 = SyntaxNode::new_root_mut(new_builder.finish());
+        } else {
+            builder.finish_node(); // DOCUMENT
+            self.0 = SyntaxNode::new_root_mut(builder.finish());
+        }
     }
 
     /// Helper to recursively copy node content
@@ -3229,6 +3304,7 @@ impl Mapping {
     }
 
     /// Insert a key-value pair before an existing key, preserving formatting
+    /// If the new key already exists, it will replace the existing value
     pub fn insert_before_preserving(
         &mut self,
         before_key: &str,
@@ -3237,8 +3313,107 @@ impl Mapping {
     ) -> bool {
         let children: Vec<_> = self.0.children_with_tokens().collect();
         let mut insert_position = None;
+        let mut existing_key_range = None;
 
-        // Find the position before the specified key
+        // First, check if the new key already exists
+        let mut i = 0;
+        while i < children.len() {
+            if let Some(node) = children[i].as_node() {
+                if node.kind() == SyntaxKind::KEY || node.kind() == SyntaxKind::SCALAR {
+                    let key_text = node.text().to_string();
+                    if key_text.trim() == new_key {
+                        // Found existing key, find its value and replace it
+                        let mut range_end = i + 1;
+                        // Find the value and newline that belong to this key
+                        for j in (i + 1)..children.len() {
+                            if let Some(token) = children[j].as_token() {
+                                if token.kind() == SyntaxKind::NEWLINE {
+                                    range_end = j + 1;
+                                    break;
+                                }
+                            } else if let Some(node) = children[j].as_node() {
+                                if node.kind() == SyntaxKind::VALUE
+                                    || node.kind() == SyntaxKind::SCALAR
+                                {
+                                    continue; // Include the value
+                                } else {
+                                    break; // Stop if we hit another key or structure
+                                }
+                            }
+                        }
+                        existing_key_range = Some((i, range_end));
+                        break;
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        // If key exists, replace it
+        if let Some((start, end)) = existing_key_range {
+            let mut new_elements = Vec::new();
+
+            // Detect indentation from the existing key
+            let indent = if start > 0 {
+                if let Some(token) = children[start - 1].as_token() {
+                    if token.kind() == SyntaxKind::WHITESPACE {
+                        token.text().to_string()
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
+            if !indent.is_empty() {
+                new_elements.push(rowan::NodeOrToken::Token(create_token_green(
+                    SyntaxKind::WHITESPACE,
+                    &indent,
+                )));
+            }
+
+            // Create new KEY node
+            let mut key_builder = GreenNodeBuilder::new();
+            key_builder.start_node(SyntaxKind::KEY.into());
+            key_builder.token(SyntaxKind::STRING.into(), new_key);
+            key_builder.finish_node();
+            let key_green = key_builder.finish();
+            new_elements.push(rowan::NodeOrToken::Node(key_green));
+
+            // Add colon and space
+            new_elements.push(rowan::NodeOrToken::Token(create_token_green(
+                SyntaxKind::COLON,
+                ":",
+            )));
+            new_elements.push(rowan::NodeOrToken::Token(create_token_green(
+                SyntaxKind::WHITESPACE,
+                " ",
+            )));
+
+            // Create new VALUE node
+            let mut value_builder = GreenNodeBuilder::new();
+            value_builder.start_node(SyntaxKind::VALUE.into());
+            value_builder.token(SyntaxKind::STRING.into(), new_value);
+            value_builder.finish_node();
+            let value_green = value_builder.finish();
+            new_elements.push(rowan::NodeOrToken::Node(value_green));
+
+            // Add newline
+            new_elements.push(rowan::NodeOrToken::Token(create_token_green(
+                SyntaxKind::NEWLINE,
+                "\n",
+            )));
+
+            // Replace the existing key-value pair
+            let new_green = self.0.green().splice_children(start..end, new_elements);
+            self.0 = SyntaxNode::new_root_mut(new_green);
+            return true;
+        }
+
+        // If key doesn't exist, find the position before the specified key
         for (i, child) in children.iter().enumerate() {
             if let Some(node) = child.as_node() {
                 if node.kind() == SyntaxKind::KEY || node.kind() == SyntaxKind::SCALAR {
@@ -3317,9 +3492,110 @@ impl Mapping {
     }
 
     /// Insert a key-value pair at a specific index, preserving formatting
+    /// If the new key already exists, it will replace the existing value
     pub fn insert_at_index_preserving(&mut self, index: usize, new_key: &str, new_value: &str) {
         let children: Vec<_> = self.0.children_with_tokens().collect();
 
+        // First, check if the new key already exists and replace it if so
+        let mut existing_key_range = None;
+        let mut i = 0;
+        while i < children.len() {
+            if let Some(node) = children[i].as_node() {
+                if node.kind() == SyntaxKind::KEY || node.kind() == SyntaxKind::SCALAR {
+                    let key_text = node.text().to_string();
+                    if key_text.trim() == new_key {
+                        // Found existing key, find its value and replace it
+                        let mut range_end = i + 1;
+                        // Find the value and newline that belong to this key
+                        for j in (i + 1)..children.len() {
+                            if let Some(token) = children[j].as_token() {
+                                if token.kind() == SyntaxKind::NEWLINE {
+                                    range_end = j + 1;
+                                    break;
+                                }
+                            } else if let Some(node) = children[j].as_node() {
+                                if node.kind() == SyntaxKind::VALUE
+                                    || node.kind() == SyntaxKind::SCALAR
+                                {
+                                    continue; // Include the value
+                                } else {
+                                    break; // Stop if we hit another key or structure
+                                }
+                            }
+                        }
+                        existing_key_range = Some((i, range_end));
+                        break;
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        // If key exists, replace it
+        if let Some((start, end)) = existing_key_range {
+            let mut new_elements = Vec::new();
+
+            // Detect indentation from the existing key
+            let indent = if start > 0 {
+                if let Some(token) = children[start - 1].as_token() {
+                    if token.kind() == SyntaxKind::WHITESPACE {
+                        token.text().to_string()
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
+            if !indent.is_empty() {
+                new_elements.push(rowan::NodeOrToken::Token(create_token_green(
+                    SyntaxKind::WHITESPACE,
+                    &indent,
+                )));
+            }
+
+            // Create new KEY node
+            let mut key_builder = GreenNodeBuilder::new();
+            key_builder.start_node(SyntaxKind::KEY.into());
+            key_builder.token(SyntaxKind::STRING.into(), new_key);
+            key_builder.finish_node();
+            let key_green = key_builder.finish();
+            new_elements.push(rowan::NodeOrToken::Node(key_green));
+
+            // Add colon and space
+            new_elements.push(rowan::NodeOrToken::Token(create_token_green(
+                SyntaxKind::COLON,
+                ":",
+            )));
+            new_elements.push(rowan::NodeOrToken::Token(create_token_green(
+                SyntaxKind::WHITESPACE,
+                " ",
+            )));
+
+            // Create new VALUE node
+            let mut value_builder = GreenNodeBuilder::new();
+            value_builder.start_node(SyntaxKind::VALUE.into());
+            value_builder.token(SyntaxKind::STRING.into(), new_value);
+            value_builder.finish_node();
+            let value_green = value_builder.finish();
+            new_elements.push(rowan::NodeOrToken::Node(value_green));
+
+            // Add newline
+            new_elements.push(rowan::NodeOrToken::Token(create_token_green(
+                SyntaxKind::NEWLINE,
+                "\n",
+            )));
+
+            // Replace the existing key-value pair
+            let new_green = self.0.green().splice_children(start..end, new_elements);
+            self.0 = SyntaxNode::new_root_mut(new_green);
+            return;
+        }
+
+        // If key doesn't exist, proceed with insertion at index
         // Count key-value pairs to find insertion position
         let mut pair_count = 0;
         let mut insert_position = children.len(); // Default to end
@@ -3348,6 +3624,27 @@ impl Mapping {
 
         // Create new AST elements
         let mut new_elements = Vec::new();
+
+        // If inserting at the end, add a newline first to separate from previous content
+        if insert_position == children.len() && !children.is_empty() {
+            // Check if the last element is not already a newline
+            if let Some(last_child) = children.last() {
+                if let Some(token) = last_child.as_token() {
+                    if token.kind() != SyntaxKind::NEWLINE {
+                        new_elements.push(rowan::NodeOrToken::Token(create_token_green(
+                            SyntaxKind::NEWLINE,
+                            "\n",
+                        )));
+                    }
+                } else {
+                    // Last child is a node, so we need a newline
+                    new_elements.push(rowan::NodeOrToken::Token(create_token_green(
+                        SyntaxKind::NEWLINE,
+                        "\n",
+                    )));
+                }
+            }
+        }
 
         // Detect and add indentation
         let indent = self.detect_indentation_from_children(&children, insert_position);
@@ -3402,7 +3699,7 @@ impl Mapping {
     fn detect_indentation_from_children(
         &self,
         children: &[rowan::SyntaxElement<Lang>],
-        position: usize,
+        _position: usize,
     ) -> String {
         // Look for whitespace before keys in the mapping
         for i in 0..children.len() {
@@ -6171,6 +6468,7 @@ second: 2
 fourth: 4"#;
 
         let mut parsed = Yaml::from_str(yaml).unwrap();
+        println!("Original YAML:\n{}", parsed.to_string());
 
         // Insert after "second"
         let success = parsed.insert_after("second", "third", "3");
@@ -6181,15 +6479,13 @@ fourth: 4"#;
 
         let output = parsed.to_string();
         println!("Output after insert_after:\n{}", output);
-        let lines: Vec<&str> = output.trim().lines().collect();
 
-        // Check order: ---, first, second, third, fourth (5 lines total)
-        assert_eq!(lines.len(), 5);
-        assert!(lines[0].starts_with("---"));
-        assert!(lines[1].starts_with("first:"));
-        assert!(lines[2].starts_with("second:"));
-        assert!(lines[3].starts_with("third:"));
-        assert!(lines[4].starts_with("fourth:"));
+        // Check exact output - should preserve original structure and insert correctly
+        let expected = r#"first: 1
+second: 2
+third: '3'
+fourth: 4"#;
+        assert_eq!(output.trim(), expected);
 
         // Test inserting after non-existent key
         let failed = parsed.insert_after("nonexistent", "new_key", "new_value");
@@ -6212,7 +6508,6 @@ third: 3
 fourth: 4"#;
 
         let mut parsed = Yaml::from_str(yaml).unwrap();
-        let doc = parsed.document_mut().unwrap();
 
         // Insert before "third"
         let success = parsed.insert_before("third", "second", "2");
@@ -6222,15 +6517,13 @@ fourth: 4"#;
         );
 
         let output = parsed.to_string();
-        let lines: Vec<&str> = output.trim().lines().collect();
 
-        // Check order: ---, first, second, third, fourth (5 lines total)
-        assert_eq!(lines.len(), 5);
-        assert!(lines[0].starts_with("---"));
-        assert!(lines[1].starts_with("first:"));
-        assert!(lines[2].starts_with("second:"));
-        assert!(lines[3].starts_with("third:"));
-        assert!(lines[4].starts_with("fourth:"));
+        // Check exact output - should preserve original structure and insert correctly
+        let expected = r#"first: 1
+second: '2'
+third: 3
+fourth: 4"#;
+        assert_eq!(output.trim(), expected);
 
         // Test inserting before non-existent key
         let failed = parsed.insert_before("nonexistent", "new_key", "new_value");
@@ -6252,26 +6545,28 @@ fourth: 4"#;
 third: 3"#;
 
         let mut parsed = Yaml::from_str(yaml).unwrap();
-        let doc = parsed.document_mut().unwrap();
 
         // Insert at index 1 (between first and third)
         parsed.insert_at_index(1, "second", "2");
 
         let output = parsed.to_string();
-        let lines: Vec<&str> = output.trim().lines().collect();
 
-        // Check order: ---, first, second, third (4 lines total)
-        assert_eq!(lines.len(), 4);
-        assert!(lines[0].starts_with("---"));
-        assert!(lines[1].starts_with("first:"));
-        assert!(lines[2].starts_with("second:"));
-        assert!(lines[3].starts_with("third:"));
+        // Check exact output - should preserve original structure and insert correctly
+        let expected = r#"first: 1
+second: '2'
+third: 3"#;
+        assert_eq!(output.trim(), expected);
 
         // Insert at index 0 (beginning)
         parsed.insert_at_index(0, "zero", "0");
         let output2 = parsed.to_string();
+        println!("Output2 after inserting at index 0:\n{}", output2);
         let lines2: Vec<&str> = output2.trim().lines().collect();
-        assert!(lines2[1].starts_with("zero:"));
+        assert!(
+            lines2[0].starts_with("zero:"),
+            "Expected zero at index 0, but lines are: {:?}",
+            lines2
+        );
 
         // Insert at out-of-bounds index (should append at end)
         parsed.insert_at_index(100, "last", "999");
@@ -6290,7 +6585,6 @@ third: 3"#;
         let yaml = "key1: value1";
 
         let mut parsed = Yaml::from_str(yaml).unwrap();
-        let doc = parsed.document_mut().unwrap();
 
         // Test with special characters that need escaping
         parsed.insert_after("key1", "special:key", "value:with:colons");
@@ -6314,7 +6608,6 @@ third: 3"#;
         let yaml = "key1: value1";
 
         let mut parsed = Yaml::from_str(yaml).unwrap();
-        let doc = parsed.document_mut().unwrap();
 
         // Test with empty values
         parsed.insert_after("key1", "empty", "");
@@ -6583,16 +6876,14 @@ active: true
         parsed.insert_before("fifth", "fourth", YamlValue::from(4));
 
         let output = parsed.to_string();
-        let lines: Vec<&str> = output.trim().lines().collect();
 
-        // Check order: ---, first, second, third, fourth, fifth
-        assert_eq!(lines.len(), 6);
-        assert!(lines[0].starts_with("---"));
-        assert!(lines[1].contains("first: 1"));
-        assert!(lines[2].contains("second: 2"));
-        assert!(lines[3].contains("third: 3"));
-        assert!(lines[4].contains("fourth: 4"));
-        assert!(lines[5].contains("fifth: 5"));
+        // Check exact output - should preserve original structure and insert correctly
+        let expected = r#"first: 1
+second: 2
+third: 3
+fourth: 4
+fifth: 5"#;
+        assert_eq!(output.trim(), expected);
 
         // Verify it's valid YAML
         let reparsed = Yaml::from_str(&output);
@@ -6644,13 +6935,12 @@ active: true
         assert!(!output.contains("test: enabled"));
         assert!(!output.contains("test_mode: development"));
 
-        // Verify order: name, description, version, active
-        let lines: Vec<&str> = output.trim().lines().collect();
-        assert_eq!(lines.len(), 5); // ---, name, description, version, active
-        assert!(lines[1].contains("name: project"));
-        assert!(lines[2].contains("description: A sample project"));
-        assert!(lines[3].contains("version: 1.0"));
-        assert!(lines[4].contains("active: true"));
+        // Check exact output - should preserve original structure and only insert description after name
+        let expected = r#"name: project
+description: A sample project
+version: 1.0
+active: true"#;
+        assert_eq!(output.trim(), expected);
     }
 
     #[test]
@@ -6943,6 +7233,137 @@ active: true
         assert!(
             Yaml::from_str(&output3).is_ok(),
             "Set output should be valid YAML"
+        );
+    }
+
+    #[test]
+    fn test_ast_preservation_comments_in_mapping() {
+        // Test that comments within mappings are preserved during insertions
+        let yaml = r#"---
+# Header comment
+key1: value1  # Inline comment 1
+# Middle comment
+key2: value2  # Inline comment 2
+# Footer comment
+"#;
+        let mut doc = Yaml::from_str(yaml).unwrap().document().unwrap();
+
+        println!("Original YAML:\n{}", yaml);
+
+        // Insert a new key using AST-preserving method
+        if let Some(mut mapping) = doc.as_mapping_mut() {
+            let success = mapping.insert_after_preserving("key1", "new_key", "new_value");
+            if success {
+                // Propagate the modified mapping back to the document
+                doc.replace_with_mapping(mapping);
+            }
+        }
+
+        let result = doc.to_string();
+        println!("Result after insertion:\n{}", result);
+
+        // These should be preserved but currently are not due to replace_with_mapping
+        assert!(
+            result.contains("# Header comment"),
+            "Header comment should be preserved"
+        );
+        assert!(
+            result.contains("# Inline comment 1"),
+            "Inline comment 1 should be preserved"
+        );
+        assert!(
+            result.contains("# Middle comment"),
+            "Middle comment should be preserved"
+        );
+        assert!(
+            result.contains("# Inline comment 2"),
+            "Inline comment 2 should be preserved"
+        );
+        assert!(
+            result.contains("# Footer comment"),
+            "Footer comment should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_ast_preservation_whitespace_in_mapping() {
+        // Test that whitespace and formatting within mappings are preserved
+        let yaml = r#"---
+key1:    value1
+
+
+key2:        value2
+"#;
+        let mut doc = Yaml::from_str(yaml).unwrap().document().unwrap();
+
+        // Insert a new key using AST-preserving method
+        if let Some(mut mapping) = doc.as_mapping_mut() {
+            mapping.insert_after_preserving("key1", "new_key", "new_value");
+        }
+
+        let result = doc.to_string();
+
+        // These formatting details should be preserved but currently are not
+        assert!(
+            result.contains("key1:    value1"),
+            "Extra spaces after colon should be preserved"
+        );
+        assert!(
+            result.contains("\n\n\nkey2:"),
+            "Multiple newlines should be preserved"
+        );
+        assert!(
+            result.contains("key2:        value2"),
+            "Long spacing should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_ast_preservation_complex_structure() {
+        // Test preservation of complex structure with nested comments
+        let yaml = r#"---
+# Configuration file
+database:  # Database settings
+  host: localhost  # Default host
+  port: 5432      # Default port
+  # Connection pool settings  
+  pool:
+    min: 1    # Minimum connections
+    max: 10   # Maximum connections
+
+# Server configuration
+server:
+  port: 8080  # HTTP port
+"#;
+        let mut doc = Yaml::from_str(yaml).unwrap().document().unwrap();
+
+        // Insert a new top-level key
+        if let Some(mut mapping) = doc.as_mapping_mut() {
+            mapping.insert_after_preserving("database", "logging", "debug");
+        }
+
+        let result = doc.to_string();
+
+        // All these comments and structure should be preserved
+        assert!(
+            result.contains("# Configuration file"),
+            "Top comment should be preserved"
+        );
+        assert!(
+            result.contains("# Database settings"),
+            "Section comment should be preserved"
+        );
+        assert!(
+            result.contains("# Default host"),
+            "Inline comment should be preserved"
+        );
+        assert!(
+            result.contains("# Connection pool settings"),
+            "Nested comment should be preserved"
+        );
+        assert!(
+            result.contains("# Server configuration"),
+            "Later section comment should be preserved"
         );
     }
 }

@@ -25,10 +25,7 @@ fn test_json_object_parsing() {
         Some("John".to_string())
     );
     assert_eq!(
-        mapping
-            .get("age")
-            .and_then(Scalar::cast)
-            .map(|s| s.value()),
+        mapping.get("age").and_then(Scalar::cast).map(|s| s.value()),
         Some("30".to_string())
     );
     assert_eq!(

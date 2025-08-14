@@ -1052,58 +1052,6 @@ impl Document {
         validator.can_coerce(self)
     }
 
-    /// Create a new document syntax node with a mapping containing multiple entries (supports YamlValue strings)
-    fn create_mapping_with_all_entries_value(&self, pairs: Vec<(String, String)>) -> SyntaxNode {
-        let mut builder = GreenNodeBuilder::new();
-        builder.start_node(SyntaxKind::DOCUMENT.into());
-        // Add the document start marker "---"
-        builder.token(SyntaxKind::DOC_START.into(), "---");
-        builder.token(SyntaxKind::WHITESPACE.into(), "\n");
-        builder.start_node(SyntaxKind::MAPPING.into());
-
-        for (i, (key, value)) in pairs.iter().enumerate() {
-            if i > 0 {
-                // Add newline between entries
-                builder.token(SyntaxKind::WHITESPACE.into(), "\n");
-            }
-
-            // Add key
-            builder.start_node(SyntaxKind::KEY.into());
-            builder.token(SyntaxKind::VALUE.into(), key);
-            builder.finish_node();
-
-            // Add colon and space
-            builder.token(SyntaxKind::COLON.into(), ":");
-            builder.token(SyntaxKind::WHITESPACE.into(), " ");
-
-            // Add value - this might be a complex YAML structure
-            if value.contains('\n')
-                || value.starts_with('[')
-                || value.starts_with('{')
-                || value.starts_with("!!")
-            {
-                // Complex value that needs special handling
-                builder.token(SyntaxKind::WHITESPACE.into(), "\n");
-                // Indent the complex value
-                for line in value.lines() {
-                    builder.token(SyntaxKind::WHITESPACE.into(), "  ");
-                    builder.token(SyntaxKind::VALUE.into(), line);
-                    builder.token(SyntaxKind::WHITESPACE.into(), "\n");
-                }
-            } else {
-                // Simple scalar value
-                builder.start_node(SyntaxKind::VALUE.into());
-                builder.token(SyntaxKind::VALUE.into(), value);
-                builder.finish_node();
-            }
-        }
-
-        builder.finish_node(); // MAPPING
-        builder.finish_node(); // DOCUMENT
-
-        SyntaxNode::new_root(builder.finish())
-    }
-
     /// Replace the document's content with a modified mapping
     pub fn replace_with_mapping(&mut self, mapping: Mapping) {
         // Use surgical splice_children to replace just the mapping node, preserving everything else
@@ -1697,12 +1645,8 @@ struct Parser {
     resolving_aliases: Vec<String>,
     /// Error recovery context for better error messages
     error_context: ErrorRecoveryContext,
-    /// Original text for error reporting
-    original_text: String,
     /// Track if we're parsing a value (to prevent nested implicit mappings)
     in_value_context: bool,
-    /// Stack of indentation levels for nested structures
-    indent_stack: Vec<String>,
 }
 
 impl Parser {
@@ -1728,9 +1672,7 @@ impl Parser {
             anchor_registry: HashMap::new(),
             resolving_aliases: Vec::new(),
             error_context: ErrorRecoveryContext::new(text.to_string()),
-            original_text: text.to_string(),
             in_value_context: false,
-            indent_stack: vec!["".to_string()], // Start with root level (empty indent)
         }
     }
 
@@ -2891,26 +2833,17 @@ impl Parser {
     }
 
     fn skip_whitespace(&mut self) {
-        while self.current() == Some(SyntaxKind::WHITESPACE) {
-            self.bump();
-        }
+        self.skip_tokens(&[SyntaxKind::WHITESPACE]);
     }
 
-    fn is_at_start_of_line_content(&self) -> bool {
-        // Check if we're positioned at content that appears at the start of a line
-        // Look backwards to see if the previous token was a NEWLINE (possibly with INDENT after)
-        let mut i = self.current_token_index + 1;
-        while i < self.tokens.len() {
-            match self.tokens[i].0 {
-                SyntaxKind::NEWLINE => return true,
-                SyntaxKind::WHITESPACE | SyntaxKind::INDENT | SyntaxKind::COMMENT => {
-                    i += 1;
-                    continue;
-                }
-                _ => return false,
+    fn skip_tokens(&mut self, kinds: &[SyntaxKind]) {
+        while let Some(current) = self.current() {
+            if kinds.contains(&current) {
+                self.bump();
+            } else {
+                break;
             }
         }
-        false
     }
 
     fn get_current_indentation_level(&self) -> usize {
@@ -2986,41 +2919,6 @@ impl Parser {
         }
 
         0 // Default if pattern not found
-    }
-
-    fn determine_sequence_item_indent(&self, sequence_base_indent: usize) -> usize {
-        // Look ahead to find the indentation level of subsequent lines in this sequence item
-        // The first line might be on the same line as the dash, but subsequent lines will be indented
-
-        let mut i = 0;
-        let mut found_newline = false;
-
-        // Look through upcoming tokens to find the first NEWLINE followed by INDENT
-        while i < self.tokens.len() {
-            let token_idx = self.tokens.len() - 1 - i;
-            if token_idx < self.current_token_index {
-                break;
-            }
-
-            let (kind, text) = &self.tokens[token_idx];
-
-            if found_newline {
-                if *kind == SyntaxKind::INDENT {
-                    // Found indentation after newline - this indicates the content indentation
-                    return text.len();
-                } else if !matches!(kind, SyntaxKind::WHITESPACE | SyntaxKind::COMMENT) {
-                    // Non-indent/non-whitespace after newline means no additional indentation
-                    return sequence_base_indent;
-                }
-            } else if *kind == SyntaxKind::NEWLINE {
-                found_newline = true;
-            }
-
-            i += 1;
-        }
-
-        // If no indentation pattern found, use the sequence base indent
-        sequence_base_indent
     }
 
     fn skip_ws_and_newlines_with_indent_check(&mut self, base_indent: usize) -> bool {
@@ -3102,38 +3000,12 @@ impl Parser {
     }
 
     fn skip_ws_and_newlines(&mut self) {
-        while matches!(
-            self.current(),
-            Some(
-                SyntaxKind::WHITESPACE
-                    | SyntaxKind::NEWLINE
-                    | SyntaxKind::INDENT
-                    | SyntaxKind::COMMENT
-            )
-        ) {
-            self.bump();
-        }
-    }
-
-    fn skip_ws_and_newlines_preserve_indent(&mut self) {
-        // Skip whitespace, newlines, and comments, but preserve INDENT tokens
-        // for indentation-aware parsing
-        loop {
-            match self.current() {
-                Some(SyntaxKind::WHITESPACE) | Some(SyntaxKind::COMMENT) => {
-                    self.bump();
-                }
-                Some(SyntaxKind::NEWLINE) => {
-                    self.bump();
-                    // After newline, if there's an INDENT, we need to decide whether to consume it
-                    // For now, don't consume it - let the caller decide
-                    if matches!(self.current(), Some(SyntaxKind::INDENT)) {
-                        break; // Stop here, leave the INDENT for caller to handle
-                    }
-                }
-                _ => break,
-            }
-        }
+        self.skip_tokens(&[
+            SyntaxKind::WHITESPACE,
+            SyntaxKind::NEWLINE,
+            SyntaxKind::INDENT,
+            SyntaxKind::COMMENT,
+        ]);
     }
 
     fn parse_mapping_key_value_pair(&mut self) {
@@ -6776,7 +6648,7 @@ second: 2
 fourth: 4"#;
 
         let mut parsed = Yaml::from_str(yaml).unwrap();
-        println!("Original YAML:\n{}", parsed.to_string());
+        println!("Original YAML:\n{}", parsed);
 
         // Insert after "second"
         let success = parsed.insert_after("second", "third", "3");

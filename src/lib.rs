@@ -12,12 +12,14 @@
 //! all whitespace, comments, and formatting. It is based on the [rowan] library.
 
 mod builder;
+pub mod custom_tags;
 mod error;
 mod error_recovery;
 mod lex;
 mod parse;
 mod scalar;
 mod schema;
+mod tagged_collections;
 mod value;
 pub mod visitor;
 mod yaml;
@@ -35,8 +37,22 @@ pub use schema::{
     CustomSchema, CustomValidationResult, Schema, SchemaValidator, ValidationError,
     ValidationErrorKind, ValidationResult,
 };
+pub use tagged_collections::TaggedCollection;
 pub use value::YamlValue;
 pub use yaml::{Directive, Document, Lang, Mapping, Scalar, Sequence, TaggedScalar, Yaml};
+
+// Re-export custom tags API
+pub use custom_tags::{
+    // Built-in handlers
+    CompressedBinaryHandler,
+    CustomTagError,
+    CustomTagHandler,
+    CustomTagParser,
+    CustomTagRegistry,
+    EnvVarHandler,
+    JsonHandler,
+    TimestampHandler,
+};
 
 /// A positioned parse error containing location information.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

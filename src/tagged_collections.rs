@@ -1,7 +1,7 @@
 //! Tagged YAML collections (!!set, !!omap, !!pairs) support.
 
-use crate::{scalar::ScalarValue, value::YamlValue};
-use std::collections::{BTreeMap, BTreeSet};
+use crate::value::YamlValue;
+use std::collections::BTreeSet;
 use std::fmt;
 
 /// Represents YAML tagged collections - special collection types with explicit tags
@@ -192,7 +192,7 @@ impl TaggedCollection {
     pub fn tag_name(&self) -> &'static str {
         match self {
             TaggedCollection::Set(_) => "!!set",
-            TaggedCollection::OrderedMapping(_) => "!!omap", 
+            TaggedCollection::OrderedMapping(_) => "!!omap",
             TaggedCollection::Pairs(_) => "!!pairs",
         }
     }
@@ -283,7 +283,10 @@ mod tests {
     #[test]
     fn test_tag_names() {
         assert_eq!(TaggedCollection::empty_set().tag_name(), "!!set");
-        assert_eq!(TaggedCollection::empty_ordered_mapping().tag_name(), "!!omap");
+        assert_eq!(
+            TaggedCollection::empty_ordered_mapping().tag_name(),
+            "!!omap"
+        );
         assert_eq!(TaggedCollection::empty_pairs().tag_name(), "!!pairs");
     }
 }

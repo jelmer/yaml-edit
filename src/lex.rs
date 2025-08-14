@@ -497,15 +497,15 @@ pub fn lex_with_validation_config<'a>(
             // Everything else is scalar content
             _ => {
                 let mut end_idx = start_idx + ch.len_utf8();
-                
+
                 // Check if this might be the start of a URL (http://, https://, ftp://, etc.)
                 let remaining = &input[token_start..];
-                let is_url = remaining.starts_with("http://") || 
-                             remaining.starts_with("https://") || 
-                             remaining.starts_with("ftp://") ||
-                             remaining.starts_with("file://") ||
-                             remaining.starts_with("ssh://");
-                
+                let is_url = remaining.starts_with("http://")
+                    || remaining.starts_with("https://")
+                    || remaining.starts_with("ftp://")
+                    || remaining.starts_with("file://")
+                    || remaining.starts_with("ssh://");
+
                 if is_url {
                     // Read the entire URL as one token
                     while let Some((idx, next_ch)) = chars.peek() {
@@ -513,7 +513,22 @@ pub fn lex_with_validation_config<'a>(
                             break;
                         }
                         // Stop at YAML special chars, but not at colons, slashes, or common URL chars
-                        if matches!(*next_ch, '?' | '[' | ']' | '{' | '}' | ',' | '|' | '>' | '#' | '&' | '*' | '!' | '"' | '\'') {
+                        if matches!(
+                            *next_ch,
+                            '?' | '['
+                                | ']'
+                                | '{'
+                                | '}'
+                                | ','
+                                | '|'
+                                | '>'
+                                | '#'
+                                | '&'
+                                | '*'
+                                | '!'
+                                | '"'
+                                | '\''
+                        ) {
                             // Note: ? and & are valid in URLs but also YAML special, so we stop at them
                             // This is a compromise - full URL parsing would be more complex
                             break;
@@ -532,12 +547,15 @@ pub fn lex_with_validation_config<'a>(
                         if *next_ch == '-' {
                             // A hyphen is only a sequence marker if it's at line start
                             // and this scalar is already complete (we're at a word boundary)
-                            let line_start = input[..(*idx)].rfind('\n').map(|p| p + 1).unwrap_or(0);
+                            let line_start =
+                                input[..(*idx)].rfind('\n').map(|p| p + 1).unwrap_or(0);
                             let before_hyphen = &input[line_start..*idx];
 
                             // If there's only whitespace before the hyphen, it might be a sequence marker
                             // Break here to let the main loop handle it
-                            if before_hyphen.chars().all(|c| c == ' ' || c == '\t') && *idx == end_idx {
+                            if before_hyphen.chars().all(|c| c == ' ' || c == '\t')
+                                && *idx == end_idx
+                            {
                                 break;
                             }
                         }

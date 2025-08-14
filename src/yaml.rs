@@ -1810,8 +1810,14 @@ impl Parser {
     }
 
     fn parse_value(&mut self) {
+        self.parse_value_with_base_indent(0);
+    }
+
+    fn parse_value_with_base_indent(&mut self, base_indent: usize) {
         match self.current() {
-            Some(SyntaxKind::DASH) if !self.in_flow_context => self.parse_sequence(),
+            Some(SyntaxKind::DASH) if !self.in_flow_context => {
+                self.parse_sequence_with_base_indent(base_indent)
+            }
             Some(SyntaxKind::ANCHOR) => self.parse_anchored_value(),
             Some(SyntaxKind::REFERENCE) => self.parse_alias(),
             Some(SyntaxKind::TAG) => self.parse_tagged_value(),
@@ -1836,7 +1842,7 @@ impl Parser {
                 // In block context, check if it's a mapping key
                 // But not if we're already in a value context (prevents implicit nested mappings)
                 if !self.in_flow_context && !self.in_value_context && self.is_mapping_key() {
-                    self.parse_mapping();
+                    self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_scalar();
                 }
@@ -1844,7 +1850,8 @@ impl Parser {
             Some(SyntaxKind::LEFT_BRACKET) => {
                 // Check if this is a complex key in a mapping
                 // But not if we're already in a value context
-                if !self.in_flow_context && !self.in_value_context && self.is_complex_mapping_key() {
+                if !self.in_flow_context && !self.in_value_context && self.is_complex_mapping_key()
+                {
                     self.parse_complex_key_mapping();
                 } else {
                     self.parse_flow_sequence();
@@ -1853,7 +1860,8 @@ impl Parser {
             Some(SyntaxKind::LEFT_BRACE) => {
                 // Check if this is a complex key in a mapping
                 // But not if we're already in a value context
-                if !self.in_flow_context && !self.in_value_context && self.is_complex_mapping_key() {
+                if !self.in_flow_context && !self.in_value_context && self.is_complex_mapping_key()
+                {
                     self.parse_complex_key_mapping();
                 } else {
                     self.parse_flow_mapping();
@@ -2026,8 +2034,8 @@ impl Parser {
                     ) {
                         break;
                     }
-                    
-                    // In flow context, colons are allowed in scalars (for IPv6, URLs, etc.)  
+
+                    // In flow context, colons are allowed in scalars (for IPv6, URLs, etc.)
                     // In block context, stop at colons as they indicate mapping structure
                     if kind == SyntaxKind::COLON {
                         if self.in_flow_context {
@@ -2038,16 +2046,18 @@ impl Parser {
                             break;
                         }
                     }
-                    
+
                     // In flow context, stop at flow collection delimiters
-                    if self.in_flow_context && matches!(
-                        kind,
-                        SyntaxKind::LEFT_BRACKET
-                            | SyntaxKind::RIGHT_BRACKET
-                            | SyntaxKind::LEFT_BRACE
-                            | SyntaxKind::RIGHT_BRACE
-                            | SyntaxKind::COMMA
-                    ) {
+                    if self.in_flow_context
+                        && matches!(
+                            kind,
+                            SyntaxKind::LEFT_BRACKET
+                                | SyntaxKind::RIGHT_BRACKET
+                                | SyntaxKind::LEFT_BRACE
+                                | SyntaxKind::RIGHT_BRACE
+                                | SyntaxKind::COMMA
+                        )
+                    {
                         break;
                     }
                     self.bump();
@@ -2294,6 +2304,10 @@ impl Parser {
     }
 
     fn parse_mapping(&mut self) {
+        self.parse_mapping_with_base_indent(0);
+    }
+
+    fn parse_mapping_with_base_indent(&mut self, base_indent: usize) {
         self.builder.start_node(SyntaxKind::MAPPING.into());
         self.error_context.push_context(ParseContext::Mapping);
 
@@ -2379,7 +2393,15 @@ impl Parser {
                 self.parse_mapping_key_value_pair();
             }
 
-            self.skip_ws_and_newlines();
+            // After parsing a mapping entry, check indentation before continuing
+            if base_indent > 0 {
+                if self.skip_ws_and_newlines_with_indent_check(base_indent) {
+                    // Dedent detected, stop parsing this mapping
+                    break;
+                }
+            } else {
+                self.skip_ws_and_newlines();
+            }
         }
 
         self.builder.finish_node();
@@ -2387,6 +2409,10 @@ impl Parser {
     }
 
     fn parse_sequence(&mut self) {
+        self.parse_sequence_with_base_indent(0);
+    }
+
+    fn parse_sequence_with_base_indent(&mut self, base_indent: usize) {
         self.builder.start_node(SyntaxKind::SEQUENCE.into());
         self.error_context.push_context(ParseContext::Sequence);
 
@@ -2395,10 +2421,22 @@ impl Parser {
             self.skip_whitespace();
 
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                self.parse_value();
+                // Pass base_indent to ensure nested content doesn't consume wrong tokens
+                self.parse_value_with_base_indent(base_indent);
             }
 
-            self.skip_ws_and_newlines();
+            // After parsing a sequence item, check indentation before continuing
+            if base_indent > 0 {
+                eprintln!("Checking indentation with base_indent={}", base_indent);
+                if self.skip_ws_and_newlines_with_indent_check(base_indent) {
+                    // Dedent detected, stop parsing this sequence
+                    eprintln!("Dedent detected! Breaking sequence parsing.");
+                    break;
+                }
+            } else {
+                eprintln!("base_indent is 0, using skip_ws_and_newlines()");
+                self.skip_ws_and_newlines();
+            }
         }
 
         self.builder.finish_node();
@@ -2860,6 +2898,211 @@ impl Parser {
         }
     }
 
+    fn is_at_start_of_line_content(&self) -> bool {
+        // Check if we're positioned at content that appears at the start of a line
+        // Look backwards to see if the previous token was a NEWLINE (possibly with INDENT after)
+        let mut i = self.current_token_index + 1;
+        while i < self.tokens.len() {
+            match self.tokens[i].0 {
+                SyntaxKind::NEWLINE => return true,
+                SyntaxKind::WHITESPACE | SyntaxKind::INDENT | SyntaxKind::COMMENT => {
+                    i += 1;
+                    continue;
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    fn get_current_indentation_level(&self) -> usize {
+        // For a DASH token, we want to find the INDENT that was consumed just before this line
+        // In our case, the pattern should be: ... NEWLINE, INDENT, [WHITESPACE], DASH
+
+        let current_idx = self.tokens.len().saturating_sub(1);
+
+        // Look for INDENT token that is immediately before the current content
+        // We expect the pattern: INDENT, [optional WHITESPACE], current_token
+        if current_idx >= 1 && self.tokens[current_idx - 1].0 == SyntaxKind::INDENT {
+            return self.tokens[current_idx - 1].1.len();
+        }
+
+        if current_idx >= 2
+            && self.tokens[current_idx - 1].0 == SyntaxKind::WHITESPACE
+            && self.tokens[current_idx - 2].0 == SyntaxKind::INDENT
+        {
+            return self.tokens[current_idx - 2].1.len();
+        }
+
+        // If that doesn't work, fall back to finding any recent INDENT
+        for i in (0..current_idx).rev() {
+            if self.tokens[i].0 == SyntaxKind::INDENT {
+                // Check if this INDENT is followed by content on the same line
+                let mut j = i + 1;
+                while j < self.tokens.len() {
+                    match self.tokens[j].0 {
+                        SyntaxKind::WHITESPACE => {
+                            j += 1;
+                            continue;
+                        }
+                        SyntaxKind::NEWLINE => {
+                            // This INDENT is followed by a newline, so it's not for current line
+                            break;
+                        }
+                        _ => {
+                            // This INDENT is followed by content, check if it leads to current
+                            if j <= current_idx {
+                                return self.tokens[i].1.len();
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        0 // Default to no indentation
+    }
+
+    fn get_dash_indentation_level(&self) -> usize {
+        // For DASH tokens, we know they should be at the beginning of a line after NEWLINE + INDENT
+        // Since the current token is DASH, look backwards for NEWLINE + INDENT pattern
+
+        let current_idx = self.tokens.len().saturating_sub(1);
+
+        // Look backwards through the token stack for NEWLINE followed by INDENT
+        for i in (1..current_idx).rev() {
+            if self.tokens[i].0 == SyntaxKind::NEWLINE {
+                // Check if the next token (closer to current) is INDENT
+                if i > 0 && self.tokens[i - 1].0 == SyntaxKind::INDENT {
+                    // This NEWLINE is followed by INDENT, but we need to check if this
+                    // INDENT is for the current DASH
+                    let indent_len = self.tokens[i - 1].1.len();
+                    // Return the most recent INDENT that has length >= 2 (typical sequence indentation)
+                    // This handles both base sequence level (2) and nested levels
+                    if indent_len >= 2 {
+                        return indent_len;
+                    }
+                }
+            }
+        }
+
+        0 // Default if pattern not found
+    }
+
+    fn determine_sequence_item_indent(&self, sequence_base_indent: usize) -> usize {
+        // Look ahead to find the indentation level of subsequent lines in this sequence item
+        // The first line might be on the same line as the dash, but subsequent lines will be indented
+
+        let mut i = 0;
+        let mut found_newline = false;
+
+        // Look through upcoming tokens to find the first NEWLINE followed by INDENT
+        while i < self.tokens.len() {
+            let token_idx = self.tokens.len() - 1 - i;
+            if token_idx < self.current_token_index {
+                break;
+            }
+
+            let (kind, text) = &self.tokens[token_idx];
+
+            if found_newline {
+                if *kind == SyntaxKind::INDENT {
+                    // Found indentation after newline - this indicates the content indentation
+                    return text.len();
+                } else if !matches!(kind, SyntaxKind::WHITESPACE | SyntaxKind::COMMENT) {
+                    // Non-indent/non-whitespace after newline means no additional indentation
+                    return sequence_base_indent;
+                }
+            } else if *kind == SyntaxKind::NEWLINE {
+                found_newline = true;
+            }
+
+            i += 1;
+        }
+
+        // If no indentation pattern found, use the sequence base indent
+        sequence_base_indent
+    }
+
+    fn skip_ws_and_newlines_with_indent_check(&mut self, base_indent: usize) -> bool {
+        // Skip whitespace and newlines, but return true if we encounter dedent
+
+        // Handle case where we're already positioned at content tokens
+        // This can happen when a previous indentation check consumed whitespace/newlines
+        match self.current() {
+            Some(SyntaxKind::STRING)
+            | Some(SyntaxKind::INT)
+            | Some(SyntaxKind::FLOAT)
+            | Some(SyntaxKind::BOOL)
+            | Some(SyntaxKind::NULL) => {
+                // We're at content - check if it's at a lower indentation than base_indent
+                let current_indent = self.get_current_indentation_level();
+                if current_indent < base_indent {
+                    return true;
+                }
+                // If not dedented, continue with normal logic
+            }
+            Some(SyntaxKind::DASH) => {
+                // DASH tokens are special - they continue sequences if at the same indentation level
+                // For DASH tokens, we need to check if this is a sequence continuation
+                // Look for the pattern: NEWLINE, INDENT(base_indent), [WHITESPACE], DASH
+                let current_indent = self.get_dash_indentation_level();
+                if current_indent < base_indent {
+                    return true;
+                }
+                // DASH at same or greater indentation continues the sequence
+                return false; // Continue parsing
+            }
+            _ => {
+                // Normal case - continue with whitespace skipping logic
+            }
+        }
+
+        while self.current().is_some() {
+            match self.current() {
+                Some(SyntaxKind::WHITESPACE) | Some(SyntaxKind::COMMENT) => {
+                    self.bump();
+                }
+                Some(SyntaxKind::NEWLINE) => {
+                    self.bump();
+                    // Check next token for indentation
+                    if let Some(SyntaxKind::INDENT) = self.current() {
+                        if let Some((_, text)) = self.tokens.last() {
+                            if text.len() < base_indent {
+                                // Dedent detected - don't consume the indent token
+                                return true;
+                            }
+                        }
+                        self.bump(); // consume indent if at appropriate level
+                    } else if !matches!(
+                        self.current(),
+                        Some(SyntaxKind::WHITESPACE)
+                            | Some(SyntaxKind::NEWLINE)
+                            | Some(SyntaxKind::COMMENT)
+                            | None
+                    ) {
+                        // Non-whitespace at start of line means indentation 0
+                        if base_indent > 0 {
+                            return true; // dedent detected
+                        }
+                    }
+                }
+                Some(SyntaxKind::INDENT) => {
+                    // Standalone indent token
+                    if let Some((_, text)) = self.tokens.last() {
+                        if text.len() < base_indent {
+                            return true; // dedent detected
+                        }
+                    }
+                    self.bump();
+                }
+                _ => break,
+            }
+        }
+        false
+    }
+
     fn skip_ws_and_newlines(&mut self) {
         while matches!(
             self.current(),
@@ -2873,7 +3116,7 @@ impl Parser {
             self.bump();
         }
     }
-    
+
     fn skip_ws_and_newlines_preserve_indent(&mut self) {
         // Skip whitespace, newlines, and comments, but preserve INDENT tokens
         // for indentation-aware parsing
@@ -2929,9 +3172,15 @@ impl Parser {
                 // Check if next line is indented (nested content)
                 self.bump(); // consume newline
                 if self.current() == Some(SyntaxKind::INDENT) {
+                    let indent_text = self
+                        .tokens
+                        .last()
+                        .map(|(_, text)| text.clone())
+                        .unwrap_or_default();
+                    let indent_level = indent_text.len();
                     self.bump(); // consume indent
-                                 // Parse the indented content as the value
-                    self.parse_value();
+                                 // Parse the indented content as the value, tracking indent level
+                    self.parse_value_with_base_indent(indent_level);
                 }
             }
             // Empty VALUE node if no value present
@@ -2970,9 +3219,9 @@ impl Parser {
         // Since tokens are in reverse order (last is current), we need to iterate
         // from the second-to-last token backwards to the beginning
         let len = self.tokens.len();
-        (0..len.saturating_sub(1)).rev().map(move |i| {
-            self.tokens[i].0
-        })
+        (0..len.saturating_sub(1))
+            .rev()
+            .map(move |i| self.tokens[i].0)
     }
 
     fn add_error(&mut self, message: String) {

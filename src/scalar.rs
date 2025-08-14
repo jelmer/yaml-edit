@@ -535,43 +535,216 @@ impl ScalarValue {
                 style: ScalarStyle::Plain,
                 scalar_type: ScalarType::String,
             }),
-            ScalarType::Integer => Self::parse_integer(&self.value).map(ScalarValue::from),
-            ScalarType::Float => self.value.parse::<f64>().ok().map(ScalarValue::from),
-            ScalarType::Boolean => match self.value.to_lowercase().as_str() {
-                "true" | "yes" | "on" | "1" => Some(ScalarValue::from(true)),
-                "false" | "no" | "off" | "0" => Some(ScalarValue::from(false)),
-                _ => None,
-            },
-            ScalarType::Null => match self.value.to_lowercase().as_str() {
-                "null" | "~" | "" => Some(ScalarValue::null()),
-                _ => None,
-            },
+            ScalarType::Integer => self.coerce_to_integer(),
+            ScalarType::Float => self.coerce_to_float(),
+            ScalarType::Boolean => self.coerce_to_boolean(),
+            ScalarType::Null => self.coerce_to_null(),
             #[cfg(feature = "base64")]
-            ScalarType::Binary => {
-                // Try to decode as base64 to verify it's valid binary data
-                if base64_decode(&self.value).is_ok() {
-                    Some(ScalarValue {
-                        value: self.value.clone(),
-                        style: ScalarStyle::Plain,
-                        scalar_type: ScalarType::Binary,
-                    })
-                } else {
-                    None
+            ScalarType::Binary => self.coerce_to_binary(),
+            #[cfg(not(feature = "base64"))]
+            ScalarType::Binary => None,
+            ScalarType::Timestamp => self.coerce_to_timestamp(),
+            ScalarType::Regex => Some(ScalarValue::regex(&self.value)),
+        }
+    }
+
+    /// Enhanced integer coercion with better parsing
+    fn coerce_to_integer(&self) -> Option<ScalarValue> {
+        let trimmed = self.value.trim();
+
+        // Try direct integer parsing first
+        if let Some(int_val) = Self::parse_integer(trimmed) {
+            return Some(ScalarValue::from(int_val));
+        }
+
+        // Try parsing as float and converting to integer (truncating)
+        if let Ok(float_val) = trimmed.parse::<f64>() {
+            if float_val.is_finite() && float_val.fract() == 0.0 {
+                let int_val = float_val as i64;
+                // Check for overflow/underflow
+                if (int_val as f64) == float_val {
+                    return Some(ScalarValue::from(int_val));
                 }
-            }
-            ScalarType::Timestamp => {
-                // Basic timestamp format validation
-                if self.is_valid_timestamp(&self.value) {
-                    Some(ScalarValue::timestamp(&self.value))
-                } else {
-                    None
-                }
-            }
-            ScalarType::Regex => {
-                // For regex, just convert the value
-                Some(ScalarValue::regex(&self.value))
             }
         }
+
+        // Try parsing numbers with thousand separators
+        let cleaned = trimmed.replace([',', '_'], "");
+        if let Some(int_val) = Self::parse_integer(&cleaned) {
+            return Some(ScalarValue::from(int_val));
+        }
+
+        None
+    }
+
+    /// Enhanced float coercion with better parsing
+    fn coerce_to_float(&self) -> Option<ScalarValue> {
+        let trimmed = self.value.trim();
+
+        // Try direct float parsing first
+        if let Ok(float_val) = trimmed.parse::<f64>() {
+            return Some(ScalarValue::from(float_val));
+        }
+
+        // Try parsing integer and converting to float
+        if let Some(int_val) = Self::parse_integer(trimmed) {
+            return Some(ScalarValue::from(int_val as f64));
+        }
+
+        // Try parsing numbers with thousand separators
+        let cleaned = trimmed.replace([',', '_'], "");
+        if let Ok(float_val) = cleaned.parse::<f64>() {
+            return Some(ScalarValue::from(float_val));
+        }
+
+        // Try scientific notation variations
+        let scientific_variants = [
+            trimmed.to_string(),       // Already correct (e/E)
+            trimmed.replace('E', "e"), // Convert to lowercase
+            trimmed.replace('d', "e"), // Common Fortran notation
+            trimmed.replace('D', "e"), // Common Fortran notation
+        ];
+
+        for variant in &scientific_variants {
+            if let Ok(float_val) = variant.parse::<f64>() {
+                return Some(ScalarValue::from(float_val));
+            }
+        }
+
+        None
+    }
+
+    /// Enhanced boolean coercion with more recognized values
+    fn coerce_to_boolean(&self) -> Option<ScalarValue> {
+        match self.value.trim().to_lowercase().as_str() {
+            // Standard true values
+            "true" | "yes" | "on" | "1" | "y" | "t" => Some(ScalarValue::from(true)),
+            // Standard false values
+            "false" | "no" | "off" | "0" | "n" | "f" => Some(ScalarValue::from(false)),
+            // Additional language-specific variations
+            "enable" | "enabled" | "active" => Some(ScalarValue::from(true)),
+            "disable" | "disabled" | "inactive" => Some(ScalarValue::from(false)),
+            // Numeric interpretations
+            v if v.chars().all(|c| c.is_ascii_digit()) => match v.parse::<i64>() {
+                Ok(0) => Some(ScalarValue::from(false)),
+                Ok(_) => Some(ScalarValue::from(true)),
+                Err(_) => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Enhanced null coercion with more recognized values
+    fn coerce_to_null(&self) -> Option<ScalarValue> {
+        match self.value.trim().to_lowercase().as_str() {
+            // Standard YAML null values
+            "null" | "~" | "" => Some(ScalarValue::null()),
+            // Additional null-like values
+            "nil" | "none" | "nothing" | "undefined" | "void" => Some(ScalarValue::null()),
+            // Programming language nulls (some overlap but clearer intent)
+            "undef" => Some(ScalarValue::null()),
+            _ => None,
+        }
+    }
+
+    /// Enhanced binary coercion
+    #[cfg(feature = "base64")]
+    fn coerce_to_binary(&self) -> Option<ScalarValue> {
+        let trimmed = self.value.trim();
+
+        // Try to decode as base64 to verify it's valid binary data
+        if base64_decode(trimmed).is_ok() {
+            return Some(ScalarValue {
+                value: trimmed.to_string(),
+                style: ScalarStyle::Plain,
+                scalar_type: ScalarType::Binary,
+            });
+        }
+
+        // Try with padding added if missing
+        let mut padded = trimmed.to_string();
+        while padded.len() % 4 != 0 {
+            padded.push('=');
+        }
+        if base64_decode(&padded).is_ok() {
+            return Some(ScalarValue {
+                value: padded,
+                style: ScalarStyle::Plain,
+                scalar_type: ScalarType::Binary,
+            });
+        }
+
+        None
+    }
+
+    /// Enhanced timestamp coercion with more formats
+    fn coerce_to_timestamp(&self) -> Option<ScalarValue> {
+        let trimmed = self.value.trim();
+
+        // Try the existing validation first
+        if self.is_valid_timestamp(trimmed) {
+            return Some(ScalarValue::timestamp(trimmed));
+        }
+
+        // Try parsing as Unix timestamp (seconds)
+        if let Ok(timestamp) = trimmed.parse::<i64>() {
+            if timestamp > 0 && timestamp < 4_102_444_800 {
+                // Valid range: 1970-2100
+                return Some(ScalarValue::timestamp(trimmed));
+            }
+        }
+
+        // Try common date formats that might be convertible
+        let date_patterns = [
+            r"^\d{4}-\d{2}-\d{2}$",                       // 2023-12-25
+            r"^\d{4}/\d{2}/\d{2}$",                       // 2023/12/25
+            r"^\d{2}/\d{2}/\d{4}$",                       // 12/25/2023
+            r"^\d{2}-\d{2}-\d{4}$",                       // 12-25-2023
+            r"^\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}$",       // 2023-12-25 15:30 or 2023-12-25T15:30
+            r"^\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}$", // with seconds
+        ];
+
+        // Simple pattern matching without regex dependency
+        for pattern in &date_patterns {
+            match *pattern {
+                r"^\d{4}-\d{2}-\d{2}$" => {
+                    if trimmed.len() == 10
+                        && trimmed.chars().nth(4) == Some('-')
+                        && trimmed.chars().nth(7) == Some('-')
+                        && trimmed[0..4].chars().all(|c| c.is_ascii_digit())
+                        && trimmed[5..7].chars().all(|c| c.is_ascii_digit())
+                        && trimmed[8..10].chars().all(|c| c.is_ascii_digit())
+                    {
+                        return Some(ScalarValue::timestamp(trimmed));
+                    }
+                }
+                r"^\d{4}/\d{2}/\d{2}$" => {
+                    if trimmed.len() == 10
+                        && trimmed.chars().nth(4) == Some('/')
+                        && trimmed.chars().nth(7) == Some('/')
+                        && trimmed[0..4].chars().all(|c| c.is_ascii_digit())
+                        && trimmed[5..7].chars().all(|c| c.is_ascii_digit())
+                        && trimmed[8..10].chars().all(|c| c.is_ascii_digit())
+                    {
+                        return Some(ScalarValue::timestamp(trimmed));
+                    }
+                }
+                _ => {
+                    // For now, accept any string that looks date-like with numbers and separators
+                    if trimmed.len() >= 8
+                        && trimmed.chars().any(|c| c.is_ascii_digit())
+                        && (trimmed.contains('-')
+                            || trimmed.contains('/')
+                            || trimmed.contains(':')
+                            || trimmed.contains('T'))
+                    {
+                        return Some(ScalarValue::timestamp(trimmed));
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Parse an integer with support for various formats
@@ -2025,5 +2198,224 @@ mod tests {
         let legacy_octal_scalar = ScalarValue::auto_typed("0755");
         assert_eq!(legacy_octal_scalar.scalar_type(), ScalarType::Integer);
         assert_eq!(legacy_octal_scalar.value(), "0755");
+    }
+
+    #[test]
+    fn test_enhanced_integer_coercion() {
+        // Test float-to-integer coercion
+        let float_str = ScalarValue::new("42.0");
+        let int_result = float_str.coerce_to_type(ScalarType::Integer).unwrap();
+        assert_eq!(int_result.scalar_type(), ScalarType::Integer);
+        assert_eq!(int_result.value(), "42");
+
+        // Test float with fractional part fails coercion
+        let fractional = ScalarValue::new("42.5");
+        assert!(fractional.coerce_to_type(ScalarType::Integer).is_none());
+
+        // Test numbers with thousand separators
+        let with_commas = ScalarValue::new("1,234,567");
+        let int_result = with_commas.coerce_to_type(ScalarType::Integer).unwrap();
+        assert_eq!(int_result.scalar_type(), ScalarType::Integer);
+
+        let with_underscores = ScalarValue::new("1_234_567");
+        let int_result = with_underscores
+            .coerce_to_type(ScalarType::Integer)
+            .unwrap();
+        assert_eq!(int_result.scalar_type(), ScalarType::Integer);
+
+        // Test whitespace handling
+        let with_whitespace = ScalarValue::new("  42  ");
+        let int_result = with_whitespace.coerce_to_type(ScalarType::Integer).unwrap();
+        assert_eq!(int_result.scalar_type(), ScalarType::Integer);
+    }
+
+    #[test]
+    fn test_enhanced_float_coercion() {
+        // Test integer-to-float coercion
+        let int_str = ScalarValue::new("42");
+        let float_result = int_str.coerce_to_type(ScalarType::Float).unwrap();
+        assert_eq!(float_result.scalar_type(), ScalarType::Float);
+        assert_eq!(float_result.value(), "42");
+
+        // Test numbers with thousand separators
+        let with_commas = ScalarValue::new("1,234.56");
+        let float_result = with_commas.coerce_to_type(ScalarType::Float).unwrap();
+        assert_eq!(float_result.scalar_type(), ScalarType::Float);
+
+        // Test scientific notation variations
+        let fortran_d = ScalarValue::new("1.23d-4");
+        let float_result = fortran_d.coerce_to_type(ScalarType::Float).unwrap();
+        assert_eq!(float_result.scalar_type(), ScalarType::Float);
+
+        let uppercase_e = ScalarValue::new("1.23E5");
+        let float_result = uppercase_e.coerce_to_type(ScalarType::Float).unwrap();
+        assert_eq!(float_result.scalar_type(), ScalarType::Float);
+    }
+
+    #[test]
+    fn test_enhanced_boolean_coercion() {
+        // Test additional true values
+        for true_val in ["enable", "enabled", "active", "y", "t"] {
+            let scalar = ScalarValue::new(true_val);
+            let bool_result = scalar.coerce_to_type(ScalarType::Boolean).unwrap();
+            assert_eq!(bool_result.scalar_type(), ScalarType::Boolean);
+            assert_eq!(bool_result.value(), "true");
+        }
+
+        // Test additional false values
+        for false_val in ["disable", "disabled", "inactive", "n", "f"] {
+            let scalar = ScalarValue::new(false_val);
+            let bool_result = scalar.coerce_to_type(ScalarType::Boolean).unwrap();
+            assert_eq!(bool_result.scalar_type(), ScalarType::Boolean);
+            assert_eq!(bool_result.value(), "false");
+        }
+
+        // Test numeric boolean values
+        let zero = ScalarValue::new("0");
+        let bool_result = zero.coerce_to_type(ScalarType::Boolean).unwrap();
+        assert_eq!(bool_result.value(), "false");
+
+        let non_zero = ScalarValue::new("123");
+        let bool_result = non_zero.coerce_to_type(ScalarType::Boolean).unwrap();
+        assert_eq!(bool_result.value(), "true");
+
+        // Test case insensitivity
+        let upper_true = ScalarValue::new("TRUE");
+        let bool_result = upper_true.coerce_to_type(ScalarType::Boolean).unwrap();
+        assert_eq!(bool_result.value(), "true");
+    }
+
+    #[test]
+    fn test_enhanced_null_coercion() {
+        // Test additional null-like values
+        for null_val in ["nil", "none", "nothing", "undefined", "void", "undef"] {
+            let scalar = ScalarValue::new(null_val);
+            let null_result = scalar.coerce_to_type(ScalarType::Null).unwrap();
+            assert_eq!(null_result.scalar_type(), ScalarType::Null);
+            assert_eq!(null_result.value(), "null");
+        }
+
+        // Test case insensitivity
+        let upper_null = ScalarValue::new("NULL");
+        let null_result = upper_null.coerce_to_type(ScalarType::Null).unwrap();
+        assert_eq!(null_result.value(), "null");
+
+        // Test whitespace handling
+        let spaced_null = ScalarValue::new("  null  ");
+        let null_result = spaced_null.coerce_to_type(ScalarType::Null).unwrap();
+        assert_eq!(null_result.value(), "null");
+    }
+
+    #[test]
+    #[cfg(feature = "base64")]
+    fn test_enhanced_binary_coercion() {
+        // Test valid base64
+        let b64 = ScalarValue::new("SGVsbG8gV29ybGQ=");
+        let binary_result = b64.coerce_to_type(ScalarType::Binary).unwrap();
+        assert_eq!(binary_result.scalar_type(), ScalarType::Binary);
+
+        // Test base64 without padding that can be auto-padded
+        let no_padding = ScalarValue::new("SGVsbG8");
+        let binary_result = no_padding.coerce_to_type(ScalarType::Binary).unwrap();
+        assert_eq!(binary_result.scalar_type(), ScalarType::Binary);
+        // Should have padding added
+        assert!(binary_result.value().ends_with('='));
+
+        // Test invalid base64
+        let invalid = ScalarValue::new("not-base64!");
+        assert!(invalid.coerce_to_type(ScalarType::Binary).is_none());
+    }
+
+    #[test]
+    fn test_enhanced_timestamp_coercion() {
+        // Test Unix timestamp
+        let unix_ts = ScalarValue::new("1640995200"); // 2022-01-01 00:00:00 UTC
+        let ts_result = unix_ts.coerce_to_type(ScalarType::Timestamp).unwrap();
+        assert_eq!(ts_result.scalar_type(), ScalarType::Timestamp);
+
+        // Test various date formats
+        let date_formats = [
+            "2023-12-25",          // ISO date
+            "2023/12/25",          // Slash format
+            "12/25/2023",          // US format
+            "12-25-2023",          // US dash format
+            "2023-12-25 15:30",    // Date with time
+            "2023-12-25T15:30",    // ISO-like
+            "2023-12-25 15:30:45", // With seconds
+        ];
+
+        for date_format in &date_formats {
+            let scalar = ScalarValue::new(*date_format);
+            let ts_result = scalar.coerce_to_type(ScalarType::Timestamp);
+            assert!(ts_result.is_some(), "Failed to coerce: {}", date_format);
+            assert_eq!(ts_result.unwrap().scalar_type(), ScalarType::Timestamp);
+        }
+
+        // Test invalid timestamps
+        let invalid_ts = ScalarValue::new("not-a-timestamp");
+        assert!(invalid_ts.coerce_to_type(ScalarType::Timestamp).is_none());
+
+        // Test Unix timestamp out of range
+        let too_old = ScalarValue::new("-1");
+        assert!(too_old.coerce_to_type(ScalarType::Timestamp).is_none());
+    }
+
+    #[test]
+    fn test_cross_type_coercion_chains() {
+        // Test that we can chain coercions through different types
+
+        // String -> Float -> Integer (when float has no fractional part)
+        let float_str = ScalarValue::new("42.0");
+        let int_result = float_str.coerce_to_type(ScalarType::Integer).unwrap();
+        assert_eq!(int_result.scalar_type(), ScalarType::Integer);
+
+        // Integer -> Float
+        let int_val = ScalarValue::from(42i64);
+        let float_result = int_val.coerce_to_type(ScalarType::Float).unwrap();
+        assert_eq!(float_result.scalar_type(), ScalarType::Float);
+        assert_eq!(float_result.value(), "42");
+
+        // Numeric string -> Boolean
+        let numeric_bool = ScalarValue::new("1");
+        let bool_result = numeric_bool.coerce_to_type(ScalarType::Boolean).unwrap();
+        assert_eq!(bool_result.value(), "true");
+    }
+
+    #[test]
+    fn test_coercion_edge_cases() {
+        // Test empty string coercion
+        let empty = ScalarValue::new("");
+        assert!(empty.coerce_to_type(ScalarType::Null).is_some());
+        assert!(empty.coerce_to_type(ScalarType::Integer).is_none());
+        assert!(empty.coerce_to_type(ScalarType::Float).is_none());
+
+        // Test whitespace-only strings
+        let whitespace = ScalarValue::new("   ");
+        assert!(whitespace.coerce_to_type(ScalarType::Integer).is_none());
+        assert!(whitespace.coerce_to_type(ScalarType::Float).is_none());
+
+        // Test very large numbers
+        let large_int = ScalarValue::new("9223372036854775807"); // i64::MAX
+        assert!(large_int.coerce_to_type(ScalarType::Integer).is_some());
+
+        // Test infinity and NaN
+        let infinity = ScalarValue::new("inf");
+        let _float_result = infinity.coerce_to_type(ScalarType::Float);
+        // This may or may not work depending on the parser implementation
+
+        // Test mixed case values
+        let mixed_case = ScalarValue::new("TrUe");
+        let bool_result = mixed_case.coerce_to_type(ScalarType::Boolean).unwrap();
+        assert_eq!(bool_result.value(), "true");
+    }
+
+    #[test]
+    fn test_coercion_preserves_original_for_same_type() {
+        let original = ScalarValue::new("test");
+        let coerced = original.coerce_to_type(ScalarType::String).unwrap();
+
+        // Should be the same value
+        assert_eq!(original.value(), coerced.value());
+        assert_eq!(original.scalar_type(), coerced.scalar_type());
     }
 }

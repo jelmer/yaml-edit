@@ -6707,7 +6707,7 @@ users:
         let json_errors = json_result.unwrap_err();
         let timestamp_error = json_errors
             .iter()
-            .any(|e| e.message.contains("json schema"));
+            .any(|e| e.message().contains("json schema"));
         assert!(timestamp_error, "Should have JSON schema error");
     }
 

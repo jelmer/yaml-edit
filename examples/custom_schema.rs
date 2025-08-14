@@ -3,7 +3,7 @@
 //! This example demonstrates how to create and use custom YAML schemas
 //! with user-defined validation rules and constraints.
 
-use yaml_edit::{CustomSchema, ScalarType, SchemaValidator, Yaml};
+use yaml_edit::{CustomSchema, CustomValidationResult, ScalarType, SchemaValidator, Yaml};
 
 fn main() {
     println!("=== Custom YAML Schema Example ===\n");
@@ -88,19 +88,16 @@ fn email_validation_example() {
     // Create a schema with custom email validation
     let email_schema = CustomSchema::new("email-validator")
         .allow_type(ScalarType::String)
-        .with_validator(ScalarType::String, |value, path| {
+        .with_validator(ScalarType::String, |value, _path| {
             if value.contains('@') && value.contains('.') && value.len() > 5 {
                 // Basic email validation
                 if value.matches('@').count() == 1 {
-                    Ok(())
+                    CustomValidationResult::Valid
                 } else {
-                    Err(format!(
-                        "invalid email format at {}: multiple @ symbols",
-                        path
-                    ))
+                    CustomValidationResult::invalid("email_format", "multiple @ symbols found")
                 }
             } else {
-                Err(format!("invalid email format at {}: {}", path, value))
+                CustomValidationResult::invalid("email_format", format!("invalid email: {}", value))
             }
         });
 
@@ -155,15 +152,18 @@ fn port_validation_example() {
         .with_validator(ScalarType::Integer, |value, _path| {
             if let Ok(port) = value.parse::<u16>() {
                 if port >= 1024 && port <= 65535 {
-                    Ok(())
+                    CustomValidationResult::Valid
                 } else {
-                    Err(format!(
-                        "port {} must be between 1024 and 65535 (unprivileged ports)",
-                        port
-                    ))
+                    CustomValidationResult::invalid(
+                        "port_range",
+                        format!("port {} must be between 1024 and 65535", port),
+                    )
                 }
             } else {
-                Err(format!("invalid integer: {}", value))
+                CustomValidationResult::invalid(
+                    "integer_format",
+                    format!("invalid integer: {}", value),
+                )
             }
         });
 
@@ -217,23 +217,29 @@ fn config_validation_example() {
         .allow_types(&[ScalarType::String, ScalarType::Integer, ScalarType::Boolean])
         .with_validator(ScalarType::String, |value, _path| {
             if value.len() >= 3 && value.len() <= 50 {
-                Ok(())
+                CustomValidationResult::Valid
             } else {
-                Err(format!(
-                    "string length must be between 3 and 50 characters, got: {}",
-                    value.len()
-                ))
+                CustomValidationResult::invalid(
+                    "string_length",
+                    format!("length {} not between 3 and 50 characters", value.len()),
+                )
             }
         })
         .with_validator(ScalarType::Integer, |value, _path| {
             if let Ok(num) = value.parse::<i32>() {
                 if num >= 0 && num <= 10000 {
-                    Ok(())
+                    CustomValidationResult::Valid
                 } else {
-                    Err(format!("integer must be between 0 and 10000, got: {}", num))
+                    CustomValidationResult::invalid(
+                        "integer_range",
+                        format!("value {} not between 0 and 10000", num),
+                    )
                 }
             } else {
-                Err(format!("invalid integer: {}", value))
+                CustomValidationResult::invalid(
+                    "integer_format",
+                    format!("invalid integer: {}", value),
+                )
             }
         });
 
@@ -293,9 +299,12 @@ fn strict_schema_example() {
                 .chars()
                 .all(|c| c.is_ascii_alphabetic() || c.is_ascii_whitespace())
             {
-                Ok(())
+                CustomValidationResult::Valid
             } else {
-                Err(format!("only letters and spaces allowed: {}", value))
+                CustomValidationResult::invalid(
+                    "character_set",
+                    format!("only letters and spaces allowed: {}", value),
+                )
             }
         });
 

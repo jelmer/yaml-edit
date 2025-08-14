@@ -4,7 +4,7 @@
 //! and handles arbitrary input gracefully.
 
 use std::panic;
-use yaml_edit::{Parse, Yaml};
+use yaml_edit::Parse;
 
 /// Generate random YAML-like content
 fn generate_random_yaml(seed: usize, complexity: usize) -> String {
@@ -179,7 +179,7 @@ fn test_fuzz_nested_structures() {
 
 #[test]
 fn test_fuzz_special_characters() {
-    let special_chars = vec![
+    let special_chars = [
         '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '-', '_', '=', '+', '[', ']', '{', '}',
         '|', '\\', ':', ';', '"', '\'', '<', '>', ',', '.', '?', '/', '~', '`',
     ];

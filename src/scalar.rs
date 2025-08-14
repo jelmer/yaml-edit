@@ -535,20 +535,8 @@ impl ScalarValue {
                 style: ScalarStyle::Plain,
                 scalar_type: ScalarType::String,
             }),
-            ScalarType::Integer => {
-                if let Some(int_val) = Self::parse_integer(&self.value) {
-                    Some(ScalarValue::from(int_val))
-                } else {
-                    None
-                }
-            }
-            ScalarType::Float => {
-                if let Ok(float_val) = self.value.parse::<f64>() {
-                    Some(ScalarValue::from(float_val))
-                } else {
-                    None
-                }
-            }
+            ScalarType::Integer => Self::parse_integer(&self.value).map(ScalarValue::from),
+            ScalarType::Float => self.value.parse::<f64>().ok().map(ScalarValue::from),
             ScalarType::Boolean => match self.value.to_lowercase().as_str() {
                 "true" | "yes" | "on" | "1" => Some(ScalarValue::from(true)),
                 "false" | "no" | "off" | "0" => Some(ScalarValue::from(false)),
@@ -592,23 +580,32 @@ impl ScalarValue {
         let value = value.trim();
 
         // Handle negative numbers
-        let (is_negative, value) = if value.starts_with('-') {
-            (true, &value[1..])
-        } else if value.starts_with('+') {
-            (false, &value[1..])
+        let (is_negative, value) = if let Some(stripped) = value.strip_prefix('-') {
+            (true, stripped)
+        } else if let Some(stripped) = value.strip_prefix('+') {
+            (false, stripped)
         } else {
             (false, value)
         };
 
-        let parsed = if value.starts_with("0x") || value.starts_with("0X") {
+        let parsed = if let Some(hex_part) = value
+            .strip_prefix("0x")
+            .or_else(|| value.strip_prefix("0X"))
+        {
             // Hexadecimal
-            i64::from_str_radix(&value[2..], 16).ok()
-        } else if value.starts_with("0b") || value.starts_with("0B") {
+            i64::from_str_radix(hex_part, 16).ok()
+        } else if let Some(bin_part) = value
+            .strip_prefix("0b")
+            .or_else(|| value.strip_prefix("0B"))
+        {
             // Binary
-            i64::from_str_radix(&value[2..], 2).ok()
-        } else if value.starts_with("0o") || value.starts_with("0O") {
+            i64::from_str_radix(bin_part, 2).ok()
+        } else if let Some(oct_part) = value
+            .strip_prefix("0o")
+            .or_else(|| value.strip_prefix("0O"))
+        {
             // Modern octal
-            i64::from_str_radix(&value[2..], 8).ok()
+            i64::from_str_radix(oct_part, 8).ok()
         } else if value.starts_with('0')
             && value.len() > 1
             && value.chars().all(|c| c.is_ascii_digit())
@@ -1885,7 +1882,7 @@ mod tests {
         let binary_scalar = ScalarValue::binary(data);
 
         // Even if we change style, binary type should maintain tag
-        let mut styled_binary = binary_scalar.clone();
+        let mut styled_binary = binary_scalar;
         styled_binary.style = ScalarStyle::DoubleQuoted;
 
         // The to_yaml_string should still respect the scalar type for tagging

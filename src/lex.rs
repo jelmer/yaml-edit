@@ -1274,7 +1274,7 @@ mod tests {
         assert_eq!(errors[0].category, WhitespaceErrorCategory::TabIndentation);
 
         // Should tokenize normally
-        assert!(tokens.len() > 0);
+        assert!(!tokens.is_empty());
     }
 
     #[test]

@@ -402,7 +402,7 @@ mod tests {
         let ctx = ErrorRecoveryContext::new("test".to_string());
 
         // Test flow sequence recovery
-        let mut ctx_flow = ctx.clone();
+        let mut ctx_flow = ctx;
         ctx_flow.push_context(ParseContext::FlowSequence);
         let strategy = ctx_flow.suggest_recovery(SyntaxKind::COMMA, Some(SyntaxKind::COLON));
         assert_eq!(strategy, RecoveryStrategy::SkipToEndOfLine);

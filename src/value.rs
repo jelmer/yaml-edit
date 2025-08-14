@@ -28,52 +28,52 @@ impl YamlValue {
     }
 
     /// Create an empty sequence
-    pub fn sequence() -> Self {
+    pub const fn sequence() -> Self {
         YamlValue::Sequence(Vec::new())
     }
 
     /// Create a sequence from a vector
-    pub fn from_sequence(items: Vec<YamlValue>) -> Self {
+    pub const fn from_sequence(items: Vec<YamlValue>) -> Self {
         YamlValue::Sequence(items)
     }
 
     /// Create an empty mapping
-    pub fn mapping() -> Self {
+    pub const fn mapping() -> Self {
         YamlValue::Mapping(BTreeMap::new())
     }
 
     /// Create a mapping from a BTreeMap
-    pub fn from_mapping(map: BTreeMap<String, YamlValue>) -> Self {
+    pub const fn from_mapping(map: BTreeMap<String, YamlValue>) -> Self {
         YamlValue::Mapping(map)
     }
 
     /// Create an empty set
-    pub fn set() -> Self {
+    pub const fn set() -> Self {
         YamlValue::Set(BTreeSet::new())
     }
 
     /// Create a set from a BTreeSet
-    pub fn from_set(set: BTreeSet<String>) -> Self {
+    pub const fn from_set(set: BTreeSet<String>) -> Self {
         YamlValue::Set(set)
     }
 
     /// Create an empty ordered mapping
-    pub fn ordered_mapping() -> Self {
+    pub const fn ordered_mapping() -> Self {
         YamlValue::OrderedMapping(Vec::new())
     }
 
     /// Create an ordered mapping from a vector of pairs
-    pub fn from_ordered_mapping(pairs: Vec<(String, YamlValue)>) -> Self {
+    pub const fn from_ordered_mapping(pairs: Vec<(String, YamlValue)>) -> Self {
         YamlValue::OrderedMapping(pairs)
     }
 
     /// Create empty pairs
-    pub fn pairs() -> Self {
+    pub const fn pairs() -> Self {
         YamlValue::Pairs(Vec::new())
     }
 
     /// Create pairs from a vector of pairs
-    pub fn from_pairs(pairs: Vec<(String, YamlValue)>) -> Self {
+    pub const fn from_pairs(pairs: Vec<(String, YamlValue)>) -> Self {
         YamlValue::Pairs(pairs)
     }
 

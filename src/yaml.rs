@@ -1755,6 +1755,13 @@ impl Parser {
 
     fn parse_value_with_base_indent(&mut self, base_indent: usize) {
         match self.current() {
+            Some(SyntaxKind::COMMENT) => {
+                // Preserve the comment and continue parsing the actual value
+                self.bump(); // consume and preserve the comment
+                self.skip_ws_and_newlines(); // skip any whitespace/newlines after comment
+                // Now parse the actual value
+                self.parse_value_with_base_indent(base_indent);
+            }
             Some(SyntaxKind::DASH) if !self.in_flow_context => {
                 self.parse_sequence_with_base_indent(base_indent)
             }

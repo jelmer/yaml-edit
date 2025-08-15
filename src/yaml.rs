@@ -2367,14 +2367,11 @@ impl Parser {
 
             // After parsing a sequence item, check indentation before continuing
             if base_indent > 0 {
-                eprintln!("Checking indentation with base_indent={}", base_indent);
                 if self.skip_ws_and_newlines_with_indent_check(base_indent) {
                     // Dedent detected, stop parsing this sequence
-                    eprintln!("Dedent detected! Breaking sequence parsing.");
                     break;
                 }
             } else {
-                eprintln!("base_indent is 0, using skip_ws_and_newlines()");
                 self.skip_ws_and_newlines();
             }
         }
@@ -3039,7 +3036,7 @@ impl Parser {
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 self.parse_mapping_value();
             } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                // Check if next line is indented (nested content)
+                // Check if next line is indented (nested content) or starts with a sequence
                 self.bump(); // consume newline
                 if self.current() == Some(SyntaxKind::INDENT) {
                     let indent_text = self
@@ -3051,6 +3048,10 @@ impl Parser {
                     self.bump(); // consume indent
                                  // Parse the indented content as the value, tracking indent level
                     self.parse_value_with_base_indent(indent_level);
+                } else if self.current() == Some(SyntaxKind::DASH) {
+                    // Zero-indented sequence (same indentation as key)
+                    // This is valid YAML: the sequence is the value for the key
+                    self.parse_sequence();
                 }
             }
             // Empty VALUE node if no value present

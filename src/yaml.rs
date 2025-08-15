@@ -1755,6 +1755,13 @@ impl Parser {
 
     fn parse_value_with_base_indent(&mut self, base_indent: usize) {
         match self.current() {
+            Some(SyntaxKind::COMMENT) => {
+                // Preserve the comment and continue parsing the actual value
+                self.bump(); // consume and preserve the comment
+                self.skip_ws_and_newlines(); // skip any whitespace/newlines after comment
+                                             // Now parse the actual value
+                self.parse_value_with_base_indent(base_indent);
+            }
             Some(SyntaxKind::DASH) if !self.in_flow_context => {
                 self.parse_sequence_with_base_indent(base_indent)
             }
@@ -1931,12 +1938,17 @@ impl Parser {
                 self.current(),
                 Some(
                     SyntaxKind::STRING
+                        | SyntaxKind::UNTERMINATED_STRING
                         | SyntaxKind::INT
                         | SyntaxKind::FLOAT
                         | SyntaxKind::BOOL
                         | SyntaxKind::NULL
                 )
             ) {
+                // Check for unterminated string and add error
+                if self.current() == Some(SyntaxKind::UNTERMINATED_STRING) {
+                    self.add_error("Unterminated quoted string".to_string());
+                }
                 if !self.in_flow_context {
                     // For plain scalars in block context, consume all tokens on the same line
                     // This handles complex values like timestamps with spaces
@@ -2363,18 +2375,29 @@ impl Parser {
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 // Pass base_indent to ensure nested content doesn't consume wrong tokens
                 self.parse_value_with_base_indent(base_indent);
+            } else if self.current() == Some(SyntaxKind::NEWLINE) {
+                // Check if next line is indented (nested content for sequence item)
+                self.bump(); // consume newline
+                if self.current() == Some(SyntaxKind::INDENT) {
+                    let indent_text = self
+                        .tokens
+                        .last()
+                        .map(|(_, text)| text.clone())
+                        .unwrap_or_default();
+                    let indent_level = indent_text.len();
+                    self.bump(); // consume indent
+                                 // Parse the indented content as the sequence item value
+                    self.parse_value_with_base_indent(indent_level);
+                }
             }
 
             // After parsing a sequence item, check indentation before continuing
             if base_indent > 0 {
-                eprintln!("Checking indentation with base_indent={}", base_indent);
                 if self.skip_ws_and_newlines_with_indent_check(base_indent) {
                     // Dedent detected, stop parsing this sequence
-                    eprintln!("Dedent detected! Breaking sequence parsing.");
                     break;
                 }
             } else {
-                eprintln!("base_indent is 0, using skip_ws_and_newlines()");
                 self.skip_ws_and_newlines();
             }
         }
@@ -2534,9 +2557,46 @@ impl Parser {
 
             // Parse key - can be any value including sequences and mappings
             self.builder.start_node(SyntaxKind::KEY.into());
+
+            // Parse the first part of the key
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 self.parse_value();
             }
+
+            // Check if this is a multiline key (newline followed by indent)
+            // Only for scalar keys, not sequences or mappings
+            if self.current() == Some(SyntaxKind::NEWLINE) {
+                // Peek ahead to see if there's an indent after the newline
+                // Since tokens are reversed, peek at the second-to-last token
+                if self.tokens.len() >= 2 {
+                    let (next_kind, _) = &self.tokens[self.tokens.len() - 2];
+                    if *next_kind == SyntaxKind::INDENT {
+                        // Check what comes after the indent (at position len() - 3)
+                        if self.tokens.len() >= 3 {
+                            let (token_after_indent, _) = &self.tokens[self.tokens.len() - 3];
+                            // If it's a DASH, this is a sequence continuation which was already
+                            // handled by parse_value() above - don't try to parse it as multiline scalar
+                            if *token_after_indent != SyntaxKind::DASH {
+                                // This is a multiline scalar key continuation
+                                self.bump(); // consume newline
+                                self.bump(); // consume indent
+
+                                // Parse scalar tokens at this indentation level as part of the key
+                                while self.current().is_some()
+                                    && self.current() != Some(SyntaxKind::NEWLINE)
+                                    && self.current() != Some(SyntaxKind::COLON)
+                                {
+                                    self.parse_scalar();
+                                    if self.current() == Some(SyntaxKind::WHITESPACE) {
+                                        self.bump(); // consume whitespace between key parts
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             self.builder.finish_node();
 
             self.skip_ws_and_newlines();
@@ -2821,12 +2881,17 @@ impl Parser {
 
         // Look ahead to see if there's a colon after the current token
         // A valid mapping key should have a colon immediately after (with only whitespace)
-        for kind in self.upcoming_tokens() {
+        let upcoming = self.upcoming_tokens();
+        for kind in upcoming {
             match kind {
-                SyntaxKind::COLON => return true,
+                SyntaxKind::COLON => {
+                    return true;
+                }
                 SyntaxKind::WHITESPACE => continue,
                 // Any other token means this is not a simple mapping key
-                _ => return false,
+                _ => {
+                    return false;
+                }
             }
         }
         false
@@ -3039,7 +3104,7 @@ impl Parser {
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 self.parse_mapping_value();
             } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                // Check if next line is indented (nested content)
+                // Check if next line is indented (nested content) or starts with a sequence
                 self.bump(); // consume newline
                 if self.current() == Some(SyntaxKind::INDENT) {
                     let indent_text = self
@@ -3051,6 +3116,10 @@ impl Parser {
                     self.bump(); // consume indent
                                  // Parse the indented content as the value, tracking indent level
                     self.parse_value_with_base_indent(indent_level);
+                } else if self.current() == Some(SyntaxKind::DASH) {
+                    // Zero-indented sequence (same indentation as key)
+                    // This is valid YAML: the sequence is the value for the key
+                    self.parse_sequence();
                 }
             }
             // Empty VALUE node if no value present

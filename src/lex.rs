@@ -100,6 +100,8 @@ pub enum SyntaxKind {
     // Content tokens (from lexer)
     /// String literal (quoted or unquoted identifier)
     STRING,
+    /// Unterminated string (missing closing quote)
+    UNTERMINATED_STRING,
     /// Integer literal
     INT,
     /// Float literal
@@ -328,8 +330,80 @@ pub fn lex_with_validation_config<'a>(
                     tokens.push((ASTERISK, &input[token_start..start_idx + 1]));
                 }
             }
-            '"' => tokens.push((QUOTE, &input[token_start..start_idx + 1])),
-            '\'' => tokens.push((SINGLE_QUOTE, &input[token_start..start_idx + 1])),
+            '"' => {
+                // Read entire double-quoted string
+                let mut end_idx = start_idx + 1;
+                let mut escaped = false;
+                let mut found_closing = false;
+
+                while let Some((idx, ch)) = chars.peek() {
+                    let current_idx = *idx;
+                    let current_ch = *ch;
+
+                    if escaped {
+                        escaped = false;
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
+                        continue;
+                    }
+
+                    if current_ch == '\\' {
+                        escaped = true;
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
+                    } else if current_ch == '"' {
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
+                        found_closing = true;
+                        break;
+                    } else {
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
+                    }
+                }
+
+                if found_closing {
+                    tokens.push((STRING, &input[token_start..end_idx]));
+                } else {
+                    // Unterminated string - add UNTERMINATED_STRING token
+                    tokens.push((UNTERMINATED_STRING, &input[token_start..end_idx]));
+                }
+            }
+            '\'' => {
+                // Read entire single-quoted string
+                let mut end_idx = start_idx + 1;
+                let mut found_closing = false;
+
+                while let Some((idx, ch)) = chars.peek() {
+                    let current_idx = *idx;
+                    let current_ch = *ch;
+
+                    if current_ch == '\'' {
+                        // Check for escaped quote ('')
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
+                        if let Some((next_idx, '\'')) = chars.peek() {
+                            // Double quote - consume both and continue
+                            end_idx = *next_idx + 1;
+                            chars.next();
+                        } else {
+                            // Single quote - end of string
+                            found_closing = true;
+                            break;
+                        }
+                    } else {
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
+                    }
+                }
+
+                if found_closing {
+                    tokens.push((STRING, &input[token_start..end_idx]));
+                } else {
+                    // Unterminated string - add UNTERMINATED_STRING token
+                    tokens.push((UNTERMINATED_STRING, &input[token_start..end_idx]));
+                }
+            }
 
             // Document end
             '.' => {
@@ -528,17 +602,17 @@ pub fn lex_with_validation_config<'a>(
                     }
 
                     // Check for YAML special characters
-                    // Special handling for colon: only special if followed by whitespace
+                    // Special handling for colon: only special if followed by whitespace or EOF
                     if *next_ch == ':' {
                         // Peek ahead one more to check if colon is followed by whitespace
                         let next_idx = *idx + next_ch.len_utf8();
-                        if next_idx < input.len() {
-                            let after_colon = input[next_idx..].chars().next();
-                            if let Some(after) = after_colon {
-                                if after.is_whitespace() {
-                                    // Colon followed by whitespace - stop here
-                                    break;
-                                }
+                        if next_idx >= input.len() {
+                            // Colon at EOF - stop here (treat as mapping indicator)
+                            break;
+                        } else if let Some(after) = input[next_idx..].chars().next() {
+                            if after.is_whitespace() {
+                                // Colon followed by whitespace - stop here
+                                break;
                             }
                         }
                         // Colon not followed by whitespace - continue as part of scalar
@@ -797,21 +871,22 @@ mod tests {
 
     #[test]
     fn test_quoted_strings() {
-        let input = r#"single: 'quoted'\ndouble: "quoted""#;
+        let input = r#"single: 'quoted'
+double: "quoted""#;
         let tokens = lex(input);
 
-        // Find quote tokens
-        let single_quotes: Vec<_> = tokens
+        // Find quoted string tokens - after fix, quotes are included in STRING tokens
+        let quoted_strings: Vec<_> = tokens
             .iter()
-            .filter(|(kind, _)| *kind == SyntaxKind::SINGLE_QUOTE)
+            .filter(|(kind, text)| {
+                *kind == SyntaxKind::STRING && (text.starts_with('\'') || text.starts_with('"'))
+            })
             .collect();
-        assert_eq!(single_quotes.len(), 2); // opening and closing
+        assert_eq!(quoted_strings.len(), 2); // single and double quoted strings
 
-        let double_quotes: Vec<_> = tokens
-            .iter()
-            .filter(|(kind, _)| *kind == SyntaxKind::QUOTE)
-            .collect();
-        assert_eq!(double_quotes.len(), 2); // opening and closing
+        // Verify content
+        assert!(quoted_strings.iter().any(|(_, text)| *text == "'quoted'"));
+        assert!(quoted_strings.iter().any(|(_, text)| *text == "\"quoted\""));
     }
 
     #[test]
@@ -1354,17 +1429,19 @@ mod tests {
 
     #[test]
     fn test_dash_with_quotes() {
-        // Quoted strings should preserve everything inside
+        // Quoted strings should preserve everything inside as STRING tokens
         let input = r#"key: "- not a sequence marker""#;
         let tokens = lex(input);
-        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::QUOTE));
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING
+                && text.contains("- not a sequence marker")));
         // The dash inside quotes becomes part of a string token
 
         let input = r#"key: '- also not a sequence marker'"#;
         let tokens = lex(input);
-        assert!(tokens
-            .iter()
-            .any(|(kind, _)| *kind == SyntaxKind::SINGLE_QUOTE));
+        assert!(tokens.iter().any(|(kind, text)| *kind == SyntaxKind::STRING
+            && text.contains("- also not a sequence marker")));
     }
 
     #[test]

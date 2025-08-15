@@ -2559,33 +2559,36 @@ impl Parser {
             }
 
             // Check if this is a multiline key (newline followed by indent)
-            while self.current() == Some(SyntaxKind::NEWLINE) {
+            // Only for scalar keys, not sequences or mappings
+            if self.current() == Some(SyntaxKind::NEWLINE) {
                 // Peek ahead to see if there's an indent after the newline
                 // Since tokens are reversed, peek at the second-to-last token
                 if self.tokens.len() >= 2 {
                     let (next_kind, _) = &self.tokens[self.tokens.len() - 2];
                     if *next_kind == SyntaxKind::INDENT {
-                        // This is a multiline key continuation
-                        self.bump(); // consume newline
-                        self.bump(); // consume indent
+                        // Check what comes after the indent (at position len() - 3)
+                        if self.tokens.len() >= 3 {
+                            let (token_after_indent, _) = &self.tokens[self.tokens.len() - 3];
+                            // If it's a DASH, this is a sequence continuation which was already
+                            // handled by parse_value() above - don't try to parse it as multiline scalar
+                            if *token_after_indent != SyntaxKind::DASH {
+                                // This is a multiline scalar key continuation
+                                self.bump(); // consume newline
+                                self.bump(); // consume indent
 
-                        // Parse tokens at this indentation level as part of the key
-                        while self.current().is_some()
-                            && self.current() != Some(SyntaxKind::NEWLINE)
-                            && self.current() != Some(SyntaxKind::COLON)
-                        {
-                            self.parse_scalar();
-                            if self.current() == Some(SyntaxKind::WHITESPACE) {
-                                self.bump(); // consume whitespace between key parts
+                                // Parse scalar tokens at this indentation level as part of the key
+                                while self.current().is_some()
+                                    && self.current() != Some(SyntaxKind::NEWLINE)
+                                    && self.current() != Some(SyntaxKind::COLON)
+                                {
+                                    self.parse_scalar();
+                                    if self.current() == Some(SyntaxKind::WHITESPACE) {
+                                        self.bump(); // consume whitespace between key parts
+                                    }
+                                }
                             }
                         }
-                    } else {
-                        // No indent after newline, key ends here
-                        break;
                     }
-                } else {
-                    // End of input, key ends here
-                    break;
                 }
             }
 

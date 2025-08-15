@@ -2825,12 +2825,17 @@ impl Parser {
 
         // Look ahead to see if there's a colon after the current token
         // A valid mapping key should have a colon immediately after (with only whitespace)
-        for kind in self.upcoming_tokens() {
+        let upcoming = self.upcoming_tokens();
+        for kind in upcoming {
             match kind {
-                SyntaxKind::COLON => return true,
+                SyntaxKind::COLON => {
+                    return true;
+                }
                 SyntaxKind::WHITESPACE => continue,
                 // Any other token means this is not a simple mapping key
-                _ => return false,
+                _ => {
+                    return false;
+                }
             }
         }
         false

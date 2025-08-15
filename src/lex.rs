@@ -528,17 +528,17 @@ pub fn lex_with_validation_config<'a>(
                     }
 
                     // Check for YAML special characters
-                    // Special handling for colon: only special if followed by whitespace
+                    // Special handling for colon: only special if followed by whitespace or EOF
                     if *next_ch == ':' {
                         // Peek ahead one more to check if colon is followed by whitespace
                         let next_idx = *idx + next_ch.len_utf8();
-                        if next_idx < input.len() {
-                            let after_colon = input[next_idx..].chars().next();
-                            if let Some(after) = after_colon {
-                                if after.is_whitespace() {
-                                    // Colon followed by whitespace - stop here
-                                    break;
-                                }
+                        if next_idx >= input.len() {
+                            // Colon at EOF - stop here (treat as mapping indicator)
+                            break;
+                        } else if let Some(after) = input[next_idx..].chars().next() {
+                            if after.is_whitespace() {
+                                // Colon followed by whitespace - stop here
+                                break;
                             }
                         }
                         // Colon not followed by whitespace - continue as part of scalar

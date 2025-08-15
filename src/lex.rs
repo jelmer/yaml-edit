@@ -333,18 +333,18 @@ pub fn lex_with_validation_config<'a>(
                 let mut end_idx = start_idx + 1;
                 let mut escaped = false;
                 let mut found_closing = false;
-                
+
                 while let Some((idx, ch)) = chars.peek() {
                     let current_idx = *idx;
                     let current_ch = *ch;
                     end_idx = current_idx + current_ch.len_utf8();
                     chars.next();
-                    
+
                     if escaped {
                         escaped = false;
                         continue;
                     }
-                    
+
                     if current_ch == '\\' {
                         escaped = true;
                     } else if current_ch == '"' {
@@ -352,7 +352,7 @@ pub fn lex_with_validation_config<'a>(
                         break;
                     }
                 }
-                
+
                 if found_closing {
                     tokens.push((STRING, &input[token_start..end_idx]));
                 } else {
@@ -364,13 +364,13 @@ pub fn lex_with_validation_config<'a>(
                 // Read entire single-quoted string
                 let mut end_idx = start_idx + 1;
                 let mut found_closing = false;
-                
+
                 while let Some((idx, ch)) = chars.peek() {
                     let current_idx = *idx;
                     let current_ch = *ch;
                     end_idx = current_idx + current_ch.len_utf8();
                     chars.next();
-                    
+
                     if current_ch == '\'' {
                         // Check for escaped quote ('')
                         if let Some((next_idx, '\'')) = chars.peek() {
@@ -384,7 +384,7 @@ pub fn lex_with_validation_config<'a>(
                         }
                     }
                 }
-                
+
                 if found_closing {
                     tokens.push((STRING, &input[token_start..end_idx]));
                 } else {
@@ -866,10 +866,12 @@ double: "quoted""#;
         // Find quoted string tokens - after fix, quotes are included in STRING tokens
         let quoted_strings: Vec<_> = tokens
             .iter()
-            .filter(|(kind, text)| *kind == SyntaxKind::STRING && (text.starts_with('\'') || text.starts_with('"')))
+            .filter(|(kind, text)| {
+                *kind == SyntaxKind::STRING && (text.starts_with('\'') || text.starts_with('"'))
+            })
             .collect();
         assert_eq!(quoted_strings.len(), 2); // single and double quoted strings
-        
+
         // Verify content
         assert!(quoted_strings.iter().any(|(_, text)| *text == "'quoted'"));
         assert!(quoted_strings.iter().any(|(_, text)| *text == "\"quoted\""));
@@ -1418,12 +1420,16 @@ double: "quoted""#;
         // Quoted strings should preserve everything inside as STRING tokens
         let input = r#"key: "- not a sequence marker""#;
         let tokens = lex(input);
-        assert!(tokens.iter().any(|(kind, text)| *kind == SyntaxKind::STRING && text.contains("- not a sequence marker")));
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING
+                && text.contains("- not a sequence marker")));
         // The dash inside quotes becomes part of a string token
 
         let input = r#"key: '- also not a sequence marker'"#;
         let tokens = lex(input);
-        assert!(tokens.iter().any(|(kind, text)| *kind == SyntaxKind::STRING && text.contains("- also not a sequence marker")));
+        assert!(tokens.iter().any(|(kind, text)| *kind == SyntaxKind::STRING
+            && text.contains("- also not a sequence marker")));
     }
 
     #[test]

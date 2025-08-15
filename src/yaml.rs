@@ -1759,7 +1759,7 @@ impl Parser {
                 // Preserve the comment and continue parsing the actual value
                 self.bump(); // consume and preserve the comment
                 self.skip_ws_and_newlines(); // skip any whitespace/newlines after comment
-                // Now parse the actual value
+                                             // Now parse the actual value
                 self.parse_value_with_base_indent(base_indent);
             }
             Some(SyntaxKind::DASH) if !self.in_flow_context => {
@@ -2381,7 +2381,7 @@ impl Parser {
                         .unwrap_or_default();
                     let indent_level = indent_text.len();
                     self.bump(); // consume indent
-                    // Parse the indented content as the sequence item value
+                                 // Parse the indented content as the sequence item value
                     self.parse_value_with_base_indent(indent_level);
                 }
             }
@@ -2552,12 +2552,12 @@ impl Parser {
 
             // Parse key - can be any value including sequences and mappings
             self.builder.start_node(SyntaxKind::KEY.into());
-            
+
             // Parse the first part of the key
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 self.parse_value();
             }
-            
+
             // Check if this is a multiline key (newline followed by indent)
             while self.current() == Some(SyntaxKind::NEWLINE) {
                 // Peek ahead to see if there's an indent after the newline
@@ -2568,11 +2568,12 @@ impl Parser {
                         // This is a multiline key continuation
                         self.bump(); // consume newline
                         self.bump(); // consume indent
-                        
+
                         // Parse tokens at this indentation level as part of the key
-                        while self.current().is_some() && 
-                              self.current() != Some(SyntaxKind::NEWLINE) &&
-                              self.current() != Some(SyntaxKind::COLON) {
+                        while self.current().is_some()
+                            && self.current() != Some(SyntaxKind::NEWLINE)
+                            && self.current() != Some(SyntaxKind::COLON)
+                        {
                             self.parse_scalar();
                             if self.current() == Some(SyntaxKind::WHITESPACE) {
                                 self.bump(); // consume whitespace between key parts
@@ -2587,7 +2588,7 @@ impl Parser {
                     break;
                 }
             }
-            
+
             self.builder.finish_node();
 
             self.skip_ws_and_newlines();

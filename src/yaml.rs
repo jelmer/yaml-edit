@@ -1938,12 +1938,17 @@ impl Parser {
                 self.current(),
                 Some(
                     SyntaxKind::STRING
+                        | SyntaxKind::UNTERMINATED_STRING
                         | SyntaxKind::INT
                         | SyntaxKind::FLOAT
                         | SyntaxKind::BOOL
                         | SyntaxKind::NULL
                 )
             ) {
+                // Check for unterminated string and add error
+                if self.current() == Some(SyntaxKind::UNTERMINATED_STRING) {
+                    self.add_error("Unterminated quoted string".to_string());
+                }
                 if !self.in_flow_context {
                     // For plain scalars in block context, consume all tokens on the same line
                     // This handles complex values like timestamps with spaces

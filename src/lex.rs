@@ -100,6 +100,8 @@ pub enum SyntaxKind {
     // Content tokens (from lexer)
     /// String literal (quoted or unquoted identifier)
     STRING,
+    /// Unterminated string (missing closing quote)
+    UNTERMINATED_STRING,
     /// Integer literal
     INT,
     /// Float literal
@@ -337,27 +339,37 @@ pub fn lex_with_validation_config<'a>(
                 while let Some((idx, ch)) = chars.peek() {
                     let current_idx = *idx;
                     let current_ch = *ch;
-                    end_idx = current_idx + current_ch.len_utf8();
-                    chars.next();
-
+                    
                     if escaped {
                         escaped = false;
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
                         continue;
                     }
 
                     if current_ch == '\\' {
                         escaped = true;
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
                     } else if current_ch == '"' {
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
                         found_closing = true;
                         break;
+                    } else if current_ch == '\n' {
+                        // Unterminated string - stop at newline
+                        break;
+                    } else {
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
                     }
                 }
 
                 if found_closing {
                     tokens.push((STRING, &input[token_start..end_idx]));
                 } else {
-                    // Unterminated string - still add the token but it will cause parse error
-                    tokens.push((STRING, &input[token_start..end_idx]));
+                    // Unterminated string - add UNTERMINATED_STRING token
+                    tokens.push((UNTERMINATED_STRING, &input[token_start..end_idx]));
                 }
             }
             '\'' => {
@@ -368,11 +380,11 @@ pub fn lex_with_validation_config<'a>(
                 while let Some((idx, ch)) = chars.peek() {
                     let current_idx = *idx;
                     let current_ch = *ch;
-                    end_idx = current_idx + current_ch.len_utf8();
-                    chars.next();
-
+                    
                     if current_ch == '\'' {
                         // Check for escaped quote ('')
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
                         if let Some((next_idx, '\'')) = chars.peek() {
                             // Double quote - consume both and continue
                             end_idx = *next_idx + 1;
@@ -382,14 +394,20 @@ pub fn lex_with_validation_config<'a>(
                             found_closing = true;
                             break;
                         }
+                    } else if current_ch == '\n' {
+                        // Unterminated string - stop at newline
+                        break;
+                    } else {
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
                     }
                 }
 
                 if found_closing {
                     tokens.push((STRING, &input[token_start..end_idx]));
                 } else {
-                    // Unterminated string - still add the token but it will cause parse error
-                    tokens.push((STRING, &input[token_start..end_idx]));
+                    // Unterminated string - add UNTERMINATED_STRING token
+                    tokens.push((UNTERMINATED_STRING, &input[token_start..end_idx]));
                 }
             }
 

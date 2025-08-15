@@ -2370,6 +2370,20 @@ impl Parser {
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 // Pass base_indent to ensure nested content doesn't consume wrong tokens
                 self.parse_value_with_base_indent(base_indent);
+            } else if self.current() == Some(SyntaxKind::NEWLINE) {
+                // Check if next line is indented (nested content for sequence item)
+                self.bump(); // consume newline
+                if self.current() == Some(SyntaxKind::INDENT) {
+                    let indent_text = self
+                        .tokens
+                        .last()
+                        .map(|(_, text)| text.clone())
+                        .unwrap_or_default();
+                    let indent_level = indent_text.len();
+                    self.bump(); // consume indent
+                    // Parse the indented content as the sequence item value
+                    self.parse_value_with_base_indent(indent_level);
+                }
             }
 
             // After parsing a sequence item, check indentation before continuing

@@ -339,7 +339,7 @@ pub fn lex_with_validation_config<'a>(
                 while let Some((idx, ch)) = chars.peek() {
                     let current_idx = *idx;
                     let current_ch = *ch;
-                    
+
                     if escaped {
                         escaped = false;
                         end_idx = current_idx + current_ch.len_utf8();
@@ -355,9 +355,6 @@ pub fn lex_with_validation_config<'a>(
                         end_idx = current_idx + current_ch.len_utf8();
                         chars.next();
                         found_closing = true;
-                        break;
-                    } else if current_ch == '\n' {
-                        // Unterminated string - stop at newline
                         break;
                     } else {
                         end_idx = current_idx + current_ch.len_utf8();
@@ -380,7 +377,7 @@ pub fn lex_with_validation_config<'a>(
                 while let Some((idx, ch)) = chars.peek() {
                     let current_idx = *idx;
                     let current_ch = *ch;
-                    
+
                     if current_ch == '\'' {
                         // Check for escaped quote ('')
                         end_idx = current_idx + current_ch.len_utf8();
@@ -394,9 +391,6 @@ pub fn lex_with_validation_config<'a>(
                             found_closing = true;
                             break;
                         }
-                    } else if current_ch == '\n' {
-                        // Unterminated string - stop at newline
-                        break;
                     } else {
                         end_idx = current_idx + current_ch.len_utf8();
                         chars.next();

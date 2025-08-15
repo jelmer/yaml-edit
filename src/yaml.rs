@@ -2552,23 +2552,42 @@ impl Parser {
 
             // Parse key - can be any value including sequences and mappings
             self.builder.start_node(SyntaxKind::KEY.into());
+            
+            // Parse the first part of the key
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 self.parse_value();
-            } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                // Multiline key - check if next line is indented
-                self.bump(); // consume newline
-                if self.current() == Some(SyntaxKind::INDENT) {
-                    let indent_text = self
-                        .tokens
-                        .last()
-                        .map(|(_, text)| text.clone())
-                        .unwrap_or_default();
-                    let indent_level = indent_text.len();
-                    self.bump(); // consume indent
-                    // Parse the indented content as the key content
-                    self.parse_value_with_base_indent(indent_level);
+            }
+            
+            // Check if this is a multiline key (newline followed by indent)
+            while self.current() == Some(SyntaxKind::NEWLINE) {
+                // Peek ahead to see if there's an indent after the newline
+                // Since tokens are reversed, peek at the second-to-last token
+                if self.tokens.len() >= 2 {
+                    let (next_kind, _) = &self.tokens[self.tokens.len() - 2];
+                    if *next_kind == SyntaxKind::INDENT {
+                        // This is a multiline key continuation
+                        self.bump(); // consume newline
+                        self.bump(); // consume indent
+                        
+                        // Parse tokens at this indentation level as part of the key
+                        while self.current().is_some() && 
+                              self.current() != Some(SyntaxKind::NEWLINE) &&
+                              self.current() != Some(SyntaxKind::COLON) {
+                            self.parse_scalar();
+                            if self.current() == Some(SyntaxKind::WHITESPACE) {
+                                self.bump(); // consume whitespace between key parts
+                            }
+                        }
+                    } else {
+                        // No indent after newline, key ends here
+                        break;
+                    }
+                } else {
+                    // End of input, key ends here
+                    break;
                 }
             }
+            
             self.builder.finish_node();
 
             self.skip_ws_and_newlines();

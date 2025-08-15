@@ -859,21 +859,20 @@ mod tests {
 
     #[test]
     fn test_quoted_strings() {
-        let input = r#"single: 'quoted'\ndouble: "quoted""#;
+        let input = r#"single: 'quoted'
+double: "quoted""#;
         let tokens = lex(input);
 
-        // Find quote tokens
-        let single_quotes: Vec<_> = tokens
+        // Find quoted string tokens - after fix, quotes are included in STRING tokens
+        let quoted_strings: Vec<_> = tokens
             .iter()
-            .filter(|(kind, _)| *kind == SyntaxKind::SINGLE_QUOTE)
+            .filter(|(kind, text)| *kind == SyntaxKind::STRING && (text.starts_with('\'') || text.starts_with('"')))
             .collect();
-        assert_eq!(single_quotes.len(), 2); // opening and closing
-
-        let double_quotes: Vec<_> = tokens
-            .iter()
-            .filter(|(kind, _)| *kind == SyntaxKind::QUOTE)
-            .collect();
-        assert_eq!(double_quotes.len(), 2); // opening and closing
+        assert_eq!(quoted_strings.len(), 2); // single and double quoted strings
+        
+        // Verify content
+        assert!(quoted_strings.iter().any(|(_, text)| *text == "'quoted'"));
+        assert!(quoted_strings.iter().any(|(_, text)| *text == "\"quoted\""));
     }
 
     #[test]
@@ -1416,17 +1415,15 @@ mod tests {
 
     #[test]
     fn test_dash_with_quotes() {
-        // Quoted strings should preserve everything inside
+        // Quoted strings should preserve everything inside as STRING tokens
         let input = r#"key: "- not a sequence marker""#;
         let tokens = lex(input);
-        assert!(tokens.iter().any(|(kind, _)| *kind == SyntaxKind::QUOTE));
+        assert!(tokens.iter().any(|(kind, text)| *kind == SyntaxKind::STRING && text.contains("- not a sequence marker")));
         // The dash inside quotes becomes part of a string token
 
         let input = r#"key: '- also not a sequence marker'"#;
         let tokens = lex(input);
-        assert!(tokens
-            .iter()
-            .any(|(kind, _)| *kind == SyntaxKind::SINGLE_QUOTE));
+        assert!(tokens.iter().any(|(kind, text)| *kind == SyntaxKind::STRING && text.contains("- also not a sequence marker")));
     }
 
     #[test]

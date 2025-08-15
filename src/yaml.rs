@@ -2554,6 +2554,20 @@ impl Parser {
             self.builder.start_node(SyntaxKind::KEY.into());
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 self.parse_value();
+            } else if self.current() == Some(SyntaxKind::NEWLINE) {
+                // Multiline key - check if next line is indented
+                self.bump(); // consume newline
+                if self.current() == Some(SyntaxKind::INDENT) {
+                    let indent_text = self
+                        .tokens
+                        .last()
+                        .map(|(_, text)| text.clone())
+                        .unwrap_or_default();
+                    let indent_level = indent_text.len();
+                    self.bump(); // consume indent
+                    // Parse the indented content as the key content
+                    self.parse_value_with_base_indent(indent_level);
+                }
             }
             self.builder.finish_node();
 

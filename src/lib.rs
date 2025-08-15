@@ -27,7 +27,7 @@ mod yaml;
 pub use builder::{MappingBuilder, SequenceBuilder, YamlBuilder};
 pub use error::{YamlError, YamlResult};
 pub use lex::{
-    lex_with_validation, lex_with_validation_config, ValidationConfig, WhitespaceError,
+    lex, lex_with_validation, lex_with_validation_config, ValidationConfig, WhitespaceError,
     WhitespaceErrorCategory,
 };
 pub use parse::Parse;

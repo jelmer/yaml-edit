@@ -328,8 +328,70 @@ pub fn lex_with_validation_config<'a>(
                     tokens.push((ASTERISK, &input[token_start..start_idx + 1]));
                 }
             }
-            '"' => tokens.push((QUOTE, &input[token_start..start_idx + 1])),
-            '\'' => tokens.push((SINGLE_QUOTE, &input[token_start..start_idx + 1])),
+            '"' => {
+                // Read entire double-quoted string
+                let mut end_idx = start_idx + 1;
+                let mut escaped = false;
+                let mut found_closing = false;
+                
+                while let Some((idx, ch)) = chars.peek() {
+                    let current_idx = *idx;
+                    let current_ch = *ch;
+                    end_idx = current_idx + current_ch.len_utf8();
+                    chars.next();
+                    
+                    if escaped {
+                        escaped = false;
+                        continue;
+                    }
+                    
+                    if current_ch == '\\' {
+                        escaped = true;
+                    } else if current_ch == '"' {
+                        found_closing = true;
+                        break;
+                    }
+                }
+                
+                if found_closing {
+                    tokens.push((STRING, &input[token_start..end_idx]));
+                } else {
+                    // Unterminated string - still add the token but it will cause parse error
+                    tokens.push((STRING, &input[token_start..end_idx]));
+                }
+            }
+            '\'' => {
+                // Read entire single-quoted string
+                let mut end_idx = start_idx + 1;
+                let mut found_closing = false;
+                
+                while let Some((idx, ch)) = chars.peek() {
+                    let current_idx = *idx;
+                    let current_ch = *ch;
+                    end_idx = current_idx + current_ch.len_utf8();
+                    chars.next();
+                    
+                    if current_ch == '\'' {
+                        // Check for escaped quote ('')
+                        if let Some((next_idx, '\'')) = chars.peek() {
+                            // Double quote - consume both and continue
+                            end_idx = *next_idx + 1;
+                            chars.next();
+                        } else {
+                            // Single quote - end of string
+                            found_closing = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if found_closing {
+                    tokens.push((STRING, &input[token_start..end_idx]));
+                } else {
+                    // Unterminated string - still add the token but it will cause parse error
+                    tokens.push((STRING, &input[token_start..end_idx]));
+                }
+            }
 
             // Document end
             '.' => {

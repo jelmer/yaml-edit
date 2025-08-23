@@ -1808,10 +1808,11 @@ impl Parser {
                 } else {
                     "'"
                 };
+                let current_text = self.current_text();
                 let error_msg = self.create_detailed_error(
                     "Unterminated quoted string",
                     &format!("closing quote {}", expected_quote),
-                    self.current_text().as_deref(),
+                    current_text.as_deref(),
                 );
                 self.add_error_and_recover(error_msg, quote_type);
             }
@@ -2011,10 +2012,11 @@ impl Parser {
                     } else {
                         "'"
                     };
+                    let current_text = self.current_text();
                     let error_msg = self.create_detailed_error(
                         "Unterminated quoted string in flow collection",
                         &format!("closing quote {}", expected_quote),
-                        self.current_text().as_deref(),
+                        current_text.as_deref(),
                     );
                     self.add_error_and_recover(error_msg, quote_type);
                 }
@@ -2262,12 +2264,11 @@ impl Parser {
                 // Check if next line is indented (nested content for sequence item)
                 self.bump(); // consume newline
                 if self.current() == Some(SyntaxKind::INDENT) {
-                    let indent_text = self
+                    let indent_level = self
                         .tokens
                         .last()
-                        .map(|(_, text)| text.clone())
-                        .unwrap_or_default();
-                    let indent_level = indent_text.len();
+                        .map(|(_, text)| text.len())
+                        .unwrap_or(0);
                     self.bump(); // consume indent
                                  // Parse the indented content as the sequence item value
                     self.parse_value_with_base_indent(indent_level);
@@ -2990,12 +2991,11 @@ impl Parser {
                 // Check if next line is indented (nested content) or starts with a sequence
                 self.bump(); // consume newline
                 if self.current() == Some(SyntaxKind::INDENT) {
-                    let indent_text = self
+                    let indent_level = self
                         .tokens
                         .last()
-                        .map(|(_, text)| text.clone())
-                        .unwrap_or_default();
-                    let indent_level = indent_text.len();
+                        .map(|(_, text)| text.len())
+                        .unwrap_or(0);
                     self.bump(); // consume indent
                                  // Parse the indented content as the value, tracking indent level
                     self.parse_value_with_base_indent(indent_level);

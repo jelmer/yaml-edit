@@ -142,10 +142,17 @@ impl Yaml {
         self.documents().next()
     }
 
-    /// Get a mutable reference to the first document
-    pub fn document_mut(&mut self) -> Option<Document> {
-        // Since Document wraps a SyntaxNode which is already mutable, we can just return it
-        self.documents().next()
+    /// Ensure there's at least one document, creating an empty one if needed
+    /// Returns the first document
+    pub fn ensure_document(&mut self) -> Document {
+        if self.documents().next().is_none() {
+            // No document exists, add an empty one
+            let doc = Document::new_mapping();
+            self.push_document(doc);
+        }
+        self.documents()
+            .next()
+            .expect("Document should exist after ensuring")
     }
 
     /// Get all directives in this YAML file
@@ -193,130 +200,6 @@ impl Yaml {
             .green()
             .splice_children(children_count..children_count, new_nodes);
         self.0 = SyntaxNode::new_root_mut(new_green);
-    }
-
-    /// Set a key-value pair in the first document (assumes first document is a mapping)
-    pub fn set(&mut self, key: impl Into<ScalarValue>, value: impl Into<ScalarValue>) {
-        if let Some(mut doc) = self.document() {
-            doc.set(key, value);
-            // Replace the first document with the modified one
-            self.replace_first_document(doc);
-        }
-    }
-
-    /// Insert a key-value pair after a specific existing key in the first document
-    ///
-    /// This method accepts any YamlValue types for positioning key, new key, and value, supporting:
-    /// - Scalars (strings, numbers, booleans, null)
-    /// - Sequences (arrays/lists)
-    /// - Mappings (nested objects)
-    /// - Sets, ordered mappings, and pairs
-    ///
-    /// # Arguments
-    /// * `after_key` - The key after which to insert the new pair (can be any YamlValue type)
-    /// * `key` - The new key (can be any type that converts to YamlValue)
-    /// * `value` - The new value (can be any type that converts to YamlValue)
-    ///
-    /// # Returns
-    /// `true` if the reference key was found and insertion succeeded, `false` otherwise
-    pub fn insert_after(
-        &mut self,
-        after_key: impl Into<YamlValue>,
-        key: impl Into<YamlValue>,
-        value: impl Into<YamlValue>,
-    ) -> bool {
-        if let Some(mut doc) = self.document_mut() {
-            let result = doc.insert_after(after_key, key, value);
-            if result {
-                // Propagate the modified document back to the Yaml tree
-                self.replace_first_document(doc);
-            }
-            result
-        } else {
-            false
-        }
-    }
-
-    /// Insert a key-value pair before a specific existing key in the first document
-    ///
-    /// This method accepts any YamlValue types for positioning key, new key, and value, supporting:
-    /// - Scalars (strings, numbers, booleans, null)
-    /// - Sequences (arrays/lists)
-    /// - Mappings (nested objects)
-    /// - Sets, ordered mappings, and pairs
-    ///
-    /// # Arguments
-    /// * `before_key` - The key before which to insert the new pair (can be any YamlValue type)
-    /// * `key` - The new key (can be any type that converts to YamlValue)
-    /// * `value` - The new value (can be any type that converts to YamlValue)
-    ///
-    /// # Returns
-    /// `true` if the reference key was found and insertion succeeded, `false` otherwise
-    pub fn insert_before(
-        &mut self,
-        before_key: impl Into<YamlValue>,
-        key: impl Into<YamlValue>,
-        value: impl Into<YamlValue>,
-    ) -> bool {
-        if let Some(mut doc) = self.document_mut() {
-            let result = doc.insert_before(before_key, key, value);
-            if result {
-                // Propagate the modified document back to the Yaml tree
-                self.replace_first_document(doc);
-            }
-            result
-        } else {
-            false
-        }
-    }
-
-    /// Insert a key-value pair at a specific index in the first document
-    ///
-    /// This method accepts any YamlValue types for key and value, supporting:
-    /// - Scalars (strings, numbers, booleans, null)
-    /// - Sequences (arrays/lists)
-    /// - Mappings (nested objects)
-    /// - Sets, ordered mappings, and pairs
-    ///
-    /// # Arguments
-    /// * `index` - The position at which to insert the new pair (0-based)
-    /// * `key` - The new key (can be any type that converts to YamlValue)
-    /// * `value` - The new value (can be any type that converts to YamlValue)
-    pub fn insert_at_index(
-        &mut self,
-        index: usize,
-        key: impl Into<YamlValue>,
-        value: impl Into<YamlValue>,
-    ) {
-        if let Some(mut doc) = self.document_mut() {
-            doc.insert_at_index(index, key, value);
-            // Always propagate back since insert_at_index doesn't return success status
-            self.replace_first_document(doc);
-        }
-    }
-
-    /// Replace the first document with a new one
-    fn replace_first_document(&mut self, new_doc: Document) {
-        // Find the first document and replace it
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        let mut doc_range = None;
-
-        for (i, child) in children.iter().enumerate() {
-            if let Some(node) = child.as_node() {
-                if Document::can_cast(node.kind()) {
-                    doc_range = Some(i..i + 1);
-                    break;
-                }
-            }
-        }
-
-        if let Some(range) = doc_range {
-            let new_green = self
-                .0
-                .green()
-                .splice_children(range, vec![new_doc.0.green().into()]);
-            self.0 = SyntaxNode::new_root_mut(new_green);
-        }
     }
 }
 
@@ -3425,13 +3308,25 @@ impl Mapping {
         }
 
         // If we didn't find a newline but found the key, insert after the value
-        if insert_position.is_none() && found_key && last_value_end > 0 {
+        let needs_leading_newline = if insert_position.is_none() && found_key && last_value_end > 0
+        {
             insert_position = Some(last_value_end);
-        }
+            true // We need to add a newline before the new content
+        } else {
+            false
+        };
 
         if let Some(pos) = insert_position {
             // Create new GREEN elements for the key-value pair
             let mut new_elements = Vec::new();
+
+            // If there was no newline after the previous value, add one first
+            if needs_leading_newline {
+                new_elements.push(rowan::NodeOrToken::Token(create_token_green(
+                    SyntaxKind::NEWLINE,
+                    "\n",
+                )));
+            }
 
             // Check if we need to add indentation by looking at surrounding nodes
             let indent = self.detect_indentation_from_children(&children, pos);
@@ -4662,13 +4557,18 @@ escaped: 'it\'s escaped'
     #[test]
     fn test_mapping_set_new_key() {
         let yaml = "existing: value";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
 
-        // Use the Yaml-level set method
-        parsed.set("new_key", "new_value");
-        let output = parsed.to_string();
-        assert!(output.contains("new_key"));
-        assert!(output.contains("new_value"));
+        // Get the document and set on it
+        let mut doc = parsed.document().expect("Should have a document");
+        doc.set("new_key", "new_value");
+
+        let output = doc.to_string();
+
+        let expected = r#"---
+existing: value
+new_key: new_value"#;
+        assert_eq!(output.trim(), expected);
     }
 
     #[test]
@@ -6630,15 +6530,19 @@ nested:
     #[test]
     fn test_mapping_simple_set() {
         let yaml = "key1: value1";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
 
-        // Add a new key using Yaml level method
-        parsed.set("key2", "value2");
+        // Get document and add a new key
+        let mut doc = parsed.document().expect("Should have a document");
+        doc.set("key2", "value2");
 
-        let output = parsed.to_string();
+        let output = doc.to_string();
         println!("After set:\n{}", output);
-        assert!(output.contains("key1: value1"));
-        assert!(output.contains("key2: value2"));
+
+        let expected = r#"---
+key1: value1
+key2: value2"#;
+        assert_eq!(output.trim(), expected);
     }
 
     #[test]
@@ -6647,17 +6551,19 @@ nested:
 second: 2
 fourth: 4"#;
 
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
         println!("Original YAML:\n{}", parsed);
 
+        let mut doc = parsed.document().expect("Should have a document");
+
         // Insert after "second"
-        let success = parsed.insert_after("second", "third", "3");
+        let success = doc.insert_after("second", "third", "3");
         assert!(
             success,
             "insert_after should succeed when reference key exists"
         );
 
-        let output = parsed.to_string();
+        let output = doc.to_string();
         println!("Output after insert_after:\n{}", output);
 
         // Check exact output - should preserve original structure and insert correctly
@@ -6668,16 +6574,16 @@ fourth: 4"#;
         assert_eq!(output.trim(), expected);
 
         // Test inserting after non-existent key
-        let failed = parsed.insert_after("nonexistent", "new_key", "new_value");
+        let failed = doc.insert_after("nonexistent", "new_key", "new_value");
         assert!(
             !failed,
             "insert_after should fail when reference key doesn't exist"
         );
 
         // Test updating existing key through insert_after
-        let updated = parsed.insert_after("first", "second", "2_updated");
+        let updated = doc.insert_after("first", "second", "2_updated");
         assert!(updated, "insert_after should update existing key");
-        let value = parsed.document().unwrap().get("second").unwrap();
+        let value = doc.get("second").unwrap();
         assert!(value.text().to_string().contains("2_updated"));
     }
 
@@ -6687,16 +6593,17 @@ fourth: 4"#;
 third: 3
 fourth: 4"#;
 
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let mut doc = parsed.document().expect("Should have a document");
 
         // Insert before "third"
-        let success = parsed.insert_before("third", "second", "2");
+        let success = doc.insert_before("third", "second", "2");
         assert!(
             success,
             "insert_before should succeed when reference key exists"
         );
 
-        let output = parsed.to_string();
+        let output = doc.to_string();
 
         // Check exact output - should preserve original structure and insert correctly
         let expected = r#"first: 1
@@ -6706,16 +6613,16 @@ fourth: 4"#;
         assert_eq!(output.trim(), expected);
 
         // Test inserting before non-existent key
-        let failed = parsed.insert_before("nonexistent", "new_key", "new_value");
+        let failed = doc.insert_before("nonexistent", "new_key", "new_value");
         assert!(
             !failed,
             "insert_before should fail when reference key doesn't exist"
         );
 
         // Test updating existing key through insert_before
-        let updated = parsed.insert_before("fourth", "third", "3_updated");
+        let updated = doc.insert_before("fourth", "third", "3_updated");
         assert!(updated, "insert_before should update existing key");
-        let value = parsed.document().unwrap().get("third").unwrap();
+        let value = doc.get("third").unwrap();
         assert!(value.text().to_string().contains("3_updated"));
     }
 
@@ -6724,12 +6631,13 @@ fourth: 4"#;
         let yaml = r#"first: 1
 third: 3"#;
 
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let mut doc = parsed.document().expect("Should have a document");
 
         // Insert at index 1 (between first and third)
-        parsed.insert_at_index(1, "second", "2");
+        doc.insert_at_index(1, "second", "2");
 
-        let output = parsed.to_string();
+        let output = doc.to_string();
 
         // Check exact output - should preserve original structure and insert correctly
         let expected = r#"first: 1
@@ -6738,25 +6646,25 @@ third: 3"#;
         assert_eq!(output.trim(), expected);
 
         // Insert at index 0 (beginning)
-        parsed.insert_at_index(0, "zero", "0");
-        let output2 = parsed.to_string();
+        doc.insert_at_index(0, "zero", "0");
+        let output2 = doc.to_string();
         println!("Output2 after inserting at index 0:\n{}", output2);
         let lines2: Vec<&str> = output2.trim().lines().collect();
         assert!(
-            lines2[0].starts_with("zero:"),
+            lines2[0].starts_with("zero:"), // First line should be "zero:"
             "Expected zero at index 0, but lines are: {:?}",
             lines2
         );
 
         // Insert at out-of-bounds index (should append at end)
-        parsed.insert_at_index(100, "last", "999");
-        let output3 = parsed.to_string();
+        doc.insert_at_index(100, "last", "999");
+        let output3 = doc.to_string();
         let lines3: Vec<&str> = output3.trim().lines().collect();
         assert!(lines3.last().unwrap().starts_with("last:"));
 
         // Test updating existing key through insert_at_index
-        parsed.insert_at_index(2, "first", "1_updated");
-        let value = parsed.document().unwrap().get("first").unwrap();
+        doc.insert_at_index(2, "first", "1_updated");
+        let value = doc.get("first").unwrap();
         assert!(value.text().to_string().contains("1_updated"));
     }
 
@@ -6764,21 +6672,21 @@ third: 3"#;
     fn test_mapping_insert_special_characters() {
         let yaml = "key1: value1";
 
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let mut doc = parsed.document().expect("Should have a document");
 
         // Test with special characters that need escaping
-        parsed.insert_after("key1", "special:key", "value:with:colons");
-        parsed.insert_before("key1", "key with spaces", "value with spaces");
-        parsed.insert_at_index(1, "key@symbol", "value#hash");
+        doc.insert_after("key1", "special:key", "value:with:colons");
+        doc.insert_before("key1", "key with spaces", "value with spaces");
+        doc.insert_at_index(1, "key@symbol", "value#hash");
 
         // Verify all keys are present
-        let doc = parsed.document().unwrap();
         assert!(doc.contains_key("special:key"));
         assert!(doc.contains_key("key with spaces"));
         assert!(doc.contains_key("key@symbol"));
 
         // Parse the output to verify it's valid YAML
-        let output = parsed.to_string();
+        let output = doc.to_string();
         let reparsed = Yaml::from_str(&output);
         assert!(reparsed.is_ok(), "Output should be valid YAML");
     }
@@ -6787,13 +6695,13 @@ third: 3"#;
     fn test_mapping_insert_empty_values() {
         let yaml = "key1: value1";
 
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let mut doc = parsed.document().expect("Should have a document");
 
         // Test with empty values
-        parsed.insert_after("key1", "empty", "");
-        parsed.insert_before("key1", "null_key", ScalarValue::null());
+        doc.insert_after("key1", "empty", "");
+        doc.insert_before("key1", "null_key", ScalarValue::null());
 
-        let doc = parsed.document().unwrap();
         assert!(doc.contains_key("empty"));
         assert!(doc.contains_key("null_key"));
 
@@ -6939,21 +6847,24 @@ active: true
     #[test]
     fn test_insert_after_with_sequence() {
         let yaml = "name: project\nversion: 1.0.0";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let mut doc = parsed.document().expect("Should have a document");
 
         // Insert a sequence after "name"
         let features = YamlValue::from(vec!["feature1", "feature2", "feature3"]);
-        let success = parsed.insert_after("name", "features", features);
+        let success = doc.insert_after("name", "features", features);
         assert!(success, "insert_after should succeed");
 
-        let output = parsed.to_string();
+        let output = doc.to_string();
         println!("Output with sequence:\n{}", output);
 
-        // Verify the sequence is present and in correct order
-        assert!(output.contains("name: project"));
-        assert!(output.contains("features:"));
-        assert!(output.contains("feature1"));
-        assert!(output.contains("version: 1.0.0"));
+        // Verify exact output
+        let expected = r#"name: project
+features:   - feature1
+  - feature2
+  - feature3
+version: 1.0.0"#;
+        assert_eq!(output.trim(), expected);
 
         // Verify it's valid YAML
         let reparsed = Yaml::from_str(&output);
@@ -6963,7 +6874,8 @@ active: true
     #[test]
     fn test_insert_before_with_mapping() {
         let yaml = "name: project\nversion: 1.0.0";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let mut doc = parsed.document().expect("Should have a document");
 
         // Insert a nested mapping before "version"
         let mut db_config = std::collections::BTreeMap::new();
@@ -6972,10 +6884,10 @@ active: true
         db_config.insert("database".to_string(), YamlValue::from("mydb"));
 
         let database = YamlValue::from_mapping(db_config);
-        let success = parsed.insert_before("version", "database", database);
+        let success = doc.insert_before("version", "database", database);
         assert!(success, "insert_before should succeed");
 
-        let output = parsed.to_string();
+        let output = doc.to_string();
         println!("Output with nested mapping:\n{}", output);
 
         // Verify the nested mapping is present and in correct order
@@ -6993,17 +6905,18 @@ active: true
     #[test]
     fn test_insert_at_index_with_mixed_types() {
         let yaml = "name: project";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let mut doc = parsed.document().expect("Should have a document");
 
         // Insert different types at various indices
-        parsed.insert_at_index(1, "version", YamlValue::from("1.0.0"));
-        parsed.insert_at_index(2, "active", YamlValue::from(true));
-        parsed.insert_at_index(3, "count", YamlValue::from(42));
+        doc.insert_at_index(1, "version", YamlValue::from("1.0.0"));
+        doc.insert_at_index(2, "active", YamlValue::from(true));
+        doc.insert_at_index(3, "count", YamlValue::from(42));
 
         let features = YamlValue::from(vec!["auth", "logging"]);
-        parsed.insert_at_index(4, "features", features);
+        doc.insert_at_index(4, "features", features);
 
-        let output = parsed.to_string();
+        let output = doc.to_string();
         println!("Output with mixed types:\n{}", output);
 
         // Verify all values are present
@@ -7023,15 +6936,16 @@ active: true
     #[test]
     fn test_insert_with_null_and_special_scalars() {
         let yaml = "name: project";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let mut doc = parsed.document().expect("Should have a document");
 
         // Insert various scalar types
-        parsed.insert_after("name", "null_value", YamlValue::from(ScalarValue::null()));
-        parsed.insert_after("null_value", "empty_string", YamlValue::from(""));
-        parsed.insert_after("empty_string", "number", YamlValue::from(1.234));
-        parsed.insert_after("number", "boolean", YamlValue::from(false));
+        doc.insert_after("name", "null_value", YamlValue::from(ScalarValue::null()));
+        doc.insert_after("null_value", "empty_string", YamlValue::from(""));
+        doc.insert_after("empty_string", "number", YamlValue::from(1.234));
+        doc.insert_after("number", "boolean", YamlValue::from(false));
 
-        let output = parsed.to_string();
+        let output = doc.to_string();
         println!("Output with special scalars:\n{}", output);
 
         // Verify all values are present
@@ -7049,13 +6963,14 @@ active: true
     #[test]
     fn test_insert_ordering_preservation() {
         let yaml = "first: 1\nthird: 3\nfifth: 5";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let mut doc = parsed.document().expect("Should have a document");
 
         // Insert items to create proper ordering
-        parsed.insert_after("first", "second", YamlValue::from(2));
-        parsed.insert_before("fifth", "fourth", YamlValue::from(4));
+        doc.insert_after("first", "second", YamlValue::from(2));
+        doc.insert_before("fifth", "fourth", YamlValue::from(4));
 
-        let output = parsed.to_string();
+        let output = doc.to_string();
 
         // Check exact output - should preserve original structure and insert correctly
         let expected = r#"first: 1
@@ -7073,18 +6988,19 @@ fifth: 5"#;
     #[test]
     fn test_insert_with_yamlvalue_positioning() {
         let yaml = "name: project\nversion: 1.0\nactive: true";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let mut doc = parsed.document().expect("Should have a document");
 
         // Test positioning with different YamlValue types
 
         // Position after a string value (using YamlValue instead of &str)
         let string_key = YamlValue::from("name");
-        let success = parsed.insert_after(string_key, "description", "A sample project");
+        let success = doc.insert_after(string_key, "description", "A sample project");
         assert!(success, "Should find string key");
 
         // Position after a numeric value
         let numeric_key = YamlValue::from(1.0);
-        let success = parsed.insert_after(numeric_key, "build", "gradle");
+        let success = doc.insert_after(numeric_key, "build", "gradle");
         assert!(
             !success,
             "Should not find numeric key (1.0) when actual key is string 'version'"
@@ -7092,7 +7008,7 @@ fifth: 5"#;
 
         // Position after a boolean value
         let bool_key = YamlValue::from(true);
-        let success = parsed.insert_after(bool_key, "test", "enabled");
+        let success = doc.insert_after(bool_key, "test", "enabled");
         assert!(
             !success,
             "Should not find boolean key (true) when actual key is string 'active'"
@@ -7100,10 +7016,10 @@ fifth: 5"#;
 
         // But string representation should work
         let bool_string_key = YamlValue::from("true");
-        let success = parsed.insert_after(bool_string_key, "test_mode", "development");
+        let success = doc.insert_after(bool_string_key, "test_mode", "development");
         assert!(!success, "Should not find 'true' key when value is true");
 
-        let output = parsed.to_string();
+        let output = doc.to_string();
         println!("Output with YamlValue positioning:\n{}", output);
 
         // Should only have the description added after name
@@ -7126,7 +7042,8 @@ active: true"#;
     #[test]
     fn test_insert_complex_nested_structure() {
         let yaml = "name: project";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let mut doc = parsed.document().expect("Should have a document");
 
         // Create a complex nested structure
         let mut server_config = std::collections::BTreeMap::new();
@@ -7141,9 +7058,9 @@ active: true"#;
             YamlValue::from(vec!["api", "web", "cli"]),
         );
 
-        parsed.insert_after("name", "config", YamlValue::from_mapping(app_config));
+        doc.insert_after("name", "config", YamlValue::from_mapping(app_config));
 
-        let output = parsed.to_string();
+        let output = doc.to_string();
         println!("Output with complex nested structure:\n{}", output);
 
         // Verify nested structure is present
@@ -7166,7 +7083,8 @@ active: true"#;
     #[test]
     fn test_insert_with_yaml_sets() {
         let yaml = "name: project";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let mut doc = parsed.document().expect("Should have a document");
 
         // Insert a YAML set
         let mut tags = std::collections::BTreeSet::new();
@@ -7175,9 +7093,9 @@ active: true"#;
         tags.insert("web".to_string());
 
         let yaml_set = YamlValue::from_set(tags);
-        parsed.insert_after("name", "tags", yaml_set);
+        doc.insert_after("name", "tags", yaml_set);
 
-        let output = parsed.to_string();
+        let output = doc.to_string();
         println!("Output with YAML set:\n{}", output);
 
         // Verify set structure is present
@@ -7196,7 +7114,8 @@ active: true"#;
     #[test]
     fn test_insert_with_ordered_mappings() {
         let yaml = "name: project";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let mut doc = parsed.document().expect("Should have a document");
 
         // Insert a YAML ordered mapping (!!omap)
         let ordered_steps = vec![
@@ -7209,9 +7128,9 @@ active: true"#;
         ];
 
         let yaml_omap = YamlValue::from_ordered_mapping(ordered_steps);
-        parsed.insert_after("name", "build_steps", yaml_omap);
+        doc.insert_after("name", "build_steps", yaml_omap);
 
-        let output = parsed.to_string();
+        let output = doc.to_string();
         println!("Output with ordered mapping:\n{}", output);
 
         // Verify ordered mapping structure is present
@@ -7230,7 +7149,8 @@ active: true"#;
     #[test]
     fn test_insert_with_pairs() {
         let yaml = "name: project";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let mut doc = parsed.document().expect("Should have a document");
 
         // Insert a YAML pairs collection (!!pairs - allows duplicate keys)
         let connection_attempts = vec![
@@ -7241,9 +7161,9 @@ active: true"#;
         ];
 
         let yaml_pairs = YamlValue::from_pairs(connection_attempts);
-        parsed.insert_after("name", "connections", yaml_pairs);
+        doc.insert_after("name", "connections", yaml_pairs);
 
-        let output = parsed.to_string();
+        let output = doc.to_string();
         println!("Output with pairs:\n{}", output);
 
         // Verify pairs structure is present
@@ -7266,9 +7186,10 @@ active: true"#;
 
         // Test empty sequence
         let yaml1 = "name: project";
-        let mut parsed1 = Yaml::from_str(yaml1).unwrap();
-        parsed1.insert_after("name", "empty_list", YamlValue::sequence());
-        let output1 = parsed1.to_string();
+        let parsed1 = Yaml::from_str(yaml1).unwrap();
+        let mut doc1 = parsed1.document().expect("Should have a document");
+        doc1.insert_after("name", "empty_list", YamlValue::sequence());
+        let output1 = doc1.to_string();
         println!("Output with empty sequence:\n{}", output1);
         assert!(output1.contains("name: project"));
         assert!(output1.contains("empty_list:"));
@@ -7276,9 +7197,10 @@ active: true"#;
 
         // Test empty mapping
         let yaml2 = "name: project";
-        let mut parsed2 = Yaml::from_str(yaml2).unwrap();
-        parsed2.insert_after("name", "empty_map", YamlValue::mapping());
-        let output2 = parsed2.to_string();
+        let parsed2 = Yaml::from_str(yaml2).unwrap();
+        let mut doc2 = parsed2.document().expect("Should have a document");
+        doc2.insert_after("name", "empty_map", YamlValue::mapping());
+        let output2 = doc2.to_string();
         println!("Output with empty mapping:\n{}", output2);
         assert!(output2.contains("name: project"));
         assert!(output2.contains("empty_map:"));
@@ -7286,9 +7208,10 @@ active: true"#;
 
         // Test empty set
         let yaml3 = "name: project";
-        let mut parsed3 = Yaml::from_str(yaml3).unwrap();
-        parsed3.insert_after("name", "empty_set", YamlValue::set());
-        let output3 = parsed3.to_string();
+        let parsed3 = Yaml::from_str(yaml3).unwrap();
+        let mut doc3 = parsed3.document().expect("Should have a document");
+        doc3.insert_after("name", "empty_set", YamlValue::set());
+        let output3 = doc3.to_string();
         println!("Output with empty set:\n{}", output3);
         assert!(output3.contains("name: project"));
         assert!(output3.contains("empty_set:"));
@@ -7312,7 +7235,8 @@ active: true"#;
     #[test]
     fn test_insert_with_deeply_nested_sequences() {
         let yaml = "name: project";
-        let mut parsed = Yaml::from_str(yaml).unwrap();
+        let parsed = Yaml::from_str(yaml).unwrap();
+        let mut doc = parsed.document().expect("Should have a document");
 
         // Create deeply nested sequence with mixed types
         let level3_config = YamlValue::from(vec![
@@ -7331,9 +7255,9 @@ active: true"#;
             YamlValue::from(42),
         ]);
 
-        parsed.insert_after("name", "nested_data", level1_sequence);
+        doc.insert_after("name", "nested_data", level1_sequence);
 
-        let output = parsed.to_string();
+        let output = doc.to_string();
         println!("Output with deeply nested sequence:\n{}", output);
 
         // Verify nested structure

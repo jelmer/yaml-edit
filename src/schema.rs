@@ -258,7 +258,7 @@ impl CustomSchema {
 
     /// Validate a scalar value with custom rules
     pub fn validate_scalar(&self, content: &str, path: &str) -> Result<(), ValidationError> {
-        let scalar_value = ScalarValue::auto_typed(content.trim());
+        let scalar_value = ScalarValue::from_yaml(content.trim());
         let scalar_type = scalar_value.scalar_type();
 
         // Check if type is allowed
@@ -476,7 +476,7 @@ impl SchemaValidator {
         }
 
         // Standard schema validation
-        let scalar_value = ScalarValue::auto_typed(content.trim());
+        let scalar_value = ScalarValue::from_yaml(content.trim());
         let scalar_type = scalar_value.scalar_type();
 
         if !self.schema.allows_scalar_type(scalar_type) {
@@ -525,7 +525,7 @@ impl SchemaValidator {
             // Get the key name first to avoid borrowing issues
             let key_name = key_opt
                 .as_ref()
-                .map(|k| k.as_string())
+                .map(|k| k.text().to_string().trim().to_string())
                 .unwrap_or_else(|| "unknown".to_string());
 
             // Keys in YAML are typically strings and don't need schema validation
@@ -546,6 +546,16 @@ impl SchemaValidator {
         path: &str,
         errors: &mut Vec<ValidationError>,
     ) {
+        use crate::lex::SyntaxKind;
+        
+        // Handle wrapper nodes (VALUE, KEY) by looking at their children
+        if node.kind() == SyntaxKind::VALUE || node.kind() == SyntaxKind::KEY {
+            for child in node.children() {
+                self.validate_node(&child, path, errors);
+            }
+            return;
+        }
+        
         if let Some(scalar) = Scalar::cast(node.clone()) {
             self.validate_scalar(&scalar, path, errors);
         } else if let Some(tagged_scalar) = TaggedScalar::cast(node.clone()) {
@@ -631,7 +641,7 @@ impl SchemaValidator {
     /// Check if a document can be coerced to match the schema
     fn check_coercion(&self, document: &Document, path: &str, errors: &mut Vec<ValidationError>) {
         if let Some(scalar) = document.as_scalar() {
-            let scalar_value = ScalarValue::auto_typed(scalar.as_string().trim());
+            let scalar_value = ScalarValue::from_yaml(scalar.as_string().trim());
             let scalar_type = scalar_value.scalar_type();
 
             if !self.schema.allows_scalar_type(scalar_type) {
@@ -667,7 +677,7 @@ impl SchemaValidator {
                 // Get the key name first to avoid borrowing issues
                 let key_name = key_opt
                     .as_ref()
-                    .map(|k| k.as_string())
+                    .map(|k| k.text().to_string().trim().to_string())
                     .unwrap_or_else(|| "unknown".to_string());
 
                 // Keys in YAML are typically strings and don't need schema validation
@@ -689,8 +699,18 @@ impl SchemaValidator {
         path: &str,
         errors: &mut Vec<ValidationError>,
     ) {
+        use crate::lex::SyntaxKind;
+        
+        // Handle wrapper nodes (VALUE, KEY) by looking at their children
+        if node.kind() == SyntaxKind::VALUE || node.kind() == SyntaxKind::KEY {
+            for child in node.children() {
+                self.check_coercion_node(&child, path, errors);
+            }
+            return;
+        }
+        
         if let Some(scalar) = Scalar::cast(node.clone()) {
-            let scalar_value = ScalarValue::auto_typed(scalar.as_string().trim());
+            let scalar_value = ScalarValue::from_yaml(scalar.as_string().trim());
             let scalar_type = scalar_value.scalar_type();
 
             if !self.schema.allows_scalar_type(scalar_type) {
@@ -735,7 +755,7 @@ impl SchemaValidator {
                 // Get the key name first to avoid borrowing issues
                 let key_name = key_opt
                     .as_ref()
-                    .map(|k| k.as_string())
+                    .map(|k| k.text().to_string().trim().to_string())
                     .unwrap_or_else(|| "unknown".to_string());
 
                 // Keys in YAML are typically strings and don't need schema validation
@@ -942,17 +962,17 @@ pattern: !!regex '\d+'
                 for (key_opt, value_opt) in mapping.pairs() {
                     if let (Some(key), Some(value)) = (key_opt, value_opt) {
                         if let Some(scalar) = Scalar::cast(value.clone()) {
-                            let scalar_value = ScalarValue::auto_typed(scalar.as_string().trim());
+                            let scalar_value = ScalarValue::from_yaml(scalar.as_string().trim());
                             println!(
                                 "JSON test - Key '{}' -> Value: '{}' -> Type: {:?}",
-                                key.as_string(),
+                                key.text().to_string().trim(),
                                 scalar.as_string().trim(),
                                 scalar_value.scalar_type()
                             );
                         } else {
                             println!(
                                 "Value for key '{}' is not a scalar. Node kind: {:?}",
-                                key.as_string(),
+                                key.text().to_string().trim(),
                                 value.kind()
                             );
                         }
@@ -1013,10 +1033,10 @@ message: world
                 for (key_opt, value_opt) in mapping.pairs() {
                     if let (Some(key), Some(value)) = (key_opt, value_opt) {
                         if let Some(scalar) = Scalar::cast(value.clone()) {
-                            let scalar_value = ScalarValue::auto_typed(scalar.as_string().trim());
+                            let scalar_value = ScalarValue::from_yaml(scalar.as_string().trim());
                             println!(
                                 "String - Key '{}' -> Value: '{}' -> Type: {:?}",
-                                key.as_string(),
+                                key.text().to_string().trim(),
                                 scalar.as_string().trim(),
                                 scalar_value.scalar_type()
                             );
@@ -1033,7 +1053,7 @@ message: world
 
         // Note: Due to current type inference limitations, quoted numbers like "42"
         // are detected as integers rather than strings. This is a limitation of
-        // the ScalarValue::auto_typed() function, not the schema validation logic.
+        // the ScalarValue::from_yaml() function, not the schema validation logic.
         // For now, we test with unambiguous strings.
         assert!(non_strict_result.is_ok());
         assert!(strict_result.is_ok());

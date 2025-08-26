@@ -22,6 +22,62 @@ pub enum YamlValue {
 }
 
 impl YamlValue {
+    /// Try to cast a SyntaxNode to a YamlValue
+    pub fn cast(node: rowan::SyntaxNode<crate::yaml::Lang>) -> Option<Self> {
+        use crate::yaml::{Scalar, Sequence, Mapping};
+        use crate::lex::SyntaxKind;
+        use rowan::ast::AstNode;
+        
+        match node.kind() {
+            SyntaxKind::SCALAR => {
+                if let Some(scalar) = Scalar::cast(node.clone()) {
+                    Some(YamlValue::Scalar(ScalarValue::new(scalar.as_string())))
+                } else {
+                    // Fallback to text content
+                    Some(YamlValue::Scalar(ScalarValue::new(node.text().to_string())))
+                }
+            }
+            SyntaxKind::SEQUENCE => {
+                if let Some(seq) = Sequence::cast(node) {
+                    let items: Vec<YamlValue> = seq.items()
+                        .filter_map(|item| YamlValue::cast(item))
+                        .collect();
+                    Some(YamlValue::Sequence(items))
+                } else {
+                    None
+                }
+            }
+            SyntaxKind::MAPPING => {
+                if let Some(mapping) = Mapping::cast(node) {
+                    let mut map = std::collections::BTreeMap::new();
+                    for (key_opt, value_opt) in mapping.pairs() {
+                        if let (Some(key_node), Some(value_node)) = (key_opt, value_opt) {
+                            // Extract key as string (simplification for BTreeMap key)
+                            let key_str = if let Some(key_scalar) = Scalar::cast(key_node.clone()) {
+                                key_scalar.as_string()
+                            } else {
+                                key_node.text().to_string()
+                            };
+                            
+                            // Convert value node to YamlValue
+                            if let Some(value_yaml) = YamlValue::cast(value_node) {
+                                map.insert(key_str, value_yaml);
+                            }
+                        }
+                    }
+                    Some(YamlValue::Mapping(map))
+                } else {
+                    None
+                }
+            }
+            SyntaxKind::VALUE => {
+                // VALUE nodes contain the actual content as children
+                node.children().next().and_then(|content| YamlValue::cast(content))
+            }
+            _ => None
+        }
+    }
+
     /// Create a scalar value
     pub fn scalar(value: impl Into<ScalarValue>) -> Self {
         YamlValue::Scalar(value.into())

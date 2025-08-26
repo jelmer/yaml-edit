@@ -657,11 +657,17 @@ impl ScalarValue {
         ScalarType::String
     }
 
-    /// Create a scalar with automatic type detection
-    pub fn auto_typed(value: impl Into<String>) -> Self {
+    /// Create a scalar by parsing a YAML string value
+    pub fn from_yaml(value: impl Into<String>) -> Self {
         let value = value.into();
         let scalar_type = Self::auto_detect_type(&value);
-        let style = Self::detect_style(&value);
+        // For non-string types, use Plain style (no quotes)
+        // For string types, detect appropriate style
+        let style = match scalar_type {
+            ScalarType::String => Self::detect_style(&value),
+            // All other types use plain style
+            _ => ScalarStyle::Plain,
+        };
 
         Self {
             value,
@@ -1128,7 +1134,7 @@ impl From<bool> for ScalarValue {
 impl From<crate::yaml::Scalar> for ScalarValue {
     fn from(scalar: crate::yaml::Scalar) -> Self {
         let value = scalar.as_string();
-        ScalarValue::auto_typed(&value)
+        ScalarValue::from_yaml(&value)
     }
 }
 
@@ -1579,7 +1585,7 @@ mod tests {
             assert_eq!(yaml_output, format!("!!timestamp {}", ts));
 
             // Test auto-detection recognizes it as timestamp
-            let auto_scalar = ScalarValue::auto_typed(ts);
+            let auto_scalar = ScalarValue::from_yaml(ts);
             assert_eq!(
                 auto_scalar.scalar_type(),
                 ScalarType::Timestamp,
@@ -1598,7 +1604,7 @@ mod tests {
         ];
 
         for ts in invalid_timestamps {
-            let auto_scalar = ScalarValue::auto_typed(ts);
+            let auto_scalar = ScalarValue::from_yaml(ts);
             assert_ne!(
                 auto_scalar.scalar_type(),
                 ScalarType::Timestamp,
@@ -1808,17 +1814,17 @@ mod tests {
     }
 
     #[test]
-    fn test_auto_typed_scalar_creation() {
-        let int_scalar = ScalarValue::auto_typed("123");
+    fn test_from_yaml_scalar_creation() {
+        let int_scalar = ScalarValue::from_yaml("123");
         assert_eq!(int_scalar.scalar_type(), ScalarType::Integer);
 
-        let bool_scalar = ScalarValue::auto_typed("true");
+        let bool_scalar = ScalarValue::from_yaml("true");
         assert_eq!(bool_scalar.scalar_type(), ScalarType::Boolean);
 
-        let timestamp_scalar = ScalarValue::auto_typed("2023-12-25");
+        let timestamp_scalar = ScalarValue::from_yaml("2023-12-25");
         assert_eq!(timestamp_scalar.scalar_type(), ScalarType::Timestamp);
 
-        let string_scalar = ScalarValue::auto_typed("hello world");
+        let string_scalar = ScalarValue::from_yaml("hello world");
         assert_eq!(string_scalar.scalar_type(), ScalarType::String);
     }
 
@@ -2010,19 +2016,19 @@ mod tests {
     #[test]
     fn test_number_format_yaml_output() {
         // Test that different number formats are properly detected and output
-        let binary_scalar = ScalarValue::auto_typed("0b1010");
+        let binary_scalar = ScalarValue::from_yaml("0b1010");
         assert_eq!(binary_scalar.scalar_type(), ScalarType::Integer);
         assert_eq!(binary_scalar.value(), "0b1010");
 
-        let octal_scalar = ScalarValue::auto_typed("0o755");
+        let octal_scalar = ScalarValue::from_yaml("0o755");
         assert_eq!(octal_scalar.scalar_type(), ScalarType::Integer);
         assert_eq!(octal_scalar.value(), "0o755");
 
-        let hex_scalar = ScalarValue::auto_typed("0xFF");
+        let hex_scalar = ScalarValue::from_yaml("0xFF");
         assert_eq!(hex_scalar.scalar_type(), ScalarType::Integer);
         assert_eq!(hex_scalar.value(), "0xFF");
 
-        let legacy_octal_scalar = ScalarValue::auto_typed("0755");
+        let legacy_octal_scalar = ScalarValue::from_yaml("0755");
         assert_eq!(legacy_octal_scalar.scalar_type(), ScalarType::Integer);
         assert_eq!(legacy_octal_scalar.value(), "0755");
     }

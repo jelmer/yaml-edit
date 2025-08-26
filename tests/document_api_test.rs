@@ -1,6 +1,6 @@
 //! Test the Document API
 
-use yaml_edit::{Document, YamlResult};
+use yaml_edit::{Document, YamlResult, YamlValue};
 
 #[test]
 fn test_document_api_usage() -> YamlResult<()> {
@@ -8,9 +8,9 @@ fn test_document_api_usage() -> YamlResult<()> {
     let mut doc = Document::new();
 
     // Check and modify fields
-    assert!(!doc.contains_key("Repository"));
+    assert!(!doc.contains_key(&YamlValue::from("Repository")));
     doc.set_string("Repository", "https://github.com/user/repo.git");
-    assert!(doc.contains_key("Repository"));
+    assert!(doc.contains_key(&YamlValue::from("Repository")));
 
     // Test get_string
     assert_eq!(
@@ -22,12 +22,24 @@ fn test_document_api_usage() -> YamlResult<()> {
     assert!(!doc.is_empty());
 
     // Test keys
-    let keys: Vec<_> = doc.keys();
-    assert!(keys.contains(&"Repository".to_string()));
+    println!("Doc is mapping: {:?}", doc.as_mapping().is_some());
+    println!("Doc content: {}", doc.to_yaml_string());
+    let key_nodes = doc.key_nodes();
+    println!("Key nodes count: {}", key_nodes.len());
+    for node in &key_nodes {
+        println!("Key node kind: {:?}, text: '{}'", node.kind(), node.text());
+        println!("  Children count: {}", node.children().count());
+        for child in node.children() {
+            println!("    Child kind: {:?}, text: '{}'", child.kind(), child.text());
+        }
+    }
+    let keys = doc.keys();
+    println!("Keys: {:?}", keys);
+    assert!(keys.contains(&YamlValue::from("Repository")));
 
     // Test remove
-    assert!(doc.remove("Repository"));
-    assert!(!doc.contains_key("Repository"));
+    assert!(doc.remove(&YamlValue::from("Repository")));
+    assert!(!doc.contains_key(&YamlValue::from("Repository")));
     assert!(doc.is_empty());
 
     Ok(())
@@ -39,18 +51,24 @@ fn test_field_ordering() {
 
     // Add fields in random order
     doc.set_string("Repository-Browse", "https://github.com/user/repo");
+    println!("After first set, doc content: '{}'", doc.to_yaml_string());
+    println!("After first set, keys: {:?}", doc.keys());
     doc.set_string("Name", "MyProject");
+    println!("After second set, doc content: '{}'", doc.to_yaml_string());
+    println!("After second set, keys: {:?}", doc.keys());
     doc.set_string("Bug-Database", "https://github.com/user/repo/issues");
     doc.set_string("Repository", "https://github.com/user/repo.git");
+    println!("After all sets, keys: {:?}", doc.keys());
 
     // Reorder fields
-    doc.reorder_fields(&["Name", "Bug-Database", "Repository", "Repository-Browse"]);
+    doc.reorder_fields(&[YamlValue::from("Name"), YamlValue::from("Bug-Database"), YamlValue::from("Repository"), YamlValue::from("Repository-Browse")]);
+    println!("After reorder, keys: {:?}", doc.keys());
 
     // Check that fields are in the expected order
-    let keys: Vec<_> = doc.keys();
+    let keys = doc.keys();
     assert_eq!(
         keys,
-        vec!["Name", "Bug-Database", "Repository", "Repository-Browse"]
+        vec![YamlValue::from("Name"), YamlValue::from("Bug-Database"), YamlValue::from("Repository"), YamlValue::from("Repository-Browse")]
     );
 }
 
@@ -95,6 +113,7 @@ fn test_file_io() -> YamlResult<()> {
 
     // Load it back
     let loaded_doc = Document::load_from_file(test_path)?;
+
     assert_eq!(
         loaded_doc.get_string("Name"),
         Some("TestProject".to_string())

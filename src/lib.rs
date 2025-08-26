@@ -23,12 +23,14 @@ mod tagged_collections;
 mod value;
 pub mod visitor;
 mod yaml;
+#[cfg(test)]
+mod test_utils;
 
 pub use builder::{MappingBuilder, SequenceBuilder, YamlBuilder};
 pub use error::{YamlError, YamlResult};
 pub use lex::{
-    lex, lex_with_validation, lex_with_validation_config, ValidationConfig, WhitespaceError,
-    WhitespaceErrorCategory,
+    lex, lex_with_validation, lex_with_validation_config, SyntaxKind, ValidationConfig,
+    WhitespaceError, WhitespaceErrorCategory,
 };
 pub use parse::Parse;
 pub use rowan::TextRange;
@@ -39,7 +41,7 @@ pub use schema::{
 };
 pub use tagged_collections::TaggedCollection;
 pub use value::YamlValue;
-pub use yaml::{Directive, Document, Lang, Mapping, Scalar, Sequence, TaggedScalar, Yaml};
+pub use yaml::{Directive, Document, Lang, Mapping, Scalar, Sequence, Set, TaggedScalar, Yaml};
 
 // Re-export custom tags API
 pub use custom_tags::{

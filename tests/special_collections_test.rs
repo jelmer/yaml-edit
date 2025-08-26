@@ -25,7 +25,12 @@ fn test_set_parsing() {
             println!("    Found mapping! Keys:");
             for (key, value) in mapping.pairs() {
                 if let (Some(k), Some(v)) = (key, value) {
-                    println!("      Key: {:?}, Value: {:?}", k.value(), v.text());
+                    let key_text = if let Some(scalar) = Scalar::cast(k.clone()) {
+                        scalar.value()
+                    } else {
+                        k.text().to_string()
+                    };
+                    println!("      Key: {:?}, Value: {:?}", key_text, v.text());
                 }
             }
         }
@@ -44,9 +49,9 @@ fn test_set_parsing() {
         assert_eq!(tagged_scalar.tag(), Some("!!set".to_string()));
         let set = tagged_scalar.as_set().expect("Should parse as set");
         assert_eq!(set.len(), 3);
-        assert!(set.contains("item1"));
-        assert!(set.contains("item2"));
-        assert!(set.contains("item3"));
+        assert!(set.contains(&"item1".into()));
+        assert!(set.contains(&"item2".into()));
+        assert!(set.contains(&"item3".into()));
     } else {
         panic!("Expected tagged scalar for set");
     }
@@ -73,9 +78,9 @@ fn test_set_flow_syntax() {
         assert_eq!(tagged_scalar.tag(), Some("!!set".to_string()));
         let set = tagged_scalar.as_set().expect("Should parse as set");
         assert_eq!(set.len(), 3);
-        assert!(set.contains("item1"));
-        assert!(set.contains("item2"));
-        assert!(set.contains("item3"));
+        assert!(set.contains(&"item1".into()));
+        assert!(set.contains(&"item2".into()));
+        assert!(set.contains(&"item3".into()));
     } else {
         panic!("Expected tagged scalar for set");
     }
@@ -99,9 +104,9 @@ fn test_omap_parsing() {
             .as_ordered_mapping()
             .expect("Should parse as ordered mapping");
         assert_eq!(omap.len(), 3);
-        assert_eq!(omap[0].0, "first");
-        assert_eq!(omap[1].0, "second");
-        assert_eq!(omap[2].0, "third");
+        assert_eq!(omap[0].0, YamlValue::from("first"));
+        assert_eq!(omap[1].0, YamlValue::from("second"));
+        assert_eq!(omap[2].0, YamlValue::from("third"));
 
         // Check values
         if let Some(scalar) = omap[0].1.as_scalar() {
@@ -126,9 +131,9 @@ fn test_omap_flow_syntax() {
             .as_ordered_mapping()
             .expect("Should parse as ordered mapping");
         assert_eq!(omap.len(), 3);
-        assert_eq!(omap[0].0, "first");
-        assert_eq!(omap[1].0, "second");
-        assert_eq!(omap[2].0, "third");
+        assert_eq!(omap[0].0, YamlValue::from("first"));
+        assert_eq!(omap[1].0, YamlValue::from("second"));
+        assert_eq!(omap[2].0, YamlValue::from("third"));
     } else {
         panic!("Expected tagged scalar for omap");
     }
@@ -150,9 +155,9 @@ fn test_pairs_parsing() {
         assert_eq!(tagged_scalar.tag(), Some("!!pairs".to_string()));
         let pairs = tagged_scalar.as_pairs().expect("Should parse as pairs");
         assert_eq!(pairs.len(), 3);
-        assert_eq!(pairs[0].0, "key1");
-        assert_eq!(pairs[1].0, "key1"); // Duplicate key allowed
-        assert_eq!(pairs[2].0, "key2");
+        assert_eq!(pairs[0].0, YamlValue::from("key1"));
+        assert_eq!(pairs[1].0, YamlValue::from("key1")); // Duplicate key allowed
+        assert_eq!(pairs[2].0, YamlValue::from("key2"));
     } else {
         panic!("Expected tagged scalar for pairs");
     }
@@ -170,9 +175,9 @@ fn test_pairs_flow_syntax() {
         assert_eq!(tagged_scalar.tag(), Some("!!pairs".to_string()));
         let pairs = tagged_scalar.as_pairs().expect("Should parse as pairs");
         assert_eq!(pairs.len(), 3);
-        assert_eq!(pairs[0].0, "key1");
-        assert_eq!(pairs[1].0, "key1"); // Duplicate key allowed
-        assert_eq!(pairs[2].0, "key2");
+        assert_eq!(pairs[0].0, YamlValue::from("key1"));
+        assert_eq!(pairs[1].0, YamlValue::from("key1")); // Duplicate key allowed
+        assert_eq!(pairs[2].0, YamlValue::from("key2"));
     } else {
         panic!("Expected tagged scalar for pairs");
     }

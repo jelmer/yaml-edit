@@ -1,5 +1,5 @@
 use std::fs;
-use yaml_edit::{Document, Yaml};
+use yaml_edit::{Document, Yaml, YamlValue};
 
 #[test]
 fn test_multi_key_yaml_parsing() {
@@ -27,9 +27,9 @@ Security-Contact: https://github.com/example/blah/tree/HEAD/SECURITY.md
     );
 
     // Test that keys are correct
-    assert!(keys.contains(&"Repository".to_string()));
-    assert!(keys.contains(&"Repository-Browse".to_string()));
-    assert!(keys.contains(&"Security-Contact".to_string()));
+    assert!(keys.contains(&YamlValue::from("Repository")));
+    assert!(keys.contains(&YamlValue::from("Repository-Browse")));
+    assert!(keys.contains(&YamlValue::from("Security-Contact")));
 
     // Test that values are correct and don't contain other keys
     let repo_value = doc.get_string("Repository").unwrap();
@@ -70,7 +70,7 @@ Repository: https://github.com/example/blah.git
 
     let keys = doc.keys();
     assert_eq!(keys.len(), 1);
-    assert_eq!(keys[0], "Repository");
+    assert_eq!(keys[0], YamlValue::from("Repository"));
 
     let repo_value = doc.get_string("Repository").unwrap();
     assert_eq!(repo_value, "https://github.com/example/blah.git");
@@ -134,8 +134,8 @@ equation: "y = 2x + 3: where x > 0"
     assert_eq!(keys.len(), 5, "Should find all 5 keys");
 
     // Verify values with colons are preserved correctly
-    // Note: Quoted strings in YAML preserve the quotes in the raw value
-    assert_eq!(doc.get_string("time").unwrap(), "\"10:30:45\"");
+    // Note: get_string() returns the unquoted string content
+    assert_eq!(doc.get_string("time").unwrap(), "10:30:45");
     assert_eq!(doc.get_string("ratio").unwrap(), "16:9");
     assert_eq!(
         doc.get_string("path").unwrap(),
@@ -147,7 +147,7 @@ equation: "y = 2x + 3: where x > 0"
     );
     assert_eq!(
         doc.get_string("equation").unwrap(),
-        "\"y = 2x + 3: where x > 0\""
+        "y = 2x + 3: where x > 0"
     );
 }
 

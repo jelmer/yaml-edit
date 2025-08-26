@@ -24,7 +24,108 @@ pub enum WhitespaceErrorCategory {
     InvalidIndentation,
 }
 
-/// Lexical analysis: the variants are different kinds of "tokens".
+/// YAML Concrete Syntax Tree (CST) node types.
+/// 
+/// This enum defines all possible node types in the YAML syntax tree, representing both
+/// lexical tokens (from the lexer) and semantic nodes (created by the parser).
+/// 
+/// # Tree Hierarchy
+/// 
+/// The YAML syntax tree follows this general structure:
+/// 
+/// ```text
+/// ROOT
+/// ├── DOCUMENT*
+/// │   ├── DIRECTIVE* (optional, e.g., %YAML 1.2)
+/// │   ├── DOC_START? (optional ---)
+/// │   ├── MAPPING | SEQUENCE | SCALAR | TAGGED_SCALAR
+/// │   └── DOC_END? (optional ...)
+/// └── WHITESPACE | NEWLINE | COMMENT (between documents)
+/// 
+/// MAPPING
+/// ├── MAPPING_ENTRY*
+/// │   ├── KEY
+/// │   │   └── SCALAR | SEQUENCE | MAPPING (YAML 1.2 allows complex keys)
+/// │   ├── COLON
+/// │   ├── WHITESPACE?
+/// │   └── VALUE
+/// │       └── SCALAR | SEQUENCE | MAPPING | TAGGED_SCALAR
+/// ├── NEWLINE
+/// ├── INDENT
+/// └── COMMENT?
+/// 
+/// SEQUENCE  
+/// ├── SEQUENCE_ENTRY*
+/// │   ├── DASH
+/// │   ├── WHITESPACE?
+/// │   └── SCALAR | SEQUENCE | MAPPING | TAGGED_SCALAR
+/// ├── NEWLINE
+/// ├── INDENT
+/// └── COMMENT?
+/// 
+/// SCALAR
+/// └── STRING | INT | FLOAT | BOOL | NULL
+/// 
+/// TAGGED_SCALAR
+/// ├── TAG (e.g., !!str, !custom)
+/// ├── WHITESPACE?
+/// └── SCALAR | MAPPING | SEQUENCE
+/// ```
+/// 
+/// # Node Categories
+/// 
+/// ## Structural Nodes (created by parser)
+/// - **ROOT**: Top-level container for the entire document
+/// - **DOCUMENT**: A single YAML document (separated by --- or ...)
+/// - **MAPPING**: Key-value pairs `{key: value}` or block style
+/// - **SEQUENCE**: Lists `[item1, item2]` or block style with `-`
+/// - **SCALAR**: Leaf values (strings, numbers, booleans, null)
+/// - **TAGGED_SCALAR**: Values with explicit type tags `!!str "hello"`
+/// 
+/// ## Container Nodes (created by parser)
+/// - **MAPPING_ENTRY**: A single key-value pair within a mapping
+/// - **SEQUENCE_ENTRY**: A single item within a sequence
+/// - **KEY**: The key part of a key-value pair (can contain complex types)
+/// - **VALUE**: The value part of a key-value pair
+/// 
+/// ## Lexical Tokens (from lexer)
+/// - **Punctuation**: COLON, DASH, COMMA, etc.
+/// - **Brackets**: LEFT_BRACKET, RIGHT_BRACKET, LEFT_BRACE, RIGHT_BRACE
+/// - **Literals**: STRING, INT, FLOAT, BOOL, NULL
+/// - **YAML-specific**: TAG, ANCHOR, REFERENCE, MERGE_KEY
+/// - **Document markers**: DOC_START (---), DOC_END (...)
+/// - **Formatting**: WHITESPACE, NEWLINE, INDENT, COMMENT
+/// 
+/// ## Special Cases
+/// 
+/// ### Complex Keys (YAML 1.2.2)
+/// Keys can be sequences or mappings, not just scalars:
+/// ```yaml
+/// [1, 2]: value        # Sequence key
+/// {a: b}: value        # Mapping key
+/// ```
+/// 
+/// ### Tagged Values
+/// Values can have explicit type information:
+/// ```yaml
+/// number: !!int "123"  # Force string "123" to be treated as integer
+/// binary: !!binary |   # Base64 encoded binary data
+///   R0lGODlhDAAMAIQ...
+/// ```
+/// 
+/// ### Block Scalars
+/// Multi-line strings with special parsing rules:
+/// ```yaml
+/// literal: |           # PIPE indicates literal scalar
+///   Line 1
+///   Line 2
+/// folded: >            # GREATER indicates folded scalar  
+///   Long text that
+///   gets folded
+/// ```
+///
+/// The tree preserves all original formatting, comments, and whitespace,
+/// enabling lossless round-trip parsing and precise source location tracking.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u16)]
 #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
@@ -96,6 +197,10 @@ pub enum SyntaxKind {
     KEY,
     /// A value in key-value pair (created by parser from context)
     VALUE,
+    /// A complete mapping entry (key-value pair with associated tokens)
+    MAPPING_ENTRY,
+    /// A sequence entry (item with associated tokens)
+    SEQUENCE_ENTRY,
 
     // Content tokens (from lexer)
     /// String literal (quoted or unquoted identifier)

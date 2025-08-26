@@ -164,12 +164,13 @@ fn test_custom_visitor() {
                 }
                 // Recursively visit nested structures
                 if let Some(value_node) = value {
-                    if let Some(nested_mapping) = yaml_edit::Mapping::cast(value_node.clone()) {
-                        nested_mapping.accept(self);
-                    } else if let Some(nested_sequence) =
-                        yaml_edit::Sequence::cast(value_node.clone())
-                    {
-                        nested_sequence.accept(self);
+                    // VALUE nodes contain the actual content as children
+                    for child in value_node.children() {
+                        if let Some(nested_mapping) = yaml_edit::Mapping::cast(child.clone()) {
+                            nested_mapping.accept(self);
+                        } else if let Some(nested_sequence) = yaml_edit::Sequence::cast(child.clone()) {
+                            nested_sequence.accept(self);
+                        }
                     }
                 }
             }

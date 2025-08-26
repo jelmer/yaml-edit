@@ -32,16 +32,25 @@ use rowan::ast::AstNode;
 ///         self.mapping_count += 1;
 ///         // Visit children
 ///         for (key, value) in mapping.pairs() {
-///             if let Some(key_scalar) = key {
-///                 key_scalar.accept(self);
+///             if let Some(key_node) = key {
+///                 // KEY nodes contain the actual content as children
+///                 for child in key_node.children() {
+///                     if let Some(scalar) = Scalar::cast(child.clone()) {
+///                         scalar.accept(self);
+///                     }
+///                     // Handle other key types as needed
+///                 }
 ///             }
 ///             if let Some(value_node) = value {
-///                 if let Some(scalar) = Scalar::cast(value_node.clone()) {
-///                     scalar.accept(self);
-///                 } else if let Some(nested_mapping) = Mapping::cast(value_node.clone()) {
-///                     nested_mapping.accept(self);
-///                 } else if let Some(nested_sequence) = Sequence::cast(value_node.clone()) {
-///                     nested_sequence.accept(self);
+///                 // VALUE nodes contain the actual content as children
+///                 for child in value_node.children() {
+///                     if let Some(scalar) = Scalar::cast(child.clone()) {
+///                         scalar.accept(self);
+///                     } else if let Some(nested_mapping) = Mapping::cast(child.clone()) {
+///                         nested_mapping.accept(self);
+///                     } else if let Some(nested_sequence) = Sequence::cast(child.clone()) {
+///                         nested_sequence.accept(self);
+///                     }
 ///                 }
 ///             }
 ///         }
@@ -199,17 +208,28 @@ impl YamlVisitor for ScalarCollector {
     fn visit_mapping(&mut self, mapping: &Mapping) {
         // Visit all key-value pairs in the mapping
         for (key, value) in mapping.pairs() {
-            if let Some(key_scalar) = key {
-                key_scalar.accept(self);
+            if let Some(key_node) = key {
+                // KEY nodes contain the actual content as children
+                for child in key_node.children() {
+                    if let Some(scalar) = Scalar::cast(child.clone()) {
+                        scalar.accept(self);
+                    } else if let Some(sequence) = Sequence::cast(child.clone()) {
+                        sequence.accept(self);
+                    } else if let Some(mapping) = Mapping::cast(child.clone()) {
+                        mapping.accept(self);
+                    }
+                }
             }
             if let Some(value_node) = value {
-                // Try to cast value_node to different types
-                if let Some(scalar) = Scalar::cast(value_node.clone()) {
-                    scalar.accept(self);
-                } else if let Some(nested_mapping) = Mapping::cast(value_node.clone()) {
-                    nested_mapping.accept(self);
-                } else if let Some(nested_sequence) = Sequence::cast(value_node.clone()) {
-                    nested_sequence.accept(self);
+                // VALUE nodes contain the actual content as children
+                for child in value_node.children() {
+                    if let Some(scalar) = Scalar::cast(child.clone()) {
+                        scalar.accept(self);
+                    } else if let Some(nested_mapping) = Mapping::cast(child.clone()) {
+                        nested_mapping.accept(self);
+                    } else if let Some(nested_sequence) = Sequence::cast(child.clone()) {
+                        nested_sequence.accept(self);
+                    }
                 }
             }
         }
@@ -286,17 +306,28 @@ impl YamlVisitor for NodeCounter {
         self.mapping_count += 1;
         // Visit children
         for (key, value) in mapping.pairs() {
-            if let Some(key_scalar) = key {
-                key_scalar.accept(self);
+            if let Some(key_node) = key {
+                // KEY nodes contain the actual content as children
+                for child in key_node.children() {
+                    if let Some(scalar) = Scalar::cast(child.clone()) {
+                        scalar.accept(self);
+                    } else if let Some(sequence) = Sequence::cast(child.clone()) {
+                        sequence.accept(self);
+                    } else if let Some(mapping) = Mapping::cast(child.clone()) {
+                        mapping.accept(self);
+                    }
+                }
             }
             if let Some(value_node) = value {
-                // Try to cast value_node to different types
-                if let Some(scalar) = Scalar::cast(value_node.clone()) {
-                    scalar.accept(self);
-                } else if let Some(nested_mapping) = Mapping::cast(value_node.clone()) {
-                    nested_mapping.accept(self);
-                } else if let Some(nested_sequence) = Sequence::cast(value_node.clone()) {
-                    nested_sequence.accept(self);
+                // VALUE nodes contain the actual content as children
+                for child in value_node.children() {
+                    if let Some(scalar) = Scalar::cast(child.clone()) {
+                        scalar.accept(self);
+                    } else if let Some(nested_mapping) = Mapping::cast(child.clone()) {
+                        nested_mapping.accept(self);
+                    } else if let Some(nested_sequence) = Sequence::cast(child.clone()) {
+                        nested_sequence.accept(self);
+                    }
                 }
             }
         }
@@ -357,17 +388,28 @@ where
 
     fn visit_mapping(&mut self, mapping: &Mapping) {
         for (key, value) in mapping.pairs() {
-            if let Some(key_scalar) = key {
-                key_scalar.accept(self);
+            if let Some(key_node) = key {
+                // KEY nodes contain the actual content as children
+                for child in key_node.children() {
+                    if let Some(scalar) = Scalar::cast(child.clone()) {
+                        scalar.accept(self);
+                    } else if let Some(sequence) = Sequence::cast(child.clone()) {
+                        sequence.accept(self);
+                    } else if let Some(mapping) = Mapping::cast(child.clone()) {
+                        mapping.accept(self);
+                    }
+                }
             }
             if let Some(value_node) = value {
-                // Try to cast value_node to different types
-                if let Some(scalar) = Scalar::cast(value_node.clone()) {
-                    scalar.accept(self);
-                } else if let Some(nested_mapping) = Mapping::cast(value_node.clone()) {
-                    nested_mapping.accept(self);
-                } else if let Some(nested_sequence) = Sequence::cast(value_node.clone()) {
-                    nested_sequence.accept(self);
+                // VALUE nodes contain the actual content as children
+                for child in value_node.children() {
+                    if let Some(scalar) = Scalar::cast(child.clone()) {
+                        scalar.accept(self);
+                    } else if let Some(nested_mapping) = Mapping::cast(child.clone()) {
+                        nested_mapping.accept(self);
+                    } else if let Some(nested_sequence) = Sequence::cast(child.clone()) {
+                        nested_sequence.accept(self);
+                    }
                 }
             }
         }

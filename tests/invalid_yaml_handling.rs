@@ -129,7 +129,7 @@ fn test_multiple_colons_in_value() {
             match parsed {
                 Ok(yaml_doc) => {
                     // Degraded parsing - might create nested mappings
-                    if let Some(doc) = yaml_doc.document() {
+                    if let Some(_doc) = yaml_doc.document() {
                         println!("{}: Parsed invalid YAML in degraded mode", name);
                         // As long as it doesn't crash, this is acceptable
                     }

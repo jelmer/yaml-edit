@@ -188,6 +188,114 @@ pub fn lex_with_validation(input: &str) -> (Vec<(SyntaxKind, &str)>, Vec<Whitesp
     lex_with_validation_config(input, &ValidationConfig::default())
 }
 
+// Helper function to handle quoted string as a single STRING token including quotes
+fn consume_quoted_string_as_whole<'a>(
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
+    input: &'a str,
+    tokens: &mut Vec<(SyntaxKind, &'a str)>,
+    start_idx: usize,
+    quote_char: char,
+) {
+    let mut end_idx = start_idx + 1; // Start after opening quote
+
+    while let Some((idx, ch)) = chars.peek().cloned() {
+        // Handle escape sequences
+        if quote_char == '"' && ch == '\\' {
+            // Double quotes: backslash escapes
+            chars.next();
+            if chars.peek().is_some() {
+                chars.next();
+            }
+            end_idx = chars.peek().map_or(input.len(), |(i, _)| *i);
+        } else if ch == quote_char {
+            // Potential closing quote
+            chars.next();
+
+            // Single quotes: check for escaped quote (two quotes)
+            if quote_char == '\'' && chars.peek().map_or(false, |(_, c)| *c == '\'') {
+                chars.next();
+                end_idx = chars.peek().map_or(input.len(), |(i, _)| *i);
+                continue;
+            }
+
+            // Found closing quote - emit the entire quoted string as one STRING token
+            tokens.push((SyntaxKind::STRING, &input[start_idx..idx + 1]));
+            return;
+        } else if ch == '\n' || ch == '\r' {
+            // Error recovery: stop at newline - emit as unterminated string
+            tokens.push((SyntaxKind::UNTERMINATED_STRING, &input[start_idx..end_idx]));
+            return;
+        } else {
+            // Regular character
+            chars.next();
+            end_idx = chars.peek().map_or(input.len(), |(i, _)| *i);
+        }
+    }
+
+    // Unterminated quote - emit UNTERMINATED_STRING token including opening quote
+    tokens.push((SyntaxKind::UNTERMINATED_STRING, &input[start_idx..end_idx]));
+}
+
+// Helper function to handle quoted string content (legacy - produces separate tokens)
+fn consume_quoted_string<'a>(
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
+    input: &'a str,
+    tokens: &mut Vec<(SyntaxKind, &'a str)>,
+    start_idx: usize,
+    quote_char: char,
+    quote_kind: SyntaxKind,
+) {
+    let content_start = start_idx + 1;
+    let mut end_idx = content_start;
+
+    while let Some((idx, ch)) = chars.peek().cloned() {
+        // Handle escape sequences
+        if quote_char == '"' && ch == '\\' {
+            // Double quotes: backslash escapes
+            chars.next();
+            if chars.peek().is_some() {
+                chars.next();
+            }
+            end_idx = chars.peek().map_or(input.len(), |(i, _)| *i);
+        } else if ch == quote_char {
+            // Potential closing quote
+            chars.next();
+
+            // Single quotes: check for escaped quote (two quotes)
+            if quote_char == '\'' && chars.peek().map_or(false, |(_, c)| *c == '\'') {
+                chars.next();
+                end_idx = chars.peek().map_or(input.len(), |(i, _)| *i);
+                continue;
+            }
+
+            // Found closing quote - emit content and closing quote
+            if end_idx > content_start {
+                tokens.push((SyntaxKind::STRING, &input[content_start..end_idx]));
+            }
+            tokens.push((quote_kind, &input[idx..idx + 1]));
+            return;
+        } else if ch == '\n' || ch == '\r' {
+            // Error recovery: stop at newline
+            break;
+        } else {
+            // Regular character
+            chars.next();
+            end_idx = chars.peek().map_or(input.len(), |(i, _)| *i);
+        }
+    }
+
+    // Unterminated quote - emit UNTERMINATED_STRING token
+    if end_idx > content_start {
+        tokens.push((
+            SyntaxKind::UNTERMINATED_STRING,
+            &input[content_start..end_idx],
+        ));
+    } else {
+        // Empty unterminated string
+        tokens.push((SyntaxKind::UNTERMINATED_STRING, ""));
+    }
+}
+
 /// Tokenize YAML input with custom validation configuration
 pub fn lex_with_validation_config<'a>(
     input: &'a str,
@@ -331,78 +439,12 @@ pub fn lex_with_validation_config<'a>(
                 }
             }
             '"' => {
-                // Read entire double-quoted string
-                let mut end_idx = start_idx + 1;
-                let mut escaped = false;
-                let mut found_closing = false;
-
-                while let Some((idx, ch)) = chars.peek() {
-                    let current_idx = *idx;
-                    let current_ch = *ch;
-
-                    if escaped {
-                        escaped = false;
-                        end_idx = current_idx + current_ch.len_utf8();
-                        chars.next();
-                        continue;
-                    }
-
-                    if current_ch == '\\' {
-                        escaped = true;
-                        end_idx = current_idx + current_ch.len_utf8();
-                        chars.next();
-                    } else if current_ch == '"' {
-                        end_idx = current_idx + current_ch.len_utf8();
-                        chars.next();
-                        found_closing = true;
-                        break;
-                    } else {
-                        end_idx = current_idx + current_ch.len_utf8();
-                        chars.next();
-                    }
-                }
-
-                if found_closing {
-                    tokens.push((STRING, &input[token_start..end_idx]));
-                } else {
-                    // Unterminated string - add UNTERMINATED_STRING token
-                    tokens.push((UNTERMINATED_STRING, &input[token_start..end_idx]));
-                }
+                // Handle double-quoted strings as a single STRING token including quotes
+                consume_quoted_string_as_whole(&mut chars, input, &mut tokens, start_idx, '"');
             }
             '\'' => {
-                // Read entire single-quoted string
-                let mut end_idx = start_idx + 1;
-                let mut found_closing = false;
-
-                while let Some((idx, ch)) = chars.peek() {
-                    let current_idx = *idx;
-                    let current_ch = *ch;
-
-                    if current_ch == '\'' {
-                        // Check for escaped quote ('')
-                        end_idx = current_idx + current_ch.len_utf8();
-                        chars.next();
-                        if let Some((next_idx, '\'')) = chars.peek() {
-                            // Double quote - consume both and continue
-                            end_idx = *next_idx + 1;
-                            chars.next();
-                        } else {
-                            // Single quote - end of string
-                            found_closing = true;
-                            break;
-                        }
-                    } else {
-                        end_idx = current_idx + current_ch.len_utf8();
-                        chars.next();
-                    }
-                }
-
-                if found_closing {
-                    tokens.push((STRING, &input[token_start..end_idx]));
-                } else {
-                    // Unterminated string - add UNTERMINATED_STRING token
-                    tokens.push((UNTERMINATED_STRING, &input[token_start..end_idx]));
-                }
+                // Handle single-quoted strings as a single STRING token including quotes
+                consume_quoted_string_as_whole(&mut chars, input, &mut tokens, start_idx, '\'');
             }
 
             // Document end
@@ -882,6 +924,7 @@ double: "quoted""#;
                 *kind == SyntaxKind::STRING && (text.starts_with('\'') || text.starts_with('"'))
             })
             .collect();
+
         assert_eq!(quoted_strings.len(), 2); // single and double quoted strings
 
         // Verify content

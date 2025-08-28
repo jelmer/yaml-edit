@@ -1,6 +1,7 @@
 //! Tests for enhanced error recovery functionality
 
-use yaml_edit::Yaml;
+use rowan::ast::AstNode;
+use yaml_edit::{Mapping, Yaml};
 
 #[test]
 fn test_missing_colon_error_recovery() {
@@ -165,4 +166,178 @@ config:
         assert!(content.contains("8080"));
         assert!(content.contains("apple"));
     }
+}
+#[test]
+fn test_missing_colon_recovery() {
+    // Missing colon should create error but continue parsing
+    let yaml_str = r#"
+key1 value1
+key2: value2
+"#;
+
+    let parsed_yaml = yaml_edit::Parse::parse_yaml(yaml_str);
+
+    // Check that we have errors
+    assert!(
+        parsed_yaml.has_errors(),
+        "Should have errors for missing colon"
+    );
+
+    let yaml = parsed_yaml.tree();
+
+    // Should still be able to find the good key
+    if let Some(doc) = yaml.document() {
+        if let Some(root) = doc.as_mapping() {
+            // key2 should be parseable even though key1 had an error
+            assert!(
+                root.get("key2").is_some(),
+                "Should find key2 despite error in key1"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_unterminated_quote_recovery() {
+    let yaml_str = r#"
+key1: "unterminated quote
+key2: value2
+"#;
+
+    let parsed = yaml_edit::Parse::parse_yaml(yaml_str);
+
+    assert!(
+        parsed.has_errors(),
+        "Should have errors for unterminated quote"
+    );
+
+    let yaml = parsed.tree();
+
+    // Parser correctly stops at unterminated quote error per YAML spec compliance
+    let output = yaml.to_string();
+    assert_eq!(
+        output,
+        "
+key1: \"unterminated quote
+key2: value2
+"
+    );
+}
+
+#[test]
+fn test_malformed_mapping_recovery() {
+    let yaml_str = r#"
+parent:
+  key1 value1  # Missing colon
+  key2: value2
+  key3
+  key4: value4
+"#;
+
+    let parsed = yaml_edit::Parse::parse_yaml(yaml_str);
+
+    assert!(parsed.has_errors(), "Should have errors for malformed keys");
+
+    let yaml = parsed.tree();
+
+    // Should still parse the good keys
+    if let Some(doc) = yaml.document() {
+        if let Some(root) = doc.as_mapping() {
+            if let Some(parent) = root.get("parent") {
+                if let Some(parent_mapping) = Mapping::cast(parent) {
+                    // Should find the properly formatted keys
+                    assert!(parent_mapping.get("key2").is_some(), "Should find key2");
+                    assert!(parent_mapping.get("key4").is_some(), "Should find key4");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_partial_parsing_with_errors() {
+    // Complex YAML with multiple errors
+    let yaml_str = r#"
+# Good section
+config:
+  database:
+    host: localhost
+    port: 5432
+
+# Bad section (missing colon)
+server
+  host: example.com
+  port: 8080
+
+# Another good section  
+logging:
+  level: info
+  file: app.log
+"#;
+
+    let parsed = yaml_edit::Parse::parse_yaml(yaml_str);
+
+    // Parser should preserve all content even with malformed sections (lossless behavior)
+    let output = parsed.tree().to_string();
+    assert_eq!(
+        output,
+        "
+# Good section
+config:
+  database:
+    host: localhost
+    port: 5432
+
+# Bad section (missing colon)
+server
+  host: example.com
+  port: 8080
+
+# Another good section  
+logging:
+  level: info
+  file: app.log
+"
+    );
+
+    let yaml = parsed.tree();
+
+    if let Some(doc) = yaml.document() {
+        if let Some(root) = doc.as_mapping() {
+            // Should be able to access good sections
+            assert!(root.get("config").is_some(), "Should parse config section");
+            assert!(
+                root.get("logging").is_some(),
+                "Should parse logging section"
+            );
+
+            // Verify we can access nested values
+            if let Some(config) = root.get("config") {
+                if let Some(config_mapping) = Mapping::cast(config) {
+                    assert!(
+                        config_mapping.get("database").is_some(),
+                        "Should parse database config"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_basic_error_recovery() {
+    // Test that parser can recover from basic syntax errors
+    let yaml_str = r#"
+key1 missing_colon
+key2: valid_value
+"#;
+
+    let parsed = yaml_edit::Parse::parse_yaml(yaml_str);
+
+    // Should have errors but still produce a usable result
+    assert!(parsed.has_errors(), "Should detect syntax error");
+
+    // Should still be able to parse the document
+    let yaml = parsed.tree();
+    assert!(yaml.document().is_some(), "Should still produce a document");
 }

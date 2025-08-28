@@ -90,10 +90,18 @@ impl ErrorRecoveryContext {
         let end = (self.position + bytes).min(self.text.len());
         let advanced_text = &self.text[self.position..end];
 
-        for ch in advanced_text.chars() {
+        let mut chars = advanced_text.chars().peekable();
+        while let Some(ch) = chars.next() {
             if ch == '\n' {
                 self.line += 1;
                 self.column = 1;
+            } else if ch == '\r' {
+                self.line += 1;
+                self.column = 1;
+                // Skip LF in CRLF sequence
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
             } else {
                 self.column += 1;
             }

@@ -18,18 +18,19 @@ A Rust library for parsing and editing YAML files while preserving all whitespac
 use yaml_edit::Yaml;
 use std::str::FromStr;
 
-let original = r#"# Server configuration
-host: localhost
-port: 8080
-debug: true
-timeout: 30
-
-# Database settings
-database:
-  name: dev_db
-  user: admin
-  max_connections: 10
-"#;
+let original = concat!(
+    "# Server configuration\n",
+    "host: localhost\n",
+    "port: 8080\n",
+    "debug: true\n",
+    "timeout: 30\n",
+    "\n",
+    "# Database settings\n",
+    "database:\n",
+    "  name: dev_db\n",
+    "  user: admin\n",
+    "  max_connections: 10"
+);
 
 let mut yaml = Yaml::from_str(original).unwrap();
 
@@ -71,8 +72,7 @@ year: 2023
 
 features:
   - logging
-  - auth
-"#;
+  - auth"#;
 
 let mut yaml = Yaml::from_str(original).unwrap();
 
@@ -189,17 +189,18 @@ doc.save_to_file("package.yaml").unwrap();
 use yaml_edit::Yaml;
 use std::str::FromStr;
 
-let original = r#"# This is my config file
-# It has very specific formatting
-
-app:    my-application    # Extra spaces preserved
-version:  "1.0.0"         # Aligned with spaces
-
-settings:
-  # These settings are important
-  timeout:   30    # seconds
-  retries:   3     # attempts
-"#;
+let original = concat!(
+    "# This is my config file\n",
+    "# It has very specific formatting\n",
+    "\n",
+    "app:    my-application    # Extra spaces preserved\n",
+    "version:  \"1.0.0\"         # Aligned with spaces\n",
+    "\n",
+    "settings:\n",
+    "  # These settings are important\n",
+    "  timeout:   30    # seconds\n",
+    "  retries:   3     # attempts"
+);
 
 let mut yaml = Yaml::from_str(original).unwrap();
 

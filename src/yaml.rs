@@ -371,6 +371,25 @@ impl MappingEntry {
         self.0.children().find(|n| n.kind() == SyntaxKind::KEY)
     }
     
+    /// Check if the key of this entry matches the given YamlValue
+    pub fn key_matches(&self, key: &YamlValue) -> bool {
+        // Use the same logic as find_entry_by_key: build expected key and compare using compare_key_nodes
+        if let Some(entry_key) = self.key() {
+            let mut builder = GreenNodeBuilder::new();
+            Document::build_key_content(&mut builder, key, 0);
+            let expected_key = SyntaxNode::new_root_mut(builder.finish());
+            
+            // Create a minimal mapping just to access the compare_key_nodes method
+            let temp_mapping = Mapping(SyntaxNode::new_root_mut(rowan::GreenNode::new(
+                SyntaxKind::MAPPING.into(),
+                std::iter::empty()
+            )));
+            temp_mapping.compare_key_nodes(&entry_key, &expected_key)
+        } else {
+            false
+        }
+    }
+    
     /// Get the VALUE node from this mapping entry
     pub fn value(&self) -> Option<SyntaxNode> {
         self.0.children().find(|n| n.kind() == SyntaxKind::VALUE)
@@ -388,8 +407,8 @@ impl MappingEntry {
         MappingEntry(SyntaxNode::new_root_mut(builder.finish()))
     }
     
-    /// Replace the value of this mapping entry in place, preserving key and comments
-    pub fn replace_value(&mut self, new_value: &YamlValue) {
+    /// Set the value of this mapping entry in place, preserving key and comments
+    pub fn set_value(&mut self, new_value: &YamlValue) {
         // Build new VALUE node
         let mut value_builder = GreenNodeBuilder::new();
         value_builder.start_node(SyntaxKind::VALUE.into());
@@ -456,6 +475,33 @@ impl SequenceEntry {
         Document::build_value_content(&mut builder, value, 0);
         builder.finish_node();
         SequenceEntry(SyntaxNode::new_root_mut(builder.finish()))
+    }
+    
+    /// Set the value of this sequence entry
+    pub fn set_value(&mut self, new_value: impl Into<YamlValue>) {
+        let value_yaml = new_value.into();
+        
+        // Build new sequence entry with same dash/whitespace but new value
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
+        builder.token(SyntaxKind::DASH.into(), "-");
+        builder.token(SyntaxKind::WHITESPACE.into(), " ");
+        Document::build_value_content(&mut builder, &value_yaml, 0);
+        builder.finish_node();
+        
+        self.0 = SyntaxNode::new_root_mut(builder.finish());
+    }
+    
+    /// Remove this sequence entry from its parent sequence
+    pub fn remove(self) {
+        self.0.detach();
+    }
+    
+    /// Get the value as a YamlValue (convenience method)
+    pub fn value_as_yaml(&self) -> Option<YamlValue> {
+        self.value().and_then(|value_node| {
+            YamlValue::cast(value_node)
+        })
     }
 }
 
@@ -556,7 +602,7 @@ impl Yaml {
     }
 
     /// Set a key-value pair in the first document (assumes first document is a mapping)
-    pub fn set(&mut self, key: impl Into<ScalarValue>, value: impl Into<YamlValue>) {
+    pub fn set(&mut self, key: &YamlValue, value: &YamlValue) {
         if let Some(mut doc) = self.document() {
             doc.set(key, value);
         }
@@ -808,7 +854,7 @@ impl Document {
     }
 
     /// Set a scalar value in the document (assumes document is a mapping)
-    pub fn set(&mut self, key: impl Into<ScalarValue>, value: impl Into<YamlValue>) {
+    pub fn set(&mut self, key: &YamlValue, value: &YamlValue) {
         if let Some(mut mapping) = self.as_mapping_mut() {
             mapping.set(key, value);
             // Changes are applied directly via splice_children, no need to replace
@@ -866,14 +912,18 @@ impl Document {
                     }
                 } else {
                     // It's a scalar value, use auto-typed parsing
-                    self.set(ScalarValue::new(key), ScalarValue::from_yaml(value));
+                    let key_val = YamlValue::Scalar(ScalarValue::new(key));
+                    let value_val = YamlValue::Scalar(ScalarValue::from_yaml(value));
+                    self.set(&key_val, &value_val);
                     return;
                 }
             }
         }
 
         // Fallback: treat as string scalar
-        self.set(ScalarValue::new(key), ScalarValue::new(value));
+        let key_val = YamlValue::Scalar(ScalarValue::new(key));
+        let value_val = YamlValue::Scalar(ScalarValue::new(value));
+        self.set(&key_val, &value_val);
     }
 
     /// Remove a key from the document (assumes document is a mapping)
@@ -1071,7 +1121,7 @@ impl Document {
         match key {
             YamlValue::Scalar(s) => {
                 builder.start_node(SyntaxKind::SCALAR.into());
-                builder.token(SyntaxKind::STRING.into(), &s.to_yaml_string());
+                builder.token(SyntaxKind::VALUE.into(), s.value());
                 builder.finish_node(); // SCALAR
             }
             _ => {
@@ -1320,13 +1370,15 @@ impl Document {
 
         // If no mapping exists, create one
         let mut mapping = Mapping::new();
-        mapping.insert_at_index_preserving(index, &key_str, &value_value);
+        mapping.insert_at_index_preserving(index, &key_value, &value_value);
         *self = Self::from_mapping(mapping);
     }
 
     /// Set a string value (convenient method)
     pub fn set_string(&mut self, key: &str, value: &str) {
-        self.set(key, ScalarValue::new(value));
+        let key_val = YamlValue::Scalar(ScalarValue::new(key));
+        let value_val = YamlValue::Scalar(ScalarValue::new(value));
+        self.set(&key_val, &value_val);
     }
 
     /// Set a value of any YAML type (scalar, sequence, mapping)
@@ -1342,9 +1394,8 @@ impl Document {
     }
 
     /// Get a string value for a key (returns None if not found)
-    pub fn get_string(&self, key: &str) -> Option<String> {
-        let key_yaml = YamlValue::Scalar(ScalarValue::new(key));
-        self.get(&key_yaml).map(|node| {
+    pub fn get_string(&self, key: &YamlValue) -> Option<String> {
+        self.get(key).map(|node| {
             if node.kind() == SyntaxKind::VALUE {
                 // Check if VALUE node contains a TAGGED_SCALAR child
                 for child in node.children() {
@@ -1890,9 +1941,8 @@ impl Mapping {
     }
 
     /// Get a value as a Mapping if it is one
-    pub fn get_mapping(&self, key: &str) -> Option<Mapping> {
-        let key_yaml = YamlValue::Scalar(ScalarValue::new(key));
-        self.get(&key_yaml).and_then(|value_node| {
+    pub fn get_mapping(&self, key: &YamlValue) -> Option<Mapping> {
+        self.get(key).and_then(|value_node| {
             // The value node is a VALUE node, look for MAPPING inside it
             value_node.children().find_map(Mapping::cast)
         })
@@ -1994,9 +2044,8 @@ impl Mapping {
     }
 
     /// Get a value as a Sequence if it is one
-    pub fn get_sequence(&self, key: &str) -> Option<Sequence> {
-        let key_yaml = YamlValue::Scalar(ScalarValue::new(key));
-        self.get(&key_yaml).and_then(|value_node| {
+    pub fn get_sequence(&self, key: &YamlValue) -> Option<Sequence> {
+        self.get(key).and_then(|value_node| {
             // The value node is a VALUE node, look for SEQUENCE inside it
             value_node.children().find_map(Sequence::cast)
         })
@@ -2068,7 +2117,8 @@ impl Mapping {
     /// Set a value of any YAML type (scalar, sequence, mapping)
     pub fn set_value(&mut self, key: impl Into<ScalarValue>, value: YamlValue) {
         // Simply delegate to set() which already handles YamlValue
-        self.set(key, value);
+        let key_val = YamlValue::Scalar(key.into());
+        self.set(&key_val, &value);
     }
 }
 
@@ -4132,10 +4182,8 @@ impl Mapping {
     
     /// Set a key-value pair with a scalar value, replacing if exists or adding if new
     /// This method automatically escapes the key and value as needed.
-    pub fn set(&mut self, key: impl Into<ScalarValue>, value: impl Into<YamlValue>) {
-        let key_yaml = YamlValue::Scalar(key.into());
-        let value_yaml = value.into();
-        self.set_yaml_value(&key_yaml, &value_yaml);
+    pub fn set(&mut self, key: &YamlValue, value: &YamlValue) {
+        self.set_yaml_value(key, value);
     }
 
     /// Internal unified method to set any YAML value type
@@ -4151,7 +4199,7 @@ impl Mapping {
                         if self.entry_has_key(&entry, key) {
                             // Found it! Update the value in place
                             let mut mutable_entry = entry;
-                            mutable_entry.replace_value(value);
+                            mutable_entry.set_value(value);
                             
                             // Replace the old entry with the updated one
                             self.0.splice_children(i..i + 1, vec![mutable_entry.0.into()]);
@@ -4929,7 +4977,7 @@ impl Mapping {
             }
 
             // Create the MAPPING_ENTRY node
-            let entry = self.create_mapping_entry(new_key, new_value);
+            let entry = self.create_mapping_entry(&YamlValue::scalar(new_key), new_value);
             new_elements.push(entry.into());
 
             // Add trailing newline only if there are more elements after this position
@@ -5103,7 +5151,7 @@ impl Mapping {
             let mut new_elements = Vec::new();
 
             // Create the MAPPING_ENTRY node
-            let entry = self.create_mapping_entry(new_key, new_value);
+            let entry = self.create_mapping_entry(&YamlValue::scalar(new_key), new_value);
             new_elements.push(entry.into());
 
             // Add newline token
@@ -5129,7 +5177,7 @@ impl Mapping {
     pub fn insert_at_index_preserving(
         &mut self,
         _index: usize,
-        new_key: &str,
+        new_key: &YamlValue,
         new_value: &YamlValue,
     ) {
         // Check if the key already exists - if so, update just the VALUE node
@@ -5138,23 +5186,25 @@ impl Mapping {
         for (i, child) in children.iter().enumerate() {
             if let Some(node) = child.as_node() {
                 if node.kind() == SyntaxKind::KEY || node.kind() == SyntaxKind::SCALAR {
-                    let key_text = node.text().to_string();
-                    println!("Found key: '{}'", key_text.trim());
-                    if key_text.trim() == new_key {
-                        // Found existing key, find its VALUE node and replace just that
-                        for j in (i + 1)..children.len() {
-                            if let Some(value_node) = children[j].as_node() {
-                                if value_node.kind() == SyntaxKind::VALUE {
-                                    // Build new VALUE node using the helper
-                                    let mut value_builder = GreenNodeBuilder::new();
-                                    Document::build_value_content(&mut value_builder, new_value, 2);
-                                    let new_value_node =
-                                        SyntaxNode::new_root_mut(value_builder.finish());
+                    // Extract existing key as YamlValue for direct comparison
+                    if let Some(existing_key_scalar) = extract_scalar(node) {
+                        let existing_key_value = YamlValue::Scalar(ScalarValue::new(existing_key_scalar.as_string()));
+                        if existing_key_value == *new_key {
+                            // Found existing key, find its VALUE node and replace just that
+                            for j in (i + 1)..children.len() {
+                                if let Some(value_node) = children[j].as_node() {
+                                    if value_node.kind() == SyntaxKind::VALUE {
+                                        // Build new VALUE node using the helper
+                                        let mut value_builder = GreenNodeBuilder::new();
+                                        Document::build_value_content(&mut value_builder, new_value, 2);
+                                        let new_value_node =
+                                            SyntaxNode::new_root_mut(value_builder.finish());
 
-                                    // Replace just the VALUE node
-                                    self.0
-                                        .splice_children(j..j + 1, vec![new_value_node.into()]);
-                                    return;
+                                        // Replace just the VALUE node
+                                        self.0
+                                            .splice_children(j..j + 1, vec![new_value_node.into()]);
+                                        return;
+                                    }
                                 }
                             }
                         }
@@ -5190,15 +5240,15 @@ impl Mapping {
 
 
     /// Remove a key-value pair
-    pub fn remove(&mut self, key: &str) -> bool {
+    pub fn remove(&mut self, key: &YamlValue) -> bool {
         let children: Vec<_> = self.0.children_with_tokens().collect();
 
         // Find the entry to remove
         for (i, child) in children.iter().enumerate() {
             if let Some(node) = child.as_node() {
                 if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                    if let Some(key_node) = node.children().find(|n| n.kind() == SyntaxKind::KEY) {
-                        if key_node.text().to_string().trim() == key.trim() {
+                    if let Some(entry) = MappingEntry::cast(node.clone()) {
+                        if entry.key_matches(key) {
                             // Found the entry to remove
 
                             // Check if this is the last MAPPING_ENTRY
@@ -5306,16 +5356,12 @@ impl Mapping {
     }
 
     /// Helper to create a MAPPING_ENTRY node from key and value strings
-    fn create_mapping_entry(&self, key: &str, value: &YamlValue) -> SyntaxNode {
+    fn create_mapping_entry(&self, key: &YamlValue, value: &YamlValue) -> SyntaxNode {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
-        // Add KEY node
-        builder.start_node(SyntaxKind::KEY.into());
-        builder.start_node(SyntaxKind::SCALAR.into());
-        builder.token(SyntaxKind::STRING.into(), key);
-        builder.finish_node(); // SCALAR
-        builder.finish_node(); // KEY
+        // Add KEY node using existing helper
+        Document::build_key_content(&mut builder, key, 0);
 
         // Add colon and space
         builder.token(SyntaxKind::COLON.into(), ":");
@@ -5604,12 +5650,49 @@ fn create_sequence_item_green(
     ]
 }
 
+fn create_sequence_item_from_yaml_value(
+    value: &YamlValue,
+) -> SyntaxNode {
+    let mut builder = GreenNodeBuilder::new();
+    builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
+    builder.token(SyntaxKind::DASH.into(), "-");
+    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+    
+    // Build the value content using existing helper
+    Document::build_value_content(&mut builder, value, 0);
+    
+    builder.finish_node();
+    SyntaxNode::new_root_mut(builder.finish())
+}
+
 // Editing methods for Sequence
 impl Sequence {
     /// Add an item to the end of the sequence (generic version)
     pub fn push<T: Into<ScalarValue>>(&mut self, value: T) {
         let scalar_value = value.into();
         self.push_str(&scalar_value.to_string());
+    }
+
+    /// Add a YamlValue item to the end of the sequence
+    pub fn push_yaml(&mut self, value: &YamlValue) {
+        let new_entry = SequenceEntry::from_yaml_value(value);
+        let count = self.0.children_with_tokens().count();
+        
+        // Add newline and new entry
+        let mut new_elements = Vec::new();
+        if count > 0 {
+            let mut nl_builder = GreenNodeBuilder::new();
+            nl_builder.start_node(SyntaxKind::ROOT.into());
+            nl_builder.token(SyntaxKind::NEWLINE.into(), "\n");
+            nl_builder.finish_node();
+            let nl_node = SyntaxNode::new_root_mut(nl_builder.finish());
+            if let Some(token) = nl_node.first_token() {
+                new_elements.push(token.into());
+            }
+        }
+        new_elements.push(new_entry.0.into());
+        
+        self.0.splice_children(count..count, new_elements);
     }
 
     /// Add a string item to the end of the sequence
@@ -5706,7 +5789,7 @@ impl Sequence {
     }
 
     /// Insert an item at a specific position
-    pub fn insert(&mut self, index: usize, value: &str) {
+    pub fn insert(&mut self, index: usize, value: &YamlValue) {
         let children: Vec<_> = self.0.children_with_tokens().collect();
         let mut item_count = 0;
         let mut insert_pos = children.len();
@@ -5724,28 +5807,28 @@ impl Sequence {
             }
         }
 
-        let new_item_tokens = create_sequence_item_green(value);
-        // Convert green nodes/tokens to syntax nodes/tokens
-        let syntax_elements: Vec<_> = new_item_tokens
-            .into_iter()
-            .map(|element| match element {
-                rowan::NodeOrToken::Node(green_node) => SyntaxNode::new_root_mut(green_node).into(),
-                rowan::NodeOrToken::Token(green_token) => {
-                    let mut builder = GreenNodeBuilder::new();
-                    builder.start_node(SyntaxKind::ROOT.into());
-                    builder.token(green_token.kind(), green_token.text());
-                    builder.finish_node();
-                    let temp_node = SyntaxNode::new_root_mut(builder.finish());
-                    temp_node.first_token().unwrap().into()
-                }
-            })
-            .collect();
-        self.0
-            .splice_children(insert_pos..insert_pos, syntax_elements);
+        let new_item_node = create_sequence_item_from_yaml_value(value);
+        
+        // Add newline if we're not inserting at the beginning and there are existing items
+        let mut elements_to_insert = Vec::new();
+        if insert_pos > 0 && !children.is_empty() {
+            let mut nl_builder = GreenNodeBuilder::new();
+            nl_builder.start_node(SyntaxKind::ROOT.into());
+            nl_builder.token(SyntaxKind::NEWLINE.into(), "\n");
+            nl_builder.finish_node();
+            let nl_node = SyntaxNode::new_root_mut(nl_builder.finish());
+            if let Some(token) = nl_node.first_token() {
+                elements_to_insert.push(token.into());
+            }
+        }
+        elements_to_insert.push(new_item_node.into());
+        
+        self.0.splice_children(insert_pos..insert_pos, elements_to_insert);
     }
 
     /// Replace an item at a specific position  
-    pub fn set(&mut self, index: usize, value: &str) -> bool {
+    pub fn set(&mut self, index: usize, value: &YamlValue) -> bool {
+        let value_str = value.to_string();
         let children: Vec<_> = self.0.children_with_tokens().collect();
         let mut item_count = 0;
 
@@ -5763,7 +5846,7 @@ impl Sequence {
                                 rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::SCALAR => {
                                     // Replace the SCALAR node
                                     builder.start_node(SyntaxKind::SCALAR.into());
-                                    builder.token(SyntaxKind::VALUE.into(), value);
+                                    builder.token(SyntaxKind::VALUE.into(), &value_str);
                                     builder.finish_node();
                                 }
                                 rowan::NodeOrToken::Node(n) => {
@@ -5902,7 +5985,8 @@ impl Sequence {
     /// Set an item at a specific position (generic version)
     pub fn set_item<T: Into<ScalarValue>>(&mut self, index: usize, value: T) -> bool {
         let scalar_value = value.into();
-        self.set(index, &scalar_value.to_string())
+        let yaml_value = YamlValue::Scalar(scalar_value);
+        self.set(index, &yaml_value)
     }
 }
 
@@ -6169,7 +6253,7 @@ escaped: 'it\'s escaped'
 
         // Get the document and set on it
         let mut doc = parsed.document().expect("Should have a document");
-        doc.set("new_key", "new_value");
+        doc.set(&YamlValue::scalar("new_key"), &YamlValue::scalar("new_value"));
 
         let output = doc.to_string();
 
@@ -6201,7 +6285,7 @@ new_key: new_value"#;
 
         if let Some(doc) = parsed.document() {
             if let Some(mut mapping) = doc.as_mapping() {
-                let removed = mapping.remove("key1");
+                let removed = mapping.remove(&YamlValue::scalar("key1"));
                 assert!(removed);
                 let output = parsed.to_string();
                 assert!(!output.contains("key1"));
@@ -6223,7 +6307,7 @@ new_key: new_value"#;
                 assert!(output.contains("item3"));
 
                 // Test insert
-                seq.insert(0, "item0");
+                seq.insert(0, &YamlValue::scalar("item0"));
                 let output = parsed.to_string();
                 assert!(output.contains("item0"));
             }
@@ -7638,8 +7722,8 @@ config:
             assert!(output.contains("2.0.0"));
 
             // Verify values can be retrieved
-            assert_eq!(doc.get_string("name"), Some("new-name".to_string()));
-            assert_eq!(doc.get_string("version"), Some("2.0.0".to_string()));
+            assert_eq!(doc.get_string(&YamlValue::scalar("name")), Some("new-name".to_string()));
+            assert_eq!(doc.get_string(&YamlValue::scalar("version")), Some("2.0.0".to_string()));
         }
     }
 
@@ -8141,7 +8225,7 @@ nested:
 
         // Get document and add a new key
         let mut doc = parsed.document().expect("Should have a document");
-        doc.set("key2", "value2");
+        doc.set(&YamlValue::scalar("key2"), &YamlValue::scalar("value2"));
 
         let output = doc.to_string();
         println!("After set:\n{}", output);

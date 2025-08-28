@@ -116,7 +116,7 @@ impl YamlValue {
     
     /// Convert a Document to a YamlValue
     pub fn from_document(doc: &crate::yaml::Document) -> Self {
-        use crate::yaml::{extract_scalar, extract_mapping, extract_sequence, extract_tagged_scalar};
+        use crate::yaml::{extract_scalar, extract_mapping, extract_sequence};
         
         // Try different document types in order
         if let Some(scalar) = doc.as_scalar() {

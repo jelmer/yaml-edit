@@ -8,13 +8,13 @@ fn test_document_api_usage() -> YamlResult<()> {
     let mut doc = Document::new();
 
     // Check and modify fields
-    assert!(!doc.contains_key(&YamlValue::from("Repository")));
+    assert!(!doc.contains_key(&YamlValue::scalar("Repository")));
     doc.set_string("Repository", "https://github.com/user/repo.git");
-    assert!(doc.contains_key(&YamlValue::from("Repository")));
+    assert!(doc.contains_key(&YamlValue::scalar("Repository")));
 
     // Test get_string
     assert_eq!(
-        doc.get_string("Repository"),
+        doc.get_string(&YamlValue::scalar("Repository")),
         Some("https://github.com/user/repo.git".to_string())
     );
 
@@ -38,8 +38,8 @@ fn test_document_api_usage() -> YamlResult<()> {
     assert!(keys.contains(&YamlValue::from("Repository")));
 
     // Test remove
-    assert!(doc.remove(&YamlValue::from("Repository")));
-    assert!(!doc.contains_key(&YamlValue::from("Repository")));
+    assert!(doc.remove(&YamlValue::scalar("Repository")));
+    assert!(!doc.contains_key(&YamlValue::scalar("Repository")));
     assert!(doc.is_empty());
 
     Ok(())
@@ -115,11 +115,11 @@ fn test_file_io() -> YamlResult<()> {
     let loaded_doc = Document::load_from_file(test_path)?;
 
     assert_eq!(
-        loaded_doc.get_string("Name"),
+        loaded_doc.get_string(&YamlValue::scalar("Name")),
         Some("TestProject".to_string())
     );
     assert_eq!(
-        loaded_doc.get_string("Repository"),
+        loaded_doc.get_string(&YamlValue::scalar("Repository")),
         Some("https://example.com/repo.git".to_string())
     );
 

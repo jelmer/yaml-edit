@@ -1,5 +1,5 @@
 use std::str::FromStr;
-use yaml_edit::Yaml;
+use yaml_edit::{Yaml, YamlValue};
 
 #[test]
 fn test_rename_key_basic() {
@@ -50,7 +50,7 @@ author: Alice"#;
 
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
-            let removed = mapping.remove("author");
+            let removed = mapping.remove(&YamlValue::scalar("author"));
             assert!(removed);
         }
     }
@@ -76,18 +76,18 @@ features:
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
             // Add new fields
-            mapping.set("license", "MIT");
-            mapping.set("published", true);
-            mapping.set("downloads", 1000);
+            mapping.set(&YamlValue::scalar("license"), &YamlValue::scalar("MIT"));
+            mapping.set(&YamlValue::scalar("published"), &YamlValue::scalar("true"));
+            mapping.set(&YamlValue::scalar("downloads"), &YamlValue::scalar("1000"));
 
             // Remove a field
-            mapping.remove("author");
+            mapping.remove(&YamlValue::scalar("author"));
 
             // Rename a field
             mapping.rename_key("version", "app_version");
 
             // Update existing field
-            mapping.set("year", 2024);
+            mapping.set(&YamlValue::scalar("year"), &YamlValue::scalar("2024"));
         }
     }
 

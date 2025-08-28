@@ -1,5 +1,5 @@
 use std::str::FromStr;
-use yaml_edit::Yaml;
+use yaml_edit::{Yaml, YamlValue};
 
 #[test]
 fn test_sequence_push_single() {
@@ -11,7 +11,7 @@ fn test_sequence_push_single() {
 
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
-            if let Some(mut team) = mapping.get_sequence("team") {
+            if let Some(mut team) = mapping.get_sequence(&YamlValue::scalar("team")) {
                 team.push("Charlie");
             }
         }
@@ -34,7 +34,7 @@ fn test_sequence_push_multiple() {
 
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
-            if let Some(mut team) = mapping.get_sequence("team") {
+            if let Some(mut team) = mapping.get_sequence(&YamlValue::scalar("team")) {
                 team.push("Charlie");
                 team.push("Diana");
             }
@@ -60,7 +60,7 @@ fn test_sequence_set_item() {
 
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
-            if let Some(mut team) = mapping.get_sequence("team") {
+            if let Some(mut team) = mapping.get_sequence(&YamlValue::scalar("team")) {
                 team.set_item(1, "Robert");
             }
         }
@@ -87,10 +87,10 @@ scores:
 
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
-            if let Some(mut team) = mapping.get_sequence("team") {
+            if let Some(mut team) = mapping.get_sequence(&YamlValue::scalar("team")) {
                 team.push("Charlie");
             }
-            if let Some(mut scores) = mapping.get_sequence("scores") {
+            if let Some(mut scores) = mapping.get_sequence(&YamlValue::scalar("scores")) {
                 scores.push(92);
                 scores.set_item(0, 100);
             }
@@ -122,11 +122,11 @@ fn test_nested_structure_with_sequences() {
 
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
-            if let Some(mut config) = mapping.get_mapping("config") {
-                config.set("enabled", false);
-                config.set("retries", 5);
+            if let Some(mut config) = mapping.get_mapping(&YamlValue::scalar("config")) {
+                config.set(&YamlValue::scalar("enabled"), &YamlValue::scalar("false"));
+                config.set(&YamlValue::scalar("retries"), &YamlValue::scalar("5"));
 
-                if let Some(mut servers) = config.get_sequence("servers") {
+                if let Some(mut servers) = config.get_sequence(&YamlValue::scalar("servers")) {
                     servers.push("host3");
                     servers.set_item(0, "primary-host");
                 }

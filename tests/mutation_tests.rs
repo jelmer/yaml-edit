@@ -1,5 +1,5 @@
 use std::str::FromStr;
-use yaml_edit::Yaml;
+use yaml_edit::{Yaml, YamlValue};
 
 #[test]
 fn test_simple_value_replacement() {
@@ -7,7 +7,7 @@ fn test_simple_value_replacement() {
 
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
-            mapping.set("key", "new_value");
+            mapping.set(&YamlValue::scalar("key"), &YamlValue::scalar("new_value"));
         }
     }
 
@@ -20,7 +20,7 @@ fn test_value_replacement_preserves_whitespace() {
 
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
-            mapping.set("key", "new_value");
+            mapping.set(&YamlValue::scalar("key"), &YamlValue::scalar("new_value"));
         }
     }
 
@@ -33,7 +33,7 @@ fn test_boolean_value_replacement() {
 
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
-            mapping.set("debug", false);
+            mapping.set(&YamlValue::scalar("debug"), &YamlValue::scalar("false"));
         }
     }
 
@@ -52,7 +52,7 @@ fn test_nested_mapping_mutation() {
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
             mapping.modify_mapping("database", |db| {
-                db.set("name", "prod_db");
+                db.set(&YamlValue::scalar("name"), &YamlValue::scalar("prod_db"));
             });
         }
     }
@@ -74,7 +74,7 @@ fn test_nested_mapping_add_new_key() {
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
             mapping.modify_mapping("database", |db| {
-                db.set("password", "secret123");
+                db.set(&YamlValue::scalar("password"), &YamlValue::scalar("secret123"));
             });
         }
     }
@@ -97,9 +97,9 @@ debug: true"#;
 
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
-            mapping.set("host", "0.0.0.0");
-            mapping.set("port", 3000);
-            mapping.set("debug", false);
+            mapping.set(&YamlValue::scalar("host"), &YamlValue::scalar("0.0.0.0"));
+            mapping.set(&YamlValue::scalar("port"), &YamlValue::scalar("3000"));
+            mapping.set(&YamlValue::scalar("debug"), &YamlValue::scalar("false"));
         }
     }
 
@@ -115,7 +115,7 @@ fn test_add_new_root_key() {
 
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
-            mapping.set("new_key", "new_value");
+            mapping.set(&YamlValue::scalar("new_key"), &YamlValue::scalar("new_value"));
         }
     }
 
@@ -137,8 +137,8 @@ server:
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
             mapping.modify_mapping("server", |server| {
-                server.set("host", "0.0.0.0");
-                server.set("timeout", 30);
+                server.set(&YamlValue::scalar("host"), &YamlValue::scalar("0.0.0.0"));
+                server.set(&YamlValue::scalar("timeout"), &YamlValue::scalar("30"));
             });
         }
     }

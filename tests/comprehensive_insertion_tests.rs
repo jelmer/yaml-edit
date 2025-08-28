@@ -145,18 +145,18 @@ database:
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             // Modify deeply nested value
-            if let Some(mut server) = mapping.get_mapping("server") {
-                if let Some(mut config) = server.get_mapping("config") {
-                    config.set("debug", false);
-                    config.set("timeout", 60);
-                    config.set("new_option", "enabled");
+            if let Some(mut server) = mapping.get_mapping(&YamlValue::scalar("server")) {
+                if let Some(mut config) = server.get_mapping(&YamlValue::scalar("config")) {
+                    config.set(&YamlValue::scalar("debug"), &YamlValue::scalar("false"));
+                    config.set(&YamlValue::scalar("timeout"), &YamlValue::scalar("60"));
+                    config.set(&YamlValue::scalar("new_option"), &YamlValue::scalar("enabled"));
                 }
             }
 
             // Modify another branch
-            if let Some(mut database) = mapping.get_mapping("database") {
-                database.set("host", "prod-db.example.com");
-                database.set("ssl", true);
+            if let Some(mut database) = mapping.get_mapping(&YamlValue::scalar("database")) {
+                database.set(&YamlValue::scalar("host"), &YamlValue::scalar("prod-db.example.com"));
+                database.set(&YamlValue::scalar("ssl"), &YamlValue::scalar("true"));
             }
         }
     }
@@ -191,12 +191,12 @@ database:
 
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
-            mapping.set("host", "0.0.0.0");
-            mapping.set("environment", "production");
+            mapping.set(&YamlValue::scalar("host"), &YamlValue::scalar("0.0.0.0"));
+            mapping.set(&YamlValue::scalar("environment"), &YamlValue::scalar("production"));
 
-            if let Some(mut db) = mapping.get_mapping("database") {
-                db.set("name", "prod_db");
-                db.set("timeout", 30);
+            if let Some(mut db) = mapping.get_mapping(&YamlValue::scalar("database")) {
+                db.set(&YamlValue::scalar("name"), &YamlValue::scalar("prod_db"));
+                db.set(&YamlValue::scalar("timeout"), &YamlValue::scalar("30"));
             }
         }
     }

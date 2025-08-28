@@ -16,6 +16,7 @@ pub mod custom_tags;
 mod error;
 mod error_recovery;
 mod lex;
+pub mod mutation;
 mod parse;
 mod scalar;
 mod schema;
@@ -58,6 +59,15 @@ pub use custom_tags::{
     EnvVarHandler,
     JsonHandler,
     TimestampHandler,
+};
+
+// Re-export mutation API
+pub use mutation::{
+    InsertPosition,
+    MutationBuilder,
+    MutationError,
+    MutationOptions,
+    MutationResult,
 };
 
 /// A positioned parse error containing location information.

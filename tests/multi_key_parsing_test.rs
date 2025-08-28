@@ -32,21 +32,21 @@ Security-Contact: https://github.com/example/blah/tree/HEAD/SECURITY.md
     assert!(keys.contains(&YamlValue::from("Security-Contact")));
 
     // Test that values are correct and don't contain other keys
-    let repo_value = doc.get_string("Repository").unwrap();
+    let repo_value = doc.get_string(&YamlValue::scalar("Repository")).unwrap();
     assert_eq!(repo_value, "https://github.com/example/blah.git");
     assert!(
         !repo_value.contains("Repository-Browse"),
         "Repository value should not contain other keys"
     );
 
-    let browse_value = doc.get_string("Repository-Browse").unwrap();
+    let browse_value = doc.get_string(&YamlValue::scalar("Repository-Browse")).unwrap();
     assert_eq!(browse_value, "https://github.com/example/blah");
     assert!(
         !browse_value.contains("Repository:"),
         "Repository-Browse value should not contain other keys"
     );
 
-    let security_value = doc.get_string("Security-Contact").unwrap();
+    let security_value = doc.get_string(&YamlValue::scalar("Security-Contact")).unwrap();
     assert_eq!(
         security_value,
         "https://github.com/example/blah/tree/HEAD/SECURITY.md"
@@ -72,7 +72,7 @@ Repository: https://github.com/example/blah.git
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0], YamlValue::from("Repository"));
 
-    let repo_value = doc.get_string("Repository").unwrap();
+    let repo_value = doc.get_string(&YamlValue::scalar("Repository")).unwrap();
     assert_eq!(repo_value, "https://github.com/example/blah.git");
 }
 
@@ -97,19 +97,19 @@ download: ftp://ftp.example.com:21/files/latest.tar.gz
 
     // Verify each URL is parsed correctly
     assert_eq!(
-        doc.get_string("homepage").unwrap(),
+        doc.get_string(&YamlValue::scalar("homepage")).unwrap(),
         "https://example.com:8080/path"
     );
     assert_eq!(
-        doc.get_string("documentation").unwrap(),
+        doc.get_string(&YamlValue::scalar("documentation")).unwrap(),
         "http://docs.example.com/guide"
     );
     assert_eq!(
-        doc.get_string("api").unwrap(),
+        doc.get_string(&YamlValue::scalar("api")).unwrap(),
         "https://api.example.com:443/v1"
     );
     assert_eq!(
-        doc.get_string("download").unwrap(),
+        doc.get_string(&YamlValue::scalar("download")).unwrap(),
         "ftp://ftp.example.com:21/files/latest.tar.gz"
     );
 }
@@ -135,18 +135,18 @@ equation: "y = 2x + 3: where x > 0"
 
     // Verify values with colons are preserved correctly
     // Note: get_string() returns the unquoted string content
-    assert_eq!(doc.get_string("time").unwrap(), "10:30:45");
-    assert_eq!(doc.get_string("ratio").unwrap(), "16:9");
+    assert_eq!(doc.get_string(&YamlValue::scalar("time")).unwrap(), "10:30:45");
+    assert_eq!(doc.get_string(&YamlValue::scalar("ratio")).unwrap(), "16:9");
     assert_eq!(
-        doc.get_string("path").unwrap(),
+        doc.get_string(&YamlValue::scalar("path")).unwrap(),
         "/usr/local/bin:/usr/bin:/bin"
     );
     assert_eq!(
-        doc.get_string("windows_path").unwrap(),
+        doc.get_string(&YamlValue::scalar("windows_path")).unwrap(),
         "C:\\Users\\Example\\Documents"
     );
     assert_eq!(
-        doc.get_string("equation").unwrap(),
+        doc.get_string(&YamlValue::scalar("equation")).unwrap(),
         "y = 2x + 3: where x > 0"
     );
 }
@@ -171,15 +171,15 @@ third: https://third.example.com
 
     // Verify the edit worked and other keys remain unchanged
     assert_eq!(
-        doc.get_string("first").unwrap(),
+        doc.get_string(&YamlValue::scalar("first")).unwrap(),
         "https://first.example.com"
     );
     assert_eq!(
-        doc.get_string("second").unwrap(),
+        doc.get_string(&YamlValue::scalar("second")).unwrap(),
         "https://updated.example.com"
     );
     assert_eq!(
-        doc.get_string("third").unwrap(),
+        doc.get_string(&YamlValue::scalar("third")).unwrap(),
         "https://third.example.com"
     );
 
@@ -187,7 +187,7 @@ third: https://third.example.com
     doc.set_string("fourth", "https://fourth.example.com");
     assert_eq!(doc.keys().len(), 4);
     assert_eq!(
-        doc.get_string("fourth").unwrap(),
+        doc.get_string(&YamlValue::scalar("fourth")).unwrap(),
         "https://fourth.example.com"
     );
 }

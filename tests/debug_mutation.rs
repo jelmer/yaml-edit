@@ -1,4 +1,4 @@
-use yaml_edit::{Yaml};
+use yaml_edit::{Yaml, YamlValue};
 use std::str::FromStr;
 
 #[test]
@@ -22,12 +22,12 @@ fn test_nested_mutation_debug() {
                 println!("Node text: {}", node.text());
             }
             
-            let db_result = mapping.get_mapping("database");
+            let db_result = mapping.get_mapping(&YamlValue::scalar("database"));
             println!("get_mapping result: {:?}", db_result.is_some());
             if let Some(mut db) = db_result {
                 println!("Got database mapping");
                 
-                db.set("name", "prod_db");
+                db.set(&YamlValue::scalar("name"), &YamlValue::scalar("prod_db"));
                 println!("Set name to prod_db");
                 
                 // Check the db mapping directly

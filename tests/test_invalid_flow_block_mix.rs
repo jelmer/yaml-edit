@@ -1,5 +1,5 @@
 use std::str::FromStr;
-use yaml_edit::Yaml;
+use yaml_edit::{Yaml, YamlValue};
 
 #[test]
 fn test_preserve_invalid_flow_block_mix() {
@@ -36,7 +36,7 @@ key1: value1"#;
         if let Some(mut mapping) = doc.as_mapping() {
             // Add a new key - but since the parser only sees {},
             // the new key is added to the empty mapping
-            mapping.set("key2", "value2");
+            mapping.set(&YamlValue::scalar("key2"), &YamlValue::scalar("value2"));
         }
     }
 
@@ -62,7 +62,7 @@ version: 1.0"#;
             // Test various operations
 
             // 1. Update existing key
-            mapping.set("version", "2.0");
+            mapping.set(&YamlValue::scalar("version"), &YamlValue::scalar("2.0"));
             assert!(yaml.to_string().contains("{}"));
             assert!(
                 yaml.to_string().contains("version: 2.0")
@@ -76,7 +76,7 @@ version: 1.0"#;
             assert!(yaml.to_string().contains("author: John"));
 
             // 3. Remove a key
-            mapping.remove("name");
+            mapping.remove(&YamlValue::scalar("name"));
             assert!(yaml.to_string().contains("{}"));
             assert!(!yaml.to_string().contains("name:"));
         }

@@ -1,4 +1,4 @@
-use yaml_edit::{Yaml, Scalar};
+use yaml_edit::{Yaml, Scalar, YamlValue};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 
@@ -12,8 +12,8 @@ fn test_editing_operations_debug() {
         println!("\nGot document");
         
         // Check initial values
-        println!("Initial name: {:?}", doc.get_string("name"));
-        println!("Initial version: {:?}", doc.get_string("version"));
+        println!("Initial name: {:?}", doc.get_string(&YamlValue::scalar("name")));
+        println!("Initial version: {:?}", doc.get_string(&YamlValue::scalar("version")));
         
         doc.set_string("name", "new-name");
         println!("Set name to new-name");
@@ -68,13 +68,13 @@ fn test_editing_operations_debug() {
         }
         
         // Verify values can be retrieved  
-        println!("Final name: {:?}", doc.get_string("name"));
-        println!("Final version: {:?}", doc.get_string("version"));
+        println!("Final name: {:?}", doc.get_string(&YamlValue::scalar("name")));
+        println!("Final version: {:?}", doc.get_string(&YamlValue::scalar("version")));
         
         assert!(output.contains("new-name"));
         assert!(output.contains("2.0.0"));
         
-        assert_eq!(doc.get_string("name"), Some("new-name".to_string()));
-        assert_eq!(doc.get_string("version"), Some("2.0.0".to_string()));
+        assert_eq!(doc.get_string(&YamlValue::scalar("name")), Some("new-name".to_string()));
+        assert_eq!(doc.get_string(&YamlValue::scalar("version")), Some("2.0.0".to_string()));
     }
 }

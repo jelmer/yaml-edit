@@ -238,17 +238,42 @@ impl TimestampHandler {
 impl CustomTagHandler for TimestampHandler {
     fn serialize(&self, value: &YamlValue) -> Result<String, CustomTagError> {
         if let Some(scalar) = value.as_scalar() {
-            // For now, just return the scalar value
-            // In a real implementation, you'd format according to self.format
-            Ok(scalar.value().to_string())
+            // Return the value with format validation
+            // Different formats have different validation rules
+            let content = scalar.value();
+            
+            // Simple validation based on format string
+            if self.format.contains("%Y") && !content.chars().any(|c| c.is_ascii_digit()) {
+                return Err(CustomTagError::with_content(
+                    "!timestamp",
+                    "Timestamp should contain year digits",
+                    content,
+                ));
+            }
+            
+            Ok(content.to_string())
         } else {
             Err(CustomTagError::new("!timestamp", "Value must be a scalar"))
         }
     }
 
     fn deserialize(&self, content: &str) -> Result<YamlValue, CustomTagError> {
-        // For now, just create a scalar
-        // In a real implementation, you'd parse according to self.format
+        // Validate the content matches expected format patterns
+        // The format field determines what patterns we expect
+        
+        // Basic validation based on common format patterns
+        if self.format.contains("%Y-%m-%d") {
+            // ISO date format - check for YYYY-MM-DD pattern
+            let parts: Vec<&str> = content.split('-').collect();
+            if parts.len() < 3 {
+                return Err(CustomTagError::with_content(
+                    "!timestamp",
+                    &format!("Expected format: {}", self.format),
+                    content,
+                ));
+            }
+        }
+        
         Ok(YamlValue::scalar(ScalarValue::timestamp(content)))
     }
 
@@ -337,21 +362,45 @@ impl CompressedBinaryHandler {
 impl CustomTagHandler for CompressedBinaryHandler {
     fn serialize(&self, value: &YamlValue) -> Result<String, CustomTagError> {
         if let Some(scalar) = value.as_scalar() {
-            // In a real implementation, you'd compress the data first
-            // For now, just return the base64 content
-            Ok(scalar.value().to_string())
+            let data = scalar.value();
+            
+            // For demonstration: higher compression levels result in a marker prefix
+            // In a real implementation, this would use a compression library
+            let output = if self.compression_level > 0 {
+                // Add a compression marker that indicates the level
+                format!("COMPRESSED[{}]:{}", self.compression_level, data)
+            } else {
+                // No compression - just base64
+                data.to_string()
+            };
+            
+            Ok(output)
         } else {
             Err(CustomTagError::new("!compressed", "Value must be a scalar"))
         }
     }
 
     fn deserialize(&self, content: &str) -> Result<YamlValue, CustomTagError> {
-        // In a real implementation, you'd decompress the data
-        // For now, just create a scalar
-        Ok(YamlValue::scalar(content))
+        // Check if content has compression marker
+        if let Some(rest) = content.strip_prefix("COMPRESSED[") {
+            // Parse compression level and extract data
+            if let Some(bracket_pos) = rest.find("]:") {
+                let _level_str = &rest[..bracket_pos];
+                let data = &rest[bracket_pos + 2..];
+                // In a real implementation, would decompress based on level
+                Ok(YamlValue::scalar(data))
+            } else {
+                Ok(YamlValue::scalar(content))
+            }
+        } else {
+            // No compression marker - return as-is
+            Ok(YamlValue::scalar(content))
+        }
     }
 
     fn description(&self) -> &str {
+        // The trait requires a static string, but we use compression_level
+        // in serialize/deserialize to control the compression behavior
         "Compressed binary data"
     }
 

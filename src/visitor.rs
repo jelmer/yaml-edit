@@ -33,24 +33,23 @@ use rowan::ast::AstNode;
 ///         // Visit children
 ///         for (key, value) in mapping.pairs() {
 ///             if let Some(key_node) = key {
-///                 // KEY nodes contain the actual content as children
-///                 for child in key_node.children() {
-///                     if let Some(scalar) = Scalar::cast(child.clone()) {
-///                         scalar.accept(self);
-///                     }
-///                     // Handle other key types as needed
+///                 // Use smart extraction to handle wrapper nodes automatically
+///                 if let Some(scalar) = yaml_edit::extract_scalar(&key_node) {
+///                     scalar.accept(self);
+///                 } else if let Some(sequence) = yaml_edit::extract_sequence(&key_node) {
+///                     sequence.accept(self);
+///                 } else if let Some(mapping) = yaml_edit::extract_mapping(&key_node) {
+///                     mapping.accept(self);
 ///                 }
 ///             }
 ///             if let Some(value_node) = value {
-///                 // VALUE nodes contain the actual content as children
-///                 for child in value_node.children() {
-///                     if let Some(scalar) = Scalar::cast(child.clone()) {
-///                         scalar.accept(self);
-///                     } else if let Some(nested_mapping) = Mapping::cast(child.clone()) {
-///                         nested_mapping.accept(self);
-///                     } else if let Some(nested_sequence) = Sequence::cast(child.clone()) {
-///                         nested_sequence.accept(self);
-///                     }
+///                 // Use smart extraction to handle wrapper nodes automatically
+///                 if let Some(scalar) = yaml_edit::extract_scalar(&value_node) {
+///                     scalar.accept(self);
+///                 } else if let Some(nested_mapping) = yaml_edit::extract_mapping(&value_node) {
+///                     nested_mapping.accept(self);
+///                 } else if let Some(nested_sequence) = yaml_edit::extract_sequence(&value_node) {
+///                     nested_sequence.accept(self);
 ///                 }
 ///             }
 ///         }
@@ -206,30 +205,28 @@ impl YamlVisitor for ScalarCollector {
     }
 
     fn visit_mapping(&mut self, mapping: &Mapping) {
+        use crate::yaml::{extract_scalar, extract_mapping, extract_sequence};
+        
         // Visit all key-value pairs in the mapping
         for (key, value) in mapping.pairs() {
             if let Some(key_node) = key {
-                // KEY nodes contain the actual content as children
-                for child in key_node.children() {
-                    if let Some(scalar) = Scalar::cast(child.clone()) {
-                        scalar.accept(self);
-                    } else if let Some(sequence) = Sequence::cast(child.clone()) {
-                        sequence.accept(self);
-                    } else if let Some(mapping) = Mapping::cast(child.clone()) {
-                        mapping.accept(self);
-                    }
+                // Use smart extraction to handle wrapper nodes automatically
+                if let Some(scalar) = extract_scalar(&key_node) {
+                    scalar.accept(self);
+                } else if let Some(sequence) = extract_sequence(&key_node) {
+                    sequence.accept(self);
+                } else if let Some(mapping) = extract_mapping(&key_node) {
+                    mapping.accept(self);
                 }
             }
             if let Some(value_node) = value {
-                // VALUE nodes contain the actual content as children
-                for child in value_node.children() {
-                    if let Some(scalar) = Scalar::cast(child.clone()) {
-                        scalar.accept(self);
-                    } else if let Some(nested_mapping) = Mapping::cast(child.clone()) {
-                        nested_mapping.accept(self);
-                    } else if let Some(nested_sequence) = Sequence::cast(child.clone()) {
-                        nested_sequence.accept(self);
-                    }
+                // Use smart extraction to handle wrapper nodes automatically
+                if let Some(scalar) = extract_scalar(&value_node) {
+                    scalar.accept(self);
+                } else if let Some(nested_mapping) = extract_mapping(&value_node) {
+                    nested_mapping.accept(self);
+                } else if let Some(nested_sequence) = extract_sequence(&value_node) {
+                    nested_sequence.accept(self);
                 }
             }
         }
@@ -303,31 +300,29 @@ impl YamlVisitor for NodeCounter {
     }
 
     fn visit_mapping(&mut self, mapping: &Mapping) {
+        use crate::yaml::{extract_scalar, extract_mapping, extract_sequence};
+        
         self.mapping_count += 1;
         // Visit children
         for (key, value) in mapping.pairs() {
             if let Some(key_node) = key {
-                // KEY nodes contain the actual content as children
-                for child in key_node.children() {
-                    if let Some(scalar) = Scalar::cast(child.clone()) {
-                        scalar.accept(self);
-                    } else if let Some(sequence) = Sequence::cast(child.clone()) {
-                        sequence.accept(self);
-                    } else if let Some(mapping) = Mapping::cast(child.clone()) {
-                        mapping.accept(self);
-                    }
+                // Use smart extraction to handle wrapper nodes automatically
+                if let Some(scalar) = extract_scalar(&key_node) {
+                    scalar.accept(self);
+                } else if let Some(sequence) = extract_sequence(&key_node) {
+                    sequence.accept(self);
+                } else if let Some(mapping) = extract_mapping(&key_node) {
+                    mapping.accept(self);
                 }
             }
             if let Some(value_node) = value {
-                // VALUE nodes contain the actual content as children
-                for child in value_node.children() {
-                    if let Some(scalar) = Scalar::cast(child.clone()) {
-                        scalar.accept(self);
-                    } else if let Some(nested_mapping) = Mapping::cast(child.clone()) {
-                        nested_mapping.accept(self);
-                    } else if let Some(nested_sequence) = Sequence::cast(child.clone()) {
-                        nested_sequence.accept(self);
-                    }
+                // Use smart extraction to handle wrapper nodes automatically
+                if let Some(scalar) = extract_scalar(&value_node) {
+                    scalar.accept(self);
+                } else if let Some(nested_mapping) = extract_mapping(&value_node) {
+                    nested_mapping.accept(self);
+                } else if let Some(nested_sequence) = extract_sequence(&value_node) {
+                    nested_sequence.accept(self);
                 }
             }
         }
@@ -387,29 +382,27 @@ where
     }
 
     fn visit_mapping(&mut self, mapping: &Mapping) {
+        use crate::yaml::{extract_scalar, extract_mapping, extract_sequence};
+        
         for (key, value) in mapping.pairs() {
             if let Some(key_node) = key {
-                // KEY nodes contain the actual content as children
-                for child in key_node.children() {
-                    if let Some(scalar) = Scalar::cast(child.clone()) {
-                        scalar.accept(self);
-                    } else if let Some(sequence) = Sequence::cast(child.clone()) {
-                        sequence.accept(self);
-                    } else if let Some(mapping) = Mapping::cast(child.clone()) {
-                        mapping.accept(self);
-                    }
+                // Use smart extraction to handle wrapper nodes automatically
+                if let Some(scalar) = extract_scalar(&key_node) {
+                    scalar.accept(self);
+                } else if let Some(sequence) = extract_sequence(&key_node) {
+                    sequence.accept(self);
+                } else if let Some(mapping) = extract_mapping(&key_node) {
+                    mapping.accept(self);
                 }
             }
             if let Some(value_node) = value {
-                // VALUE nodes contain the actual content as children
-                for child in value_node.children() {
-                    if let Some(scalar) = Scalar::cast(child.clone()) {
-                        scalar.accept(self);
-                    } else if let Some(nested_mapping) = Mapping::cast(child.clone()) {
-                        nested_mapping.accept(self);
-                    } else if let Some(nested_sequence) = Sequence::cast(child.clone()) {
-                        nested_sequence.accept(self);
-                    }
+                // Use smart extraction to handle wrapper nodes automatically
+                if let Some(scalar) = extract_scalar(&value_node) {
+                    scalar.accept(self);
+                } else if let Some(nested_mapping) = extract_mapping(&value_node) {
+                    nested_mapping.accept(self);
+                } else if let Some(nested_sequence) = extract_sequence(&value_node) {
+                    nested_sequence.accept(self);
                 }
             }
         }

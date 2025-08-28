@@ -41,7 +41,11 @@ pub use schema::{
 };
 pub use tagged_collections::TaggedCollection;
 pub use value::YamlValue;
-pub use yaml::{Directive, Document, Lang, Mapping, Scalar, Sequence, Set, TaggedScalar, Yaml};
+pub use yaml::{
+    Directive, Document, Lang, Mapping, Scalar, Sequence, Set, TaggedScalar, Yaml,
+    // Smart extraction helpers
+    extract_scalar, extract_mapping, extract_sequence, extract_tagged_scalar,
+};
 
 // Re-export custom tags API
 pub use custom_tags::{

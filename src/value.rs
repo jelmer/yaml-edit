@@ -97,6 +97,84 @@ impl YamlValue {
     pub const fn mapping() -> Self {
         YamlValue::Mapping(BTreeMap::new())
     }
+    
+    /// Parse a raw YAML string into a YamlValue
+    /// This handles both simple scalars and complex structures
+    pub fn parse_raw(yaml_str: &str) -> Self {
+        use std::str::FromStr;
+        
+        // Try to parse as a complete YAML document
+        if let Ok(parsed) = crate::Yaml::from_str(yaml_str) {
+            if let Some(doc) = parsed.document() {
+                return Self::from_document(&doc);
+            }
+        }
+        
+        // Fallback: treat as a scalar value
+        YamlValue::Scalar(ScalarValue::from_yaml(yaml_str))
+    }
+    
+    /// Convert a Document to a YamlValue
+    pub fn from_document(doc: &crate::yaml::Document) -> Self {
+        use crate::yaml::{extract_scalar, extract_mapping, extract_sequence, extract_tagged_scalar};
+        
+        // Try different document types in order
+        if let Some(scalar) = doc.as_scalar() {
+            YamlValue::Scalar(ScalarValue::new(scalar.as_string()))
+        } else if let Some(mapping) = doc.as_mapping() {
+            let mut map = BTreeMap::new();
+            for (key_opt, value_opt) in mapping.pairs() {
+                if let (Some(key_node), Some(value_node)) = (key_opt, value_opt) {
+                    // Extract key as string
+                    let key_str = if let Some(key_scalar) = extract_scalar(&key_node) {
+                        key_scalar.as_string()
+                    } else {
+                        key_node.text().to_string()
+                    };
+                    
+                    // Convert value node to YamlValue recursively
+                    let value_yaml = if let Some(scalar) = extract_scalar(&value_node) {
+                        YamlValue::Scalar(ScalarValue::new(scalar.as_string()))
+                    } else if let Some(mapping) = extract_mapping(&value_node) {
+                        // Recursively convert mapping
+                        let mut nested_map = BTreeMap::new();
+                        for (k, v) in mapping.pairs() {
+                            if let (Some(k_node), Some(v_node)) = (k, v) {
+                                let k_str = if let Some(k_scalar) = extract_scalar(&k_node) {
+                                    k_scalar.as_string()
+                                } else {
+                                    k_node.text().to_string()
+                                };
+                                if let Some(v_yaml) = Self::cast(v_node) {
+                                    nested_map.insert(k_str, v_yaml);
+                                }
+                            }
+                        }
+                        YamlValue::Mapping(nested_map)
+                    } else if let Some(sequence) = extract_sequence(&value_node) {
+                        let items: Vec<_> = sequence.items()
+                            .filter_map(|item| Self::cast(item))
+                            .collect();
+                        YamlValue::Sequence(items)
+                    } else {
+                        // Fallback to text
+                        YamlValue::Scalar(ScalarValue::new(value_node.text().to_string()))
+                    };
+                    
+                    map.insert(key_str, value_yaml);
+                }
+            }
+            YamlValue::Mapping(map)
+        } else if let Some(sequence) = doc.as_sequence() {
+            let items: Vec<_> = sequence.items()
+                .filter_map(|item| Self::cast(item))
+                .collect();
+            YamlValue::Sequence(items)
+        } else {
+            // Fallback to empty scalar
+            YamlValue::Scalar(ScalarValue::new(""))
+        }
+    }
 
     /// Create a mapping from a BTreeMap
     pub const fn from_mapping(map: BTreeMap<String, YamlValue>) -> Self {

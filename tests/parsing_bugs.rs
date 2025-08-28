@@ -1,6 +1,7 @@
 use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{Mapping, Scalar, Sequence, TaggedScalar, Yaml};
+use yaml_edit::{Mapping, Scalar, Yaml, 
+    extract_scalar, extract_mapping, extract_sequence, extract_tagged_scalar};
 
 #[test]
 fn test_timestamp_parsing_with_spaces() {
@@ -15,16 +16,10 @@ fn test_timestamp_parsing_with_spaces() {
         .get(&"timestamp".into())
         .expect("timestamp key should exist");
     
-    // Look inside the VALUE node for the actual scalar
-    let mut found_scalar = false;
-    for child in timestamp.children() {
-        if let Some(scalar) = Scalar::cast(child) {
-            assert_eq!(scalar.as_string(), "2001-12-14 21:59:43.10 -5");
-            found_scalar = true;
-            break;
-        }
-    }
-    if !found_scalar {
+    // Use smart extraction to handle wrapper nodes automatically
+    if let Some(scalar) = extract_scalar(&timestamp) {
+        assert_eq!(scalar.as_string(), "2001-12-14 21:59:43.10 -5");
+    } else {
         panic!("timestamp should be a scalar");
     }
 }
@@ -49,9 +44,8 @@ timestamps:
         .get(&"timestamps".into())
         .expect("timestamps key should exist");
     
-    // Look inside the VALUE node for the actual mapping
-    let timestamps_mapping = timestamps.children()
-        .find_map(Mapping::cast)
+    // Use smart extraction to handle wrapper nodes automatically
+    let timestamps_mapping = extract_mapping(&timestamps)
         .expect("timestamps should be a mapping");
 
     // Verify all timestamp formats are parsed correctly
@@ -61,13 +55,13 @@ timestamps:
 
     let with_timezone = timestamps_mapping
         .get(&"with_timezone".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("with_timezone should exist and be scalar");
     assert_eq!(with_timezone.as_string(), "2001-12-14 21:59:43.10 -5");
 
     let with_utc = timestamps_mapping
         .get(&"with_utc".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("with_utc should exist and be scalar");
     assert_eq!(with_utc.as_string(), "2001-12-14 21:59:43.10 Z");
 }
@@ -90,9 +84,8 @@ data: !!binary |
     // Get the data field
     let data = mapping.get(&"data".into()).expect("data key should exist");
 
-    // Look inside the VALUE node for the tagged scalar
-    let tagged = data.children()
-        .find_map(TaggedScalar::cast)
+    // Use smart extraction to handle wrapper nodes automatically
+    let tagged = extract_tagged_scalar(&data)
         .expect("Expected tagged scalar for binary data");
     
     {
@@ -132,8 +125,8 @@ fn test_binary_round_trip() {
     let map1 = doc1.as_mapping().expect("Root 1 should be mapping");
     let map2 = doc2.as_mapping().expect("Root 2 should be mapping");
 
-    let data1 = map1.get(&"image".into()).and_then(|node| node.children().find_map(TaggedScalar::cast));
-    let data2 = map2.get(&"image".into()).and_then(|node| node.children().find_map(TaggedScalar::cast));
+    let data1 = map1.get(&"image".into()).and_then(|node| extract_tagged_scalar(&node));
+    let data2 = map2.get(&"image".into()).and_then(|node| extract_tagged_scalar(&node));
 
     match (data1, data2) {
         (Some(tagged1), Some(tagged2)) => {
@@ -193,21 +186,21 @@ description: This is a value: with a colon
     // Check URL parsing
     let url = mapping
         .get(&"url".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("url should exist");
     assert_eq!(url.as_string(), "http://example.com:8080");
 
     // Check time parsing
     let time = mapping
         .get(&"time".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("time should exist");
     assert_eq!(time.as_string(), "12:30:45");
 
     // Check description parsing
     let desc = mapping
         .get(&"description".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("description should exist");
     assert_eq!(desc.as_string(), "This is a value: with a colon");
 }
@@ -232,7 +225,7 @@ ssh_url: ssh://user@example.com:22/path
     // Verify each URL is parsed correctly
     let http_url = mapping
         .get(&"http_url".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("http_url should exist");
     assert_eq!(
         http_url.as_string(),
@@ -241,7 +234,7 @@ ssh_url: ssh://user@example.com:22/path
 
     let https_url = mapping
         .get(&"https_url".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("https_url should exist");
     assert_eq!(
         https_url.as_string(),
@@ -250,7 +243,7 @@ ssh_url: ssh://user@example.com:22/path
 
     let ftp_url = mapping
         .get(&"ftp_url".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("ftp_url should exist");
     assert_eq!(
         ftp_url.as_string(),
@@ -259,13 +252,13 @@ ssh_url: ssh://user@example.com:22/path
 
     let file_url = mapping
         .get(&"file_url".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("file_url should exist");
     assert_eq!(file_url.as_string(), "file:///path/to/local/file.txt");
 
     let ssh_url = mapping
         .get(&"ssh_url".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("ssh_url should exist");
     assert_eq!(ssh_url.as_string(), "ssh://user@example.com:22/path");
 }
@@ -291,11 +284,11 @@ web:
 
     let database = mapping
         .get(&"database".into())
-        .and_then(|node| node.children().find_map(Mapping::cast))
+        .and_then(|node| extract_mapping(&node))
         .expect("database should be a mapping");
     let db_url = database
         .get(&"url".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("url should exist");
     assert_eq!(
         db_url.as_string(),
@@ -304,11 +297,11 @@ web:
 
     let web = mapping
         .get(&"web".into())
-        .and_then(|node| node.children().find_map(Mapping::cast))
+        .and_then(|node| extract_mapping(&node))
         .expect("web should be a mapping");
     let api_url = web
         .get(&"api_url".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("api_url should exist");
     assert_eq!(api_url.as_string(), "https://api.example.com:443/v1");
 }
@@ -333,16 +326,16 @@ ratio: 3:2:1
     assert_eq!(mapping.keys().count(), 7, "Should have 7 entries");
 
     // These should be parsed as single scalars due to our port number detection
-    let server = mapping
+    mapping
         .get(&"server".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("server should exist");
     // Note: Due to lexer limitations, "example.com:8080" gets split into tokens
     // This is acceptable for now as the core URL parsing works
 
     let timestamp = mapping
         .get(&"timestamp".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("timestamp should exist");
     assert_eq!(timestamp.as_string(), "2023-12-25 14:30:45.123 -05:00");
 }
@@ -377,7 +370,7 @@ urls:
     // Check services array
     let services = mapping
         .get(&"services".into())
-        .and_then(|node| node.children().find_map(Sequence::cast))
+        .and_then(|node| extract_sequence(&node))
         .expect("services should be a sequence");
     let service_items: Vec<_> = services.items().collect();
     assert_eq!(service_items.len(), 2, "Should have 2 services");
@@ -385,7 +378,7 @@ urls:
     // Check URLs array
     let urls = mapping
         .get(&"urls".into())
-        .and_then(|node| node.children().find_map(Sequence::cast))
+        .and_then(|node| extract_sequence(&node))
         .expect("urls should be a sequence");
     let url_items: Vec<_> = urls.items().collect();
     assert_eq!(url_items.len(), 3, "Should have 3 URLs");
@@ -450,7 +443,7 @@ another_key: value
     // Check the sequence has all 3 items
     let items = mapping
         .get(&"items".into())
-        .and_then(|node| node.children().find_map(Sequence::cast))
+        .and_then(|node| extract_sequence(&node))
         .expect("items should be a sequence");
     let item_vec: Vec<_> = items.items().collect();
     assert_eq!(item_vec.len(), 3, "Should have 3 items in sequence");
@@ -461,7 +454,7 @@ another_key: value
             .unwrap_or_else(|| panic!("Item {} should be a mapping", i));
         let id = item_mapping
             .get(&"id".into())
-            .and_then(|node| node.children().find_map(Scalar::cast))
+            .and_then(|node| extract_scalar(&node))
             .unwrap_or_else(|| panic!("Item {} should have id", i));
         assert_eq!(id.as_string(), (i + 1).to_string());
     }
@@ -510,20 +503,20 @@ colon_end: "ends with:"
     // Check that URLs are preserved correctly
     let start_url = mapping
         .get(&"start_url".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("start_url should exist");
     assert_eq!(start_url.as_string(), "http://start.com");
 
     let basic_auth = mapping
         .get(&"basic_auth".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("basic_auth should exist");
     assert_eq!(basic_auth.as_string(), "https://user:pass@example.com:443");
 
     // Non-URLs should also be handled correctly
     let quoted_colons = mapping
         .get(&"not_url_3".into())
-        .and_then(|node| node.children().find_map(Scalar::cast))
+        .and_then(|node| extract_scalar(&node))
         .expect("not_url_3 should exist");
     assert_eq!(quoted_colons.as_string(), "quoted:string:with:colons");
 }
@@ -581,7 +574,7 @@ message: !custom |
 
     let message = mapping.get(&"message".into()).expect("message key should exist");
 
-    if let Some(tagged) = message.children().find_map(TaggedScalar::cast) {
+    if let Some(tagged) = extract_tagged_scalar(&message) {
         assert_eq!(tagged.tag(), Some("!custom".to_string()));
 
         if let Some(scalar) = tagged.value() {
@@ -615,7 +608,7 @@ description: !note >
         .get(&"description".into())
         .expect("description key should exist");
 
-    if let Some(tagged) = desc.children().find_map(TaggedScalar::cast) {
+    if let Some(tagged) = extract_tagged_scalar(&desc) {
         assert_eq!(tagged.tag(), Some("!note".to_string()));
         // Just verify it parses correctly - folding behavior is preserved in the AST
     } else {

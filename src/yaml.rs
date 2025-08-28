@@ -185,6 +185,48 @@ ast_node!(
 );
 ast_node!(Directive, DIRECTIVE, "A YAML directive like %YAML 1.2");
 
+// CST abstraction layer - hides wrapper node complexity
+
+/// Extract the actual content from a VALUE or KEY wrapper node
+fn extract_content_node(wrapper: &SyntaxNode) -> Option<SyntaxNode> {
+    use crate::lex::SyntaxKind;
+    match wrapper.kind() {
+        SyntaxKind::VALUE | SyntaxKind::KEY => {
+            wrapper.children().next()
+        }
+        _ => Some(wrapper.clone())
+    }
+}
+
+/// Smart cast that handles wrapper nodes automatically
+fn smart_cast<T: AstNode<Language = Lang>>(node: SyntaxNode) -> Option<T> {
+    if let Some(content) = extract_content_node(&node) {
+        T::cast(content)
+    } else {
+        None
+    }
+}
+
+/// Extract a Scalar from any node (handles wrappers automatically)
+pub fn extract_scalar(node: &SyntaxNode) -> Option<Scalar> {
+    smart_cast(node.clone())
+}
+
+/// Extract a Mapping from any node (handles wrappers automatically) 
+pub fn extract_mapping(node: &SyntaxNode) -> Option<Mapping> {
+    smart_cast(node.clone())
+}
+
+/// Extract a Sequence from any node (handles wrappers automatically)
+pub fn extract_sequence(node: &SyntaxNode) -> Option<Sequence> {
+    smart_cast(node.clone())
+}
+
+/// Extract a TaggedScalar from any node (handles wrappers automatically)
+pub fn extract_tagged_scalar(node: &SyntaxNode) -> Option<TaggedScalar> {
+    smart_cast(node.clone())
+}
+
 // Utility functions for YAML scalar handling
 
 /// Parse a YAML scalar text, handling different quote styles
@@ -2025,66 +2067,8 @@ impl Mapping {
 
     /// Set a value of any YAML type (scalar, sequence, mapping)
     pub fn set_value(&mut self, key: impl Into<ScalarValue>, value: YamlValue) {
-        match value {
-            YamlValue::Scalar(scalar) => {
-                self.set(key, scalar);
-            }
-            YamlValue::Sequence(items) => {
-                // Create a flow-style sequence for now
-                let items_str: Vec<String> = items
-                    .into_iter()
-                    .map(|item| match item {
-                        YamlValue::Scalar(s) => s.to_yaml_string(),
-                        YamlValue::Sequence(_) => "[...]".to_string(), // Nested sequences
-                        YamlValue::Mapping(_) => "{...}".to_string(),  // Nested mappings
-                        YamlValue::Set(_) => "!!set{...}".to_string(),
-                        YamlValue::OrderedMapping(_) => "!!omap[...]".to_string(),
-                        YamlValue::Pairs(_) => "!!pairs[...]".to_string(),
-                    })
-                    .collect();
-                let sequence_yaml = format!("[{}]", items_str.join(", "));
-                let key_str = key.into().to_yaml_string();
-                self.set_raw(&key_str, &sequence_yaml);
-            }
-            YamlValue::Mapping(map) => {
-                // Create a flow-style mapping for now
-                let pairs: Vec<String> = map
-                    .into_iter()
-                    .map(|(k, v)| {
-                        let value_str = match v {
-                            YamlValue::Scalar(s) => s.to_yaml_string(),
-                            YamlValue::Sequence(_) => "[...]".to_string(),
-                            YamlValue::Mapping(_) => "{...}".to_string(),
-                            YamlValue::Set(_) => "!!set{...}".to_string(),
-                            YamlValue::OrderedMapping(_) => "!!omap[...]".to_string(),
-                            YamlValue::Pairs(_) => "!!pairs[...]".to_string(),
-                        };
-                        format!("{}: {}", k, value_str)
-                    })
-                    .collect();
-                let mapping_yaml = format!("{{{}}}", pairs.join(", "));
-                let key_str = key.into().to_yaml_string();
-                self.set_raw(&key_str, &mapping_yaml);
-            }
-            YamlValue::Set(set) => {
-                // Convert set to YAML representation
-                let yaml_str = YamlValue::Set(set).to_yaml_string(0);
-                let key_str = key.into().to_yaml_string();
-                self.set_raw(&key_str, &yaml_str);
-            }
-            YamlValue::OrderedMapping(pairs) => {
-                // Convert ordered mapping to YAML representation
-                let yaml_str = YamlValue::OrderedMapping(pairs).to_yaml_string(0);
-                let key_str = key.into().to_yaml_string();
-                self.set_raw(&key_str, &yaml_str);
-            }
-            YamlValue::Pairs(pairs) => {
-                // Convert pairs to YAML representation
-                let yaml_str = YamlValue::Pairs(pairs).to_yaml_string(0);
-                let key_str = key.into().to_yaml_string();
-                self.set_raw(&key_str, &yaml_str);
-            }
-        }
+        // Simply delegate to set() which already handles YamlValue
+        self.set(key, value);
     }
 }
 
@@ -4151,11 +4135,11 @@ impl Mapping {
     pub fn set(&mut self, key: impl Into<ScalarValue>, value: impl Into<YamlValue>) {
         let key_yaml = YamlValue::Scalar(key.into());
         let value_yaml = value.into();
-        self.set_key_value_cst(&key_yaml, &value_yaml);
+        self.set_yaml_value(&key_yaml, &value_yaml);
     }
 
-    /// Internal method to set a key-value pair using CST building
-    fn set_key_value_cst(&mut self, key: &YamlValue, value: &YamlValue) {
+    /// Internal unified method to set any YAML value type
+    fn set_yaml_value(&mut self, key: &YamlValue, value: &YamlValue) {
         // First, look for an existing entry with this key
         let children: Vec<_> = self.0.children_with_tokens().collect();
         
@@ -4273,213 +4257,6 @@ impl Mapping {
         }
     }
 
-    /// Internal method to set a key-value pair using proper KEY/VALUE nodes
-    fn set_key_value(&mut self, key: &str, value: &str) {
-        // Look through children to find MAPPING_ENTRY nodes
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        for (i, child) in children.iter().enumerate() {
-            if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                    // Check if this entry contains the key we're looking for
-                    if let Some(key_node) = node.children().find(|n| n.kind() == SyntaxKind::KEY) {
-                        if key_node.text().to_string().trim() == key.trim() {
-                            // Found the entry! Build a new one with updated value
-                            let entry_children: Vec<_> = node.children_with_tokens().collect();
-                            let mut builder = GreenNodeBuilder::new();
-                            builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
-
-                            for entry_child in entry_children {
-                                match entry_child {
-                                    rowan::NodeOrToken::Node(n)
-                                        if n.kind() == SyntaxKind::VALUE =>
-                                    {
-                                        // Replace the VALUE node with new value, preserving trailing whitespace
-                                        builder.start_node(SyntaxKind::VALUE.into());
-
-                                        // Check if the original VALUE has any trailing whitespace
-                                        let mut trailing_whitespace = String::new();
-                                        for child in n.children_with_tokens() {
-                                            if let rowan::NodeOrToken::Node(scalar) = &child {
-                                                if scalar.kind() == SyntaxKind::SCALAR {
-                                                    // Check if the SCALAR's text has trailing whitespace
-                                                    let scalar_text = scalar.text().to_string();
-                                                    // Find where the actual value ends and whitespace begins
-                                                    let trimmed_len = scalar_text.trim_end().len();
-                                                    if trimmed_len < scalar_text.len() {
-                                                        trailing_whitespace =
-                                                            scalar_text[trimmed_len..].to_string();
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        // Build new SCALAR with value
-                                        builder.start_node(SyntaxKind::SCALAR.into());
-                                        builder.token(SyntaxKind::STRING.into(), value);
-                                        // Add any trailing whitespace from original
-                                        if !trailing_whitespace.is_empty() {
-                                            builder.token(
-                                                SyntaxKind::WHITESPACE.into(),
-                                                &trailing_whitespace,
-                                            );
-                                        }
-                                        builder.finish_node(); // SCALAR
-                                        builder.finish_node(); // VALUE
-                                    }
-                                    rowan::NodeOrToken::Node(n) => {
-                                        // Copy other nodes as-is
-                                        self.copy_node_to_builder(&mut builder, &n);
-                                    }
-                                    rowan::NodeOrToken::Token(t) => {
-                                        // Copy tokens as-is
-                                        builder.token(t.kind().into(), t.text());
-                                    }
-                                }
-                            }
-
-                            builder.finish_node(); // MAPPING_ENTRY
-                            let new_entry = SyntaxNode::new_root_mut(builder.finish());
-
-                            // Replace the old MAPPING_ENTRY with the new one
-                            self.0.splice_children(i..i + 1, vec![new_entry.into()]);
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Key doesn't exist, add new MAPPING_ENTRY at the end
-        let children_with_tokens: Vec<_> = self.0.children_with_tokens().collect();
-        let count = children_with_tokens.len();
-
-        // Check if there's a trailing newline we need to preserve
-        let has_trailing_newline = if count > 0 {
-            if let Some(last) = children_with_tokens.last() {
-                if let Some(token) = last.as_token() {
-                    token.kind() == SyntaxKind::NEWLINE
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        // Determine insertion position - before trailing newline if it exists
-        let insert_pos = if has_trailing_newline {
-            count - 1
-        } else {
-            count
-        };
-
-        let mut new_elements = Vec::new();
-
-        // Add newline before if there are existing entries (but not if we're at position 0)
-        // Also check that the previous token isn't already a newline to avoid double newlines
-        let needs_newline = if insert_pos > 0 {
-            // Check what's at insert_pos - 1
-            if let Some(prev) = children_with_tokens.get(insert_pos - 1) {
-                // Only add newline if previous isn't already a newline
-                if let Some(token) = prev.as_token() {
-                    token.kind() != SyntaxKind::NEWLINE
-                } else {
-                    true // Previous is a node, we need a newline
-                }
-            } else {
-                true
-            }
-        } else {
-            false
-        };
-        
-        if needs_newline {
-            let mut nl_builder = GreenNodeBuilder::new();
-            nl_builder.start_node(SyntaxKind::ROOT.into());
-            nl_builder.token(SyntaxKind::NEWLINE.into(), "\n");
-            nl_builder.finish_node();
-            let nl_node = SyntaxNode::new_root_mut(nl_builder.finish());
-            if let Some(token) = nl_node.first_token() {
-                new_elements.push(token.into());
-            }
-        }
-
-        // Detect the indentation level of existing entries
-        let indent_level = self.detect_indentation_level();
-
-        // Add indentation if needed
-        if indent_level > 0 {
-            let indent_str = " ".repeat(indent_level);
-            let mut indent_builder = GreenNodeBuilder::new();
-            indent_builder.start_node(SyntaxKind::ROOT.into());
-            indent_builder.token(SyntaxKind::INDENT.into(), &indent_str);
-            indent_builder.finish_node();
-            let indent_node = SyntaxNode::new_root_mut(indent_builder.finish());
-            if let Some(token) = indent_node.first_token() {
-                new_elements.push(token.into());
-            }
-        }
-
-        // Build a new MAPPING_ENTRY
-        let mut builder = GreenNodeBuilder::new();
-        builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
-
-        // Add KEY node
-        builder.start_node(SyntaxKind::KEY.into());
-        builder.start_node(SyntaxKind::SCALAR.into());
-        builder.token(SyntaxKind::STRING.into(), key);
-        builder.finish_node(); // SCALAR
-        builder.finish_node(); // KEY
-
-        // Add colon and space
-        builder.token(SyntaxKind::COLON.into(), ":");
-        builder.token(SyntaxKind::WHITESPACE.into(), " ");
-
-        // Add VALUE node
-        builder.start_node(SyntaxKind::VALUE.into());
-        builder.start_node(SyntaxKind::SCALAR.into());
-        builder.token(SyntaxKind::STRING.into(), value);
-        builder.finish_node(); // SCALAR
-        builder.finish_node(); // VALUE
-
-        builder.finish_node(); // MAPPING_ENTRY
-
-        let new_entry = SyntaxNode::new_root_mut(builder.finish());
-        new_elements.push(new_entry.clone().into());
-
-        // If we're appending at the end and there's no trailing newline, add one
-        // This ensures YAML documents end with a newline per spec
-        // Exception: Don't add if this is a flow mapping (starts with {)
-        let is_flow_mapping = if count > 0 {
-            if let Some(first) = children_with_tokens.first() {
-                if let Some(token) = first.as_token() {
-                    token.kind() == SyntaxKind::LEFT_BRACE
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        if !has_trailing_newline && insert_pos == count && !is_flow_mapping {
-            let mut nl_builder = GreenNodeBuilder::new();
-            nl_builder.start_node(SyntaxKind::ROOT.into());
-            nl_builder.token(SyntaxKind::NEWLINE.into(), "\n");
-            nl_builder.finish_node();
-            let nl_node = SyntaxNode::new_root_mut(nl_builder.finish());
-            if let Some(token) = nl_node.first_token() {
-                new_elements.push(token.into());
-            }
-        }
-
-        // Insert at the calculated position
-        self.0.splice_children(insert_pos..insert_pos, new_elements);
-    }
 
     /// Internal method to insert or replace an entry using CST nodes
     fn insert_or_replace_entry_cst(&mut self, new_entry: &SyntaxNode, key: &YamlValue) {
@@ -4848,8 +4625,8 @@ impl Mapping {
                 if node.kind() == SyntaxKind::MAPPING_ENTRY {
                     if let Some(key_node) = node.children().find(|n| n.kind() == SyntaxKind::KEY) {
                         if self.keys_match(&key_node, &key_yaml) {
-                            // Key exists, update its value using CST
-                            self.set_key_value_cst(&key_yaml, &value_yaml);
+                            // Key exists, update its value using unified method
+                            self.set_yaml_value(&key_yaml, &value_yaml);
                             return;
                         }
                     }
@@ -4962,120 +4739,23 @@ impl Mapping {
                 }
             } else {
                 // No existing ordered keys, just append using CST
-                self.set_key_value_cst(&key_yaml, &value_yaml);
+                self.set_yaml_value(&key_yaml, &value_yaml);
             }
         } else {
             // Key is not in field order, append at the end using CST
-            self.set_key_value_cst(&key_yaml, &value_yaml);
+            self.set_yaml_value(&key_yaml, &value_yaml);
         }
     }
 
     /// Set a key-value pair, replacing if exists or adding if new
-    /// This is the low-level method that doesn't escape values.
+    /// This parses the raw YAML strings for both key and value.
     pub fn set_raw(&mut self, key: &str, value: &str) {
-        // Look through children to find the key-value pair
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-
-        for (i, child) in children.iter().enumerate() {
-            // Look for KEY nodes
-            if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::KEY {
-                    // Check if this key matches
-                    let key_text = node.text().to_string();
-                    if key_text.trim() == key.trim() {
-                        // Found the key! Now find the corresponding VALUE node
-                        // It should be after the colon
-                        for j in (i + 1)..children.len() {
-                            if let Some(token) = children[j].as_token() {
-                                if token.kind() == SyntaxKind::COLON {
-                                    // Found the colon, now find the VALUE node
-                                    for k in (j + 1)..children.len() {
-                                        if let Some(value_node) = children[k].as_node() {
-                                            if value_node.kind() == SyntaxKind::VALUE {
-                                                // Found the value to replace!
-                                                // We need to preserve the structure of the VALUE node
-                                                // The VALUE node may contain tokens with trailing whitespace
-                                                // We should replace just the value content, not the whitespace
-
-                                                // Build a new VALUE node that preserves trailing whitespace
-                                                let mut builder = GreenNodeBuilder::new();
-                                                builder.start_node(SyntaxKind::VALUE.into());
-
-                                                // Check if the original VALUE has trailing whitespace
-                                                let original_text = value_node.text().to_string();
-                                                let trimmed = original_text.trim_end();
-                                                let trailing_ws = &original_text[trimmed.len()..];
-
-                                                // Add the new value with the preserved trailing whitespace
-                                                builder.token(
-                                                    SyntaxKind::STRING.into(),
-                                                    &format!("{}{}", value, trailing_ws),
-                                                );
-                                                builder.finish_node();
-                                                let new_value =
-                                                    SyntaxNode::new_root_mut(builder.finish());
-
-                                                // Replace just the VALUE node
-                                                self.0.splice_children(
-                                                    k..k + 1,
-                                                    vec![new_value.into()],
-                                                );
-                                                return;
-                                            }
-                                        }
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Key doesn't exist, add new entry at the end
-        let count = self.0.children_with_tokens().count();
-
-        // Detect the indentation level of existing entries
-        let indent_level = self.detect_indentation_level();
-
-        // Build an entry node containing the new key-value pair
-        let mut entry_builder = GreenNodeBuilder::new();
-        entry_builder.start_node(SyntaxKind::ROOT.into()); // Temporary root for building
-
-        // Add newline if there are existing entries
-        if count > 0 {
-            entry_builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-
-        // Add indentation to match other entries
-        if indent_level > 0 {
-            let indent_str = " ".repeat(indent_level);
-            entry_builder.token(SyntaxKind::INDENT.into(), &indent_str);
-        }
-
-        // Add the key as a SCALAR
-        entry_builder.start_node(SyntaxKind::SCALAR.into());
-        entry_builder.token(SyntaxKind::STRING.into(), key);
-        entry_builder.finish_node();
-
-        // Add colon and space
-        entry_builder.token(SyntaxKind::COLON.into(), ":");
-        entry_builder.token(SyntaxKind::WHITESPACE.into(), " ");
-
-        // Add the value as a SCALAR
-        entry_builder.start_node(SyntaxKind::SCALAR.into());
-        entry_builder.token(SyntaxKind::STRING.into(), value);
-        entry_builder.finish_node();
-
-        entry_builder.finish_node();
-
-        // Create a temporary node to extract the elements
-        let temp_node = SyntaxNode::new_root_mut(entry_builder.finish());
-        let new_elements: Vec<_> = temp_node.children_with_tokens().collect();
-
-        // Append at the end
-        self.0.splice_children(count..count, new_elements);
+        // Parse raw YAML strings into YamlValues
+        let key_yaml = YamlValue::parse_raw(key);
+        let value_yaml = YamlValue::parse_raw(value);
+        
+        // Use the unified internal method
+        self.set_yaml_value(&key_yaml, &value_yaml);
     }
 
     /// Detect the indentation level used by entries in this mapping
@@ -5091,54 +4771,6 @@ impl Mapping {
         0 // No indentation found, must be root level
     }
 
-    // Helper to rebuild mapping from pairs - similar to deb822 approach
-    fn rebuild_from_pairs(&mut self, pairs: Vec<(Scalar, SyntaxNode)>) {
-        // Build a new complete MAPPING node with all children
-        let mut builder = GreenNodeBuilder::new();
-        builder.start_node(SyntaxKind::MAPPING.into());
-
-        for (i, (key_scalar, value_node)) in pairs.iter().enumerate() {
-            // Add MAPPING_ENTRY node
-            builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
-
-            // Add KEY node
-            builder.start_node(SyntaxKind::KEY.into());
-            builder.start_node(SyntaxKind::SCALAR.into());
-            builder.token(SyntaxKind::VALUE.into(), &key_scalar.value());
-            builder.finish_node(); // SCALAR
-            builder.finish_node(); // KEY
-
-            // Add colon and space
-            builder.token(SyntaxKind::COLON.into(), ":");
-            builder.token(SyntaxKind::WHITESPACE.into(), " ");
-
-            // Add VALUE node
-            builder.start_node(SyntaxKind::VALUE.into());
-            builder.start_node(SyntaxKind::SCALAR.into());
-            builder.token(SyntaxKind::VALUE.into(), &value_node.text().to_string());
-            builder.finish_node(); // SCALAR
-            builder.finish_node(); // VALUE
-
-            builder.finish_node(); // MAPPING_ENTRY
-
-            // Add newline after each entry
-            if i < pairs.len() - 1 {
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
-            }
-        }
-
-        builder.finish_node();
-
-        // Create the new mapping node and replace self
-        let new_mapping = SyntaxNode::new_root_mut(builder.finish());
-
-        // Get all children from the new mapping
-        let new_children: Vec<_> = new_mapping.children_with_tokens().collect();
-
-        // Replace all children of the current mapping node
-        let child_count = self.0.children_with_tokens().count();
-        self.0.splice_children(0..child_count, new_children);
-    }
 
     /// Insert a key-value pair after an existing key, preserving formatting
     /// Returns true if successful, false if the reference key wasn't found
@@ -5556,33 +5188,6 @@ impl Mapping {
         self.0.splice_children(count..count, new_elements);
     }
 
-    /// Helper to detect indentation level at a position from children vector
-    fn detect_indentation_from_children(
-        &self,
-        children: &[rowan::SyntaxElement<Lang>],
-        _position: usize,
-    ) -> String {
-        // Look for whitespace before keys in the mapping
-        for i in 0..children.len() {
-            if let Some(node) = children[i].as_node() {
-                if node.kind() == SyntaxKind::KEY || node.kind() == SyntaxKind::SCALAR {
-                    // Check if there's whitespace before this key
-                    if i > 0 {
-                        if let Some(token) = children[i - 1].as_token() {
-                            if token.kind() == SyntaxKind::WHITESPACE {
-                                let text = token.text();
-                                // Only use if it looks like indentation (not just a single space)
-                                if text.chars().all(|c| c == ' ' || c == '\t') && text.len() > 1 {
-                                    return text.to_string();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        String::new()
-    }
 
     /// Remove a key-value pair
     pub fn remove(&mut self, key: &str) -> bool {
@@ -5778,7 +5383,7 @@ impl Mapping {
         
         // Check if the new key already exists - if so, just update it
         if let Some(_existing) = self.find_entry_by_key(&key_yaml) {
-            self.set_key_value_cst(&key_yaml, &value_yaml);
+            self.set_yaml_value(&key_yaml, &value_yaml);
             return true;
         }
         
@@ -5839,7 +5444,7 @@ impl Mapping {
         
         // Check if the new key already exists - if so, just update it
         if let Some(_existing) = self.find_entry_by_key(&key_yaml) {
-            self.set_key_value_cst(&key_yaml, &value_yaml);
+            self.set_yaml_value(&key_yaml, &value_yaml);
             return true;
         }
         
@@ -5899,7 +5504,7 @@ impl Mapping {
         
         // Check if the key already exists - if so, just update it
         if let Some(_existing) = self.find_entry_by_key(&key_yaml) {
-            self.set_key_value_cst(&key_yaml, &value_yaml);
+            self.set_yaml_value(&key_yaml, &value_yaml);
             return;
         }
         
@@ -5988,10 +5593,6 @@ fn create_nested_value(path_parts: &[&str], final_value: &str) -> YamlValue {
     YamlValue::Mapping(map)
 }
 
-fn create_scalar_node(value: &str) -> SyntaxNode {
-    SyntaxNode::new_root_mut(create_scalar_green(value))
-}
-
 fn create_sequence_item_green(
     value: &str,
 ) -> Vec<rowan::NodeOrToken<rowan::GreenNode, rowan::GreenToken>> {
@@ -6000,19 +5601,6 @@ fn create_sequence_item_green(
         create_token_green(SyntaxKind::WHITESPACE, " ").into(),
         create_scalar_green(value).into(),
         create_token_green(SyntaxKind::NEWLINE, "\n").into(),
-    ]
-}
-
-fn create_sequence_item_green_with_indent(
-    value: &str,
-    indentation: &str,
-) -> Vec<rowan::NodeOrToken<rowan::GreenNode, rowan::GreenToken>> {
-    vec![
-        create_token_green(SyntaxKind::NEWLINE, "\n").into(),
-        create_token_green(SyntaxKind::WHITESPACE, indentation).into(),
-        create_token_green(SyntaxKind::DASH, "-").into(),
-        create_token_green(SyntaxKind::WHITESPACE, " ").into(),
-        create_scalar_green(value).into(),
     ]
 }
 

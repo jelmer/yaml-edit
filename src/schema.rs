@@ -5,7 +5,6 @@
 
 use crate::scalar::{ScalarType, ScalarValue};
 use crate::yaml::{Document, Mapping, Scalar, Sequence, TaggedScalar};
-use rowan::ast::AstNode;
 
 /// Specific type of validation error that occurred
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -546,23 +545,16 @@ impl SchemaValidator {
         path: &str,
         errors: &mut Vec<ValidationError>,
     ) {
-        use crate::lex::SyntaxKind;
+        use crate::yaml::{extract_scalar, extract_tagged_scalar, extract_sequence, extract_mapping};
         
-        // Handle wrapper nodes (VALUE, KEY) by looking at their children
-        if node.kind() == SyntaxKind::VALUE || node.kind() == SyntaxKind::KEY {
-            for child in node.children() {
-                self.validate_node(&child, path, errors);
-            }
-            return;
-        }
-        
-        if let Some(scalar) = Scalar::cast(node.clone()) {
+        // Use smart extraction to handle wrapper nodes automatically
+        if let Some(scalar) = extract_scalar(node) {
             self.validate_scalar(&scalar, path, errors);
-        } else if let Some(tagged_scalar) = TaggedScalar::cast(node.clone()) {
+        } else if let Some(tagged_scalar) = extract_tagged_scalar(node) {
             self.validate_tagged_scalar(&tagged_scalar, path, errors);
-        } else if let Some(sequence) = Sequence::cast(node.clone()) {
+        } else if let Some(sequence) = extract_sequence(node) {
             self.validate_sequence(&sequence, path, errors);
-        } else if let Some(mapping) = Mapping::cast(node.clone()) {
+        } else if let Some(mapping) = extract_mapping(node) {
             self.validate_mapping(&mapping, path, errors);
         }
         // If none match, it might be a different node type - skip validation
@@ -699,17 +691,10 @@ impl SchemaValidator {
         path: &str,
         errors: &mut Vec<ValidationError>,
     ) {
-        use crate::lex::SyntaxKind;
+        use crate::yaml::{extract_scalar, extract_tagged_scalar, extract_sequence, extract_mapping};
         
-        // Handle wrapper nodes (VALUE, KEY) by looking at their children
-        if node.kind() == SyntaxKind::VALUE || node.kind() == SyntaxKind::KEY {
-            for child in node.children() {
-                self.check_coercion_node(&child, path, errors);
-            }
-            return;
-        }
-        
-        if let Some(scalar) = Scalar::cast(node.clone()) {
+        // Use smart extraction to handle wrapper nodes automatically
+        if let Some(scalar) = extract_scalar(node) {
             let scalar_value = ScalarValue::from_yaml(scalar.as_string().trim());
             let scalar_type = scalar_value.scalar_type();
 
@@ -733,7 +718,7 @@ impl SchemaValidator {
                     ));
                 }
             }
-        } else if let Some(tagged_scalar) = TaggedScalar::cast(node.clone()) {
+        } else if let Some(tagged_scalar) = extract_tagged_scalar(node) {
             let scalar_type = self.get_tagged_scalar_type(&tagged_scalar);
 
             if !self.schema.allows_scalar_type(scalar_type) {
@@ -745,12 +730,12 @@ impl SchemaValidator {
                     self.schema.allowed_scalar_types(),
                 ));
             }
-        } else if let Some(sequence) = Sequence::cast(node.clone()) {
+        } else if let Some(sequence) = extract_sequence(node) {
             for (i, item) in sequence.items().enumerate() {
                 let item_path = format!("{}[{}]", path, i);
                 self.check_coercion_node(&item, &item_path, errors);
             }
-        } else if let Some(mapping) = Mapping::cast(node.clone()) {
+        } else if let Some(mapping) = extract_mapping(node) {
             for (key_opt, value_opt) in mapping.pairs() {
                 // Get the key name first to avoid borrowing issues
                 let key_name = key_opt
@@ -775,6 +760,7 @@ impl SchemaValidator {
 mod tests {
     use super::*;
     use crate::yaml::Document;
+    use rowan::ast::AstNode;
 
     #[test]
     fn test_schema_names() {

@@ -430,7 +430,6 @@ impl CustomTagHandler for EnvVarHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
     #[test]
     fn test_tag_registry_basic() {

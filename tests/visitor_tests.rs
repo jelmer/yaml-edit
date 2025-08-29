@@ -2,7 +2,7 @@ use rowan::ast::AstNode;
 use yaml_edit::visitor::{
     NodeCounter, ScalarCollector, ScalarTransformer, YamlAccept, YamlVisitor,
 };
-use yaml_edit::{Document, Yaml};
+use yaml_edit::Yaml;
 
 #[test]
 fn test_scalar_collector() {

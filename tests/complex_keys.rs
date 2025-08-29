@@ -9,6 +9,9 @@ fn test_explicit_key_indicator() {
 : value2
 "#;
     let doc = yaml.parse::<Yaml>();
+    if let Err(e) = &doc {
+        eprintln!("Parse error: {:?}", e);
+    }
     assert!(doc.is_ok());
     let doc = doc.unwrap();
 
@@ -82,6 +85,9 @@ fn test_mapping_as_key() {
 {name: Jane, age: 25}: designer
 "#;
     let doc = yaml.parse::<Yaml>();
+    if let Err(e) = &doc {
+        eprintln!("Parse error: {:?}", e);
+    }
     assert!(doc.is_ok());
     let doc = doc.unwrap();
 
@@ -228,6 +234,9 @@ fn test_explicit_key_without_value() {
 : has_value
 "#;
     let doc = yaml.parse::<Yaml>();
+    if let Err(e) = &doc {
+        eprintln!("Parse error: {:?}", e);
+    }
     assert!(doc.is_ok());
     let doc = doc.unwrap();
 

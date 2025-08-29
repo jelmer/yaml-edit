@@ -1,8 +1,20 @@
 //! Value wrapper that can represent any YAML value type (scalar, sequence, mapping).
 
+use crate::lex::SyntaxKind;
 use crate::scalar::ScalarValue;
+use rowan::GreenNodeBuilder;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotingContext {
+    /// Default context - quote based on content
+    Default,
+    /// Inside ordered mapping or pairs - be less aggressive with quoting
+    OrderedCollection,
+    /// Key context - quote aggressively to ensure valid YAML keys
+    Key,
+}
 
 /// Represents any YAML value - scalar, sequence, mapping, or special collections
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +133,16 @@ impl YamlValue {
         }
     }
 
+    /// Create a rowan green tree for this YAML value
+    pub fn to_green_tree(&self) -> rowan::GreenNode {
+        crate::yaml::create_yaml_content_green(self, false)
+    }
+
+    /// Create a rowan green tree for this YAML value when used as a key
+    pub fn to_key_green_tree(&self) -> rowan::GreenNode {
+        crate::yaml::create_yaml_content_green(self, true)
+    }
+
     /// Get as sequence if this is a sequence
     pub fn as_sequence(&self) -> Option<&[YamlValue]> {
         match self {
@@ -198,6 +220,197 @@ impl YamlValue {
         match self {
             YamlValue::Pairs(pairs) => Some(pairs),
             _ => None,
+        }
+    }
+
+    /// Convert to AST green node that can be spliced into a YAML tree
+    pub fn to_green_node(&self) -> rowan::GreenNode {
+        let mut builder = GreenNodeBuilder::new();
+        self.build_green_node(&mut builder, QuotingContext::Default);
+        builder.finish()
+    }
+
+    /// Build the green node representation into the provided builder
+    pub fn build_green_node(&self, builder: &mut GreenNodeBuilder, context: QuotingContext) {
+        match self {
+            YamlValue::Scalar(s) => {
+                // For scalars, check if we need quoting based on the scalar type and content
+                let value = s.value();
+                let scalar_type = s.scalar_type();
+
+                // Trust the scalar type - if it's specifically typed as a number/bool, don't quote
+                let needs_quote = match scalar_type {
+                    crate::scalar::ScalarType::Integer
+                    | crate::scalar::ScalarType::Float
+                    | crate::scalar::ScalarType::Boolean
+                    | crate::scalar::ScalarType::Null => false,
+                    _ => {
+                        // For strings, check if content needs quoting based on context
+                        let basic_needs_quote = value.is_empty() ||
+                            value.contains(':') || value.contains('#') ||
+                            value.contains('@') || value.contains('[') || value.contains(']') ||
+                            value.contains('{') || value.contains('}') ||
+                            // Check if it looks like a YAML keyword
+                            matches!(value.to_lowercase().as_str(),
+                                "true" | "false" | "yes" | "no" | "on" | "off" | "null" | "~") ||
+                            // Check if it looks like a number but should be treated as string
+                            value.parse::<f64>().is_ok();
+
+                        // Add space quoting based on context
+                        let space_needs_quote = value.contains(' ')
+                            && match context {
+                                QuotingContext::Default => {
+                                    // In default context, only quote spaces if they're problematic
+                                    value.starts_with(' ')
+                                        || value.ends_with(' ')
+                                        || value.contains(": ")
+                                        || value.contains("# ")
+                                }
+                                QuotingContext::OrderedCollection => {
+                                    // In ordered collections, be even more permissive
+                                    value.starts_with(' ')
+                                        || value.ends_with(' ')
+                                        || value.contains(": ")
+                                        || value.contains("# ")
+                                }
+                                QuotingContext::Key => {
+                                    // For keys, always quote spaces to ensure valid YAML
+                                    true
+                                }
+                            };
+
+                        basic_needs_quote || space_needs_quote
+                    }
+                };
+
+                if needs_quote {
+                    let quoted = format!("'{}'", value.replace('\'', "''"));
+                    builder.token(SyntaxKind::STRING.into(), &quoted);
+                } else {
+                    builder.token(SyntaxKind::STRING.into(), value);
+                }
+            }
+            YamlValue::Sequence(seq) => {
+                if seq.is_empty() {
+                    // For empty sequences, use flow style []
+                    builder.token(SyntaxKind::LEFT_BRACKET.into(), "[");
+                    builder.token(SyntaxKind::RIGHT_BRACKET.into(), "]");
+                } else {
+                    builder.start_node(SyntaxKind::SEQUENCE.into());
+                    for item in seq {
+                        builder.token(SyntaxKind::DASH.into(), "-");
+                        builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                        item.build_green_node(builder, context);
+                        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                    }
+                    builder.finish_node();
+                }
+            }
+            YamlValue::Mapping(map) => {
+                if map.is_empty() {
+                    // For empty mappings, use flow style {}
+                    builder.token(SyntaxKind::LEFT_BRACE.into(), "{");
+                    builder.token(SyntaxKind::RIGHT_BRACE.into(), "}");
+                } else {
+                    builder.start_node(SyntaxKind::MAPPING.into());
+                    for (key, value) in map {
+                        builder.start_node(SyntaxKind::KEY.into());
+                        // Quote key if needed
+                        let needs_quote = key.contains(':')
+                            || key.contains('#')
+                            || key.contains(' ')
+                            || key.contains('@');
+                        if needs_quote {
+                            let quoted = format!("'{}'", key.replace('\'', "''"));
+                            builder.token(SyntaxKind::STRING.into(), &quoted);
+                        } else {
+                            builder.token(SyntaxKind::STRING.into(), key);
+                        }
+                        builder.finish_node();
+
+                        builder.token(SyntaxKind::COLON.into(), ":");
+                        builder.token(SyntaxKind::WHITESPACE.into(), " ");
+
+                        builder.start_node(SyntaxKind::VALUE.into());
+                        value.build_green_node(builder, context);
+                        builder.finish_node();
+
+                        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                    }
+                    builder.finish_node();
+                }
+            }
+            YamlValue::Set(set) => {
+                builder.token(SyntaxKind::TAG.into(), "!!set");
+                builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                if set.is_empty() {
+                    // For empty sets, use flow style {}
+                    builder.token(SyntaxKind::LEFT_BRACE.into(), "{");
+                    builder.token(SyntaxKind::RIGHT_BRACE.into(), "}");
+                } else {
+                    builder.start_node(SyntaxKind::MAPPING.into());
+                    for item in set {
+                        builder.token(SyntaxKind::STRING.into(), item);
+                        builder.token(SyntaxKind::COLON.into(), ":");
+                        builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                        builder.token(SyntaxKind::NULL.into(), "null");
+                        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                    }
+                    builder.finish_node();
+                }
+            }
+            YamlValue::OrderedMapping(pairs) => {
+                builder.token(SyntaxKind::TAG.into(), "!!omap");
+                builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                builder.start_node(SyntaxKind::SEQUENCE.into());
+                for (key, value) in pairs {
+                    builder.token(SyntaxKind::WHITESPACE.into(), "  ");
+                    builder.token(SyntaxKind::DASH.into(), "-");
+                    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                    builder.start_node(SyntaxKind::MAPPING.into());
+
+                    builder.start_node(SyntaxKind::KEY.into());
+                    builder.token(SyntaxKind::STRING.into(), key);
+                    builder.finish_node();
+
+                    builder.token(SyntaxKind::COLON.into(), ":");
+                    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+
+                    builder.start_node(SyntaxKind::VALUE.into());
+                    value.build_green_node(builder, QuotingContext::OrderedCollection);
+                    builder.finish_node();
+
+                    builder.finish_node();
+                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                }
+                builder.finish_node();
+            }
+            YamlValue::Pairs(pairs) => {
+                builder.token(SyntaxKind::TAG.into(), "!!pairs");
+                builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                builder.start_node(SyntaxKind::SEQUENCE.into());
+                for (key, value) in pairs {
+                    builder.token(SyntaxKind::WHITESPACE.into(), "  ");
+                    builder.token(SyntaxKind::DASH.into(), "-");
+                    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                    builder.start_node(SyntaxKind::MAPPING.into());
+
+                    builder.start_node(SyntaxKind::KEY.into());
+                    builder.token(SyntaxKind::STRING.into(), key);
+                    builder.finish_node();
+
+                    builder.token(SyntaxKind::COLON.into(), ":");
+                    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+
+                    builder.start_node(SyntaxKind::VALUE.into());
+                    value.build_green_node(builder, QuotingContext::OrderedCollection);
+                    builder.finish_node();
+
+                    builder.finish_node();
+                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                }
+                builder.finish_node();
+            }
         }
     }
 

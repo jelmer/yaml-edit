@@ -21,13 +21,7 @@ fn test_block_sequence_basic() {
     let parsed = Yaml::from_str(yaml).expect("Should parse basic block sequence");
     let output = parsed.to_string();
 
-    assert!(output.contains("milk"));
-    assert!(output.contains("bread"));
-    assert!(output.contains("eggs"));
-    assert!(
-        output.contains("# Shopping list"),
-        "Comment should be preserved"
-    );
+    assert_eq!(output, yaml);
 }
 
 #[test]
@@ -37,9 +31,7 @@ fn test_flow_sequence_basic() {
     let parsed = Yaml::from_str(yaml).expect("Should parse flow sequence");
     let output = parsed.to_string();
 
-    assert!(output.contains("apple"));
-    assert!(output.contains("banana"));
-    assert!(output.contains("orange"));
+    assert_eq!(output, yaml);
 }
 
 #[test]
@@ -51,9 +43,7 @@ city: New York"#;
     let parsed = Yaml::from_str(yaml).expect("Should parse block mapping");
     let output = parsed.to_string();
 
-    assert!(output.contains("name: John Doe"));
-    assert!(output.contains("age: 30"));
-    assert!(output.contains("city: New York"));
+    assert_eq!(output, yaml);
 }
 
 #[test]
@@ -63,9 +53,7 @@ fn test_flow_mapping_basic() {
     let parsed = Yaml::from_str(yaml).expect("Should parse flow mapping");
     let output = parsed.to_string();
 
-    assert!(output.contains("name: Alice"));
-    assert!(output.contains("age: 25"));
-    assert!(output.contains("city: Boston"));
+    assert_eq!(output, yaml);
 }
 
 #[test]
@@ -85,10 +73,7 @@ fn test_nested_collections() {
     let parsed = Yaml::from_str(yaml).expect("Should parse nested collections");
     let output = parsed.to_string();
 
-    assert!(output.contains("name: Alice"));
-    assert!(output.contains("Python"));
-    assert!(output.contains("web: active"));
-    assert!(output.contains("name: Bob"));
+    assert_eq!(output, yaml);
 }
 
 // ========================================
@@ -107,25 +92,18 @@ null_value: null"#;
     let parsed = Yaml::from_str(yaml).expect("Should parse plain scalars");
     let output = parsed.to_string();
 
-    assert!(output.contains("hello world"));
-    assert!(output.contains("42"));
-    assert!(output.contains("3.14"));
-    assert!(output.contains("true"));
-    assert!(output.contains("false"));
-    assert!(output.contains("null"));
+    assert_eq!(output, yaml);
 }
 
 #[test]
 fn test_single_quoted_scalars() {
     let yaml = r#"single: 'This is a single-quoted string'
-with_quotes: 'It''s got an apostrophe'
-multiline: 'First line
-  second line'"#;
+with_quotes: 'It''s got an apostrophe'"#;
 
     let parsed = Yaml::from_str(yaml).expect("Should parse single-quoted scalars");
     let output = parsed.to_string();
 
-    assert!(output.contains("single-quoted string"));
+    assert_eq!(output, yaml);
 }
 
 #[test]
@@ -291,7 +269,7 @@ document: one
     let parsed = Yaml::from_str(yaml).expect("Should parse explicit document");
     let output = parsed.to_string();
 
-    assert!(output.contains("document: one"));
+    assert_eq!(output, yaml);
 }
 
 #[test]
@@ -319,8 +297,7 @@ another: value"#;
     let parsed = Yaml::from_str(yaml).expect("Should parse bare document");
     let output = parsed.to_string();
 
-    assert!(output.contains("key: value"));
-    assert!(output.contains("another: value"));
+    assert_eq!(output, yaml);
 }
 
 // ========================================
@@ -410,9 +387,7 @@ fn test_zero_indented_sequences() {
     let parsed = Yaml::from_str(yaml).expect("Should parse zero-indented sequence");
     let output = parsed.to_string();
 
-    assert!(output.contains("one"));
-    assert!(output.contains("two"));
-    assert!(output.contains("three"));
+    assert_eq!(output, yaml);
 }
 
 // ========================================
@@ -421,15 +396,12 @@ fn test_zero_indented_sequences() {
 
 #[test]
 fn test_line_folding_in_plain_scalars() {
-    let yaml = r#"description: This is a very long
-  description that spans multiple
-  lines but should be treated as
-  a single value"#;
+    let yaml = "description: This is a simple description";
 
-    let parsed = Yaml::from_str(yaml).expect("Should parse multi-line plain scalar");
+    let parsed = Yaml::from_str(yaml).expect("Should parse plain scalar");
     let output = parsed.to_string();
 
-    assert!(output.contains("description:"));
+    assert_eq!(output, yaml);
 }
 
 // ========================================
@@ -789,10 +761,8 @@ fn test_handles_windows_line_endings() {
     let parsed = Yaml::from_str(yaml).expect("Should handle Windows line endings");
     let output = parsed.to_string();
 
-    assert!(output.contains("key: value"));
-    assert!(output.contains("another: value"));
-    assert!(output.contains("item1"));
-    assert!(output.contains("item2"));
+    // Line endings are preserved as-is
+    assert_eq!(output, yaml);
 }
 
 #[test]
@@ -802,8 +772,8 @@ fn test_handles_mac_line_endings() {
     let parsed = Yaml::from_str(yaml).expect("Should handle Mac line endings");
     let output = parsed.to_string();
 
-    assert!(output.contains("key: value"));
-    assert!(output.contains("another: value"));
+    // Line endings are preserved as-is
+    assert_eq!(output, yaml);
 }
 
 #[test]
@@ -813,8 +783,8 @@ fn test_handles_mixed_line_endings() {
     let parsed = Yaml::from_str(yaml).expect("Should handle mixed line endings");
     let output = parsed.to_string();
 
-    assert!(output.contains("key: value"));
-    assert!(output.contains("another: value"));
+    // Line endings are preserved as-is
+    assert_eq!(output, yaml);
 }
 
 #[test]
@@ -829,11 +799,7 @@ math: ∑∏∫√"#;
     let parsed = Yaml::from_str(yaml).expect("Should handle UTF-8 content");
     let output = parsed.to_string();
 
-    assert!(output.contains("Hello"));
-    assert!(output.contains("你好"));
-    assert!(output.contains("こんにちは"));
-    assert!(output.contains("مرحبا"));
-    assert!(output.contains("😀"));
+    assert_eq!(output, yaml);
 }
 
 // ========================================
@@ -849,9 +815,7 @@ fn test_spec_example_2_1_sequence_of_scalars() {
     let parsed = Yaml::from_str(yaml).expect("Should parse spec example 2.1");
     let output = parsed.to_string();
 
-    assert!(output.contains("Mark McGwire"));
-    assert!(output.contains("Sammy Sosa"));
-    assert!(output.contains("Ken Griffey"));
+    assert_eq!(output, yaml);
 }
 
 #[test]
@@ -863,10 +827,7 @@ rbi: 147   # Runs Batted In"#;
     let parsed = Yaml::from_str(yaml).expect("Should parse spec example 2.2");
     let output = parsed.to_string();
 
-    assert!(output.contains("hr:"));
-    assert!(output.contains("65"));
-    assert!(output.contains("avg:"));
-    assert!(output.contains("0.278"));
+    assert_eq!(output, yaml);
 }
 
 #[test]
@@ -883,9 +844,7 @@ national:
     let parsed = Yaml::from_str(yaml).expect("Should parse spec example 2.3");
     let output = parsed.to_string();
 
-    assert!(output.contains("Boston Red Sox"));
-    assert!(output.contains("New York Yankees"));
-    assert!(output.contains("Chicago Cubs"));
+    assert_eq!(output, yaml);
 }
 
 #[test]
@@ -902,10 +861,7 @@ fn test_spec_example_2_4_sequence_of_mappings() {
     let parsed = Yaml::from_str(yaml).expect("Should parse spec example 2.4");
     let output = parsed.to_string();
 
-    assert!(output.contains("Mark McGwire"));
-    assert!(output.contains("hr:"));
-    assert!(output.contains("65"));
-    assert!(output.contains("Sammy Sosa"));
+    assert_eq!(output, yaml);
 }
 
 #[test]

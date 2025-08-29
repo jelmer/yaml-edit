@@ -18,7 +18,7 @@ description: A test app"#;
 
     let result = yaml.to_string();
     let expected = r#"name: my-app
-version: '2.0'
+version: 2.0
 description: A test app"#;
     assert_eq!(result, expected);
 }
@@ -39,7 +39,7 @@ description: A test app"#;
 
     let result = yaml.to_string();
     let expected = r#"name: my-app
-version: '1.0'
+version: 1.0
 description: A test app"#;
     assert_eq!(result, expected);
 }
@@ -82,7 +82,8 @@ version: 1.0"#;
     let result = yaml.to_string();
     let expected = r#"name: my-app
 version: 1.0
-description: A test app"#;
+description: A test app
+"#;
     assert_eq!(result, expected);
 }
 
@@ -111,7 +112,8 @@ author: John Doe
 #[test]
 fn test_set_with_field_order_complex_ordering() {
     let original = r#"version: 1.0
-author: John Doe"#;
+author: John Doe
+"#;
 
     let mut yaml = Yaml::from_str(original).unwrap();
 
@@ -129,14 +131,16 @@ author: John Doe"#;
     let expected = r#"name: my-app
 version: 1.0
 description: A test app
-author: John Doe"#;
+author: John Doe
+"#;
     assert_eq!(result, expected);
 }
 
 #[test]
 fn test_document_set_with_field_order() {
     let original = r#"version: 1.0
-author: John Doe"#;
+author: John Doe
+"#;
 
     let mut yaml = Yaml::from_str(original).unwrap();
 
@@ -148,7 +152,8 @@ author: John Doe"#;
     let result = yaml.to_string();
     let expected = r#"name: my-app
 version: 1.0
-author: John Doe"#;
+author: John Doe
+"#;
     assert_eq!(result, expected);
 }
 
@@ -167,7 +172,7 @@ fn test_set_with_field_order_empty_document() {
     let expected = r#"---
 {}
 name: my-app
-version: '1.0'
+version: 1.0
 "#;
     assert_eq!(result, expected);
 }

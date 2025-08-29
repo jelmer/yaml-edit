@@ -39,14 +39,18 @@ Security-Contact: https://github.com/example/blah/tree/HEAD/SECURITY.md
         "Repository value should not contain other keys"
     );
 
-    let browse_value = doc.get_string(&YamlValue::scalar("Repository-Browse")).unwrap();
+    let browse_value = doc
+        .get_string(&YamlValue::scalar("Repository-Browse"))
+        .unwrap();
     assert_eq!(browse_value, "https://github.com/example/blah");
     assert!(
         !browse_value.contains("Repository:"),
         "Repository-Browse value should not contain other keys"
     );
 
-    let security_value = doc.get_string(&YamlValue::scalar("Security-Contact")).unwrap();
+    let security_value = doc
+        .get_string(&YamlValue::scalar("Security-Contact"))
+        .unwrap();
     assert_eq!(
         security_value,
         "https://github.com/example/blah/tree/HEAD/SECURITY.md"
@@ -135,7 +139,10 @@ equation: "y = 2x + 3: where x > 0"
 
     // Verify values with colons are preserved correctly
     // Note: get_string() returns the unquoted string content
-    assert_eq!(doc.get_string(&YamlValue::scalar("time")).unwrap(), "10:30:45");
+    assert_eq!(
+        doc.get_string(&YamlValue::scalar("time")).unwrap(),
+        "10:30:45"
+    );
     assert_eq!(doc.get_string(&YamlValue::scalar("ratio")).unwrap(), "16:9");
     assert_eq!(
         doc.get_string(&YamlValue::scalar("path")).unwrap(),
@@ -167,7 +174,10 @@ third: https://third.example.com
     assert_eq!(doc.keys().len(), 3);
 
     // Edit a value
-    doc.set_string("second", "https://updated.example.com");
+    doc.set(
+        &YamlValue::scalar("second"),
+        &YamlValue::scalar("https://updated.example.com"),
+    );
 
     // Verify the edit worked and other keys remain unchanged
     assert_eq!(
@@ -184,7 +194,10 @@ third: https://third.example.com
     );
 
     // Add a new key
-    doc.set_string("fourth", "https://fourth.example.com");
+    doc.set(
+        &YamlValue::scalar("fourth"),
+        &YamlValue::scalar("https://fourth.example.com"),
+    );
     assert_eq!(doc.keys().len(), 4);
     assert_eq!(
         doc.get_string(&YamlValue::scalar("fourth")).unwrap(),

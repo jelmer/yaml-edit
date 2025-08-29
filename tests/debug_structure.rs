@@ -1,11 +1,11 @@
-use yaml_edit::{Yaml, SyntaxKind};
-use std::str::FromStr;
 use rowan::ast::AstNode;
+use std::str::FromStr;
+use yaml_edit::{SyntaxKind, Yaml};
 
 #[test]
 fn test_structure() {
     let yaml = Yaml::from_str("debug: true  # For now").unwrap();
-    
+
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             for entry in mapping.entries() {
@@ -19,10 +19,18 @@ fn test_structure() {
                                 for vchild in n.children_with_tokens() {
                                     match vchild {
                                         rowan::NodeOrToken::Node(vn) => {
-                                            println!("      Node: kind={:?}, text='{}'", vn.kind(), vn.text());
+                                            println!(
+                                                "      Node: kind={:?}, text='{}'",
+                                                vn.kind(),
+                                                vn.text()
+                                            );
                                         }
                                         rowan::NodeOrToken::Token(vt) => {
-                                            println!("      Token: kind={:?}, text='{}'", vt.kind(), vt.text());
+                                            println!(
+                                                "      Token: kind={:?}, text='{}'",
+                                                vt.kind(),
+                                                vt.text()
+                                            );
                                         }
                                     }
                                 }

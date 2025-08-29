@@ -241,7 +241,7 @@ impl CustomTagHandler for TimestampHandler {
             // Return the value with format validation
             // Different formats have different validation rules
             let content = scalar.value();
-            
+
             // Simple validation based on format string
             if self.format.contains("%Y") && !content.chars().any(|c| c.is_ascii_digit()) {
                 return Err(CustomTagError::with_content(
@@ -250,7 +250,7 @@ impl CustomTagHandler for TimestampHandler {
                     content,
                 ));
             }
-            
+
             Ok(content.to_string())
         } else {
             Err(CustomTagError::new("!timestamp", "Value must be a scalar"))
@@ -260,7 +260,7 @@ impl CustomTagHandler for TimestampHandler {
     fn deserialize(&self, content: &str) -> Result<YamlValue, CustomTagError> {
         // Validate the content matches expected format patterns
         // The format field determines what patterns we expect
-        
+
         // Basic validation based on common format patterns
         if self.format.contains("%Y-%m-%d") {
             // ISO date format - check for YYYY-MM-DD pattern
@@ -273,7 +273,7 @@ impl CustomTagHandler for TimestampHandler {
                 ));
             }
         }
-        
+
         Ok(YamlValue::scalar(ScalarValue::timestamp(content)))
     }
 
@@ -363,7 +363,7 @@ impl CustomTagHandler for CompressedBinaryHandler {
     fn serialize(&self, value: &YamlValue) -> Result<String, CustomTagError> {
         if let Some(scalar) = value.as_scalar() {
             let data = scalar.value();
-            
+
             // For demonstration: higher compression levels result in a marker prefix
             // In a real implementation, this would use a compression library
             let output = if self.compression_level > 0 {
@@ -373,7 +373,7 @@ impl CustomTagHandler for CompressedBinaryHandler {
                 // No compression - just base64
                 data.to_string()
             };
-            
+
             Ok(output)
         } else {
             Err(CustomTagError::new("!compressed", "Value must be a scalar"))

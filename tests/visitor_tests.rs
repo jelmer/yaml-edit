@@ -168,7 +168,9 @@ fn test_custom_visitor() {
                     for child in value_node.children() {
                         if let Some(nested_mapping) = yaml_edit::Mapping::cast(child.clone()) {
                             nested_mapping.accept(self);
-                        } else if let Some(nested_sequence) = yaml_edit::Sequence::cast(child.clone()) {
+                        } else if let Some(nested_sequence) =
+                            yaml_edit::Sequence::cast(child.clone())
+                        {
                             nested_sequence.accept(self);
                         }
                     }

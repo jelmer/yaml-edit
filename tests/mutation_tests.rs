@@ -74,7 +74,10 @@ fn test_nested_mapping_add_new_key() {
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
             mapping.modify_mapping("database", |db| {
-                db.set(&YamlValue::scalar("password"), &YamlValue::scalar("secret123"));
+                db.set(
+                    &YamlValue::scalar("password"),
+                    &YamlValue::scalar("secret123"),
+                );
             });
         }
     }
@@ -115,7 +118,10 @@ fn test_add_new_root_key() {
 
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
-            mapping.set(&YamlValue::scalar("new_key"), &YamlValue::scalar("new_value"));
+            mapping.set(
+                &YamlValue::scalar("new_key"),
+                &YamlValue::scalar("new_value"),
+            );
         }
     }
 

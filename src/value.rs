@@ -24,10 +24,10 @@ pub enum YamlValue {
 impl YamlValue {
     /// Try to cast a SyntaxNode to a YamlValue
     pub fn cast(node: rowan::SyntaxNode<crate::yaml::Lang>) -> Option<Self> {
-        use crate::yaml::{Scalar, Sequence, Mapping};
         use crate::lex::SyntaxKind;
+        use crate::yaml::{Mapping, Scalar, Sequence};
         use rowan::ast::AstNode;
-        
+
         match node.kind() {
             SyntaxKind::SCALAR => {
                 if let Some(scalar) = Scalar::cast(node.clone()) {
@@ -39,7 +39,8 @@ impl YamlValue {
             }
             SyntaxKind::SEQUENCE => {
                 if let Some(seq) = Sequence::cast(node) {
-                    let items: Vec<YamlValue> = seq.items()
+                    let items: Vec<YamlValue> = seq
+                        .items()
                         .filter_map(|item| YamlValue::cast(item))
                         .collect();
                     Some(YamlValue::Sequence(items))
@@ -58,7 +59,7 @@ impl YamlValue {
                             } else {
                                 key_node.text().to_string()
                             };
-                            
+
                             // Convert value node to YamlValue
                             if let Some(value_yaml) = YamlValue::cast(value_node) {
                                 map.insert(key_str, value_yaml);
@@ -72,9 +73,11 @@ impl YamlValue {
             }
             SyntaxKind::VALUE => {
                 // VALUE nodes contain the actual content as children
-                node.children().next().and_then(|content| YamlValue::cast(content))
+                node.children()
+                    .next()
+                    .and_then(|content| YamlValue::cast(content))
             }
-            _ => None
+            _ => None,
         }
     }
 
@@ -97,27 +100,27 @@ impl YamlValue {
     pub const fn mapping() -> Self {
         YamlValue::Mapping(BTreeMap::new())
     }
-    
+
     /// Parse a raw YAML string into a YamlValue
     /// This handles both simple scalars and complex structures
     pub fn parse_raw(yaml_str: &str) -> Self {
         use std::str::FromStr;
-        
+
         // Try to parse as a complete YAML document
         if let Ok(parsed) = crate::Yaml::from_str(yaml_str) {
             if let Some(doc) = parsed.document() {
                 return Self::from_document(&doc);
             }
         }
-        
+
         // Fallback: treat as a scalar value
         YamlValue::Scalar(ScalarValue::from_yaml(yaml_str))
     }
-    
+
     /// Convert a Document to a YamlValue
     pub fn from_document(doc: &crate::yaml::Document) -> Self {
-        use crate::yaml::{extract_scalar, extract_mapping, extract_sequence};
-        
+        use crate::yaml::{extract_mapping, extract_scalar, extract_sequence};
+
         // Try different document types in order
         if let Some(scalar) = doc.as_scalar() {
             YamlValue::Scalar(ScalarValue::new(scalar.as_string()))
@@ -131,7 +134,7 @@ impl YamlValue {
                     } else {
                         key_node.text().to_string()
                     };
-                    
+
                     // Convert value node to YamlValue recursively
                     let value_yaml = if let Some(scalar) = extract_scalar(&value_node) {
                         YamlValue::Scalar(ScalarValue::new(scalar.as_string()))
@@ -152,7 +155,8 @@ impl YamlValue {
                         }
                         YamlValue::Mapping(nested_map)
                     } else if let Some(sequence) = extract_sequence(&value_node) {
-                        let items: Vec<_> = sequence.items()
+                        let items: Vec<_> = sequence
+                            .items()
                             .filter_map(|item| Self::cast(item))
                             .collect();
                         YamlValue::Sequence(items)
@@ -160,13 +164,14 @@ impl YamlValue {
                         // Fallback to text
                         YamlValue::Scalar(ScalarValue::new(value_node.text().to_string()))
                     };
-                    
+
                     map.insert(key_str, value_yaml);
                 }
             }
             YamlValue::Mapping(map)
         } else if let Some(sequence) = doc.as_sequence() {
-            let items: Vec<_> = sequence.items()
+            let items: Vec<_> = sequence
+                .items()
                 .filter_map(|item| Self::cast(item))
                 .collect();
             YamlValue::Sequence(items)

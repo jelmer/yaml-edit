@@ -1,7 +1,8 @@
 use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{Mapping, Scalar, Yaml, 
-    extract_scalar, extract_mapping, extract_sequence, extract_tagged_scalar};
+use yaml_edit::{
+    extract_mapping, extract_scalar, extract_sequence, extract_tagged_scalar, Mapping, Scalar, Yaml,
+};
 
 #[test]
 fn test_timestamp_parsing_with_spaces() {
@@ -15,7 +16,7 @@ fn test_timestamp_parsing_with_spaces() {
     let timestamp = mapping
         .get(&"timestamp".into())
         .expect("timestamp key should exist");
-    
+
     // Use smart extraction to handle wrapper nodes automatically
     if let Some(scalar) = extract_scalar(&timestamp) {
         assert_eq!(scalar.as_string(), "2001-12-14 21:59:43.10 -5");
@@ -43,10 +44,9 @@ timestamps:
     let timestamps = root_mapping
         .get(&"timestamps".into())
         .expect("timestamps key should exist");
-    
+
     // Use smart extraction to handle wrapper nodes automatically
-    let timestamps_mapping = extract_mapping(&timestamps)
-        .expect("timestamps should be a mapping");
+    let timestamps_mapping = extract_mapping(&timestamps).expect("timestamps should be a mapping");
 
     // Verify all timestamp formats are parsed correctly
     assert!(timestamps_mapping.get(&"simple".into()).is_some());
@@ -85,9 +85,8 @@ data: !!binary |
     let data = mapping.get(&"data".into()).expect("data key should exist");
 
     // Use smart extraction to handle wrapper nodes automatically
-    let tagged = extract_tagged_scalar(&data)
-        .expect("Expected tagged scalar for binary data");
-    
+    let tagged = extract_tagged_scalar(&data).expect("Expected tagged scalar for binary data");
+
     {
         assert_eq!(tagged.tag(), Some("!!binary".to_string()));
 
@@ -125,8 +124,12 @@ fn test_binary_round_trip() {
     let map1 = doc1.as_mapping().expect("Root 1 should be mapping");
     let map2 = doc2.as_mapping().expect("Root 2 should be mapping");
 
-    let data1 = map1.get(&"image".into()).and_then(|node| extract_tagged_scalar(&node));
-    let data2 = map2.get(&"image".into()).and_then(|node| extract_tagged_scalar(&node));
+    let data1 = map1
+        .get(&"image".into())
+        .and_then(|node| extract_tagged_scalar(&node));
+    let data2 = map2
+        .get(&"image".into())
+        .and_then(|node| extract_tagged_scalar(&node));
 
     match (data1, data2) {
         (Some(tagged1), Some(tagged2)) => {
@@ -450,8 +453,8 @@ another_key: value
 
     // Verify each item is a mapping with the expected structure
     for (i, item) in item_vec.iter().enumerate() {
-        let item_mapping = Mapping::cast(item.clone())
-            .unwrap_or_else(|| panic!("Item {} should be a mapping", i));
+        let item_mapping =
+            Mapping::cast(item.clone()).unwrap_or_else(|| panic!("Item {} should be a mapping", i));
         let id = item_mapping
             .get(&"id".into())
             .and_then(|node| extract_scalar(&node))
@@ -572,7 +575,9 @@ message: !custom |
     let doc = parsed.document().expect("Should have a document");
     let mapping = doc.as_mapping().expect("Root should be a mapping");
 
-    let message = mapping.get(&"message".into()).expect("message key should exist");
+    let message = mapping
+        .get(&"message".into())
+        .expect("message key should exist");
 
     if let Some(tagged) = extract_tagged_scalar(&message) {
         assert_eq!(tagged.tag(), Some("!custom".to_string()));

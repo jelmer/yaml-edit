@@ -545,8 +545,10 @@ impl SchemaValidator {
         path: &str,
         errors: &mut Vec<ValidationError>,
     ) {
-        use crate::yaml::{extract_scalar, extract_tagged_scalar, extract_sequence, extract_mapping};
-        
+        use crate::yaml::{
+            extract_mapping, extract_scalar, extract_sequence, extract_tagged_scalar,
+        };
+
         // Use smart extraction to handle wrapper nodes automatically
         if let Some(scalar) = extract_scalar(node) {
             self.validate_scalar(&scalar, path, errors);
@@ -691,8 +693,10 @@ impl SchemaValidator {
         path: &str,
         errors: &mut Vec<ValidationError>,
     ) {
-        use crate::yaml::{extract_scalar, extract_tagged_scalar, extract_sequence, extract_mapping};
-        
+        use crate::yaml::{
+            extract_mapping, extract_scalar, extract_sequence, extract_tagged_scalar,
+        };
+
         // Use smart extraction to handle wrapper nodes automatically
         if let Some(scalar) = extract_scalar(node) {
             let scalar_value = ScalarValue::from_yaml(scalar.as_string().trim());

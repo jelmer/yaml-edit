@@ -1,5 +1,5 @@
 use std::str::FromStr;
-use yaml_edit::{Document, Yaml};
+use yaml_edit::{Document, Yaml, YamlValue};
 
 #[test]
 fn test_insert_at_index_empty_document() {
@@ -46,8 +46,14 @@ fn test_insert_at_index_new_key_at_beginning() {
     // Should be able to access all values
     let doc = yaml.document().expect("Should have document");
     assert!(doc.get(&"zero".into()).is_some(), "Should have 'zero' key");
-    assert!(doc.get(&"first".into()).is_some(), "Should have 'first' key");
-    assert!(doc.get(&"second".into()).is_some(), "Should have 'second' key");
+    assert!(
+        doc.get(&"first".into()).is_some(),
+        "Should have 'first' key"
+    );
+    assert!(
+        doc.get(&"second".into()).is_some(),
+        "Should have 'second' key"
+    );
 }
 
 #[test]
@@ -64,9 +70,18 @@ fn test_insert_at_index_new_key_in_middle() {
 
     // Should be able to access all values
     let doc = yaml.document().expect("Should have document");
-    assert!(doc.get(&"first".into()).is_some(), "Should have 'first' key");
-    assert!(doc.get(&"second".into()).is_some(), "Should have 'second' key");
-    assert!(doc.get(&"third".into()).is_some(), "Should have 'third' key");
+    assert!(
+        doc.get(&"first".into()).is_some(),
+        "Should have 'first' key"
+    );
+    assert!(
+        doc.get(&"second".into()).is_some(),
+        "Should have 'second' key"
+    );
+    assert!(
+        doc.get(&"third".into()).is_some(),
+        "Should have 'third' key"
+    );
 }
 
 #[test]
@@ -92,7 +107,10 @@ fn test_insert_at_index_preserves_document_structure() {
     );
 
     // Should be able to access all values
-    assert!(doc_after.get(&"name".into()).is_some(), "Should have 'name' key");
+    assert!(
+        doc_after.get(&"name".into()).is_some(),
+        "Should have 'name' key"
+    );
     assert!(
         doc_after.get(&"version".into()).is_some(),
         "Should have 'version' key"
@@ -106,21 +124,33 @@ fn test_insert_at_index_preserves_document_structure() {
 #[test]
 fn test_document_insert_at_index() {
     let mut doc = Document::new();
-    doc.set_string("first", "1");
-    doc.set_string("second", "2");
+    doc.set(&YamlValue::scalar("first"), &YamlValue::scalar("1"));
+    doc.set(&YamlValue::scalar("second"), &YamlValue::scalar("2"));
 
     // Insert new key
     doc.insert_at_index(1, "middle", 1.5);
 
     let output = doc.to_yaml_string();
-    assert!(output.contains("first: '1'"));
-    assert!(output.contains("middle: "));
-    assert!(output.contains("second: '2'"));
+    let expected = "---
+first: 1
+middle: 1.5
+second: 2
+";
+    assert_eq!(output, expected);
 
     // Should be able to access values
-    assert!(doc.get(&"first".into()).is_some(), "Should have 'first' key");
-    assert!(doc.get(&"middle".into()).is_some(), "Should have 'middle' key");
-    assert!(doc.get(&"second".into()).is_some(), "Should have 'second' key");
+    assert!(
+        doc.get(&"first".into()).is_some(),
+        "Should have 'first' key"
+    );
+    assert!(
+        doc.get(&"middle".into()).is_some(),
+        "Should have 'middle' key"
+    );
+    assert!(
+        doc.get(&"second".into()).is_some(),
+        "Should have 'second' key"
+    );
 }
 
 #[test]
@@ -145,7 +175,10 @@ fn test_insert_special_characters() {
     let mapping = doc.as_mapping().expect("Should be mapping");
 
     // At minimum, the original key should still be there
-    assert!(mapping.contains_key(&"key1".into()), "Should have 'key1' key");
+    assert!(
+        mapping.contains_key(&"key1".into()),
+        "Should have 'key1' key"
+    );
 }
 
 #[test]

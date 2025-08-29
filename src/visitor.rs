@@ -205,8 +205,8 @@ impl YamlVisitor for ScalarCollector {
     }
 
     fn visit_mapping(&mut self, mapping: &Mapping) {
-        use crate::yaml::{extract_scalar, extract_mapping, extract_sequence};
-        
+        use crate::yaml::{extract_mapping, extract_scalar, extract_sequence};
+
         // Visit all key-value pairs in the mapping
         for (key, value) in mapping.pairs() {
             if let Some(key_node) = key {
@@ -300,8 +300,8 @@ impl YamlVisitor for NodeCounter {
     }
 
     fn visit_mapping(&mut self, mapping: &Mapping) {
-        use crate::yaml::{extract_scalar, extract_mapping, extract_sequence};
-        
+        use crate::yaml::{extract_mapping, extract_scalar, extract_sequence};
+
         self.mapping_count += 1;
         // Visit children
         for (key, value) in mapping.pairs() {
@@ -382,8 +382,8 @@ where
     }
 
     fn visit_mapping(&mut self, mapping: &Mapping) {
-        use crate::yaml::{extract_scalar, extract_mapping, extract_sequence};
-        
+        use crate::yaml::{extract_mapping, extract_scalar, extract_sequence};
+
         for (key, value) in mapping.pairs() {
             if let Some(key_node) = key {
                 // Use smart extraction to handle wrapper nodes automatically

@@ -5,8 +5,8 @@
 //! for simple operations. This builder is for complex operations that need positioning,
 //! field ordering, or other advanced options.
 
-use crate::value::YamlValue;
 use crate::scalar::ScalarValue;
+use crate::value::YamlValue;
 use crate::yaml::{Document, Mapping, Sequence};
 
 /// Position specification for insertions
@@ -71,7 +71,7 @@ impl<'a> MutationBuilder<'a> {
             options: MutationOptions::default(),
         }
     }
-    
+
     /// Create a builder for Mapping mutations
     pub fn mapping(mapping: &'a mut Mapping) -> Self {
         Self {
@@ -79,7 +79,7 @@ impl<'a> MutationBuilder<'a> {
             options: MutationOptions::default(),
         }
     }
-    
+
     /// Create a builder for Sequence mutations
     pub fn sequence(sequence: &'a mut Sequence) -> Self {
         Self {
@@ -87,63 +87,67 @@ impl<'a> MutationBuilder<'a> {
             options: MutationOptions::default(),
         }
     }
-    
+
     /// Set the insertion position
     pub fn position(mut self, pos: InsertPosition) -> Self {
         self.options.position = pos;
         self
     }
-    
+
     /// Insert at the end (default)
     pub fn at_end(self) -> Self {
         self.position(InsertPosition::End)
     }
-    
+
     /// Insert at the beginning
     pub fn at_start(self) -> Self {
         self.position(InsertPosition::Start)
     }
-    
+
     /// Insert at a specific index
     pub fn at_index(self, index: usize) -> Self {
         self.position(InsertPosition::Index(index))
     }
-    
+
     /// Insert after a specific key (mappings only)
     pub fn after_key(self, key: impl Into<String>) -> Self {
         self.position(InsertPosition::AfterKey(key.into()))
     }
-    
+
     /// Insert before a specific key (mappings only)
     pub fn before_key(self, key: impl Into<String>) -> Self {
         self.position(InsertPosition::BeforeKey(key.into()))
     }
-    
+
     /// Use field ordering for insertion
     pub fn with_field_order(mut self, order: Vec<String>) -> Self {
         self.options.field_order = Some(order.clone());
         self.options.position = InsertPosition::Ordered(order);
         self
     }
-    
+
     /// Enable/disable preserving existing formatting
     pub fn preserve_formatting(mut self, preserve: bool) -> Self {
         self.options.preserve_formatting = preserve;
         self
     }
-    
+
     /// Enable/disable replacing existing entries
     pub fn replace_existing(mut self, replace: bool) -> Self {
         self.options.replace_existing = replace;
         self
     }
-    
+
     /// Set a key-value pair (mappings and documents)
-    pub fn set(mut self, key: impl Into<ScalarValue>, value: impl Into<YamlValue>) -> MutationResult {
+    pub fn set(
+        mut self,
+        key: impl Into<ScalarValue>,
+        value: impl Into<YamlValue>,
+    ) -> MutationResult {
         let key_val = YamlValue::Scalar(key.into());
         let value_val = value.into();
         let options = self.options.clone();
-        
+
         match self.target {
             MutationTarget::Document(ref mut doc) => {
                 Self::set_in_document_impl(doc, key_val, value_val, &options)
@@ -151,18 +155,18 @@ impl<'a> MutationBuilder<'a> {
             MutationTarget::Mapping(ref mut mapping) => {
                 Self::set_in_mapping_impl(mapping, key_val, value_val, &options)
             }
-            MutationTarget::Sequence(_) => {
-                Err(MutationError::InvalidOperation("Cannot set key-value pairs in sequences".to_string()))
-            }
+            MutationTarget::Sequence(_) => Err(MutationError::InvalidOperation(
+                "Cannot set key-value pairs in sequences".to_string(),
+            )),
         }
     }
-    
+
     /// Set raw YAML strings (parses them first)
     pub fn set_raw(mut self, key: &str, value: &str) -> MutationResult {
         let key_val = YamlValue::parse_raw(key);
         let value_val = YamlValue::parse_raw(value);
         let options = self.options.clone();
-        
+
         match self.target {
             MutationTarget::Document(ref mut doc) => {
                 Self::set_in_document_impl(doc, key_val, value_val, &options)
@@ -170,12 +174,12 @@ impl<'a> MutationBuilder<'a> {
             MutationTarget::Mapping(ref mut mapping) => {
                 Self::set_in_mapping_impl(mapping, key_val, value_val, &options)
             }
-            MutationTarget::Sequence(_) => {
-                Err(MutationError::InvalidOperation("Cannot set key-value pairs in sequences".to_string()))
-            }
+            MutationTarget::Sequence(_) => Err(MutationError::InvalidOperation(
+                "Cannot set key-value pairs in sequences".to_string(),
+            )),
         }
     }
-    
+
     /// Add an item to a sequence
     pub fn push(mut self, value: impl Into<YamlValue>) -> MutationResult {
         match self.target {
@@ -183,10 +187,12 @@ impl<'a> MutationBuilder<'a> {
                 seq.push_yaml(&value.into());
                 Ok(())
             }
-            _ => Err(MutationError::InvalidOperation("Can only push to sequences".to_string())),
+            _ => Err(MutationError::InvalidOperation(
+                "Can only push to sequences".to_string(),
+            )),
         }
     }
-    
+
     /// Insert an item at the specified position
     pub fn insert(mut self, value: impl Into<YamlValue>) -> MutationResult {
         let value_val = value.into();
@@ -195,14 +201,16 @@ impl<'a> MutationBuilder<'a> {
             MutationTarget::Sequence(ref mut seq) => {
                 Self::insert_in_sequence_impl(seq, value_val, &options)
             }
-            _ => Err(MutationError::InvalidOperation("Insert with position only supported for sequences".to_string())),
+            _ => Err(MutationError::InvalidOperation(
+                "Insert with position only supported for sequences".to_string(),
+            )),
         }
     }
-    
+
     /// Remove a key or item
     pub fn remove(mut self, key: impl Into<YamlValue>) -> MutationResult {
         let key_val = key.into();
-        
+
         match self.target {
             MutationTarget::Document(ref mut doc) => {
                 if let YamlValue::Scalar(scalar_key) = key_val {
@@ -212,7 +220,9 @@ impl<'a> MutationBuilder<'a> {
                         Err(MutationError::KeyNotFound(scalar_key.value().to_string()))
                     }
                 } else {
-                    Err(MutationError::InvalidKeyType("Document remove requires scalar key".to_string()))
+                    Err(MutationError::InvalidKeyType(
+                        "Document remove requires scalar key".to_string(),
+                    ))
                 }
             }
             MutationTarget::Mapping(ref mut mapping) => {
@@ -223,7 +233,9 @@ impl<'a> MutationBuilder<'a> {
                         Err(MutationError::KeyNotFound(scalar_key.value().to_string()))
                     }
                 } else {
-                    Err(MutationError::InvalidKeyType("Mapping remove requires scalar key".to_string()))
+                    Err(MutationError::InvalidKeyType(
+                        "Mapping remove requires scalar key".to_string(),
+                    ))
                 }
             }
             MutationTarget::Sequence(ref mut seq) => {
@@ -233,15 +245,19 @@ impl<'a> MutationBuilder<'a> {
                         seq.remove(index);
                         Ok(())
                     } else {
-                        Err(MutationError::InvalidKeyType("Invalid index for sequence".to_string()))
+                        Err(MutationError::InvalidKeyType(
+                            "Invalid index for sequence".to_string(),
+                        ))
                     }
                 } else {
-                    Err(MutationError::InvalidKeyType("Sequence remove requires numeric index".to_string()))
+                    Err(MutationError::InvalidKeyType(
+                        "Sequence remove requires numeric index".to_string(),
+                    ))
                 }
             }
         }
     }
-    
+
     /// Rename a key (mappings only)
     pub fn rename(mut self, old_key: &str, new_key: impl Into<ScalarValue>) -> MutationResult {
         match self.target {
@@ -252,13 +268,20 @@ impl<'a> MutationBuilder<'a> {
                     Err(MutationError::KeyNotFound(old_key.to_string()))
                 }
             }
-            _ => Err(MutationError::InvalidOperation("Rename only supported for mappings".to_string())),
+            _ => Err(MutationError::InvalidOperation(
+                "Rename only supported for mappings".to_string(),
+            )),
         }
     }
-    
+
     // Internal implementation methods
-    
-    fn set_in_document_impl(doc: &mut Document, key: YamlValue, value: YamlValue, options: &MutationOptions) -> MutationResult {
+
+    fn set_in_document_impl(
+        doc: &mut Document,
+        key: YamlValue,
+        value: YamlValue,
+        options: &MutationOptions,
+    ) -> MutationResult {
         // Delegate to existing document logic but with options
         if let Some(mut mapping) = doc.as_mapping_mut() {
             Self::set_in_mapping_impl(&mut mapping, key, value, options)
@@ -269,12 +292,19 @@ impl<'a> MutationBuilder<'a> {
                     doc.set(&YamlValue::Scalar(scalar_key), &value);
                     Ok(())
                 }
-                _ => Err(MutationError::InvalidKeyType("Document set requires scalar key".to_string())),
+                _ => Err(MutationError::InvalidKeyType(
+                    "Document set requires scalar key".to_string(),
+                )),
             }
         }
     }
-    
-    fn set_in_mapping_impl(mapping: &mut Mapping, key: YamlValue, value: YamlValue, options: &MutationOptions) -> MutationResult {
+
+    fn set_in_mapping_impl(
+        mapping: &mut Mapping,
+        key: YamlValue,
+        value: YamlValue,
+        options: &MutationOptions,
+    ) -> MutationResult {
         match options.position {
             InsertPosition::Ordered(ref order) => {
                 // Use field order - delegate to existing method
@@ -310,8 +340,12 @@ impl<'a> MutationBuilder<'a> {
             }
         }
     }
-    
-    fn insert_in_sequence_impl(seq: &mut Sequence, value: YamlValue, options: &MutationOptions) -> MutationResult {
+
+    fn insert_in_sequence_impl(
+        seq: &mut Sequence,
+        value: YamlValue,
+        options: &MutationOptions,
+    ) -> MutationResult {
         match options.position {
             InsertPosition::Index(index) => {
                 seq.insert(index, &value);
@@ -375,40 +409,41 @@ mod tests {
     fn test_builder_basic_set() {
         let mut yaml = Yaml::from_str("name: old_value").unwrap();
         let mut doc = yaml.document().unwrap();
-        
-        let result = MutationBuilder::document(&mut doc)
-            .set("name", "new_value");
-        
+
+        let result = MutationBuilder::document(&mut doc).set("name", "new_value");
+
         assert!(result.is_ok());
-        assert_eq!(doc.get_string(&YamlValue::scalar("name")).unwrap(), "new_value");
+        assert_eq!(
+            doc.get_string(&YamlValue::scalar("name")).unwrap(),
+            "new_value"
+        );
     }
-    
+
     #[test]
     fn test_builder_with_field_order() {
         let mut yaml = Yaml::from_str("name: test\nversion: 1.0").unwrap();
         let mut doc = yaml.document().unwrap();
-        
+
         let result = MutationBuilder::document(&mut doc)
             .with_field_order(vec!["version".to_string(), "name".to_string()])
             .set("description", "A test project");
-        
+
         assert!(result.is_ok());
-        
+
         // Check that the field was added
         assert!(doc.get_string(&YamlValue::scalar("description")).is_some());
     }
-    
+
     #[test]
     fn test_builder_sequence_operations() {
         let mut yaml = Yaml::from_str("items: [1, 2]").unwrap();
         let mut doc = yaml.document().unwrap();
-        
+
         if let Some(mut mapping) = doc.as_mapping_mut() {
             if let Some(items_node) = mapping.get(&YamlValue::scalar("items")) {
                 if let Some(mut seq) = crate::yaml::extract_sequence(&items_node) {
-                    let result = MutationBuilder::sequence(&mut seq)
-                        .push("3");
-                    
+                    let result = MutationBuilder::sequence(&mut seq).push("3");
+
                     assert!(result.is_ok());
                 }
             }

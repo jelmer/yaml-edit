@@ -25,7 +25,10 @@ fn test_json_object_parsing() {
         Some("John".to_string())
     );
     assert_eq!(
-        mapping.get(&"age".into()).and_then(|v| v.children().find_map(Scalar::cast)).map(|s| s.value()),
+        mapping
+            .get(&"age".into())
+            .and_then(|v| v.children().find_map(Scalar::cast))
+            .map(|s| s.value()),
         Some("30".to_string())
     );
     assert_eq!(
@@ -212,12 +215,16 @@ fn test_json_special_values() {
     assert_eq!(empty_str, Some("".to_string()));
 
     // Check empty array
-    let empty_array = mapping.get(&"empty_array".into()).and_then(|v| v.children().find_map(Sequence::cast));
+    let empty_array = mapping
+        .get(&"empty_array".into())
+        .and_then(|v| v.children().find_map(Sequence::cast));
     assert!(empty_array.is_some(), "Should have empty array");
     assert_eq!(empty_array.unwrap().items().count(), 0);
 
     // Check empty object
-    let empty_obj = mapping.get(&"empty_object".into()).and_then(|v| v.children().find_map(Mapping::cast));
+    let empty_obj = mapping
+        .get(&"empty_object".into())
+        .and_then(|v| v.children().find_map(Mapping::cast));
     assert!(empty_obj.is_some(), "Should have empty object");
 }
 

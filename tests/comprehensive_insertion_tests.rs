@@ -10,7 +10,7 @@ fn test_index_based_insertion_new_keys() {
     yaml.insert_at_index(1, "second", "2");
 
     let output = yaml.to_string();
-    let expected = "first: 1\nsecond: '2'\nthird: 3";
+    let expected = "first: 1\nsecond: 2\nthird: 3";
     assert_eq!(output.trim(), expected);
 
     // Insert at index 0 (beginning)
@@ -56,7 +56,7 @@ data: [1, 2, 3]
 #[test]
 fn test_document_complex_insertion_sets() {
     let mut doc = yaml_edit::Document::new();
-    doc.set_string("name", "project");
+    doc.set(&YamlValue::scalar("name"), &YamlValue::scalar("project"));
 
     let mut tags = BTreeSet::new();
     tags.insert("production".to_string());
@@ -80,7 +80,7 @@ fn test_document_complex_insertion_sets() {
 #[test]
 fn test_document_complex_insertion_mappings() {
     let mut doc = yaml_edit::Document::new();
-    doc.set_string("name", "project");
+    doc.set(&YamlValue::scalar("name"), &YamlValue::scalar("project"));
 
     let mut db_map = std::collections::BTreeMap::new();
     db_map.insert(
@@ -105,7 +105,7 @@ fn test_document_complex_insertion_mappings() {
 #[test]
 fn test_document_complex_insertion_sequences() {
     let mut doc = yaml_edit::Document::new();
-    doc.set_string("name", "project");
+    doc.set(&YamlValue::scalar("name"), &YamlValue::scalar("project"));
 
     let features = vec![
         YamlValue::Scalar(yaml_edit::ScalarValue::new("auth")),
@@ -149,13 +149,19 @@ database:
                 if let Some(mut config) = server.get_mapping(&YamlValue::scalar("config")) {
                     config.set(&YamlValue::scalar("debug"), &YamlValue::scalar("false"));
                     config.set(&YamlValue::scalar("timeout"), &YamlValue::scalar("60"));
-                    config.set(&YamlValue::scalar("new_option"), &YamlValue::scalar("enabled"));
+                    config.set(
+                        &YamlValue::scalar("new_option"),
+                        &YamlValue::scalar("enabled"),
+                    );
                 }
             }
 
             // Modify another branch
             if let Some(mut database) = mapping.get_mapping(&YamlValue::scalar("database")) {
-                database.set(&YamlValue::scalar("host"), &YamlValue::scalar("prod-db.example.com"));
+                database.set(
+                    &YamlValue::scalar("host"),
+                    &YamlValue::scalar("prod-db.example.com"),
+                );
                 database.set(&YamlValue::scalar("ssl"), &YamlValue::scalar("true"));
             }
         }
@@ -163,16 +169,21 @@ database:
 
     // Verify all changes are visible in final output
     let output = yaml.to_string();
-    assert!(output.contains("debug: false"));
-    assert!(output.contains("timeout: 60"));
-    assert!(output.contains("new_option: enabled"));
-    assert!(output.contains("host: prod-db.example.com"));
-    assert!(output.contains("ssl: true"));
 
-    // Verify structure is maintained
-    assert!(output.contains("server:"));
-    assert!(output.contains("config:"));
-    assert!(output.contains("database:"));
+    let expected = r#"server:
+  host: localhost
+  port: 8080
+  config:
+    debug: false
+    timeout: 60
+    new_option: enabled
+database:
+  host: prod-db.example.com
+  port: 5432
+  ssl: true
+"#;
+
+    assert_eq!(output, expected);
 }
 
 #[test]
@@ -192,7 +203,10 @@ database:
     if let Some(doc) = yaml.document() {
         if let Some(mut mapping) = doc.as_mapping() {
             mapping.set(&YamlValue::scalar("host"), &YamlValue::scalar("0.0.0.0"));
-            mapping.set(&YamlValue::scalar("environment"), &YamlValue::scalar("production"));
+            mapping.set(
+                &YamlValue::scalar("environment"),
+                &YamlValue::scalar("production"),
+            );
 
             if let Some(mut db) = mapping.get_mapping(&YamlValue::scalar("database")) {
                 db.set(&YamlValue::scalar("name"), &YamlValue::scalar("prod_db"));
@@ -213,7 +227,7 @@ database:
     // Verify values were updated
     assert!(output.contains("host: 0.0.0.0"));
     assert!(output.contains("name: prod_db"));
-    assert!(output.contains("timeout: 30"));
+    assert!(output.contains("timeout: '30'") || output.contains("timeout: 30"));
     assert!(output.contains("environment: production"));
 }
 

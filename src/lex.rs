@@ -25,14 +25,14 @@ pub enum WhitespaceErrorCategory {
 }
 
 /// YAML Concrete Syntax Tree (CST) node types.
-/// 
+///
 /// This enum defines all possible node types in the YAML syntax tree, representing both
 /// lexical tokens (from the lexer) and semantic nodes (created by the parser).
-/// 
+///
 /// # Tree Hierarchy
-/// 
+///
 /// The YAML syntax tree follows this general structure:
-/// 
+///
 /// ```text
 /// ROOT
 /// ├── DOCUMENT*
@@ -41,7 +41,7 @@ pub enum WhitespaceErrorCategory {
 /// │   ├── MAPPING | SEQUENCE | SCALAR | TAGGED_SCALAR
 /// │   └── DOC_END? (optional ...)
 /// └── WHITESPACE | NEWLINE | COMMENT (between documents)
-/// 
+///
 /// MAPPING
 /// ├── MAPPING_ENTRY*
 /// │   ├── KEY
@@ -53,7 +53,7 @@ pub enum WhitespaceErrorCategory {
 /// ├── NEWLINE
 /// ├── INDENT
 /// └── COMMENT?
-/// 
+///
 /// SEQUENCE  
 /// ├── SEQUENCE_ENTRY*
 /// │   ├── DASH
@@ -62,18 +62,18 @@ pub enum WhitespaceErrorCategory {
 /// ├── NEWLINE
 /// ├── INDENT
 /// └── COMMENT?
-/// 
+///
 /// SCALAR
 /// └── STRING | INT | FLOAT | BOOL | NULL
-/// 
+///
 /// TAGGED_SCALAR
 /// ├── TAG (e.g., !!str, !custom)
 /// ├── WHITESPACE?
 /// └── SCALAR | MAPPING | SEQUENCE
 /// ```
-/// 
+///
 /// # Node Categories
-/// 
+///
 /// ## Structural Nodes (created by parser)
 /// - **ROOT**: Top-level container for the entire document
 /// - **DOCUMENT**: A single YAML document (separated by --- or ...)
@@ -81,13 +81,13 @@ pub enum WhitespaceErrorCategory {
 /// - **SEQUENCE**: Lists `[item1, item2]` or block style with `-`
 /// - **SCALAR**: Leaf values (strings, numbers, booleans, null)
 /// - **TAGGED_SCALAR**: Values with explicit type tags `!!str "hello"`
-/// 
+///
 /// ## Container Nodes (created by parser)
 /// - **MAPPING_ENTRY**: A single key-value pair within a mapping
 /// - **SEQUENCE_ENTRY**: A single item within a sequence
 /// - **KEY**: The key part of a key-value pair (can contain complex types)
 /// - **VALUE**: The value part of a key-value pair
-/// 
+///
 /// ## Lexical Tokens (from lexer)
 /// - **Punctuation**: COLON, DASH, COMMA, etc.
 /// - **Brackets**: LEFT_BRACKET, RIGHT_BRACKET, LEFT_BRACE, RIGHT_BRACE
@@ -95,16 +95,16 @@ pub enum WhitespaceErrorCategory {
 /// - **YAML-specific**: TAG, ANCHOR, REFERENCE, MERGE_KEY
 /// - **Document markers**: DOC_START (---), DOC_END (...)
 /// - **Formatting**: WHITESPACE, NEWLINE, INDENT, COMMENT
-/// 
+///
 /// ## Special Cases
-/// 
+///
 /// ### Complex Keys (YAML 1.2.2)
 /// Keys can be sequences or mappings, not just scalars:
 /// ```yaml
 /// [1, 2]: value        # Sequence key
 /// {a: b}: value        # Mapping key
 /// ```
-/// 
+///
 /// ### Tagged Values
 /// Values can have explicit type information:
 /// ```yaml
@@ -112,7 +112,7 @@ pub enum WhitespaceErrorCategory {
 /// binary: !!binary |   # Base64 encoded binary data
 ///   R0lGODlhDAAMAIQ...
 /// ```
-/// 
+///
 /// ### Block Scalars
 /// Multi-line strings with special parsing rules:
 /// ```yaml

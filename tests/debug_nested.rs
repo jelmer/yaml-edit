@@ -1,6 +1,6 @@
-use yaml_edit::{Yaml, SyntaxKind};
-use std::str::FromStr;
 use rowan::ast::AstNode;
+use std::str::FromStr;
+use yaml_edit::{SyntaxKind, Yaml};
 
 #[test]
 fn test_nested_structure() {
@@ -8,7 +8,7 @@ fn test_nested_structure() {
   name: dev_db
   user: admin"#;
     let yaml = Yaml::from_str(yaml_str).unwrap();
-    
+
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             // Find the database entry
@@ -27,17 +27,29 @@ fn test_nested_structure() {
                                             for nested_child in n.children_with_tokens() {
                                                 match nested_child {
                                                     rowan::NodeOrToken::Node(nn) => {
-                                                        println!("      Node: kind={:?}, text='{}'", nn.kind(), nn.text());
+                                                        println!(
+                                                            "      Node: kind={:?}, text='{}'",
+                                                            nn.kind(),
+                                                            nn.text()
+                                                        );
                                                     }
                                                     rowan::NodeOrToken::Token(nt) => {
-                                                        println!("      Token: kind={:?}, text='{}'", nt.kind(), nt.text());
+                                                        println!(
+                                                            "      Token: kind={:?}, text='{}'",
+                                                            nt.kind(),
+                                                            nt.text()
+                                                        );
                                                     }
                                                 }
                                             }
                                         }
                                     }
                                     rowan::NodeOrToken::Token(t) => {
-                                        println!("  Token: kind={:?}, text='{}'", t.kind(), t.text());
+                                        println!(
+                                            "  Token: kind={:?}, text='{}'",
+                                            t.kind(),
+                                            t.text()
+                                        );
                                     }
                                 }
                             }

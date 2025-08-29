@@ -21,11 +21,11 @@ mod parse;
 mod scalar;
 mod schema;
 mod tagged_collections;
+#[cfg(test)]
+mod test_utils;
 mod value;
 pub mod visitor;
 mod yaml;
-#[cfg(test)]
-mod test_utils;
 
 pub use builder::{MappingBuilder, SequenceBuilder, YamlBuilder};
 pub use error::{YamlError, YamlResult};
@@ -43,9 +43,20 @@ pub use schema::{
 pub use tagged_collections::TaggedCollection;
 pub use value::YamlValue;
 pub use yaml::{
-    Directive, Document, Lang, Mapping, Scalar, Sequence, Set, TaggedScalar, Yaml,
+    extract_mapping,
     // Smart extraction helpers
-    extract_scalar, extract_mapping, extract_sequence, extract_tagged_scalar,
+    extract_scalar,
+    extract_sequence,
+    extract_tagged_scalar,
+    Directive,
+    Document,
+    Lang,
+    Mapping,
+    Scalar,
+    Sequence,
+    Set,
+    TaggedScalar,
+    Yaml,
 };
 
 // Re-export custom tags API
@@ -63,11 +74,7 @@ pub use custom_tags::{
 
 // Re-export mutation API
 pub use mutation::{
-    InsertPosition,
-    MutationBuilder,
-    MutationError,
-    MutationOptions,
-    MutationResult,
+    InsertPosition, MutationBuilder, MutationError, MutationOptions, MutationResult,
 };
 
 /// A positioned parse error containing location information.

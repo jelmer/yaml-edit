@@ -20,14 +20,12 @@ fn test_insert_after_preserves_newline() {
         let output = doc.to_string();
         println!("Document output:\n{}", output);
 
-        // Check that newline is preserved
-        assert!(output.contains("Bug-Submit: https://github.com/example/example/issues/new\n"));
-        // The URL contains colons, so it MUST be quoted per YAML spec
-        assert!(output.contains("Repository: 'https://github.com/example/example.git'"));
-        assert!(
-            !output.contains("newRepository"),
-            "Should not concatenate fields"
-        );
+        let expected = "---
+Bug-Database: https://github.com/example/example/issues
+Bug-Submit: https://github.com/example/example/issues/new
+Repository: https://github.com/example/example.git
+";
+        assert_eq!(output, expected);
     }
 }
 
@@ -48,11 +46,11 @@ fn test_insert_after_without_trailing_newline() {
         let output = doc.to_string();
         println!("Document output:\n{}", output);
 
-        // Check that fields are not concatenated (the original bug)
-        assert!(
-            !output.contains("newRepository"),
-            "Should not concatenate fields"
-        );
-        assert!(output.contains("Repository: 'https://github.com/example/example.git'"));
+        let expected = "---
+Bug-Database: https://github.com/example/example/issues
+Bug-Submit: https://github.com/example/example/issues/new
+Repository: https://github.com/example/example.git
+";
+        assert_eq!(output, expected);
     }
 }

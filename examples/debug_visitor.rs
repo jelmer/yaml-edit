@@ -1,7 +1,7 @@
-use yaml_edit::visitor::{ScalarCollector, YamlAccept};
-use yaml_edit::{Yaml, Scalar};
 use rowan::ast::AstNode;
 use std::str::FromStr;
+use yaml_edit::visitor::{ScalarCollector, YamlAccept};
+use yaml_edit::{Scalar, Yaml};
 
 fn main() {
     let yaml_text = r#"
@@ -23,7 +23,11 @@ age: 30
                     }
                 }
                 if let Some(value) = entry.value() {
-                    println!("Value node kind: {:?}, text: '{}'", value.kind(), value.text());
+                    println!(
+                        "Value node kind: {:?}, text: '{}'",
+                        value.kind(),
+                        value.text()
+                    );
                     for child in value.children() {
                         println!("  Child kind: {:?}, text: '{}'", child.kind(), child.text());
                     }
@@ -31,13 +35,13 @@ age: 30
             }
         }
     }
-    
+
     println!("\n--- Running visitor ---");
     let mut collector = ScalarCollector::new();
     yaml.accept(&mut collector);
-    
+
     println!("Collected scalars: {:?}", collector.scalars);
-    
+
     // Expected scalars: "name", "John Doe", "age", "30"
     let expected = ["name", "John Doe", "age", "30"];
     for exp in &expected {

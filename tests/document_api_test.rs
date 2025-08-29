@@ -9,7 +9,10 @@ fn test_document_api_usage() -> YamlResult<()> {
 
     // Check and modify fields
     assert!(!doc.contains_key(&YamlValue::scalar("Repository")));
-    doc.set_string("Repository", "https://github.com/user/repo.git");
+    doc.set(
+        &YamlValue::scalar("Repository"),
+        &YamlValue::scalar("https://github.com/user/repo.git"),
+    );
     assert!(doc.contains_key(&YamlValue::scalar("Repository")));
 
     // Test get_string
@@ -30,7 +33,11 @@ fn test_document_api_usage() -> YamlResult<()> {
         println!("Key node kind: {:?}, text: '{}'", node.kind(), node.text());
         println!("  Children count: {}", node.children().count());
         for child in node.children() {
-            println!("    Child kind: {:?}, text: '{}'", child.kind(), child.text());
+            println!(
+                "    Child kind: {:?}, text: '{}'",
+                child.kind(),
+                child.text()
+            );
         }
     }
     let keys = doc.keys();
@@ -50,25 +57,44 @@ fn test_field_ordering() {
     let mut doc = Document::new();
 
     // Add fields in random order
-    doc.set_string("Repository-Browse", "https://github.com/user/repo");
+    doc.set(
+        &YamlValue::scalar("Repository-Browse"),
+        &YamlValue::scalar("https://github.com/user/repo"),
+    );
     println!("After first set, doc content: '{}'", doc.to_yaml_string());
     println!("After first set, keys: {:?}", doc.keys());
-    doc.set_string("Name", "MyProject");
+    doc.set(&YamlValue::scalar("Name"), &YamlValue::scalar("MyProject"));
     println!("After second set, doc content: '{}'", doc.to_yaml_string());
     println!("After second set, keys: {:?}", doc.keys());
-    doc.set_string("Bug-Database", "https://github.com/user/repo/issues");
-    doc.set_string("Repository", "https://github.com/user/repo.git");
+    doc.set(
+        &YamlValue::scalar("Bug-Database"),
+        &YamlValue::scalar("https://github.com/user/repo/issues"),
+    );
+    doc.set(
+        &YamlValue::scalar("Repository"),
+        &YamlValue::scalar("https://github.com/user/repo.git"),
+    );
     println!("After all sets, keys: {:?}", doc.keys());
 
     // Reorder fields
-    doc.reorder_fields(&[YamlValue::from("Name"), YamlValue::from("Bug-Database"), YamlValue::from("Repository"), YamlValue::from("Repository-Browse")]);
+    doc.reorder_fields(&[
+        YamlValue::from("Name"),
+        YamlValue::from("Bug-Database"),
+        YamlValue::from("Repository"),
+        YamlValue::from("Repository-Browse"),
+    ]);
     println!("After reorder, keys: {:?}", doc.keys());
 
     // Check that fields are in the expected order
     let keys = doc.keys();
     assert_eq!(
         keys,
-        vec![YamlValue::from("Name"), YamlValue::from("Bug-Database"), YamlValue::from("Repository"), YamlValue::from("Repository-Browse")]
+        vec![
+            YamlValue::from("Name"),
+            YamlValue::from("Bug-Database"),
+            YamlValue::from("Repository"),
+            YamlValue::from("Repository-Browse")
+        ]
     );
 }
 
@@ -86,7 +112,7 @@ fn test_array_detection() {
             "https://gitlab.com/user/repo.git",
         )),
     ]);
-    doc.set_value("Repository", array_value);
+    doc.set(&YamlValue::scalar("Repository"), &array_value);
 
     // Test array detection (this might not work perfectly with our current implementation)
     // But the API is established
@@ -106,8 +132,14 @@ fn test_file_io() -> YamlResult<()> {
 
     // Create and save a document
     let mut doc = Document::new();
-    doc.set_string("Name", "TestProject");
-    doc.set_string("Repository", "https://example.com/repo.git");
+    doc.set(
+        &YamlValue::scalar("Name"),
+        &YamlValue::scalar("TestProject"),
+    );
+    doc.set(
+        &YamlValue::scalar("Repository"),
+        &YamlValue::scalar("https://example.com/repo.git"),
+    );
 
     doc.save_to_file(test_path)?;
 

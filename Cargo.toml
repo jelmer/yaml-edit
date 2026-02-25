@@ -1,0 +1,31 @@
+[package]
+name = "yaml-edit"
+version = "0.2.0"
+edition = "2021"
+authors = ["Jelmer Vernooĳ <jelmer@debian.org>"]
+license = "Apache-2.0"
+description = "A lossless parser and editor for YAML files"
+keywords = ["yaml", "parser", "lossless", "edit"]
+categories = ["parser-implementations"]
+repository = "https://github.com/jelmer/yaml-edit"
+homepage = "https://github.com/jelmer/yaml-edit"
+documentation = "https://docs.rs/yaml-edit"
+readme = "README.md"
+rust-version = "1.70"
+
+[dependencies]
+rowan = "0.16"
+regex = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
+
+[features]
+default = ["binary"]
+binary = ["base64"]
+regex = ["dep:regex"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "yaml_stress_tests"
+harness = false

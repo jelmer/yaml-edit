@@ -1,0 +1,1730 @@
+//! Lexer for YAML files.
+
+/// Whitespace and formatting validation errors
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhitespaceError {
+    /// The error message
+    pub message: String,
+    /// The byte range where the error occurred
+    pub range: std::ops::Range<usize>,
+    /// Error category
+    pub category: WhitespaceErrorCategory,
+}
+
+/// Categories of whitespace errors
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WhitespaceErrorCategory {
+    /// Tab character used for indentation (forbidden in YAML)
+    TabIndentation,
+    /// Line too long according to configured limit
+    LineTooLong,
+    /// Mixed line ending styles
+    MixedLineEndings,
+    /// Invalid scalar indentation
+    InvalidIndentation,
+}
+
+/// YAML Concrete Syntax Tree (CST) node types.
+///
+/// This enum defines all possible node types in the YAML syntax tree, representing both
+/// lexical tokens (from the lexer) and semantic nodes (created by the parser).
+///
+/// # Tree Hierarchy
+///
+/// The YAML syntax tree follows this general structure:
+///
+/// ```text
+/// ROOT
+/// ├── DOCUMENT*
+/// │   ├── DIRECTIVE* (optional, e.g., %YAML 1.2)
+/// │   ├── DOC_START? (optional ---)
+/// │   ├── MAPPING | SEQUENCE | SCALAR | TAGGED_NODE
+/// │   └── DOC_END? (optional ...)
+/// └── WHITESPACE | NEWLINE | COMMENT (between documents)
+///
+/// MAPPING
+/// ├── MAPPING_ENTRY*
+/// │   ├── KEY
+/// │   │   └── SCALAR | SEQUENCE | MAPPING (YAML 1.2 allows complex keys)
+/// │   ├── COLON
+/// │   ├── WHITESPACE?
+/// │   └── VALUE
+/// │       └── SCALAR | SEQUENCE | MAPPING | TAGGED_NODE
+/// ├── NEWLINE
+/// ├── INDENT
+/// └── COMMENT?
+///
+/// SEQUENCE  
+/// ├── SEQUENCE_ENTRY*
+/// │   ├── DASH
+/// │   ├── WHITESPACE?
+/// │   └── SCALAR | SEQUENCE | MAPPING | TAGGED_NODE
+/// ├── NEWLINE
+/// ├── INDENT
+/// └── COMMENT?
+///
+/// SCALAR
+/// └── STRING | INT | FLOAT | BOOL | NULL
+///
+/// TAGGED_NODE
+/// ├── TAG (e.g., !!str, !custom)
+/// ├── WHITESPACE?
+/// └── SCALAR | MAPPING | SEQUENCE
+/// ```
+///
+/// # Node Categories
+///
+/// ## Structural Nodes (created by parser)
+/// - **ROOT**: Top-level container for the entire document
+/// - **DOCUMENT**: A single YAML document (separated by --- or ...)
+/// - **MAPPING**: Key-value pairs `{key: value}` or block style
+/// - **SEQUENCE**: Lists `[item1, item2]` or block style with `-`
+/// - **SCALAR**: Leaf values (strings, numbers, booleans, null)
+/// - **TAGGED_NODE**: Values with explicit type tags `!!str "hello"`
+///
+/// ## Container Nodes (created by parser)
+/// - **MAPPING_ENTRY**: A single key-value pair within a mapping
+/// - **SEQUENCE_ENTRY**: A single item within a sequence
+/// - **KEY**: The key part of a key-value pair (can contain complex types)
+/// - **VALUE**: The value part of a key-value pair
+///
+/// ## Lexical Tokens (from lexer)
+/// - **Punctuation**: COLON, DASH, COMMA, etc.
+/// - **Brackets**: LEFT_BRACKET, RIGHT_BRACKET, LEFT_BRACE, RIGHT_BRACE
+/// - **Literals**: STRING, INT, FLOAT, BOOL, NULL
+/// - **YAML-specific**: TAG, ANCHOR, REFERENCE, MERGE_KEY
+/// - **Document markers**: DOC_START (---), DOC_END (...)
+/// - **Formatting**: WHITESPACE, NEWLINE, INDENT, COMMENT
+///
+/// ## Special Cases
+///
+/// ### Complex Keys (YAML 1.2.2)
+/// Keys can be sequences or mappings, not just scalars:
+/// ```yaml
+/// [1, 2]: value        # Sequence key
+/// {a: b}: value        # Mapping key
+/// ```
+///
+/// ### Tagged Values
+/// Values can have explicit type information:
+/// ```yaml
+/// number: !!int "123"  # Force string "123" to be treated as integer
+/// binary: !!binary |   # Base64 encoded binary data
+///   R0lGODlhDAAMAIQ...
+/// ```
+///
+/// ### Block Scalars
+/// Multi-line strings with special parsing rules:
+/// ```yaml
+/// literal: |           # PIPE indicates literal scalar
+///   Line 1
+///   Line 2
+/// folded: >            # GREATER indicates folded scalar  
+///   Long text that
+///   gets folded
+/// ```
+///
+/// The tree preserves all original formatting, comments, and whitespace,
+/// enabling lossless round-trip parsing and precise source location tracking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u16)]
+#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+pub enum SyntaxKind {
+    // Structural
+    /// Root node of the syntax tree
+    ROOT = 0,
+    /// A YAML document
+    DOCUMENT,
+    /// A YAML sequence (list)
+    SEQUENCE,
+    /// A YAML mapping (key-value pairs)
+    MAPPING,
+    /// A YAML scalar value
+    SCALAR,
+    /// A YAML alias reference (e.g., *anchor_name)
+    ALIAS,
+    /// A YAML tagged scalar (tag + value)
+    TAGGED_NODE,
+    /// Parse error marker
+    ERROR,
+
+    // Tokens
+    /// Dash character '-'
+    DASH,
+    /// Plus character '+'
+    PLUS,
+    /// Colon character ':'
+    COLON,
+    /// Question mark '?'
+    QUESTION,
+    /// Left bracket '['
+    LEFT_BRACKET,
+    /// Right bracket ']'
+    RIGHT_BRACKET,
+    /// Left brace '{'
+    LEFT_BRACE,
+    /// Right brace '}'
+    RIGHT_BRACE,
+    /// Comma ','
+    COMMA,
+    /// Pipe '|'
+    PIPE,
+    /// Greater than '>'
+    GREATER,
+    /// Ampersand '&'
+    AMPERSAND,
+    /// Asterisk '*'
+    ASTERISK,
+    /// Exclamation '!'
+    EXCLAMATION,
+    /// Percent '%'
+    PERCENT,
+    /// At symbol '@'
+    AT,
+    /// Backtick '`'
+    BACKTICK,
+    /// Double quote '"'
+    QUOTE,
+    /// Single quote "'"
+    SINGLE_QUOTE,
+
+    // Document markers
+    /// Document start marker '---'
+    DOC_START,
+    /// Document end marker '...'
+    DOC_END,
+
+    // Parser-generated semantic nodes
+    /// A mapping key (created by parser from context)
+    KEY,
+    /// A value in key-value pair (created by parser from context)
+    VALUE,
+    /// A complete mapping entry (key-value pair with associated tokens)
+    MAPPING_ENTRY,
+    /// A sequence entry (item with associated tokens)
+    SEQUENCE_ENTRY,
+
+    // Content tokens (from lexer)
+    /// String literal (quoted or unquoted identifier)
+    STRING,
+    /// Unterminated string (missing closing quote)
+    UNTERMINATED_STRING,
+    /// Integer literal
+    INT,
+    /// Float literal
+    FLOAT,
+    /// Boolean literal (true/false)
+    BOOL,
+    /// Null literal
+    NULL,
+    /// YAML tag like '!tag'
+    TAG,
+    /// YAML anchor like '&anchor'
+    ANCHOR,
+    /// YAML reference like '*reference'
+    REFERENCE,
+    /// YAML merge key '<<'
+    MERGE_KEY,
+    /// YAML directive like '%YAML 1.2'
+    DIRECTIVE,
+
+    // Whitespace and formatting
+    /// Spaces and tabs
+    WHITESPACE,
+    /// Newline characters
+    NEWLINE,
+    /// Leading whitespace that determines structure
+    INDENT,
+    /// Comments starting with '#'
+    COMMENT,
+
+    // Special
+    /// UTF-8 Byte Order Mark (BOM) - U+FEFF at start of file
+    BOM,
+    /// End of file marker
+    EOF,
+}
+
+impl From<SyntaxKind> for rowan::SyntaxKind {
+    fn from(kind: SyntaxKind) -> Self {
+        Self(kind as u16)
+    }
+}
+
+/// Helper to read a scalar value starting from current position
+fn read_scalar_from<'a>(
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
+    input: &'a str,
+    start_idx: usize,
+    exclude_chars: &str,
+) -> &'a str {
+    let mut end_idx = start_idx;
+    while let Some((idx, ch)) = chars.peek() {
+        if ch.is_whitespace() || is_yaml_special_except(*ch, exclude_chars) {
+            break;
+        }
+        end_idx = *idx + ch.len_utf8();
+        chars.next();
+    }
+    &input[start_idx..end_idx]
+}
+
+/// Tokenize YAML input with whitespace validation
+pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
+    let (tokens, _) = lex_with_validation(input);
+    tokens
+}
+
+/// Configuration for whitespace and formatting validation
+pub struct ValidationConfig {
+    /// Maximum line length (None = no limit)
+    pub max_line_length: Option<usize>,
+    /// Whether to enforce consistent line endings
+    pub enforce_consistent_line_endings: bool,
+}
+
+impl Default for ValidationConfig {
+    fn default() -> Self {
+        Self {
+            max_line_length: Some(120), // Default to 120 characters
+            enforce_consistent_line_endings: true,
+        }
+    }
+}
+
+/// Tokenize YAML input with whitespace and formatting validation
+pub fn lex_with_validation(input: &str) -> (Vec<(SyntaxKind, &str)>, Vec<WhitespaceError>) {
+    lex_with_validation_config(input, &ValidationConfig::default())
+}
+
+/// Tokenize YAML input with custom validation configuration
+pub fn lex_with_validation_config<'a>(
+    input: &'a str,
+    config: &ValidationConfig,
+) -> (Vec<(SyntaxKind, &'a str)>, Vec<WhitespaceError>) {
+    use SyntaxKind::*;
+
+    let mut tokens = Vec::with_capacity(input.len() / 8); // Pre-allocate based on estimate
+    let mut chars = input.char_indices().peekable();
+    let mut whitespace_errors = Vec::new();
+    let bytes = input.as_bytes();
+
+    // Track line information for validation
+    let mut current_line_start = 0;
+    let mut detected_line_ending: Option<&str> = None;
+
+    // Track flow collection depth for context-aware tokenization
+    let mut flow_depth: u32 = 0;
+
+    // Handle UTF-8 BOM (U+FEFF) at the start of the file
+    // Per YAML spec, BOM is allowed and should be processed transparently
+    if let Some((0, '\u{FEFF}')) = chars.peek() {
+        chars.next(); // Consume the BOM
+        tokens.push((BOM, "\u{FEFF}"));
+    }
+
+    while let Some((start_idx, ch)) = chars.next() {
+        let token_start = start_idx;
+
+        match ch {
+            // Context-aware hyphen handling
+            '-' => {
+                if let Some((_, '-')) = chars.peek() {
+                    chars.next(); // consume second -
+                    if let Some((_, '-')) = chars.peek() {
+                        chars.next(); // consume third -
+                        tokens.push((DOC_START, &input[token_start..start_idx + 3]));
+                    } else {
+                        // Just two dashes, treat as sequence marker followed by dash
+                        tokens.push((DASH, &input[token_start..start_idx + 1]));
+                        tokens.push((DASH, &input[start_idx + 1..start_idx + 2]));
+                    }
+                } else {
+                    // Check if this hyphen should be treated as a sequence marker
+                    // It's a sequence marker if:
+                    // 1. It's at the beginning of a line (after optional indentation)
+                    // 2. OR it follows a value context (after ? or : plus whitespace)
+                    // AND it's followed by whitespace or end of input
+
+                    // Check if preceded only by whitespace from start of line
+                    // Look for either \n or \r as line breaks
+                    let line_start_pos = input[..token_start]
+                        .rfind(['\n', '\r'])
+                        .map(|pos| pos + 1)
+                        .unwrap_or(0);
+                    let before_dash = &input[line_start_pos..token_start];
+                    let only_whitespace_before = before_dash.chars().all(|c| c == ' ' || c == '\t');
+
+                    // Check if the previous non-whitespace token was ? or :
+                    // indicating a value context where sequences are allowed
+                    let after_value_indicator = tokens
+                        .iter()
+                        .rev()
+                        .find(|(kind, _)| !matches!(kind, WHITESPACE | INDENT))
+                        .is_some_and(|(kind, _)| matches!(kind, QUESTION | COLON));
+
+                    // Check if followed by whitespace or end of input
+                    let followed_by_whitespace_or_end = chars
+                        .peek()
+                        .map_or(true, |(_, next_ch)| next_ch.is_whitespace());
+
+                    let is_sequence_marker = (only_whitespace_before || after_value_indicator)
+                        && followed_by_whitespace_or_end;
+
+                    if is_sequence_marker {
+                        tokens.push((DASH, &input[token_start..start_idx + 1]));
+                    } else {
+                        // This hyphen is part of a scalar value
+                        let text = read_scalar_from(&mut chars, input, start_idx + 1, "-");
+                        let full_text = &input[token_start..token_start + 1 + text.len()];
+                        let token_kind = classify_scalar(full_text);
+                        tokens.push((token_kind, full_text));
+                    }
+                }
+            }
+            '+' => tokens.push((PLUS, &input[token_start..start_idx + 1])),
+            ':' => {
+                // In flow collections, colon is always a structural character
+                // In block context, colon only indicates mapping if followed by whitespace
+                if flow_depth > 0 {
+                    // Inside flow collection: always tokenize as COLON
+                    tokens.push((COLON, &input[token_start..start_idx + 1]));
+                } else if let Some((_, next_ch)) = chars.peek() {
+                    if next_ch.is_whitespace() {
+                        // This is a mapping indicator in block context
+                        tokens.push((COLON, &input[token_start..start_idx + 1]));
+                    } else {
+                        // This colon is part of a plain scalar (e.g., URLs, timestamps)
+                        // Continue reading the scalar
+                        let mut end_idx = start_idx + 1;
+                        while let Some((idx, next_ch)) = chars.peek() {
+                            if next_ch.is_whitespace() {
+                                break;
+                            }
+                            // Check for special chars, but exclude colon since we're already in a scalar with colon
+                            if is_yaml_special_except(*next_ch, ":") {
+                                break;
+                            }
+                            end_idx = *idx + next_ch.len_utf8();
+                            chars.next();
+                        }
+                        let text = &input[token_start..end_idx];
+                        tokens.push((classify_scalar(text), text));
+                    }
+                } else {
+                    // Colon at end of input
+                    tokens.push((COLON, &input[token_start..start_idx + 1]));
+                }
+            }
+            '?' => tokens.push((QUESTION, &input[token_start..start_idx + 1])),
+            '[' => {
+                flow_depth += 1;
+                tokens.push((LEFT_BRACKET, &input[token_start..start_idx + 1]));
+            }
+            ']' => {
+                flow_depth = flow_depth.saturating_sub(1);
+                tokens.push((RIGHT_BRACKET, &input[token_start..start_idx + 1]));
+            }
+            '{' => {
+                flow_depth += 1;
+                tokens.push((LEFT_BRACE, &input[token_start..start_idx + 1]));
+            }
+            '}' => {
+                flow_depth = flow_depth.saturating_sub(1);
+                tokens.push((RIGHT_BRACE, &input[token_start..start_idx + 1]));
+            }
+            ',' => tokens.push((COMMA, &input[token_start..start_idx + 1])),
+            '|' => tokens.push((PIPE, &input[token_start..start_idx + 1])),
+            '>' => tokens.push((GREATER, &input[token_start..start_idx + 1])),
+            '<' => {
+                // Check if this is a merge key '<<'
+                if let Some((_, '<')) = chars.peek() {
+                    chars.next(); // consume second <
+                    tokens.push((MERGE_KEY, &input[token_start..start_idx + 2]));
+                } else {
+                    // Single '<' is not a special YAML character, treat as scalar
+                    let mut end_idx = start_idx + 1;
+                    while let Some((idx, ch)) = chars.peek() {
+                        if ch.is_whitespace() || is_yaml_special(*ch) {
+                            break;
+                        }
+                        end_idx = *idx + ch.len_utf8();
+                        chars.next();
+                    }
+                    let text = &input[token_start..end_idx];
+                    let token_kind = classify_scalar(text);
+                    tokens.push((token_kind, text));
+                }
+            }
+            '&' => {
+                // Check if this is an anchor definition
+                let name = read_scalar_from(&mut chars, input, start_idx + 1, "");
+                if !name.is_empty() {
+                    tokens.push((ANCHOR, &input[token_start..start_idx + 1 + name.len()]));
+                } else {
+                    tokens.push((AMPERSAND, &input[token_start..start_idx + 1]));
+                }
+            }
+            '*' => {
+                // Check if this is an alias reference
+                let name = read_scalar_from(&mut chars, input, start_idx + 1, "");
+                if !name.is_empty() {
+                    tokens.push((REFERENCE, &input[token_start..start_idx + 1 + name.len()]));
+                } else {
+                    tokens.push((ASTERISK, &input[token_start..start_idx + 1]));
+                }
+            }
+            '"' => {
+                // Read entire double-quoted string
+                let mut end_idx = start_idx + 1;
+                let mut escaped = false;
+                let mut found_closing = false;
+
+                while let Some((idx, ch)) = chars.peek() {
+                    let current_idx = *idx;
+                    let current_ch = *ch;
+
+                    if escaped {
+                        escaped = false;
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
+                        continue;
+                    }
+
+                    if current_ch == '\\' {
+                        escaped = true;
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
+                    } else if current_ch == '"' {
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
+                        found_closing = true;
+                        break;
+                    } else {
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
+                    }
+                }
+
+                if found_closing {
+                    tokens.push((STRING, &input[token_start..end_idx]));
+                } else {
+                    // Unterminated string - add UNTERMINATED_STRING token
+                    tokens.push((UNTERMINATED_STRING, &input[token_start..end_idx]));
+                }
+            }
+            '\'' => {
+                // Read entire single-quoted string
+                let mut end_idx = start_idx + 1;
+                let mut found_closing = false;
+
+                while let Some((idx, ch)) = chars.peek() {
+                    let current_idx = *idx;
+                    let current_ch = *ch;
+
+                    if current_ch == '\'' {
+                        // Check for escaped quote ('')
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
+                        if let Some((next_idx, '\'')) = chars.peek() {
+                            // Double quote - consume both and continue
+                            end_idx = *next_idx + 1;
+                            chars.next();
+                        } else {
+                            // Single quote - end of string
+                            found_closing = true;
+                            break;
+                        }
+                    } else {
+                        end_idx = current_idx + current_ch.len_utf8();
+                        chars.next();
+                    }
+                }
+
+                if found_closing {
+                    tokens.push((STRING, &input[token_start..end_idx]));
+                } else {
+                    // Unterminated string - add UNTERMINATED_STRING token
+                    tokens.push((UNTERMINATED_STRING, &input[token_start..end_idx]));
+                }
+            }
+
+            // Document end
+            '.' => {
+                // Check for three dots (document end marker)
+                if chars.peek() == Some(&(start_idx + 1, '.')) {
+                    chars.next(); // consume second .
+                    if chars.peek() == Some(&(start_idx + 2, '.')) {
+                        chars.next(); // consume third .
+                        tokens.push((DOC_END, &input[token_start..start_idx + 3]));
+                    } else {
+                        // Two dots - continue as scalar
+                        let rest = read_scalar_from(&mut chars, input, start_idx + 2, "");
+                        let text = &input[token_start..start_idx + 2 + rest.len()];
+                        let token_kind = classify_scalar(text);
+                        tokens.push((token_kind, text));
+                    }
+                } else {
+                    // Single dot - part of scalar
+                    let rest = read_scalar_from(&mut chars, input, start_idx + 1, "");
+                    let text = &input[token_start..start_idx + 1 + rest.len()];
+                    let token_kind = classify_scalar(text);
+                    tokens.push((token_kind, text));
+                }
+            }
+
+            // Comments
+            '#' => {
+                let mut end_idx = start_idx + 1;
+                while let Some((idx, ch)) = chars.peek() {
+                    if *ch == '\n' || *ch == '\r' {
+                        break;
+                    }
+                    end_idx = *idx + ch.len_utf8();
+                    chars.next();
+                }
+                tokens.push((COMMENT, &input[token_start..end_idx]));
+            }
+
+            // Tags
+            '!' => {
+                // Handle tag indicators - both ! and !!
+                let mut end_idx = start_idx + 1;
+
+                // Check for double exclamation (global tag)
+                if let Some((_, '!')) = chars.peek() {
+                    chars.next(); // consume the second !
+                    end_idx = start_idx + 2;
+                }
+
+                // Read the tag name after the ! or !!
+                while let Some((idx, ch)) = chars.peek() {
+                    if ch.is_whitespace() || is_yaml_special(*ch) {
+                        break;
+                    }
+                    end_idx = *idx + ch.len_utf8();
+                    chars.next();
+                }
+
+                tokens.push((TAG, &input[token_start..end_idx]));
+            }
+
+            '%' => {
+                // In flow collections, % is part of plain scalars, not a directive
+                if flow_depth > 0 {
+                    // Treat as part of a plain scalar in flow context
+                    let mut end_idx = start_idx + 1;
+                    while let Some((idx, next_ch)) = chars.peek() {
+                        if next_ch.is_whitespace() {
+                            break;
+                        }
+                        if is_yaml_special_except(*next_ch, "%") {
+                            break;
+                        }
+                        end_idx = *idx + next_ch.len_utf8();
+                        chars.next();
+                    }
+                    let text = &input[token_start..end_idx];
+                    tokens.push((classify_scalar(text), text));
+                } else {
+                    // In block context, % starts a directive
+                    let mut end_idx = start_idx + 1;
+                    while let Some((idx, ch)) = chars.peek() {
+                        if *ch == '\n' || *ch == '\r' {
+                            break;
+                        }
+                        end_idx = *idx + ch.len_utf8();
+                        chars.next();
+                    }
+                    tokens.push((DIRECTIVE, &input[token_start..end_idx]));
+                }
+            }
+
+            // Newlines
+            '\n' => {
+                // Check line length before processing newline
+                if let Some(max_len) = config.max_line_length {
+                    let line_length = start_idx - current_line_start;
+                    if line_length > max_len {
+                        whitespace_errors.push(WhitespaceError {
+                            message: format!(
+                                "Line too long ({} > {} characters)",
+                                line_length, max_len
+                            ),
+                            range: current_line_start..start_idx,
+                            category: WhitespaceErrorCategory::LineTooLong,
+                        });
+                    }
+                }
+
+                // Validate line ending consistency
+                let line_ending = "\n";
+                if config.enforce_consistent_line_endings {
+                    if let Some(detected) = detected_line_ending {
+                        if detected != line_ending {
+                            whitespace_errors.push(WhitespaceError {
+                                message: "Inconsistent line endings detected".to_string(),
+                                range: token_start..start_idx + 1,
+                                category: WhitespaceErrorCategory::MixedLineEndings,
+                            });
+                        }
+                    } else {
+                        detected_line_ending = Some(line_ending);
+                    }
+                }
+
+                tokens.push((NEWLINE, &input[token_start..start_idx + 1]));
+                current_line_start = start_idx + 1;
+            }
+            '\r' => {
+                // Check line length before processing newline
+                if let Some(max_len) = config.max_line_length {
+                    let line_length = start_idx - current_line_start;
+                    if line_length > max_len {
+                        whitespace_errors.push(WhitespaceError {
+                            message: format!(
+                                "Line too long ({} > {} characters)",
+                                line_length, max_len
+                            ),
+                            range: current_line_start..start_idx,
+                            category: WhitespaceErrorCategory::LineTooLong,
+                        });
+                    }
+                }
+
+                let (line_ending, end_pos) = if let Some((_, '\n')) = chars.peek() {
+                    chars.next();
+                    ("\r\n", start_idx + 2)
+                } else {
+                    ("\r", start_idx + 1)
+                };
+
+                // Validate line ending consistency
+                if config.enforce_consistent_line_endings {
+                    if let Some(detected) = detected_line_ending {
+                        if detected != line_ending {
+                            whitespace_errors.push(WhitespaceError {
+                                message: "Inconsistent line endings detected".to_string(),
+                                range: token_start..end_pos,
+                                category: WhitespaceErrorCategory::MixedLineEndings,
+                            });
+                        }
+                    } else {
+                        detected_line_ending = Some(line_ending);
+                    }
+                }
+
+                tokens.push((NEWLINE, &input[token_start..end_pos]));
+                current_line_start = end_pos;
+            }
+
+            // Whitespace (spaces and tabs)
+            ' ' | '\t' => {
+                let mut end_idx = start_idx + 1;
+                let mut has_tabs = ch == '\t';
+
+                while let Some((idx, ch)) = chars.peek() {
+                    if *ch != ' ' && *ch != '\t' {
+                        break;
+                    }
+                    if *ch == '\t' {
+                        has_tabs = true;
+                    }
+                    end_idx = *idx + 1;
+                    chars.next();
+                }
+
+                // Determine if this is structural indentation
+                // Check for any line break: \n, \r\n (already consumed \n), or \r alone
+                let is_indentation = token_start == 0
+                    || (token_start > 0
+                        && (bytes[token_start - 1] == b'\n' || bytes[token_start - 1] == b'\r'));
+
+                if is_indentation {
+                    // Check for tab characters in indentation (forbidden in YAML)
+                    if has_tabs {
+                        whitespace_errors.push(WhitespaceError {
+                            message: "Tab character used for indentation (forbidden in YAML)"
+                                .to_string(),
+                            range: token_start..end_idx,
+                            category: WhitespaceErrorCategory::TabIndentation,
+                        });
+                    }
+                    tokens.push((INDENT, &input[token_start..end_idx]));
+                } else {
+                    tokens.push((WHITESPACE, &input[token_start..end_idx]));
+                }
+            }
+
+            // Everything else is scalar content
+            _ => {
+                let mut end_idx = start_idx + ch.len_utf8();
+
+                // Read the rest of the scalar normally, including embedded hyphens
+                while let Some((idx, next_ch)) = chars.peek() {
+                    if next_ch.is_whitespace() {
+                        break;
+                    }
+
+                    // Check for YAML special characters
+                    // Special handling for colon: only special if followed by whitespace or EOF
+                    if *next_ch == ':' {
+                        // Peek ahead one more to check if colon is followed by whitespace
+                        let next_idx = *idx + next_ch.len_utf8();
+                        if next_idx >= input.len() {
+                            // Colon at EOF - stop here (treat as mapping indicator)
+                            break;
+                        } else if let Some(after) = input[next_idx..].chars().next() {
+                            if after.is_whitespace() {
+                                // Colon followed by whitespace - stop here
+                                break;
+                            }
+                        }
+                        // Colon not followed by whitespace - continue as part of scalar
+                        end_idx = *idx + next_ch.len_utf8();
+                        chars.next();
+                        continue;
+                    }
+
+                    // Check other special characters (excluding hyphen and colon)
+                    if is_yaml_special_except(*next_ch, "-:") {
+                        break;
+                    }
+
+                    // Special case: check if hyphen is a sequence marker
+                    if *next_ch == '-' {
+                        // A hyphen is only a sequence marker if it's at line start
+                        // and this scalar is already complete (we're at a word boundary)
+                        let line_start = input[..(*idx)].rfind('\n').map(|p| p + 1).unwrap_or(0);
+                        let before_hyphen = &input[line_start..*idx];
+
+                        // If there's only whitespace before the hyphen, it might be a sequence marker
+                        // Break here to let the main loop handle it
+                        if before_hyphen.chars().all(|c| c == ' ' || c == '\t') && *idx == end_idx {
+                            break;
+                        }
+                    }
+
+                    end_idx = *idx + next_ch.len_utf8();
+                    chars.next();
+                }
+
+                let text = &input[token_start..end_idx];
+                tokens.push((classify_scalar(text), text));
+            }
+        }
+    }
+
+    // Check the final line length if there's no trailing newline
+    if let Some(max_len) = config.max_line_length {
+        let final_line_length = input.len() - current_line_start;
+        if final_line_length > max_len && final_line_length > 0 {
+            whitespace_errors.push(WhitespaceError {
+                message: format!(
+                    "Line too long ({} > {} characters)",
+                    final_line_length, max_len
+                ),
+                range: current_line_start..input.len(),
+                category: WhitespaceErrorCategory::LineTooLong,
+            });
+        }
+    }
+
+    (tokens, whitespace_errors)
+}
+
+/// Classify a scalar token based on its content
+fn classify_scalar(text: &str) -> SyntaxKind {
+    use SyntaxKind::*;
+
+    // Boolean literals
+    match text {
+        "true" | "false" | "True" | "False" | "TRUE" | "FALSE" => return BOOL,
+        "null" | "Null" | "NULL" | "~" => return NULL,
+        _ => {}
+    }
+
+    // Try to parse as integer (handles 0x, 0o, 0b, octal, decimal)
+    if crate::scalar::ScalarValue::parse_integer(text).is_some() {
+        return INT;
+    }
+
+    // YAML special float values (infinity and NaN)
+    // Note: Must check these before general f64 parsing because Rust's parse::<f64>()
+    // accepts "infinity" and "inf" which should only be treated as floats in YAML
+    // when written as ".inf", not as bare "infinity" or "inf"
+    match text {
+        ".inf" | ".Inf" | ".INF" | "+.inf" | "+.Inf" | "+.INF" | "-.inf" | "-.Inf" | "-.INF"
+        | ".nan" | ".NaN" | ".NAN" => return FLOAT,
+        // Rust's parse::<f64>() accepts "infinity" and "inf", but in YAML these
+        // should be treated as strings unless written as ".inf"
+        "infinity" | "inf" | "Infinity" | "Inf" | "INFINITY" | "INF" | "-infinity" | "-inf"
+        | "-Infinity" | "-Inf" | "-INFINITY" | "-INF" | "+infinity" | "+inf" | "+Infinity"
+        | "+Inf" | "+INFINITY" | "+INF" | "nan" | "NaN" | "NAN" => return STRING,
+        _ => {}
+    }
+
+    // Try to parse as float
+    if text.parse::<f64>().is_ok() {
+        return FLOAT;
+    }
+
+    // Everything else is a string
+    STRING
+}
+
+/// Common set of YAML special characters
+const YAML_SPECIAL_CHARS: &str = ":+-?[]{},'|>&*!%\"#";
+
+/// Check if a character has special meaning in YAML
+fn is_yaml_special(ch: char) -> bool {
+    YAML_SPECIAL_CHARS.contains(ch)
+}
+
+/// Check if character is YAML special, with optional exclusions
+fn is_yaml_special_except(ch: char, exclude: &str) -> bool {
+    YAML_SPECIAL_CHARS.contains(ch) && !exclude.contains(ch)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_simple_mapping() {
+        let input = "key: value";
+        let tokens = lex(input);
+
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "key"));
+        assert_eq!(tokens[1], (SyntaxKind::COLON, ":"));
+        assert_eq!(tokens[2], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[3], (SyntaxKind::STRING, "value"));
+    }
+
+    #[test]
+    fn test_scalar_types() {
+        // Test integer
+        let tokens = lex("age: 42");
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "age"));
+        assert_eq!(tokens[3], (SyntaxKind::INT, "42"));
+
+        // Test float
+        let tokens = lex("pi: 3.14");
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "pi"));
+        assert_eq!(tokens[3], (SyntaxKind::FLOAT, "3.14"));
+
+        // Test boolean true
+        let tokens = lex("enabled: true");
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "enabled"));
+        assert_eq!(tokens[3], (SyntaxKind::BOOL, "true"));
+
+        // Test boolean false
+        let tokens = lex("disabled: false");
+        assert_eq!(tokens[3], (SyntaxKind::BOOL, "false"));
+
+        // Test null
+        let tokens = lex("value: null");
+        assert_eq!(tokens[3], (SyntaxKind::NULL, "null"));
+
+        // Test tilde as null
+        let tokens = lex("value: ~");
+        assert_eq!(tokens[3], (SyntaxKind::NULL, "~"));
+    }
+
+    #[test]
+    fn test_sequences() {
+        let input = "- item1\n- item2";
+        let tokens = lex(input);
+
+        assert_eq!(tokens[0], (SyntaxKind::DASH, "-"));
+        assert_eq!(tokens[1], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[2], (SyntaxKind::STRING, "item1"));
+        assert_eq!(tokens[3], (SyntaxKind::NEWLINE, "\n"));
+        assert_eq!(tokens[4], (SyntaxKind::DASH, "-"));
+        assert_eq!(tokens[5], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[6], (SyntaxKind::STRING, "item2"));
+    }
+
+    #[test]
+    fn test_hyphen_in_scalars() {
+        // Test hyphens in scalar values should not be treated as sequence markers
+        let input = "Name: example-project";
+        let tokens = lex(input);
+
+        println!("Hyphen test tokens:");
+        for (i, (kind, text)) in tokens.iter().enumerate() {
+            println!("  {}: {:?} = {:?}", i, kind, text);
+        }
+
+        // Should get: STRING("Name"), COLON(":"), WHITESPACE(" "), STRING("example-project")
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "Name"));
+        assert_eq!(tokens[1], (SyntaxKind::COLON, ":"));
+        assert_eq!(tokens[2], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[3], (SyntaxKind::STRING, "example-project"));
+    }
+
+    #[test]
+    fn test_hyphen_sequence_vs_scalar() {
+        // Test that sequence markers are still recognized correctly
+        let sequence_input = "- example-item";
+        let tokens = lex(sequence_input);
+
+        println!("Sequence hyphen tokens:");
+        for (i, (kind, text)) in tokens.iter().enumerate() {
+            println!("  {}: {:?} = {:?}", i, kind, text);
+        }
+
+        // Should get: DASH("-"), WHITESPACE(" "), STRING("example-item")
+        assert_eq!(tokens[0], (SyntaxKind::DASH, "-"));
+        assert_eq!(tokens[1], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[2], (SyntaxKind::STRING, "example-item"));
+
+        // Test scalar with hyphens in different contexts
+        let scalar_input = "package-name: my-awesome-package";
+        let tokens = lex(scalar_input);
+
+        println!("Package hyphen tokens:");
+        for (i, (kind, text)) in tokens.iter().enumerate() {
+            println!("  {}: {:?} = {:?}", i, kind, text);
+        }
+
+        // Should get: STRING("package-name"), COLON(":"), WHITESPACE(" "), STRING("my-awesome-package")
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "package-name"));
+        assert_eq!(tokens[3], (SyntaxKind::STRING, "my-awesome-package"));
+    }
+
+    #[test]
+    fn test_flow_style() {
+        // Flow sequence
+        let tokens = lex("[1, 2, 3]");
+        assert_eq!(tokens[0], (SyntaxKind::LEFT_BRACKET, "["));
+        assert_eq!(tokens[1], (SyntaxKind::INT, "1"));
+        assert_eq!(tokens[2], (SyntaxKind::COMMA, ","));
+        assert_eq!(tokens[3], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[4], (SyntaxKind::INT, "2"));
+        assert_eq!(tokens[5], (SyntaxKind::COMMA, ","));
+        assert_eq!(tokens[6], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[7], (SyntaxKind::INT, "3"));
+        assert_eq!(tokens[8], (SyntaxKind::RIGHT_BRACKET, "]"));
+
+        // Flow mapping
+        let tokens = lex("{a: 1, b: 2}");
+        assert_eq!(tokens[0], (SyntaxKind::LEFT_BRACE, "{"));
+        assert_eq!(tokens[1], (SyntaxKind::STRING, "a"));
+        assert_eq!(tokens[2], (SyntaxKind::COLON, ":"));
+        assert_eq!(tokens[3], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[4], (SyntaxKind::INT, "1"));
+    }
+
+    #[test]
+    fn test_comments() {
+        let input = "key: value # this is a comment\n# full line comment";
+        let tokens = lex(input);
+
+        // Find comment tokens
+        let comments: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::COMMENT)
+            .collect();
+
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].1, "# this is a comment");
+        assert_eq!(comments[1].1, "# full line comment");
+    }
+
+    #[test]
+    fn test_multiline_scalar() {
+        let input = "key: value\n  continued";
+        let tokens = lex(input);
+
+        // Check for indent token
+        let indents: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::INDENT)
+            .collect();
+        assert_eq!(indents.len(), 1);
+        assert_eq!(indents[0].1, "  ");
+    }
+
+    #[test]
+    fn test_quoted_strings() {
+        let input = r#"single: 'quoted'
+double: "quoted""#;
+        let tokens = lex(input);
+
+        // Find quoted string tokens - after fix, quotes are included in STRING tokens
+        let quoted_strings: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, text)| {
+                *kind == SyntaxKind::STRING && (text.starts_with('\'') || text.starts_with('"'))
+            })
+            .collect();
+        assert_eq!(quoted_strings.len(), 2); // single and double quoted strings
+
+        // Verify content (order depends on which appears first in the source)
+        let quoted_texts: Vec<&str> = {
+            let mut v: Vec<&str> = quoted_strings.iter().map(|(_, t)| *t).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(quoted_texts, ["\"quoted\"", "'quoted'"]);
+    }
+
+    #[test]
+    fn test_document_markers() {
+        let input = "---\nkey: value\n...";
+        let tokens = lex(input);
+
+        println!("Document tokens:");
+        for (i, (kind, text)) in tokens.iter().enumerate() {
+            println!("  {}: {:?} = {:?}", i, kind, text);
+        }
+
+        // Check for document start and end markers
+        let doc_start_count = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::DOC_START)
+            .count();
+        let doc_end_count = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::DOC_END)
+            .count();
+        assert_eq!(doc_start_count, 1);
+        assert_eq!(doc_end_count, 1);
+    }
+
+    #[test]
+    fn test_empty_input() {
+        let input = "";
+        let tokens = lex(input);
+        println!("Empty input tokens: {:?}", tokens);
+        assert_eq!(tokens.len(), 0);
+    }
+
+    #[test]
+    fn test_anchors_and_aliases() {
+        // Test anchor definition
+        let input = "key: &anchor_name value";
+        let tokens = lex(input);
+        println!("Anchor tokens: {:?}", tokens);
+
+        let anchors: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::ANCHOR)
+            .collect();
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0].1, "&anchor_name");
+
+        // Test alias reference
+        let input = "key: *reference_name";
+        let tokens = lex(input);
+        println!("Reference tokens: {:?}", tokens);
+
+        let references: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::REFERENCE)
+            .collect();
+        assert_eq!(references.len(), 1);
+        assert_eq!(references[0].1, "*reference_name");
+
+        // Test bare ampersand and asterisk (should not be treated as anchors/references)
+        let input = "key: & *";
+        let tokens = lex(input);
+
+        let ampersands: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::AMPERSAND)
+            .collect();
+        assert_eq!(ampersands.len(), 1);
+
+        let asterisks: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::ASTERISK)
+            .collect();
+        assert_eq!(asterisks.len(), 1);
+    }
+
+    #[test]
+    fn test_merge_key_token() {
+        // Test merge key '<<'
+        let input = "<<: *defaults";
+        let tokens = lex(input);
+
+        let merge_keys: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::MERGE_KEY)
+            .collect();
+        assert_eq!(merge_keys.len(), 1);
+        assert_eq!(merge_keys[0].1, "<<");
+
+        // Test single '<' is not a merge key
+        let input2 = "key: < value";
+        let tokens2 = lex(input2);
+
+        let merge_keys2: Vec<_> = tokens2
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::MERGE_KEY)
+            .collect();
+        assert_eq!(merge_keys2.len(), 0, "Single < should not be a merge key");
+    }
+
+    #[test]
+    fn test_plus_token() {
+        // Test plus as standalone token
+        let input = "key: |+ value";
+        let tokens = lex(input);
+
+        let plus_tokens: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::PLUS)
+            .collect();
+        assert_eq!(plus_tokens.len(), 1);
+        assert_eq!(plus_tokens[0].1, "+");
+    }
+
+    #[test]
+    fn test_block_scalar_indicators() {
+        // Test literal with chomping indicators
+        let input1 = "key: |+ content";
+        let tokens1 = lex(input1);
+
+        assert!(tokens1
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::PIPE && *text == "|"));
+        assert!(tokens1
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::PLUS && *text == "+"));
+
+        // Test folded with chomping indicators
+        let input2 = "key: >- content";
+        let tokens2 = lex(input2);
+
+        assert!(tokens2
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::GREATER && *text == ">"));
+        assert!(tokens2
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "-"));
+
+        // Test with explicit indentation
+        let input3 = "key: |2+ content";
+        let tokens3 = lex(input3);
+
+        assert!(tokens3
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::PIPE && *text == "|"));
+        assert!(tokens3
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::INT && *text == "2"));
+        assert!(tokens3
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::PLUS && *text == "+"));
+    }
+
+    #[test]
+    fn test_special_characters_in_block_content() {
+        let input = "line with - and + and : characters";
+        let tokens = lex(input);
+
+        // With context-aware hyphen parsing, the standalone hyphen with spaces
+        // is treated as a string because it's not a sequence marker
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "-"));
+
+        // Plus and colon are still tokenized as special characters
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::PLUS && *text == "+"));
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::COLON && *text == ":"));
+
+        // Should also have the word tokens
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "line"));
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "with"));
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "and"));
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "characters"));
+    }
+
+    #[test]
+    fn test_token_recognition() {
+        let input = "key: |2+ \n  content with - and : and > chars\n  more content";
+        let tokens = lex(input);
+
+        // Print tokens for debugging
+        println!("Comprehensive tokens:");
+        for (i, (kind, text)) in tokens.iter().enumerate() {
+            println!("  {}: {:?} = {:?}", i, kind, text);
+        }
+
+        // Verify all expected token kinds are present (input: "key: |2+ \n  content with - and : and > chars\n  more content")
+        let count = |k: SyntaxKind| tokens.iter().filter(|(kind, _)| *kind == k).count();
+        // Two colons: one for the mapping ("key:"), one in the value content ("and :")
+        assert_eq!(count(SyntaxKind::COLON), 2);
+        assert_eq!(count(SyntaxKind::PIPE), 1); // "|"
+        assert_eq!(count(SyntaxKind::INT), 1); // "2"
+        assert_eq!(count(SyntaxKind::PLUS), 1); // "+"
+        assert_eq!(count(SyntaxKind::GREATER), 1); // ">"
+        assert_eq!(count(SyntaxKind::NEWLINE), 2); // after "|2+" line and after first content line
+        assert_eq!(count(SyntaxKind::INDENT), 2); // "  " before each content line
+                                                  // Multiple STRING tokens: "key", content words, and the hyphen
+        assert!(count(SyntaxKind::STRING) >= 1, "expected STRING tokens");
+
+        // With context-aware hyphen parsing, the hyphen in content is now part of a STRING
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|(kind, text)| *kind == SyntaxKind::STRING && *text == "-")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_dash_handling() {
+        // Test 1: Document start marker
+        let input = "---\nkey: value";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::DOC_START, "---"));
+
+        // Test 2: Document with just three dashes
+        let input = "---";
+        let tokens = lex(input);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], (SyntaxKind::DOC_START, "---"));
+
+        // Test 3: Two dashes (not a document marker)
+        let input = "--";
+        let tokens = lex(input);
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0], (SyntaxKind::DASH, "-"));
+        assert_eq!(tokens[1], (SyntaxKind::DASH, "-"));
+
+        // Test 4: Four dashes
+        let input = "----";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::DOC_START, "---"));
+        assert_eq!(tokens[1], (SyntaxKind::STRING, "-"));
+    }
+
+    #[test]
+    fn test_dash_in_different_scalar_contexts() {
+        // Test kebab-case identifiers
+        let input = "package-name: my-awesome-package-v2";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "package-name"));
+        assert_eq!(tokens[1], (SyntaxKind::COLON, ":"));
+        assert_eq!(tokens[2], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[3], (SyntaxKind::STRING, "my-awesome-package-v2"));
+
+        // Test UUID-like strings
+        let input = "id: 123e4567-e89b-12d3-a456-426614174000";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "id"));
+        assert_eq!(
+            tokens[3],
+            (SyntaxKind::STRING, "123e4567-e89b-12d3-a456-426614174000")
+        );
+
+        // Test command-line arguments
+        let input = "args: --verbose --log-level=debug";
+        let tokens = lex(input);
+        // Double dashes are tokenized as two DASH tokens
+        assert_eq!(
+            tokens
+                .windows(3)
+                .filter(|w| {
+                    w[0] == (SyntaxKind::DASH, "-")
+                        && w[1] == (SyntaxKind::DASH, "-")
+                        && w[2] == (SyntaxKind::STRING, "verbose")
+                })
+                .count(),
+            1
+        );
+
+        // Test negative numbers
+        let input = "temperature: -40";
+        let tokens = lex(input);
+        // Negative numbers are tokenized as INT tokens
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|(kind, text)| *kind == SyntaxKind::INT && *text == "-40")
+                .count(),
+            1
+        );
+
+        // Test ranges
+        let input = "range: 1-10";
+        let tokens = lex(input);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|(kind, text)| *kind == SyntaxKind::STRING && *text == "1-10")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_sequence_markers_with_indentation() {
+        // Test basic sequence
+        let input = "- item1\n- item2";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::DASH, "-"));
+        assert_eq!(tokens[1], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[2], (SyntaxKind::STRING, "item1"));
+
+        // Test indented sequence
+        let input = "  - item1\n  - item2";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::INDENT, "  "));
+        assert_eq!(tokens[1], (SyntaxKind::DASH, "-"));
+
+        // Test nested sequences
+        let input = "- item1\n  - nested1\n  - nested2\n- item2";
+        let tokens = lex(input);
+        let dash_tokens: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::DASH)
+            .collect();
+        assert_eq!(dash_tokens.len(), 4); // Four sequence markers
+
+        // Test sequence with hyphenated values
+        let input = "- first-item\n- second-item";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::DASH, "-"));
+        assert_eq!(tokens[2], (SyntaxKind::STRING, "first-item"));
+        assert_eq!(tokens[4], (SyntaxKind::DASH, "-"));
+        assert_eq!(tokens[6], (SyntaxKind::STRING, "second-item"));
+    }
+
+    #[test]
+    fn test_dash_after_colon() {
+        // Test hyphen immediately after colon
+        // According to YAML spec, "key:-value" is a single plain scalar
+        // because the colon is not followed by whitespace
+        let input = "key:-value";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "key:-value"));
+
+        // Test with space - this creates a mapping
+        let input = "key: -value";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "key"));
+        assert_eq!(tokens[1], (SyntaxKind::COLON, ":"));
+        assert_eq!(tokens[2], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[3], (SyntaxKind::STRING, "-value"));
+    }
+
+    #[test]
+    fn test_yaml_spec_compliant_colon_handling() {
+        // Test that colons are handled according to YAML spec:
+        // - Colon followed by whitespace indicates mapping
+        // - Colon not followed by whitespace is part of plain scalar
+
+        // URLs should be single scalars (no space after colon)
+        let input = "http://example.com:8080/path";
+        let tokens = lex(input);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(
+            tokens[0],
+            (SyntaxKind::STRING, "http://example.com:8080/path")
+        );
+
+        // Timestamps should be single scalars
+        let input = "2024:12:31:23:59:59";
+        let tokens = lex(input);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "2024:12:31:23:59:59"));
+
+        // Key-value pairs need space after colon
+        let input = "key: value";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "key"));
+        assert_eq!(tokens[1], (SyntaxKind::COLON, ":"));
+        assert_eq!(tokens[2], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(tokens[3], (SyntaxKind::STRING, "value"));
+
+        // Without space, it's a single scalar
+        let input = "key:value";
+        let tokens = lex(input);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "key:value"));
+
+        // Multiple colons without spaces
+        let input = "a:b:c:d";
+        let tokens = lex(input);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "a:b:c:d"));
+    }
+
+    #[test]
+    fn test_block_scalar_with_chomping() {
+        // Helper to count tokens by kind
+        let count_kind = |toks: &[(SyntaxKind, &str)], k: SyntaxKind| {
+            toks.iter().filter(|(kind, _)| *kind == k).count()
+        };
+
+        // Test literal block scalar with strip chomping
+        let input = "text: |-\n  content";
+        let tokens = lex(input);
+        assert_eq!(count_kind(&tokens, SyntaxKind::PIPE), 1);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|(kind, text)| *kind == SyntaxKind::STRING && *text == "-")
+                .count(),
+            1
+        );
+
+        // Test literal block scalar with keep chomping
+        let input = "text: |+\n  content";
+        let tokens = lex(input);
+        assert_eq!(count_kind(&tokens, SyntaxKind::PIPE), 1);
+        assert_eq!(count_kind(&tokens, SyntaxKind::PLUS), 1);
+
+        // Test folded block scalar with strip chomping
+        let input = "text: >-\n  content";
+        let tokens = lex(input);
+        assert_eq!(count_kind(&tokens, SyntaxKind::GREATER), 1);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|(kind, text)| *kind == SyntaxKind::STRING && *text == "-")
+                .count(),
+            1
+        );
+
+        // Test with explicit indentation and chomping
+        let input = "text: |2-\n  content";
+        let tokens = lex(input);
+        assert_eq!(count_kind(&tokens, SyntaxKind::PIPE), 1);
+        // The "2-" after pipe gets read as one token because hyphens in scalars are included
+        let has_2_token = tokens.iter().any(|(kind, text)| {
+            (*kind == SyntaxKind::STRING || *kind == SyntaxKind::INT) && text.contains("2")
+        });
+        assert!(has_2_token, "expected a token containing '2'");
+    }
+
+    #[test]
+    fn test_dash_edge_cases() {
+        // Test trailing hyphen
+        let input = "value-";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "value-"));
+
+        // Test leading hyphen (not a sequence marker)
+        let input = "-value";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "-value"));
+
+        // Test multiple consecutive hyphens in scalar
+        let input = "key: a---b";
+        let tokens = lex(input);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|(kind, text)| *kind == SyntaxKind::STRING && *text == "a---b")
+                .count(),
+            1
+        );
+
+        // Test hyphen at end of line
+        let input = "key: value-\nnext: item";
+        let tokens = lex(input);
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "value-"));
+
+        // Test mix of dashes and underscores
+        let input = "snake_case-with-dash_mix";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "snake_case-with-dash_mix"));
+    }
+
+    #[test]
+    fn test_whitespace_validation_tab_indentation() {
+        // Test tab character validation
+        let input_with_tabs = "key: value\n\tindented_key: indented_value";
+        let (tokens, errors) = lex_with_validation(input_with_tabs);
+
+        // Should have detected tab indentation error
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].category, WhitespaceErrorCategory::TabIndentation);
+        assert!(errors[0]
+            .message
+            .contains("Tab character used for indentation"));
+
+        // But should still tokenize correctly
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::INDENT && text.contains('\t')));
+    }
+
+    #[test]
+    fn test_whitespace_validation_line_endings() {
+        // Test mixed line ending detection
+        let input_mixed = "line1\nline2\r\nline3\rline4";
+        let config = ValidationConfig {
+            enforce_consistent_line_endings: true,
+            max_line_length: None,
+        };
+        let (tokens, errors) = lex_with_validation_config(input_mixed, &config);
+
+        // Should detect mixed line endings
+        assert!(errors
+            .iter()
+            .any(|e| e.category == WhitespaceErrorCategory::MixedLineEndings));
+
+        // Should still tokenize all line endings
+        let newlines: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::NEWLINE)
+            .collect();
+        assert_eq!(newlines.len(), 3); // Three line endings
+        assert_eq!(newlines[0].1, "\n");
+        assert_eq!(newlines[1].1, "\r\n");
+        assert_eq!(newlines[2].1, "\r");
+    }
+
+    #[test]
+    fn test_whitespace_validation_line_length() {
+        // Test line length validation
+        let long_line = format!("key: {}", "a".repeat(150));
+        let config = ValidationConfig {
+            enforce_consistent_line_endings: false,
+            max_line_length: Some(120),
+        };
+        let (_, errors) = lex_with_validation_config(&long_line, &config);
+
+        // Should detect line too long
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].category, WhitespaceErrorCategory::LineTooLong);
+        assert_eq!(errors[0].message, "Line too long (155 > 120 characters)");
+    }
+
+    #[test]
+    fn test_whitespace_validation_disabled() {
+        // Test with validation disabled
+        let input_with_issues = "key: value\n\tindented: with_tabs\n";
+        let config = ValidationConfig {
+            enforce_consistent_line_endings: false,
+            max_line_length: None,
+        };
+        let (tokens, errors) = lex_with_validation_config(input_with_issues, &config);
+
+        // Should still detect tab indentation (always enforced in YAML)
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].category, WhitespaceErrorCategory::TabIndentation);
+
+        // Should tokenize normally
+        assert!(!tokens.is_empty());
+    }
+
+    #[test]
+    fn test_dash_in_flow_collections() {
+        // Test dash in flow sequence
+        let input = "[item-one, item-two]";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::LEFT_BRACKET, "["));
+        assert_eq!(tokens[1], (SyntaxKind::STRING, "item-one"));
+        assert_eq!(tokens[2], (SyntaxKind::COMMA, ","));
+        assert_eq!(tokens[4], (SyntaxKind::STRING, "item-two"));
+        assert_eq!(tokens[5], (SyntaxKind::RIGHT_BRACKET, "]"));
+
+        // Test dash in flow mapping
+        let input = "{kebab-key: kebab-value}";
+        let tokens = lex(input);
+        assert_eq!(tokens[0], (SyntaxKind::LEFT_BRACE, "{"));
+        assert_eq!(tokens[1], (SyntaxKind::STRING, "kebab-key"));
+        assert_eq!(tokens[2], (SyntaxKind::COLON, ":"));
+        assert_eq!(tokens[4], (SyntaxKind::STRING, "kebab-value"));
+        assert_eq!(tokens[5], (SyntaxKind::RIGHT_BRACE, "}"));
+    }
+
+    #[test]
+    fn test_dash_with_quotes() {
+        // Quoted strings should preserve everything inside as STRING tokens
+        let input = r#"key: "- not a sequence marker""#;
+        let tokens = lex(input);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|(kind, text)| {
+                    *kind == SyntaxKind::STRING && *text == "\"- not a sequence marker\""
+                })
+                .count(),
+            1
+        );
+
+        let input = r#"key: '- also not a sequence marker'"#;
+        let tokens = lex(input);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|(kind, text)| {
+                    *kind == SyntaxKind::STRING && *text == "'- also not a sequence marker'"
+                })
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_dash_in_multiline_values() {
+        // Test multiline with dashes
+        let input = "description: This is a multi-\n  line value with dashes";
+        let tokens = lex(input);
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "multi-"));
+
+        // Test continuation with sequence-like line
+        let input = "text: value\n  - but this is not a sequence";
+        let tokens = lex(input);
+        // The dash after indentation should be treated as a sequence marker
+        let indent_dash: Vec<_> = tokens
+            .windows(2)
+            .filter(|w| w[0].0 == SyntaxKind::INDENT && w[1].0 == SyntaxKind::DASH)
+            .collect();
+        assert_eq!(indent_dash.len(), 1);
+    }
+
+    #[test]
+    fn test_dash_special_yaml_values() {
+        // Test that special YAML values with dashes work
+        let input = "date: 2024-01-15";
+        let tokens = lex(input);
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "2024-01-15"));
+
+        // Test ISO timestamp - gets tokenized as multiple parts due to hyphens
+        let input = "timestamp: 2024-01-15T10:30:00-05:00";
+        let tokens = lex(input);
+        // The timestamp is split into multiple tokens but parses correctly
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && text.contains("2024")));
+
+        // Test version strings
+        let input = "version: 1.0.0-beta.1";
+        let tokens = lex(input);
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "1.0.0-beta.1"));
+    }
+}

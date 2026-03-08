@@ -144,7 +144,19 @@ impl MappingEntry {
         // Build new VALUE node, preserving any inline comment from the old value
         let mut value_builder = GreenNodeBuilder::new();
         value_builder.start_node(SyntaxKind::VALUE.into());
-        new_value.build_content(&mut value_builder, 0, flow_context);
+        
+        // Detect indentation from parent mapping
+        let mut indent = 0;
+        if let Some(parent) = self.0.parent() {
+            if let Some(mapping) = Mapping::cast(parent) {
+                indent = mapping.detect_indentation_level();
+            }
+        }
+        if indent == 0 {
+            indent = 2; // Default fallback
+        }
+
+        new_value.build_content(&mut value_builder, indent, flow_context);
 
         // Find the old VALUE node and extract trailing whitespace + comment
         for child in self.0.children_with_tokens() {

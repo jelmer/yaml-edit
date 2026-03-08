@@ -82,22 +82,27 @@ impl Sequence {
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn push(&self, value: impl crate::AsYaml) {
         // Detect the indentation by looking at existing SEQUENCE_ENTRY nodes
-        let mut indentation = self
-            .0
-            .children_with_tokens()
-            .find_map(|child| {
-                child
-                    .into_token()
-                    .filter(|t| t.kind() == SyntaxKind::INDENT)
-                    .map(|t| t.text().to_string())
-            })
-            .unwrap_or_else(|| "  ".to_string());
-
-        // If no INDENT token found, look within SEQUENCE_ENTRY nodes
-        if indentation == "  " {
-            for child in self.0.children() {
-                if child.kind() == SyntaxKind::SEQUENCE_ENTRY {
-                    let tokens: Vec<_> = child.children_with_tokens().collect();
+        let mut indentation = "  ".to_string();
+        
+        // First try to find INDENT token directly in the sequence
+        if let Some(ind) = self.0.children_with_tokens().find_map(|child| {
+            child.into_token().filter(|t| t.kind() == SyntaxKind::INDENT).map(|t| t.text().to_string())
+        }) {
+            indentation = ind;
+        } else {
+            // Look for the first SEQUENCE_ENTRY and get its previous token
+            if let Some(first_entry) = self.0.children().find(|c| c.kind() == SyntaxKind::SEQUENCE_ENTRY) {
+                if let Some(prev_token) = first_entry.first_token().and_then(|t| t.prev_token()) {
+                    if prev_token.kind() == SyntaxKind::INDENT {
+                        indentation = prev_token.text().to_string();
+                    } else if prev_token.kind() == SyntaxKind::WHITESPACE {
+                        indentation = prev_token.text().to_string();
+                    }
+                }
+                
+                // If still not found, look inside the entry
+                if indentation == "  " {
+                    let tokens: Vec<_> = first_entry.children_with_tokens().collect();
                     for (i, token) in tokens.iter().enumerate() {
                         if let Some(t) = token.as_token() {
                             if t.kind() == SyntaxKind::WHITESPACE && i + 1 < tokens.len() {
@@ -109,9 +114,6 @@ impl Sequence {
                                 }
                             }
                         }
-                    }
-                    if !indentation.is_empty() && indentation != "  " {
-                        break;
                     }
                 }
             }
@@ -177,7 +179,9 @@ impl Sequence {
         builder.token(SyntaxKind::WHITESPACE.into(), " ");
 
         // Build the value content directly using AsYaml
-        let value_ends_with_newline = value.build_content(&mut builder, 0, false);
+        // Pass the correct indentation for the value (sequence indent + 2)
+        let value_indent = indentation.len() + 2;
+        let value_ends_with_newline = value.build_content(&mut builder, value_indent, false);
 
         // Add trailing newline only if the value doesn't already end with one
         // and if the last entry had one (preserves document style)
@@ -280,7 +284,8 @@ impl Sequence {
         builder.token(SyntaxKind::WHITESPACE.into(), " ");
 
         // Build the value content directly using AsYaml
-        value.build_content(&mut builder, 0, false);
+        let value_indent = indentation.len() + 2;
+        value.build_content(&mut builder, value_indent, false);
 
         builder.finish_node(); // SEQUENCE_ENTRY
         let new_entry = SyntaxNode::new_root_mut(builder.finish());
@@ -342,7 +347,14 @@ impl Sequence {
                                 {
                                     // Replace the value node with the new value built from AsYaml
                                     if !value_inserted {
-                                        value.build_content(&mut builder, 0, false);
+                                        // Try to find indentation from the current node's tokens
+                                        let mut indent = 2; // Default fallback
+                                        if let Some(prev) = n.first_token().and_then(|t| t.prev_token()) {
+                                            if prev.kind() == crate::lex::SyntaxKind::INDENT {
+                                                indent = prev.text().len() + 2;
+                                            }
+                                        }
+                                        value.build_content(&mut builder, indent, false);
                                         value_inserted = true;
                                     }
                                 }

@@ -78,6 +78,7 @@ impl MappingEntry {
         value: impl crate::AsYaml,
         flow_context: bool,
         use_explicit_key: bool,
+        indent: usize,
     ) -> Self {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
@@ -111,14 +112,14 @@ impl MappingEntry {
                 builder.token(SyntaxKind::WHITESPACE.into(), " ");
                 // Note: TAGGED_NODE values (!!set, !!omap, !!pairs) are inline but may
                 // end with newlines from their block-style content
-                value.build_content(&mut builder, 0, flow_context)
+                value.build_content(&mut builder, indent, flow_context)
             }
             // Block mappings and sequences start on new line but don't get pre-indented
             // They handle their own indentation via copy_node_content_with_indent
             (false, crate::as_yaml::YamlKind::Mapping)
             | (false, crate::as_yaml::YamlKind::Sequence) => {
                 builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                value.build_content(&mut builder, 0, flow_context)
+                value.build_content(&mut builder, indent, flow_context)
             }
             // Block scalars (literal/folded) get newline and indent
             (false, _) => {
@@ -726,7 +727,8 @@ impl Mapping {
         }
 
         // Entry doesn't exist, create a new one
-        let new_entry = MappingEntry::new(key, value, flow_context, use_explicit_keys);
+        let indent = self.detect_indentation_level();
+        let new_entry = MappingEntry::new(key, value, flow_context, use_explicit_keys, if indent > 0 { indent } else { 2 });
         self.insert_entry_cst(&new_entry.0);
     }
 
@@ -766,8 +768,12 @@ impl Mapping {
         let insert_pos = count;
 
         // Add indentation if needed
-        let indent_level = self.detect_indentation_level();
-        if indent_level > 0 && count > 0 {
+        let mut indent_level = self.detect_indentation_level();
+        if indent_level == 0 {
+            // Try to detect from parent or default to 2
+            indent_level = 2; 
+        }
+        if count > 0 {
             let mut builder = rowan::GreenNodeBuilder::new();
             builder.start_node(SyntaxKind::ROOT.into());
             // Only add NEWLINE if we're NOT inserting before an existing trailing newline
@@ -1077,7 +1083,7 @@ impl Mapping {
             // Build the new entry with proper newline ownership
             let flow_context = self.is_flow_style();
             let use_explicit_keys = self.uses_explicit_keys();
-            let new_entry = MappingEntry::new(&key, &value, flow_context, use_explicit_keys).0;
+            let new_entry = MappingEntry::new(&key, &value, flow_context, use_explicit_keys, 0).0;
 
             // Insert after the target entry, ensuring it has a trailing newline
             if let Some(after_node) = insert_after_node {
@@ -2073,7 +2079,7 @@ impl Mapping {
         // Create the new mapping entry
         let flow_context = self.is_flow_style();
         let use_explicit_keys = self.uses_explicit_keys();
-        let new_entry = MappingEntry::new(&key, &value, flow_context, use_explicit_keys);
+        let new_entry = MappingEntry::new(&key, &value, flow_context, use_explicit_keys, 0);
 
         // Count existing entries to determine actual insertion position
         let entry_count = self.entries().count();

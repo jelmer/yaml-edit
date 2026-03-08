@@ -159,6 +159,9 @@ impl MappingEntry {
         let is_block = !new_value.is_inline() && matches!(new_value.kind(), crate::as_yaml::YamlKind::Mapping | crate::as_yaml::YamlKind::Sequence);
         if is_block {
             value_builder.token(crate::lex::SyntaxKind::NEWLINE.into(), "\n");
+            if indent > 0 {
+                value_builder.token(crate::lex::SyntaxKind::INDENT.into(), &" ".repeat(indent));
+            }
         } else {
             value_builder.token(crate::lex::SyntaxKind::WHITESPACE.into(), " ");
         }

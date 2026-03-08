@@ -403,33 +403,107 @@ fn set_path_on_mapping<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegm
         return;
     }
 
-    // First segment must be a key for mappings
     let first_key = match &segments[0] {
         PathSegment::Key(key) => key.as_str(),
-        PathSegment::Index(_) => return, // Can't set by index on a mapping
+        PathSegment::Index(_) => return,
     };
 
     if segments.len() == 1 {
-        // Base case: set directly
         mapping.set(first_key, value);
         return;
     }
 
-    // Try to navigate to existing nested mapping
-    if let Some(nested) = mapping.get_mapping(first_key) {
-        // Nested mapping exists, recurse
-        set_path_on_mapping(&nested, &segments[1..], value);
-    } else {
-        // Need to create intermediate structure
-        let empty_mapping = MappingBuilder::new()
-            .build_document()
-            .as_mapping()
-            .expect("MappingBuilder always produces a mapping");
-        mapping.set(first_key, &empty_mapping);
+    let next_segment = &segments[1];
+    match next_segment {
+        PathSegment::Key(_) => {
+            if let Some(nested) = mapping.get_mapping(first_key) {
+                set_path_on_mapping(&nested, &segments[1..], value);
+            } else {
+                mapping.set(first_key, crate::value::YamlValue::Mapping(Default::default()));
+                if let Some(nested) = mapping.get_mapping(first_key) {
+                    set_path_on_mapping(&nested, &segments[1..], value);
+                }
+            }
+        }
+        PathSegment::Index(idx) => {
+            if let Some(nested) = mapping.get_sequence(first_key) {
+                set_path_on_sequence(&nested, &segments[1..], value);
+            } else {
+                mapping.set(first_key, crate::value::YamlValue::Sequence(Default::default()));
+                if let Some(nested) = mapping.get_sequence(first_key) {
+                    set_path_on_sequence(&nested, &segments[1..], value);
+                }
+            }
+        }
+    }
+}
 
-        // Retrieve and recurse into the newly created mapping
-        if let Some(nested) = mapping.get_mapping(first_key) {
-            set_path_on_mapping(&nested, &segments[1..], value);
+fn set_path_on_sequence<V: crate::AsYaml>(seq: &crate::Sequence, segments: &[PathSegment], value: V) {
+    if segments.is_empty() {
+        return;
+    }
+
+    let index = match &segments[0] {
+        PathSegment::Index(idx) => *idx,
+        PathSegment::Key(_) => return,
+    };
+
+    if segments.len() == 1 {
+        seq.set(index, value);
+        return;
+    }
+
+    let next_segment = &segments[1];
+    match next_segment {
+        PathSegment::Key(_) => {
+            if let Some(item) = seq.get(index) {
+                if let Some(nested) = item.as_mapping() {
+                    set_path_on_mapping(&nested, &segments[1..], value);
+                } else {
+                    seq.set(index, crate::value::YamlValue::Mapping(Default::default()));
+                    if let Some(item) = seq.get(index) {
+                        if let Some(nested) = item.as_mapping() {
+                            set_path_on_mapping(&nested, &segments[1..], value);
+                        }
+                    }
+                }
+            } else {
+                // Fill with nulls up to index
+                while seq.len() <= index {
+                    seq.push(crate::scalar::ScalarValue::null());
+                }
+                seq.set(index, crate::value::YamlValue::Mapping(Default::default()));
+                if let Some(item) = seq.get(index) {
+                    if let Some(nested) = item.as_mapping() {
+                        set_path_on_mapping(&nested, &segments[1..], value);
+                    }
+                }
+            }
+        }
+        PathSegment::Index(next_idx) => {
+            if let Some(item) = seq.get(index) {
+                if let Some(nested) = item.as_sequence() {
+                    set_path_on_sequence(&nested, &segments[1..], value);
+                } else {
+                    seq.set(index, crate::value::YamlValue::Sequence(Default::default()));
+                    if let Some(item) = seq.get(index) {
+                        if let Some(nested) = item.as_sequence() {
+                            set_path_on_sequence(&nested, &segments[1..], value);
+                        }
+                    }
+                }
+            } else {
+                // Fill with nulls up to index
+                while seq.len() <= index {
+                    seq.push(crate::scalar::ScalarValue::null());
+                }
+                seq.set(index, crate::value::YamlValue::Sequence(Default::default()));
+                if let Some(item) = seq.get(index) {
+                    if let Some(nested) = item.as_sequence() {
+                        set_path_on_sequence(&nested, &segments[1..], value);
+                    }
+                }
+            }
         }
     }
 }

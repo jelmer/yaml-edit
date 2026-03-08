@@ -419,11 +419,7 @@ fn set_path_on_mapping<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegm
             if let Some(nested) = mapping.get_mapping(first_key) {
                 set_path_on_mapping(&nested, &segments[1..], value);
             } else {
-                let empty_mapping = crate::MappingBuilder::new()
-                    .build_document()
-                    .as_mapping()
-                    .expect("MappingBuilder always produces a mapping");
-                mapping.set(first_key, &empty_mapping);
+                mapping.set(first_key, crate::value::YamlValue::Mapping(Default::default()));
                 if let Some(nested) = mapping.get_mapping(first_key) {
                     set_path_on_mapping(&nested, &segments[1..], value);
                 }
@@ -433,11 +429,7 @@ fn set_path_on_mapping<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegm
             if let Some(nested) = mapping.get_sequence(first_key) {
                 set_path_on_sequence(&nested, &segments[1..], value);
             } else {
-                let empty_seq = crate::SequenceBuilder::new()
-                    .build_document()
-                    .as_sequence()
-                    .expect("SequenceBuilder always produces a sequence");
-                mapping.set(first_key, &empty_seq);
+                mapping.set(first_key, crate::value::YamlValue::Sequence(Default::default()));
                 if let Some(nested) = mapping.get_sequence(first_key) {
                     set_path_on_sequence(&nested, &segments[1..], value);
                 }
@@ -468,11 +460,7 @@ fn set_path_on_sequence<V: crate::AsYaml>(seq: &crate::Sequence, segments: &[Pat
                 if let Some(nested) = item.as_mapping() {
                     set_path_on_mapping(&nested, &segments[1..], value);
                 } else {
-                    let empty_mapping = crate::MappingBuilder::new()
-                        .build_document()
-                        .as_mapping()
-                        .expect("MappingBuilder always produces a mapping");
-                    seq.set(index, &empty_mapping);
+                    seq.set(index, crate::value::YamlValue::Mapping(Default::default()));
                     if let Some(item) = seq.get(index) {
                         if let Some(nested) = item.as_mapping() {
                             set_path_on_mapping(&nested, &segments[1..], value);
@@ -484,11 +472,7 @@ fn set_path_on_sequence<V: crate::AsYaml>(seq: &crate::Sequence, segments: &[Pat
                 while seq.len() <= index {
                     seq.push(crate::scalar::ScalarValue::Null);
                 }
-                let empty_mapping = crate::MappingBuilder::new()
-                    .build_document()
-                    .as_mapping()
-                    .expect("MappingBuilder always produces a mapping");
-                seq.set(index, &empty_mapping);
+                seq.set(index, crate::value::YamlValue::Mapping(Default::default()));
                 if let Some(item) = seq.get(index) {
                     if let Some(nested) = item.as_mapping() {
                         set_path_on_mapping(&nested, &segments[1..], value);
@@ -501,11 +485,7 @@ fn set_path_on_sequence<V: crate::AsYaml>(seq: &crate::Sequence, segments: &[Pat
                 if let Some(nested) = item.as_sequence() {
                     set_path_on_sequence(&nested, &segments[1..], value);
                 } else {
-                    let empty_seq = crate::SequenceBuilder::new()
-                        .build_document()
-                        .as_sequence()
-                        .expect("SequenceBuilder always produces a sequence");
-                    seq.set(index, &empty_seq);
+                    seq.set(index, crate::value::YamlValue::Sequence(Default::default()));
                     if let Some(item) = seq.get(index) {
                         if let Some(nested) = item.as_sequence() {
                             set_path_on_sequence(&nested, &segments[1..], value);
@@ -517,11 +497,7 @@ fn set_path_on_sequence<V: crate::AsYaml>(seq: &crate::Sequence, segments: &[Pat
                 while seq.len() <= index {
                     seq.push(crate::scalar::ScalarValue::Null);
                 }
-                let empty_seq = crate::SequenceBuilder::new()
-                    .build_document()
-                    .as_sequence()
-                    .expect("SequenceBuilder always produces a sequence");
-                seq.set(index, &empty_seq);
+                seq.set(index, crate::value::YamlValue::Sequence(Default::default()));
                 if let Some(item) = seq.get(index) {
                     if let Some(nested) = item.as_sequence() {
                         set_path_on_sequence(&nested, &segments[1..], value);

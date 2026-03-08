@@ -156,6 +156,12 @@ impl MappingEntry {
             indent = 2; // Default fallback
         }
 
+        let is_block = !new_value.is_inline() && matches!(new_value.kind(), crate::as_yaml::YamlKind::Mapping | crate::as_yaml::YamlKind::Sequence);
+        if is_block {
+            value_builder.token(crate::lex::SyntaxKind::NEWLINE.into(), "\n");
+        } else {
+            value_builder.token(crate::lex::SyntaxKind::WHITESPACE.into(), " ");
+        }
         new_value.build_content(&mut value_builder, indent, flow_context);
 
         // Find the old VALUE node and extract trailing whitespace + comment

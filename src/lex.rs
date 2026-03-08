@@ -788,7 +788,12 @@ pub fn lex_with_validation_config<'a>(
 
                     // Check other special characters (excluding hyphen and colon)
                     if is_yaml_special_except(*next_ch, "-:") {
-                        break;
+                        // In block context, flow indicators do NOT break scalars
+                        if flow_depth == 0 && matches!(*next_ch, '[' | ']' | '{' | '}' | ',') {
+                            // do nothing, let it be part of the scalar
+                        } else {
+                            break;
+                        }
                     }
 
                     // Special case: check if hyphen is a sequence marker

@@ -149,8 +149,7 @@ mod tests {
         yaml.push_document(doc);
 
         let output = yaml.to_string();
-        assert!(output.contains("%YAML 1.2"));
-        assert!(output.contains("name: test"));
+        assert_eq!(output, "%YAML 1.2name: test\n");
 
         // Should have both directive and document
         let directives: Vec<_> = yaml.directives().collect();
@@ -165,8 +164,6 @@ mod tests {
         let output = parsed.to_string();
 
         // Check that directives are preserved
-        assert!(output.contains("%YAML 1.2"));
-        assert!(output.contains("%TAG ! tag:example.com,2000:app/"));
-        assert!(output.contains("key: value"));
+        assert_eq!(output, input);
     }
 }

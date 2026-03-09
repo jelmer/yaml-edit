@@ -21,8 +21,12 @@ fn test_registry_basic_usage() {
     // List all registered tags
     let tags = registry.registered_tags();
     assert_eq!(tags.len(), 2);
-    assert!(tags.contains(&"!timestamp".to_string()));
-    assert!(tags.contains(&"!json".to_string()));
+    let mut sorted_tags = tags.clone();
+    sorted_tags.sort();
+    assert_eq!(
+        sorted_tags,
+        vec!["!json".to_string(), "!timestamp".to_string()]
+    );
 }
 
 #[test]

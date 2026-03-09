@@ -881,10 +881,10 @@ active: true
         assert!(!errors.is_empty());
 
         // Should have errors for integer and boolean types
-        let has_type_error = errors
+        assert!(errors.iter().all(|e| e.schema_name == "failsafe"));
+        assert!(errors
             .iter()
-            .any(|e| e.message().contains("failsafe schema"));
-        assert!(has_type_error);
+            .all(|e| matches!(&e.kind, ValidationErrorKind::TypeNotAllowed { .. })));
     }
 
     #[test]
@@ -938,8 +938,10 @@ pattern: !!regex '\d+'
         assert!(!errors.is_empty());
 
         // Should have errors for timestamp and regex types
-        let has_type_error = errors.iter().any(|e| e.message().contains("json schema"));
-        assert!(has_type_error);
+        assert!(errors.iter().all(|e| e.schema_name == "json"));
+        assert!(errors
+            .iter()
+            .all(|e| matches!(&e.kind, ValidationErrorKind::TypeNotAllowed { .. })));
     }
 
     #[test]
@@ -1049,9 +1051,18 @@ users:
         let core_types = Schema::Core.allowed_scalar_types();
         // Core includes at minimum: String, Integer, Float, Boolean, Null, Timestamp, Regex
         // (plus Binary if the base64 feature is enabled)
-        assert!(core_types.contains(&ScalarType::Timestamp));
-        assert!(core_types.contains(&ScalarType::Regex));
-        assert!(core_types.len() >= 7);
+        let mut expected_core = vec![
+            ScalarType::String,
+            ScalarType::Integer,
+            ScalarType::Float,
+            ScalarType::Boolean,
+            ScalarType::Null,
+            ScalarType::Timestamp,
+            ScalarType::Regex,
+        ];
+        #[cfg(feature = "base64")]
+        expected_core.insert(5, ScalarType::Binary);
+        assert_eq!(core_types, expected_core);
     }
 
     #[test]
@@ -1104,10 +1115,9 @@ user:
         let errors = result.unwrap_err();
         assert!(!errors.is_empty());
         // Check that errors have meaningful paths
-        let has_nested_path = errors
-            .iter()
-            .any(|e| e.path.contains("details.age") || e.path.contains("scores["));
-        assert!(has_nested_path);
+        let paths: Vec<&str> = errors.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"root.user.details.age"));
+        assert!(paths.contains(&"root.user.details.scores[0]"));
 
         // JSON should succeed
         let json_validator = SchemaValidator::json();
@@ -1201,12 +1211,9 @@ users:
         let paths: Vec<&str> = errors.iter().map(|e| e.path.as_str()).collect();
 
         // Should have paths that show the nested structure
-        assert!(paths
-            .iter()
-            .any(|p| p.contains("users") && p.contains("metadata")));
-        assert!(paths
-            .iter()
-            .any(|p| p.contains("tags[") || p.contains("active")));
+        assert!(paths.contains(&"root.users[0].metadata.created"));
+        assert!(paths.contains(&"root.users[0].metadata.tags[1]"));
+        assert!(paths.contains(&"root.users[1].active"));
 
         // Print paths for debugging if needed
         for error in &errors {
@@ -1418,9 +1425,10 @@ port: 80
 
         let errors = result.unwrap_err();
         assert!(!errors.is_empty());
-        assert!(errors[0]
-            .message()
-            .contains("must be between 1024 and 65535"));
+        assert_eq!(
+            errors[0].message(),
+            "custom constraint 'port_range: port 80 must be between 1024 and 65535' failed for value '80'"
+        );
     }
 
     #[test]

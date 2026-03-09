@@ -2,11 +2,6 @@
 
 ### Code Quality
 
-**Replace `.contains()` with `assert_eq!()` in tests**
-- ~17 uses in src/yaml.rs, src/nodes/document.rs
-- 1 use in tests/yaml_spec_compliance.rs
-- Tests should verify exact output, not substring matching
-
 **Reduce nesting in mutation methods**
 - nodes/mapping.rs and nodes/sequence.rs have deeply nested code
 - Extract helper functions to improve readability

@@ -2007,13 +2007,9 @@ mod tests {
             !violations.is_empty(),
             "Expected violation for invalid comma after tag"
         );
-        assert!(
-            violations
-                .iter()
-                .any(|v| v.message.contains("comma") && v.rule == Rule::InvalidTag),
-            "Expected 'Invalid comma after tag' violation, got: {:?}",
-            violations
-        );
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].message, "Invalid comma after tag");
+        assert_eq!(violations[0].rule, Rule::InvalidTag);
     }
 
     #[test]
@@ -2067,15 +2063,15 @@ mod tests {
         use rowan::ast::AstNode;
         let violations = validator.validate_syntax(file.syntax());
 
-        let directive_violations: Vec<_> = violations
-            .iter()
-            .filter(|v| v.message.contains("Directive in document content"))
-            .collect();
         assert_eq!(
-            directive_violations.len(),
+            violations.len(),
             1,
             "Expected one violation for directive in content, got: {:?}",
             violations
+        );
+        assert_eq!(
+            violations[0].message,
+            "Directive in document content (missing document end marker `...` before directive)"
         );
     }
 }

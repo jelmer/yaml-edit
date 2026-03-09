@@ -87,8 +87,8 @@ fn generate_diagnostics(
     diagnostics
 }
 
-/// Find duplicate key violations that have text ranges, for code actions.
-fn find_duplicate_key_violations(parsed: &yaml_edit::Parse<yaml_edit::YamlFile>) -> Vec<Violation> {
+/// Run the validator and return all violations that have text ranges.
+fn get_violations(parsed: &yaml_edit::Parse<yaml_edit::YamlFile>) -> Vec<Violation> {
     let tree = parsed.tree();
     let syntax: &rowan::SyntaxNode<yaml_edit::Lang> =
         <yaml_edit::YamlFile as rowan::ast::AstNode>::syntax(&tree);
@@ -97,8 +97,142 @@ fn find_duplicate_key_violations(parsed: &yaml_edit::Parse<yaml_edit::YamlFile>)
     validator
         .validate_syntax(syntax)
         .into_iter()
-        .filter(|v| v.rule == Rule::DuplicateKeys && v.text_range.is_some())
+        .filter(|v| v.text_range.is_some())
         .collect()
+}
+
+/// Generate a code action from a violation, if an automated fix is possible.
+fn violation_to_code_action(
+    violation: &Violation,
+    source_text: &str,
+    uri: &Uri,
+) -> Option<CodeAction> {
+    let tp = violation.text_range?;
+    let violation_range = text_position_to_lsp_range(source_text, tp);
+    let start = tp.start as usize;
+    let end = tp.end as usize;
+
+    let (title, edit_range, new_text) = match violation.rule {
+        Rule::DuplicateKeys => {
+            // Remove the entire duplicate mapping entry including trailing newline
+            let remove_end = if end < source_text.len() && source_text.as_bytes()[end] == b'\n' {
+                end + 1
+            } else {
+                end
+            };
+            let remove_range = text_position_to_lsp_range(
+                source_text,
+                yaml_edit::TextPosition::new(start as u32, remove_end as u32),
+            );
+            (
+                format!("Remove duplicate: {}", violation.message),
+                remove_range,
+                String::new(),
+            )
+        }
+        Rule::InvalidTabUsage => {
+            // Replace the tab-containing token with spaces
+            let token_text = &source_text[start..end];
+            let replaced = token_text.replace('\t', "  ");
+            (
+                "Replace tabs with spaces".to_string(),
+                violation_range,
+                replaced,
+            )
+        }
+        _ if violation.message == "Comment without whitespace separation" => {
+            // Insert a space before the comment
+            let insert_pos = text_position_to_lsp_range(
+                source_text,
+                yaml_edit::TextPosition::new(start as u32, start as u32),
+            );
+            (
+                "Insert space before comment".to_string(),
+                insert_pos,
+                " ".to_string(),
+            )
+        }
+        _ if violation.message == "Double comma in flow collection" => {
+            // The text_range covers the entire flow collection node, but we need
+            // to find and remove one of the consecutive commas. Scan the range
+            // for ",," (possibly with whitespace between).
+            let text_slice = &source_text[start..end];
+            let mut i = 0;
+            let bytes = text_slice.as_bytes();
+            while i < bytes.len() {
+                if bytes[i] == b',' {
+                    let mut j = i + 1;
+                    // skip whitespace
+                    while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                        j += 1;
+                    }
+                    if j < bytes.len() && bytes[j] == b',' {
+                        // Remove from the first comma to just before the second
+                        let remove_start = (start + i) as u32;
+                        let remove_end = (start + j) as u32;
+                        let remove_range = text_position_to_lsp_range(
+                            source_text,
+                            yaml_edit::TextPosition::new(remove_start, remove_end),
+                        );
+                        return Some(make_code_action(
+                            "Remove extra comma".to_string(),
+                            &violation.message,
+                            violation_range,
+                            remove_range,
+                            String::new(),
+                            uri,
+                        ));
+                    }
+                }
+                i += 1;
+            }
+            return None;
+        }
+        _ => return None,
+    };
+
+    Some(make_code_action(
+        title,
+        &violation.message,
+        violation_range,
+        edit_range,
+        new_text,
+        uri,
+    ))
+}
+
+/// Build a quick-fix CodeAction.
+fn make_code_action(
+    title: String,
+    diagnostic_message: &str,
+    diagnostic_range: Range,
+    edit_range: Range,
+    new_text: String,
+    uri: &Uri,
+) -> CodeAction {
+    let edit = TextEdit {
+        range: edit_range,
+        new_text,
+    };
+
+    let workspace_edit = WorkspaceEdit {
+        changes: Some(vec![(uri.clone(), vec![edit])].into_iter().collect()),
+        ..Default::default()
+    };
+
+    CodeAction {
+        title,
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![Diagnostic {
+            range: diagnostic_range,
+            severity: Some(DiagnosticSeverity::ERROR),
+            source: Some("yaml-lsp".to_string()),
+            message: diagnostic_message.to_string(),
+            ..Default::default()
+        }]),
+        edit: Some(workspace_edit),
+        ..Default::default()
+    }
 }
 
 /// A suggested fix derived from a parse error.
@@ -369,62 +503,22 @@ impl LanguageServer for Backend {
 
         let mut actions = Vec::new();
 
-        // Offer "Remove duplicate key" for duplicate key violations in the requested range
-        let dup_violations = find_duplicate_key_violations(&parsed);
-        for violation in dup_violations {
-            let tp = violation.text_range.unwrap();
+        // Generate code actions from validator violations
+        let violations = get_violations(&parsed);
+        for violation in &violations {
+            let tp = match violation.text_range {
+                Some(tp) => tp,
+                None => continue,
+            };
             let violation_range = text_position_to_lsp_range(&source_text, tp);
-
             if !range_overlaps(&violation_range, &params.range) {
                 continue;
             }
-
-            // Find the full line(s) of the duplicate mapping entry to remove
-            let start = tp.start as usize;
-            let end = tp.end as usize;
-
-            // Extend to include the trailing newline if present
-            let remove_end = if end < source_text.len() && source_text.as_bytes()[end] == b'\n' {
-                end + 1
-            } else {
-                end
-            };
-
-            let remove_range = text_position_to_lsp_range(
-                &source_text,
-                yaml_edit::TextPosition::new(start as u32, remove_end as u32),
-            );
-
-            let edit = TextEdit {
-                range: remove_range,
-                new_text: String::new(),
-            };
-
-            let workspace_edit = WorkspaceEdit {
-                changes: Some(
-                    vec![(params.text_document.uri.clone(), vec![edit])]
-                        .into_iter()
-                        .collect(),
-                ),
-                ..Default::default()
-            };
-
-            let action = CodeAction {
-                title: format!("Remove duplicate: {}", violation.message),
-                kind: Some(CodeActionKind::QUICKFIX),
-                diagnostics: Some(vec![Diagnostic {
-                    range: violation_range,
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    code: Some(NumberOrString::String("DuplicateKeys".to_string())),
-                    source: Some("yaml-lsp".to_string()),
-                    message: violation.message.clone(),
-                    ..Default::default()
-                }]),
-                edit: Some(workspace_edit),
-                ..Default::default()
-            };
-
-            actions.push(CodeActionOrCommand::CodeAction(action));
+            if let Some(action) =
+                violation_to_code_action(violation, &source_text, &params.text_document.uri)
+            {
+                actions.push(CodeActionOrCommand::CodeAction(action));
+            }
         }
 
         // Offer fixes for parse errors (unclosed brackets, unterminated strings)
@@ -439,35 +533,14 @@ impl LanguageServer for Backend {
                 end: fix.insert_position,
             };
 
-            let edit = TextEdit {
-                range: insert_range,
-                new_text: fix.insert_text,
-            };
-
-            let workspace_edit = WorkspaceEdit {
-                changes: Some(
-                    vec![(params.text_document.uri.clone(), vec![edit])]
-                        .into_iter()
-                        .collect(),
-                ),
-                ..Default::default()
-            };
-
-            let action = CodeAction {
-                title: fix.title,
-                kind: Some(CodeActionKind::QUICKFIX),
-                diagnostics: Some(vec![Diagnostic {
-                    range: fix.diagnostic_range,
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    source: Some("yaml-lsp".to_string()),
-                    message: fix.diagnostic_message,
-                    ..Default::default()
-                }]),
-                edit: Some(workspace_edit),
-                ..Default::default()
-            };
-
-            actions.push(CodeActionOrCommand::CodeAction(action));
+            actions.push(CodeActionOrCommand::CodeAction(make_code_action(
+                fix.title,
+                &fix.diagnostic_message,
+                fix.diagnostic_range,
+                insert_range,
+                fix.insert_text,
+                &params.text_document.uri,
+            )));
         }
 
         if actions.is_empty() {
@@ -564,15 +637,38 @@ mod tests {
         let text = "key: value1\nkey: value2\n";
         let parsed = yaml_edit::Parse::parse_yaml(text);
 
-        let violations = find_duplicate_key_violations(&parsed);
+        let violations = get_violations(&parsed);
+        let dup = violations
+            .iter()
+            .find(|v| v.rule == Rule::DuplicateKeys)
+            .expect("should find duplicate key violation");
         assert!(
-            !violations.is_empty(),
-            "should find duplicate key violations"
-        );
-        assert!(
-            violations[0].text_range.is_some(),
+            dup.text_range.is_some(),
             "violation should have a text range"
         );
+
+        let uri: Uri = "file:///test.yaml".parse().unwrap();
+        let action = violation_to_code_action(dup, text, &uri);
+        assert!(action.is_some(), "should produce a code action");
+        assert!(
+            action.unwrap().title.starts_with("Remove duplicate:"),
+            "action title should describe the fix"
+        );
+    }
+
+    #[test]
+    fn test_tab_replacement_code_action() {
+        let text = "key: value\n\tindented: bad\n";
+        let parsed = yaml_edit::Parse::parse_yaml(text);
+
+        let violations = get_violations(&parsed);
+        let tab = violations.iter().find(|v| v.rule == Rule::InvalidTabUsage);
+
+        if let Some(tab_violation) = tab {
+            let uri: Uri = "file:///test.yaml".parse().unwrap();
+            let action = violation_to_code_action(tab_violation, text, &uri).unwrap();
+            assert_eq!(action.title, "Replace tabs with spaces");
+        }
     }
 
     #[test]

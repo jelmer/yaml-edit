@@ -13,10 +13,10 @@ use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 mod position;
 mod workspace;
 
-use position::text_position_to_lsp_range;
-use workspace::{SourceFile, Workspace};
+use position::{position_to_offset, text_position_to_lsp_range};
+use workspace::{AnchorEntry, SourceFile, Workspace};
 use yaml_edit::validator::{Rule, Severity, Validator, Violation};
-use yaml_edit::ParseErrorKind;
+use yaml_edit::{ParseErrorKind, TextPosition};
 
 struct Backend {
     client: Client,
@@ -389,6 +389,13 @@ fn generate_semantic_tokens(
     tokens
 }
 
+/// Find the anchor or alias entry at the given byte offset.
+fn anchor_at_offset(anchors: &[AnchorEntry], offset: u32) -> Option<&AnchorEntry> {
+    anchors
+        .iter()
+        .find(|a| a.range.start <= offset && offset < a.range.end)
+}
+
 /// Check if two LSP ranges overlap.
 fn range_overlaps(a: &Range, b: &Range) -> bool {
     (a.start.line < b.end.line
@@ -404,6 +411,12 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                })),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
@@ -547,6 +560,153 @@ impl LanguageServer for Backend {
             Ok(None)
         } else {
             Ok(Some(actions))
+        }
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let workspace = self.workspace.lock().await;
+        let files = self.files.lock().await;
+        let uri = &params.text_document_position_params.text_document.uri;
+
+        let Some(source_file) = files.get(uri) else {
+            return Ok(None);
+        };
+
+        let source_text = workspace.source_text(*source_file);
+        let offset =
+            position_to_offset(&source_text, params.text_document_position_params.position);
+        let anchors = workspace.get_anchors(*source_file);
+
+        let Some(current) = anchor_at_offset(&anchors, offset) else {
+            return Ok(None);
+        };
+
+        // Find the definition of this anchor name
+        let definition = anchors
+            .iter()
+            .find(|a| a.is_definition && a.name == current.name);
+
+        let Some(def) = definition else {
+            return Ok(None);
+        };
+
+        let range = text_position_to_lsp_range(&source_text, def.range);
+        Ok(Some(GotoDefinitionResponse::Scalar(Location {
+            uri: uri.clone(),
+            range,
+        })))
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let workspace = self.workspace.lock().await;
+        let files = self.files.lock().await;
+        let uri = &params.text_document_position.text_document.uri;
+
+        let Some(source_file) = files.get(uri) else {
+            return Ok(None);
+        };
+
+        let source_text = workspace.source_text(*source_file);
+        let offset = position_to_offset(&source_text, params.text_document_position.position);
+        let anchors = workspace.get_anchors(*source_file);
+
+        let Some(current) = anchor_at_offset(&anchors, offset) else {
+            return Ok(None);
+        };
+
+        let include_definition = params.context.include_declaration;
+        let locations: Vec<Location> = anchors
+            .iter()
+            .filter(|a| a.name == current.name && (include_definition || !a.is_definition))
+            .map(|a| Location {
+                uri: uri.clone(),
+                range: text_position_to_lsp_range(&source_text, a.range),
+            })
+            .collect();
+
+        if locations.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(locations))
+        }
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let workspace = self.workspace.lock().await;
+        let files = self.files.lock().await;
+
+        let Some(source_file) = files.get(&params.text_document.uri) else {
+            return Ok(None);
+        };
+
+        let source_text = workspace.source_text(*source_file);
+        let offset = position_to_offset(&source_text, params.position);
+        let anchors = workspace.get_anchors(*source_file);
+
+        let Some(current) = anchor_at_offset(&anchors, offset) else {
+            return Ok(None);
+        };
+
+        // Return the range of just the name part (after & or *)
+        let name_start = current.range.start + 1; // skip & or *
+        let name_range = text_position_to_lsp_range(
+            &source_text,
+            TextPosition::new(name_start, current.range.end),
+        );
+
+        Ok(Some(PrepareRenameResponse::Range(name_range)))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let workspace = self.workspace.lock().await;
+        let files = self.files.lock().await;
+        let uri = &params.text_document_position.text_document.uri;
+
+        let Some(source_file) = files.get(uri) else {
+            return Ok(None);
+        };
+
+        let source_text = workspace.source_text(*source_file);
+        let offset = position_to_offset(&source_text, params.text_document_position.position);
+        let anchors = workspace.get_anchors(*source_file);
+
+        let Some(current) = anchor_at_offset(&anchors, offset) else {
+            return Ok(None);
+        };
+
+        let new_name = &params.new_name;
+
+        // Build edits for all anchors and aliases with the same name.
+        // Replace only the name portion (after & or *), keeping the prefix.
+        let edits: Vec<TextEdit> = anchors
+            .iter()
+            .filter(|a| a.name == current.name)
+            .map(|a| {
+                let name_start = a.range.start + 1; // skip & or *
+                let name_range = text_position_to_lsp_range(
+                    &source_text,
+                    TextPosition::new(name_start, a.range.end),
+                );
+                TextEdit {
+                    range: name_range,
+                    new_text: new_name.clone(),
+                }
+            })
+            .collect();
+
+        if edits.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(WorkspaceEdit {
+                changes: Some(vec![(uri.clone(), edits)].into_iter().collect()),
+                ..Default::default()
+            }))
         }
     }
 
@@ -774,5 +934,132 @@ mod tests {
         let diagnostics = generate_diagnostics(&parsed, &source_text);
 
         assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_anchors_collected() {
+        let mut workspace = Workspace::new();
+        let url: Uri = "file:///test.yaml".parse().unwrap();
+        let text = "defaults: &defs\n  a: 1\nother: *defs\n";
+
+        let file = workspace.update_file(url, text.to_string());
+        let anchors = workspace.get_anchors(file);
+
+        assert_eq!(anchors.len(), 2);
+
+        let def = anchors.iter().find(|a| a.is_definition).unwrap();
+        assert_eq!(def.name, "defs");
+
+        let reference = anchors.iter().find(|a| !a.is_definition).unwrap();
+        assert_eq!(reference.name, "defs");
+    }
+
+    #[test]
+    fn test_anchor_at_offset() {
+        let mut workspace = Workspace::new();
+        let url: Uri = "file:///test.yaml".parse().unwrap();
+        let text = "defaults: &defs\n  a: 1\nother: *defs\n";
+
+        let file = workspace.update_file(url, text.to_string());
+        let anchors = workspace.get_anchors(file);
+
+        // &defs is at 10..15
+        let hit = anchor_at_offset(&anchors, 10);
+        assert!(hit.is_some());
+        assert_eq!(hit.unwrap().name, "defs");
+        assert!(hit.unwrap().is_definition);
+
+        // *defs is at 30..35
+        let hit = anchor_at_offset(&anchors, 30);
+        assert!(hit.is_some());
+        assert_eq!(hit.unwrap().name, "defs");
+        assert!(!hit.unwrap().is_definition);
+
+        // Somewhere else
+        let miss = anchor_at_offset(&anchors, 0);
+        assert!(miss.is_none());
+    }
+
+    #[test]
+    fn test_goto_definition_finds_anchor() {
+        let mut workspace = Workspace::new();
+        let url: Uri = "file:///test.yaml".parse().unwrap();
+        // "defaults: &defs\n  a: 1\nother: *defs\n"
+        //  0         10    16      23  29
+        let text = "defaults: &defs\n  a: 1\nother: *defs\n";
+
+        let file = workspace.update_file(url, text.to_string());
+        let anchors = workspace.get_anchors(file);
+        let source_text = workspace.source_text(file);
+
+        // From the alias *defs (offset 30), find the definition
+        let current = anchor_at_offset(&anchors, 30).unwrap();
+        assert!(!current.is_definition);
+
+        let def = anchors
+            .iter()
+            .find(|a| a.is_definition && a.name == current.name)
+            .unwrap();
+        let range = text_position_to_lsp_range(&source_text, def.range);
+
+        // &defs is at line 0, characters 10..15
+        assert_eq!(range.start.line, 0);
+        assert_eq!(range.start.character, 10);
+        assert_eq!(range.end.character, 15);
+    }
+
+    #[test]
+    fn test_find_references() {
+        let mut workspace = Workspace::new();
+        let url: Uri = "file:///test.yaml".parse().unwrap();
+        let text = "a: &x 1\nb: *x\nc: *x\n";
+
+        let file = workspace.update_file(url, text.to_string());
+        let anchors = workspace.get_anchors(file);
+
+        // From &x, find all references (excluding definition)
+        let current = anchor_at_offset(&anchors, 3).unwrap();
+        let refs: Vec<_> = anchors
+            .iter()
+            .filter(|a| a.name == current.name && !a.is_definition)
+            .collect();
+        assert_eq!(refs.len(), 2);
+
+        // Including definition
+        let all: Vec<_> = anchors.iter().filter(|a| a.name == current.name).collect();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_rename_generates_edits() {
+        let mut workspace = Workspace::new();
+        let url: Uri = "file:///test.yaml".parse().unwrap();
+        let text = "a: &x 1\nb: *x\n";
+
+        let file = workspace.update_file(url, text.to_string());
+        let anchors = workspace.get_anchors(file);
+        let source_text = workspace.source_text(file);
+
+        let current = anchor_at_offset(&anchors, 3).unwrap();
+        let edits: Vec<TextEdit> = anchors
+            .iter()
+            .filter(|a| a.name == current.name)
+            .map(|a| {
+                let name_start = a.range.start + 1;
+                let name_range = text_position_to_lsp_range(
+                    &source_text,
+                    TextPosition::new(name_start, a.range.end),
+                );
+                TextEdit {
+                    range: name_range,
+                    new_text: "renamed".to_string(),
+                }
+            })
+            .collect();
+
+        assert_eq!(edits.len(), 2);
+        // Both edits should replace "x" with "renamed"
+        assert_eq!(edits[0].new_text, "renamed");
+        assert_eq!(edits[1].new_text, "renamed");
     }
 }

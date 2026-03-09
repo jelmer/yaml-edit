@@ -82,22 +82,38 @@ impl Sequence {
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn push(&self, value: impl crate::AsYaml) {
         // Detect the indentation by looking at existing SEQUENCE_ENTRY nodes
-        let mut indentation = self
-            .0
-            .children_with_tokens()
-            .find_map(|child| {
-                child
-                    .into_token()
-                    .filter(|t| t.kind() == SyntaxKind::INDENT)
-                    .map(|t| t.text().to_string())
-            })
-            .unwrap_or_else(|| "  ".to_string());
-
-        // If no INDENT token found, look within SEQUENCE_ENTRY nodes
+        let mut indentation = "  ".to_string();
+        
+        // First try to find INDENT token directly in the sequence
+        if let Some(ind) = self.0.children_with_tokens().find_map(|child| {
+            child.into_token().filter(|t| t.kind() == SyntaxKind::INDENT).map(|t| t.text().to_string())
+        }) {
+            indentation = ind;
+        } else if let Some(value_node) = self.0.parent() {
+            if let Some(mapping_entry) = value_node.parent() {
+                if let Some(mapping_node) = mapping_entry.parent() {
+                    if let Some(mapping) = crate::nodes::Mapping::cast(mapping_node) {
+                        let parent_indent = mapping.detect_indentation_level();
+                        indentation = " ".repeat(parent_indent + 2);
+                    }
+                }
+            }
+        }
+        
         if indentation == "  " {
-            for child in self.0.children() {
-                if child.kind() == SyntaxKind::SEQUENCE_ENTRY {
-                    let tokens: Vec<_> = child.children_with_tokens().collect();
+            // Look for the first SEQUENCE_ENTRY and get its previous token
+            if let Some(first_entry) = self.0.children().find(|c| c.kind() == SyntaxKind::SEQUENCE_ENTRY) {
+                if let Some(prev_token) = first_entry.first_token().and_then(|t| t.prev_token()) {
+                    if prev_token.kind() == SyntaxKind::INDENT {
+                        indentation = prev_token.text().to_string();
+                    } else if prev_token.kind() == SyntaxKind::WHITESPACE {
+                        indentation = prev_token.text().to_string();
+                    }
+                }
+                
+                // If still not found, look inside the entry
+                if indentation == "  " {
+                    let tokens: Vec<_> = first_entry.children_with_tokens().collect();
                     for (i, token) in tokens.iter().enumerate() {
                         if let Some(t) = token.as_token() {
                             if t.kind() == SyntaxKind::WHITESPACE && i + 1 < tokens.len() {
@@ -109,9 +125,6 @@ impl Sequence {
                                 }
                             }
                         }
-                    }
-                    if !indentation.is_empty() && indentation != "  " {
-                        break;
                     }
                 }
             }
@@ -177,7 +190,9 @@ impl Sequence {
         builder.token(SyntaxKind::WHITESPACE.into(), " ");
 
         // Build the value content directly using AsYaml
-        let value_ends_with_newline = value.build_content(&mut builder, 0, false);
+        // Pass the correct indentation for the value (sequence indent + 2)
+        let value_indent = indentation.len() + 2;
+        let value_ends_with_newline = value.build_content(&mut builder, value_indent, false);
 
         // Add trailing newline only if the value doesn't already end with one
         // and if the last entry had one (preserves document style)
@@ -211,7 +226,59 @@ impl Sequence {
             }
         }
 
-        // Insert the indent token and new entry before any trailing blank newlines
+        // Check if this is an empty flow sequence `[]`
+        let mut has_left = false;
+        let mut has_right = false;
+        for c in &children {
+            if let Some(t) = c.as_token() {
+                if t.kind() == SyntaxKind::LEFT_BRACKET { has_left = true; }
+                if t.kind() == SyntaxKind::RIGHT_BRACKET { has_right = true; }
+            }
+        }
+        let is_empty_flow = has_left && has_right && children.iter().filter(|c| c.as_node().is_some()).count() == 0;
+        
+        if is_empty_flow {
+            let mut nl_builder = GreenNodeBuilder::new();
+            nl_builder.start_node(SyntaxKind::ROOT.into());
+            nl_builder.token(SyntaxKind::NEWLINE.into(), "\n");
+            nl_builder.finish_node();
+            let nl_node = SyntaxNode::new_root_mut(nl_builder.finish());
+            if let Some(token) = nl_node.first_token() {
+                // Remove from end to start to avoid index shifting issues
+                for i in (1..children.len()).rev() {
+                    self.0.splice_children(i..i+1, vec![]);
+                }
+                self.0.splice_children(
+                    0..1, // Replace left bracket
+                    vec![token.into(), indent_token.into(), new_entry.into()],
+                );
+                return;
+            }
+        }
+
+
+
+        // Insert the indent token
+        // But if the sequence is empty, we need to add a newline first
+        if children.is_empty() {
+            let mut nl_builder = GreenNodeBuilder::new();
+            nl_builder.start_node(SyntaxKind::ROOT.into());
+            nl_builder.token(SyntaxKind::NEWLINE.into(), "\n");
+            nl_builder.finish_node();
+            let nl_node = SyntaxNode::new_root_mut(nl_builder.finish());
+            if let Some(token) = nl_node.first_token() {
+                // For an empty sequence, we need to replace the empty array brackets if they exist
+                // The empty array brackets are usually in the parent node (the VALUE node)
+                // However, we can't easily replace them here.
+                // Instead, we just append the newline, indent, and new entry.
+                self.0.splice_children(
+                    insert_pos..insert_pos,
+                    vec![token.into(), indent_token.into(), new_entry.into()],
+                );
+                return;
+            }
+        }
+        
         self.0.splice_children(
             insert_pos..insert_pos,
             vec![indent_token.into(), new_entry.into()],
@@ -280,7 +347,8 @@ impl Sequence {
         builder.token(SyntaxKind::WHITESPACE.into(), " ");
 
         // Build the value content directly using AsYaml
-        value.build_content(&mut builder, 0, false);
+        let value_indent = indentation.len() + 2;
+        value.build_content(&mut builder, value_indent, false);
 
         builder.finish_node(); // SEQUENCE_ENTRY
         let new_entry = SyntaxNode::new_root_mut(builder.finish());
@@ -342,7 +410,14 @@ impl Sequence {
                                 {
                                     // Replace the value node with the new value built from AsYaml
                                     if !value_inserted {
-                                        value.build_content(&mut builder, 0, false);
+                                        // Try to find indentation from the current node's tokens
+                                        let mut indent = 2; // Default fallback
+                                        if let Some(prev) = n.first_token().and_then(|t| t.prev_token()) {
+                                            if prev.kind() == crate::lex::SyntaxKind::INDENT {
+                                                indent = prev.text().len() + 2;
+                                            }
+                                        }
+                                        value.build_content(&mut builder, indent, false);
                                         value_inserted = true;
                                     }
                                 }
@@ -667,6 +742,7 @@ mod tests {
     #[test]
     fn test_sequence_into_iterator() {
         use crate::Document;
+    use crate::path::YamlPath;
         let text = "items:\n  - apple\n  - banana\n  - cherry";
         let doc = Document::from_str(text).unwrap();
         let mapping = doc.as_mapping().unwrap();
@@ -689,6 +765,7 @@ mod tests {
     #[test]
     fn test_sequence_into_iterator_count() {
         use crate::Document;
+    use crate::path::YamlPath;
         let text = "[1, 2, 3, 4, 5]";
         let doc = Document::from_str(text).unwrap();
         let sequence = doc.as_sequence().unwrap();
@@ -700,6 +777,7 @@ mod tests {
     #[test]
     fn test_sequence_iterator_map() {
         use crate::Document;
+    use crate::path::YamlPath;
         let text = "numbers: [1, 2, 3]";
         let doc = Document::from_str(text).unwrap();
         let mapping = doc.as_mapping().unwrap();
@@ -717,6 +795,7 @@ mod tests {
     #[test]
     fn test_empty_sequence_iterator() {
         use crate::Document;
+    use crate::path::YamlPath;
         let text = "items: []";
         let doc = Document::from_str(text).unwrap();
         let mapping = doc.as_mapping().unwrap();
@@ -731,6 +810,7 @@ mod tests {
     #[test]
     fn test_sequence_push_single() {
         use crate::Document;
+    use crate::path::YamlPath;
         let original = r#"team:
   - Alice
   - Bob"#;
@@ -750,6 +830,7 @@ mod tests {
     #[test]
     fn test_sequence_push_multiple() {
         use crate::Document;
+    use crate::path::YamlPath;
         let original = r#"team:
   - Alice
   - Bob"#;
@@ -771,6 +852,7 @@ mod tests {
     #[test]
     fn test_sequence_set_item() {
         use crate::Document;
+    use crate::path::YamlPath;
         let original = r#"team:
   - Alice
   - Bob
@@ -791,6 +873,7 @@ mod tests {
     #[test]
     fn test_multiple_sequences() {
         use crate::Document;
+    use crate::path::YamlPath;
         let original = r#"team:
   - Alice
   - Bob
@@ -822,6 +905,7 @@ scores:
     #[test]
     fn test_nested_structure_with_sequences() {
         use crate::Document;
+    use crate::path::YamlPath;
         let original = r#"config:
   enabled: true
   retries: 3
@@ -852,6 +936,7 @@ scores:
     #[test]
     fn test_sequence_len_and_is_empty() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items:\n  - a\n  - b\n  - c").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -870,6 +955,7 @@ scores:
     #[test]
     fn test_sequence_get() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items:\n  - first\n  - second\n  - third").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -883,6 +969,7 @@ scores:
     #[test]
     fn test_sequence_first_and_last() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items:\n  - first\n  - middle\n  - last").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -901,6 +988,7 @@ scores:
     #[test]
     fn test_sequence_values_iterator() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items:\n  - a\n  - b\n  - c").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -912,6 +1000,7 @@ scores:
     #[test]
     fn test_sequence_pop() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items:\n  - a\n  - b\n  - c").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -937,6 +1026,7 @@ scores:
     #[test]
     fn test_sequence_clear() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items:\n  - a\n  - b\n  - c").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -950,6 +1040,7 @@ scores:
     #[test]
     fn test_sequence_get_with_nested_values() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str(
             r#"items:
   - simple
@@ -969,6 +1060,7 @@ scores:
     #[test]
     fn test_flow_sequence_len_and_is_empty() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [a, b, c]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -987,6 +1079,7 @@ scores:
     #[test]
     fn test_flow_sequence_get() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [first, second, third]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1000,6 +1093,7 @@ scores:
     #[test]
     fn test_flow_sequence_first_and_last() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [first, middle, last]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1011,6 +1105,7 @@ scores:
     #[test]
     fn test_flow_sequence_values_iterator() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [a, b, c]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1022,6 +1117,7 @@ scores:
     #[test]
     fn test_flow_sequence_remove_middle() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [a, b, c]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1038,6 +1134,7 @@ scores:
     #[test]
     fn test_flow_sequence_remove_first() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [a, b, c]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1054,6 +1151,7 @@ scores:
     #[test]
     fn test_flow_sequence_remove_last() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [a, b, c]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1070,6 +1168,7 @@ scores:
     #[test]
     fn test_flow_sequence_pop() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [a, b, c]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1092,6 +1191,7 @@ scores:
     #[test]
     fn test_flow_sequence_clear() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [a, b, c]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1105,6 +1205,7 @@ scores:
     #[test]
     fn test_flow_sequence_with_whitespace() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [ a , b , c ]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1117,6 +1218,7 @@ scores:
     #[test]
     fn test_block_sequence_remove_middle() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items:\n  - a\n  - b\n  - c").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1133,6 +1235,7 @@ scores:
     #[test]
     fn test_block_sequence_remove_first() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items:\n  - a\n  - b\n  - c").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1149,6 +1252,7 @@ scores:
     #[test]
     fn test_block_sequence_remove_last() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items:\n  - a\n  - b\n  - c").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1165,6 +1269,7 @@ scores:
     #[test]
     fn test_single_item_block_sequence_remove() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items:\n  - only").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1178,6 +1283,7 @@ scores:
     #[test]
     fn test_single_item_flow_sequence_remove() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [only]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1191,6 +1297,7 @@ scores:
     #[test]
     fn test_flow_sequence_push() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [a, b]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1206,6 +1313,7 @@ scores:
     #[test]
     fn test_flow_sequence_push_multiple() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [a]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1221,6 +1329,7 @@ scores:
     #[test]
     fn test_flow_sequence_set_item() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [a, b, c]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1234,6 +1343,7 @@ scores:
     #[test]
     fn test_flow_sequence_insert_beginning() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [b, c]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1247,6 +1357,7 @@ scores:
     #[test]
     fn test_flow_sequence_insert_middle() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [a, c]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1260,6 +1371,7 @@ scores:
     #[test]
     fn test_flow_sequence_insert_end() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items: [a, b]").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1273,6 +1385,7 @@ scores:
     #[test]
     fn test_block_sequence_push() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items:\n  - a\n  - b").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1288,6 +1401,7 @@ scores:
     #[test]
     fn test_block_sequence_set_item() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items:\n  - a\n  - b\n  - c").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1301,6 +1415,7 @@ scores:
     #[test]
     fn test_block_sequence_insert_beginning() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items:\n  - b\n  - c").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1314,6 +1429,7 @@ scores:
     #[test]
     fn test_block_sequence_insert_middle() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items:\n  - a\n  - c").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1327,6 +1443,7 @@ scores:
     #[test]
     fn test_block_sequence_insert_end() {
         use crate::Document;
+    use crate::path::YamlPath;
         let doc = Document::from_str("items:\n  - a\n  - b").unwrap();
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
@@ -1360,5 +1477,38 @@ scores:
             seq.get(2).unwrap().as_scalar().unwrap().as_string(),
             "gamma"
         );
+    }
+}
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+    use crate::Document;
+    use crate::path::YamlPath;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_sequence_push_empty_flow() {
+        let doc = Document::from_str("seq: []").unwrap();
+        let seq = doc.get_path("seq").unwrap().as_sequence().unwrap().clone();
+        seq.push("item1");
+        assert_eq!(doc.to_string(), "seq: \n  - item1\n");
+    }
+
+    #[test]
+    fn test_sequence_push_empty_block() {
+        // Create a document with an empty block sequence by setting it
+        let doc = Document::from_str("seq: []").unwrap();
+        let seq = doc.get_path("seq").unwrap().as_sequence().unwrap().clone();
+        seq.push("item1");
+        assert_eq!(doc.to_string(), "seq: \n  - item1\n");
+    }
+
+    #[test]
+    fn test_sequence_push_deeply_nested() {
+        let doc = Document::from_str("a:\n  b:\n    c:\n      - existing\n").unwrap();
+        let seq = doc.get_path("a.b.c").unwrap().as_sequence().unwrap().clone();
+        seq.push("new_item");
+        assert_eq!(doc.to_string(), "a:\n  b:\n    c:\n      - existing\n      - new_item\n");
     }
 }

@@ -1753,3 +1753,17 @@ double: "quoted""#;
         );
     }
 }
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+
+    #[test]
+    fn test_flow_indicators_in_block_scalar() {
+        let input = "key: unix:///Users/${metadata.username}/path";
+        let tokens = lex(input);
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[3].0, SyntaxKind::STRING);
+        assert_eq!(tokens[3].1, "unix:///Users/${metadata.username}/path");
+    }
+}

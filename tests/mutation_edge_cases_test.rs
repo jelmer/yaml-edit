@@ -284,9 +284,9 @@ fn test_add_to_empty_flow_sequence() {
     assert_eq!(empty_seq.len(), 0, "Should be empty initially");
 
     // Add items to the empty sequence
-    empty_seq.push("first");
-    empty_seq.push("second");
-    empty_seq.push("third");
+    empty_seq.push("first").unwrap();
+    empty_seq.push("second").unwrap();
+    empty_seq.push("third").unwrap();
 
     // Verify items were added
     assert_eq!(empty_seq.len(), 3, "Should have 3 items");

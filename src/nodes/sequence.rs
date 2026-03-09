@@ -114,8 +114,59 @@ impl Sequence {
 
     /// Add an item to the end of the sequence.
     ///
+    /// Returns an error if this is a flow-style sequence (`[...]`) and the
+    /// value is not inline (e.g. a block mapping or block sequence), since
+    /// block content cannot appear inside a flow collection.
+    ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
-    pub fn push(&self, value: impl crate::AsYaml) {
+    pub fn push(&self, value: impl crate::AsYaml) -> Result<(), crate::error::YamlError> {
+        // For flow-style sequences ([...]), insert as flow content before the RIGHT_BRACKET
+        if self.is_flow_style() {
+            if !value.is_inline() {
+                return Err(crate::error::YamlError::InvalidOperation {
+                    operation: "push".to_string(),
+                    reason: "cannot insert block-style content into a flow sequence".to_string(),
+                });
+            }
+            let has_entries = !self.is_empty();
+            for (i, child) in self.0.children_with_tokens().enumerate() {
+                if let Some(t) = child.as_token() {
+                    if t.kind() == SyntaxKind::RIGHT_BRACKET {
+                        let mut new_elements: Vec<
+                            rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<crate::Lang>>,
+                        > = Vec::new();
+
+                        // Add ", " separator if there are existing entries
+                        if has_entries {
+                            let mut sep_builder = GreenNodeBuilder::new();
+                            sep_builder.start_node(SyntaxKind::ROOT.into());
+                            sep_builder.token(SyntaxKind::COMMA.into(), ",");
+                            sep_builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                            sep_builder.finish_node();
+                            let sep_node = SyntaxNode::new_root_mut(sep_builder.finish());
+                            for c in sep_node.children_with_tokens() {
+                                if let rowan::NodeOrToken::Token(tok) = c {
+                                    new_elements.push(tok.into());
+                                }
+                            }
+                        }
+
+                        // Build a SEQUENCE_ENTRY containing the value
+                        let mut entry_builder = GreenNodeBuilder::new();
+                        entry_builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
+                        value.build_content(&mut entry_builder, 0, true);
+                        entry_builder.finish_node();
+                        let entry_node = SyntaxNode::new_root_mut(entry_builder.finish());
+                        new_elements.push(entry_node.into());
+
+                        self.0.splice_children(i..i, new_elements);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // Block-style sequence: detect the indentation
         let indentation = self.detect_indentation();
 
         // Build the INDENT token (separate from the SEQUENCE_ENTRY)
@@ -217,6 +268,7 @@ impl Sequence {
             insert_pos..insert_pos,
             vec![indent_token.into(), new_entry.into()],
         );
+        Ok(())
     }
 
     /// Insert an item at a specific position.
@@ -313,7 +365,8 @@ impl Sequence {
                                     // trailing NEWLINE+INDENT that must be preserved.
                                     let text = n.text().to_string();
                                     if let Some(last_newline_pos) = text.rfind('\n') {
-                                        trailing_text = Some(text[last_newline_pos..].to_string());
+                                        trailing_text =
+                                            Some(text[last_newline_pos..].to_string());
                                     }
 
                                     // Replace the value node with the new value built from AsYaml
@@ -630,7 +683,7 @@ mod tests {
         let seq = doc.as_sequence().expect("expected a sequence");
 
         // Test push
-        seq.push("item3");
+        seq.push("item3").unwrap();
         let values: Vec<_> = seq.values().collect();
         assert_eq!(values.len(), 3);
         assert_eq!(
@@ -724,7 +777,7 @@ mod tests {
         let doc = Document::from_str(original).unwrap();
         let mapping = doc.as_mapping().unwrap();
         let team = mapping.get_sequence("team").unwrap();
-        team.push("Charlie");
+        team.push("Charlie").unwrap();
 
         let expected = r#"team:
   - Alice
@@ -743,8 +796,8 @@ mod tests {
         let doc = Document::from_str(original).unwrap();
         let mapping = doc.as_mapping().unwrap();
         let team = mapping.get_sequence("team").unwrap();
-        team.push("Charlie");
-        team.push("Diana");
+        team.push("Charlie").unwrap();
+        team.push("Diana").unwrap();
 
         let expected = r#"team:
   - Alice
@@ -788,9 +841,9 @@ scores:
         let doc = Document::from_str(original).unwrap();
         let mapping = doc.as_mapping().unwrap();
         let team = mapping.get_sequence("team").unwrap();
-        team.push("Charlie");
+        team.push("Charlie").unwrap();
         let scores = mapping.get_sequence("scores").unwrap();
-        scores.push(92);
+        scores.push(92).unwrap();
         scores.set(0, 100);
 
         let expected = r#"team:
@@ -822,7 +875,7 @@ scores:
         config.set("retries", 5);
 
         let servers = config.get_sequence("servers").unwrap();
-        servers.push("host3");
+        servers.push("host3").unwrap();
         servers.set(0, "primary-host");
 
         let expected = r#"config:
@@ -1182,7 +1235,7 @@ scores:
         let seq = mapping.get_sequence("items").unwrap();
 
         assert_eq!(seq.len(), 2);
-        seq.push("c");
+        seq.push("c").unwrap();
         assert_eq!(seq.len(), 3);
 
         let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
@@ -1196,9 +1249,9 @@ scores:
         let mapping = doc.as_mapping().unwrap();
         let seq = mapping.get_sequence("items").unwrap();
 
-        seq.push("b");
-        seq.push("c");
-        seq.push("d");
+        seq.push("b").unwrap();
+        seq.push("c").unwrap();
+        seq.push("d").unwrap();
 
         let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
         assert_eq!(values, vec!["a", "b", "c", "d"]);
@@ -1264,7 +1317,7 @@ scores:
         let seq = mapping.get_sequence("items").unwrap();
 
         assert_eq!(seq.len(), 2);
-        seq.push("c");
+        seq.push("c").unwrap();
         assert_eq!(seq.len(), 3);
 
         let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
@@ -1368,5 +1421,226 @@ scores:
             doc.to_string(),
             "items:\n  - replaced\n  - name: second\n    value: 2\n"
         );
+    }
+
+    #[test]
+    fn test_sequence_push_empty_flow() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        let doc = Document::from_str("seq: []").unwrap();
+        let seq = doc.get_path("seq").unwrap().as_sequence().unwrap().clone();
+        seq.push("item1").unwrap();
+        assert_eq!(doc.to_string(), "seq: [item1]");
+    }
+
+    #[test]
+    fn test_sequence_push_non_empty_flow() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        let doc = Document::from_str("seq: [a, b]").unwrap();
+        let seq = doc.get_path("seq").unwrap().as_sequence().unwrap().clone();
+        seq.push("c").unwrap();
+        assert_eq!(doc.to_string(), "seq: [a, b, c]");
+    }
+
+    #[test]
+    fn test_flow_sequence_push_string_with_spaces() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        let doc = Document::from_str("tags: [foo]").unwrap();
+        let seq = doc.get_path("tags").unwrap().as_sequence().unwrap().clone();
+        seq.push("hello world").unwrap();
+        assert_eq!(doc.to_string(), "tags: [foo, hello world]");
+    }
+
+    #[test]
+    fn test_flow_sequence_push_integer() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        let doc = Document::from_str("nums: [1, 2]").unwrap();
+        let seq = doc.get_path("nums").unwrap().as_sequence().unwrap().clone();
+        seq.push(3).unwrap();
+        assert_eq!(doc.to_string(), "nums: [1, 2, 3]");
+    }
+
+    #[test]
+    fn test_flow_sequence_push_multiple_to_empty() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        let doc = Document::from_str("seq: []").unwrap();
+        let seq = doc.get_path("seq").unwrap().as_sequence().unwrap().clone();
+        seq.push("a").unwrap();
+        seq.push("b").unwrap();
+        seq.push("c").unwrap();
+        assert_eq!(doc.to_string(), "seq: [a, b, c]");
+    }
+
+    #[test]
+    fn test_flow_sequence_push_preserves_surrounding() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        let doc = Document::from_str("before: 1\nseq: [a]\nafter: 2\n").unwrap();
+        let seq = doc.get_path("seq").unwrap().as_sequence().unwrap().clone();
+        seq.push("b").unwrap();
+        assert_eq!(doc.to_string(), "before: 1\nseq: [a, b]\nafter: 2\n");
+    }
+
+    #[test]
+    fn test_flow_sequence_push_nested_in_mapping() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        let doc = Document::from_str("config:\n  items: [x]\n  other: val\n").unwrap();
+        let seq = doc
+            .get_path("config.items")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .clone();
+        seq.push("y").unwrap();
+        assert_eq!(doc.to_string(), "config:\n  items: [x, y]\n  other: val\n");
+    }
+
+    #[test]
+    fn test_flow_sequence_push_flow_indicators() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        // Strings containing flow indicators must be quoted in flow context
+        let doc = Document::from_str("seq: [a]").unwrap();
+        let seq = doc.get_path("seq").unwrap().as_sequence().unwrap().clone();
+        seq.push("contains]bracket").unwrap();
+        assert_eq!(doc.to_string(), "seq: [a, 'contains]bracket']");
+
+        let doc = Document::from_str("seq: [a]").unwrap();
+        let seq = doc.get_path("seq").unwrap().as_sequence().unwrap().clone();
+        seq.push("has[open").unwrap();
+        assert_eq!(doc.to_string(), "seq: [a, 'has[open']");
+
+        let doc = Document::from_str("seq: [a]").unwrap();
+        let seq = doc.get_path("seq").unwrap().as_sequence().unwrap().clone();
+        seq.push("with,comma").unwrap();
+        assert_eq!(doc.to_string(), "seq: [a, 'with,comma']");
+
+        let doc = Document::from_str("seq: [a]").unwrap();
+        let seq = doc.get_path("seq").unwrap().as_sequence().unwrap().clone();
+        seq.push("has{brace").unwrap();
+        assert_eq!(doc.to_string(), "seq: [a, 'has{brace']");
+
+        // When string contains both single quote and flow indicator, use double quotes
+        let doc = Document::from_str("seq: [a]").unwrap();
+        let seq = doc.get_path("seq").unwrap().as_sequence().unwrap().clone();
+        seq.push("it's a [test]").unwrap();
+        assert_eq!(doc.to_string(), "seq: [a, \"it's a [test]\"]");
+    }
+
+    #[test]
+    fn test_flow_sequence_push_with_extra_whitespace() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        // Flow sequence with extra internal whitespace
+        let doc = Document::from_str("seq: [ a , b ]").unwrap();
+        let seq = doc.get_path("seq").unwrap().as_sequence().unwrap().clone();
+        seq.push("c").unwrap();
+        assert_eq!(doc.to_string(), "seq: [ a , b , c]");
+    }
+
+    #[test]
+    fn test_flow_sequence_push_block_mapping_node_rejected() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        // Pushing a block mapping into a flow sequence should return an error
+        let source = Document::from_str("key: value\nnested: true").unwrap();
+        let source_mapping = source.as_mapping().unwrap();
+        let source_node = crate::as_yaml::YamlNode::Mapping(source_mapping.clone());
+
+        let doc = Document::from_str("items: [a, b]").unwrap();
+        let seq = doc
+            .get_path("items")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .clone();
+        assert!(seq.push(source_node).is_err());
+        // Original sequence is unchanged
+        assert_eq!(doc.to_string(), "items: [a, b]");
+    }
+
+    #[test]
+    fn test_flow_sequence_push_block_sequence_node_rejected() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        // Pushing a block sequence into a flow sequence should return an error
+        let source = Document::from_str("- x\n- y\n- z").unwrap();
+        let source_seq = source.as_sequence().unwrap();
+        let source_node = crate::as_yaml::YamlNode::Sequence(source_seq.clone());
+
+        let doc = Document::from_str("items: [a, b]").unwrap();
+        let seq = doc
+            .get_path("items")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .clone();
+        assert!(seq.push(source_node).is_err());
+        // Original sequence is unchanged
+        assert_eq!(doc.to_string(), "items: [a, b]");
+    }
+
+    #[test]
+    fn test_flow_sequence_push_flow_mapping_node_accepted() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        // Pushing a flow mapping into a flow sequence should work
+        let source = Document::from_str("{key: value}").unwrap();
+        let source_mapping = source.as_mapping().unwrap();
+        let source_node = crate::as_yaml::YamlNode::Mapping(source_mapping.clone());
+
+        let doc = Document::from_str("items: [a, b]").unwrap();
+        let seq = doc
+            .get_path("items")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .clone();
+        seq.push(source_node).unwrap();
+        assert_eq!(doc.to_string(), "items: [a, b, {key: value}]");
+    }
+
+    #[test]
+    fn test_flow_sequence_push_flow_sequence_node_accepted() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        // Pushing a flow sequence into a flow sequence should work
+        let source = Document::from_str("[x, y]").unwrap();
+        let source_seq = source.as_sequence().unwrap();
+        let source_node = crate::as_yaml::YamlNode::Sequence(source_seq.clone());
+
+        let doc = Document::from_str("items: [a, b]").unwrap();
+        let seq = doc
+            .get_path("items")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .clone();
+        seq.push(source_node).unwrap();
+        assert_eq!(doc.to_string(), "items: [a, b, [x, y]]");
+    }
+
+    #[test]
+    fn test_block_sequence_push_block_mapping_accepted() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        // Pushing a block mapping into a block sequence should work fine
+        let source = Document::from_str("key: value\nnested: true").unwrap();
+        let source_mapping = source.as_mapping().unwrap();
+        let source_node = crate::as_yaml::YamlNode::Mapping(source_mapping.clone());
+
+        let doc = Document::from_str("items:\n  - a\n  - b").unwrap();
+        let seq = doc
+            .get_path("items")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .clone();
+        seq.push(source_node).unwrap();
     }
 }

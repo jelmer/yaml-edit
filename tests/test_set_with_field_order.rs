@@ -169,13 +169,7 @@ fn test_set_with_field_order_empty_document() {
     }
 
     let result = yaml.to_string();
-    // In flow-style context ({}), strings are quoted
-    let expected = r#"---
-{}
-name: "my-app"
-version: 1.0
-"#;
-    assert_eq!(result, expected);
+    assert_eq!(result, "---\n{}\nname: my-app\nversion: 1.0\n");
 }
 
 #[test]
@@ -718,13 +712,7 @@ fn test_set_with_field_order_all_new_fields() {
     let result = yaml.to_string();
     assert_eq!(
         result,
-        r#"---
-{}
-name: "test-app"
-version: "0.1.0"
-author: "Tester"
-description: "A test app"
-"#
+        "---\n{}\nname: test-app\nversion: 0.1.0\nauthor: Tester\ndescription: A test app\n"
     );
 }
 

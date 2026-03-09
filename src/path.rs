@@ -1154,3 +1154,21 @@ config:
         );
     }
 }
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+    use crate::Document;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_set_path_creates_intermediate_nodes() {
+        let doc = Document::from_str("base: true\n").unwrap();
+        doc.set_path("a.b[0].c", "value");
+        // The current behavior creates flow mappings/sequences for intermediate nodes
+        // This test ensures it doesn't panic (which was the bug fixed in 478dac9)
+        let out = doc.to_string();
+        assert!(out.contains("a:"));
+        assert!(out.contains("value"));
+    }
+}

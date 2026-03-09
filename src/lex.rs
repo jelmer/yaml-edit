@@ -1564,9 +1564,10 @@ double: "quoted""#;
         // Should have detected tab indentation error
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].category, WhitespaceErrorCategory::TabIndentation);
-        assert!(errors[0]
-            .message
-            .contains("Tab character used for indentation"));
+        assert_eq!(
+            errors[0].message,
+            "Tab character used for indentation (forbidden in YAML)"
+        );
 
         // But should still tokenize correctly
         assert!(tokens
@@ -1716,9 +1717,9 @@ double: "quoted""#;
         let input = "timestamp: 2024-01-15T10:30:00-05:00";
         let tokens = lex(input);
         // The timestamp is split into multiple tokens but parses correctly
-        assert!(tokens
-            .iter()
-            .any(|(kind, text)| *kind == SyntaxKind::STRING && text.contains("2024")));
+        assert!(tokens.iter().any(
+            |(kind, text)| *kind == SyntaxKind::STRING && *text == "2024-01-15T10:30:00-05:00"
+        ));
 
         // Test version strings
         let input = "version: 1.0.0-beta.1";

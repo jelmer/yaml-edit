@@ -316,21 +316,26 @@ hobbies:
         yaml.accept(&mut collector);
 
         // Should collect all scalar values from the document
-        assert!(collector.scalars.contains(&"name".to_string()));
-        assert!(collector.scalars.contains(&"John Doe".to_string()));
-        assert!(collector.scalars.contains(&"age".to_string()));
-        assert!(collector.scalars.contains(&"30".to_string()));
-        assert!(collector.scalars.contains(&"address".to_string()));
-        assert!(collector.scalars.contains(&"street".to_string()));
-        assert!(collector.scalars.contains(&"123 Main St".to_string()));
-        assert!(collector.scalars.contains(&"city".to_string()));
-        assert!(collector.scalars.contains(&"New York".to_string()));
-        assert!(collector.scalars.contains(&"country".to_string()));
-        assert!(collector.scalars.contains(&"USA".to_string()));
-        assert!(collector.scalars.contains(&"hobbies".to_string()));
-        assert!(collector.scalars.contains(&"reading".to_string()));
-        assert!(collector.scalars.contains(&"coding".to_string()));
-        assert!(collector.scalars.contains(&"hiking".to_string()));
+        assert_eq!(
+            collector.scalars,
+            vec![
+                "name",
+                "John Doe",
+                "age",
+                "30",
+                "address",
+                "street",
+                "123 Main St",
+                "city",
+                "New York",
+                "country",
+                "USA",
+                "hobbies",
+                "reading",
+                "coding",
+                "hiking",
+            ]
+        );
     }
 
     #[test]
@@ -356,8 +361,8 @@ hobbies:
 
         // Should count all node types
         assert_eq!(counter.document_count, 1);
-        assert!(counter.scalar_count > 0); // Should have multiple scalars
-        assert!(counter.mapping_count >= 2); // Root mapping and address mapping
+        assert_eq!(counter.scalar_count, 15);
+        assert_eq!(counter.mapping_count, 2); // Root mapping and address mapping
         assert_eq!(counter.sequence_count, 1); // hobbies sequence
 
         // Total should be sum of all counts
@@ -388,12 +393,17 @@ country: usa
         let results = transformer.results();
 
         // Check that transformations were applied
-        assert!(results.contains(&("name".to_string(), "NAME".to_string())));
-        assert!(results.contains(&("john".to_string(), "JOHN".to_string())));
-        assert!(results.contains(&("city".to_string(), "CITY".to_string())));
-        assert!(results.contains(&("new york".to_string(), "NEW YORK".to_string())));
-        assert!(results.contains(&("country".to_string(), "COUNTRY".to_string())));
-        assert!(results.contains(&("usa".to_string(), "USA".to_string())));
+        assert_eq!(
+            results,
+            &[
+                ("name".to_string(), "NAME".to_string()),
+                ("john".to_string(), "JOHN".to_string()),
+                ("city".to_string(), "CITY".to_string()),
+                ("new york".to_string(), "NEW YORK".to_string()),
+                ("country".to_string(), "COUNTRY".to_string()),
+                ("usa".to_string(), "USA".to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -413,11 +423,10 @@ country: usa
         yaml.accept(&mut collector);
 
         // Should collect all scalars including nested ones
-        assert!(collector.scalars.contains(&"item1".to_string()));
-        assert!(collector.scalars.contains(&"item2".to_string()));
-        assert!(collector.scalars.contains(&"nested".to_string()));
-        assert!(collector.scalars.contains(&"subitem1".to_string()));
-        assert!(collector.scalars.contains(&"subitem2".to_string()));
+        assert_eq!(
+            collector.scalars,
+            vec!["item1", "item2", "nested", "subitem1", "subitem2"]
+        );
     }
 
     #[test]

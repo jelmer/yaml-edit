@@ -655,9 +655,7 @@ mod tests {
         let val = YamlValue::from(vec!["item1", "item2", "item3"]);
         assert!(val.is_sequence());
         let yaml = val.to_yaml_string(0);
-        assert!(yaml.contains("- item1"));
-        assert!(yaml.contains("- item2"));
-        assert!(yaml.contains("- item3"));
+        assert_eq!(yaml, "  - item1\n  - item2\n  - item3");
 
         // Empty sequence
         let val = YamlValue::sequence();
@@ -673,8 +671,7 @@ mod tests {
         let val = YamlValue::from(map);
         assert!(val.is_mapping());
         let yaml = val.to_yaml_string(0);
-        assert!(yaml.contains("name: project"));
-        assert!(yaml.contains("version: 1.0.0"));
+        assert_eq!(yaml, "name: project\nversion: 1.0.0");
 
         // Empty mapping
         let val = YamlValue::mapping();
@@ -694,14 +691,10 @@ mod tests {
 
         let val = YamlValue::from(root_map);
         let yaml = val.to_yaml_string(0);
-
-        assert!(yaml.contains("name: app"));
-        assert!(yaml.contains("database:"));
-        assert!(yaml.contains("  host: localhost"));
-        assert!(yaml.contains("  port: 5432"));
-        assert!(yaml.contains("features:"));
-        assert!(yaml.contains("  - auth"));
-        assert!(yaml.contains("  - logging"));
+        assert_eq!(
+            yaml,
+            "database: \n  host: localhost\n  port: 5432\nfeatures: \n    - auth\n    - logging\nname: app"
+        );
     }
 
     #[test]
@@ -714,10 +707,7 @@ mod tests {
         let val = YamlValue::from_set(set);
         assert!(val.is_set());
         let yaml = val.to_yaml_string(0);
-        assert!(yaml.contains("!!set"));
-        assert!(yaml.contains("item1: null"));
-        assert!(yaml.contains("item2: null"));
-        assert!(yaml.contains("item3: null"));
+        assert_eq!(yaml, "!!set\nitem1: null\nitem2: null\nitem3: null");
 
         // Empty set
         let val = YamlValue::set();
@@ -735,10 +725,10 @@ mod tests {
         let val = YamlValue::from_ordered_mapping(pairs);
         assert!(val.is_ordered_mapping());
         let yaml = val.to_yaml_string(0);
-        assert!(yaml.contains("!!omap"));
-        assert!(yaml.contains("- first: value1"));
-        assert!(yaml.contains("- second: value2"));
-        assert!(yaml.contains("- third: value3"));
+        assert_eq!(
+            yaml,
+            "!!omap\n  - first: value1\n  - second: value2\n  - third: value3"
+        );
 
         // Empty ordered mapping
         let val = YamlValue::ordered_mapping();
@@ -756,10 +746,10 @@ mod tests {
         let val = YamlValue::from_pairs(pairs);
         assert!(val.is_pairs());
         let yaml = val.to_yaml_string(0);
-        assert!(yaml.contains("!!pairs"));
-        assert!(yaml.contains("- key1: value1"));
-        assert!(yaml.contains("- key1: value2"));
-        assert!(yaml.contains("- key2: value3"));
+        assert_eq!(
+            yaml,
+            "!!pairs\n  - key1: value1\n  - key1: value2\n  - key2: value3"
+        );
 
         // Empty pairs
         let val = YamlValue::pairs();

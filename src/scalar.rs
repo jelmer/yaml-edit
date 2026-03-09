@@ -1440,9 +1440,10 @@ mod tests {
 
         // Should detect that content already has indentation and preserve it
         let yaml_output = scalar.to_literal_with_indent(2);
-        assert!(yaml_output.contains("  Line 1"));
-        assert!(yaml_output.contains("    Line 2 more indented"));
-        assert!(yaml_output.contains("  Line 3"));
+        assert_eq!(
+            yaml_output,
+            "|\n    Line 1\n      Line 2 more indented\n    Line 3"
+        );
     }
 
     #[test]
@@ -1480,14 +1481,10 @@ mod tests {
         let scalar = ScalarValue::literal(content);
 
         let yaml_4_spaces = scalar.to_literal_with_indent(4);
-        assert!(yaml_4_spaces.contains("    Line 1"));
-        assert!(yaml_4_spaces.contains("    Line 2"));
-        assert!(yaml_4_spaces.contains("    Line 3"));
+        assert_eq!(yaml_4_spaces, "|\n    Line 1\n    Line 2\n    Line 3");
 
         let yaml_1_space = scalar.to_literal_with_indent(1);
-        assert!(yaml_1_space.contains(" Line 1"));
-        assert!(yaml_1_space.contains(" Line 2"));
-        assert!(yaml_1_space.contains(" Line 3"));
+        assert_eq!(yaml_1_space, "|\n Line 1\n Line 2\n Line 3");
     }
 
     #[test]
@@ -1497,10 +1494,7 @@ mod tests {
         let scalar = ScalarValue::folded(content);
 
         let yaml_3_spaces = scalar.to_folded_with_indent(3);
-        assert!(yaml_3_spaces.starts_with(">\n"));
-        assert!(yaml_3_spaces.contains("   Line 1"));
-        assert!(yaml_3_spaces.contains("   Line 2"));
-        assert!(yaml_3_spaces.contains("   Line 3"));
+        assert_eq!(yaml_3_spaces, ">\n   Line 1\n   Line 2\n   Line 3");
     }
 
     #[test]
@@ -1510,9 +1504,7 @@ mod tests {
         let scalar = ScalarValue::literal(content_with_empty_lines);
 
         let yaml_output = scalar.to_literal_with_indent(2);
-        assert!(yaml_output.contains("  Line 1"));
-        assert!(yaml_output.contains("  Line 3"));
-        assert!(yaml_output.contains("  Line 6"));
+        assert_eq!(yaml_output, "|\n  Line 1\n\n  Line 3\n\n\n  Line 6");
 
         // Empty lines should remain empty (no indentation added)
         // Input has 3 empty lines; they should appear unchanged in the output
@@ -1541,9 +1533,7 @@ mod tests {
         let yaml_string = scalar.to_yaml_string();
 
         // Should contain escaped sequences
-        assert!(yaml_string.contains("\\n"));
-        assert!(yaml_string.contains("\\t"));
-        assert!(yaml_string.contains("\\U"));
+        assert_eq!(yaml_string, "\"Hello\\nWorld\\t\\U0001F603\"");
 
         // Parse it back
         let parsed = ScalarValue::parse_escape_sequences(&yaml_string[1..yaml_string.len() - 1]);
@@ -1557,7 +1547,7 @@ mod tests {
         let yaml_string = scalar.to_yaml_string();
 
         // Should escape non-ASCII characters
-        assert!(yaml_string.contains("\\u") || yaml_string.contains("\\U"));
+        assert_eq!(yaml_string, "\"Hello \\u4E16\\u754C \\U0001F30D\"");
 
         // But the internal value should remain unchanged
         assert_eq!(scalar.value(), "Hello 世界 🌍");
@@ -1937,7 +1927,7 @@ mod tests {
         styled_binary.style = ScalarStyle::DoubleQuoted;
 
         // The to_yaml_string should still respect the scalar type for tagging
-        assert!(styled_binary.to_yaml_string().contains("!!binary"));
+        assert_eq!(styled_binary.to_yaml_string(), "!!binary \"dGVzdA==\"");
     }
 
     #[test]

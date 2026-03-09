@@ -54,8 +54,8 @@ services:
     // The output should preserve all merge keys and references
     let output = yaml.to_string();
 
-    // Verify merge keys are preserved
-    assert!(output.contains("<<:") && output.contains("*defaults"));
+    // Verify output is preserved exactly
+    assert_eq!(output, yaml_content);
 
     Ok(())
 }

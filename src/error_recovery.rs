@@ -140,7 +140,12 @@ impl ErrorRecoveryContext {
     }
 
     /// Create a positioned error with current location
-    pub fn create_error(&self, message: String, length: usize) -> PositionedParseError {
+    pub fn create_error(
+        &self,
+        message: String,
+        length: usize,
+        kind: crate::ParseErrorKind,
+    ) -> PositionedParseError {
         let (line, column) = self.current_location();
         let range = self.current_range(length);
 
@@ -148,6 +153,7 @@ impl ErrorRecoveryContext {
             message: format!("{}:{}: {}", line, column, message),
             range: range.into(),
             code: None,
+            kind,
         }
     }
 

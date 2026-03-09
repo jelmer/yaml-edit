@@ -374,6 +374,19 @@ impl From<TextPosition> for rowan::TextRange {
     }
 }
 
+/// The kind of parse error, enabling structured matching without string parsing.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ParseErrorKind {
+    /// An unclosed flow sequence (missing `]`)
+    UnclosedFlowSequence,
+    /// An unclosed flow mapping (missing `}`)
+    UnclosedFlowMapping,
+    /// An unterminated quoted string (missing closing quote)
+    UnterminatedString,
+    /// Any other parse error
+    Other,
+}
+
 /// A positioned parse error containing location information.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PositionedParseError {
@@ -383,6 +396,8 @@ pub struct PositionedParseError {
     pub range: TextPosition,
     /// Optional error code for categorization
     pub code: Option<String>,
+    /// Structured error kind
+    pub kind: ParseErrorKind,
 }
 
 impl PositionedParseError {

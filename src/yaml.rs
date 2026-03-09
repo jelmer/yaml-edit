@@ -4,7 +4,7 @@ use crate::{
     error_recovery::{ErrorBuilder, ErrorRecoveryContext, ParseContext, RecoveryStrategy},
     lex::{lex, SyntaxKind},
     parse::Parse,
-    PositionedParseError,
+    ParseErrorKind, PositionedParseError,
 };
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
@@ -842,7 +842,11 @@ impl Parser {
                     &format!("closing quote {}", expected_quote),
                     self.current_text(),
                 );
-                self.add_error_and_recover(error_msg, quote_type);
+                self.add_error_and_recover(
+                    error_msg,
+                    quote_type,
+                    ParseErrorKind::UnterminatedString,
+                );
             }
         } else {
             // Handle typed scalar tokens from lexer
@@ -859,7 +863,10 @@ impl Parser {
             ) {
                 // Check for unterminated string and add error
                 if self.current() == Some(SyntaxKind::UNTERMINATED_STRING) {
-                    self.add_error("Unterminated quoted string".to_string());
+                    self.add_error(
+                        "Unterminated quoted string".to_string(),
+                        ParseErrorKind::UnterminatedString,
+                    );
                 }
                 if !self.in_flow_context {
                     // For plain scalars in block context, handle multi-line plain scalars
@@ -1409,7 +1416,7 @@ impl Parser {
                         "':' after key",
                         self.current_text(),
                     );
-                    self.add_error_and_recover(error_msg, SyntaxKind::COLON);
+                    self.add_error_and_recover(error_msg, SyntaxKind::COLON, ParseErrorKind::Other);
                 }
 
                 // Finish the MAPPING_ENTRY node
@@ -1701,7 +1708,11 @@ impl Parser {
                 "']' to close sequence",
                 self.current_text(),
             );
-            self.add_error_and_recover(error_msg, SyntaxKind::RIGHT_BRACKET);
+            self.add_error_and_recover(
+                error_msg,
+                SyntaxKind::RIGHT_BRACKET,
+                ParseErrorKind::UnclosedFlowSequence,
+            );
         }
 
         self.builder.finish_node();
@@ -1785,7 +1796,7 @@ impl Parser {
                     "':' after key",
                     self.current_text(),
                 );
-                self.add_error_and_recover(error_msg, SyntaxKind::COLON);
+                self.add_error_and_recover(error_msg, SyntaxKind::COLON, ParseErrorKind::Other);
             }
 
             self.skip_ws_and_newlines(); // Support comments after values
@@ -1810,7 +1821,11 @@ impl Parser {
                 "'}' to close mapping",
                 self.current_text(),
             );
-            self.add_error_and_recover(error_msg, SyntaxKind::RIGHT_BRACE);
+            self.add_error_and_recover(
+                error_msg,
+                SyntaxKind::RIGHT_BRACE,
+                ParseErrorKind::UnclosedFlowMapping,
+            );
         }
 
         self.builder.finish_node();
@@ -1823,7 +1838,7 @@ impl Parser {
         if self.current() == Some(SyntaxKind::DIRECTIVE) {
             self.bump(); // consume the directive token
         } else {
-            self.add_error("Expected directive".to_string());
+            self.add_error("Expected directive".to_string(), ParseErrorKind::Other);
         }
 
         self.builder.finish_node();
@@ -1974,7 +1989,7 @@ impl Parser {
                 "':' after complex key",
                 self.current_text(),
             );
-            self.add_error_and_recover(error_msg, SyntaxKind::COLON);
+            self.add_error_and_recover(error_msg, SyntaxKind::COLON, ParseErrorKind::Other);
         }
 
         // Finish the first MAPPING_ENTRY node
@@ -2522,7 +2537,7 @@ impl Parser {
                 "':' after key",
                 self.current_text(),
             );
-            self.add_error_and_recover(error_msg, SyntaxKind::COLON);
+            self.add_error_and_recover(error_msg, SyntaxKind::COLON, ParseErrorKind::Other);
         }
 
         // Consume any trailing inline whitespace before closing MAPPING_ENTRY
@@ -2583,18 +2598,23 @@ impl Parser {
             .map(move |i| self.tokens[i].0)
     }
 
-    fn add_error(&mut self, message: String) {
+    fn add_error(&mut self, message: String, kind: ParseErrorKind) {
         // Create positioned error with line/column info
         let token_len = self.current_text().map(|s| s.len()).unwrap_or(1);
-        let positioned_error = self.error_context.create_error(message, token_len);
+        let positioned_error = self.error_context.create_error(message, token_len, kind);
 
         self.errors.push(positioned_error.message.clone());
         self.positioned_errors.push(positioned_error);
     }
 
     /// Add an error with recovery
-    fn add_error_and_recover(&mut self, message: String, expected: SyntaxKind) {
-        self.add_error(message);
+    fn add_error_and_recover(
+        &mut self,
+        message: String,
+        expected: SyntaxKind,
+        kind: ParseErrorKind,
+    ) {
+        self.add_error(message, kind);
 
         // Determine recovery strategy
         let found = self.current();

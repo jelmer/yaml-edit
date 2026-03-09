@@ -3404,4 +3404,31 @@ downloads: 1000
             "Newline should be preserved after modification"
         );
     }
+
+    #[test]
+    fn test_sequence_set_with_nested_mapping() {
+        // Test that when setting a nested mapping value in a sequence,
+        // the indentation is preserved correctly
+        use crate::path::YamlPath;
+        use crate::Document;
+
+        let yaml_str = "items:\n  - name: first\n    value: 1\n  - name: second\n    value: 2\n";
+        let doc = Document::from_str(yaml_str).unwrap();
+
+        // Get the sequence
+        let items_node = doc.get_path("items").unwrap();
+        let items = items_node.as_sequence().unwrap();
+
+        // The sequence items should be mappings
+        assert_eq!(items.len(), 2);
+        let first = items.get(0).unwrap();
+        assert!(first.is_mapping());
+
+        // Setting a scalar at index should work
+        items.set(0, "replaced");
+        assert_eq!(
+            doc.to_string(),
+            "items:\n  - replaced\n  - name: second\n    value: 2\n"
+        );
+    }
 }

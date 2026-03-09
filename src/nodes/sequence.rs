@@ -329,8 +329,10 @@ impl Sequence {
                         builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
 
                         let mut value_inserted = false;
+                        let mut trailing_text: Option<String> = None;
+
                         for entry_child in entry_children {
-                            match entry_child {
+                            match &entry_child {
                                 rowan::NodeOrToken::Node(n)
                                     if matches!(
                                         n.kind(),
@@ -340,6 +342,14 @@ impl Sequence {
                                             | SyntaxKind::TAGGED_NODE
                                     ) =>
                                 {
+                                    // Extract trailing whitespace from the old value node
+                                    // The old value may contain trailing NEWLINE+INDENT that we need to preserve
+                                    let text = n.text().to_string();
+                                    // Find the trailing whitespace (newline + indent pattern)
+                                    if let Some(last_newline_pos) = text.rfind('\n') {
+                                        trailing_text = Some(text[last_newline_pos..].to_string());
+                                    }
+
                                     // Replace the value node with the new value built from AsYaml
                                     if !value_inserted {
                                         value.build_content(&mut builder, 0, false);
@@ -348,11 +358,23 @@ impl Sequence {
                                 }
                                 rowan::NodeOrToken::Node(n) => {
                                     // Copy other nodes as-is (like VALUE wrappers, etc.)
-                                    crate::yaml::copy_node_to_builder(&mut builder, &n);
+                                    crate::yaml::copy_node_to_builder(&mut builder, n);
                                 }
                                 rowan::NodeOrToken::Token(t) => {
                                     // Copy tokens as-is
                                     builder.token(t.kind().into(), t.text());
+                                }
+                            }
+                        }
+
+                        // Add the trailing whitespace that was extracted from the old value
+                        if let Some(trailing) = trailing_text {
+                            // Parse the trailing text to add appropriate tokens
+                            if trailing.starts_with('\n') {
+                                builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                                let indent_part = &trailing[1..];
+                                if !indent_part.is_empty() {
+                                    builder.token(SyntaxKind::INDENT.into(), indent_part);
                                 }
                             }
                         }

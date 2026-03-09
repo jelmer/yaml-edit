@@ -788,7 +788,12 @@ pub fn lex_with_validation_config<'a>(
 
                     // Check other special characters (excluding hyphen and colon)
                     if is_yaml_special_except(*next_ch, "-:") {
-                        break;
+                        // In block context, flow indicators do NOT break scalars
+                        if flow_depth == 0 && matches!(*next_ch, '[' | ']' | '{' | '}' | ',') {
+                            // do nothing, let it be part of the scalar
+                        } else {
+                            break;
+                        }
                     }
 
                     // Special case: check if hyphen is a sequence marker
@@ -1727,5 +1732,24 @@ double: "quoted""#;
         assert!(tokens
             .iter()
             .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "1.0.0-beta.1"));
+    }
+
+    #[test]
+    fn test_flow_indicators_in_block_scalar() {
+        // Flow indicators should be allowed in block context scalars
+        // This is valid YAML: the curly braces are part of the scalar value
+        let input = "key: unix:///Users/${metadata.username}/path";
+        let tokens = lex(input);
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0], (SyntaxKind::STRING, "key"));
+        assert_eq!(tokens[1], (SyntaxKind::COLON, ":"));
+        assert_eq!(tokens[2], (SyntaxKind::WHITESPACE, " "));
+        assert_eq!(
+            tokens[3],
+            (
+                SyntaxKind::STRING,
+                "unix:///Users/${metadata.username}/path"
+            )
+        );
     }
 }

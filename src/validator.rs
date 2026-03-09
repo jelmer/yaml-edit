@@ -33,6 +33,8 @@ pub struct Violation {
     pub message: String,
     /// Location in the source (line:column format)
     pub location: Option<String>,
+    /// Byte range in the source text where the violation occurred
+    pub text_range: Option<crate::TextPosition>,
     /// Severity of the violation
     pub severity: Severity,
     /// Specific rule that was violated
@@ -146,6 +148,11 @@ fn find_root(node: &SyntaxNode) -> SyntaxNode {
         .unwrap_or_else(|| node.clone())
 }
 
+/// Convert a rowan TextRange to a TextPosition.
+fn range_to_text_position(range: rowan::TextRange) -> crate::TextPosition {
+    crate::TextPosition::new(u32::from(range.start()), u32::from(range.end()))
+}
+
 impl Validator {
     /// Create a new validator with default configuration
     pub fn new() -> Self {
@@ -227,6 +234,7 @@ impl Validator {
                 violations.push(Violation {
                     message: format!("Invalid content in document: {:?}", preview),
                     location: None,
+                    text_range: Some(range_to_text_position(node.text_range())),
                     severity: Severity::Error,
                     rule: Rule::Other,
                 });
@@ -339,6 +347,7 @@ impl Validator {
             violations.push(Violation {
                 message: "Directive requires a document with content".to_string(),
                 location: None,
+                text_range: None,
                 severity: Severity::Error,
                 rule: Rule::Other,
             });
@@ -385,6 +394,7 @@ impl Validator {
             violations.push(Violation {
                 message: "Directive without document content".to_string(),
                 location: None,
+                text_range: None,
                 severity: Severity::Error,
                 rule: Rule::Other,
             });
@@ -462,6 +472,7 @@ impl Validator {
                                     "Directive after document requires document end marker (...)"
                                         .to_string(),
                                 location: None,
+                                text_range: None,
                                 severity: Severity::Error,
                                 rule: Rule::Other,
                             });
@@ -487,6 +498,7 @@ impl Validator {
             violations.push(Violation {
                 message: "Directive in document content (missing document end marker `...` before directive)".to_string(),
                 location: None,
+                    text_range: Some(range_to_text_position(node.text_range())),
                 severity: Severity::Error,
                 rule: Rule::Other,
             });
@@ -522,6 +534,7 @@ impl Validator {
                 violations.push(Violation {
                     message: format!("Duplicate {} directive", directive_type),
                     location: None,
+                    text_range: None,
                     severity: Severity::Error,
                     rule: Rule::Other,
                 });
@@ -545,6 +558,7 @@ impl Validator {
             violations.push(Violation {
                 message: "Multiple anchors on the same node".to_string(),
                 location: None,
+                text_range: Some(range_to_text_position(node.text_range())),
                 severity: Severity::Error,
                 rule: Rule::InvalidAnchor,
             });
@@ -576,6 +590,7 @@ impl Validator {
                         violations.push(Violation {
                             message: format!("Invalid escape sequence: \\{}", next),
                             location: None,
+                            text_range: Some(range_to_text_position(node.text_range())),
                             severity: Severity::Error,
                             rule: Rule::InvalidEscape,
                         });
@@ -636,6 +651,7 @@ impl Validator {
                                     "Block scalar content cannot appear on same line as indicator"
                                         .to_string(),
                                 location: None,
+                                text_range: None,
                                 severity: Severity::Error,
                                 rule: Rule::Other,
                             });
@@ -686,6 +702,7 @@ impl Validator {
                             violations.push(Violation {
                                 message: "Trailing content after quoted string".to_string(),
                                 location: None,
+                                text_range: None,
                                 severity: Severity::Error,
                                 rule: Rule::Other,
                             });
@@ -743,6 +760,7 @@ impl Validator {
             violations.push(Violation {
                 message: "Plain scalar value cannot contain mapping syntax (colon)".to_string(),
                 location: None,
+                text_range: None,
                 severity: Severity::Error,
                 rule: Rule::Other,
             });
@@ -775,6 +793,7 @@ impl Validator {
             violations.push(Violation {
                 message: "Document marker on its own line inside quoted string".to_string(),
                 location: None,
+                text_range: Some(range_to_text_position(node.text_range())),
                 severity: Severity::Error,
                 rule: Rule::InvalidDocumentMarker,
             });
@@ -792,6 +811,7 @@ impl Validator {
                     violations.push(Violation {
                         message: "Tabs are not allowed for indentation in YAML".to_string(),
                         location: None,
+                        text_range: Some(range_to_text_position(token.text_range())),
                         severity: Severity::Error,
                         rule: Rule::InvalidTabUsage,
                     });
@@ -813,6 +833,7 @@ impl Validator {
                 violations.push(Violation {
                     message: "Document marker inside string is invalid".to_string(),
                     location: None,
+                    text_range: Some(range_to_text_position(node.text_range())),
                     severity: Severity::Error,
                     rule: Rule::InvalidDocumentMarker,
                 });
@@ -851,6 +872,7 @@ impl Validator {
                         violations.push(Violation {
                             message: "Double comma in flow collection".to_string(),
                             location: None,
+                            text_range: Some(range_to_text_position(node.text_range())),
                             severity: Severity::Error,
                             rule: Rule::Other,
                         });
@@ -870,6 +892,7 @@ impl Validator {
                     entry_count, comma_count
                 ),
                 location: None,
+                text_range: None,
                 severity: Severity::Error,
                 rule: Rule::MissingSyntax,
             });
@@ -899,38 +922,48 @@ impl Validator {
         for child in node.children() {
             if child.kind() == crate::SyntaxKind::MAPPING_ENTRY {
                 if let Some(prev) = prev_entry {
-                    // Check if there's a NEWLINE between prev and current entry
-                    // Look at the tokens between the end of prev and start of current
+                    // Check if there's a NEWLINE between prev and current entry.
+                    // The newline may be inside the previous entry (as its last
+                    // token) or between entries as a sibling token.
                     let has_newline_between = {
-                        let mut current_sibling = prev.next_sibling_or_token();
-                        let mut found_newline = false;
+                        // First check if the previous entry ends with a newline
+                        let prev_ends_with_newline = prev
+                            .last_token()
+                            .is_some_and(|t| t.kind() == crate::SyntaxKind::NEWLINE);
 
-                        while let Some(sibling) = current_sibling {
-                            // Stop when we reach the current entry
-                            if let rowan::NodeOrToken::Node(n) = &sibling {
-                                if n == &child {
-                                    break;
+                        if prev_ends_with_newline {
+                            true
+                        } else {
+                            // Check sibling tokens between the entries
+                            let mut current_sibling = prev.next_sibling_or_token();
+                            let mut found_newline = false;
+
+                            while let Some(sibling) = current_sibling {
+                                if let rowan::NodeOrToken::Node(n) = &sibling {
+                                    if n == &child {
+                                        break;
+                                    }
                                 }
+
+                                if let rowan::NodeOrToken::Token(t) = &sibling {
+                                    if t.kind() == crate::SyntaxKind::NEWLINE {
+                                        found_newline = true;
+                                        break;
+                                    }
+                                }
+
+                                current_sibling = sibling.next_sibling_or_token();
                             }
 
-                            // Check if this is a NEWLINE token
-                            if let rowan::NodeOrToken::Token(t) = &sibling {
-                                if t.kind() == crate::SyntaxKind::NEWLINE {
-                                    found_newline = true;
-                                    break;
-                                }
-                            }
-
-                            current_sibling = sibling.next_sibling_or_token();
+                            found_newline
                         }
-
-                        found_newline
                     };
 
                     if !has_newline_between {
                         violations.push(Violation {
                             message: "Block mapping entries must be on separate lines".to_string(),
                             location: None,
+                            text_range: None,
                             severity: Severity::Error,
                             rule: Rule::Other,
                         });
@@ -963,6 +996,7 @@ impl Validator {
                 violations.push(Violation {
                     message: "Flow sequence cannot use block sequence syntax (-)".to_string(),
                     location: None,
+                    text_range: Some(range_to_text_position(node.text_range())),
                     severity: Severity::Error,
                     rule: Rule::Other,
                 });
@@ -984,6 +1018,7 @@ impl Validator {
                         message: "Anchor must be attached to a node, not at document level"
                             .to_string(),
                         location: None,
+                        text_range: Some(range_to_text_position(token.text_range())),
                         severity: Severity::Error,
                         rule: Rule::Other,
                     });
@@ -1027,6 +1062,7 @@ impl Validator {
             violations.push(Violation {
                 message: "Node cannot have both an anchor and be an alias".to_string(),
                 location: None,
+                text_range: None,
                 severity: Severity::Error,
                 rule: Rule::Other,
             });
@@ -1053,6 +1089,7 @@ impl Validator {
                         violations.push(Violation {
                             message: "Comment without whitespace separation".to_string(),
                             location: None,
+                            text_range: Some(range_to_text_position(token.text_range())),
                             severity: Severity::Error,
                             rule: Rule::Other,
                         });
@@ -1063,6 +1100,7 @@ impl Validator {
                     violations.push(Violation {
                         message: "Comment without whitespace separation".to_string(),
                         location: None,
+                        text_range: Some(range_to_text_position(token.text_range())),
                         severity: Severity::Error,
                         rule: Rule::Other,
                     });
@@ -1123,6 +1161,7 @@ impl Validator {
             violations.push(Violation {
                 message: "Content on same line as document start marker".to_string(),
                 location: None,
+                text_range: None,
                 severity: Severity::Error,
                 rule: Rule::InvalidDocumentMarker,
             });
@@ -1147,6 +1186,7 @@ impl Validator {
                 violations.push(Violation {
                     message: format!("Invalid character '{}' in tag", ch),
                     location: None,
+                    text_range: Some(range_to_text_position(token.text_range())),
                     severity: Severity::Error,
                     rule: Rule::InvalidTag,
                 });
@@ -1183,6 +1223,7 @@ impl Validator {
                             violations.push(Violation {
                                 message: "Invalid comma after tag".to_string(),
                                 location: None,
+                                text_range: Some(range_to_text_position(token.text_range())),
                                 severity: Severity::Error,
                                 rule: Rule::InvalidTag,
                             });
@@ -1205,6 +1246,7 @@ impl Validator {
                                     violations.push(Violation {
                                         message: "Invalid comma after tag".to_string(),
                                         location: None,
+                                        text_range: None,
                                         severity: Severity::Error,
                                         rule: Rule::InvalidTag,
                                     });
@@ -1243,6 +1285,7 @@ impl Validator {
                     violations.push(Violation {
                         message: "Implicit key cannot span multiple lines".to_string(),
                         location: None,
+                        text_range: Some(range_to_text_position(child.text_range())),
                         severity: Severity::Error,
                         rule: Rule::Other,
                     });
@@ -1339,6 +1382,7 @@ impl Validator {
             violations.push(Violation {
                 message: "Block sequence cannot start on same line as mapping key".to_string(),
                 location: None,
+                text_range: None,
                 severity: Severity::Error,
                 rule: Rule::Other,
             });
@@ -1412,6 +1456,7 @@ impl Validator {
                     violations.push(Violation {
                         message: "Inconsistent sequence item indentation".to_string(),
                         location: None,
+                        text_range: None,
                         severity: Severity::Error,
                         rule: Rule::InvalidIndentation,
                     });
@@ -1462,6 +1507,7 @@ impl Validator {
                     violations.push(Violation {
                         message: "Wrong indented multiline quoted scalar".to_string(),
                         location: None,
+                        text_range: None,
                         severity: Severity::Error,
                         rule: Rule::InvalidIndentation,
                     });
@@ -1483,11 +1529,12 @@ impl Validator {
         use crate::yaml_eq;
         use crate::SyntaxKind;
 
-        // Collect all KEY nodes with their text representation
-        let keys: Vec<(SyntaxNode, String)> = node
+        // Collect all KEY nodes with their text representation and parent entry range
+        let keys: Vec<(SyntaxNode, String, rowan::TextRange)> = node
             .children()
             .filter(|child| child.kind() == SyntaxKind::MAPPING_ENTRY)
             .filter_map(|child| {
+                let entry_range = child.text_range();
                 child
                     .children()
                     .find(|n| n.kind() == SyntaxKind::KEY)
@@ -1495,7 +1542,7 @@ impl Validator {
                         // Only allocate once: trim() returns &str, then to_string() once
                         let key_text = key_node.text().to_string();
                         let key_text = key_text.trim().to_string();
-                        (key_node, key_text)
+                        (key_node, key_text, entry_range)
                     })
             })
             .collect();
@@ -1545,6 +1592,7 @@ impl Validator {
                                 format_key(first_text)
                             ),
                             location: None,
+                            text_range: Some(range_to_text_position(keys[j].2)),
                             severity: Severity::Error,
                             rule: Rule::DuplicateKeys,
                         });
@@ -1926,6 +1974,7 @@ mod tests {
         let violation = Violation {
             message: "Test violation".to_string(),
             location: Some("1:5".to_string()),
+            text_range: None,
             severity: Severity::Error,
             rule: Rule::InvalidIndentation,
         };

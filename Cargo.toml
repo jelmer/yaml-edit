@@ -31,3 +31,6 @@ serde_json = "1"
 [[bench]]
 name = "yaml_stress_tests"
 harness = false
+
+[workspace]
+members = [".", "yaml-lsp"]

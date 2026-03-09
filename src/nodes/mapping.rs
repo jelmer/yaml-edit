@@ -2976,10 +2976,9 @@ downloads: 1000
         // Can still add to empty mapping
         mapping.set("first", "value");
         assert!(!mapping.is_empty());
-        // In flow-style (JSON) context, strings are quoted
         assert_eq!(
             mapping.get("first").map(|v| v.to_string()),
-            Some("\"value\"".to_string())
+            Some("value".to_string())
         );
     }
 

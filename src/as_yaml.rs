@@ -830,13 +830,9 @@ impl AsYaml for &str {
         use crate::lex::SyntaxKind;
         use crate::scalar::ScalarValue;
 
-        // In flow context (JSON), always use double-quoted strings for compatibility
-        // In block context (YAML), use standard quoting rules
-        let scalar = if flow_context {
-            ScalarValue::double_quoted(*self)
-        } else {
-            ScalarValue::string(*self)
-        };
+        // Use flow-context-aware quoting: in flow context, strings containing
+        // flow indicators ([, ], {, }, ,) will be quoted; plain strings stay unquoted.
+        let scalar = ScalarValue::string_in_context(*self, flow_context);
 
         let yaml_text = scalar.to_yaml_string();
         // Both quoted and unquoted strings use STRING token kind;

@@ -43,8 +43,7 @@ key1: value1"#;
     let result = yaml.to_string();
 
     // The parser preserves BOTH the new key and the original invalid content
-    // In flow-style context ({}), strings are quoted
-    assert_eq!(result, "---\n{}\nkey2: \"value2\"\n\nkey1: value1");
+    assert_eq!(result, "---\n{}\nkey2: value2\n\nkey1: value1");
 }
 
 #[test]
@@ -69,8 +68,7 @@ version: 1.0"#;
             mapping.set("author", "John");
 
             // The new key is added to {}, invalid content remains in ERROR nodes
-            // In flow-style context ({}), strings are quoted
-            let expected = "---\n{}\nauthor: \"John\"\n\nname: test\nversion: 1.0";
+            let expected = "---\n{}\nauthor: John\n\nname: test\nversion: 1.0";
             assert_eq!(yaml.to_string(), expected);
         }
     }

@@ -103,9 +103,16 @@ impl ScalarValue {
     /// For YAML-style type detection (parsing "123" as Integer, "true" as Boolean),
     /// use [`ScalarValue::parse()`] instead.
     pub fn string(value: impl Into<String>) -> Self {
+        Self::string_in_context(value, false)
+    }
+
+    /// Create a scalar value from a string, with flow-context-aware quoting.
+    ///
+    /// When `flow_context` is true, strings containing flow indicators
+    /// (`[`, `]`, `{`, `}`, `,`) will be quoted.
+    pub fn string_in_context(value: impl Into<String>, flow_context: bool) -> Self {
         let value = value.into();
-        let style = Self::detect_style(&value);
-        // Detect the type - default to String for user-provided values
+        let style = Self::detect_style_for_context(&value, flow_context);
         let scalar_type = ScalarType::String;
         Self {
             value,
@@ -813,8 +820,12 @@ impl ScalarValue {
 
     /// Detect the appropriate style for a value
     fn detect_style(value: &str) -> ScalarStyle {
+        Self::detect_style_for_context(value, false)
+    }
+
+    fn detect_style_for_context(value: &str, flow_context: bool) -> ScalarStyle {
         // Check if value needs quoting
-        if Self::needs_quoting(value) {
+        if Self::needs_quoting(value, flow_context) {
             // Prefer single quotes if no single quotes in value
             if !value.contains('\'') {
                 ScalarStyle::SingleQuoted
@@ -829,8 +840,12 @@ impl ScalarValue {
         }
     }
 
-    /// Check if a value needs quoting when treated as a string
-    fn needs_quoting(value: &str) -> bool {
+    /// Check if a value needs quoting when treated as a string.
+    ///
+    /// When `flow_context` is true, flow indicators (`[`, `]`, `{`, `}`, `,`)
+    /// anywhere in the string also trigger quoting, since they are syntactically
+    /// significant inside flow collections.
+    fn needs_quoting(value: &str, flow_context: bool) -> bool {
         // Empty string needs quotes
         if value.is_empty() {
             return true;
@@ -859,6 +874,11 @@ impl ScalarValue {
         if value.starts_with(|ch: char| {
             matches!(ch, '-' | '?' | '[' | ']' | '{' | '}' | ',' | '>' | '<')
         }) {
+            return true;
+        }
+
+        // In flow context, flow indicators anywhere in the string are ambiguous
+        if flow_context && value.contains(&['[', ']', '{', '}', ','] as &[char]) {
             return true;
         }
 
@@ -902,7 +922,7 @@ impl ScalarValue {
                 match self.scalar_type {
                     ScalarType::String => {
                         // For strings, quote if the content looks like a special value
-                        if Self::needs_quoting(&self.value) {
+                        if Self::needs_quoting(&self.value, false) {
                             self.to_single_quoted()
                         } else {
                             self.value.clone()

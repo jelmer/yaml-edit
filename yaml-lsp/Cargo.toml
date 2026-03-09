@@ -1,0 +1,23 @@
+[package]
+name = "yaml-lsp"
+version = "0.1.0"
+edition = "2021"
+authors = ["Jelmer Vernooĳ <jelmer@debian.org>"]
+description = "Language Server Protocol implementation for YAML files"
+license = "Apache-2.0"
+repository = "https://github.com/jelmer/yaml-edit"
+keywords = ["lsp", "yaml", "language-server"]
+categories = ["development-tools", "text-editors"]
+
+[dependencies]
+yaml-edit = { path = "..", features = ["binary"] }
+rowan = "0.16"
+tower-lsp-server = "0.23"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+salsa = ">=0.23, <0.27"
+
+[[bin]]
+name = "yaml-lsp"
+test = true

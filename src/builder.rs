@@ -923,7 +923,7 @@ Reference:
 
         // Set the sequence back
         if let Some(seq) = seq_doc.as_sequence() {
-            mapping.set("Reference", seq);
+            mapping.set("Reference", seq).unwrap();
         }
 
         let result = doc.to_string();

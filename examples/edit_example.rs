@@ -36,8 +36,8 @@ features:
 
     // Edit the document
     if let Some(doc) = yaml.document() {
-        doc.set("name", "my-awesome-project");
-        doc.set("version", "2.1.0");
+        doc.set("name", "my-awesome-project").unwrap();
+        doc.set("version", "2.1.0").unwrap();
 
         println!("After editing:");
         println!("{}", doc);

@@ -145,7 +145,7 @@ mod tests {
         yaml.add_directive("%YAML 1.2");
 
         let doc = Document::new_mapping();
-        doc.set("name", "test");
+        doc.set("name", "test").unwrap();
         yaml.push_document(doc);
 
         let output = yaml.to_string();

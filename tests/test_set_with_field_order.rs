@@ -12,7 +12,9 @@ description: A test app"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "version", "description"];
-            mapping.set_with_field_order("version", 2.0, field_order);
+            mapping
+                .set_with_field_order("version", 2.0, field_order)
+                .unwrap();
         }
     }
 
@@ -33,7 +35,9 @@ description: A test app"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "version", "description"];
-            mapping.set_with_field_order("version", 1.0, field_order);
+            mapping
+                .set_with_field_order("version", 1.0, field_order)
+                .unwrap();
         }
     }
 
@@ -54,7 +58,9 @@ description: A test app"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "version", "description"];
-            mapping.set_with_field_order("name", "my-app", field_order);
+            mapping
+                .set_with_field_order("name", "my-app", field_order)
+                .unwrap();
         }
     }
 
@@ -75,7 +81,9 @@ version: 1.0"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "version", "description"];
-            mapping.set_with_field_order("description", "A test app", field_order);
+            mapping
+                .set_with_field_order("description", "A test app", field_order)
+                .unwrap();
         }
     }
 
@@ -97,7 +105,9 @@ version: 1.0"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "version", "description"];
-            mapping.set_with_field_order("author", "John Doe", field_order);
+            mapping
+                .set_with_field_order("author", "John Doe", field_order)
+                .unwrap();
         }
     }
 
@@ -122,8 +132,12 @@ author: John Doe
             let field_order = &["name", "version", "description", "author"];
 
             // Add multiple keys in different orders
-            mapping.set_with_field_order("description", "A test app", field_order);
-            mapping.set_with_field_order("name", "my-app", field_order);
+            mapping
+                .set_with_field_order("description", "A test app", field_order)
+                .unwrap();
+            mapping
+                .set_with_field_order("name", "my-app", field_order)
+                .unwrap();
         }
     }
 
@@ -146,7 +160,8 @@ author: John Doe
 
     if let Some(doc) = yaml.document() {
         let field_order = &["name", "version", "description", "author"];
-        doc.set_with_field_order("name", "my-app", field_order);
+        doc.set_with_field_order("name", "my-app", field_order)
+            .unwrap();
     }
 
     let result = yaml.to_string();
@@ -164,8 +179,10 @@ fn test_set_with_field_order_empty_document() {
 
     if let Some(doc) = yaml.document() {
         let field_order = &["name", "version", "description"];
-        doc.set_with_field_order("name", "my-app", field_order);
-        doc.set_with_field_order("version", 1.0, field_order);
+        doc.set_with_field_order("name", "my-app", field_order)
+            .unwrap();
+        doc.set_with_field_order("version", 1.0, field_order)
+            .unwrap();
     }
 
     let result = yaml.to_string();
@@ -185,9 +202,15 @@ e: value_e"#;
             let field_order = &["a", "b", "c", "d", "e"];
 
             // Insert fields that should come before existing ones
-            mapping.set_with_field_order("a", "value_a", field_order);
-            mapping.set_with_field_order("b", "value_b", field_order);
-            mapping.set_with_field_order("c", "value_c", field_order);
+            mapping
+                .set_with_field_order("a", "value_a", field_order)
+                .unwrap();
+            mapping
+                .set_with_field_order("b", "value_b", field_order)
+                .unwrap();
+            mapping
+                .set_with_field_order("c", "value_c", field_order)
+                .unwrap();
         }
     }
 
@@ -213,7 +236,9 @@ c: value_c"#;
             let field_order = &["a", "b", "c"];
 
             // Insert 'b' between 'a' and 'c'
-            mapping.set_with_field_order("b", "value_b", field_order);
+            mapping
+                .set_with_field_order("b", "value_b", field_order)
+                .unwrap();
         }
     }
 
@@ -238,7 +263,9 @@ c: value_c"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["a", "b", "c"];
-            mapping.set_with_field_order("a", "value_a", field_order);
+            mapping
+                .set_with_field_order("a", "value_a", field_order)
+                .unwrap();
         }
     }
 
@@ -261,8 +288,12 @@ c: value_c"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["a", "b", "c", "d"];
-            mapping.set_with_field_order("b", "value_b", field_order);
-            mapping.set_with_field_order("d", "value_d", field_order);
+            mapping
+                .set_with_field_order("b", "value_b", field_order)
+                .unwrap();
+            mapping
+                .set_with_field_order("d", "value_d", field_order)
+                .unwrap();
         }
     }
 
@@ -303,7 +334,9 @@ Contact: https://forum.example.com"#;
             ];
 
             // Add Name field which should be inserted at the very beginning
-            mapping.set_with_field_order("Name", "blah", field_order);
+            mapping
+                .set_with_field_order("Name", "blah", field_order)
+                .unwrap();
         }
     }
 
@@ -336,7 +369,9 @@ fn test_multiline_value_no_extra_newlines() {
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["multi", "next"];
-            mapping.set_with_field_order("next", "value", field_order);
+            mapping
+                .set_with_field_order("next", "value", field_order)
+                .unwrap();
         }
     }
 
@@ -376,33 +411,47 @@ fn test_lintian_brush_line_interrupted() {
             ];
 
             // Add multiple fields that should all come before Registry
-            mapping.set_with_field_order("Name", "tsne", field_order);
-            mapping.set_with_field_order(
-                "Contact",
-                "Justin Donaldson <jdonaldson@gmail.com>",
-                field_order,
-            );
-            mapping.set_with_field_order("Archive", "CRAN", field_order);
-            mapping.set_with_field_order(
-                "Bug-Database",
-                "https://github.com/jdonaldson/rtsne/issues",
-                field_order,
-            );
-            mapping.set_with_field_order(
-                "Bug-Submit",
-                "https://github.com/jdonaldson/rtsne/issues/new",
-                field_order,
-            );
-            mapping.set_with_field_order(
-                "Repository",
-                "https://github.com/jdonaldson/rtsne.git",
-                field_order,
-            );
-            mapping.set_with_field_order(
-                "Repository-Browse",
-                "https://github.com/jdonaldson/rtsne",
-                field_order,
-            );
+            mapping
+                .set_with_field_order("Name", "tsne", field_order)
+                .unwrap();
+            mapping
+                .set_with_field_order(
+                    "Contact",
+                    "Justin Donaldson <jdonaldson@gmail.com>",
+                    field_order,
+                )
+                .unwrap();
+            mapping
+                .set_with_field_order("Archive", "CRAN", field_order)
+                .unwrap();
+            mapping
+                .set_with_field_order(
+                    "Bug-Database",
+                    "https://github.com/jdonaldson/rtsne/issues",
+                    field_order,
+                )
+                .unwrap();
+            mapping
+                .set_with_field_order(
+                    "Bug-Submit",
+                    "https://github.com/jdonaldson/rtsne/issues/new",
+                    field_order,
+                )
+                .unwrap();
+            mapping
+                .set_with_field_order(
+                    "Repository",
+                    "https://github.com/jdonaldson/rtsne.git",
+                    field_order,
+                )
+                .unwrap();
+            mapping
+                .set_with_field_order(
+                    "Repository-Browse",
+                    "https://github.com/jdonaldson/rtsne",
+                    field_order,
+                )
+                .unwrap();
         }
     }
 
@@ -446,22 +495,30 @@ Repository-Browse: https://github.com/example/blah
                 "Security-Contact",
             ];
 
-            mapping.set_with_field_order("Name", "blah", field_order);
-            mapping.set_with_field_order(
-                "Bug-Database",
-                "https://github.com/example/blah/issues",
-                field_order,
-            );
-            mapping.set_with_field_order(
-                "Bug-Submit",
-                "https://github.com/example/blah/issues/new",
-                field_order,
-            );
-            mapping.set_with_field_order(
-                "Security-Contact",
-                "https://github.com/example/blah/tree/HEAD/SECURITY.md",
-                field_order,
-            );
+            mapping
+                .set_with_field_order("Name", "blah", field_order)
+                .unwrap();
+            mapping
+                .set_with_field_order(
+                    "Bug-Database",
+                    "https://github.com/example/blah/issues",
+                    field_order,
+                )
+                .unwrap();
+            mapping
+                .set_with_field_order(
+                    "Bug-Submit",
+                    "https://github.com/example/blah/issues/new",
+                    field_order,
+                )
+                .unwrap();
+            mapping
+                .set_with_field_order(
+                    "Security-Contact",
+                    "https://github.com/example/blah/tree/HEAD/SECURITY.md",
+                    field_order,
+                )
+                .unwrap();
         }
     }
 
@@ -493,7 +550,9 @@ version: 1.0
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "author", "version", "description"];
-            mapping.set_with_field_order("author", "John Doe", field_order);
+            mapping
+                .set_with_field_order("author", "John Doe", field_order)
+                .unwrap();
         }
     }
 
@@ -522,7 +581,9 @@ version: 1.0"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "author", "description", "version"];
-            mapping.set_with_field_order("author", "Jane Smith", field_order);
+            mapping
+                .set_with_field_order("author", "Jane Smith", field_order)
+                .unwrap();
         }
     }
 
@@ -549,7 +610,9 @@ version: 1.0"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "name", "author", "version", "version"];
-            mapping.set_with_field_order("author", "Bob", field_order);
+            mapping
+                .set_with_field_order("author", "Bob", field_order)
+                .unwrap();
         }
     }
 
@@ -572,7 +635,9 @@ version: 1.0"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order: &[&str] = &[];
-            mapping.set_with_field_order("author", "Alice", field_order);
+            mapping
+                .set_with_field_order("author", "Alice", field_order)
+                .unwrap();
         }
     }
 
@@ -597,7 +662,9 @@ fn test_set_with_field_order_special_characters_in_keys() {
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["regular-key", "new-key", "key with spaces", "single-quoted"];
-            mapping.set_with_field_order("new-key", "new-value", field_order);
+            mapping
+                .set_with_field_order("new-key", "new-value", field_order)
+                .unwrap();
         }
     }
 
@@ -624,7 +691,9 @@ version: 1.0"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "author", "config", "version"];
-            mapping.set_with_field_order("author", "Developer", field_order);
+            mapping
+                .set_with_field_order("author", "Developer", field_order)
+                .unwrap();
         }
     }
 
@@ -651,8 +720,12 @@ count: 42"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "version", "count"];
-            mapping.set_with_field_order("version", 2.0, field_order);
-            mapping.set_with_field_order("count", 100, field_order);
+            mapping
+                .set_with_field_order("version", 2.0, field_order)
+                .unwrap();
+            mapping
+                .set_with_field_order("count", 100, field_order)
+                .unwrap();
         }
     }
 
@@ -676,7 +749,9 @@ description: test"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["version"];
-            mapping.set_with_field_order("author", "Solo", field_order);
+            mapping
+                .set_with_field_order("author", "Solo", field_order)
+                .unwrap();
         }
     }
 
@@ -702,10 +777,18 @@ fn test_set_with_field_order_all_new_fields() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "version", "author", "description"];
 
-            mapping.set_with_field_order("description", "A test app", field_order);
-            mapping.set_with_field_order("name", "test-app", field_order);
-            mapping.set_with_field_order("author", "Tester", field_order);
-            mapping.set_with_field_order("version", "0.1.0", field_order);
+            mapping
+                .set_with_field_order("description", "A test app", field_order)
+                .unwrap();
+            mapping
+                .set_with_field_order("name", "test-app", field_order)
+                .unwrap();
+            mapping
+                .set_with_field_order("author", "Tester", field_order)
+                .unwrap();
+            mapping
+                .set_with_field_order("version", "0.1.0", field_order)
+                .unwrap();
         }
     }
 
@@ -728,7 +811,9 @@ another: data"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "author", "version"];
-            mapping.set_with_field_order("author", "Partial", field_order);
+            mapping
+                .set_with_field_order("author", "Partial", field_order)
+                .unwrap();
         }
     }
 
@@ -754,7 +839,9 @@ end: value"#;
                 "field1", "field2", "field3", "field4", "field5", "start", "middle", "field6",
                 "field7", "field8", "field9", "field10", "end", "field11", "field12",
             ];
-            mapping.set_with_field_order("middle", "inserted", field_order);
+            mapping
+                .set_with_field_order("middle", "inserted", field_order)
+                .unwrap();
         }
     }
 
@@ -777,7 +864,9 @@ version: 1.0"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["名前", "作者", "version"];
-            mapping.set_with_field_order("作者", "山田太郎", field_order);
+            mapping
+                .set_with_field_order("作者", "山田太郎", field_order)
+                .unwrap();
         }
     }
 
@@ -801,10 +890,18 @@ field5: value5"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["field1", "field2", "field3", "field4", "field5"];
 
-            mapping.set_with_field_order("field3", "value3", field_order);
-            mapping.set_with_field_order("field2", "value2", field_order);
-            mapping.set_with_field_order("field4", "value4", field_order);
-            mapping.set_with_field_order("field1", "updated1", field_order);
+            mapping
+                .set_with_field_order("field3", "value3", field_order)
+                .unwrap();
+            mapping
+                .set_with_field_order("field2", "value2", field_order)
+                .unwrap();
+            mapping
+                .set_with_field_order("field4", "value4", field_order)
+                .unwrap();
+            mapping
+                .set_with_field_order("field1", "updated1", field_order)
+                .unwrap();
         }
     }
 

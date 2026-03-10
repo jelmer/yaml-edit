@@ -77,45 +77,46 @@ impl Sequence {
 }
 
 impl Sequence {
+    /// Detect the indentation used by entries in this sequence.
+    ///
+    /// First looks for a top-level INDENT token, then falls back to looking
+    /// for WHITESPACE immediately before DASH inside SEQUENCE_ENTRY nodes.
+    /// Returns `"  "` (two spaces) if no indentation can be detected.
+    fn detect_indentation(&self) -> String {
+        // First try top-level INDENT tokens
+        if let Some(ind) = self.0.children_with_tokens().find_map(|child| {
+            child
+                .into_token()
+                .filter(|t| t.kind() == SyntaxKind::INDENT)
+                .map(|t| t.text().to_string())
+        }) {
+            return ind;
+        }
+
+        // Fall back: look for WHITESPACE before DASH inside entry nodes
+        self.0
+            .children()
+            .filter(|c| c.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            .find_map(|entry| {
+                let tokens: Vec<_> = entry.children_with_tokens().collect();
+                tokens.windows(2).find_map(|pair| {
+                    let ws = pair[0].as_token()?;
+                    let dash = pair[1].as_token()?;
+                    if ws.kind() == SyntaxKind::WHITESPACE && dash.kind() == SyntaxKind::DASH {
+                        Some(ws.text().to_string())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or_else(|| "  ".to_string())
+    }
+
     /// Add an item to the end of the sequence.
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn push(&self, value: impl crate::AsYaml) {
-        // Detect the indentation by looking at existing SEQUENCE_ENTRY nodes
-        let mut indentation = self
-            .0
-            .children_with_tokens()
-            .find_map(|child| {
-                child
-                    .into_token()
-                    .filter(|t| t.kind() == SyntaxKind::INDENT)
-                    .map(|t| t.text().to_string())
-            })
-            .unwrap_or_else(|| "  ".to_string());
-
-        // If no INDENT token found, look within SEQUENCE_ENTRY nodes
-        if indentation == "  " {
-            for child in self.0.children() {
-                if child.kind() == SyntaxKind::SEQUENCE_ENTRY {
-                    let tokens: Vec<_> = child.children_with_tokens().collect();
-                    for (i, token) in tokens.iter().enumerate() {
-                        if let Some(t) = token.as_token() {
-                            if t.kind() == SyntaxKind::WHITESPACE && i + 1 < tokens.len() {
-                                if let Some(next_t) = tokens[i + 1].as_token() {
-                                    if next_t.kind() == SyntaxKind::DASH {
-                                        indentation = t.text().to_string();
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if !indentation.is_empty() && indentation != "  " {
-                        break;
-                    }
-                }
-            }
-        }
+        let indentation = self.detect_indentation();
 
         // Build the INDENT token (separate from the SEQUENCE_ENTRY)
         let mut indent_builder = GreenNodeBuilder::new();
@@ -225,42 +226,7 @@ impl Sequence {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn insert(&self, index: usize, value: impl crate::AsYaml) {
-        // Detect the indentation by looking at existing SEQUENCE_ENTRY nodes (same as push_str)
-        let mut indentation = "  ".to_string();
-        let all_children: Vec<_> = self.0.children_with_tokens().collect();
-
-        for child in all_children.iter() {
-            if let Some(token) = child.as_token() {
-                if token.kind() == SyntaxKind::INDENT {
-                    indentation = token.text().to_string();
-                    break;
-                }
-            }
-        }
-
-        // If no INDENT token found, look within SEQUENCE_ENTRY nodes
-        if indentation == "  " {
-            for child in self.0.children() {
-                if child.kind() == SyntaxKind::SEQUENCE_ENTRY {
-                    let tokens: Vec<_> = child.children_with_tokens().collect();
-                    for (i, token) in tokens.iter().enumerate() {
-                        if let Some(t) = token.as_token() {
-                            if t.kind() == SyntaxKind::WHITESPACE && i + 1 < tokens.len() {
-                                if let Some(next_t) = tokens[i + 1].as_token() {
-                                    if next_t.kind() == SyntaxKind::DASH {
-                                        indentation = t.text().to_string();
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if !indentation.is_empty() && indentation != "  " {
-                        break;
-                    }
-                }
-            }
-        }
+        let indentation = self.detect_indentation();
 
         // Build a newline token
         let mut newline_builder = GreenNodeBuilder::new();

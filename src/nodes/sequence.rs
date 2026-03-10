@@ -329,8 +329,10 @@ impl Sequence {
                         builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
 
                         let mut value_inserted = false;
+                        let mut trailing_text: Option<String> = None;
+
                         for entry_child in entry_children {
-                            match entry_child {
+                            match &entry_child {
                                 rowan::NodeOrToken::Node(n)
                                     if matches!(
                                         n.kind(),
@@ -340,6 +342,14 @@ impl Sequence {
                                             | SyntaxKind::TAGGED_NODE
                                     ) =>
                                 {
+                                    // Extract trailing whitespace from the old value node.
+                                    // Multi-line values (e.g. nested mappings) contain a
+                                    // trailing NEWLINE+INDENT that must be preserved.
+                                    let text = n.text().to_string();
+                                    if let Some(last_newline_pos) = text.rfind('\n') {
+                                        trailing_text = Some(text[last_newline_pos..].to_string());
+                                    }
+
                                     // Replace the value node with the new value built from AsYaml
                                     if !value_inserted {
                                         value.build_content(&mut builder, 0, false);
@@ -348,11 +358,21 @@ impl Sequence {
                                 }
                                 rowan::NodeOrToken::Node(n) => {
                                     // Copy other nodes as-is (like VALUE wrappers, etc.)
-                                    crate::yaml::copy_node_to_builder(&mut builder, &n);
+                                    crate::yaml::copy_node_to_builder(&mut builder, n);
                                 }
                                 rowan::NodeOrToken::Token(t) => {
                                     // Copy tokens as-is
                                     builder.token(t.kind().into(), t.text());
+                                }
+                            }
+                        }
+
+                        // Restore trailing whitespace extracted from the old value
+                        if let Some(trailing) = trailing_text {
+                            if let Some(indent_part) = trailing.strip_prefix('\n') {
+                                builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                                if !indent_part.is_empty() {
+                                    builder.token(SyntaxKind::INDENT.into(), indent_part);
                                 }
                             }
                         }
@@ -1359,6 +1379,28 @@ scores:
         assert_eq!(
             seq.get(2).unwrap().as_scalar().unwrap().as_string(),
             "gamma"
+        );
+    }
+
+    #[test]
+    fn test_sequence_set_with_nested_mapping() {
+        use crate::path::YamlPath;
+        use crate::Document;
+
+        let yaml_str = "items:\n  - name: first\n    value: 1\n  - name: second\n    value: 2\n";
+        let doc = Document::from_str(yaml_str).unwrap();
+
+        let items_node = doc.get_path("items").unwrap();
+        let items = items_node.as_sequence().unwrap();
+
+        assert_eq!(items.len(), 2);
+        let first = items.get(0).unwrap();
+        assert!(first.is_mapping());
+
+        items.set(0, "replaced");
+        assert_eq!(
+            doc.to_string(),
+            "items:\n  - replaced\n  - name: second\n    value: 2\n"
         );
     }
 }

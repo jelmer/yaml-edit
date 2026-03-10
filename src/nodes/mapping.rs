@@ -1253,17 +1253,6 @@ impl Mapping {
         };
 
         // Find the position after the specified key's value
-        for child in children.iter() {
-            if let Some(_node) = child.as_node() {
-            } else if let Some(token) = child.as_token() {
-                let _preview = token
-                    .text()
-                    .replace("\n", "\\n")
-                    .chars()
-                    .take(40)
-                    .collect::<String>();
-            }
-        }
         for (i, child) in children.iter().enumerate() {
             if let Some(node) = child.as_node() {
                 if node.kind() == SyntaxKind::MAPPING_ENTRY {

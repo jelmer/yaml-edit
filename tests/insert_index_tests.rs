@@ -4,7 +4,7 @@ use yaml_edit::{Document, YamlFile};
 #[test]
 fn test_insert_at_index_empty_document() {
     let yaml = YamlFile::from_str("").unwrap();
-    yaml.insert_at_index(0, "first", "value");
+    yaml.insert_at_index(0, "first", "value").unwrap();
 
     // Verify via API first
     let doc = yaml.document().expect("Should have document");
@@ -24,7 +24,7 @@ fn test_insert_at_index_update_existing() {
     let yaml = YamlFile::from_str("first: 1\nsecond: 2\nthird: 3").unwrap();
 
     // Update existing key
-    yaml.insert_at_index(2, "first", "updated");
+    yaml.insert_at_index(2, "first", "updated").unwrap();
 
     // Verify via API first
     let doc = yaml.document().expect("Should have document");
@@ -44,7 +44,7 @@ fn test_insert_at_index_new_key_at_beginning() {
     let yaml = YamlFile::from_str("first: 1\nsecond: 2").unwrap();
 
     // Insert new key at beginning
-    yaml.insert_at_index(0, "zero", "0");
+    yaml.insert_at_index(0, "zero", "0").unwrap();
 
     // Verify via API first
     let doc = yaml.document().expect("Should have document");
@@ -88,7 +88,7 @@ fn test_insert_at_index_new_key_in_middle() {
     let yaml = YamlFile::from_str("first: 1\nthird: 3").unwrap();
 
     // Insert new key in middle
-    yaml.insert_at_index(1, "second", "2");
+    yaml.insert_at_index(1, "second", "2").unwrap();
 
     // Verify via API first
     let doc = yaml.document().expect("Should have document");
@@ -138,7 +138,7 @@ fn test_insert_at_index_preserves_document_structure() {
     assert_eq!(pairs_before, 2, "Should have 2 pairs initially");
 
     // Insert new key
-    yaml.insert_at_index(1, "author", "developer");
+    yaml.insert_at_index(1, "author", "developer").unwrap();
 
     // Document structure should still be valid
     let doc_after = yaml.document().expect("Should still have document");
@@ -164,11 +164,11 @@ fn test_insert_at_index_preserves_document_structure() {
 #[test]
 fn test_document_insert_at_index() {
     let doc = Document::new();
-    doc.set("first", 1);
-    doc.set("second", 2);
+    doc.set("first", 1).unwrap();
+    doc.set("second", 2).unwrap();
 
     // Insert new key
-    doc.insert_at_index(1, "middle", 1.5);
+    doc.insert_at_index(1, "middle", 1.5).unwrap();
 
     let output = doc.to_string();
     let expected = "---
@@ -189,9 +189,11 @@ fn test_insert_special_characters() {
     let yaml = YamlFile::from_str("key1: value1").unwrap();
 
     // Test various special characters
-    yaml.insert_at_index(1, "special:key", "value:with:colons");
-    yaml.insert_at_index(0, "key with spaces", "value with spaces");
-    yaml.insert_at_index(2, "key@symbol", "value#hash");
+    yaml.insert_at_index(1, "special:key", "value:with:colons")
+        .unwrap();
+    yaml.insert_at_index(0, "key with spaces", "value with spaces")
+        .unwrap();
+    yaml.insert_at_index(2, "key@symbol", "value#hash").unwrap();
 
     // Verify via API first
     let doc = yaml.document().expect("Should have document");
@@ -252,7 +254,7 @@ fn test_insert_maintains_pairs_count() {
     assert_eq!(pairs_before, 3, "Should have 3 pairs initially");
 
     // Update existing key
-    yaml.insert_at_index(1, "b", "updated");
+    yaml.insert_at_index(1, "b", "updated").unwrap();
 
     let doc_after = yaml.document().expect("Should have document");
     let mapping_after = doc_after.as_mapping().expect("Should be mapping");
@@ -260,7 +262,7 @@ fn test_insert_maintains_pairs_count() {
     assert_eq!(pairs_after, 3, "Should still have 3 pairs after update");
 
     // Insert new key
-    yaml.insert_at_index(2, "d", "4");
+    yaml.insert_at_index(2, "d", "4").unwrap();
 
     let doc_final = yaml.document().expect("Should have document");
     let mapping_final = doc_final.as_mapping().expect("Should be mapping");

@@ -365,8 +365,7 @@ impl Sequence {
                                     // trailing NEWLINE+INDENT that must be preserved.
                                     let text = n.text().to_string();
                                     if let Some(last_newline_pos) = text.rfind('\n') {
-                                        trailing_text =
-                                            Some(text[last_newline_pos..].to_string());
+                                        trailing_text = Some(text[last_newline_pos..].to_string());
                                     }
 
                                     // Replace the value node with the new value built from AsYaml
@@ -871,8 +870,8 @@ scores:
         let doc = Document::from_str(original).unwrap();
         let mapping = doc.as_mapping().unwrap();
         let config = mapping.get_mapping("config").unwrap();
-        config.set("enabled", false);
-        config.set("retries", 5);
+        config.set("enabled", false).unwrap();
+        config.set("retries", 5).unwrap();
 
         let servers = config.get_sequence("servers").unwrap();
         servers.push("host3").unwrap();

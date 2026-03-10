@@ -117,20 +117,25 @@ impl Document {
     }
 
     /// Set a scalar value in the document (assumes document is a mapping)
-    pub fn set(&self, key: impl crate::AsYaml, value: impl crate::AsYaml) {
+    pub fn set(
+        &self,
+        key: impl crate::AsYaml,
+        value: impl crate::AsYaml,
+    ) -> Result<(), crate::error::YamlError> {
         if let Some(mapping) = self.as_mapping() {
-            mapping.set(key, value);
+            mapping.set(key, value)?;
             // Changes are applied directly via splice_children, no need to replace
         } else {
             // If document is not a mapping, create one and add it to the document
             let mapping = Mapping::new();
-            mapping.set(key, value);
+            mapping.set(key, value)?;
 
             // Add the mapping node directly to the document
             let child_count = self.0.children_with_tokens().count();
             self.0
                 .splice_children(child_count..child_count, vec![mapping.0.into()]);
         }
+        Ok(())
     }
 
     /// Set a key-value pair with field ordering support.
@@ -143,23 +148,25 @@ impl Document {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
         field_order: I,
-    ) where
+    ) -> Result<(), crate::error::YamlError>
+    where
         I: IntoIterator<Item = K>,
         K: crate::AsYaml,
     {
         // Collect so we can pass to both branches if needed.
         let field_order: Vec<K> = field_order.into_iter().collect();
         if let Some(mapping) = self.as_mapping() {
-            mapping.set_with_field_order(key, value, field_order);
+            mapping.set_with_field_order(key, value, field_order)?;
             // Changes are applied directly via splice_children, no need to replace
         } else {
             // If document is not a mapping, create one and splice it in.
             let mapping = Mapping::new();
-            mapping.set_with_field_order(key, value, field_order);
+            mapping.set_with_field_order(key, value, field_order)?;
             let child_count = self.0.children_with_tokens().count();
             self.0
                 .splice_children(child_count..child_count, vec![mapping.0.into()]);
         }
+        Ok(())
     }
 
     /// Remove a key from the document (assumes document is a mapping).
@@ -272,11 +279,11 @@ impl Document {
         after_key: impl crate::AsYaml,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) -> bool {
+    ) -> Result<bool, crate::error::YamlError> {
         if let Some(mapping) = self.as_mapping() {
             mapping.insert_after(after_key, key, value)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -293,11 +300,11 @@ impl Document {
         after_key: impl crate::AsYaml,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) -> bool {
+    ) -> Result<bool, crate::error::YamlError> {
         if let Some(mapping) = self.as_mapping() {
             mapping.move_after(after_key, key, value)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -314,11 +321,11 @@ impl Document {
         before_key: impl crate::AsYaml,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) -> bool {
+    ) -> Result<bool, crate::error::YamlError> {
         if let Some(mapping) = self.as_mapping() {
             mapping.insert_before(before_key, key, value)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -335,11 +342,11 @@ impl Document {
         before_key: impl crate::AsYaml,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) -> bool {
+    ) -> Result<bool, crate::error::YamlError> {
         if let Some(mapping) = self.as_mapping() {
             mapping.move_before(before_key, key, value)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -364,20 +371,21 @@ impl Document {
         index: usize,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) {
+    ) -> Result<(), crate::error::YamlError> {
         // Delegate to Mapping::insert_at_index if we have a mapping
         if let Some(mapping) = self.as_mapping() {
-            mapping.insert_at_index(index, key, value);
-            return;
+            mapping.insert_at_index(index, key, value)?;
+            return Ok(());
         }
 
         // No mapping exists yet: create one and replace document contents
         let mapping = Mapping::new();
-        mapping.insert_at_index_preserving(index, key, value);
+        mapping.insert_at_index_preserving(index, key, value)?;
         let new_doc = Self::from_mapping(mapping);
         let new_children: Vec<_> = new_doc.0.children_with_tokens().collect();
         let child_count = self.0.children_with_tokens().count();
         self.0.splice_children(0..child_count, new_children);
+        Ok(())
     }
 
     /// Get the scalar value for `key` as a decoded `String`.
@@ -774,7 +782,7 @@ Author: Someone
         let doc = parsed.document().expect("Should have a document");
 
         // Update Version - should stay in middle
-        doc.set("Version", 2.0);
+        doc.set("Version", 2.0).unwrap();
 
         let output = doc.to_string();
         let expected = r#"Name: original
@@ -918,7 +926,7 @@ active: true
 
         // Test Document.insert_after with sequence
         let doc1 = Document::new();
-        doc1.set("name", "project");
+        doc1.set("name", "project").unwrap();
         let features = SequenceBuilder::new()
             .item("auth")
             .item("api")
@@ -926,7 +934,7 @@ active: true
             .build_document()
             .as_sequence()
             .unwrap();
-        let success = doc1.insert_after("name", "features", features);
+        let success = doc1.insert_after("name", "features", features).unwrap();
         assert!(success);
         let output1 = doc1.to_string();
         assert_eq!(
@@ -936,15 +944,15 @@ active: true
 
         // Test Document.insert_before with mapping
         let doc2 = Document::new();
-        doc2.set("name", "project");
-        doc2.set("version", "1.0.0");
+        doc2.set("name", "project").unwrap();
+        doc2.set("version", "1.0.0").unwrap();
         let database = MappingBuilder::new()
             .pair("host", "localhost")
             .pair("port", 5432)
             .build_document()
             .as_mapping()
             .unwrap();
-        let success = doc2.insert_before("version", "database", database);
+        let success = doc2.insert_before("version", "database", database).unwrap();
         assert!(success);
         let output2 = doc2.to_string();
         assert_eq!(
@@ -954,7 +962,7 @@ active: true
 
         // Test Document.insert_at_index with set
         let doc3 = Document::new();
-        doc3.set("name", "project");
+        doc3.set("name", "project").unwrap();
         // TODO: migrate away from YamlValue once !!set has a non-YamlValue AsYaml impl
         #[allow(clippy::disallowed_types)]
         let tag_set = {
@@ -964,7 +972,7 @@ active: true
             tags.insert("database".to_string());
             YamlValue::from_set(tags)
         };
-        doc3.insert_at_index(1, "tags", tag_set);
+        doc3.insert_at_index(1, "tags", tag_set).unwrap();
         let output3 = doc3.to_string();
         assert_eq!(
             output3,
@@ -993,7 +1001,8 @@ active: true
 
         // Check and modify fields
         assert!(!doc.contains_key("Repository"));
-        doc.set("Repository", "https://github.com/user/repo.git");
+        doc.set("Repository", "https://github.com/user/repo.git")
+            .unwrap();
         assert!(doc.contains_key("Repository"));
 
         // Test get_string
@@ -1022,10 +1031,13 @@ active: true
         let doc = Document::new();
 
         // Add fields in random order
-        doc.set("Repository-Browse", "https://github.com/user/repo");
-        doc.set("Name", "MyProject");
-        doc.set("Bug-Database", "https://github.com/user/repo/issues");
-        doc.set("Repository", "https://github.com/user/repo.git");
+        doc.set("Repository-Browse", "https://github.com/user/repo")
+            .unwrap();
+        doc.set("Name", "MyProject").unwrap();
+        doc.set("Bug-Database", "https://github.com/user/repo/issues")
+            .unwrap();
+        doc.set("Repository", "https://github.com/user/repo.git")
+            .unwrap();
 
         // Reorder fields
         doc.reorder_fields(["Name", "Bug-Database", "Repository", "Repository-Browse"]);
@@ -1065,7 +1077,7 @@ active: true
             .build_document()
             .as_sequence()
             .unwrap();
-        doc.set("Repository", &array_value);
+        doc.set("Repository", &array_value).unwrap();
 
         // Test array detection
         assert!(doc.is_sequence("Repository"));
@@ -1083,8 +1095,9 @@ active: true
 
         // Create and save a document
         let doc = Document::new();
-        doc.set("Name", "TestProject");
-        doc.set("Repository", "https://example.com/repo.git");
+        doc.set("Name", "TestProject").unwrap();
+        doc.set("Repository", "https://example.com/repo.git")
+            .unwrap();
 
         doc.to_file(test_path)?;
 
@@ -1299,7 +1312,10 @@ features:
                 "Repository",
                 "https://github.com/example/example.git",
             );
-            assert!(result, "insert_after should return true when key is found");
+            assert!(
+                result.unwrap(),
+                "insert_after should return true when key is found"
+            );
 
             // Check the document output directly
             let output = doc.to_string();
@@ -1320,11 +1336,13 @@ Repository: https://github.com/example/example.git
         let yaml_obj = YamlFile::from_str(yaml).unwrap();
 
         if let Some(doc) = yaml_obj.document() {
-            let result = doc.insert_after(
-                "Bug-Submit",
-                "Repository",
-                "https://github.com/example/example.git",
-            );
+            let result = doc
+                .insert_after(
+                    "Bug-Submit",
+                    "Repository",
+                    "https://github.com/example/example.git",
+                )
+                .unwrap();
             assert!(result, "insert_after should return true when key is found");
 
             let output = doc.to_string();

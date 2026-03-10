@@ -149,7 +149,7 @@ third: https://third.example.com
     assert_eq!(doc.keys().count(), 3);
 
     // Edit a value
-    doc.set("second", "https://updated.example.com");
+    doc.set("second", "https://updated.example.com").unwrap();
 
     // Verify the edit worked and other keys remain unchanged
     assert_eq!(
@@ -166,7 +166,7 @@ third: https://third.example.com
     );
 
     // Add a new key
-    doc.set("fourth", "https://fourth.example.com");
+    doc.set("fourth", "https://fourth.example.com").unwrap();
     assert_eq!(doc.keys().count(), 4);
     assert_eq!(
         doc.get_string("fourth").unwrap(),

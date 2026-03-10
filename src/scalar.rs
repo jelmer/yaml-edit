@@ -838,11 +838,15 @@ impl ScalarValue {
 
         // Check for YAML keywords that would be misinterpreted
         // These need quotes when we want them as strings
-        let lowercase = value.to_lowercase();
-        if matches!(
-            lowercase.as_str(),
-            "true" | "false" | "yes" | "no" | "on" | "off" | "null" | "~"
-        ) {
+        if value.eq_ignore_ascii_case("true")
+            || value.eq_ignore_ascii_case("false")
+            || value.eq_ignore_ascii_case("yes")
+            || value.eq_ignore_ascii_case("no")
+            || value.eq_ignore_ascii_case("on")
+            || value.eq_ignore_ascii_case("off")
+            || value.eq_ignore_ascii_case("null")
+            || value == "~"
+        {
             return true;
         }
 
@@ -851,29 +855,25 @@ impl ScalarValue {
             return true;
         }
 
+        // Check if starts with special characters
+        if value.starts_with(|ch: char| {
+            matches!(ch, '-' | '?' | '[' | ']' | '{' | '}' | ',' | '>' | '<')
+        }) {
+            return true;
+        }
+
         // Check for special characters that require quoting
-        // Note: Some characters like : # need context-aware checking
-        // For now, we check if they appear in positions that would be ambiguous
-        for (i, ch) in value.chars().enumerate() {
+        // : and # need context-aware checking (only ambiguous before whitespace or at end)
+        let mut chars = value.chars().peekable();
+        while let Some(ch) = chars.next() {
             match ch {
-                // These are always problematic in plain scalars
                 '&' | '*' | '!' | '|' | '\'' | '"' | '%' => return true,
-                // : and # require context - only quote if followed by space or at end
                 ':' | '#' => {
-                    if i + 1 >= value.len() || value.chars().nth(i + 1).unwrap().is_whitespace() {
+                    if chars.peek().map_or(true, |next| next.is_whitespace()) {
                         return true;
                     }
                 }
-                // > and < are only special at the start of a scalar
-                // In the middle they're fine (e.g., email addresses)
                 _ => {}
-            }
-        }
-
-        // Check if starts with special characters
-        if let Some(first) = value.chars().next() {
-            if matches!(first, '-' | '?' | '[' | ']' | '{' | '}' | ',' | '>' | '<') {
-                return true;
             }
         }
 

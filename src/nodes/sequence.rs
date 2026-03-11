@@ -1549,7 +1549,7 @@ scores:
         // Pushing a block mapping into a flow sequence should return an error
         let source = Document::from_str("key: value\nnested: true").unwrap();
         let source_mapping = source.as_mapping().unwrap();
-        let source_node = crate::as_yaml::YamlNode::Mapping(source_mapping.clone());
+        let source_node = crate::as_yaml::YamlNode::Mapping(source_mapping);
 
         let doc = Document::from_str("items: [a, b]").unwrap();
         let seq = doc
@@ -1570,7 +1570,7 @@ scores:
         // Pushing a block sequence into a flow sequence should return an error
         let source = Document::from_str("- x\n- y\n- z").unwrap();
         let source_seq = source.as_sequence().unwrap();
-        let source_node = crate::as_yaml::YamlNode::Sequence(source_seq.clone());
+        let source_node = crate::as_yaml::YamlNode::Sequence(source_seq);
 
         let doc = Document::from_str("items: [a, b]").unwrap();
         let seq = doc
@@ -1591,7 +1591,7 @@ scores:
         // Pushing a flow mapping into a flow sequence should work
         let source = Document::from_str("{key: value}").unwrap();
         let source_mapping = source.as_mapping().unwrap();
-        let source_node = crate::as_yaml::YamlNode::Mapping(source_mapping.clone());
+        let source_node = crate::as_yaml::YamlNode::Mapping(source_mapping);
 
         let doc = Document::from_str("items: [a, b]").unwrap();
         let seq = doc
@@ -1611,7 +1611,7 @@ scores:
         // Pushing a flow sequence into a flow sequence should work
         let source = Document::from_str("[x, y]").unwrap();
         let source_seq = source.as_sequence().unwrap();
-        let source_node = crate::as_yaml::YamlNode::Sequence(source_seq.clone());
+        let source_node = crate::as_yaml::YamlNode::Sequence(source_seq);
 
         let doc = Document::from_str("items: [a, b]").unwrap();
         let seq = doc
@@ -1631,7 +1631,7 @@ scores:
         // Pushing a block mapping into a block sequence should work fine
         let source = Document::from_str("key: value\nnested: true").unwrap();
         let source_mapping = source.as_mapping().unwrap();
-        let source_node = crate::as_yaml::YamlNode::Mapping(source_mapping.clone());
+        let source_node = crate::as_yaml::YamlNode::Mapping(source_mapping);
 
         let doc = Document::from_str("items:\n  - a\n  - b").unwrap();
         let seq = doc

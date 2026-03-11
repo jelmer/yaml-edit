@@ -279,13 +279,14 @@ impl YamlPath for crate::yaml::Document {
             return Ok(());
         }
 
-        // Get the root mapping (can only set paths on mappings at the root)
-        let mapping = match self.as_mapping() {
-            Some(m) => m,
-            None => return Ok(()),
-        };
-
-        set_path_impl(&mapping, &segments, value)
+        // Dispatch based on root type
+        if let Some(mapping) = self.as_mapping() {
+            set_path_on_mapping(&mapping, &segments, value)
+        } else if let Some(sequence) = self.as_sequence() {
+            set_path_on_sequence(&sequence, &segments, value)
+        } else {
+            Ok(())
+        }
     }
 
     fn remove_path(&self, path: &str) -> bool {
@@ -294,74 +295,15 @@ impl YamlPath for crate::yaml::Document {
             return false;
         }
 
-        // Start from document root
-        let root = if let Some(m) = self.as_mapping() {
-            crate::as_yaml::YamlNode::Mapping(m)
-        } else if let Some(s) = self.as_sequence() {
-            crate::as_yaml::YamlNode::Sequence(s)
+        // Dispatch based on root type
+        if let Some(mapping) = self.as_mapping() {
+            remove_path_from_mapping(&mapping, &segments)
+        } else if let Some(sequence) = self.as_sequence() {
+            remove_path_from_sequence(&sequence, &segments)
         } else {
-            return false;
-        };
-
-        remove_path_impl(root, &segments)
-    }
-}
-
-/// Set a value at a path, creating intermediate mappings as needed.
-///
-/// This is used by Document::set_path() to handle the full path navigation.
-fn set_path_impl<V: crate::AsYaml>(
-    mapping: &Mapping,
-    segments: &[PathSegment],
-    value: V,
-) -> Result<(), crate::error::YamlError> {
-    set_path_on_mapping(mapping, segments, value)
-}
-
-/// Remove a value at a nested path.
-///
-/// This is used by Document::remove_path() to handle the full path navigation.
-fn remove_path_impl(root: crate::as_yaml::YamlNode, segments: &[PathSegment]) -> bool {
-    if segments.is_empty() {
-        return false;
-    }
-
-    if segments.len() == 1 {
-        // Base case: remove from the current node
-        match &segments[0] {
-            PathSegment::Key(key) => {
-                if let Some(mapping) = root.as_mapping() {
-                    return mapping.remove(key.as_str()).is_some();
-                }
-            }
-            PathSegment::Index(_) => {
-                // Removing by index from a sequence is not supported
-                // (would require shifting all subsequent elements)
-                return false;
-            }
-        }
-        return false;
-    }
-
-    // Navigate to the parent and recurse
-    match &segments[0] {
-        PathSegment::Key(key) => {
-            if let Some(mapping) = root.as_mapping() {
-                if let Some(nested) = mapping.get(key.as_str()) {
-                    return remove_path_impl(nested, &segments[1..]);
-                }
-            }
-        }
-        PathSegment::Index(index) => {
-            if let Some(sequence) = root.as_sequence() {
-                if let Some(nested) = sequence.get(*index) {
-                    return remove_path_impl(nested, &segments[1..]);
-                }
-            }
+            false
         }
     }
-
-    false
 }
 
 // Implementation for Mapping
@@ -410,6 +352,50 @@ impl YamlPath for Mapping {
     }
 }
 
+// Implementation for Sequence
+impl YamlPath for crate::Sequence {
+    fn get_path(&self, path: &str) -> Option<crate::as_yaml::YamlNode> {
+        let segments = parse_path(path);
+        if segments.is_empty() {
+            return None;
+        }
+
+        let index = match &segments[0] {
+            PathSegment::Index(idx) => *idx,
+            PathSegment::Key(_) => return None, // Can't key into a sequence directly
+        };
+
+        let current = self.get(index)?;
+        if segments.len() == 1 {
+            return Some(current);
+        }
+
+        navigate_path(current, &segments[1..])
+    }
+
+    fn set_path(
+        &self,
+        path: &str,
+        value: impl crate::AsYaml,
+    ) -> Result<(), crate::error::YamlError> {
+        let segments = parse_path(path);
+        if segments.is_empty() {
+            return Ok(());
+        }
+
+        set_path_on_sequence(self, &segments, value)
+    }
+
+    fn remove_path(&self, path: &str) -> bool {
+        let segments = parse_path(path);
+        if segments.is_empty() {
+            return false;
+        }
+
+        remove_path_from_sequence(self, &segments)
+    }
+}
+
 /// Set a value at a path on a mapping, creating intermediate structures as needed.
 ///
 /// This function uses only the public API (get_mapping, set) and does NOT rebuild nodes.
@@ -434,14 +420,94 @@ fn set_path_on_mapping<V: crate::AsYaml>(
         return Ok(());
     }
 
-    // Next segment is a key, so we need a mapping
-    if let Some(nested) = mapping.get_mapping(first_key) {
-        set_path_on_mapping(&nested, &segments[1..], value)?;
-    } else {
-        // Create empty mapping using Mapping::new() (avoids cross-document bugs)
-        mapping.set(first_key, Mapping::new())?;
-        if let Some(nested) = mapping.get_mapping(first_key) {
-            set_path_on_mapping(&nested, &segments[1..], value)?;
+    let next_segment = &segments[1];
+    match next_segment {
+        PathSegment::Key(_) => {
+            // Next segment is a key, so we need a mapping
+            if let Some(nested) = mapping.get_mapping(first_key) {
+                set_path_on_mapping(&nested, &segments[1..], value)?;
+            } else {
+                // Create empty mapping using YamlValue (avoids cross-document bugs)
+                mapping.set(first_key, Mapping::new())?;
+                if let Some(nested) = mapping.get_mapping(first_key) {
+                    set_path_on_mapping(&nested, &segments[1..], value)?;
+                }
+            }
+        }
+        PathSegment::Index(_) => {
+            // Next segment is an index, so we need a sequence
+            if let Some(nested) = mapping.get_sequence(first_key) {
+                set_path_on_sequence(&nested, &segments[1..], value)?;
+            } else {
+                // Create empty sequence using YamlValue (avoids cross-document bugs)
+                mapping.set(
+                    first_key,
+                    crate::value::YamlValue::Sequence(Default::default()),
+                )?;
+                if let Some(nested) = mapping.get_sequence(first_key) {
+                    set_path_on_sequence(&nested, &segments[1..], value)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Set a value at a path on a sequence, creating intermediate structures as needed.
+fn set_path_on_sequence<V: crate::AsYaml>(
+    seq: &crate::Sequence,
+    segments: &[PathSegment],
+    value: V,
+) -> Result<(), crate::error::YamlError> {
+    if segments.is_empty() {
+        return Ok(());
+    }
+
+    let index = match &segments[0] {
+        PathSegment::Index(idx) => *idx,
+        PathSegment::Key(_) => return Ok(()), // Can't set by key on a sequence
+    };
+
+    if segments.len() == 1 {
+        seq.set(index, value);
+        return Ok(());
+    }
+
+    // Ensure the item exists at `index`, filling with nulls if needed
+    if seq.get(index).is_none() {
+        while seq.len() <= index {
+            seq.push(crate::scalar::ScalarValue::null())?;
+        }
+    }
+
+    match &segments[1] {
+        PathSegment::Key(_) => {
+            // Next segment is a key — need a mapping at this index
+            let has_mapping = seq
+                .get(index)
+                .is_some_and(|item| item.as_mapping().is_some());
+            if !has_mapping {
+                seq.set(index, Mapping::new());
+            }
+            if let Some(item) = seq.get(index) {
+                if let Some(nested) = item.as_mapping() {
+                    set_path_on_mapping(nested, &segments[1..], value)?;
+                }
+            }
+        }
+        PathSegment::Index(_) => {
+            // Next segment is an index — need a sequence at this index
+            let has_sequence = seq
+                .get(index)
+                .is_some_and(|item| item.as_sequence().is_some());
+            if !has_sequence {
+                seq.set(index, crate::value::YamlValue::Sequence(Default::default()));
+            }
+            if let Some(item) = seq.get(index) {
+                if let Some(nested) = item.as_sequence() {
+                    set_path_on_sequence(nested, &segments[1..], value)?;
+                }
+            }
         }
     }
     Ok(())
@@ -455,22 +521,70 @@ fn remove_path_from_mapping(mapping: &Mapping, segments: &[PathSegment]) -> bool
         return false;
     }
 
-    // First segment must be a key for mappings
     let first_key = match &segments[0] {
         PathSegment::Key(key) => key.as_str(),
         PathSegment::Index(_) => return false, // Can't index into a mapping
     };
 
     if segments.len() == 1 {
-        // Base case: remove directly
         return mapping.remove(first_key).is_some();
     }
 
-    // Navigate to the parent mapping and recurse
-    if let Some(nested) = mapping.get_mapping(first_key) {
-        remove_path_from_mapping(&nested, &segments[1..])
-    } else {
-        false // Path doesn't exist
+    // Navigate into the value at this key and recurse
+    match &segments[1] {
+        PathSegment::Key(_) => {
+            if let Some(nested) = mapping.get_mapping(first_key) {
+                remove_path_from_mapping(&nested, &segments[1..])
+            } else {
+                false
+            }
+        }
+        PathSegment::Index(_) => {
+            if let Some(nested) = mapping.get_sequence(first_key) {
+                remove_path_from_sequence(&nested, &segments[1..])
+            } else {
+                false
+            }
+        }
+    }
+}
+
+/// Remove a value at a path from a sequence.
+fn remove_path_from_sequence(seq: &crate::Sequence, segments: &[PathSegment]) -> bool {
+    if segments.is_empty() {
+        return false;
+    }
+
+    let index = match &segments[0] {
+        PathSegment::Index(idx) => *idx,
+        PathSegment::Key(_) => return false, // Can't key into a sequence
+    };
+
+    if segments.len() == 1 {
+        return seq.remove(index).is_some();
+    }
+
+    // Navigate into the item at this index and recurse
+    let item = match seq.get(index) {
+        Some(item) => item,
+        None => return false,
+    };
+
+    match &segments[1] {
+        PathSegment::Key(_) => {
+            if let Some(nested) = item.as_mapping() {
+                remove_path_from_mapping(nested, &segments[1..])
+            } else {
+                false
+            }
+        }
+        PathSegment::Index(_) => {
+            if let Some(nested) = item.as_sequence() {
+                remove_path_from_sequence(nested, &segments[1..])
+            } else {
+                false
+            }
+        }
     }
 }
 
@@ -1092,5 +1206,147 @@ config:
                 .map(|s| s.to_string()),
             Some("5432".to_string())
         );
+    }
+
+    #[test]
+    fn test_set_path_creates_intermediate_nodes() {
+        use std::str::FromStr;
+        let doc = crate::Document::from_str("base: true\n").unwrap();
+
+        // Setting a deeply nested path should create intermediate structures
+        doc.set_path("a.b[0].c", "value").unwrap();
+
+        // Verify the value is accessible via get_path
+        assert_eq!(
+            doc.get_path("a.b[0].c")
+                .as_ref()
+                .and_then(|v| v.as_scalar())
+                .map(|s| s.to_string()),
+            Some("value".to_string())
+        );
+    }
+
+    #[test]
+    fn test_set_path_into_sequence() {
+        use std::str::FromStr;
+        let doc = crate::Document::from_str("items:\n  - name: first\n").unwrap();
+
+        // Setting a nested value in an existing sequence item
+        doc.set_path("items[0].name", "updated").unwrap();
+
+        assert_eq!(doc.to_string(), "items:\n  - name: updated\n");
+    }
+
+    #[test]
+    fn test_remove_path_sequence_index() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let yaml = Document::from_str("items:\n  - first\n  - second\n  - third\n").unwrap();
+
+        assert!(yaml.remove_path("items[1]"));
+
+        let binding = yaml.get_path("items").unwrap();
+        let seq = binding.as_sequence().unwrap();
+        let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
+        assert_eq!(values, vec!["first", "third"]);
+    }
+
+    #[test]
+    fn test_remove_path_nested_in_sequence() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let yaml = Document::from_str("items:\n  - name: first\n    value: 1\n  - name: second\n")
+            .unwrap();
+
+        assert!(yaml.remove_path("items[0].value"));
+        assert_eq!(
+            yaml.get_path("items[0].name")
+                .as_ref()
+                .and_then(|v| v.as_scalar())
+                .map(|s| s.to_string()),
+            Some("first".to_string())
+        );
+        assert_eq!(yaml.get_path("items[0].value"), None);
+    }
+
+    #[test]
+    fn test_remove_path_sequence_index_out_of_bounds() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let yaml = Document::from_str("items:\n  - first\n").unwrap();
+        assert!(!yaml.remove_path("items[5]"));
+    }
+
+    #[test]
+    fn test_mapping_remove_path_through_sequence() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let yaml = Document::from_str("items:\n  - name: first\n    value: 1\n").unwrap();
+        let mapping = yaml.as_mapping().unwrap();
+
+        assert!(mapping.remove_path("items[0].value"));
+        assert_eq!(yaml.get_path("items[0].value"), None);
+        assert!(yaml.get_path("items[0].name").is_some());
+    }
+
+    #[test]
+    fn test_sequence_yaml_path() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let yaml = Document::from_str("- name: first\n  value: 1\n- name: second\n").unwrap();
+        let seq = yaml.as_sequence().unwrap();
+
+        // get_path
+        assert_eq!(
+            seq.get_path("[0].name")
+                .as_ref()
+                .and_then(|v| v.as_scalar())
+                .map(|s| s.to_string()),
+            Some("first".to_string())
+        );
+
+        // set_path
+        seq.set_path("[0].value", 42).unwrap();
+        assert_eq!(
+            seq.get_path("[0].value")
+                .as_ref()
+                .and_then(|v| v.as_scalar())
+                .map(|s| s.to_string()),
+            Some("42".to_string())
+        );
+
+        // remove_path
+        assert!(seq.remove_path("[1]"));
+        assert_eq!(seq.get_path("[1]"), None);
+    }
+
+    #[test]
+    fn test_document_set_path_sequence_root() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let yaml = Document::from_str("- name: first\n").unwrap();
+
+        yaml.set_path("[0].name", "updated").unwrap();
+        assert_eq!(yaml.to_string(), "- name: updated\n");
+    }
+
+    #[test]
+    fn test_document_remove_path_sequence_root() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let yaml = Document::from_str("- first\n- second\n- third\n").unwrap();
+
+        assert!(yaml.remove_path("[1]"));
+
+        let seq = yaml.as_sequence().unwrap();
+        let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
+        assert_eq!(values, vec!["first", "third"]);
     }
 }

@@ -11,12 +11,6 @@ fn base64_encode(input: &[u8]) -> String {
     general_purpose::STANDARD.encode(input)
 }
 
-#[cfg(not(feature = "base64"))]
-compile_error!(
-    "Binary scalar support requires the 'base64' feature to be enabled. \
-     Add `yaml-edit = {{ features = [\"base64\"] }}` to your Cargo.toml."
-);
-
 /// Base64 decode string back to bytes
 #[cfg(feature = "base64")]
 fn base64_decode(input: &str) -> Result<Vec<u8>, String> {

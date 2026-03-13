@@ -1,6 +1,6 @@
 [package]
 name = "yaml-edit"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Jelmer Vernooĳ <jelmer@debian.org>"]
 license = "Apache-2.0"

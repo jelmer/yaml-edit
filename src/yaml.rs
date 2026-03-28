@@ -315,6 +315,50 @@ impl YamlFile {
         Self::from_str(&contents)
     }
 
+    /// Parse YAML text, allowing syntax errors.
+    ///
+    /// Returns the parsed tree even if there are parse errors, along with
+    /// a list of error messages. This allows for error-resilient tooling
+    /// that can work with partial or invalid input.
+    ///
+    /// # Example
+    /// ```
+    /// use yaml_edit::YamlFile;
+    ///
+    /// let (yaml_file, errors) = YamlFile::from_str_relaxed("key: [unclosed");
+    /// // Tree is usable even with errors
+    /// assert!(!errors.is_empty());
+    /// assert!(yaml_file.document().is_some());
+    /// ```
+    pub fn from_str_relaxed(s: &str) -> (YamlFile, Vec<String>) {
+        let parsed = YamlFile::parse(s);
+        let errors = parsed.errors();
+        (parsed.tree(), errors)
+    }
+
+    /// Parse YAML from a file path, allowing syntax errors.
+    ///
+    /// Returns the parsed tree even if there are parse errors, along with
+    /// a list of error messages. I/O errors are still returned as `Err`.
+    pub fn from_path_relaxed<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<(YamlFile, Vec<String>), std::io::Error> {
+        let contents = std::fs::read_to_string(path)?;
+        Ok(Self::from_str_relaxed(&contents))
+    }
+
+    /// Read YAML from a `Read` object, allowing syntax errors.
+    ///
+    /// Returns the parsed tree even if there are parse errors, along with
+    /// a list of error messages. I/O errors are still returned as `Err`.
+    pub fn read_relaxed<R: std::io::Read>(
+        mut r: R,
+    ) -> Result<(YamlFile, Vec<String>), std::io::Error> {
+        let mut buf = String::new();
+        r.read_to_string(&mut buf)?;
+        Ok(Self::from_str_relaxed(&buf))
+    }
+
     /// Get all documents in this YAML file
     pub fn documents(&self) -> impl Iterator<Item = Document> {
         self.0.children().filter_map(Document::cast)
@@ -6242,5 +6286,59 @@ server:
             // Lexer should tokenize this as single string token
             assert!(!check_implicit_mapping("http://example.com"));
         }
+    }
+
+    #[test]
+    fn test_from_str_relaxed_valid() {
+        let (yaml_file, errors) = YamlFile::from_str_relaxed("key: value\n");
+        assert!(errors.is_empty());
+        let doc = yaml_file.document().unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        assert_eq!(
+            mapping.get("key").unwrap().as_scalar().unwrap().to_string(),
+            "value"
+        );
+    }
+
+    #[test]
+    fn test_from_str_relaxed_unclosed_flow_sequence() {
+        let (yaml_file, errors) = YamlFile::from_str_relaxed("key: [a, b");
+        assert!(!errors.is_empty());
+        // Tree is still usable
+        let doc = yaml_file.document().unwrap();
+        assert!(doc.as_mapping().is_some());
+    }
+
+    #[test]
+    fn test_from_str_relaxed_unclosed_flow_mapping() {
+        let (yaml_file, errors) = YamlFile::from_str_relaxed("key: {a: 1");
+        assert!(!errors.is_empty());
+        let doc = yaml_file.document().unwrap();
+        assert!(doc.as_mapping().is_some());
+    }
+
+    #[test]
+    fn test_from_str_relaxed_preserves_valid_content() {
+        let input = "good: value\nbad: [unclosed\nalso_good: 42\n";
+        let (yaml_file, errors) = YamlFile::from_str_relaxed(input);
+        assert!(!errors.is_empty());
+        let doc = yaml_file.document().unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        assert_eq!(
+            mapping
+                .get("good")
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .to_string(),
+            "value"
+        );
+    }
+
+    #[test]
+    fn test_from_str_relaxed_empty_input() {
+        let (yaml_file, errors) = YamlFile::from_str_relaxed("");
+        assert!(errors.is_empty());
+        assert!(yaml_file.document().is_none());
     }
 }

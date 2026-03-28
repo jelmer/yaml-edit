@@ -3,6 +3,10 @@
 use rowan::GreenNode;
 
 /// The result of a parse operation.
+///
+/// Returns the syntax tree even if there are parse errors. Use [`errors()`](Self::errors)
+/// or [`positioned_errors()`](Self::positioned_errors) to check for errors if needed.
+/// This allows for error-resilient tooling that can work with partial or invalid input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parse<T> {
     green_node: GreenNode,
@@ -71,6 +75,11 @@ impl<T> Parse<T> {
     /// Whether the parse had any errors.
     pub fn has_errors(&self) -> bool {
         !self.positioned_errors.is_empty()
+    }
+
+    /// Whether the parse succeeded without any errors.
+    pub fn ok(&self) -> bool {
+        self.positioned_errors.is_empty()
     }
 }
 

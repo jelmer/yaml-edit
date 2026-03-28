@@ -45,6 +45,42 @@ impl Document {
         Self::from_str(&content)
     }
 
+    /// Parse a YAML string, allowing syntax errors.
+    ///
+    /// Returns the first document even if there are parse errors, along with
+    /// a list of error messages. This allows for error-resilient tooling
+    /// that can work with partial or invalid input.
+    ///
+    /// Unlike [`Document::from_str`], this does not return an error if the
+    /// input contains multiple documents — only the first document is returned.
+    ///
+    /// # Example
+    /// ```
+    /// use yaml_edit::Document;
+    ///
+    /// let (doc, errors) = Document::from_str_relaxed("key: [unclosed");
+    /// // Tree is usable even with errors
+    /// assert!(!errors.is_empty());
+    /// assert!(doc.as_mapping().is_some());
+    /// ```
+    pub fn from_str_relaxed(s: &str) -> (Document, Vec<String>) {
+        let parsed = YamlFile::parse(s);
+        let errors = parsed.errors();
+        let first = parsed.tree().documents().next().unwrap_or_default();
+        (first, errors)
+    }
+
+    /// Load a document from a file, allowing syntax errors.
+    ///
+    /// Returns the first document even if there are parse errors, along with
+    /// a list of error messages. I/O errors are still returned as `Err`.
+    pub fn from_file_relaxed<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<(Document, Vec<String>), std::io::Error> {
+        let content = std::fs::read_to_string(path)?;
+        Ok(Self::from_str_relaxed(&content))
+    }
+
     /// Write the document to a file, creating directories as needed
     ///
     /// This follows the standard Rust naming convention of `to_file()`
@@ -1336,5 +1372,44 @@ Repository: https://github.com/example/example.git
 ";
             assert_eq!(output, expected);
         }
+    }
+
+    #[test]
+    fn test_from_str_relaxed_valid() {
+        let (doc, errors) = Document::from_str_relaxed("key: value\n");
+        assert!(errors.is_empty());
+        let mapping = doc.as_mapping().unwrap();
+        assert_eq!(
+            mapping.get("key").unwrap().as_scalar().unwrap().to_string(),
+            "value"
+        );
+    }
+
+    #[test]
+    fn test_from_str_relaxed_with_errors() {
+        let (doc, errors) = Document::from_str_relaxed("key: [unclosed");
+        assert!(!errors.is_empty());
+        // Tree is still usable
+        assert!(doc.as_mapping().is_some());
+    }
+
+    #[test]
+    fn test_from_str_relaxed_multi_document() {
+        // Unlike from_str, from_str_relaxed does not error on multiple documents
+        let (doc, errors) = Document::from_str_relaxed("a: 1\n---\nb: 2\n");
+        assert!(errors.is_empty());
+        let mapping = doc.as_mapping().unwrap();
+        assert_eq!(
+            mapping.get("a").unwrap().as_scalar().unwrap().to_string(),
+            "1"
+        );
+    }
+
+    #[test]
+    fn test_from_str_relaxed_empty_input() {
+        let (doc, errors) = Document::from_str_relaxed("");
+        assert!(errors.is_empty());
+        // Default document when nothing is parsed
+        assert!(doc.as_mapping().is_none());
     }
 }

@@ -17,7 +17,7 @@
 //! let host = yaml.get_path("server.host");
 //!
 //! // Set nested values (creates intermediate mappings)
-//! yaml.set_path("database.primary.host", "db.example.com");
+//! yaml.set_path("database.primary.host", "db.example.com").unwrap();
 //!
 //! // Remove nested values
 //! yaml.remove_path("server.port");
@@ -25,7 +25,6 @@
 //!
 //! All operations preserve formatting, comments, and whitespace.
 
-use crate::builder::MappingBuilder;
 use crate::yaml::Mapping;
 
 /// Trait for YAML types that support path-based access.
@@ -74,10 +73,14 @@ pub trait YamlPath {
     /// use std::str::FromStr;
     ///
     /// let yaml = Document::from_str("name: test\n").unwrap();
-    /// yaml.set_path("server.host", "localhost");
-    /// yaml.set_path("server.port", 8080);
+    /// yaml.set_path("server.host", "localhost").unwrap();
+    /// yaml.set_path("server.port", 8080).unwrap();
     /// ```
-    fn set_path(&self, path: &str, value: impl crate::AsYaml);
+    fn set_path(
+        &self,
+        path: &str,
+        value: impl crate::AsYaml,
+    ) -> Result<(), crate::error::YamlError>;
 
     /// Remove a value at a nested path.
     ///
@@ -266,19 +269,23 @@ impl YamlPath for crate::yaml::Document {
         navigate_path(root, &segments)
     }
 
-    fn set_path(&self, path: &str, value: impl crate::AsYaml) {
+    fn set_path(
+        &self,
+        path: &str,
+        value: impl crate::AsYaml,
+    ) -> Result<(), crate::error::YamlError> {
         let segments = parse_path(path);
         if segments.is_empty() {
-            return;
+            return Ok(());
         }
 
         // Get the root mapping (can only set paths on mappings at the root)
         let mapping = match self.as_mapping() {
             Some(m) => m,
-            None => return,
+            None => return Ok(()),
         };
 
-        set_path_impl(&mapping, &segments, value);
+        set_path_impl(&mapping, &segments, value)
     }
 
     fn remove_path(&self, path: &str) -> bool {
@@ -303,8 +310,12 @@ impl YamlPath for crate::yaml::Document {
 /// Set a value at a path, creating intermediate mappings as needed.
 ///
 /// This is used by Document::set_path() to handle the full path navigation.
-fn set_path_impl<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegment], value: V) {
-    set_path_on_mapping(mapping, segments, value);
+fn set_path_impl<V: crate::AsYaml>(
+    mapping: &Mapping,
+    segments: &[PathSegment],
+    value: V,
+) -> Result<(), crate::error::YamlError> {
+    set_path_on_mapping(mapping, segments, value)
 }
 
 /// Remove a value at a nested path.
@@ -376,13 +387,17 @@ impl YamlPath for Mapping {
         navigate_path(current, &segments[1..])
     }
 
-    fn set_path(&self, path: &str, value: impl crate::AsYaml) {
+    fn set_path(
+        &self,
+        path: &str,
+        value: impl crate::AsYaml,
+    ) -> Result<(), crate::error::YamlError> {
         let segments = parse_path(path);
         if segments.is_empty() {
-            return;
+            return Ok(());
         }
 
-        set_path_on_mapping(self, &segments, value);
+        set_path_on_mapping(self, &segments, value)
     }
 
     fn remove_path(&self, path: &str) -> bool {
@@ -395,43 +410,41 @@ impl YamlPath for Mapping {
     }
 }
 
-/// Set a value at a path on a mapping, creating intermediate mappings as needed.
+/// Set a value at a path on a mapping, creating intermediate structures as needed.
 ///
 /// This function uses only the public API (get_mapping, set) and does NOT rebuild nodes.
-fn set_path_on_mapping<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegment], value: V) {
+/// Uses YamlValue for intermediate structures to avoid cross-document node insertion bugs.
+fn set_path_on_mapping<V: crate::AsYaml>(
+    mapping: &Mapping,
+    segments: &[PathSegment],
+    value: V,
+) -> Result<(), crate::error::YamlError> {
     if segments.is_empty() {
-        return;
+        return Ok(());
     }
 
-    // First segment must be a key for mappings
     let first_key = match &segments[0] {
         PathSegment::Key(key) => key.as_str(),
-        PathSegment::Index(_) => return, // Can't set by index on a mapping
+        PathSegment::Index(_) => return Ok(()), // Can't set by index on a mapping
     };
 
     if segments.len() == 1 {
         // Base case: set directly
-        mapping.set(first_key, value);
-        return;
+        mapping.set(first_key, value)?;
+        return Ok(());
     }
 
-    // Try to navigate to existing nested mapping
+    // Next segment is a key, so we need a mapping
     if let Some(nested) = mapping.get_mapping(first_key) {
-        // Nested mapping exists, recurse
-        set_path_on_mapping(&nested, &segments[1..], value);
+        set_path_on_mapping(&nested, &segments[1..], value)?;
     } else {
-        // Need to create intermediate structure
-        let empty_mapping = MappingBuilder::new()
-            .build_document()
-            .as_mapping()
-            .expect("MappingBuilder always produces a mapping");
-        mapping.set(first_key, &empty_mapping);
-
-        // Retrieve and recurse into the newly created mapping
+        // Create empty mapping using Mapping::new() (avoids cross-document bugs)
+        mapping.set(first_key, Mapping::new())?;
         if let Some(nested) = mapping.get_mapping(first_key) {
-            set_path_on_mapping(&nested, &segments[1..], value);
+            set_path_on_mapping(&nested, &segments[1..], value)?;
         }
     }
+    Ok(())
 }
 
 /// Remove a value at a path from a mapping.
@@ -615,7 +628,7 @@ items:
         use crate::yaml::Document;
 
         let doc = Document::new();
-        doc.set("key.with.dots", "test value");
+        doc.set("key.with.dots", "test value").unwrap();
 
         // Without escaping - should not find it (looking for nested keys)
         assert!(doc.get_path("key.with.dots").is_none());
@@ -810,7 +823,7 @@ config:
 
         let yaml = Document::from_str("name: Alice\nage: 30\n").unwrap();
 
-        yaml.set_path("name", "Bob");
+        yaml.set_path("name", "Bob").unwrap();
 
         assert_eq!(yaml.to_string(), "name: Bob\nage: 30\n");
     }
@@ -822,7 +835,7 @@ config:
 
         let yaml = Document::from_str("name: Alice\n").unwrap();
 
-        yaml.set_path("age", 30);
+        yaml.set_path("age", 30).unwrap();
 
         assert_eq!(yaml.to_string(), "name: Alice\nage: 30\n");
     }
@@ -834,7 +847,7 @@ config:
 
         let yaml = Document::from_str("server:\n  host: localhost\n  port: 8080\n").unwrap();
 
-        yaml.set_path("server.port", 9000);
+        yaml.set_path("server.port", 9000).unwrap();
 
         assert_eq!(
             yaml.to_string(),
@@ -849,7 +862,7 @@ config:
 
         let yaml = Document::from_str("server:\n  host: localhost\n").unwrap();
 
-        yaml.set_path("server.port", 8080);
+        yaml.set_path("server.port", 8080).unwrap();
 
         assert_eq!(yaml.to_string(), "server:\n  host: localhost\nport: 8080\n");
     }
@@ -861,7 +874,7 @@ config:
 
         let yaml = Document::from_str("name: test\n").unwrap();
 
-        yaml.set_path("server.database.host", "localhost");
+        yaml.set_path("server.database.host", "localhost").unwrap();
 
         assert_eq!(
             yaml.to_string(),
@@ -883,10 +896,11 @@ config:
         use crate::yaml::Document;
         use std::str::FromStr;
 
-        let yaml = Document::from_str("app: {}\n").unwrap();
+        let yaml = Document::from_str("app:\n  name: test\n").unwrap();
 
-        yaml.set_path("app.database.primary.host", "db.example.com");
-        yaml.set_path("app.database.primary.port", 5432);
+        yaml.set_path("app.database.primary.host", "db.example.com")
+            .unwrap();
+        yaml.set_path("app.database.primary.port", 5432).unwrap();
 
         let host = yaml.get_path("app.database.primary.host");
         assert_eq!(
@@ -985,7 +999,7 @@ config:
         );
 
         // Set on mapping
-        mapping.set_path("server.port", 8080);
+        mapping.set_path("server.port", 8080).unwrap();
         assert_eq!(yaml.to_string(), "server:\n  host: localhost\nport: 8080\n");
 
         // Remove from mapping
@@ -1004,7 +1018,7 @@ config:
 
         let yaml = Document::from_str("server:\n  host: localhost  # production server\n").unwrap();
 
-        yaml.set_path("server.host", "newhost");
+        yaml.set_path("server.host", "newhost").unwrap();
 
         assert_eq!(
             yaml.to_string(),
@@ -1020,10 +1034,10 @@ config:
         let yaml = Document::from_str("name: test\n").unwrap();
 
         // Create nested structure
-        yaml.set_path("server.host", "localhost");
-        yaml.set_path("server.port", 8080);
-        yaml.set_path("database.host", "db.local");
-        yaml.set_path("database.port", 5432);
+        yaml.set_path("server.host", "localhost").unwrap();
+        yaml.set_path("server.port", 8080).unwrap();
+        yaml.set_path("database.host", "db.local").unwrap();
+        yaml.set_path("database.port", 5432).unwrap();
 
         // Verify all values
         assert_eq!(

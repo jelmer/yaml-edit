@@ -30,7 +30,7 @@ ref: *x"#;
     assert_eq!(ref_val.as_alias().unwrap().name(), "x");
 
     // Mutate the anchored value
-    mapping.set("anchor", "modified");
+    mapping.set("anchor", "modified").unwrap();
 
     // Verify the anchor value changed
     let new_anchor_val = mapping.get("anchor").expect("Should have anchor");
@@ -69,8 +69,8 @@ server: *defaults"#;
     );
 
     // Mutate the anchored mapping
-    config.set("timeout", 60);
-    config.set("max_connections", 100);
+    config.set("timeout", 60).unwrap();
+    config.set("max_connections", 100).unwrap();
 
     // Verify the config mapping changed
     assert_eq!(
@@ -145,7 +145,7 @@ fn test_edit_block_scalar_content() {
     assert_eq!(initial_text, "Line 1\nLine 2\n");
 
     // Replace the block scalar with new content
-    mapping.set("text", "New single line");
+    mapping.set("text", "New single line").unwrap();
 
     // Verify the content changed
     let new_text_val = mapping.get("text").expect("Should have text");
@@ -176,7 +176,7 @@ fn test_replace_block_scalar_with_multiline() {
     // Note: We're setting a string value, which may render as plain/quoted scalar
     // depending on the implementation's formatting choices
     let new_content = "New line 1\nNew line 2\nNew line 3";
-    mapping.set("description", new_content);
+    mapping.set("description", new_content).unwrap();
 
     // Verify the content changed
     let new_val = mapping.get("description").expect("Should have description");
@@ -216,8 +216,8 @@ count: !!int 42"#;
 
     // Mutate the tagged values
     // Note: This replaces the tagged node with a plain scalar
-    mapping.set("date", "2024-12-31");
-    mapping.set("count", 100);
+    mapping.set("date", "2024-12-31").unwrap();
+    mapping.set("count", 100).unwrap();
 
     // Verify the values changed
     let new_date = mapping.get("date").expect("Should have date");
@@ -248,8 +248,8 @@ fn test_add_to_empty_flow_mapping() {
     assert_eq!(empty_map.keys().count(), 0, "Should be empty initially");
 
     // Add keys to the empty mapping
-    empty_map.set("a", 1);
-    empty_map.set("b", 2);
+    empty_map.set("a", 1).unwrap();
+    empty_map.set("b", 2).unwrap();
 
     // Verify keys were added
     assert_eq!(empty_map.keys().count(), 2, "Should have 2 keys");
@@ -284,9 +284,9 @@ fn test_add_to_empty_flow_sequence() {
     assert_eq!(empty_seq.len(), 0, "Should be empty initially");
 
     // Add items to the empty sequence
-    empty_seq.push("first");
-    empty_seq.push("second");
-    empty_seq.push("third");
+    empty_seq.push("first").unwrap();
+    empty_seq.push("second").unwrap();
+    empty_seq.push("third").unwrap();
 
     // Verify items were added
     assert_eq!(empty_seq.len(), 3, "Should have 3 items");

@@ -36,15 +36,14 @@ key1: value1"#;
         if let Some(mapping) = doc.as_mapping() {
             // Add a new key - since the mapping is {}, the new key is added there
             // The invalid content after {} is preserved in ERROR nodes
-            mapping.set("key2", "value2");
+            mapping.set("key2", "value2").unwrap();
         }
     }
 
     let result = yaml.to_string();
 
     // The parser preserves BOTH the new key and the original invalid content
-    // In flow-style context ({}), strings are quoted
-    assert_eq!(result, "---\n{}\nkey2: \"value2\"\n\nkey1: value1");
+    assert_eq!(result, "---\n{}\nkey2: value2\n\nkey1: value1");
 }
 
 #[test]
@@ -66,11 +65,10 @@ version: 1.0"#;
             // which preserve "name: test\nversion: 1.0"
 
             // Add a key to the empty mapping
-            mapping.set("author", "John");
+            mapping.set("author", "John").unwrap();
 
             // The new key is added to {}, invalid content remains in ERROR nodes
-            // In flow-style context ({}), strings are quoted
-            let expected = "---\n{}\nauthor: \"John\"\n\nname: test\nversion: 1.0";
+            let expected = "---\n{}\nauthor: John\n\nname: test\nversion: 1.0";
             assert_eq!(yaml.to_string(), expected);
         }
     }

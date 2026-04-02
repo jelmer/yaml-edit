@@ -78,7 +78,13 @@ impl MappingEntry {
         value: impl crate::AsYaml,
         flow_context: bool,
         use_explicit_key: bool,
-    ) -> Self {
+    ) -> Result<Self, crate::error::YamlError> {
+        if flow_context && !value.is_inline() {
+            return Err(crate::error::YamlError::InvalidOperation {
+                operation: "new mapping entry".to_string(),
+                reason: "cannot insert block-style content into a flow mapping".to_string(),
+            });
+        }
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
@@ -135,11 +141,21 @@ impl MappingEntry {
         }
 
         builder.finish_node(); // MAPPING_ENTRY
-        MappingEntry(SyntaxNode::new_root_mut(builder.finish()))
+        Ok(MappingEntry(SyntaxNode::new_root_mut(builder.finish())))
     }
 
     /// Replace the value of this entry in place, preserving the key and surrounding whitespace.
-    pub fn set_value(&self, new_value: impl crate::AsYaml, flow_context: bool) {
+    pub fn set_value(
+        &self,
+        new_value: impl crate::AsYaml,
+        flow_context: bool,
+    ) -> Result<(), crate::error::YamlError> {
+        if flow_context && !new_value.is_inline() {
+            return Err(crate::error::YamlError::InvalidOperation {
+                operation: "set value".to_string(),
+                reason: "cannot insert block-style content into a flow mapping".to_string(),
+            });
+        }
         // Build new VALUE node, preserving any inline comment from the old value
         let mut value_builder = GreenNodeBuilder::new();
         value_builder.start_node(SyntaxKind::VALUE.into());
@@ -184,7 +200,7 @@ impl MappingEntry {
                 if node.kind() == SyntaxKind::VALUE {
                     self.0
                         .splice_children(i..i + 1, vec![new_value_node.into()]);
-                    return;
+                    return Ok(());
                 }
             }
         }
@@ -226,6 +242,7 @@ impl MappingEntry {
         let new_children: Vec<_> = new_entry.children_with_tokens().collect();
         let child_count = self.0.children_with_tokens().count();
         self.0.splice_children(0..child_count, new_children);
+        Ok(())
     }
 
     /// Detach this entry from its parent mapping, effectively removing it.
@@ -675,8 +692,12 @@ impl Mapping {
     /// which return `bool` to indicate whether the anchor key was found.
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
-    pub fn set(&self, key: impl crate::AsYaml, value: impl crate::AsYaml) {
-        self.set_as_yaml(key, value);
+    pub fn set(
+        &self,
+        key: impl crate::AsYaml,
+        value: impl crate::AsYaml,
+    ) -> Result<(), crate::error::YamlError> {
+        self.set_as_yaml(key, value)
     }
 
     /// Detect if this mapping uses explicit key indicators (?)
@@ -698,7 +719,11 @@ impl Mapping {
     }
 
     /// Internal unified method to set any YAML value type
-    fn set_as_yaml<K: crate::AsYaml, V: crate::AsYaml>(&self, key: K, value: V) {
+    fn set_as_yaml<K: crate::AsYaml, V: crate::AsYaml>(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<(), crate::error::YamlError> {
         // Detect if this mapping is in flow style (JSON format)
         let flow_context = self.is_flow_style();
 
@@ -714,10 +739,10 @@ impl Mapping {
                         if let Some(entry_key_node) = entry.key() {
                             if key_content_matches(&entry_key_node, &key) {
                                 // Found it! Update the value in place
-                                entry.set_value(value, flow_context);
+                                entry.set_value(value, flow_context)?;
 
                                 self.0.splice_children(i..i + 1, vec![entry.0.into()]);
-                                return;
+                                return Ok(());
                             }
                         }
                     }
@@ -726,8 +751,9 @@ impl Mapping {
         }
 
         // Entry doesn't exist, create a new one
-        let new_entry = MappingEntry::new(key, value, flow_context, use_explicit_keys);
+        let new_entry = MappingEntry::new(key, value, flow_context, use_explicit_keys)?;
         self.insert_entry_cst(&new_entry.0);
+        Ok(())
     }
 
     /// Internal method to insert a new entry at the end (does not check for duplicates)
@@ -992,7 +1018,8 @@ impl Mapping {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
         field_order: I,
-    ) where
+    ) -> Result<(), crate::error::YamlError>
+    where
         I: IntoIterator<Item = K>,
         K: crate::AsYaml,
     {
@@ -1007,8 +1034,8 @@ impl Mapping {
                     if let Some(key_node) = node.children().find(|n| n.kind() == SyntaxKind::KEY) {
                         if key_content_matches(&key_node, &key) {
                             // Key exists, update its value using unified method
-                            self.set_as_yaml(&key, &value);
-                            return;
+                            self.set_as_yaml(&key, &value)?;
+                            return Ok(());
                         }
                     }
                 }
@@ -1077,7 +1104,7 @@ impl Mapping {
             // Build the new entry with proper newline ownership
             let flow_context = self.is_flow_style();
             let use_explicit_keys = self.uses_explicit_keys();
-            let new_entry = MappingEntry::new(&key, &value, flow_context, use_explicit_keys).0;
+            let new_entry = MappingEntry::new(&key, &value, flow_context, use_explicit_keys)?.0;
 
             // Insert after the target entry, ensuring it has a trailing newline
             if let Some(after_node) = insert_after_node {
@@ -1151,12 +1178,13 @@ impl Mapping {
                 self.0.splice_children(idx..idx, vec![new_entry.into()]);
             } else {
                 // No existing ordered keys, just append using CST
-                self.set_as_yaml(&key, &value);
+                self.set_as_yaml(&key, &value)?;
             }
         } else {
             // Key is not in field order, append at the end using CST
-            self.set_as_yaml(&key, &value);
+            self.set_as_yaml(&key, &value)?;
         }
+        Ok(())
     }
 
     /// Detect the indentation level (in spaces) used by entries in this mapping.
@@ -1190,7 +1218,7 @@ impl Mapping {
         after_key: impl crate::AsYaml,
         new_key: impl crate::AsYaml,
         new_value: impl crate::AsYaml,
-    ) -> bool {
+    ) -> Result<bool, crate::error::YamlError> {
         self.move_after_impl(after_key, new_key, new_value)
     }
 
@@ -1200,7 +1228,7 @@ impl Mapping {
         after_key: impl crate::AsYaml,
         new_key: impl crate::AsYaml,
         new_value: impl crate::AsYaml,
-    ) -> bool {
+    ) -> Result<bool, crate::error::YamlError> {
         let children: Vec<_> = self.0.children_with_tokens().collect();
         let mut insert_position = None;
         let mut found_key = false;
@@ -1440,16 +1468,16 @@ impl Mapping {
             }
 
             // Create the MAPPING_ENTRY node
-            let (entry, _has_trailing_newline) = self.create_mapping_entry(&new_key, &new_value);
+            let (entry, _has_trailing_newline) = self.create_mapping_entry(&new_key, &new_value)?;
 
             // Add the new entry (which already has its own trailing newline)
             new_elements.push(entry.into());
 
             // Splice in the new elements
             self.0.splice_children(pos..pos, new_elements);
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -1468,7 +1496,7 @@ impl Mapping {
         before_key: impl crate::AsYaml,
         new_key: impl crate::AsYaml,
         new_value: impl crate::AsYaml,
-    ) -> bool {
+    ) -> Result<bool, crate::error::YamlError> {
         self.move_before_impl(before_key, new_key, new_value)
     }
 
@@ -1478,7 +1506,7 @@ impl Mapping {
         before_key: impl crate::AsYaml,
         new_key: impl crate::AsYaml,
         new_value: impl crate::AsYaml,
-    ) -> bool {
+    ) -> Result<bool, crate::error::YamlError> {
         let children: Vec<_> = self.0.children_with_tokens().collect();
         let mut insert_position = None;
 
@@ -1533,12 +1561,12 @@ impl Mapping {
                                 let j = i + 1 + offset;
                                 self.0
                                     .splice_children(j..j + 1, vec![new_value_node.into()]);
-                                return true;
+                                return Ok(true);
                             }
                         }
                     }
                     // If no VALUE node found, something's wrong with the structure
-                    return false;
+                    return Ok(false);
                 }
             }
             if !removed_existing {
@@ -1604,7 +1632,7 @@ impl Mapping {
             let mut new_elements = Vec::new();
 
             // Create the MAPPING_ENTRY node
-            let (entry, _has_trailing_newline) = self.create_mapping_entry(&new_key, &new_value);
+            let (entry, _has_trailing_newline) = self.create_mapping_entry(&new_key, &new_value)?;
             new_elements.push(entry.into());
 
             // Note: create_mapping_entry already adds a trailing newline to the MAPPING_ENTRY
@@ -1612,9 +1640,9 @@ impl Mapping {
 
             // Splice in the new elements
             self.0.splice_children(pos..pos, new_elements);
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -1630,9 +1658,9 @@ impl Mapping {
         index: usize,
         new_key: impl crate::AsYaml,
         new_value: impl crate::AsYaml,
-    ) {
+    ) -> Result<(), crate::error::YamlError> {
         // Create the new entry using create_mapping_entry
-        let (new_entry, _has_trailing_newline) = self.create_mapping_entry(new_key, new_value);
+        let (new_entry, _has_trailing_newline) = self.create_mapping_entry(new_key, new_value)?;
 
         // Check if key already exists in newly created entry for update detection
         if let Some(created_entry) = MappingEntry::cast(new_entry.clone()) {
@@ -1661,7 +1689,7 @@ impl Mapping {
                         // Just replace the old entry node with the new one
                         self.0.splice_children(i..i + 1, vec![new_entry.into()]);
 
-                        return;
+                        return Ok(());
                     }
                 }
             }
@@ -1727,6 +1755,7 @@ impl Mapping {
 
         // Insert at the calculated position
         self.0.splice_children(insert_pos..insert_pos, new_elements);
+        Ok(())
     }
 
     /// Remove a key-value pair, returning the removed entry.
@@ -1937,7 +1966,14 @@ impl Mapping {
         &self,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) -> (SyntaxNode, bool) {
+    ) -> Result<(SyntaxNode, bool), crate::error::YamlError> {
+        let flow_context = self.is_flow_style();
+        if flow_context && !value.is_inline() {
+            return Err(crate::error::YamlError::InvalidOperation {
+                operation: "create mapping entry".to_string(),
+                reason: "cannot insert block-style content into a flow mapping".to_string(),
+            });
+        }
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
@@ -1972,10 +2008,10 @@ impl Mapping {
         };
 
         builder.finish_node(); // MAPPING_ENTRY
-        (
+        Ok((
             SyntaxNode::new_root_mut(builder.finish()),
             added_newline || value_ends_with_newline,
-        )
+        ))
     }
 
     /// Insert a key-value pair immediately after an existing key.
@@ -1994,11 +2030,11 @@ impl Mapping {
         after_key: impl crate::AsYaml,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) -> bool {
+    ) -> Result<bool, crate::error::YamlError> {
         // Check if the new key already exists - if so, just update it
         if self.find_entry_by_key(&key).is_some() {
-            self.set_as_yaml(&key, &value);
-            return true;
+            self.set_as_yaml(&key, &value)?;
+            return Ok(true);
         }
 
         // Key doesn't exist yet — delegate to move_after, which already contains
@@ -2024,13 +2060,13 @@ impl Mapping {
         before_key: impl crate::AsYaml,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) -> bool {
+    ) -> Result<bool, crate::error::YamlError> {
         // Key exists → update in-place (don't move).
         if self.find_entry_by_key(&key).is_some() {
-            self.set_as_yaml(&key, &value);
+            self.set_as_yaml(&key, &value)?;
             // Only return true if before_key also exists (contract: false when
             // reference key is not found).
-            return self.find_entry_by_key(&before_key).is_some();
+            return Ok(self.find_entry_by_key(&before_key).is_some());
         }
 
         // Key doesn't exist yet — delegate to move_before, which already contains
@@ -2044,25 +2080,23 @@ impl Mapping {
     /// If `key` already exists in the mapping, its value is updated in-place and
     /// it remains at its current position (the `index` argument is ignored).
     /// If `index` is out of bounds, the entry is appended at the end.
-    /// This method always succeeds; it never returns an error.
-    ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn insert_at_index(
         &self,
         index: usize,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) {
+    ) -> Result<(), crate::error::YamlError> {
         // Check if the key already exists - if so, just update it
         if self.find_entry_by_key(&key).is_some() {
-            self.set_as_yaml(&key, &value);
-            return;
+            self.set_as_yaml(&key, &value)?;
+            return Ok(());
         }
 
         // Create the new mapping entry
         let flow_context = self.is_flow_style();
         let use_explicit_keys = self.uses_explicit_keys();
-        let new_entry = MappingEntry::new(&key, &value, flow_context, use_explicit_keys);
+        let new_entry = MappingEntry::new(&key, &value, flow_context, use_explicit_keys)?;
 
         // Count existing entries to determine actual insertion position
         let entry_count = self.entries().count();
@@ -2127,6 +2161,7 @@ impl Mapping {
 
         // Insert at the calculated position
         self.0.splice_children(insert_pos..insert_pos, new_elements);
+        Ok(())
     }
 
     /// Get the byte offset range of this mapping in the source text.
@@ -2222,7 +2257,7 @@ mod tests {
 
         // Get the document and set on it
         let doc = parsed.document().expect("Should have a document");
-        doc.set("new_key", "new_value");
+        doc.set("new_key", "new_value").unwrap();
 
         let output = doc.to_string();
 
@@ -2262,7 +2297,7 @@ new_key: new_value"#;
 
         // Get document and add a new key
         let doc = parsed.document().expect("Should have a document");
-        doc.set("key2", "value2");
+        doc.set("key2", "value2").unwrap();
 
         let output = doc.to_string();
 
@@ -2281,7 +2316,7 @@ Repository: https://github.com/example/repo.git
         let doc = parsed.document().expect("Should have a document");
 
         // Update Contact - it should stay in position 2, not move to the end
-        doc.set("Contact", "updated_contact");
+        doc.set("Contact", "updated_contact").unwrap();
 
         let output = doc.to_string();
         let expected = r#"Name: original_name
@@ -2303,9 +2338,11 @@ Repository: https://github.com/jdonaldson/rtsne.git
 
         if let Some(mapping) = doc.as_mapping() {
             // Update Contact - should stay in position 2
-            mapping.set("Contact", "New Contact <new@example.com>");
+            mapping
+                .set("Contact", "New Contact <new@example.com>")
+                .unwrap();
             // Update Archive - should stay in position 3
-            mapping.set("Archive", "PyPI");
+            mapping.set("Archive", "PyPI").unwrap();
         }
 
         let output = doc.to_string();
@@ -2327,7 +2364,7 @@ fourth: 4"#;
         let doc = parsed.document().expect("Should have a document");
 
         // Insert after "second"
-        let success = doc.insert_after("second", "third", 3);
+        let success = doc.insert_after("second", "third", 3).unwrap();
         assert!(
             success,
             "insert_after should succeed when reference key exists"
@@ -2343,14 +2380,16 @@ fourth: 4"#;
         assert_eq!(output.trim(), expected);
 
         // Test inserting after non-existent key
-        let failed = doc.insert_after("nonexistent", "new_key", "new_value");
+        let failed = doc
+            .insert_after("nonexistent", "new_key", "new_value")
+            .unwrap();
         assert!(
             !failed,
             "insert_after should fail when reference key doesn't exist"
         );
 
         // Test updating existing key through insert_after
-        let updated = doc.insert_after("first", "second", "2_updated");
+        let updated = doc.insert_after("first", "second", "2_updated").unwrap();
         assert!(updated, "insert_after should update existing key");
         let updated_output = doc.to_string();
         let expected_updated = r#"first: 1
@@ -2369,7 +2408,7 @@ fourth: 4"#;
         let doc = parsed.document().expect("Should have a document");
 
         // Insert before "third"
-        let success = doc.insert_before("third", "second", 2);
+        let success = doc.insert_before("third", "second", 2).unwrap();
         assert!(
             success,
             "insert_before should succeed when reference key exists"
@@ -2385,14 +2424,16 @@ fourth: 4"#;
         assert_eq!(output.trim(), expected);
 
         // Test inserting before non-existent key
-        let failed = doc.insert_before("nonexistent", "new_key", "new_value");
+        let failed = doc
+            .insert_before("nonexistent", "new_key", "new_value")
+            .unwrap();
         assert!(
             !failed,
             "insert_before should fail when reference key doesn't exist"
         );
 
         // Test updating existing key through insert_before
-        let updated = doc.insert_before("fourth", "third", "3_updated");
+        let updated = doc.insert_before("fourth", "third", "3_updated").unwrap();
         assert!(updated, "insert_before should update existing key");
         let output = doc.to_string();
         let expected_updated = r#"first: 1
@@ -2410,7 +2451,7 @@ third: 3"#;
         let doc = parsed.document().expect("Should have a document");
 
         // Insert at index 1 (between first and third)
-        doc.insert_at_index(1, "second", 2);
+        doc.insert_at_index(1, "second", 2).unwrap();
 
         let output = doc.to_string();
 
@@ -2421,7 +2462,7 @@ third: 3"#;
         assert_eq!(output.trim(), expected);
 
         // Insert at index 0 (beginning)
-        doc.insert_at_index(0, "zero", 0);
+        doc.insert_at_index(0, "zero", 0).unwrap();
         let output2 = doc.to_string();
         let expected2 = r#"zero: 0
 first: 1
@@ -2430,7 +2471,7 @@ third: 3"#;
         assert_eq!(output2.trim(), expected2);
 
         // Insert at out-of-bounds index (should append at end)
-        doc.insert_at_index(100, "last", "999");
+        doc.insert_at_index(100, "last", "999").unwrap();
         let output3 = doc.to_string();
         let expected3 = r#"zero: 0
 first: 1
@@ -2440,7 +2481,7 @@ last: '999'"#;
         assert_eq!(output3.trim(), expected3);
 
         // Test updating existing key through insert_at_index
-        doc.insert_at_index(2, "first", "1_updated");
+        doc.insert_at_index(2, "first", "1_updated").unwrap();
         let final_output = doc.to_string();
         let expected_final = r#"zero: 0
 first: 1_updated
@@ -2457,9 +2498,11 @@ last: '999'"#;
         let doc = parsed.document().expect("Should have a document");
 
         // Test with special characters that need escaping
-        doc.insert_after("key1", "special:key", "value:with:colons");
-        doc.insert_before("key1", "key with spaces", "value with spaces");
-        doc.insert_at_index(1, "key@symbol", "value#hash");
+        doc.insert_after("key1", "special:key", "value:with:colons")
+            .unwrap();
+        doc.insert_before("key1", "key with spaces", "value with spaces")
+            .unwrap();
+        doc.insert_at_index(1, "key@symbol", "value#hash").unwrap();
 
         // Verify all keys are present
         assert!(doc.contains_key("special:key"));
@@ -2479,8 +2522,9 @@ last: '999'"#;
         let doc = parsed.document().expect("Should have a document");
 
         // Test with empty values
-        doc.insert_after("key1", "empty", "");
-        doc.insert_before("key1", "null_key", ScalarValue::null());
+        doc.insert_after("key1", "empty", "").unwrap();
+        doc.insert_before("key1", "null_key", ScalarValue::null())
+            .unwrap();
 
         assert!(doc.contains_key("empty"));
         assert!(doc.contains_key("null_key"));
@@ -2659,7 +2703,7 @@ last: '999'"#;
         let doc = yaml.document().unwrap();
         let mapping = doc.as_mapping().unwrap();
 
-        mapping.set("age", 30);
+        mapping.set("age", 30).unwrap();
 
         let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
         assert_eq!(keys, vec!["name", "age"]);
@@ -2672,7 +2716,7 @@ last: '999'"#;
         let doc = yaml.document().unwrap();
         let mapping = doc.as_mapping().unwrap();
 
-        mapping.set("age", 31);
+        mapping.set("age", 31).unwrap();
 
         assert_eq!(mapping.get("age").and_then(|v| v.to_i64()), Some(31));
         let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
@@ -2792,9 +2836,9 @@ features:
         if let Some(doc) = yaml.document() {
             if let Some(mapping) = doc.as_mapping() {
                 // Add new fields
-                mapping.set("license", "MIT");
-                mapping.set("published", true);
-                mapping.set("downloads", 1000);
+                mapping.set("license", "MIT").unwrap();
+                mapping.set("published", true).unwrap();
+                mapping.set("downloads", 1000).unwrap();
 
                 // Remove a field
                 mapping.remove("author");
@@ -2803,7 +2847,7 @@ features:
                 mapping.rename_key("version", "app_version");
 
                 // Update existing field
-                mapping.set("year", 2024);
+                mapping.set("year", 2024).unwrap();
             }
         }
 
@@ -2945,9 +2989,9 @@ downloads: 1000
         let doc = yaml.document().unwrap();
         let mapping = doc.as_mapping().unwrap();
 
-        mapping.set("number", 123);
-        mapping.set("bool", false);
-        mapping.set("text", "hello");
+        mapping.set("number", 123).unwrap();
+        mapping.set("bool", false).unwrap();
+        mapping.set("text", "hello").unwrap();
 
         assert_eq!(mapping.get("number").and_then(|v| v.to_i64()), Some(123));
         assert_eq!(mapping.get("bool").and_then(|v| v.to_bool()), Some(false));
@@ -2974,12 +3018,11 @@ downloads: 1000
         assert!(!mapping.rename_key("old", "new"));
 
         // Can still add to empty mapping
-        mapping.set("first", "value");
+        mapping.set("first", "value").unwrap();
         assert!(!mapping.is_empty());
-        // In flow-style (JSON) context, strings are quoted
         assert_eq!(
             mapping.get("first").map(|v| v.to_string()),
-            Some("\"value\"".to_string())
+            Some("value".to_string())
         );
     }
 
@@ -3059,10 +3102,10 @@ downloads: 1000
 
         assert_eq!(mapping.len(), 1);
 
-        mapping.set("age", 30);
+        mapping.set("age", 30).unwrap();
         assert_eq!(mapping.len(), 2);
 
-        mapping.set("city", "NYC");
+        mapping.set("city", "NYC").unwrap();
         assert_eq!(mapping.len(), 3);
     }
 
@@ -3308,7 +3351,7 @@ downloads: 1000
         assert_eq!(mapping.len(), 0);
 
         // Add new entries after clearing
-        mapping.set("new_key", "new_value");
+        mapping.set("new_key", "new_value").unwrap();
         assert_eq!(mapping.len(), 1);
         let value = mapping.get("new_key").unwrap();
         assert_eq!(
@@ -3384,7 +3427,7 @@ downloads: 1000
         let mapping = doc.as_mapping().unwrap();
 
         // Modify a value
-        mapping.set("key1", "new_value");
+        mapping.set("key1", "new_value").unwrap();
 
         // Should still end with newline
         let output = yaml.to_string();

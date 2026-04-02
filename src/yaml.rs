@@ -428,10 +428,15 @@ impl YamlFile {
     /// need to guarantee a document exists.
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
-    pub fn set(&self, key: impl crate::AsYaml, value: impl crate::AsYaml) {
+    pub fn set(
+        &self,
+        key: impl crate::AsYaml,
+        value: impl crate::AsYaml,
+    ) -> Result<(), crate::error::YamlError> {
         if let Some(doc) = self.document() {
-            doc.set(key, value);
+            doc.set(key, value)?;
         }
+        Ok(())
     }
 
     /// Insert a key-value pair immediately after `after_key` in the first document.
@@ -447,11 +452,11 @@ impl YamlFile {
         after_key: impl crate::AsYaml,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) -> bool {
+    ) -> Result<bool, crate::error::YamlError> {
         if let Some(doc) = self.document() {
             doc.insert_after(after_key, key, value)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -468,11 +473,11 @@ impl YamlFile {
         before_key: impl crate::AsYaml,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) -> bool {
+    ) -> Result<bool, crate::error::YamlError> {
         if let Some(doc) = self.document() {
             doc.insert_before(before_key, key, value)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -491,11 +496,11 @@ impl YamlFile {
         after_key: impl crate::AsYaml,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) -> bool {
+    ) -> Result<bool, crate::error::YamlError> {
         if let Some(doc) = self.document() {
             doc.move_after(after_key, key, value)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -514,11 +519,11 @@ impl YamlFile {
         before_key: impl crate::AsYaml,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) -> bool {
+    ) -> Result<bool, crate::error::YamlError> {
         if let Some(doc) = self.document() {
             doc.move_before(before_key, key, value)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -535,10 +540,9 @@ impl YamlFile {
         index: usize,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) {
+    ) -> Result<(), crate::error::YamlError> {
         if let Some(doc) = self.document() {
-            doc.insert_at_index(index, key, value);
-            // Mutations happen directly on the document, no need to replace
+            doc.insert_at_index(index, key, value)?;
         } else {
             // If no document exists, create one without the --- marker for consistency
             // with normal parsed YAML
@@ -554,9 +558,10 @@ impl YamlFile {
 
             // Now get the document again and insert
             if let Some(doc) = self.document() {
-                doc.insert_at_index(index, key, value);
+                doc.insert_at_index(index, key, value)?;
             }
         }
+        Ok(())
     }
 }
 
@@ -4995,8 +5000,8 @@ config:
         // Test basic editing operations
         let yaml = YamlFile::from_str("name: old-name\nversion: 1.0.0").unwrap();
         if let Some(doc) = yaml.document() {
-            doc.set("name", "new-name");
-            doc.set("version", "2.0.0");
+            doc.set("name", "new-name").unwrap();
+            doc.set("version", "2.0.0").unwrap();
 
             // Verify values can be retrieved via API
             assert_eq!(doc.get_string("name"), Some("new-name".to_string()));
@@ -5430,7 +5435,7 @@ patterns:
             .build_document()
             .as_sequence()
             .unwrap();
-        let success = doc.insert_after("name", "features", features);
+        let success = doc.insert_after("name", "features", features).unwrap();
         assert!(success, "insert_after should succeed");
 
         let output = doc.to_string();
@@ -5462,7 +5467,7 @@ version: 1.0.0"#;
             .build_document()
             .as_mapping()
             .unwrap();
-        let success = doc.insert_before("version", "database", database);
+        let success = doc.insert_before("version", "database", database).unwrap();
         assert!(success, "insert_before should succeed");
 
         let output = doc.to_string();
@@ -5512,9 +5517,9 @@ version: 1.0.0"#;
         let doc = parsed.document().expect("Should have a document");
 
         // Insert different types at various indices
-        doc.insert_at_index(1, "version", "1.0.0");
-        doc.insert_at_index(2, "active", true);
-        doc.insert_at_index(3, "count", 42);
+        doc.insert_at_index(1, "version", "1.0.0").unwrap();
+        doc.insert_at_index(2, "active", true).unwrap();
+        doc.insert_at_index(3, "count", 42).unwrap();
 
         let features = SequenceBuilder::new()
             .item("auth")
@@ -5522,7 +5527,7 @@ version: 1.0.0"#;
             .build_document()
             .as_sequence()
             .unwrap();
-        doc.insert_at_index(4, "features", features);
+        doc.insert_at_index(4, "features", features).unwrap();
 
         let output = doc.to_string();
 
@@ -5573,10 +5578,11 @@ features:
         let doc = parsed.document().expect("Should have a document");
 
         // Insert various scalar types
-        doc.insert_after("name", "null_value", ScalarValue::null());
-        doc.insert_after("null_value", "empty_string", "");
-        doc.insert_after("empty_string", "number", 1.234);
-        doc.insert_after("number", "boolean", false);
+        doc.insert_after("name", "null_value", ScalarValue::null())
+            .unwrap();
+        doc.insert_after("null_value", "empty_string", "").unwrap();
+        doc.insert_after("empty_string", "number", 1.234).unwrap();
+        doc.insert_after("number", "boolean", false).unwrap();
 
         let output = doc.to_string();
 
@@ -5632,8 +5638,8 @@ boolean: false"#;
         let doc = parsed.document().expect("Should have a document");
 
         // Insert items to create proper ordering
-        doc.insert_after("first", "second", 2);
-        doc.insert_before("fifth", "fourth", 4);
+        doc.insert_after("first", "second", 2).unwrap();
+        doc.insert_before("fifth", "fourth", 4).unwrap();
 
         let output = doc.to_string();
 
@@ -5658,18 +5664,20 @@ fifth: 5"#;
         // Test positioning with different value types
 
         // Position after a string value
-        let success = doc.insert_after("name", "description", "A sample project");
+        let success = doc
+            .insert_after("name", "description", "A sample project")
+            .unwrap();
         assert!(success, "Should find string key");
 
         // Position after a numeric value
-        let success = doc.insert_after(1.0, "build", "gradle");
+        let success = doc.insert_after(1.0, "build", "gradle").unwrap();
         assert!(
             !success,
             "Should not find numeric key (1.0) when actual key is string 'version'"
         );
 
         // Position after a boolean value
-        let success = doc.insert_after(true, "test", "enabled");
+        let success = doc.insert_after(true, "test", "enabled").unwrap();
         assert!(
             !success,
             "Should not find boolean key (true) when actual key is string 'active'"
@@ -5677,7 +5685,9 @@ fifth: 5"#;
 
         // But string representation should work
         let bool_string_key = "true";
-        let success = doc.insert_after(bool_string_key, "test_mode", "development");
+        let success = doc
+            .insert_after(bool_string_key, "test_mode", "development")
+            .unwrap();
         assert!(!success, "Should not find 'true' key when value is true");
 
         let output = doc.to_string();
@@ -5702,7 +5712,7 @@ fifth: 5"#;
             .as_mapping()
             .unwrap();
 
-        doc.insert_after("name", "config", config);
+        doc.insert_after("name", "config", config).unwrap();
 
         let output = doc.to_string();
 
@@ -5765,7 +5775,7 @@ fifth: 5"#;
         tags.insert("web".to_string());
 
         let yaml_set = YamlValue::from_set(tags);
-        doc.insert_after("name", "tags", yaml_set);
+        doc.insert_after("name", "tags", yaml_set).unwrap();
 
         let output = doc.to_string();
 
@@ -5828,7 +5838,7 @@ fifth: 5"#;
         ];
 
         let yaml_omap = YamlValue::from_ordered_mapping(ordered_steps);
-        doc.insert_after("name", "build_steps", yaml_omap);
+        doc.insert_after("name", "build_steps", yaml_omap).unwrap();
 
         let output = doc.to_string();
 
@@ -5908,7 +5918,7 @@ fifth: 5"#;
         ];
 
         let yaml_pairs = YamlValue::from_pairs(connection_attempts);
-        doc.insert_after("name", "connections", yaml_pairs);
+        doc.insert_after("name", "connections", yaml_pairs).unwrap();
 
         let output = doc.to_string();
 
@@ -5995,7 +6005,7 @@ fifth: 5"#;
         let empty_seq_yaml = YamlFile::from_str("[]").unwrap();
         let empty_list = empty_seq_yaml.document().unwrap().as_sequence().unwrap();
 
-        doc1.insert_after("name", "empty_list", empty_list);
+        doc1.insert_after("name", "empty_list", empty_list).unwrap();
         let output1 = doc1.to_string();
         assert_eq!(output1, "name: project\nempty_list: []\n");
 
@@ -6008,7 +6018,7 @@ fifth: 5"#;
         let empty_map_yaml = YamlFile::from_str("{}").unwrap();
         let empty_map = empty_map_yaml.document().unwrap().as_mapping().unwrap();
 
-        doc2.insert_after("name", "empty_map", empty_map);
+        doc2.insert_after("name", "empty_map", empty_map).unwrap();
         let output2 = doc2.to_string();
         assert_eq!(output2, "name: project\nempty_map: {}\n");
 
@@ -6016,7 +6026,8 @@ fifth: 5"#;
         let yaml3 = "name: project";
         let parsed3 = YamlFile::from_str(yaml3).unwrap();
         let doc3 = parsed3.document().expect("Should have a document");
-        doc3.insert_after("name", "empty_set", YamlValue::set());
+        doc3.insert_after("name", "empty_set", YamlValue::set())
+            .unwrap();
         let output3 = doc3.to_string();
         assert_eq!(output3, "name: project\nempty_set: !!set {}\n");
 
@@ -6053,7 +6064,8 @@ fifth: 5"#;
             .as_sequence()
             .unwrap();
 
-        doc.insert_after("name", "nested_data", nested_data);
+        doc.insert_after("name", "nested_data", nested_data)
+            .unwrap();
 
         let output = doc.to_string();
 
@@ -6120,7 +6132,7 @@ key2: value2  # Inline comment 2
 
         // Insert a new key, re-inserting it if it already exists - changes propagate automatically
         if let Some(mapping) = doc.as_mapping() {
-            mapping.move_after("key1", "new_key", "new_value");
+            mapping.move_after("key1", "new_key", "new_value").unwrap();
         }
 
         let result = doc.to_string();
@@ -6149,7 +6161,7 @@ key2:        value2
 
         // Insert a new key using AST-preserving method
         if let Some(mapping) = doc.as_mapping() {
-            mapping.move_after("key1", "new_key", "new_value");
+            mapping.move_after("key1", "new_key", "new_value").unwrap();
         }
 
         let result = doc.to_string();
@@ -6187,7 +6199,7 @@ server:
 
         // Insert a new top-level key
         if let Some(mapping) = doc.as_mapping() {
-            mapping.move_after("database", "logging", "debug");
+            mapping.move_after("database", "logging", "debug").unwrap();
         }
 
         let result = doc.to_string();

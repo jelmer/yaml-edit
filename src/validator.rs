@@ -259,10 +259,8 @@ impl Validator {
                 // Check for directives inside document content (e.g. %YAML after ---)
                 self.check_directive_in_content(node, violations);
             }
-            SyntaxKind::DOC_START | SyntaxKind::DOC_END => {
-                if self.config.check_document_markers {
-                    self.check_document_marker_placement(node, violations);
-                }
+            SyntaxKind::DOC_START | SyntaxKind::DOC_END if self.config.check_document_markers => {
+                self.check_document_marker_placement(node, violations);
             }
             SyntaxKind::MAPPING => {
                 self.check_flow_collection_commas(node, violations);
@@ -444,39 +442,36 @@ impl Validator {
                         }
                     }
                 }
-                SyntaxKind::DIRECTIVE => {
+                SyntaxKind::DIRECTIVE if seen_document_with_content => {
                     // If we've seen a document with content and the last document didn't have DOC_END
-                    if seen_document_with_content {
-                        // Check if the previous DOCUMENT had a DOC_END
-                        let mut prev_sibling = child.prev_sibling();
-                        let mut found_doc_with_end = false;
+                    // Check if the previous DOCUMENT had a DOC_END
+                    let mut prev_sibling = child.prev_sibling();
+                    let mut found_doc_with_end = false;
 
-                        while let Some(prev) = prev_sibling {
-                            if prev.kind() == SyntaxKind::DOCUMENT {
-                                // Check if this document has DOC_END
-                                let has_doc_end = prev
-                                    .children_with_tokens()
-                                    .any(|t| t.kind() == SyntaxKind::DOC_END);
+                    while let Some(prev) = prev_sibling {
+                        if prev.kind() == SyntaxKind::DOCUMENT {
+                            // Check if this document has DOC_END
+                            let has_doc_end = prev
+                                .children_with_tokens()
+                                .any(|t| t.kind() == SyntaxKind::DOC_END);
 
-                                if has_doc_end {
-                                    found_doc_with_end = true;
-                                }
-                                break;
+                            if has_doc_end {
+                                found_doc_with_end = true;
                             }
-                            prev_sibling = prev.prev_sibling();
+                            break;
                         }
+                        prev_sibling = prev.prev_sibling();
+                    }
 
-                        if !found_doc_with_end {
-                            violations.push(Violation {
-                                message:
-                                    "Directive after document requires document end marker (...)"
-                                        .to_string(),
-                                location: None,
-                                text_range: None,
-                                severity: Severity::Error,
-                                rule: Rule::Other,
-                            });
-                        }
+                    if !found_doc_with_end {
+                        violations.push(Violation {
+                            message: "Directive after document requires document end marker (...)"
+                                .to_string(),
+                            location: None,
+                            text_range: None,
+                            severity: Severity::Error,
+                            rule: Rule::Other,
+                        });
                     }
                 }
                 _ => {}

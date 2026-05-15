@@ -245,16 +245,14 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 }
             }
         }
-        SyntaxKind::SEQUENCE_ENTRY => {
+        SyntaxKind::SEQUENCE_ENTRY if !is_in_flow_collection(node) => {
             // Check if block-style
-            if !is_in_flow_collection(node) {
-                if let Some(last_token) = node.last_token() {
-                    if last_token.kind() != SyntaxKind::NEWLINE {
-                        return Err(format!(
-                            "Block-style SEQUENCE_ENTRY should end with NEWLINE, ends with {:?}",
-                            last_token.kind()
-                        ));
-                    }
+            if let Some(last_token) = node.last_token() {
+                if last_token.kind() != SyntaxKind::NEWLINE {
+                    return Err(format!(
+                        "Block-style SEQUENCE_ENTRY should end with NEWLINE, ends with {:?}",
+                        last_token.kind()
+                    ));
                 }
             }
         }

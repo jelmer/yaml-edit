@@ -862,10 +862,8 @@ impl ScalarValue {
         while let Some(ch) = chars.next() {
             match ch {
                 '&' | '*' | '!' | '|' | '\'' | '"' | '%' => return true,
-                ':' | '#' => {
-                    if chars.peek().map_or(true, |next| next.is_whitespace()) {
-                        return true;
-                    }
+                ':' | '#' if chars.peek().map_or(true, |next| next.is_whitespace()) => {
+                    return true;
                 }
                 _ => {}
             }

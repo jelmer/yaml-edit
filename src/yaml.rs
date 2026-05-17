@@ -42,6 +42,29 @@ ast_node!(
     "A YAML file containing one or more documents"
 );
 
+impl YamlFile {
+    /// Capture an independent snapshot of this YAML file.
+    ///
+    /// The returned value shares the underlying immutable green-node data
+    /// with `self` at the time of the call, but lives in its own mutable
+    /// tree: subsequent mutations to `self` do not propagate to the snapshot.
+    /// Pair with [`Self::tree_eq`] to detect later mutations.
+    pub fn snapshot(&self) -> Self {
+        YamlFile(SyntaxNode::new_root_mut(self.0.green().into_owned()))
+    }
+
+    /// Returns true iff the syntax trees of `self` and `other` are
+    /// value-equal. An O(1) pointer-identity fast path makes this free for
+    /// trees that still share state with a recent `snapshot()`.
+    pub fn tree_eq(&self, other: &Self) -> bool {
+        let a = self.0.green();
+        let b = other.0.green();
+        let a_ref: &rowan::GreenNodeData = &a;
+        let b_ref: &rowan::GreenNodeData = &b;
+        std::ptr::eq(a_ref as *const _, b_ref as *const _) || a_ref == b_ref
+    }
+}
+
 /// Trait for value nodes (Mapping, Sequence, Scalar) with inline detection
 pub trait ValueNode: rowan::ast::AstNode<Language = Lang> {
     /// Returns whether this value should be rendered inline

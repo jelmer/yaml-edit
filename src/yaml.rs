@@ -601,6 +601,11 @@ impl FromStr for YamlFile {
     }
 }
 
+/// Maximum nesting depth for flow collections. Beyond this, the parser
+/// returns an error rather than risking stack overflow or unbounded RSS
+/// growth from pathological input like `{{{{...}}}}`.
+const MAX_FLOW_DEPTH: usize = 256;
+
 /// Internal parser state
 struct Parser {
     tokens: Vec<(SyntaxKind, String)>,
@@ -615,6 +620,8 @@ struct Parser {
     in_value_context: bool,
     /// Track the current line's indentation level for plain scalar continuation
     current_line_indent: usize,
+    /// Current depth of nested flow collections ([...] / {...}).
+    flow_depth: usize,
 }
 
 impl Parser {
@@ -640,6 +647,7 @@ impl Parser {
             error_context: ErrorRecoveryContext::new(text.to_string()),
             in_value_context: false,
             current_line_indent: 0,
+            flow_depth: 0,
         }
     }
 
@@ -1408,6 +1416,7 @@ impl Parser {
         self.error_context.push_context(ParseContext::Mapping);
 
         while self.current().is_some() {
+            let tokens_before_iter = self.tokens.len();
             // Skip whitespace, break on dedent
             if self.skip_whitespace_only_with_dedent_check(base_indent) {
                 break;
@@ -1535,6 +1544,19 @@ impl Parser {
                 self.builder.finish_node();
             } else {
                 self.parse_mapping_key_value_pair();
+            }
+
+            // Progress guard: if no token was consumed this iteration we
+            // would loop forever (e.g. when is_mapping_key() is fooled by a
+            // delimiter such as `}` followed by `:`, and synthetic-token
+            // recovery never advances).
+            if self.tokens.len() == tokens_before_iter {
+                let unexpected = self.current_text().unwrap_or("").to_string();
+                self.add_error(
+                    format!("Unexpected token in mapping: {:?}", unexpected),
+                    ParseErrorKind::Other,
+                );
+                self.bump();
             }
         }
 
@@ -1722,6 +1744,34 @@ impl Parser {
         self.builder.start_node(SyntaxKind::SEQUENCE.into());
         self.error_context.push_context(ParseContext::FlowSequence);
 
+        if self.flow_depth >= MAX_FLOW_DEPTH {
+            self.add_error(
+                format!(
+                    "Flow collection nested too deeply (limit {})",
+                    MAX_FLOW_DEPTH
+                ),
+                ParseErrorKind::Other,
+            );
+            // Consume everything up to a closing delimiter to recover, then
+            // bail out without recursing further.
+            while let Some(kind) = self.current() {
+                if matches!(
+                    kind,
+                    SyntaxKind::RIGHT_BRACKET | SyntaxKind::DOC_START | SyntaxKind::DOC_END
+                ) {
+                    break;
+                }
+                self.bump();
+            }
+            if self.current() == Some(SyntaxKind::RIGHT_BRACKET) {
+                self.bump();
+            }
+            self.builder.finish_node();
+            self.error_context.pop_context();
+            return;
+        }
+        self.flow_depth += 1;
+
         self.bump(); // consume [
         self.skip_ws_and_newlines(); // Support comments and newlines in flow sequences
 
@@ -1729,6 +1779,8 @@ impl Parser {
         self.in_flow_context = true;
 
         while self.current() != Some(SyntaxKind::RIGHT_BRACKET) && self.current().is_some() {
+            let tokens_before = self.tokens.len();
+
             // Start SEQUENCE_ENTRY node to wrap the item
             self.builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
 
@@ -1763,6 +1815,18 @@ impl Parser {
                     break;
                 }
             }
+
+            // Guarantee progress: if no token was consumed this iteration we
+            // would loop forever (e.g. on stray `}` inside `[...]`). Report
+            // the unexpected token and skip it.
+            if self.tokens.len() == tokens_before {
+                let unexpected = self.current_text().unwrap_or("").to_string();
+                self.add_error(
+                    format!("Unexpected token in flow sequence: {:?}", unexpected),
+                    ParseErrorKind::Other,
+                );
+                self.bump();
+            }
         }
 
         self.in_flow_context = prev_flow;
@@ -1782,6 +1846,7 @@ impl Parser {
             );
         }
 
+        self.flow_depth -= 1;
         self.builder.finish_node();
         self.error_context.pop_context();
     }
@@ -1789,6 +1854,32 @@ impl Parser {
     fn parse_flow_mapping(&mut self) {
         self.builder.start_node(SyntaxKind::MAPPING.into());
         self.error_context.push_context(ParseContext::FlowMapping);
+
+        if self.flow_depth >= MAX_FLOW_DEPTH {
+            self.add_error(
+                format!(
+                    "Flow collection nested too deeply (limit {})",
+                    MAX_FLOW_DEPTH
+                ),
+                ParseErrorKind::Other,
+            );
+            while let Some(kind) = self.current() {
+                if matches!(
+                    kind,
+                    SyntaxKind::RIGHT_BRACE | SyntaxKind::DOC_START | SyntaxKind::DOC_END
+                ) {
+                    break;
+                }
+                self.bump();
+            }
+            if self.current() == Some(SyntaxKind::RIGHT_BRACE) {
+                self.bump();
+            }
+            self.builder.finish_node();
+            self.error_context.pop_context();
+            return;
+        }
+        self.flow_depth += 1;
 
         self.bump(); // consume {
         self.skip_ws_and_newlines(); // Support comments and newlines in flow mappings
@@ -1805,6 +1896,8 @@ impl Parser {
                 // These tokens indicate we've exited the flow mapping or hit invalid syntax
                 break;
             }
+
+            let tokens_before = self.tokens.len();
 
             // Start MAPPING_ENTRY node to wrap the key-value pair
             self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
@@ -1876,6 +1969,18 @@ impl Parser {
 
             // Finish MAPPING_ENTRY node
             self.builder.finish_node();
+
+            // Guarantee progress: if no token was consumed this iteration we
+            // would loop forever (e.g. on stray `]` inside `{...}`). Report
+            // the unexpected token and skip it.
+            if self.tokens.len() == tokens_before {
+                let unexpected = self.current_text().unwrap_or("").to_string();
+                self.add_error(
+                    format!("Unexpected token in flow mapping: {:?}", unexpected),
+                    ParseErrorKind::Other,
+                );
+                self.bump();
+            }
         }
 
         self.in_flow_context = prev_flow;
@@ -1895,6 +2000,7 @@ impl Parser {
             );
         }
 
+        self.flow_depth -= 1;
         self.builder.finish_node();
         self.error_context.pop_context();
     }
@@ -1954,9 +2060,16 @@ impl Parser {
                                     && self.current() != Some(SyntaxKind::NEWLINE)
                                     && self.current() != Some(SyntaxKind::COLON)
                                 {
+                                    let before = self.tokens.len();
                                     self.parse_scalar();
                                     if self.current() == Some(SyntaxKind::WHITESPACE) {
                                         self.bump(); // consume whitespace between key parts
+                                    }
+                                    // Progress guard: parse_scalar() can return without
+                                    // consuming tokens for kinds it doesn't handle (e.g.
+                                    // COMMENT). Break to avoid an infinite loop.
+                                    if self.tokens.len() == before {
+                                        break;
                                     }
                                 }
                             }
@@ -2008,8 +2121,26 @@ impl Parser {
 
         // Continue parsing regular mapping entries if any
         while self.current().is_some() && self.is_mapping_key() {
+            let tokens_before_iter = self.tokens.len();
+            // is_mapping_key() returns true for QUESTION, but
+            // parse_mapping_key_value_pair does not consume a `?` key — that
+            // would loop forever. Re-enter explicit-key handling for `?`.
+            if self.current() == Some(SyntaxKind::QUESTION) {
+                self.parse_explicit_key_entries();
+                break;
+            }
             self.parse_mapping_key_value_pair();
             self.skip_ws_and_newlines();
+            // Progress guard against any future case where the body consumes
+            // nothing (e.g. recovery via synthetic-token insertion).
+            if self.tokens.len() == tokens_before_iter {
+                let unexpected = self.current_text().unwrap_or("").to_string();
+                self.add_error(
+                    format!("Unexpected token in explicit-key mapping: {:?}", unexpected),
+                    ParseErrorKind::Other,
+                );
+                self.bump();
+            }
         }
 
         self.builder.finish_node();
@@ -2066,6 +2197,7 @@ impl Parser {
 
         // Continue parsing more entries if they exist
         while self.current().is_some() {
+            let tokens_before_iter = self.tokens.len();
             if self.current() == Some(SyntaxKind::QUESTION) {
                 // Switch to explicit key parsing
                 self.parse_explicit_key_entries();
@@ -2123,6 +2255,18 @@ impl Parser {
                 self.skip_ws_and_newlines();
             } else {
                 break;
+            }
+
+            // Progress guard: if is_mapping_key() returned true but nothing
+            // consumed the current token (e.g. `]:` at top level), break to
+            // avoid an infinite loop.
+            if self.tokens.len() == tokens_before_iter {
+                let unexpected = self.current_text().unwrap_or("").to_string();
+                self.add_error(
+                    format!("Unexpected token in complex mapping: {:?}", unexpected),
+                    ParseErrorKind::Other,
+                );
+                self.bump();
             }
         }
 
@@ -6367,5 +6511,81 @@ server:
         let (yaml_file, errors) = YamlFile::from_str_relaxed("");
         assert!(errors.is_empty());
         assert!(yaml_file.document().is_none());
+    }
+
+    #[test]
+    fn test_parse_flow_sequence_with_stray_close_brace_does_not_hang() {
+        // Regression: previously caused an infinite loop / OOM because
+        // parse_flow_sequence did not make progress on `}`.
+        let parse = crate::Parse::parse_yaml("[}9[Z");
+        let _ = parse.tree();
+        assert!(parse.has_errors());
+    }
+
+    #[test]
+    fn test_parse_flow_mapping_with_stray_close_bracket_does_not_hang() {
+        // Regression: parse_flow_mapping must make progress on `]`.
+        let parse = crate::Parse::parse_yaml("{]");
+        let _ = parse.tree();
+        assert!(parse.has_errors());
+    }
+
+    #[test]
+    fn test_parse_explicit_key_multiline_with_comment_does_not_hang() {
+        // Regression: the multi-line explicit-key scalar loop must make
+        // progress when the indented continuation begins with a token
+        // parse_scalar() cannot consume (e.g. COMMENT).
+        let input = "?\u{18}\0\0\0\0\0\0\n\t#\t\t?\t";
+        let parse = crate::Parse::parse_yaml(input);
+        let _ = parse.tree();
+    }
+
+    #[test]
+    fn test_parse_deeply_nested_flow_mapping_does_not_blow_up() {
+        // Regression: deeply nested `{{{...` blew RSS/stack. The parser now
+        // bails out with an error after MAX_FLOW_DEPTH levels.
+        let input = "{".repeat(2000);
+        let parse = crate::Parse::parse_yaml(&input);
+        let _ = parse.tree();
+        assert!(parse.has_errors());
+    }
+
+    #[test]
+    fn test_parse_deeply_nested_flow_sequence_does_not_blow_up() {
+        let input = "[".repeat(2000);
+        let parse = crate::Parse::parse_yaml(&input);
+        let _ = parse.tree();
+        assert!(parse.has_errors());
+    }
+
+    #[test]
+    fn test_parse_explicit_key_followed_by_question_in_value_does_not_hang() {
+        // Regression: parse_explicit_key_mapping's continuation loop must
+        // re-enter explicit-key handling when current is `?` instead of
+        // calling parse_mapping_key_value_pair (which cannot consume a `?`).
+        let input = "<<?: ?:  \n<<\n ?:    : 0\n:@";
+        let parse = crate::Parse::parse_yaml(input);
+        let _ = parse.tree();
+    }
+
+    #[test]
+    fn test_parse_complex_key_mapping_with_stray_close_bracket_does_not_hang() {
+        // Regression: parse_complex_key_mapping's continuation loop must
+        // make progress when is_mapping_key() is fooled by `]:`.
+        let input = "[%:%:]: \n]: \n\n";
+        let parse = crate::Parse::parse_yaml(input);
+        let _ = parse.tree();
+    }
+
+    #[test]
+    fn test_parse_mapping_with_stray_close_brace_does_not_hang() {
+        // Regression: parse_mapping_with_base_indent must make progress when
+        // is_mapping_key() is fooled by `}:` (or `]:`) appearing as a stray
+        // delimiter — the missing-colon recovery inserts a synthetic token
+        // without advancing the input.
+        let input = "\0:\n\n}:\n\n{";
+        let parse = crate::Parse::parse_yaml(input);
+        let _ = parse.tree();
+        assert!(parse.has_errors());
     }
 }

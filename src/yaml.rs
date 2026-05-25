@@ -4009,11 +4009,15 @@ other: >  # Folded block comment
         let doc = parsed.document().expect("Should have document");
         let mapping = doc.as_mapping().expect("Should be a mapping");
 
-        // The config block scalar includes content until it hits a less-indented line
-        // The "# Outside comment" line at base level is parsed as a key "Outside comment"
+        // The config block scalar includes content until it hits a less-indented line.
+        // The "# Outside comment" line at column 0 is currently still consumed as
+        // part of the block scalar text (a separate parser-level limitation), but
+        // `as_string()` now preserves its bytes rather than blindly chopping
+        // `base_indent` bytes off the start (which had been mangling multi-byte
+        // characters and dropping the leading `#`).
         assert_eq!(
             mapping.get("config").unwrap().as_scalar().unwrap().as_string(),
-            "# This comment is inside the block\nline1: value1\n# Another internal comment\nline2: value2\n\nOutside comment\n"
+            "# This comment is inside the block\nline1: value1\n# Another internal comment\nline2: value2\n\n# Outside comment\n"
         );
 
         assert_eq!(

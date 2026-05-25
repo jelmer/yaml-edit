@@ -165,12 +165,19 @@ impl Scalar {
                 prev_was_empty = true;
                 prev_was_more_indented = false;
             } else {
-                // Non-empty line - strip base indentation
-                let stripped = if line.len() >= base_indent {
-                    &line[base_indent..]
-                } else {
-                    line.trim_start()
-                };
+                // Non-empty line - strip up to `base_indent` leading spaces.
+                // base_indent is a character count, so we step by chars to
+                // stay on UTF-8 boundaries even if the line starts with
+                // multi-byte content at less than base_indent spaces of
+                // indentation.
+                let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
+                let strip = leading_spaces.min(base_indent);
+                let strip_bytes = line
+                    .char_indices()
+                    .nth(strip)
+                    .map(|(i, _)| i)
+                    .unwrap_or(line.len());
+                let stripped = &line[strip_bytes..];
 
                 if is_literal {
                     // Literal: each line gets content + newline
@@ -574,5 +581,15 @@ items: ["first", "second"]
         assert_eq!(values[1].value(), r#""second""#);
         assert_eq!(values[0].as_string(), "first");
         assert_eq!(values[1].as_string(), "second");
+    }
+
+    #[test]
+    fn test_parse_block_scalar_multibyte_after_dedent() {
+        // Regression: `base_indent` is a char count but we sliced bytes,
+        // which panicked when a continuation line started with a multi-byte
+        // character at less than `base_indent` spaces of indentation.
+        let yaml = ">\n  a\n\u{4f1}b\n";
+        // We only care that it does not panic.
+        let _ = super::Scalar::parse_block_scalar(yaml);
     }
 }

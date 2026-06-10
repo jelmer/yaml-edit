@@ -582,7 +582,12 @@ impl fmt::Display for YamlNode {
 }
 
 /// Blanket impl: any reference to an `AsYaml` type also implements `AsYaml`.
-impl<T: AsYaml> AsYaml for &T {
+///
+/// The `?Sized` bound makes this work for trait objects (`&dyn AsYaml`),
+/// which lets [`MappingView`](crate::MappingView) — whose methods take
+/// `&dyn AsYaml` — forward keys to inherent methods that take
+/// `impl AsYaml`.
+impl<T: AsYaml + ?Sized> AsYaml for &T {
     fn as_node(&self) -> Option<&SyntaxNode> {
         (*self).as_node()
     }

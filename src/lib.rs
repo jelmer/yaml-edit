@@ -174,6 +174,14 @@
 //! ```
 
 pub mod anchor_resolution;
+#[doc(inline)]
+pub use anchor_resolution::{
+    AnchorRegistry, DocumentMergedExt, DocumentResolvedExt, MappingMergedExt, MergedMapping,
+    MergedView,
+};
+pub mod mapping_view;
+#[doc(inline)]
+pub use mapping_view::MappingView;
 mod as_yaml;
 mod builder;
 pub mod custom_tags;

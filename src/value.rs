@@ -635,6 +635,250 @@ where
 mod tests {
     use super::*;
 
+    fn render_as_yaml<T: crate::AsYaml>(v: &T) -> String {
+        let mut builder = rowan::GreenNodeBuilder::new();
+        v.build_content(&mut builder, 0, false);
+        let green = builder.finish();
+        let node = rowan::SyntaxNode::<crate::yaml::Lang>::new_root(green);
+        node.text().to_string()
+    }
+
+    fn scalar_token_kind(v: &YamlValue) -> crate::lex::SyntaxKind {
+        use rowan::ast::AstNode;
+        let mut builder = rowan::GreenNodeBuilder::new();
+        crate::AsYaml::build_content(v, &mut builder, 0, false);
+        let green = builder.finish();
+        let node = rowan::SyntaxNode::<crate::yaml::Lang>::new_root(green);
+        let scalar = crate::yaml::Scalar::cast(node).expect("scalar node");
+        scalar
+            .syntax()
+            .children_with_tokens()
+            .filter_map(|c| c.into_token())
+            .next()
+            .expect("token")
+            .kind()
+    }
+
+    #[test]
+    fn test_scalar_build_content_token_kind() {
+        use crate::lex::SyntaxKind;
+        assert_eq!(
+            scalar_token_kind(&YamlValue::from("hello")),
+            SyntaxKind::STRING
+        );
+        assert_eq!(scalar_token_kind(&YamlValue::from(42)), SyntaxKind::INT);
+        assert_eq!(scalar_token_kind(&YamlValue::from(1.5)), SyntaxKind::FLOAT);
+        assert_eq!(
+            scalar_token_kind(&YamlValue::Scalar(ScalarValue::string("true"))),
+            SyntaxKind::BOOL
+        );
+        assert_eq!(
+            scalar_token_kind(&YamlValue::Scalar(ScalarValue::string("false"))),
+            SyntaxKind::BOOL
+        );
+        assert_eq!(
+            scalar_token_kind(&YamlValue::Scalar(ScalarValue::string("null"))),
+            SyntaxKind::NULL
+        );
+    }
+
+    #[test]
+    fn test_as_yaml_build_content_tagged_and_nested() {
+        // Tagged collections render the tag, a newline, then content indented by
+        // two spaces (indent + 2). A wrong arithmetic op would drop the indent.
+        let omap = YamlValue::from_ordered_mapping(vec![
+            ("a".to_string(), YamlValue::from("1")),
+            ("b".to_string(), YamlValue::from("2")),
+        ]);
+        assert_eq!(render_as_yaml(&omap), "!!omap\n  - a: 1\n  - b: 2\n");
+
+        let pairs = YamlValue::from_pairs(vec![("a".to_string(), YamlValue::from("1"))]);
+        assert_eq!(render_as_yaml(&pairs), "!!pairs\n  - a: 1\n");
+
+        let set = YamlValue::from_set(BTreeSet::from(["a".to_string(), "b".to_string()]));
+        assert_eq!(render_as_yaml(&set), "!!set\n  a: null\n  b: null\n");
+
+        // A mapping whose value is a multi-entry mapping. The inner mapping's
+        // own entry separators are indented by the indent passed down
+        // (BTreeMap::build_content indent + 2), so a wrong op shows up on the
+        // second inner key.
+        let mut inner = BTreeMap::new();
+        inner.insert("x".to_string(), YamlValue::from("1"));
+        inner.insert("y".to_string(), YamlValue::from("2"));
+        let mut outer = BTreeMap::new();
+        outer.insert("o".to_string(), YamlValue::Mapping(inner));
+        assert_eq!(render_as_yaml(&outer), "o:\n  x: 1\n  y: 2\n");
+
+        // Pairs with two entries: the indent passed into the nested sequence
+        // shows on the second item's "  - " separator (Pairs branch indent + 2).
+        let pairs2 = YamlValue::from_pairs(vec![
+            ("a".to_string(), YamlValue::from("1")),
+            ("b".to_string(), YamlValue::from("2")),
+        ]);
+        assert_eq!(render_as_yaml(&pairs2), "!!pairs\n  - a: 1\n  - b: 2\n");
+
+        // A sequence nested inside a sequence (&[]::build_content indent + 2).
+        let seq = vec![YamlValue::Sequence(vec![YamlValue::from("a")])];
+        assert_eq!(render_as_yaml(&seq), "- - a\n");
+
+        // A sequence whose single item is a multi-entry mapping: the indent
+        // handed to that item (&[]::build_content indent + 2) shows on the
+        // second mapping key.
+        let mut item = BTreeMap::new();
+        item.insert("x".to_string(), YamlValue::from("1"));
+        item.insert("y".to_string(), YamlValue::from("2"));
+        let seq_of_map = vec![YamlValue::Mapping(item)];
+        assert_eq!(render_as_yaml(&seq_of_map), "- x: 1\n  y: 2\n");
+    }
+
+    #[test]
+    fn test_as_yaml_build_content() {
+        use crate::AsYaml;
+
+        // Vec<YamlValue> and &[YamlValue] render as a block sequence.
+        let seq = vec![YamlValue::from("a"), YamlValue::from("b")];
+        assert_eq!(render_as_yaml(&seq), "- a\n- b\n");
+        assert_eq!(render_as_yaml(&seq.as_slice()), "- a\n- b\n");
+
+        // BTreeMap renders as a block mapping (keys sorted).
+        let mut m = BTreeMap::new();
+        m.insert("k".to_string(), YamlValue::from("v"));
+        m.insert("j".to_string(), YamlValue::from("w"));
+        assert_eq!(render_as_yaml(&m), "j: w\nk: v\n");
+
+        // Empty collections render in flow style.
+        let empty_seq: Vec<YamlValue> = vec![];
+        assert_eq!(render_as_yaml(&empty_seq), "[]");
+        let empty_map: BTreeMap<String, YamlValue> = BTreeMap::new();
+        assert_eq!(render_as_yaml(&empty_map), "{}");
+
+        // A mapping whose value is a non-scalar gets a newline and deeper indent.
+        let mut m2 = BTreeMap::new();
+        m2.insert(
+            "list".to_string(),
+            YamlValue::Sequence(vec![YamlValue::from("a")]),
+        );
+        assert_eq!(render_as_yaml(&m2), "list:\n  - a\n");
+
+        // YamlValue delegates to the right impl per variant.
+        assert_eq!(
+            render_as_yaml(&YamlValue::Sequence(seq.clone())),
+            "- a\n- b\n"
+        );
+        assert_eq!(
+            render_as_yaml(&YamlValue::Mapping(m.clone())),
+            "j: w\nk: v\n"
+        );
+        assert_eq!(render_as_yaml(&YamlValue::from("scalar")), "scalar");
+
+        // is_inline: empty collections are inline, non-empty block collections
+        // are not. Scalars are always inline.
+        assert!(!AsYaml::is_inline(&seq));
+        assert!(AsYaml::is_inline(&empty_seq));
+        assert!(!AsYaml::is_inline(&m));
+        assert!(AsYaml::is_inline(&empty_map));
+        assert!(!AsYaml::is_inline(&seq.as_slice()));
+        assert!(AsYaml::is_inline(&empty_seq.as_slice()));
+        assert!(AsYaml::is_inline(&YamlValue::from("x")));
+        assert!(!AsYaml::is_inline(&YamlValue::Sequence(seq)));
+        assert!(AsYaml::is_inline(&YamlValue::sequence()));
+        assert!(!AsYaml::is_inline(&YamlValue::Mapping(m)));
+        assert!(AsYaml::is_inline(&YamlValue::mapping()));
+    }
+
+    #[test]
+    fn test_parse_raw_variants() {
+        // parse_raw goes through YamlValue::cast, so each YAML shape must map to
+        // the corresponding variant.
+        assert!(YamlValue::parse_raw("hello").is_scalar());
+
+        let seq = YamlValue::parse_raw("- a\n- b\n");
+        assert_eq!(
+            seq.as_sequence(),
+            Some([YamlValue::from("a"), YamlValue::from("b")].as_slice())
+        );
+
+        let map = YamlValue::parse_raw("k: v\n");
+        assert_eq!(map.as_mapping().map(|m| m.len()), Some(1));
+
+        let set = YamlValue::parse_raw("!!set\n  a: ~\n  b: ~\n");
+        assert_eq!(
+            set.as_set(),
+            Some(&BTreeSet::from(["a".to_string(), "b".to_string()]))
+        );
+
+        let omap = YamlValue::parse_raw("!!omap\n  - a: 1\n  - b: 2\n");
+        assert_eq!(
+            omap.as_ordered_mapping(),
+            Some(
+                [
+                    ("a".to_string(), YamlValue::from(1)),
+                    ("b".to_string(), YamlValue::from(2)),
+                ]
+                .as_slice()
+            )
+        );
+
+        let pairs = YamlValue::parse_raw("!!pairs\n  - a: 1\n  - a: 2\n");
+        assert_eq!(
+            pairs.as_pairs(),
+            Some(
+                [
+                    ("a".to_string(), YamlValue::from(1)),
+                    ("a".to_string(), YamlValue::from(2)),
+                ]
+                .as_slice()
+            )
+        );
+    }
+
+    #[test]
+    fn test_display_matches_to_yaml_string() {
+        let map = {
+            let mut m = BTreeMap::new();
+            m.insert("name".to_string(), YamlValue::from("app"));
+            YamlValue::Mapping(m)
+        };
+        assert_eq!(format!("{}", map), map.to_yaml_string(0));
+        assert_eq!(format!("{}", map), "name: app");
+
+        let scalar = YamlValue::from("hello");
+        assert_eq!(format!("{}", scalar), "hello");
+    }
+
+    #[test]
+    fn test_to_yaml_string_nested_indentation() {
+        // Sequence holding a non-scalar item: nested mapping is indented by
+        // indent + 4 relative to the dash.
+        let mut inner = BTreeMap::new();
+        inner.insert("h".to_string(), YamlValue::from("x"));
+        let seq = YamlValue::Sequence(vec![YamlValue::Mapping(inner)]);
+        assert_eq!(seq.to_yaml_string(0), "  - \n    h: x");
+
+        // Mapping holding a non-scalar value: nested sequence is rendered at
+        // indent + 2.
+        let mut m = BTreeMap::new();
+        m.insert(
+            "k".to_string(),
+            YamlValue::Sequence(vec![YamlValue::from("a")]),
+        );
+        assert_eq!(YamlValue::Mapping(m).to_yaml_string(0), "k: \n    - a");
+
+        // Ordered mapping with a non-scalar value: nested mapping at indent + 4.
+        let mut inner2 = BTreeMap::new();
+        inner2.insert("x".to_string(), YamlValue::from("y"));
+        let omap =
+            YamlValue::from_ordered_mapping(vec![("a".to_string(), YamlValue::Mapping(inner2))]);
+        assert_eq!(omap.to_yaml_string(0), "!!omap\n  - a: \n    x: y");
+
+        // Pairs with a non-scalar value: nested sequence at indent + 4.
+        let pairs = YamlValue::from_pairs(vec![(
+            "a".to_string(),
+            YamlValue::Sequence(vec![YamlValue::from("z")]),
+        )]);
+        assert_eq!(pairs.to_yaml_string(0), "!!pairs\n  - a: \n      - z");
+    }
+
     #[test]
     fn test_scalar_value() {
         let val = YamlValue::from("hello");
@@ -754,6 +998,93 @@ mod tests {
         // Empty pairs
         let val = YamlValue::pairs();
         assert_eq!(val.to_yaml_string(0), "!!pairs []");
+    }
+
+    #[test]
+    fn test_predicates_and_accessors() {
+        let scalar = YamlValue::from("s");
+        let seq = YamlValue::Sequence(vec![YamlValue::from("a")]);
+        let map = {
+            let mut m = BTreeMap::new();
+            m.insert("k".to_string(), YamlValue::from("v"));
+            YamlValue::Mapping(m)
+        };
+        let set = YamlValue::from_set(BTreeSet::from(["x".to_string()]));
+        let omap = YamlValue::from_ordered_mapping(vec![("a".to_string(), YamlValue::from("b"))]);
+        let pairs = YamlValue::from_pairs(vec![("a".to_string(), YamlValue::from("b"))]);
+
+        // Each predicate is true only for its own variant.
+        assert!(scalar.is_scalar());
+        assert!(!seq.is_scalar());
+
+        assert!(seq.is_sequence());
+        assert!(!scalar.is_sequence());
+
+        assert!(map.is_mapping());
+        assert!(!seq.is_mapping());
+
+        assert!(set.is_set());
+        assert!(!map.is_set());
+
+        assert!(omap.is_ordered_mapping());
+        assert!(!map.is_ordered_mapping());
+
+        assert!(pairs.is_pairs());
+        assert!(!omap.is_pairs());
+
+        // Accessors return Some only for the matching variant, None otherwise.
+        assert!(scalar.as_scalar().is_some());
+        assert!(seq.as_scalar().is_none());
+
+        assert_eq!(seq.as_sequence(), Some([YamlValue::from("a")].as_slice()));
+        assert_eq!(scalar.as_sequence(), None);
+
+        assert_eq!(map.as_mapping().map(|m| m.len()), Some(1));
+        assert_eq!(scalar.as_mapping(), None);
+
+        assert_eq!(set.as_set().map(|s| s.len()), Some(1));
+        assert_eq!(map.as_set(), None);
+
+        assert_eq!(omap.as_ordered_mapping().map(|p| p.len()), Some(1));
+        assert_eq!(map.as_ordered_mapping(), None);
+
+        assert_eq!(pairs.as_pairs().map(|p| p.len()), Some(1));
+        assert_eq!(omap.as_pairs(), None);
+    }
+
+    #[test]
+    fn test_accessors_mut() {
+        let mut seq = YamlValue::Sequence(vec![YamlValue::from("a")]);
+        seq.as_sequence_mut().unwrap().push(YamlValue::from("b"));
+        assert_eq!(seq.as_sequence().map(|s| s.len()), Some(2));
+        assert!(YamlValue::from("x").as_sequence_mut().is_none());
+
+        let mut map = YamlValue::mapping();
+        map.as_mapping_mut()
+            .unwrap()
+            .insert("k".to_string(), YamlValue::from("v"));
+        assert_eq!(map.as_mapping().map(|m| m.len()), Some(1));
+        assert!(YamlValue::from("x").as_mapping_mut().is_none());
+
+        let mut set = YamlValue::set();
+        set.as_set_mut().unwrap().insert("a".to_string());
+        assert_eq!(set.as_set().map(|s| s.len()), Some(1));
+        assert!(YamlValue::from("x").as_set_mut().is_none());
+
+        let mut omap = YamlValue::ordered_mapping();
+        omap.as_ordered_mapping_mut()
+            .unwrap()
+            .push(("a".to_string(), YamlValue::from("b")));
+        assert_eq!(omap.as_ordered_mapping().map(|p| p.len()), Some(1));
+        assert!(YamlValue::from("x").as_ordered_mapping_mut().is_none());
+
+        let mut pairs = YamlValue::pairs();
+        pairs
+            .as_pairs_mut()
+            .unwrap()
+            .push(("a".to_string(), YamlValue::from("b")));
+        assert_eq!(pairs.as_pairs().map(|p| p.len()), Some(1));
+        assert!(YamlValue::from("x").as_pairs_mut().is_none());
     }
 
     #[test]

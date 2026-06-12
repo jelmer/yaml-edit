@@ -2059,4 +2059,220 @@ mod tests {
         assert_eq!(legacy_octal_scalar.scalar_type(), ScalarType::Integer);
         assert_eq!(legacy_octal_scalar.value(), "0755");
     }
+
+    #[test]
+    fn test_unix_timestamp_bounds() {
+        // Unix epoch boundary: 0 is rejected, 1 accepted, and the upper bound
+        // (2100-01-01) is exclusive.
+        assert!(!ScalarValue::is_valid_timestamp_static("0"));
+        assert!(ScalarValue::is_valid_timestamp_static("1"));
+        assert!(ScalarValue::is_valid_timestamp_static("4102444799"));
+        assert!(!ScalarValue::is_valid_timestamp_static("4102444800"));
+
+        // The instance method delegates to the static one.
+        let s = ScalarValue::string("x");
+        assert!(s.is_valid_timestamp("1"));
+        assert!(!s.is_valid_timestamp("0"));
+    }
+
+    #[test]
+    fn test_iso8601_time_component_bounds() {
+        // Hour/minute/second upper bounds: 23:59:59 is valid, anything past is not.
+        assert!(ScalarValue::matches_iso8601_pattern("2023-01-01T23:59:59"));
+        assert!(!ScalarValue::matches_iso8601_pattern("2023-01-01T24:00:00"));
+        assert!(!ScalarValue::matches_iso8601_pattern("2023-01-01T10:60:00"));
+        assert!(!ScalarValue::matches_iso8601_pattern("2023-01-01T10:30:60"));
+
+        // Day bounds: 31 is valid, 0 and 32 are not.
+        assert!(ScalarValue::matches_iso8601_pattern("2023-01-31"));
+        assert!(!ScalarValue::matches_iso8601_pattern("2023-01-00"));
+        assert!(!ScalarValue::matches_iso8601_pattern("2023-01-32"));
+
+        // A malformed time separator falls through to invalid.
+        assert!(!ScalarValue::matches_iso8601_pattern("2023-01-01X10:30:45"));
+        // Time present but seconds field non-numeric.
+        assert!(!ScalarValue::matches_iso8601_pattern("2023-01-01T10:30:xx"));
+
+        // The two date separators must each be '-'. A non-dash in either
+        // position must reject even though the digit groups parse as valid
+        // month/day. This pins the separator conjuncts in the format check.
+        assert!(!ScalarValue::matches_iso8601_pattern("2023X12-25"));
+        assert!(!ScalarValue::matches_iso8601_pattern("2023-12X25"));
+    }
+
+    #[test]
+    #[cfg(feature = "base64")]
+    fn test_base64_padding_bounds() {
+        // Exactly two padding characters is the maximum allowed and must pass.
+        assert!(ScalarValue::looks_like_base64("QQ==")); // "A"
+                                                         // One padding character.
+        assert!(ScalarValue::looks_like_base64("SGVsbG8=")); // "Hello"
+                                                             // Padding in the middle is rejected even with a valid count.
+        assert!(!ScalarValue::looks_like_base64("QQ=Q"));
+        // Length not a multiple of 4.
+        assert!(!ScalarValue::looks_like_base64("QQQ"));
+    }
+
+    #[test]
+    fn test_coerce_to_null() {
+        // Only the recognized null spellings coerce to Null.
+        let s = ScalarValue::string("null");
+        assert_eq!(
+            s.coerce_to_type(ScalarType::Null).map(|v| v.scalar_type()),
+            Some(ScalarType::Null)
+        );
+        assert!(ScalarValue::string("~")
+            .coerce_to_type(ScalarType::Null)
+            .is_some());
+        assert!(ScalarValue::string("")
+            .coerce_to_type(ScalarType::Null)
+            .is_some());
+        assert!(ScalarValue::string("notnull")
+            .coerce_to_type(ScalarType::Null)
+            .is_none());
+    }
+
+    #[test]
+    fn test_parse_escape_single_quote() {
+        // The \' escape decodes to a bare single quote.
+        assert_eq!(ScalarValue::parse_escape_sequences("a\\'b"), "a'b");
+    }
+
+    #[test]
+    fn test_parse_preserves_string_style() {
+        // The String arm of parse() runs detect_style; a plain word stays Plain.
+        let plain = ScalarValue::parse("hello");
+        assert_eq!(plain.scalar_type(), ScalarType::String);
+        assert_eq!(plain.style, ScalarStyle::Plain);
+
+        // A multi-line string is given Literal style by detect_style, which only
+        // runs in the String arm of parse().
+        let multiline = ScalarValue::parse("multi line\nvalue");
+        assert_eq!(multiline.scalar_type(), ScalarType::String);
+        assert_eq!(multiline.style, ScalarStyle::Literal);
+    }
+
+    #[test]
+    fn test_from_scalar_type_and_style() {
+        use crate::yaml::Document;
+        use rowan::ast::AstNode;
+        use std::str::FromStr;
+
+        // NULL token maps to Null type.
+        let doc = Document::from_str("k: null\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let null_node = mapping.get("k").unwrap();
+        let null_scalar = crate::yaml::Scalar::cast(null_node.syntax().clone()).unwrap();
+        let sv = ScalarValue::from_scalar(&null_scalar);
+        assert_eq!(sv.scalar_type(), ScalarType::Null);
+        assert_eq!(sv.style, ScalarStyle::Plain);
+
+        // STRING token in double quotes maps to String type, DoubleQuoted style.
+        let doc = Document::from_str("k: \"hi\"\n").unwrap();
+        let node = doc.as_mapping().unwrap().get("k").unwrap();
+        let scalar = crate::yaml::Scalar::cast(node.syntax().clone()).unwrap();
+        let sv = ScalarValue::from_scalar(&scalar);
+        assert_eq!(sv.scalar_type(), ScalarType::String);
+        assert_eq!(sv.style, ScalarStyle::DoubleQuoted);
+
+        // Single quoted string keeps SingleQuoted style.
+        let doc = Document::from_str("k: 'hi'\n").unwrap();
+        let node = doc.as_mapping().unwrap().get("k").unwrap();
+        let scalar = crate::yaml::Scalar::cast(node.syntax().clone()).unwrap();
+        let sv = ScalarValue::from_scalar(&scalar);
+        assert_eq!(sv.style, ScalarStyle::SingleQuoted);
+    }
+
+    #[test]
+    fn test_needs_quoting_special_chars() {
+        // Leading-character based quoting and special embedded characters, plus
+        // each boolean/null keyword spelling (so dropping any one keyword arm is
+        // detected). Single quotes are preferred unless the value already
+        // contains one, in which case double quotes are used.
+        let cases = [
+            ("&anchor", "'&anchor'"),
+            ("*alias", "'*alias'"),
+            ("!tag", "'!tag'"),
+            ("a|b", "'a|b'"),
+            ("it's", "\"it's\""),
+            ("a\"b", "'a\"b'"),
+            ("50%", "'50%'"),
+            ("on", "'on'"),
+            ("off", "'off'"),
+            ("On", "'On'"),
+            ("OFF", "'OFF'"),
+            ("yes", "'yes'"),
+            ("no", "'no'"),
+            ("true", "'true'"),
+            ("false", "'false'"),
+            ("null", "'null'"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(ScalarValue::string(input).to_yaml_string(), expected);
+        }
+        // A plain word that needs no quoting round-trips unchanged.
+        assert_eq!(ScalarValue::string("plain").to_yaml_string(), "plain");
+    }
+
+    #[test]
+    fn test_literal_and_folded_nonempty() {
+        // Literal and folded styles render the block indicator on its own line
+        // followed by the content indented by two spaces.
+        let s = ScalarValue::with_style("line one\nline two", ScalarStyle::Literal);
+        assert_eq!(s.to_yaml_string(), "|\n  line one\n  line two");
+
+        let s = ScalarValue::with_style("line one\nline two", ScalarStyle::Folded);
+        assert_eq!(s.to_yaml_string(), ">\n  line one\n  line two");
+    }
+
+    #[test]
+    fn test_display_matches_yaml_string() {
+        let s = ScalarValue::string("true");
+        assert_eq!(format!("{}", s), s.to_yaml_string());
+        assert_eq!(format!("{}", s), "'true'");
+    }
+
+    #[test]
+    fn test_as_yaml_token_kind_per_type() {
+        use crate::lex::SyntaxKind;
+        use rowan::ast::AstNode;
+
+        let cases = [
+            (ScalarValue::parse("42"), SyntaxKind::INT),
+            (ScalarValue::parse("3.14"), SyntaxKind::FLOAT),
+            (ScalarValue::parse("true"), SyntaxKind::BOOL),
+            (ScalarValue::parse("null"), SyntaxKind::NULL),
+            (ScalarValue::string("hello"), SyntaxKind::STRING),
+        ];
+        for (value, expected) in cases {
+            let mut builder = rowan::GreenNodeBuilder::new();
+            crate::AsYaml::build_content(&value, &mut builder, 0, false);
+            let green = builder.finish();
+            let node = rowan::SyntaxNode::<crate::yaml::Lang>::new_root(green);
+            let scalar = crate::yaml::Scalar::cast(node).unwrap();
+            let kind = scalar
+                .syntax()
+                .children_with_tokens()
+                .filter_map(|c| c.into_token())
+                .next()
+                .unwrap()
+                .kind();
+            assert_eq!(kind, expected, "value {:?}", value.value());
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "regex")]
+    fn test_as_regex_type_gated() {
+        // as_regex only compiles when the scalar is tagged as a regex.
+        let re = ScalarValue::regex(r"\d+");
+        assert!(re.as_regex().is_some());
+
+        let not_re = ScalarValue::string(r"\d+");
+        assert!(not_re.as_regex().is_none());
+
+        // try_as_regex ignores the type and compiles the value directly.
+        assert!(not_re.try_as_regex().is_ok());
+        assert!(ScalarValue::string("(").try_as_regex().is_err());
+    }
 }

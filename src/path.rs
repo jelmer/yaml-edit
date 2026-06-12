@@ -998,6 +998,23 @@ config:
     }
 
     #[test]
+    fn test_mapping_remove_path_single_segment() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let yaml = Document::from_str("a: 1\nb: 2\n").unwrap();
+        let mapping = yaml.as_mapping().unwrap();
+
+        // A single-segment path removes the key directly from the mapping.
+        assert!(mapping.remove_path("a"));
+        assert!(mapping.get_path("a").is_none());
+        assert!(mapping.get_path("b").is_some());
+
+        // Removing a missing single-segment key returns false.
+        assert!(!mapping.remove_path("missing"));
+    }
+
+    #[test]
     fn test_set_path_preserves_formatting() {
         use crate::yaml::Document;
         use std::str::FromStr;

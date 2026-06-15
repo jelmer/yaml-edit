@@ -32,8 +32,8 @@ pub use crate::nodes::{Lang, SyntaxNode};
 
 // Re-export extracted AST nodes from nodes module
 pub use crate::nodes::{
-    Alias, Directive, Document, Mapping, MappingEntry, Scalar, ScalarConversionError, Sequence,
-    TaggedNode,
+    Alias, Comment, Directive, Document, Mapping, MappingEntry, Scalar, ScalarConversionError,
+    Sequence, TaggedNode,
 };
 
 ast_node!(
@@ -385,6 +385,24 @@ impl YamlFile {
     /// Get all documents in this YAML file
     pub fn documents(&self) -> impl Iterator<Item = Document> {
         self.0.children().filter_map(Document::cast)
+    }
+
+    /// Iterate over the comments in this file, in source order.
+    ///
+    /// This includes comments inside documents as well as any comments between
+    /// or outside documents.
+    ///
+    /// # Example
+    /// ```
+    /// use yaml_edit::YamlFile;
+    /// use std::str::FromStr;
+    ///
+    /// let file = YamlFile::from_str("# header\nkey: value # trailing\n").unwrap();
+    /// let comments: Vec<_> = file.comments().map(|c| c.content().to_string()).collect();
+    /// assert_eq!(comments, vec!["header", "trailing"]);
+    /// ```
+    pub fn comments(&self) -> impl Iterator<Item = Comment> {
+        crate::nodes::comment::comments(&self.0)
     }
 
     /// Get the first document in this YAML file, or `None` if there are none.

@@ -25,6 +25,7 @@ impl rowan::Language for Lang {
 }
 
 pub type SyntaxNode = rowan::SyntaxNode<Lang>;
+pub type SyntaxToken = rowan::SyntaxToken<Lang>;
 
 /// A macro to create AST node wrappers.
 macro_rules! ast_node {
@@ -77,6 +78,7 @@ pub(crate) use ast_node;
 
 // Node modules
 pub mod alias_node;
+pub mod comment;
 pub mod directive;
 pub mod document;
 pub mod mapping;
@@ -86,6 +88,7 @@ pub mod tagged_node;
 
 // Re-exports
 pub use alias_node::Alias;
+pub use comment::Comment;
 pub use directive::Directive;
 pub use document::Document;
 pub use mapping::{Mapping, MappingEntry};

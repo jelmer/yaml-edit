@@ -213,8 +213,8 @@ pub use schema::{
     ValidationErrorKind, ValidationResult,
 };
 pub use yaml::{
-    Alias, Directive, Document, Lang, Mapping, MappingEntry, Scalar, ScalarConversionError,
-    Sequence, Set, TaggedNode, YamlFile,
+    Alias, Comment, Directive, Document, Lang, Mapping, MappingEntry, Scalar,
+    ScalarConversionError, Sequence, Set, TaggedNode, YamlFile,
 };
 
 /// Advanced API for power users who need direct access to the underlying syntax tree.

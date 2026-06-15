@@ -578,6 +578,21 @@ impl Document {
         let range = self.byte_range();
         crate::byte_offset_to_line_column(source_text, range.end as usize)
     }
+
+    /// Iterate over the comments in this document, in source order.
+    ///
+    /// # Example
+    /// ```
+    /// use yaml_edit::Document;
+    /// use std::str::FromStr;
+    ///
+    /// let doc = Document::from_str("key: value # trailing\n# standalone\n").unwrap();
+    /// let comments: Vec<_> = doc.comments().map(|c| c.content().to_string()).collect();
+    /// assert_eq!(comments, vec!["trailing", "standalone"]);
+    /// ```
+    pub fn comments(&self) -> impl Iterator<Item = super::Comment> {
+        super::comment::comments(&self.0)
+    }
 }
 
 impl Default for Document {

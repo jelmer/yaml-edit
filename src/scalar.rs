@@ -1155,15 +1155,25 @@ impl crate::AsYaml for ScalarValue {
         _flow_context: bool,
     ) -> bool {
         use crate::lex::SyntaxKind;
-        let token_kind = match self.scalar_type() {
-            ScalarType::Integer => SyntaxKind::INT,
-            ScalarType::Float => SyntaxKind::FLOAT,
-            ScalarType::Boolean => SyntaxKind::BOOL,
-            ScalarType::Null => SyntaxKind::NULL,
-            _ => SyntaxKind::STRING,
+        // Render with proper YAML quoting/escaping. When the value needs
+        // quotes (e.g. the string "null", or text containing ": "), the
+        // rendered text starts with a quote and must be tokenized as a
+        // STRING regardless of the semantic type.
+        let text = self.to_yaml_string();
+        let quoted = text.starts_with('\'') || text.starts_with('"');
+        let token_kind = if quoted {
+            SyntaxKind::STRING
+        } else {
+            match self.scalar_type() {
+                ScalarType::Integer => SyntaxKind::INT,
+                ScalarType::Float => SyntaxKind::FLOAT,
+                ScalarType::Boolean => SyntaxKind::BOOL,
+                ScalarType::Null => SyntaxKind::NULL,
+                _ => SyntaxKind::STRING,
+            }
         };
         builder.start_node(SyntaxKind::SCALAR.into());
-        builder.token(token_kind.into(), self.value());
+        builder.token(token_kind.into(), &text);
         builder.finish_node();
         false
     }
@@ -2259,6 +2269,31 @@ mod tests {
                 .kind();
             assert_eq!(kind, expected, "value {:?}", value.value());
         }
+    }
+
+    #[test]
+    fn test_as_yaml_quotes_string_that_looks_special() {
+        use std::str::FromStr;
+
+        // A string whose value reads as a null/bool/number must be quoted so it
+        // round-trips as a string, not the special value.
+        let doc = crate::yaml::Document::from_str("key: x\n").unwrap();
+        doc.as_mapping()
+            .unwrap()
+            .set("key", ScalarValue::string("null"));
+        assert_eq!(doc.to_string(), "key: 'null'\n");
+
+        // A string containing ": " must be quoted or it produces invalid YAML.
+        let doc = crate::yaml::Document::from_str("key: x\n").unwrap();
+        doc.as_mapping()
+            .unwrap()
+            .set("key", ScalarValue::string("has: colon"));
+        assert_eq!(doc.to_string(), "key: 'has: colon'\n");
+
+        // An actual null scalar stays bare.
+        let doc = crate::yaml::Document::from_str("key: x\n").unwrap();
+        doc.as_mapping().unwrap().set("key", ScalarValue::null());
+        assert_eq!(doc.to_string(), "key: null\n");
     }
 
     #[test]

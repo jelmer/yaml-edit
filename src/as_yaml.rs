@@ -857,6 +857,39 @@ impl AsYaml for &str {
     }
 }
 
+/// `Some(v)` behaves exactly like `v`; `None` emits a bare `null` scalar.
+impl<T: AsYaml> AsYaml for Option<T> {
+    fn as_node(&self) -> Option<&crate::yaml::SyntaxNode> {
+        self.as_ref().and_then(AsYaml::as_node)
+    }
+
+    fn kind(&self) -> YamlKind {
+        match self {
+            Some(v) => v.kind(),
+            None => YamlKind::Scalar,
+        }
+    }
+
+    fn build_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        flow_context: bool,
+    ) -> bool {
+        match self {
+            Some(v) => v.build_content(builder, indent, flow_context),
+            None => crate::scalar::ScalarValue::null().build_content(builder, indent, flow_context),
+        }
+    }
+
+    fn is_inline(&self) -> bool {
+        match self {
+            Some(v) => v.is_inline(),
+            None => true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1386,5 +1419,23 @@ block_map:
         // Flow and block styles should be semantically equal
         assert!(yaml_eq(&flow_seq, &block_seq));
         assert!(yaml_eq(&flow_map, &block_map));
+    }
+
+    #[test]
+    fn test_option_none_emits_null() {
+        let doc = Document::from_str("key: value\n").unwrap();
+        doc.as_mapping().unwrap().set("key", None::<&str>);
+        assert_eq!(doc.to_string(), "key: null\n");
+    }
+
+    #[test]
+    fn test_option_some_delegates() {
+        let doc = Document::from_str("key: value\n").unwrap();
+        doc.as_mapping().unwrap().set("key", Some("hello"));
+        assert_eq!(doc.to_string(), "key: hello\n");
+
+        let doc = Document::from_str("key: value\n").unwrap();
+        doc.as_mapping().unwrap().set("key", Some(42i64));
+        assert_eq!(doc.to_string(), "key: 42\n");
     }
 }

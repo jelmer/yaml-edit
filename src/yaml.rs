@@ -1630,11 +1630,11 @@ impl Parser {
             // Start SEQUENCE_ENTRY node to wrap the entire item
             self.builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
 
-            // Record the dash's line indentation for the item value parsing
-            let item_indent = self.current_line_indent;
-
             self.bump(); // consume dash
             self.skip_whitespace();
+
+            // Record the dash's line indentation for the item value parsing
+            let item_indent = self.current_line_indent;
 
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 // Use item's line indent so nested mappings parse at the right level
@@ -2796,6 +2796,9 @@ impl Parser {
                 SyntaxKind::NEWLINE => {
                     // Reset to 0 until we see the next INDENT
                     self.current_line_indent = 0;
+                }
+                SyntaxKind::DASH => {
+                    self.current_line_indent += text.len();
                 }
                 _ => {}
             }

@@ -658,3 +658,36 @@ fn test_complex_key_mapping() {
     let parsed = YamlFile::from_str(yaml).expect("Failed to parse complex key mapping");
     assert!(parsed.document().is_some());
 }
+
+#[test]
+fn test_sequence_without_indentation_containing_mapping_followed_by_mapping() {
+    // Test a non-indented sequence with mapping value doesn't swallow up following mapping
+    let yaml = r#"
+items:
+- key: value1
+toplevel1: value2
+toplevel2: value3
+"#;
+
+    let parsed = YamlFile::from_str(yaml).expect("Failed to parse YAML");
+    let doc = parsed.document().expect("Should have a document");
+    let mapping = doc.as_mapping().expect("Root should be a mapping");
+
+    assert_eq!(mapping.keys().count(), 3, "Should have 3 top-level entries");
+
+    // Check the sequence has a single item
+    let items = mapping
+        .get("items")
+        .and_then(|node| node.as_sequence().cloned())
+        .expect("items should be a sequence");
+    assert_eq!(items.len(), 1, "Should have 1 item in sequence");
+
+    // Check the mapping in the sequence has a single item
+    let nested_mapping = items.pop().expect("1 item");
+    let nested_mapping = nested_mapping.as_mapping().expect("nested mapping");
+    assert_eq!(
+        nested_mapping.keys().count(),
+        1,
+        "Should have 1 nested entry"
+    );
+}

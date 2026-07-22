@@ -256,10 +256,9 @@ impl YamlPath for crate::yaml::Document {
             crate::as_yaml::YamlNode::Mapping(m)
         } else if let Some(s) = self.as_sequence() {
             crate::as_yaml::YamlNode::Sequence(s)
-        } else if let Some(sc) = self.as_scalar() {
-            crate::as_yaml::YamlNode::Scalar(sc)
         } else {
-            return None;
+            let sc = self.as_scalar()?;
+            crate::as_yaml::YamlNode::Scalar(sc)
         };
 
         // Navigate through the path segments

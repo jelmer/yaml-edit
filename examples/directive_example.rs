@@ -41,9 +41,9 @@ version: 1.0.0
 
     // Create a document
     let doc = Document::new_mapping();
-    doc.set("application", "yaml-edit");
-    doc.set("version", "0.1.0");
-    doc.set("author", "Jelmer Vernooĳ");
+    doc.set("application", "yaml-edit").unwrap();
+    doc.set("version", "0.1.0").unwrap();
+    doc.set("author", "Jelmer Vernooĳ").unwrap();
 
     yaml.push_document(doc);
 

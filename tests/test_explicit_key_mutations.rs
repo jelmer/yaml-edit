@@ -31,7 +31,7 @@ fn test_explicit_key_mutations() {
     );
 
     // Change value1 to newvalue
-    mapping.set("key1", "newvalue");
+    mapping.set("key1", "newvalue").unwrap();
 
     // Verify mutation via API
     assert_eq!(
@@ -67,7 +67,7 @@ fn test_explicit_key_mutations() {
     );
 
     // Add new key
-    mapping2.set("newkey", "newvalue");
+    mapping2.set("newkey", "newvalue").unwrap();
 
     // Verify addition via API
     assert_eq!(mapping2.len(), 2);

@@ -22,7 +22,7 @@ fn test_simple_value_replacement() {
 
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
-            mapping.set("key", "new_value");
+            mapping.set("key", "new_value").unwrap();
         }
     }
 
@@ -40,7 +40,7 @@ fn test_value_replacement_preserves_whitespace() {
 
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
-            mapping.set("key", "new_value");
+            mapping.set("key", "new_value").unwrap();
         }
     }
 
@@ -58,7 +58,7 @@ fn test_boolean_value_replacement() {
 
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
-            mapping.set("debug", false);
+            mapping.set("debug", false).unwrap();
         }
     }
 
@@ -81,7 +81,7 @@ fn test_nested_mapping_mutation() {
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             mapping.modify_mapping("database", |db| {
-                db.set("name", "prod_db");
+                db.set("name", "prod_db").unwrap();
             });
         }
     }
@@ -108,7 +108,7 @@ fn test_nested_mapping_add_new_key() {
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             mapping.modify_mapping("database", |db| {
-                db.set("password", "secret123");
+                db.set("password", "secret123").unwrap();
             });
         }
     }
@@ -136,9 +136,9 @@ debug: true"#;
 
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
-            mapping.set("host", "0.0.0.0");
-            mapping.set("port", 3000);
-            mapping.set("debug", false);
+            mapping.set("host", "0.0.0.0").unwrap();
+            mapping.set("port", 3000).unwrap();
+            mapping.set("debug", false).unwrap();
         }
     }
 
@@ -159,7 +159,7 @@ fn test_add_new_root_key() {
 
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
-            mapping.set("new_key", "new_value");
+            mapping.set("new_key", "new_value").unwrap();
         }
     }
 
@@ -186,8 +186,8 @@ server:
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             mapping.modify_mapping("server", |server| {
-                server.set("host", "0.0.0.0");
-                server.set("timeout", 30);
+                server.set("host", "0.0.0.0").unwrap();
+                server.set("timeout", 30).unwrap();
             });
         }
     }
@@ -221,9 +221,9 @@ fn test_nested_mapping_mutations_propagate() {
         if let Some(mapping) = doc.as_mapping() {
             // Get the nested database mapping and modify it
             if let Some(db) = mapping.get_mapping("database") {
-                db.set("name", "prod_db");
-                db.set("password", "secret123");
-                db.set("max_connections", 50);
+                db.set("name", "prod_db").unwrap();
+                db.set("password", "secret123").unwrap();
+                db.set("max_connections", 50).unwrap();
             }
         }
     }
@@ -254,8 +254,8 @@ fn test_deeply_nested_mutations() {
             if let Some(server) = root.get_mapping("server") {
                 if let Some(db) = server.get_mapping("database") {
                     if let Some(primary) = db.get_mapping("primary") {
-                        primary.set("host", "prod.example.com");
-                        primary.set("ssl", true);
+                        primary.set("host", "prod.example.com").unwrap();
+                        primary.set("ssl", true).unwrap();
                     }
                 }
             }

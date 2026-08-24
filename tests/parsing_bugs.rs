@@ -691,3 +691,92 @@ toplevel2: value3
         "Should have 1 nested entry"
     );
 }
+
+#[test]
+fn test_sequence_without_indentation_starting_with_comment() {
+    let yaml = r#"
+items:
+# comment
+- value1
+"#;
+    let parsed = YamlFile::from_str(yaml).expect("Failed to parse YAML");
+    let doc = parsed.document().expect("Should have a document");
+    let mapping = doc.as_mapping().expect("Root should be a mapping");
+
+    assert_eq!(mapping.keys().count(), 1, "Should have 1 top-level entry");
+
+    // Check the sequence has a single item
+    let items = mapping
+        .get("items")
+        .and_then(|node| node.as_sequence().cloned())
+        .expect("items should be a sequence");
+    assert_eq!(items.len(), 1, "Should have 1 item in sequence");
+}
+
+#[test]
+fn test_sequence_without_indentation_starting_with_indented_comment() {
+    let yaml = r#"
+items:
+  # comment
+- value1
+"#;
+    let parsed = YamlFile::from_str(yaml).expect("Failed to parse YAML");
+    dbg!(&parsed);
+    let doc = parsed.document().expect("Should have a document");
+    let mapping = doc.as_mapping().expect("Root should be a mapping");
+
+    assert_eq!(mapping.keys().count(), 1, "Should have 1 top-level entry");
+
+    // Check the sequence has a single item
+    let items = mapping
+        .get("items")
+        .and_then(|node| node.as_sequence().cloned())
+        .expect("items should be a sequence");
+    assert_eq!(items.len(), 1, "Should have 1 item in sequence");
+}
+
+#[test]
+fn test_sequence_without_indentation_starting_with_newline() {
+    let yaml = r#"
+items:
+
+- value1
+"#;
+    let parsed = YamlFile::from_str(yaml).expect("Failed to parse YAML");
+    let doc = parsed.document().expect("Should have a document");
+    let mapping = doc.as_mapping().expect("Root should be a mapping");
+
+    assert_eq!(mapping.keys().count(), 1, "Should have 1 top-level entry");
+
+    // Check the sequence has a single item
+    let items = mapping
+        .get("items")
+        .and_then(|node| node.as_sequence().cloned())
+        .expect("items should be a sequence");
+    assert_eq!(items.len(), 1, "Should have 1 item in sequence");
+}
+
+#[test]
+fn test_sequence_without_indentation_starting_with_newline_and_comment() {
+    let yaml = r#"
+items:
+
+# comment
+
+# comment
+
+- value1
+"#;
+    let parsed = YamlFile::from_str(yaml).expect("Failed to parse YAML");
+    let doc = parsed.document().expect("Should have a document");
+    let mapping = doc.as_mapping().expect("Root should be a mapping");
+
+    assert_eq!(mapping.keys().count(), 1, "Should have 1 top-level entry");
+
+    // Check the sequence has a single item
+    let items = mapping
+        .get("items")
+        .and_then(|node| node.as_sequence().cloned())
+        .expect("items should be a sequence");
+    assert_eq!(items.len(), 1, "Should have 1 item in sequence");
+}

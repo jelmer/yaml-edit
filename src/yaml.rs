@@ -2736,13 +2736,9 @@ impl Parser {
                 }
                 // If no indented content follows the comment, has_value stays false → implicit null
             } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                // Check if next line is indented (nested content) or starts with a sequence
-                self.bump(); // consume newline
-                if self.current() == Some(SyntaxKind::INDENT) {
-                    let indent_level = self.tokens.last().map(|(_, text)| text.len()).unwrap_or(0);
-                    self.bump(); // consume indent
-                                 // Parse the indented content as the value, tracking indent level
-                    self.parse_value_with_base_indent(indent_level);
+                self.skip_ws_and_newlines();
+                if self.current_line_indent != 0 {
+                    self.parse_value_with_base_indent(self.current_line_indent);
                     has_value = true;
                 } else if self.current() == Some(SyntaxKind::DASH) {
                     // Zero-indented sequence (same indentation as key)

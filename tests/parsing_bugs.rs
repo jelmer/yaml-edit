@@ -721,7 +721,6 @@ items:
 - value1
 "#;
     let parsed = YamlFile::from_str(yaml).expect("Failed to parse YAML");
-    dbg!(&parsed);
     let doc = parsed.document().expect("Should have a document");
     let mapping = doc.as_mapping().expect("Root should be a mapping");
 

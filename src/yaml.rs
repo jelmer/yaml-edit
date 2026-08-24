@@ -836,13 +836,7 @@ impl Parser {
             }
             Some(SyntaxKind::PIPE) => self.parse_literal_block_scalar(),
             Some(SyntaxKind::GREATER) => self.parse_folded_block_scalar(),
-            Some(
-                SyntaxKind::STRING
-                | SyntaxKind::INT
-                | SyntaxKind::FLOAT
-                | SyntaxKind::BOOL
-                | SyntaxKind::NULL,
-            ) => {
+            Some(kind) if is_plain_scalar_kind(kind) => {
                 // In flow context, always parse as scalar
                 // In block context, check if it's a mapping key
                 // But not if we're already in a value context (prevents implicit nested mappings)
@@ -1719,6 +1713,18 @@ impl Parser {
     }
 }
 
+/// Kinds emitted by the lexer for plain (unquoted) scalar content.
+fn is_plain_scalar_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::STRING
+            | SyntaxKind::INT
+            | SyntaxKind::FLOAT
+            | SyntaxKind::BOOL
+            | SyntaxKind::NULL
+    )
+}
+
 /// Standalone helper to detect implicit mapping pattern in flow collections.
 /// Takes an iterator of SyntaxKind tokens (in reverse order, as stored in Parser).
 /// Returns true if there's a colon at depth 0 before any comma or closing bracket.
@@ -2441,19 +2447,16 @@ impl Parser {
             return false;
         }
 
-        // Look ahead to see if there's a colon after the current token
-        // A valid mapping key should have a colon immediately after (with only whitespace)
-        let upcoming = self.upcoming_tokens();
-        for kind in upcoming {
-            match kind {
-                SyntaxKind::COLON => {
-                    return true;
-                }
-                SyntaxKind::WHITESPACE => continue,
-                // Any other token means this is not a simple mapping key
-                _ => {
-                    return false;
-                }
+        // Look ahead to see if there's a colon after the current token.
+        // Plain scalars can contain spaces, so a key may span multiple scalar
+        // tokens separated by whitespace before the terminating colon
+        // (e.g. `abc cba: value`).
+        for kind in self.upcoming_tokens() {
+            if kind == SyntaxKind::COLON {
+                return true;
+            }
+            if kind != SyntaxKind::WHITESPACE && !is_plain_scalar_kind(kind) {
+                return false;
             }
         }
         false
@@ -2674,18 +2677,21 @@ impl Parser {
         } else if self.current() == Some(SyntaxKind::REFERENCE) {
             // Handle alias as key (*b:)
             self.parse_alias();
-        } else if matches!(
-            self.current(),
-            Some(
-                SyntaxKind::STRING
-                    | SyntaxKind::INT
-                    | SyntaxKind::FLOAT
-                    | SyntaxKind::BOOL
-                    | SyntaxKind::NULL
-            )
-        ) {
+        } else if self.current().is_some_and(is_plain_scalar_kind) {
             self.builder.start_node(SyntaxKind::SCALAR.into());
-            self.bump(); // consume the key token
+            self.bump();
+            // Plain scalars can contain spaces, so absorb any following
+            // whitespace + scalar tokens until we reach the terminating colon
+            // (e.g. `abc cba: value`).
+            while self.current() == Some(SyntaxKind::WHITESPACE)
+                && self
+                    .upcoming_tokens()
+                    .next()
+                    .is_some_and(is_plain_scalar_kind)
+            {
+                self.bump(); // WHITESPACE inside the plain scalar
+                self.bump(); // next scalar segment
+            }
             self.builder.finish_node(); // SCALAR
         }
         self.builder.finish_node(); // KEY

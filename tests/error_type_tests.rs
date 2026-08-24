@@ -361,3 +361,62 @@ fn test_nested_unclosed_bracket_exact_error() {
         "2:18: Unclosed flow sequence. Expected: ']' to close sequence. Found: end of input. Context: in flow sequence. Suggestion: Add ']' to close the array, or check for missing commas between elements"
     );
 }
+
+/// Test that plain scalar with spaces works as a key (issue #30).
+#[test]
+fn test_key_with_spaces_issue_30() {
+    let yaml = "xyz: 1\nabc cba: 2\nfoo: 3\n";
+    let parsed = YamlFile::parse(yaml);
+    let errors = parsed.errors();
+    assert_eq!(
+        errors.len(),
+        0,
+        "Should parse without errors, got: {:?}",
+        errors
+    );
+
+    let tree = parsed.tree();
+    let doc = tree.document().expect("Should have document");
+    let mapping = doc.as_mapping().expect("Should be a mapping");
+
+    let keys: Vec<String> = mapping
+        .iter()
+        .map(|(k, _)| k.as_scalar().map(|s| s.as_string()).unwrap_or_default())
+        .collect();
+
+    assert_eq!(
+        keys,
+        vec!["xyz".to_string(), "abc cba".to_string(), "foo".to_string()]
+    );
+
+    // Round-trip: parsed tree must serialize back to the original input.
+    use rowan::ast::AstNode;
+    assert_eq!(tree.syntax().text().to_string(), yaml);
+}
+
+/// Multi-word keys should work in nested (indented) mappings too.
+#[test]
+fn test_multi_word_key_nested() {
+    let yaml = "outer:\n  abc cba: 2\n  foo: 3\n";
+    let parsed = YamlFile::parse(yaml);
+    assert_eq!(parsed.errors(), Vec::<String>::new());
+    let doc = parsed.tree().document().unwrap();
+    let outer = doc.as_mapping().unwrap();
+    let inner = outer.get("outer").unwrap();
+    let inner_map = inner.as_mapping().expect("nested mapping");
+    let val = inner_map
+        .get("abc cba")
+        .and_then(|n| n.as_scalar().cloned())
+        .expect("multi-word nested key");
+    assert_eq!(val.as_string(), "2");
+}
+
+/// A multi-word scalar with no colon must NOT be treated as a mapping.
+#[test]
+fn test_multi_word_scalar_without_colon_is_scalar() {
+    let yaml = "abc cba\n";
+    let parsed = YamlFile::parse(yaml);
+    let doc = parsed.tree().document().unwrap();
+    let scalar = doc.as_scalar().expect("should be a scalar, not mapping");
+    assert_eq!(scalar.as_string(), "abc cba");
+}

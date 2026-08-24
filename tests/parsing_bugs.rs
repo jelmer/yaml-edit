@@ -535,8 +535,9 @@ colon_end: "ends with:"
 }
 
 #[test]
-fn test_no_false_mapping_with_colon_later() {
-    // Test that tokens with colons appearing later don't become mapping keys
+fn test_multi_word_key_in_sequence_item() {
+    // Plain scalars may contain spaces, so a mapping key inside a sequence
+    // item can be multiple words (per YAML 1.2 spec, matching PyYAML behavior).
     let yaml = r#"
 - item1: value1
 - item2 has text: but not a key
@@ -549,28 +550,33 @@ fn test_no_false_mapping_with_colon_later() {
 
     assert_eq!(sequence.len(), 3, "Should have 3 items");
 
-    // First item should be a mapping
     let item0 = sequence.get(0).expect("Should have item 0");
-    assert!(
-        item0.as_mapping().is_some(),
-        "First item should be a mapping"
+    let mapping0 = item0.as_mapping().expect("First item should be a mapping");
+    assert_eq!(
+        mapping0
+            .get("item1")
+            .and_then(|n| n.as_scalar().cloned())
+            .expect("item1 should exist")
+            .as_string(),
+        "value1"
     );
 
-    // Second item should be a scalar (not treated as mapping due to colon position)
     let item1 = sequence.get(1).expect("Should have item 1");
-    if let Some(scalar) = item1.as_scalar() {
-        assert_eq!(scalar.as_string(), "item2 has text: but not a key");
-    } else {
-        panic!("Second item should be a scalar, not a mapping");
-    }
+    let mapping1 = item1
+        .as_mapping()
+        .expect("Second item should be a mapping with multi-word key");
+    assert_eq!(
+        mapping1
+            .get("item2 has text")
+            .and_then(|n| n.as_scalar().cloned())
+            .expect("'item2 has text' should be a key")
+            .as_string(),
+        "but not a key"
+    );
 
-    // Third item should be a scalar
     let item2 = sequence.get(2).expect("Should have item 2");
-    if let Some(scalar) = item2.as_scalar() {
-        assert_eq!(scalar.as_string(), "item3");
-    } else {
-        panic!("Third item should be a scalar");
-    }
+    let scalar = item2.as_scalar().expect("Third item should be a scalar");
+    assert_eq!(scalar.as_string(), "item3");
 }
 
 #[test]

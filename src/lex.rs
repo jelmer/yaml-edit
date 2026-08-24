@@ -251,6 +251,42 @@ impl From<SyntaxKind> for rowan::SyntaxKind {
     }
 }
 
+/// Decide whether the whitespace run starting at `ws_idx` is internal to a
+/// plain scalar or a real terminator. Internal whitespace is followed by
+/// more plain-scalar content on the same line; a terminator is followed by
+/// end-of-line, end-of-input, a `#` comment marker, a `:` that ends the
+/// scalar (colon + whitespace/EOF), a flow indicator, or any other YAML
+/// special character.
+///
+/// Whitespace before a flow indicator is treated as a terminator even in
+/// block context: while the main loop treats `[](){},` as scalar content
+/// when they appear directly (no leading space), a space introduces a
+/// clear boundary that should be preserved as its own WHITESPACE token.
+///
+/// Caller must guarantee the character at `ws_idx` is a space or tab.
+fn plain_scalar_continues_past_whitespace(input: &str, ws_idx: usize, _flow_depth: u32) -> bool {
+    let rest = &input[ws_idx..];
+    // Find the first non-whitespace char in the run.
+    let (offset, next) = match rest.char_indices().find(|(_, c)| *c != ' ' && *c != '\t') {
+        Some(v) => v,
+        None => return false,
+    };
+    match next {
+        '\n' | '\r' | '#' => false,
+        ',' | '[' | ']' | '{' | '}' => false,
+        ':' => {
+            let colon_pos = ws_idx + offset;
+            let after_colon = &input[colon_pos + 1..];
+            after_colon
+                .chars()
+                .next()
+                .is_some_and(|nc| !nc.is_whitespace())
+        }
+        c if is_yaml_special(c) => false,
+        _ => true,
+    }
+}
+
 /// Helper to read a scalar value starting from current position
 fn read_scalar_from<'a>(
     chars: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
@@ -761,16 +797,37 @@ pub fn lex_with_validation_config<'a>(
                 let mut end_idx = start_idx + ch.len_utf8();
 
                 // Read the rest of the scalar normally, including embedded hyphens
-                while let Some((idx, next_ch)) = chars.peek() {
-                    if next_ch.is_whitespace() {
+                while let Some((idx, next_ch)) = chars.peek().copied() {
+                    // Line breaks always terminate the current scalar token.
+                    if next_ch == '\n' || next_ch == '\r' {
                         break;
+                    }
+
+                    // Intra-line whitespace (space/tab) is part of a plain
+                    // scalar when followed by more scalar content on the same
+                    // line. Per YAML 1.2, plain scalars may contain single or
+                    // multiple internal spaces, but stop at line break, at
+                    // ` #` (comment start), or at end of line.
+                    if next_ch == ' ' || next_ch == '\t' {
+                        if !plain_scalar_continues_past_whitespace(input, idx, flow_depth) {
+                            break;
+                        }
+                        // Absorb the whitespace run into the scalar
+                        while let Some((wi, wc)) = chars.peek().copied() {
+                            if wc != ' ' && wc != '\t' {
+                                break;
+                            }
+                            end_idx = wi + wc.len_utf8();
+                            chars.next();
+                        }
+                        continue;
                     }
 
                     // Check for YAML special characters
                     // Special handling for colon: only special if followed by whitespace or EOF
-                    if *next_ch == ':' {
+                    if next_ch == ':' {
                         // Peek ahead one more to check if colon is followed by whitespace
-                        let next_idx = *idx + next_ch.len_utf8();
+                        let next_idx = idx + next_ch.len_utf8();
                         if next_idx >= input.len() {
                             // Colon at EOF - stop here (treat as mapping indicator)
                             break;
@@ -781,15 +838,15 @@ pub fn lex_with_validation_config<'a>(
                             }
                         }
                         // Colon not followed by whitespace - continue as part of scalar
-                        end_idx = *idx + next_ch.len_utf8();
+                        end_idx = idx + next_ch.len_utf8();
                         chars.next();
                         continue;
                     }
 
                     // Check other special characters (excluding hyphen and colon)
-                    if is_yaml_special_except(*next_ch, "-:") {
+                    if is_yaml_special_except(next_ch, "-:") {
                         // In block context, flow indicators do NOT break scalars
-                        if flow_depth == 0 && matches!(*next_ch, '[' | ']' | '{' | '}' | ',') {
+                        if flow_depth == 0 && matches!(next_ch, '[' | ']' | '{' | '}' | ',') {
                             // do nothing, let it be part of the scalar
                         } else {
                             break;
@@ -797,20 +854,20 @@ pub fn lex_with_validation_config<'a>(
                     }
 
                     // Special case: check if hyphen is a sequence marker
-                    if *next_ch == '-' {
+                    if next_ch == '-' {
                         // A hyphen is only a sequence marker if it's at line start
                         // and this scalar is already complete (we're at a word boundary)
-                        let line_start = input[..(*idx)].rfind('\n').map(|p| p + 1).unwrap_or(0);
-                        let before_hyphen = &input[line_start..*idx];
+                        let line_start = input[..idx].rfind('\n').map(|p| p + 1).unwrap_or(0);
+                        let before_hyphen = &input[line_start..idx];
 
                         // If there's only whitespace before the hyphen, it might be a sequence marker
                         // Break here to let the main loop handle it
-                        if before_hyphen.chars().all(|c| c == ' ' || c == '\t') && *idx == end_idx {
+                        if before_hyphen.chars().all(|c| c == ' ' || c == '\t') && idx == end_idx {
                             break;
                         }
                     }
 
-                    end_idx = *idx + next_ch.len_utf8();
+                    end_idx = idx + next_ch.len_utf8();
                     chars.next();
                 }
 
@@ -1234,13 +1291,17 @@ double: "quoted""#;
         let input = "line with - and + and : characters";
         let tokens = lex(input);
 
-        // With context-aware hyphen parsing, the standalone hyphen with spaces
-        // is treated as a string because it's not a sequence marker
+        // Plain scalars absorb intra-line whitespace until they hit a real
+        // terminator, so `line with` is one STRING and the standalone `-`
+        // between spaces is another (not a sequence marker mid-line).
+        assert!(tokens
+            .iter()
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "line with"));
         assert!(tokens
             .iter()
             .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "-"));
 
-        // Plus and colon are still tokenized as special characters
+        // Plus and colon remain separately tokenized.
         assert!(tokens
             .iter()
             .any(|(kind, text)| *kind == SyntaxKind::PLUS && *text == "+"));
@@ -1248,19 +1309,9 @@ double: "quoted""#;
             .iter()
             .any(|(kind, text)| *kind == SyntaxKind::COLON && *text == ":"));
 
-        // Should also have the word tokens
-        assert!(tokens
-            .iter()
-            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "line"));
-        assert!(tokens
-            .iter()
-            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "with"));
-        assert!(tokens
-            .iter()
-            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "and"));
-        assert!(tokens
-            .iter()
-            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "characters"));
+        // Round-trip: concatenating tokens reproduces input.
+        let joined: String = tokens.iter().map(|(_, t)| *t).collect();
+        assert_eq!(joined, input);
     }
 
     #[test]
@@ -1691,12 +1742,15 @@ double: "quoted""#;
 
     #[test]
     fn test_dash_in_multiline_values() {
-        // Test multiline with dashes
+        // Test multiline with dashes: plain scalars absorb intra-line
+        // whitespace, so the first line becomes one STRING token ending
+        // in the trailing hyphen (hyphen-at-end-of-word is scalar content,
+        // not a sequence marker mid-scalar).
         let input = "description: This is a multi-\n  line value with dashes";
         let tokens = lex(input);
         assert!(tokens
             .iter()
-            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "multi-"));
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "This is a multi-"));
 
         // Test continuation with sequence-like line
         let input = "text: value\n  - but this is not a sequence";

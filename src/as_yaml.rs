@@ -551,7 +551,7 @@ impl AsYaml for YamlNode {
             YamlNode::Mapping(m) => ValueNode::is_inline(m),
             YamlNode::Sequence(s) => ValueNode::is_inline(s),
             YamlNode::Alias(_) => true,
-            YamlNode::TaggedNode(_) => true,
+            YamlNode::TaggedNode(t) => ValueNode::is_inline(t),
         }
     }
 }
@@ -714,6 +714,14 @@ pub(crate) fn copy_node_content_reindent(
     for child in node.children_with_tokens() {
         match child {
             rowan::NodeOrToken::Node(n) => {
+                // Empty nodes (e.g. an implicit `null` value after `? key`
+                // in a set) emit nothing, so they must not affect the
+                // `after_newline` state or trigger a pre-node indent.
+                if n.text_range().is_empty() {
+                    builder.start_node(n.kind().into());
+                    builder.finish_node();
+                    continue;
+                }
                 if after_newline && delta > 0 {
                     builder.token(SyntaxKind::WHITESPACE.into(), &pad(delta));
                 }
@@ -756,24 +764,49 @@ pub(crate) fn copy_node_content_reindent(
 /// a MAPPING_ENTRY it's the column of the key. Returns 0 for anything at
 /// the start of the tree's text.
 pub(crate) fn source_base_indent(node: &SyntaxNode) -> usize {
-    // Compute the column where `node` starts by counting characters back
-    // from its start offset to the most recent newline in the tree text.
-    // Walks up to the root and reads the text prefix so it works regardless
-    // of how the parser chose to distribute INDENT/WHITESPACE tokens across
-    // the CST (siblings, inside a `SEQUENCE_ENTRY`'s dash-space, etc.).
-    let node_start: usize = node.text_range().start().into();
-    let mut root = node.clone();
-    while let Some(p) = root.parent() {
-        root = p;
-    }
-    let root_start: usize = root.text_range().start().into();
-    let prefix_len = node_start.saturating_sub(root_start);
-    let root_text = root.text().to_string();
-    // TextSize is byte-based, so slice on the byte boundary.
-    let prefix = root_text.get(..prefix_len).unwrap_or(&root_text);
-    match prefix.rfind('\n') {
-        Some(nl) => prefix[nl + 1..].chars().count(),
-        None => prefix.chars().count(),
+    // Walk backwards through preceding tokens (climbing to parent siblings
+    // when we run out), accumulating characters until we hit a NEWLINE or
+    // the start of the tree. This works regardless of how the parser
+    // distributed INDENT/WHITESPACE tokens (siblings, inside a
+    // `SEQUENCE_ENTRY`'s dash-space, etc.) and only materializes text
+    // subtrees that we've already confirmed contain a newline.
+    let mut column: usize = 0;
+    let mut cursor = node.prev_sibling_or_token();
+    let mut current = node.clone();
+    loop {
+        while let Some(item) = cursor {
+            match item {
+                rowan::NodeOrToken::Token(t) => {
+                    let text = t.text();
+                    if let Some(nl) = text.rfind('\n') {
+                        column += text[nl + 1..].chars().count();
+                        return column;
+                    }
+                    column += text.chars().count();
+                    cursor = t.prev_sibling_or_token();
+                }
+                rowan::NodeOrToken::Node(n) => {
+                    // For nodes containing no newline we still need the
+                    // character count (bytes lie for multi-byte input);
+                    // materialize.
+                    let text = n.text().to_string();
+                    if let Some(nl) = text.rfind('\n') {
+                        column += text[nl + 1..].chars().count();
+                        return column;
+                    }
+                    column += text.chars().count();
+                    cursor = n.prev_sibling_or_token();
+                }
+            }
+        }
+        // Ran out of siblings; climb up and continue with the parent's siblings.
+        match current.parent() {
+            Some(p) => {
+                cursor = p.prev_sibling_or_token();
+                current = p;
+            }
+            None => return column,
+        }
     }
 }
 

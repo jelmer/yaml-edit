@@ -266,3 +266,162 @@ fn set_replaces_scalar_with_literal_block_scalar() {
     let expected = "outer:\n  key: |\n    line1\n    line2\n";
     assert_eq!(target_file.to_string(), expected);
 }
+
+#[test]
+fn set_scalar_replaces_block_value_keeps_space() {
+    // Replacing a block sequence (or mapping) with an inline scalar must
+    // insert the required WHITESPACE between COLON and the new VALUE and
+    // append a trailing NEWLINE.
+    let src = "k:\n  - a\n  - b\n";
+    let sf = YamlFile::from_str(src).unwrap();
+    sf.document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .set("k", "modified");
+    assert_eq!(sf.to_string(), "k: modified\n");
+}
+
+#[test]
+fn set_preserves_anchor_on_block_source() {
+    // A source with a leading `&anchor` before its block content keeps
+    // the anchor on the key line so aliases still resolve.
+    let source = "k: &myanchor\n  - a\n  - b\n";
+    let source_file = YamlFile::from_str(source).unwrap();
+    let src = source_file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("k")
+        .unwrap();
+
+    let target = "outer:\n  key: old\n";
+    let target_file = YamlFile::from_str(target).unwrap();
+    target_file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("outer")
+        .unwrap()
+        .set("key", &src);
+    let expected = "outer:\n  key: &myanchor\n    - a\n    - b\n";
+    assert_eq!(target_file.to_string(), expected);
+}
+
+#[test]
+fn set_reindents_tagged_block_value() {
+    // Tagged values (!!set, !!omap, custom !tag) keep the tag on the key
+    // line and re-indent the wrapped block content under the new column.
+    let source = "k: !!omap\n  - alpha: 1\n  - beta: 2\n";
+    let source_file = YamlFile::from_str(source).unwrap();
+    let src = source_file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("k")
+        .unwrap();
+
+    let target = "outer:\n  key: old\n";
+    let target_file = YamlFile::from_str(target).unwrap();
+    target_file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("outer")
+        .unwrap()
+        .set("key", &src);
+    let expected = "outer:\n  key: !!omap\n    - alpha: 1\n    - beta: 2\n";
+    assert_eq!(target_file.to_string(), expected);
+}
+
+#[test]
+fn set_preserves_anchor_on_inline_source() {
+    // Anchor on an inline scalar (`&a hello`) survives replacement into
+    // another entry. The default `set_value` path now checks the source
+    // for a preceding `&anchor` and inserts it before the new value.
+    let source = "k: &a hello\n";
+    let source_file = YamlFile::from_str(source).unwrap();
+    let src = source_file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("k")
+        .unwrap();
+    let target = "outer:\n  key: old\n";
+    let target_file = YamlFile::from_str(target).unwrap();
+    target_file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("outer")
+        .unwrap()
+        .set("key", &src);
+    assert_eq!(target_file.to_string(), "outer:\n  key: &a hello\n");
+}
+
+#[test]
+fn set_scalar_replaces_block_value_with_anchor_or_tag() {
+    // The block-old-value detector should recognise block form even when
+    // it's fronted by an ANCHOR or a TAGGED_NODE — replacing with an
+    // inline scalar has to drop the old space+block and rebuild with a
+    // single space and a trailing newline.
+    let target = "k: &a\n  - old\n";
+    let tf = YamlFile::from_str(target).unwrap();
+    tf.document().unwrap().as_mapping().unwrap().set("k", "new");
+    assert_eq!(tf.to_string(), "k: new\n");
+
+    let target = "k: !!seq\n  - old\n";
+    let tf = YamlFile::from_str(target).unwrap();
+    tf.document().unwrap().as_mapping().unwrap().set("k", "new");
+    assert_eq!(tf.to_string(), "k: new\n");
+}
+
+#[test]
+fn set_explicit_key_scalar_to_block_no_blank_line() {
+    // Explicit-key entries have their trailing NEWLINE at the parent MAPPING
+    // level (not inside the MAPPING_ENTRY). When we replace the value with
+    // a block whose own content ends with NEWLINE, that sibling NEWLINE
+    // would render as a spurious blank line — we drop it.
+    let target = "? mykey\n: old_scalar\n";
+    let tf = YamlFile::from_str(target).unwrap();
+    let source = "k:\n  - a\n";
+    let sf = YamlFile::from_str(source).unwrap();
+    let src = sf
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("k")
+        .unwrap();
+    tf.document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .set("mykey", &src);
+    assert_eq!(tf.to_string(), "? mykey\n:\n  - a\n");
+}
+
+#[test]
+fn set_preserves_blank_line_between_entries() {
+    // The trailing-blank-line cleanup must not touch a genuine blank line
+    // between two entries.
+    let target = "a: 1\n\nb: 2\n";
+    let tf = YamlFile::from_str(target).unwrap();
+    let source = "s:\n  - x\n";
+    let sf = YamlFile::from_str(source).unwrap();
+    let src = sf
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("s")
+        .unwrap();
+    tf.document().unwrap().as_mapping().unwrap().set("a", &src);
+    assert!(tf.to_string().contains("\n\nb: 2"));
+}

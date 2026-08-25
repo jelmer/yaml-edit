@@ -114,6 +114,35 @@ impl ValueNode for Scalar {
     }
 }
 
+impl ValueNode for TaggedNode {
+    fn is_inline(&self) -> bool {
+        // A tagged node is inline iff the value it wraps is inline. Look
+        // for the first NEWLINE inside; if it appears before the wrapped
+        // node, the value sits on the next line (block form).
+        let mut seen_newline = false;
+        for child in self.0.children_with_tokens() {
+            match child {
+                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::NEWLINE => {
+                    seen_newline = true;
+                }
+                rowan::NodeOrToken::Node(n) => {
+                    if seen_newline {
+                        return false;
+                    }
+                    return match n.kind() {
+                        SyntaxKind::MAPPING => Mapping::cast(n).is_some_and(|m| m.is_inline()),
+                        SyntaxKind::SEQUENCE => Sequence::cast(n).is_some_and(|s| s.is_inline()),
+                        SyntaxKind::SCALAR => Scalar::cast(n).is_some_and(|s| s.is_inline()),
+                        _ => true,
+                    };
+                }
+                _ => {}
+            }
+        }
+        true
+    }
+}
+
 // Helper functions for newline management
 
 /// Check if a syntax node ends with a newline token

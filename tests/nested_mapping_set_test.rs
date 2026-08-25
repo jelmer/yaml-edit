@@ -238,6 +238,22 @@ fn scalar_over_block_preserves_key_line_comment() {
 }
 
 #[test]
+fn set_path_creates_intermediate_mappings_with_indent() {
+    // Regression for issue #18: set_path drilling through several missing
+    // intermediate mappings must indent each level correctly and must not
+    // leave stray blank lines behind.
+    use yaml_edit::path::YamlPath;
+    use yaml_edit::Document;
+
+    let doc = Document::from_str("managers:\n  pm:\n    runtime: claude-code\n").unwrap();
+    doc.set_path("managers.pm.interfaces.telegram.bot_token_env", "TOKEN");
+    assert_eq!(
+        doc.to_string(),
+        "managers:\n  pm:\n    runtime: claude-code\n    interfaces:\n      telegram:\n        bot_token_env: TOKEN\n"
+    );
+}
+
+#[test]
 fn round_trip_scalar_block_preserves_comment() {
     let (tf, root) = parse("key: initial  # sticky\n");
     // scalar → block

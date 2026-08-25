@@ -201,14 +201,11 @@ fn build_tagged_value_node(source: &SyntaxNode, target: usize) -> (SyntaxNode, b
 fn source_anchor_text(source: &SyntaxNode) -> Option<String> {
     let mut cursor = source.prev_sibling_or_token();
     while let Some(item) = cursor {
-        if let Some(tok) = item.as_token() {
-            match tok.kind() {
-                SyntaxKind::ANCHOR => return Some(tok.text().to_string()),
-                SyntaxKind::WHITESPACE | SyntaxKind::INDENT | SyntaxKind::NEWLINE => {}
-                _ => return None,
-            }
-        } else {
-            return None;
+        let tok = item.as_token()?;
+        match tok.kind() {
+            SyntaxKind::ANCHOR => return Some(tok.text().to_string()),
+            SyntaxKind::WHITESPACE | SyntaxKind::INDENT | SyntaxKind::NEWLINE => {}
+            _ => return None,
         }
         cursor = item.prev_sibling_or_token();
     }
@@ -363,7 +360,15 @@ impl MappingEntry {
                         | crate::as_yaml::YamlKind::Tagged(_)
                 )
             })
-            .filter(|src| key_indent > 0 || crate::as_yaml::source_base_indent(src) > 0);
+            // Route through build_block_value_node whenever indentation
+            // needs to shift, OR when the source is empty (so a future
+            // insertion has an INDENT hint to drop into rather than
+            // landing at column 0).
+            .filter(|src| {
+                key_indent > 0
+                    || crate::as_yaml::source_base_indent(src) > 0
+                    || src.children().next().is_none()
+            });
 
         let value_ends_with_newline = if let Some(source) = block_source {
             let (value_node, ends_with_newline) = build_block_value_node(source, key_indent + 2);
@@ -1250,6 +1255,36 @@ impl Mapping {
         // already adds one as part of the newline ownership model (entries own their trailing newlines)
 
         self.0.splice_children(insert_pos..insert_pos, new_elements);
+
+        // If the mapping had been empty and sits inside a VALUE whose parent
+        // MAPPING_ENTRY already carries a trailing NEWLINE, that NEWLINE was
+        // a placeholder for the still-empty value ("key:\n    \n") and is
+        // now redundant: the freshly inserted entry brings its own trailing
+        // NEWLINE. Leaving it in place would produce a blank line at the end
+        // of the drilled-in mapping (see issue #18).
+        if count == 0 {
+            let entry_ends_with_nl = new_entry
+                .last_token()
+                .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
+            if entry_ends_with_nl {
+                if let Some(parent_value) = self.0.parent() {
+                    if parent_value.kind() == SyntaxKind::VALUE {
+                        if let Some(parent_entry) = parent_value.parent() {
+                            if parent_entry.kind() == SyntaxKind::MAPPING_ENTRY {
+                                if let Some(last) = parent_entry.last_child_or_token() {
+                                    if last
+                                        .as_token()
+                                        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
+                                    {
+                                        last.detach();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Compare two key nodes structurally

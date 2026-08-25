@@ -867,7 +867,7 @@ config:
 
         assert_eq!(
             yaml.to_string(),
-            "name: test\nserver:\ndatabase:\nhost: localhost\n\n\n"
+            "name: test\nserver:\n  database:\n    host: localhost\n"
         );
 
         // Verify we can retrieve it

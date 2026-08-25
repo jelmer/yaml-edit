@@ -606,8 +606,15 @@ impl std::str::FromStr for Document {
 
     /// Parse a document from a YAML string.
     ///
-    /// Returns an error if the string contains multiple documents.
-    /// For multi-document YAML, use `YamlFile::from_str()` instead.
+    /// Returns an error if:
+    /// - the string contains multiple documents, or
+    /// - the string contains stream-level content (comments or `%YAML`/`%TAG`
+    ///   directives outside the document body).
+    ///
+    /// Per the YAML 1.2 spec, comments before the leading `---` (or after the
+    /// trailing `...`) and top-level directives belong to the stream, not the
+    /// document, so `Document` cannot round-trip them. Use
+    /// [`YamlFile::from_str`] if you need to preserve them.
     ///
     /// # Example
     /// ```
@@ -630,7 +637,8 @@ impl std::str::FromStr for Document {
             });
         }
 
-        let mut docs = parsed.tree().documents();
+        let tree = parsed.tree();
+        let mut docs = tree.documents();
         let first = docs.next().unwrap_or_default();
 
         if docs.next().is_some() {
@@ -638,6 +646,29 @@ impl std::str::FromStr for Document {
                 operation: "Document::from_str".to_string(),
                 reason: "Input contains multiple YAML documents. Use YamlFile::from_str() for multi-document YAML.".to_string(),
             });
+        }
+
+        // Per the YAML 1.2 spec, comments and directives outside a document
+        // (before the leading `---` or after the trailing `...`) belong to the
+        // stream, not to any document. `Document` cannot round-trip them, so
+        // reject rather than silently discard. Callers who need to preserve
+        // stream-level content should use `YamlFile::from_str` instead.
+        for child in tree.0.children_with_tokens() {
+            match child {
+                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::COMMENT => {
+                    return Err(crate::error::YamlError::InvalidOperation {
+                        operation: "Document::from_str".to_string(),
+                        reason: "Input contains stream-level comments outside the document. Use YamlFile::from_str() to preserve them.".to_string(),
+                    });
+                }
+                rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::DIRECTIVE => {
+                    return Err(crate::error::YamlError::InvalidOperation {
+                        operation: "Document::from_str".to_string(),
+                        reason: "Input contains YAML directives outside the document. Use YamlFile::from_str() to preserve them.".to_string(),
+                    });
+                }
+                _ => {}
+            }
         }
 
         Ok(first)
@@ -1387,6 +1418,59 @@ Repository: https://github.com/example/example.git
 ";
             assert_eq!(output, expected);
         }
+    }
+
+    #[test]
+    fn test_document_from_str_leading_comment_errors() {
+        // Per the YAML 1.2 spec, a comment before the document body is part
+        // of the stream, not the document. Document::from_str would have to
+        // silently drop it on round-trip, so instead it errors.
+        let yaml = "# leading comment\nkey: value\n";
+        let err = Document::from_str(yaml).unwrap_err();
+        match err {
+            crate::error::YamlError::InvalidOperation { operation, reason } => {
+                assert_eq!(operation, "Document::from_str");
+                assert!(
+                    reason.contains("stream-level comments"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            other => panic!("expected InvalidOperation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_document_from_str_directive_errors() {
+        // A %YAML directive is stream-level and cannot be attached to a
+        // Document, so parsing must fail rather than silently drop it.
+        let yaml = "%YAML 1.2\n---\nkey: value\n";
+        let err = Document::from_str(yaml).unwrap_err();
+        match err {
+            crate::error::YamlError::InvalidOperation { operation, reason } => {
+                assert_eq!(operation, "Document::from_str");
+                assert!(reason.contains("directives"), "unexpected reason: {reason}");
+            }
+            other => panic!("expected InvalidOperation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_document_from_str_trailing_comment_errors() {
+        // A comment after the `...` end marker is stream-level too.
+        let yaml = "key: value\n...\n# trailing\n";
+        assert!(matches!(
+            Document::from_str(yaml),
+            Err(crate::error::YamlError::InvalidOperation { .. })
+        ));
+    }
+
+    #[test]
+    fn test_document_from_str_interior_comment_ok() {
+        // A comment attached to a mapping entry lives inside the document
+        // and round-trips fine.
+        let yaml = "key: value # trailing\n";
+        let doc = Document::from_str(yaml).unwrap();
+        assert_eq!(doc.to_string(), yaml);
     }
 
     #[test]

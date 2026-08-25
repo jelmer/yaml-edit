@@ -893,7 +893,7 @@ impl<T: AsYaml> AsYaml for Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::yaml::Document;
+    use crate::yaml::{Document, YamlFile};
     use std::str::FromStr;
 
     #[test]
@@ -1022,7 +1022,9 @@ key: value # inline comment
 key: value
 "#;
 
-        let doc1 = Document::from_str(yaml1).unwrap();
+        // yaml1 has a stream-level leading comment, so parse via YamlFile
+        // rather than Document::from_str (which rejects stream-scoped content).
+        let doc1 = YamlFile::from_str(yaml1).unwrap().document().unwrap();
         let doc2 = Document::from_str(yaml2).unwrap();
 
         let mapping1 = doc1.as_mapping().unwrap();

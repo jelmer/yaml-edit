@@ -1713,7 +1713,7 @@ mod tests {
     #[test]
     fn test_validator_duplicate_directive() {
         let yaml = "%YAML 1.2\n%YAML 1.2\n---\nkey: value\n";
-        let doc = Document::from_str(yaml).unwrap();
+        let doc = crate::YamlFile::from_str(yaml).unwrap().document().unwrap();
         let validator = Validator::new();
         let violations = validator.validate(&doc);
 
@@ -1874,7 +1874,10 @@ mod tests {
     fn test_validator_directive_without_document() {
         // Test 9MMA: Directive without any document
         let yaml = "%YAML 1.2\n";
-        let doc = Document::from_str(yaml).unwrap();
+        let doc = crate::YamlFile::from_str(yaml)
+            .unwrap()
+            .document()
+            .unwrap_or_default();
 
         // Debug: check if directive exists in tree
         let root = doc
@@ -1939,7 +1942,7 @@ mod tests {
         // A document with a tagged scalar following a directive should NOT be
         // reported as "directive without content" — TAGGED_NODE is real content.
         let yaml = "%YAML 1.2\n---\n!custom foo\n";
-        let doc = Document::from_str(yaml).unwrap();
+        let doc = crate::YamlFile::from_str(yaml).unwrap().document().unwrap();
         let validator = Validator::new();
         let violations = validator.validate(&doc);
 

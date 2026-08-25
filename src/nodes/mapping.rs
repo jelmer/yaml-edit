@@ -138,8 +138,132 @@ impl MappingEntry {
         MappingEntry(SyntaxNode::new_root_mut(builder.finish()))
     }
 
+    /// Column at which this entry's key sits on its line.
+    ///
+    /// Walks backwards through prior tokens (crossing up through parents
+    /// when this entry is the first child of its mapping) until it finds
+    /// the INDENT/WHITESPACE that follows the preceding NEWLINE. Returns 0
+    /// for root-level entries or entries that share a line with something
+    /// else (an explicit-key form, a flow-style parent, etc.).
+    fn indent_of_line(&self) -> usize {
+        let mut current: SyntaxNode = self.0.clone();
+        loop {
+            let mut cursor = current.prev_sibling_or_token();
+            while let Some(item) = cursor {
+                if let Some(tok) = item.as_token() {
+                    match tok.kind() {
+                        SyntaxKind::WHITESPACE | SyntaxKind::INDENT => {
+                            return tok.text().len();
+                        }
+                        SyntaxKind::NEWLINE => return 0,
+                        _ => {}
+                    }
+                }
+                cursor = item.prev_sibling_or_token();
+            }
+            match current.parent() {
+                Some(p) => current = p,
+                None => return 0,
+            }
+        }
+    }
+
+    /// Replace this entry's value with a block sequence or mapping from
+    /// another CST. Emits the value on the line after the key, indented to
+    /// this entry's nesting depth + 2, with the source's interior
+    /// indentation shifted to match. Called only from [`set_value`] for
+    /// non-flow parents whose new value is a node-backed block collection.
+    fn set_block_value(&self, source: &SyntaxNode) {
+        let target = self.indent_of_line() + 2;
+        let source_base = crate::as_yaml::source_base_indent(source);
+        let delta = target as isize - source_base as isize;
+
+        let mut value_builder = GreenNodeBuilder::new();
+        value_builder.start_node(SyntaxKind::VALUE.into());
+        value_builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        value_builder.token(SyntaxKind::INDENT.into(), &" ".repeat(target));
+        value_builder.start_node(source.kind().into());
+        let value_ends_with_newline =
+            crate::as_yaml::copy_node_content_reindent(&mut value_builder, source, delta);
+        value_builder.finish_node();
+        value_builder.finish_node();
+        let new_value_node = SyntaxNode::new_root_mut(value_builder.finish());
+
+        // Rebuild the entry from scratch in a fresh green tree: keep the
+        // original KEY (and any leading tokens like QUESTION for explicit
+        // keys) and the COLON, drop the inline-value spacing between COLON
+        // and VALUE, use the new VALUE, and drop the MAPPING_ENTRY-level
+        // trailing NEWLINE if the block value already ends with one.
+        let copy_wrapped = |builder: &mut GreenNodeBuilder, node: &SyntaxNode| {
+            builder.start_node(node.kind().into());
+            add_node_children_to(builder, node);
+            builder.finish_node();
+        };
+
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
+        let mut value_placed = false;
+        let mut inside_between = false; // between COLON and old VALUE
+        for child in self.0.children_with_tokens() {
+            match child {
+                rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::VALUE => {
+                    copy_wrapped(&mut builder, &new_value_node);
+                    value_placed = true;
+                    inside_between = false;
+                }
+                rowan::NodeOrToken::Node(n) => copy_wrapped(&mut builder, &n),
+                rowan::NodeOrToken::Token(t) => match t.kind() {
+                    SyntaxKind::COLON => {
+                        builder.token(t.kind().into(), t.text());
+                        inside_between = true;
+                    }
+                    SyntaxKind::WHITESPACE if inside_between => {}
+                    SyntaxKind::NEWLINE if value_placed && value_ends_with_newline => {}
+                    _ => {
+                        builder.token(t.kind().into(), t.text());
+                        inside_between = false;
+                    }
+                },
+            }
+        }
+        if !value_placed {
+            copy_wrapped(&mut builder, &new_value_node);
+        }
+        builder.finish_node();
+        let rebuilt = SyntaxNode::new_root_mut(builder.finish());
+
+        // Replace self's entire content with the rebuilt entry's content.
+        // Detach the existing children one at a time (rowan's splice_children
+        // stops after the first detach when iterating a live tree, so we
+        // can't use a single 0..N splice), then insert the new ones.
+        let existing: Vec<_> = self.0.children_with_tokens().collect();
+        for child in existing {
+            child.detach();
+        }
+        let new_children: Vec<_> = rebuilt.children_with_tokens().collect();
+        self.0.splice_children(0..0, new_children);
+    }
+
     /// Replace the value of this entry in place, preserving the key and surrounding whitespace.
     pub fn set_value(&self, new_value: impl crate::AsYaml, flow_context: bool) {
+        use crate::as_yaml::YamlKind;
+
+        // A block collection coming from another CST needs a full rebuild of
+        // the entry: the value goes on its own line, so any sibling
+        // WHITESPACE between COLON and VALUE must be dropped, and any
+        // sibling trailing NEWLINE would collide with the newline that the
+        // block content already carries. Flow context (parent mapping is
+        // flow-style) means block content isn't valid there, so we fall
+        // through to the default path.
+        let block_source = (!flow_context && !new_value.is_inline())
+            .then(|| new_value.as_node())
+            .flatten()
+            .filter(|_| matches!(new_value.kind(), YamlKind::Mapping | YamlKind::Sequence));
+        if let Some(source) = block_source {
+            self.set_block_value(source);
+            return;
+        }
+
         // Build new VALUE node, preserving any inline comment from the old value
         let mut value_builder = GreenNodeBuilder::new();
         value_builder.start_node(SyntaxKind::VALUE.into());

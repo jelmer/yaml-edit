@@ -693,6 +693,87 @@ pub(crate) fn copy_node_content_with_indent(
     }
 }
 
+/// Copy the children of `node` into `builder`, shifting every post-newline
+/// whitespace by `delta` columns (may be negative to dedent).
+///
+/// Unlike [`copy_node_content_with_indent`], newline state is tracked
+/// across node boundaries: a NEWLINE inside a child node correctly marks
+/// the next sibling token as being at the start of a line, so
+/// sibling INDENT tokens between entries (which is where the parser
+/// places them for block sequences and mappings) are shifted too.
+/// Returns whether the last emitted token was a NEWLINE.
+pub(crate) fn copy_node_content_reindent(
+    builder: &mut rowan::GreenNodeBuilder,
+    node: &SyntaxNode,
+    delta: isize,
+) -> bool {
+    use crate::lex::SyntaxKind;
+    let mut after_newline = false;
+    let pad = |n: isize| " ".repeat(n.max(0) as usize);
+
+    for child in node.children_with_tokens() {
+        match child {
+            rowan::NodeOrToken::Node(n) => {
+                if after_newline && delta > 0 {
+                    builder.token(SyntaxKind::WHITESPACE.into(), &pad(delta));
+                }
+                builder.start_node(n.kind().into());
+                after_newline = copy_node_content_reindent(builder, &n, delta);
+                builder.finish_node();
+            }
+            rowan::NodeOrToken::Token(t) => match t.kind() {
+                SyntaxKind::NEWLINE => {
+                    builder.token(t.kind().into(), t.text());
+                    after_newline = true;
+                }
+                SyntaxKind::WHITESPACE | SyntaxKind::INDENT => {
+                    if after_newline {
+                        let total = t.text().len() as isize + delta;
+                        if total > 0 {
+                            builder.token(SyntaxKind::WHITESPACE.into(), &pad(total));
+                        }
+                    } else {
+                        builder.token(t.kind().into(), t.text());
+                    }
+                    after_newline = false;
+                }
+                _ => {
+                    if after_newline && delta > 0 {
+                        builder.token(SyntaxKind::WHITESPACE.into(), &pad(delta));
+                    }
+                    builder.token(t.kind().into(), t.text());
+                    after_newline = false;
+                }
+            },
+        }
+    }
+    after_newline
+}
+
+/// Column at which `node` is laid out in its source tree.
+///
+/// Reads the WHITESPACE/INDENT token that sits between the preceding
+/// NEWLINE and `node` in its parent — that's the amount of indent the
+/// parser stored to describe `node`'s starting column. If `node` is the
+/// document root, is at column 0, or shares a line with something else,
+/// returns 0.
+pub(crate) fn source_base_indent(node: &SyntaxNode) -> usize {
+    use crate::lex::SyntaxKind;
+    let mut cursor = node.prev_sibling_or_token();
+    while let Some(item) = cursor {
+        if let Some(tok) = item.as_token() {
+            match tok.kind() {
+                SyntaxKind::WHITESPACE | SyntaxKind::INDENT => return tok.text().len(),
+                SyntaxKind::NEWLINE => return 0,
+                _ => {}
+            }
+        }
+        cursor = item.prev_sibling_or_token();
+    }
+    // No indent found among siblings — walk up one level and continue.
+    node.parent().map(|p| source_base_indent(&p)).unwrap_or(0)
+}
+
 // AsYaml trait implementations for primitive types
 //
 // Uses macros to reduce boilerplate for the 12 numeric primitive types.

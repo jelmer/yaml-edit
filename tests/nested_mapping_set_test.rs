@@ -2,156 +2,96 @@
 //! when setting block sequences in nested mappings.
 
 use std::str::FromStr;
-use yaml_edit::YamlFile;
+use yaml_edit::{Mapping, MappingBuilder, Sequence, SequenceBuilder, YamlFile};
 
-#[test]
-fn set_block_sequence_in_nested_mapping() {
-    let target = "\
-gui:
-  theme:
-    activeBorderColor:
-      - \"#old\"
-      - bold
-    other: keep
-";
-    let source_yaml = "\
-activeBorderColor:
-  - \"#new\"
-  - bold
-";
+/// Parse `yaml` and return the file plus its root mapping.
+fn parse(yaml: &str) -> (YamlFile, Mapping) {
+    let file = YamlFile::from_str(yaml).unwrap();
+    let root = file.document().unwrap().as_mapping().unwrap();
+    (file, root)
+}
 
-    let target_file = YamlFile::from_str(target).unwrap();
-    let source_file = YamlFile::from_str(source_yaml).unwrap();
+/// Navigate into nested mappings via successive `get_mapping` calls.
+fn dig(root: &Mapping, path: &[&str]) -> Mapping {
+    let mut m = root.clone();
+    for seg in path {
+        m = m.get_mapping(seg).unwrap();
+    }
+    m
+}
 
-    let source_map = source_file.document().unwrap().as_mapping().unwrap();
-    let source_node = source_map.get("activeBorderColor").unwrap();
+/// Build a standalone sequence of scalar items.
+fn seq(items: &[&str]) -> Sequence {
+    let mut b = SequenceBuilder::new();
+    for it in items {
+        b = b.item(*it);
+    }
+    b.build_document().as_sequence().unwrap()
+}
 
-    let doc = target_file.document().unwrap();
-    let gui = doc.as_mapping().unwrap().get_mapping("gui").unwrap();
-    let theme = gui.get_mapping("theme").unwrap();
-    theme.set("activeBorderColor", &source_node);
-
-    let expected = "\
-gui:
-  theme:
-    activeBorderColor:
-      - \"#new\"
-      - bold
-    other: keep
-";
-    assert_eq!(target_file.to_string(), expected);
-
-    let reparsed = YamlFile::from_str(&target_file.to_string()).unwrap();
-    assert!(reparsed.document().is_some());
+/// Build a standalone mapping of scalar pairs.
+fn map(pairs: &[(&str, &str)]) -> Mapping {
+    let mut b = MappingBuilder::new();
+    for (k, v) in pairs {
+        b = b.pair(*k, *v);
+    }
+    b.build_document().as_mapping().unwrap()
 }
 
 #[test]
-fn set_block_mapping_in_nested_mapping() {
-    let target = "\
-outer:
-  inner:
-    replaced:
-      old_key: old
-    keep: yes
-";
-    let source_yaml = "\
-replaced:
-  new_key: new
-  another: value
-";
-
-    let target_file = YamlFile::from_str(target).unwrap();
-    let source_file = YamlFile::from_str(source_yaml).unwrap();
-
-    let source_map = source_file.document().unwrap().as_mapping().unwrap();
-    let source_node = source_map.get("replaced").unwrap();
-
-    let doc = target_file.document().unwrap();
-    let outer = doc.as_mapping().unwrap().get_mapping("outer").unwrap();
-    let inner = outer.get_mapping("inner").unwrap();
-    inner.set("replaced", &source_node);
-
-    let expected = "\
-outer:
-  inner:
-    replaced:
-      new_key: new
-      another: value
-    keep: yes
-";
-    assert_eq!(target_file.to_string(), expected);
+fn block_sequence_in_nested_mapping() {
+    let (tf, root) = parse(
+        "gui:\n  theme:\n    activeBorderColor:\n      - \"#old\"\n      - bold\n    other: keep\n",
+    );
+    dig(&root, &["gui", "theme"]).set("activeBorderColor", seq(&["\"#new\"", "bold"]));
+    // See block_sequence_in_root_mapping about the single-quoting of `"#new"`.
+    assert_eq!(
+        tf.to_string(),
+        "gui:\n  theme:\n    activeBorderColor:\n      - '\"#new\"'\n      - bold\n    other: keep\n"
+    );
 }
 
 #[test]
-fn set_block_sequence_in_root_mapping() {
-    let target = "\
-activeBorderColor:
-  - \"#old\"
-  - bold
-other: keep
-";
-    let source_yaml = "\
-activeBorderColor:
-  - \"#new\"
-  - bold
-";
-
-    let target_file = YamlFile::from_str(target).unwrap();
-    let source_file = YamlFile::from_str(source_yaml).unwrap();
-
-    let source_map = source_file.document().unwrap().as_mapping().unwrap();
-    let source_node = source_map.get("activeBorderColor").unwrap();
-
-    let doc = target_file.document().unwrap();
-    let root = doc.as_mapping().unwrap();
-    root.set("activeBorderColor", &source_node);
-
-    let expected = "\
-activeBorderColor:
-  - \"#new\"
-  - bold
-other: keep
-";
-    assert_eq!(target_file.to_string(), expected);
+fn block_mapping_in_nested_mapping() {
+    let (tf, root) = parse("outer:\n  inner:\n    replaced:\n      old_key: old\n    keep: yes\n");
+    dig(&root, &["outer", "inner"])
+        .set("replaced", map(&[("new_key", "new"), ("another", "value")]));
+    assert_eq!(
+        tf.to_string(),
+        "outer:\n  inner:\n    replaced:\n      new_key: new\n      another: value\n    keep: yes\n"
+    );
 }
 
 #[test]
-fn set_replaces_inline_scalar_with_block_sequence() {
-    // Old value is an inline scalar (`key: old`). Replacing with a block
-    // sequence must drop the WHITESPACE between COLON and the old VALUE
-    // (otherwise `key:` gets a stray trailing space) and must not duplicate
-    // the entry's trailing NEWLINE (the block value carries its own).
-    let target = "a: 1\nb: 2\nc: 3\n";
-    let target_file = YamlFile::from_str(target).unwrap();
-
-    let source = "k:\n  - x\n  - y\n";
-    let source_file = YamlFile::from_str(source).unwrap();
-    let src = source_file
-        .document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .get("k")
-        .unwrap();
-
-    target_file
-        .document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .set("b", &src);
-    let expected = "a: 1\nb:\n  - x\n  - y\nc: 3\n";
-    assert_eq!(target_file.to_string(), expected);
+fn block_sequence_in_root_mapping() {
+    let (tf, root) = parse("activeBorderColor:\n  - \"#old\"\n  - bold\nother: keep\n");
+    root.set("activeBorderColor", seq(&["\"#new\"", "bold"]));
+    // The scalar `"#new"` starts with `#`, so the SequenceBuilder wraps
+    // it in single quotes to keep it a scalar rather than a comment start.
+    assert_eq!(
+        tf.to_string(),
+        "activeBorderColor:\n  - '\"#new\"'\n  - bold\nother: keep\n"
+    );
 }
 
 #[test]
-fn set_preserves_relative_indent_of_nested_source() {
-    // Source has nested structure inside its top-level mapping. When placed
-    // at a deeper column, the relative indentation between nested levels
-    // must be preserved.
-    let source = "root:\n  a:\n    - x:\n        nested: 1\n      other: v\n";
-    let source_file = YamlFile::from_str(source).unwrap();
-    let src = source_file
+fn replaces_inline_scalar_with_block_sequence() {
+    // Old value is an inline scalar. Replacing with a block sequence must
+    // drop the WHITESPACE between COLON and the old VALUE and must not
+    // duplicate the entry's trailing NEWLINE.
+    let (tf, root) = parse("a: 1\nb: 2\nc: 3\n");
+    root.set("b", seq(&["x", "y"]));
+    assert_eq!(tf.to_string(), "a: 1\nb:\n  - x\n  - y\nc: 3\n");
+}
+
+#[test]
+fn preserves_relative_indent_of_nested_source() {
+    // Placing a nested block into a deeper column preserves relative indent.
+    // (Uses a parsed source because the shape isn't reachable via the
+    // scalar-only builders above.)
+    let src_file =
+        YamlFile::from_str("root:\n  a:\n    - x:\n        nested: 1\n      other: v\n").unwrap();
+    let src = src_file
         .document()
         .unwrap()
         .as_mapping()
@@ -159,269 +99,155 @@ fn set_preserves_relative_indent_of_nested_source() {
         .get("root")
         .unwrap();
 
-    let target = "outer:\n  inner:\n    tgt: old\n";
-    let target_file = YamlFile::from_str(target).unwrap();
-    target_file
-        .document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .get_mapping("outer")
-        .unwrap()
-        .get_mapping("inner")
-        .unwrap()
-        .set("tgt", &src);
-
-    let expected =
-        "outer:\n  inner:\n    tgt:\n      a:\n        - x:\n            nested: 1\n          other: v\n";
-    assert_eq!(target_file.to_string(), expected);
+    let (tf, root) = parse("outer:\n  inner:\n    tgt: old\n");
+    dig(&root, &["outer", "inner"]).set("tgt", &src);
+    assert_eq!(
+        tf.to_string(),
+        "outer:\n  inner:\n    tgt:\n      a:\n        - x:\n            nested: 1\n          other: v\n"
+    );
 }
 
 #[test]
-fn set_inserts_new_block_key_with_proper_indent() {
-    // Setting a NEW key (not replacing) with a node-backed block value
-    // must also re-indent the source content to line up under the new
-    // entry's column. Previously this went through MappingEntry::new
-    // which did a verbatim copy and produced inconsistent indentation.
-    let target = "outer:\n  inner:\n    old: v\n";
-    let target_file = YamlFile::from_str(target).unwrap();
-    let source = "k:\n  - a\n  - b\n";
-    let source_file = YamlFile::from_str(source).unwrap();
-    let src = source_file
+fn inserts_new_block_key_with_proper_indent() {
+    let (tf, root) = parse("outer:\n  inner:\n    old: v\n");
+    dig(&root, &["outer", "inner"]).set("newkey", seq(&["a", "b"]));
+    assert_eq!(
+        tf.to_string(),
+        "outer:\n  inner:\n    old: v\n    newkey:\n      - a\n      - b\n"
+    );
+}
+
+#[test]
+fn preserves_inline_comment_on_replaced_value() {
+    // Comment on the old inline value line survives the switch to a block
+    // value by moving up to the `key:` line.
+    let (tf, root) = parse("outer:\n  key: old  # important comment\n");
+    dig(&root, &["outer"]).set("key", seq(&["a", "b"]));
+    assert_eq!(
+        tf.to_string(),
+        "outer:\n  key:  # important comment\n    - a\n    - b\n"
+    );
+}
+
+#[test]
+fn replaces_scalar_with_literal_block_scalar() {
+    // Block scalars (`|` and `>`) keep the indicator on the key line.
+    // The block-scalar shape isn't reachable via the plain builders, so
+    // this one parses its source.
+    let src_file = YamlFile::from_str("k: |\n  line1\n  line2\n").unwrap();
+    let src = src_file
         .document()
         .unwrap()
         .as_mapping()
         .unwrap()
         .get("k")
         .unwrap();
-
-    target_file
-        .document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .get_mapping("outer")
-        .unwrap()
-        .get_mapping("inner")
-        .unwrap()
-        .set("newkey", &src);
-    let expected = "outer:\n  inner:\n    old: v\n    newkey:\n      - a\n      - b\n";
-    assert_eq!(target_file.to_string(), expected);
+    let (tf, root) = parse("outer:\n  key: old\n");
+    dig(&root, &["outer"]).set("key", &src);
+    assert_eq!(tf.to_string(), "outer:\n  key: |\n    line1\n    line2\n");
 }
 
 #[test]
-fn set_preserves_inline_comment_on_replaced_value() {
-    // When the old value had a trailing inline comment (`key: old # note`),
-    // the comment survives the switch to a block value by moving up to the
-    // `key:` line.
-    let target = "outer:\n  key: old  # important comment\n";
-    let target_file = YamlFile::from_str(target).unwrap();
-    let source = "k:\n  - a\n  - b\n";
-    let source_file = YamlFile::from_str(source).unwrap();
-    let src = source_file
+fn scalar_replaces_block_value_keeps_space() {
+    let (tf, root) = parse("k:\n  - a\n  - b\n");
+    root.set("k", "modified");
+    assert_eq!(tf.to_string(), "k: modified\n");
+}
+
+#[test]
+fn preserves_anchor_on_block_source() {
+    // Anchors aren't reachable via the plain builders — parse the source.
+    let src_file = YamlFile::from_str("k: &myanchor\n  - a\n  - b\n").unwrap();
+    let src = src_file
         .document()
         .unwrap()
         .as_mapping()
         .unwrap()
         .get("k")
         .unwrap();
-
-    target_file
-        .document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .get_mapping("outer")
-        .unwrap()
-        .set("key", &src);
-    let expected = "outer:\n  key:  # important comment\n    - a\n    - b\n";
-    assert_eq!(target_file.to_string(), expected);
+    let (tf, root) = parse("outer:\n  key: old\n");
+    dig(&root, &["outer"]).set("key", &src);
+    assert_eq!(
+        tf.to_string(),
+        "outer:\n  key: &myanchor\n    - a\n    - b\n"
+    );
 }
 
 #[test]
-fn set_replaces_scalar_with_literal_block_scalar() {
-    // Block scalars (`|` and `>`) are structurally different from block
-    // collections: the indicator stays on the key line and content follows
-    // on subsequent lines, indented from the key by 2.
-    let source = "k: |\n  line1\n  line2\n";
-    let source_file = YamlFile::from_str(source).unwrap();
-    let src = source_file
+fn reindents_tagged_block_value() {
+    // Tags aren't reachable via the plain builders — parse the source.
+    let src_file = YamlFile::from_str("k: !!omap\n  - alpha: 1\n  - beta: 2\n").unwrap();
+    let src = src_file
         .document()
         .unwrap()
         .as_mapping()
         .unwrap()
         .get("k")
         .unwrap();
-
-    let target = "outer:\n  key: old\n";
-    let target_file = YamlFile::from_str(target).unwrap();
-    target_file
-        .document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .get_mapping("outer")
-        .unwrap()
-        .set("key", &src);
-    let expected = "outer:\n  key: |\n    line1\n    line2\n";
-    assert_eq!(target_file.to_string(), expected);
+    let (tf, root) = parse("outer:\n  key: old\n");
+    dig(&root, &["outer"]).set("key", &src);
+    assert_eq!(
+        tf.to_string(),
+        "outer:\n  key: !!omap\n    - alpha: 1\n    - beta: 2\n"
+    );
 }
 
 #[test]
-fn set_scalar_replaces_block_value_keeps_space() {
-    // Replacing a block sequence (or mapping) with an inline scalar must
-    // insert the required WHITESPACE between COLON and the new VALUE and
-    // append a trailing NEWLINE.
-    let src = "k:\n  - a\n  - b\n";
-    let sf = YamlFile::from_str(src).unwrap();
-    sf.document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .set("k", "modified");
-    assert_eq!(sf.to_string(), "k: modified\n");
-}
-
-#[test]
-fn set_preserves_anchor_on_block_source() {
-    // A source with a leading `&anchor` before its block content keeps
-    // the anchor on the key line so aliases still resolve.
-    let source = "k: &myanchor\n  - a\n  - b\n";
-    let source_file = YamlFile::from_str(source).unwrap();
-    let src = source_file
+fn preserves_anchor_on_inline_source() {
+    let src_file = YamlFile::from_str("k: &a hello\n").unwrap();
+    let src = src_file
         .document()
         .unwrap()
         .as_mapping()
         .unwrap()
         .get("k")
         .unwrap();
-
-    let target = "outer:\n  key: old\n";
-    let target_file = YamlFile::from_str(target).unwrap();
-    target_file
-        .document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .get_mapping("outer")
-        .unwrap()
-        .set("key", &src);
-    let expected = "outer:\n  key: &myanchor\n    - a\n    - b\n";
-    assert_eq!(target_file.to_string(), expected);
+    let (tf, root) = parse("outer:\n  key: old\n");
+    dig(&root, &["outer"]).set("key", &src);
+    assert_eq!(tf.to_string(), "outer:\n  key: &a hello\n");
 }
 
 #[test]
-fn set_reindents_tagged_block_value() {
-    // Tagged values (!!set, !!omap, custom !tag) keep the tag on the key
-    // line and re-indent the wrapped block content under the new column.
-    let source = "k: !!omap\n  - alpha: 1\n  - beta: 2\n";
-    let source_file = YamlFile::from_str(source).unwrap();
-    let src = source_file
-        .document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .get("k")
-        .unwrap();
-
-    let target = "outer:\n  key: old\n";
-    let target_file = YamlFile::from_str(target).unwrap();
-    target_file
-        .document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .get_mapping("outer")
-        .unwrap()
-        .set("key", &src);
-    let expected = "outer:\n  key: !!omap\n    - alpha: 1\n    - beta: 2\n";
-    assert_eq!(target_file.to_string(), expected);
+fn scalar_replaces_block_value_with_anchor_or_tag() {
+    for target in ["k: &a\n  - old\n", "k: !!seq\n  - old\n"] {
+        let (tf, root) = parse(target);
+        root.set("k", "new");
+        assert_eq!(tf.to_string(), "k: new\n");
+    }
 }
 
 #[test]
-fn set_preserves_anchor_on_inline_source() {
-    // Anchor on an inline scalar (`&a hello`) survives replacement into
-    // another entry. The default `set_value` path now checks the source
-    // for a preceding `&anchor` and inserts it before the new value.
-    let source = "k: &a hello\n";
-    let source_file = YamlFile::from_str(source).unwrap();
-    let src = source_file
-        .document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .get("k")
-        .unwrap();
-    let target = "outer:\n  key: old\n";
-    let target_file = YamlFile::from_str(target).unwrap();
-    target_file
-        .document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .get_mapping("outer")
-        .unwrap()
-        .set("key", &src);
-    assert_eq!(target_file.to_string(), "outer:\n  key: &a hello\n");
-}
-
-#[test]
-fn set_scalar_replaces_block_value_with_anchor_or_tag() {
-    // The block-old-value detector should recognise block form even when
-    // it's fronted by an ANCHOR or a TAGGED_NODE — replacing with an
-    // inline scalar has to drop the old space+block and rebuild with a
-    // single space and a trailing newline.
-    let target = "k: &a\n  - old\n";
-    let tf = YamlFile::from_str(target).unwrap();
-    tf.document().unwrap().as_mapping().unwrap().set("k", "new");
-    assert_eq!(tf.to_string(), "k: new\n");
-
-    let target = "k: !!seq\n  - old\n";
-    let tf = YamlFile::from_str(target).unwrap();
-    tf.document().unwrap().as_mapping().unwrap().set("k", "new");
-    assert_eq!(tf.to_string(), "k: new\n");
-}
-
-#[test]
-fn set_explicit_key_scalar_to_block_no_blank_line() {
-    // Explicit-key entries have their trailing NEWLINE at the parent MAPPING
-    // level (not inside the MAPPING_ENTRY). When we replace the value with
-    // a block whose own content ends with NEWLINE, that sibling NEWLINE
-    // would render as a spurious blank line — we drop it.
-    let target = "? mykey\n: old_scalar\n";
-    let tf = YamlFile::from_str(target).unwrap();
-    let source = "k:\n  - a\n";
-    let sf = YamlFile::from_str(source).unwrap();
-    let src = sf
-        .document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .get("k")
-        .unwrap();
-    tf.document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .set("mykey", &src);
+fn explicit_key_scalar_to_block_no_blank_line() {
+    let (tf, root) = parse("? mykey\n: old_scalar\n");
+    root.set("mykey", seq(&["a"]));
     assert_eq!(tf.to_string(), "? mykey\n:\n  - a\n");
 }
 
 #[test]
-fn set_preserves_blank_line_between_entries() {
-    // The trailing-blank-line cleanup must not touch a genuine blank line
-    // between two entries.
-    let target = "a: 1\n\nb: 2\n";
-    let tf = YamlFile::from_str(target).unwrap();
-    let source = "s:\n  - x\n";
-    let sf = YamlFile::from_str(source).unwrap();
-    let src = sf
-        .document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .get("s")
-        .unwrap();
-    tf.document().unwrap().as_mapping().unwrap().set("a", &src);
-    assert!(tf.to_string().contains("\n\nb: 2"));
+fn preserves_blank_line_between_entries() {
+    let (tf, root) = parse("a: 1\n\nb: 2\n");
+    root.set("a", seq(&["x"]));
+    assert_eq!(tf.to_string(), "a:\n  - x\n\nb: 2\n");
+}
+
+#[test]
+fn scalar_over_block_preserves_key_line_comment() {
+    let (tf, root) = parse("k:  # sticky\n  - old\n");
+    root.set("k", "new");
+    assert_eq!(tf.to_string(), "k:  new  # sticky\n");
+}
+
+#[test]
+fn round_trip_scalar_block_preserves_comment() {
+    let (tf, root) = parse("key: initial  # sticky\n");
+    // scalar → block
+    root.set("key", seq(&["item0"]));
+    assert_eq!(tf.to_string(), "key:  # sticky\n  - item0\n");
+    // block → scalar
+    root.set("key", "back");
+    assert_eq!(tf.to_string(), "key: back  # sticky\n");
+    // scalar → mapping. MappingBuilder passes string values through, so
+    // numeric-looking string values get quoted to preserve their type.
+    root.set("key", map(&[("a", "1"), ("b", "2")]));
+    assert_eq!(tf.to_string(), "key:  # sticky\n  a: '1'\n  b: '2'\n");
 }

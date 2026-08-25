@@ -176,3 +176,93 @@ fn set_preserves_relative_indent_of_nested_source() {
         "outer:\n  inner:\n    tgt:\n      a:\n        - x:\n            nested: 1\n          other: v\n";
     assert_eq!(target_file.to_string(), expected);
 }
+
+#[test]
+fn set_inserts_new_block_key_with_proper_indent() {
+    // Setting a NEW key (not replacing) with a node-backed block value
+    // must also re-indent the source content to line up under the new
+    // entry's column. Previously this went through MappingEntry::new
+    // which did a verbatim copy and produced inconsistent indentation.
+    let target = "outer:\n  inner:\n    old: v\n";
+    let target_file = YamlFile::from_str(target).unwrap();
+    let source = "k:\n  - a\n  - b\n";
+    let source_file = YamlFile::from_str(source).unwrap();
+    let src = source_file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("k")
+        .unwrap();
+
+    target_file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("outer")
+        .unwrap()
+        .get_mapping("inner")
+        .unwrap()
+        .set("newkey", &src);
+    let expected = "outer:\n  inner:\n    old: v\n    newkey:\n      - a\n      - b\n";
+    assert_eq!(target_file.to_string(), expected);
+}
+
+#[test]
+fn set_preserves_inline_comment_on_replaced_value() {
+    // When the old value had a trailing inline comment (`key: old # note`),
+    // the comment survives the switch to a block value by moving up to the
+    // `key:` line.
+    let target = "outer:\n  key: old  # important comment\n";
+    let target_file = YamlFile::from_str(target).unwrap();
+    let source = "k:\n  - a\n  - b\n";
+    let source_file = YamlFile::from_str(source).unwrap();
+    let src = source_file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("k")
+        .unwrap();
+
+    target_file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("outer")
+        .unwrap()
+        .set("key", &src);
+    let expected = "outer:\n  key:  # important comment\n    - a\n    - b\n";
+    assert_eq!(target_file.to_string(), expected);
+}
+
+#[test]
+fn set_replaces_scalar_with_literal_block_scalar() {
+    // Block scalars (`|` and `>`) are structurally different from block
+    // collections: the indicator stays on the key line and content follows
+    // on subsequent lines, indented from the key by 2.
+    let source = "k: |\n  line1\n  line2\n";
+    let source_file = YamlFile::from_str(source).unwrap();
+    let src = source_file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("k")
+        .unwrap();
+
+    let target = "outer:\n  key: old\n";
+    let target_file = YamlFile::from_str(target).unwrap();
+    target_file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("outer")
+        .unwrap()
+        .set("key", &src);
+    let expected = "outer:\n  key: |\n    line1\n    line2\n";
+    assert_eq!(target_file.to_string(), expected);
+}

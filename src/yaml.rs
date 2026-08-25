@@ -103,8 +103,14 @@ impl ValueNode for Sequence {
 
 impl ValueNode for Scalar {
     fn is_inline(&self) -> bool {
-        // Scalars are always inline
-        true
+        // Block scalars (literal `|` and folded `>`) span multiple lines
+        // starting on a NEW line after their indicator, so they don't
+        // render inline. Everything else — plain, quoted, tagged scalars —
+        // sits on the same line as its key.
+        !self
+            .0
+            .children_with_tokens()
+            .any(|c| matches!(c.kind(), SyntaxKind::PIPE | SyntaxKind::GREATER))
     }
 }
 

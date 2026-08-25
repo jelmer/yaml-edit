@@ -547,7 +547,7 @@ impl AsYaml for YamlNode {
     fn is_inline(&self) -> bool {
         use crate::yaml::ValueNode;
         match self {
-            YamlNode::Scalar(_) => true,
+            YamlNode::Scalar(s) => ValueNode::is_inline(s),
             YamlNode::Mapping(m) => ValueNode::is_inline(m),
             YamlNode::Sequence(s) => ValueNode::is_inline(s),
             YamlNode::Alias(_) => true,
@@ -750,28 +750,31 @@ pub(crate) fn copy_node_content_reindent(
     after_newline
 }
 
-/// Column at which `node` is laid out in its source tree.
+/// Column at which `node` starts on its line.
 ///
-/// Reads the WHITESPACE/INDENT token that sits between the preceding
-/// NEWLINE and `node` in its parent — that's the amount of indent the
-/// parser stored to describe `node`'s starting column. If `node` is the
-/// document root, is at column 0, or shares a line with something else,
-/// returns 0.
+/// For a MAPPING or SEQUENCE this is the column of its first entry; for
+/// a MAPPING_ENTRY it's the column of the key. Returns 0 for anything at
+/// the start of the tree's text.
 pub(crate) fn source_base_indent(node: &SyntaxNode) -> usize {
-    use crate::lex::SyntaxKind;
-    let mut cursor = node.prev_sibling_or_token();
-    while let Some(item) = cursor {
-        if let Some(tok) = item.as_token() {
-            match tok.kind() {
-                SyntaxKind::WHITESPACE | SyntaxKind::INDENT => return tok.text().len(),
-                SyntaxKind::NEWLINE => return 0,
-                _ => {}
-            }
-        }
-        cursor = item.prev_sibling_or_token();
+    // Compute the column where `node` starts by counting characters back
+    // from its start offset to the most recent newline in the tree text.
+    // Walks up to the root and reads the text prefix so it works regardless
+    // of how the parser chose to distribute INDENT/WHITESPACE tokens across
+    // the CST (siblings, inside a `SEQUENCE_ENTRY`'s dash-space, etc.).
+    let node_start: usize = node.text_range().start().into();
+    let mut root = node.clone();
+    while let Some(p) = root.parent() {
+        root = p;
     }
-    // No indent found among siblings — walk up one level and continue.
-    node.parent().map(|p| source_base_indent(&p)).unwrap_or(0)
+    let root_start: usize = root.text_range().start().into();
+    let prefix_len = node_start.saturating_sub(root_start);
+    let root_text = root.text().to_string();
+    // TextSize is byte-based, so slice on the byte boundary.
+    let prefix = root_text.get(..prefix_len).unwrap_or(&root_text);
+    match prefix.rfind('\n') {
+        Some(nl) => prefix[nl + 1..].chars().count(),
+        None => prefix.chars().count(),
+    }
 }
 
 // AsYaml trait implementations for primitive types

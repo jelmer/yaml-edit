@@ -14,6 +14,118 @@ ast_node!(
     "A key-value pair in a YAML mapping"
 );
 
+/// Copy `node` (with its own outer kind) into `builder`. Unlike
+/// [`add_node_children_to`], which unwraps and copies only children, this
+/// preserves the node itself so a caller can splice in a fully-typed node
+/// like `VALUE`.
+fn add_node_children_to_wrapped(builder: &mut GreenNodeBuilder, node: &SyntaxNode) {
+    builder.start_node(node.kind().into());
+    add_node_children_to(builder, node);
+    builder.finish_node();
+}
+
+/// If `value` (a VALUE node) ends with `WHITESPACE COMMENT` (an inline
+/// comment following the value on the same line), return the two token
+/// texts. Returns `None` for values with no trailing inline comment.
+fn extract_trailing_inline_comment(value: &SyntaxNode) -> Option<(String, String)> {
+    let mut ws: Option<String> = None;
+    let mut comment: Option<String> = None;
+    for child in value.children_with_tokens() {
+        if let Some(tok) = child.as_token() {
+            match tok.kind() {
+                SyntaxKind::WHITESPACE => {
+                    ws = Some(tok.text().to_string());
+                    comment = None;
+                }
+                SyntaxKind::COMMENT => {
+                    comment = Some(tok.text().to_string());
+                }
+                SyntaxKind::NEWLINE => break,
+                _ => {
+                    ws = None;
+                    comment = None;
+                }
+            }
+        } else {
+            ws = None;
+            comment = None;
+        }
+    }
+    match (ws, comment) {
+        (Some(w), Some(c)) => Some((w, c)),
+        _ => None,
+    }
+}
+
+/// True if `source` is a block scalar (literal `|` or folded `>`) — its
+/// first token is the block indicator that must sit on the same line as
+/// the key.
+fn is_block_scalar(source: &SyntaxNode) -> bool {
+    source.kind() == SyntaxKind::SCALAR
+        && source
+            .first_token()
+            .is_some_and(|t| matches!(t.kind(), SyntaxKind::PIPE | SyntaxKind::GREATER))
+}
+
+/// Build a VALUE node wrapping `source` (a block sequence, mapping, or
+/// scalar from another CST) so it renders correctly under a key whose
+/// content column is `target`. Block collections go on the line after the
+/// key with content at `target`; block scalars keep their `|`/`>`
+/// indicator on the key line and put content on the next line at `target`.
+/// The source's interior indentation is shifted so nested lines line up.
+/// Returns the new VALUE node plus whether it ends with a NEWLINE.
+fn build_block_value_node(source: &SyntaxNode, target: usize) -> (SyntaxNode, bool) {
+    let is_scalar = is_block_scalar(source);
+    // For block scalars, the content column is stored as an INDENT token
+    // *inside* the SCALAR (immediately after the `|`/`>` indicator and
+    // NEWLINE). For block collections, it's the INDENT that precedes the
+    // node in its parent. The two cases need different queries.
+    let source_base = if is_scalar {
+        block_scalar_content_indent(source).unwrap_or(0)
+    } else {
+        crate::as_yaml::source_base_indent(source)
+    };
+    let delta = target as isize - source_base as isize;
+    let mut value_builder = GreenNodeBuilder::new();
+    value_builder.start_node(SyntaxKind::VALUE.into());
+    if is_scalar {
+        // Block scalar indicator (`|` or `>`) stays on the key line.
+        value_builder.token(SyntaxKind::WHITESPACE.into(), " ");
+    } else {
+        // Block collection content goes on the line after the key.
+        value_builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        value_builder.token(SyntaxKind::INDENT.into(), &" ".repeat(target));
+    }
+    value_builder.start_node(source.kind().into());
+    let ends_with_newline =
+        crate::as_yaml::copy_node_content_reindent(&mut value_builder, source, delta);
+    value_builder.finish_node();
+    value_builder.finish_node();
+    (
+        SyntaxNode::new_root_mut(value_builder.finish()),
+        ends_with_newline,
+    )
+}
+
+/// Find the content indent of a block scalar — the INDENT token right after
+/// the `|`/`>` indicator and its NEWLINE. Returns `None` if the scalar is
+/// empty (no content lines).
+fn block_scalar_content_indent(scalar: &SyntaxNode) -> Option<usize> {
+    let mut after_newline = false;
+    for child in scalar.children_with_tokens() {
+        if let Some(tok) = child.as_token() {
+            match tok.kind() {
+                SyntaxKind::NEWLINE => after_newline = true,
+                SyntaxKind::WHITESPACE | SyntaxKind::INDENT if after_newline => {
+                    return Some(tok.text().len());
+                }
+                _ => after_newline = false,
+            }
+        }
+    }
+    None
+}
+
 impl MappingEntry {
     /// Get the underlying syntax node (for debugging/testing)
     #[cfg(test)]
@@ -73,11 +185,30 @@ impl MappingEntry {
     /// The entry is built as a standalone CST node; attach it to a mapping with
     /// one of the `insert_*` methods. Block-style values (mappings, sequences)
     /// are indented with 2 spaces relative to the key.
+    ///
+    /// This builds the entry assuming the key will sit at column 0. If the
+    /// entry will be inserted into a mapping at a deeper column, use
+    /// [`new_at_indent`](Self::new_at_indent) instead so a node-backed block
+    /// value's interior indentation lines up with the target column.
     pub fn new(
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
         flow_context: bool,
         use_explicit_key: bool,
+    ) -> Self {
+        Self::new_at_indent(key, value, flow_context, use_explicit_key, 0)
+    }
+
+    /// Like [`new`](Self::new) but builds the entry as if its key were
+    /// placed at column `key_indent`. Only affects how a node-backed block
+    /// collection value is re-indented; other value kinds render the same
+    /// as with [`new`](Self::new).
+    pub fn new_at_indent(
+        key: impl crate::AsYaml,
+        value: impl crate::AsYaml,
+        flow_context: bool,
+        use_explicit_key: bool,
+        key_indent: usize,
     ) -> Self {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
@@ -101,33 +232,64 @@ impl MappingEntry {
 
         builder.token(SyntaxKind::COLON.into(), ":");
 
-        // Build VALUE
-        // Note: For explicit keys, we don't add a space here because
-        // the VALUE building logic below will add it for inline values
-        builder.start_node(SyntaxKind::VALUE.into());
-        let value_ends_with_newline = match (value.is_inline(), value.kind()) {
-            // Inline values (scalars, flow collections) go on same line with space
-            (true, _) => {
-                builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                // Note: TAGGED_NODE values (!!set, !!omap, !!pairs) are inline but may
-                // end with newlines from their block-style content
-                value.build_content(&mut builder, 0, flow_context)
-            }
-            // Block mappings and sequences start on new line but don't get pre-indented
-            // They handle their own indentation via copy_node_content_with_indent
-            (false, crate::as_yaml::YamlKind::Mapping)
-            | (false, crate::as_yaml::YamlKind::Sequence) => {
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                value.build_content(&mut builder, 0, flow_context)
-            }
-            // Block scalars (literal/folded) get newline and indent
-            (false, _) => {
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                builder.token(SyntaxKind::INDENT.into(), "  ");
-                value.build_content(&mut builder, 2, flow_context)
-            }
+        // Node-backed block collections and block scalars need the same
+        // re-indent treatment that MappingEntry::set_value applies when
+        // the source's own base indent doesn't already put it at the
+        // correct target column: put the value on the next line and shift
+        // its interior indentation to line up under this entry.
+        //
+        // When key_indent == 0 (root-level insertion), col-0 dashes render
+        // as valid compact-style block content, so we leave sources with
+        // source_base == 0 alone to preserve existing formatting choices.
+        // For nested insertion (key_indent > 0), col-0 content would be
+        // parsed as escaping the parent's scope, so we must re-indent.
+        let block_source = (!flow_context && !value.is_inline())
+            .then(|| value.as_node())
+            .flatten()
+            .filter(|_| {
+                matches!(
+                    value.kind(),
+                    crate::as_yaml::YamlKind::Mapping
+                        | crate::as_yaml::YamlKind::Sequence
+                        | crate::as_yaml::YamlKind::Scalar
+                )
+            })
+            .filter(|src| key_indent > 0 || crate::as_yaml::source_base_indent(src) > 0);
+
+        let value_ends_with_newline = if let Some(source) = block_source {
+            let (value_node, ends_with_newline) = build_block_value_node(source, key_indent + 2);
+            add_node_children_to_wrapped(&mut builder, &value_node);
+            ends_with_newline
+        } else {
+            // Build VALUE
+            // Note: For explicit keys, we don't add a space here because
+            // the VALUE building logic below will add it for inline values
+            builder.start_node(SyntaxKind::VALUE.into());
+            let ends_with_newline = match (value.is_inline(), value.kind()) {
+                // Inline values (scalars, flow collections) go on same line with space
+                (true, _) => {
+                    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                    // Note: TAGGED_NODE values (!!set, !!omap, !!pairs) are inline but may
+                    // end with newlines from their block-style content
+                    value.build_content(&mut builder, 0, flow_context)
+                }
+                // Block mappings and sequences start on new line but don't get pre-indented
+                // They handle their own indentation via copy_node_content_with_indent
+                (false, crate::as_yaml::YamlKind::Mapping)
+                | (false, crate::as_yaml::YamlKind::Sequence) => {
+                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                    value.build_content(&mut builder, 0, flow_context)
+                }
+                // Block scalars (literal/folded) get newline and indent
+                (false, _) => {
+                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                    builder.token(SyntaxKind::INDENT.into(), "  ");
+                    value.build_content(&mut builder, 2, flow_context)
+                }
+            };
+            builder.finish_node(); // VALUE
+            ends_with_newline
         };
-        builder.finish_node(); // VALUE
 
         // Every block-style MAPPING_ENTRY ends with NEWLINE (newline ownership model)
         if !value_ends_with_newline {
@@ -140,32 +302,10 @@ impl MappingEntry {
 
     /// Column at which this entry's key sits on its line.
     ///
-    /// Walks backwards through prior tokens (crossing up through parents
-    /// when this entry is the first child of its mapping) until it finds
-    /// the INDENT/WHITESPACE that follows the preceding NEWLINE. Returns 0
-    /// for root-level entries or entries that share a line with something
-    /// else (an explicit-key form, a flow-style parent, etc.).
+    /// Returns 0 for root-level entries or entries that share a line with
+    /// something else (an explicit-key form, a flow-style parent, etc.).
     fn indent_of_line(&self) -> usize {
-        let mut current: SyntaxNode = self.0.clone();
-        loop {
-            let mut cursor = current.prev_sibling_or_token();
-            while let Some(item) = cursor {
-                if let Some(tok) = item.as_token() {
-                    match tok.kind() {
-                        SyntaxKind::WHITESPACE | SyntaxKind::INDENT => {
-                            return tok.text().len();
-                        }
-                        SyntaxKind::NEWLINE => return 0,
-                        _ => {}
-                    }
-                }
-                cursor = item.prev_sibling_or_token();
-            }
-            match current.parent() {
-                Some(p) => current = p,
-                None => return 0,
-            }
-        }
+        crate::as_yaml::source_base_indent(&self.0)
     }
 
     /// Replace this entry's value with a block sequence or mapping from
@@ -174,32 +314,25 @@ impl MappingEntry {
     /// indentation shifted to match. Called only from [`set_value`] for
     /// non-flow parents whose new value is a node-backed block collection.
     fn set_block_value(&self, source: &SyntaxNode) {
-        let target = self.indent_of_line() + 2;
-        let source_base = crate::as_yaml::source_base_indent(source);
-        let delta = target as isize - source_base as isize;
+        let (new_value_node, value_ends_with_newline) =
+            build_block_value_node(source, self.indent_of_line() + 2);
 
-        let mut value_builder = GreenNodeBuilder::new();
-        value_builder.start_node(SyntaxKind::VALUE.into());
-        value_builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        value_builder.token(SyntaxKind::INDENT.into(), &" ".repeat(target));
-        value_builder.start_node(source.kind().into());
-        let value_ends_with_newline =
-            crate::as_yaml::copy_node_content_reindent(&mut value_builder, source, delta);
-        value_builder.finish_node();
-        value_builder.finish_node();
-        let new_value_node = SyntaxNode::new_root_mut(value_builder.finish());
+        // If the old VALUE was an inline scalar followed by a trailing
+        // inline comment (e.g. `key: old  # note`), pull the WHITESPACE +
+        // COMMENT out and reattach them on the `key:` line so the comment
+        // survives the switch from inline to block-style value.
+        let trailing_comment = self
+            .0
+            .children()
+            .find(|n| n.kind() == SyntaxKind::VALUE)
+            .and_then(|value| extract_trailing_inline_comment(&value));
 
         // Rebuild the entry from scratch in a fresh green tree: keep the
         // original KEY (and any leading tokens like QUESTION for explicit
         // keys) and the COLON, drop the inline-value spacing between COLON
-        // and VALUE, use the new VALUE, and drop the MAPPING_ENTRY-level
-        // trailing NEWLINE if the block value already ends with one.
-        let copy_wrapped = |builder: &mut GreenNodeBuilder, node: &SyntaxNode| {
-            builder.start_node(node.kind().into());
-            add_node_children_to(builder, node);
-            builder.finish_node();
-        };
-
+        // and VALUE, splice in any inline comment we rescued, use the new
+        // VALUE, and drop the MAPPING_ENTRY-level trailing NEWLINE if the
+        // block value already ends with one.
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
         let mut value_placed = false;
@@ -207,11 +340,15 @@ impl MappingEntry {
         for child in self.0.children_with_tokens() {
             match child {
                 rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::VALUE => {
-                    copy_wrapped(&mut builder, &new_value_node);
+                    if let Some((ws, comment)) = &trailing_comment {
+                        builder.token(SyntaxKind::WHITESPACE.into(), ws);
+                        builder.token(SyntaxKind::COMMENT.into(), comment);
+                    }
+                    add_node_children_to_wrapped(&mut builder, &new_value_node);
                     value_placed = true;
                     inside_between = false;
                 }
-                rowan::NodeOrToken::Node(n) => copy_wrapped(&mut builder, &n),
+                rowan::NodeOrToken::Node(n) => add_node_children_to_wrapped(&mut builder, &n),
                 rowan::NodeOrToken::Token(t) => match t.kind() {
                     SyntaxKind::COLON => {
                         builder.token(t.kind().into(), t.text());
@@ -227,7 +364,11 @@ impl MappingEntry {
             }
         }
         if !value_placed {
-            copy_wrapped(&mut builder, &new_value_node);
+            if let Some((ws, comment)) = &trailing_comment {
+                builder.token(SyntaxKind::WHITESPACE.into(), ws);
+                builder.token(SyntaxKind::COMMENT.into(), comment);
+            }
+            add_node_children_to_wrapped(&mut builder, &new_value_node);
         }
         builder.finish_node();
         let rebuilt = SyntaxNode::new_root_mut(builder.finish());
@@ -248,17 +389,22 @@ impl MappingEntry {
     pub fn set_value(&self, new_value: impl crate::AsYaml, flow_context: bool) {
         use crate::as_yaml::YamlKind;
 
-        // A block collection coming from another CST needs a full rebuild of
-        // the entry: the value goes on its own line, so any sibling
-        // WHITESPACE between COLON and VALUE must be dropped, and any
-        // sibling trailing NEWLINE would collide with the newline that the
-        // block content already carries. Flow context (parent mapping is
-        // flow-style) means block content isn't valid there, so we fall
-        // through to the default path.
+        // A block collection or block scalar coming from another CST needs
+        // a full rebuild of the entry: the value goes on its own line, so
+        // any sibling WHITESPACE between COLON and VALUE must be dropped,
+        // and any sibling trailing NEWLINE would collide with the newline
+        // that the block content already carries. Flow context (parent
+        // mapping is flow-style) means block content isn't valid there, so
+        // we fall through to the default path.
         let block_source = (!flow_context && !new_value.is_inline())
             .then(|| new_value.as_node())
             .flatten()
-            .filter(|_| matches!(new_value.kind(), YamlKind::Mapping | YamlKind::Sequence));
+            .filter(|_| {
+                matches!(
+                    new_value.kind(),
+                    YamlKind::Mapping | YamlKind::Sequence | YamlKind::Scalar
+                )
+            });
         if let Some(source) = block_source {
             self.set_block_value(source);
             return;
@@ -849,8 +995,12 @@ impl Mapping {
             }
         }
 
-        // Entry doesn't exist, create a new one
-        let new_entry = MappingEntry::new(key, value, flow_context, use_explicit_keys);
+        // Entry doesn't exist, create a new one. Tell the constructor at
+        // what column its key will sit so a node-backed block value has its
+        // interior indentation shifted to line up under the new entry.
+        let key_indent = self.detect_indentation_level();
+        let new_entry =
+            MappingEntry::new_at_indent(key, value, flow_context, use_explicit_keys, key_indent);
         self.insert_entry_cst(&new_entry.0);
     }
 
@@ -1201,7 +1351,15 @@ impl Mapping {
             // Build the new entry with proper newline ownership
             let flow_context = self.is_flow_style();
             let use_explicit_keys = self.uses_explicit_keys();
-            let new_entry = MappingEntry::new(&key, &value, flow_context, use_explicit_keys).0;
+            let key_indent = self.detect_indentation_level();
+            let new_entry = MappingEntry::new_at_indent(
+                &key,
+                &value,
+                flow_context,
+                use_explicit_keys,
+                key_indent,
+            )
+            .0;
 
             // Insert after the target entry, ensuring it has a trailing newline
             if let Some(after_node) = insert_after_node {
@@ -1287,7 +1445,8 @@ impl Mapping {
     ///
     /// Returns `0` for root-level mappings where entries have no leading indentation.
     pub fn detect_indentation_level(&self) -> usize {
-        // Look for an INDENT token that precedes a KEY
+        // Look for an INDENT token that precedes a KEY inside this mapping.
+        // For a multi-entry mapping the parser stores that column here.
         for child in self.0.children_with_tokens() {
             if let Some(token) = child.as_token() {
                 if token.kind() == SyntaxKind::INDENT {
@@ -1295,7 +1454,10 @@ impl Mapping {
                 }
             }
         }
-        0 // No indentation found, must be root level
+        // Single-entry mapping (or empty): the column of the first entry
+        // isn't stored here, it's the INDENT that precedes the MAPPING node
+        // in its parent's VALUE. Fall back to that.
+        crate::as_yaml::source_base_indent(&self.0)
     }
 
     /// Move a key-value pair to immediately after an existing key.
@@ -2186,7 +2348,9 @@ impl Mapping {
         // Create the new mapping entry
         let flow_context = self.is_flow_style();
         let use_explicit_keys = self.uses_explicit_keys();
-        let new_entry = MappingEntry::new(&key, &value, flow_context, use_explicit_keys);
+        let key_indent = self.detect_indentation_level();
+        let new_entry =
+            MappingEntry::new_at_indent(&key, &value, flow_context, use_explicit_keys, key_indent);
 
         // Count existing entries to determine actual insertion position
         let entry_count = self.entries().count();

@@ -601,8 +601,10 @@ mod tests {
 
     #[test]
     fn test_multiline_document_byte_offsets() {
+        // Leading comment is stream-level and can't be attached to a
+        // `Document`, so parse via `YamlFile` to reach the document.
         let text = "# Comment\nname: Alice\n\nage: 30";
-        let doc = Document::from_str(text).unwrap();
+        let doc = YamlFile::from_str(text).unwrap().document().unwrap();
 
         let range = doc.byte_range();
         assert_eq!(range.start, 10);

@@ -850,7 +850,10 @@ config:
 
         yaml.set_path("server.port", 8080);
 
-        assert_eq!(yaml.to_string(), "server:\n  host: localhost\nport: 8080\n");
+        assert_eq!(
+            yaml.to_string(),
+            "server:\n  host: localhost\n  port: 8080\n"
+        );
     }
 
     #[test]
@@ -864,7 +867,7 @@ config:
 
         assert_eq!(
             yaml.to_string(),
-            "name: test\nserver:\ndatabase:\nhost: localhost\n\n\n"
+            "name: test\nserver:\n  database:\n    host: localhost\n"
         );
 
         // Verify we can retrieve it
@@ -985,7 +988,10 @@ config:
 
         // Set on mapping
         mapping.set_path("server.port", 8080);
-        assert_eq!(yaml.to_string(), "server:\n  host: localhost\nport: 8080\n");
+        assert_eq!(
+            yaml.to_string(),
+            "server:\n  host: localhost\n  port: 8080\n"
+        );
 
         // Remove from mapping
         let result = mapping.remove_path("server.port");

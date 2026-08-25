@@ -103,7 +103,42 @@ impl ValueNode for Sequence {
 
 impl ValueNode for Scalar {
     fn is_inline(&self) -> bool {
-        // Scalars are always inline
+        // Block scalars (literal `|` and folded `>`) span multiple lines
+        // starting on a NEW line after their indicator, so they don't
+        // render inline. Everything else — plain, quoted, tagged scalars —
+        // sits on the same line as its key.
+        !self
+            .0
+            .children_with_tokens()
+            .any(|c| matches!(c.kind(), SyntaxKind::PIPE | SyntaxKind::GREATER))
+    }
+}
+
+impl ValueNode for TaggedNode {
+    fn is_inline(&self) -> bool {
+        // A tagged node is inline iff the value it wraps is inline. Look
+        // for the first NEWLINE inside; if it appears before the wrapped
+        // node, the value sits on the next line (block form).
+        let mut seen_newline = false;
+        for child in self.0.children_with_tokens() {
+            match child {
+                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::NEWLINE => {
+                    seen_newline = true;
+                }
+                rowan::NodeOrToken::Node(n) => {
+                    if seen_newline {
+                        return false;
+                    }
+                    return match n.kind() {
+                        SyntaxKind::MAPPING => Mapping::cast(n).is_some_and(|m| m.is_inline()),
+                        SyntaxKind::SEQUENCE => Sequence::cast(n).is_some_and(|s| s.is_inline()),
+                        SyntaxKind::SCALAR => Scalar::cast(n).is_some_and(|s| s.is_inline()),
+                        _ => true,
+                    };
+                }
+                _ => {}
+            }
+        }
         true
     }
 }

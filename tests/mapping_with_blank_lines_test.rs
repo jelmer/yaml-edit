@@ -229,3 +229,58 @@ another: value
     let output = doc.to_string();
     assert_eq!(output, yaml);
 }
+
+#[test]
+fn test_issue_26_blank_line_between_key_and_nested_value() {
+    // Regression test for https://github.com/jelmer/yaml-edit/issues/26
+    let yaml = "foo: bar\n\nbaz:\n\n  qux: ~\n";
+
+    let doc = YamlFile::parse(yaml).to_result().unwrap();
+    let document = doc.document().unwrap();
+    let mapping = document.as_mapping().unwrap();
+
+    // Should have exactly two root-level keys: foo and baz
+    assert_eq!(mapping.len(), 2);
+    assert_eq!(
+        mapping.get("foo").unwrap().as_scalar().unwrap().as_string(),
+        "bar"
+    );
+
+    // baz should be a mapping containing qux
+    let baz = mapping.get_mapping("baz").unwrap();
+    assert_eq!(baz.len(), 1);
+    assert_eq!(
+        baz.get("qux").unwrap().as_scalar().unwrap().as_string(),
+        "~"
+    );
+
+    // Verify lossless round-trip
+    assert_eq!(doc.to_string(), yaml);
+}
+
+#[test]
+fn test_issue_26_comment_null_key_no_blank_line() {
+    // Related comment on issue #26: bar2 with no value, followed by bar3 at same indent
+    let yaml = "foo:\n  bar1: 42\n  bar2:\n  bar3: \"hello\"\n";
+
+    let doc = YamlFile::parse(yaml).to_result().unwrap();
+    let document = doc.document().unwrap();
+    let mapping = document.as_mapping().unwrap();
+
+    let foo = mapping.get_mapping("foo").unwrap();
+    // Should have three sibling keys: bar1, bar2, bar3
+    assert_eq!(foo.len(), 3);
+    assert_eq!(
+        foo.get("bar1").unwrap().as_scalar().unwrap().as_string(),
+        "42"
+    );
+    // bar2 has null value
+    assert!(foo.get("bar2").unwrap().as_scalar().is_some());
+    assert_eq!(
+        foo.get("bar3").unwrap().as_scalar().unwrap().as_string(),
+        "hello"
+    );
+
+    // Verify lossless round-trip
+    assert_eq!(doc.to_string(), yaml);
+}

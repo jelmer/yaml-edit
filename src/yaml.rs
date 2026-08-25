@@ -1555,7 +1555,7 @@ impl Parser {
                 // Finish the MAPPING_ENTRY node
                 self.builder.finish_node();
             } else {
-                self.parse_mapping_key_value_pair();
+                self.parse_mapping_key_value_pair(base_indent);
             }
 
             // Progress guard: if no token was consumed this iteration we
@@ -2153,7 +2153,7 @@ impl Parser {
                 self.parse_explicit_key_entries();
                 break;
             }
-            self.parse_mapping_key_value_pair();
+            self.parse_mapping_key_value_pair(0);
             self.skip_ws_and_newlines();
             // Progress guard against any future case where the body consumes
             // nothing (e.g. recovery via synthetic-token insertion).
@@ -2657,7 +2657,7 @@ impl Parser {
         ]);
     }
 
-    fn parse_mapping_key_value_pair(&mut self) {
+    fn parse_mapping_key_value_pair(&mut self, base_indent: usize) {
         // Start MAPPING_ENTRY node to wrap the entire key-value pair
         self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
@@ -2743,15 +2743,22 @@ impl Parser {
                 // If no indented content follows the comment, has_value stays false → implicit null
             } else if self.current() == Some(SyntaxKind::NEWLINE) {
                 self.skip_ws_and_newlines();
-                if self.current_line_indent != 0 {
+                if self.current_line_indent > base_indent {
+                    // Nested value is more indented than the enclosing mapping's
+                    // base indent — belongs to this key.
                     self.parse_value_with_base_indent(self.current_line_indent);
                     has_value = true;
-                } else if self.current() == Some(SyntaxKind::DASH) {
+                } else if self.current_line_indent == base_indent
+                    && self.current() == Some(SyntaxKind::DASH)
+                {
                     // Zero-indented sequence (same indentation as key)
                     // This is valid YAML: the sequence is the value for the key
-                    self.parse_sequence();
+                    self.parse_sequence_with_base_indent(base_indent);
                     has_value = true;
                 }
+                // Otherwise the "value" would be at the parent's indent or
+                // less, so this key has an implicit null value and what
+                // follows is a sibling entry.
             }
 
             // If no value present, create an implicit null scalar

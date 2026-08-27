@@ -24,6 +24,39 @@ enum FlowInsertPos {
     Before(SyntaxNode),
 }
 
+/// Does this subtree end with a NEWLINE leaf, or with any run of
+/// zero-width tokens (like an implicit-null NULL "") whose last
+/// non-empty predecessor is a NEWLINE?
+///
+/// `last_token()` alone can't answer this: it returns the deepest tail
+/// leaf, which may be a zero-width NULL sitting after a NEWLINE inside
+/// the same KEY subtree (`? b\n` under a tagged mapping). Walk the
+/// token stream backwards, skipping empty tokens, and check what's
+/// there.
+fn trailing_newline_reachable(node: &SyntaxNode) -> bool {
+    let mut cur = node.last_token();
+    while let Some(tok) = cur {
+        if tok.text().is_empty() {
+            cur = tok.prev_token();
+            continue;
+        }
+        return tok.kind() == SyntaxKind::NEWLINE;
+    }
+    false
+}
+
+/// Does any descendant token of `node` have kind NEWLINE?
+///
+/// Preferred over `node.text().contains('\n')` for structural checks:
+/// avoids materializing the whole subtree as a string, and looks at
+/// the token stream directly.
+fn has_newline_token(node: &SyntaxNode) -> bool {
+    node.descendants_with_tokens().any(|el| {
+        el.as_token()
+            .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
+    })
+}
+
 /// Append a trailing NEWLINE token to `entry` if it doesn't already end with
 /// one. Used when a block-style entry is about to have a new sibling appended
 /// after it (its trailing newline separates the two entries visually).
@@ -651,7 +684,7 @@ impl MappingEntry {
         value_builder.finish_node();
         let new_value_node = SyntaxNode::new_root_mut(value_builder.finish());
 
-        let old_was_block = self.value().is_some_and(|v| v.text().contains_char('\n'));
+        let old_was_block = self.value().is_some_and(|v| has_newline_token(&v));
         if old_was_block {
             self.rebuild_with_inline_value(&new_value_node);
             return;
@@ -1348,19 +1381,15 @@ impl Mapping {
             }
         }
 
-        // Check if the last entry ends with a newline, OR if the mapping itself has a trailing newline
-        // Note: The newline is inside the entry, not a direct child of the mapping
+        // Does the last entry end with a NEWLINE leaf? Checking
+        // last_token().kind() == NEWLINE alone misses the case where
+        // the tail token is a zero-width implicit-null (e.g. `? b\n`
+        // under a tagged mapping) but a real NEWLINE sits just before
+        // it in the token stream. Walk the token tail instead.
         let has_trailing_newline = if let Some(entry) = &last_mapping_entry {
-            entry
-                .last_token()
-                .map(|t| t.kind() == SyntaxKind::NEWLINE)
-                .unwrap_or(false)
+            trailing_newline_reachable(entry)
         } else {
-            // No mapping entries yet - check if mapping itself has a trailing newline token
-            self.0
-                .last_token()
-                .map(|t| t.kind() == SyntaxKind::NEWLINE)
-                .unwrap_or(false)
+            trailing_newline_reachable(&self.0)
         };
 
         let mut new_elements = Vec::new();

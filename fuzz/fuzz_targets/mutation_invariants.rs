@@ -32,6 +32,7 @@ const SEEDS: &[&str] = &[
     "defaults: &d\n  timeout: 30\nprod:\n  <<: *d\n  host: prod\n",
     "first: &ref value\nsecond: *ref\n",
     "count: !!int '42'\n",
+    "keys: !!set\n  ? a\n  ? b\n",
     "mapping: !!map\n  a: 1\n  b: 2\n",
     "literal: |\n  line1\n  line2\n",
     "folded: >\n  wrapped\n  paragraph\n",

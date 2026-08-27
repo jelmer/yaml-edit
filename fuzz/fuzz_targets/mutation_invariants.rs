@@ -67,6 +67,9 @@ impl<'a> Arbitrary<'a> for SafeStr {
     }
 }
 
+/// Keep in sync with `tests/proptest_invariants.rs::Op`. Both fuzzers
+/// should exercise the same mutation surface; this target uses
+/// `SafeStr` values, the proptest side uses plain `String`.
 #[derive(Debug, Arbitrary)]
 enum Op {
     // Mapping ops

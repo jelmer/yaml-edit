@@ -450,8 +450,28 @@ impl Sequence {
                                 .is_some_and(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
                         });
 
-                        // Remove the entry
+                        // Remove the entry first, then the INDENT that
+                        // separated it from a sibling. Doing them as two
+                        // separate single-child splices sidesteps a
+                        // rowan iteration quirk where a multi-child
+                        // splice can skip elements mid-iteration.
+                        //
+                        // For non-first entries the INDENT sits right
+                        // before this entry (the separator after the
+                        // previous entry's NEWLINE); for the first
+                        // entry any INDENT is a top-level formatting
+                        // one we leave alone.
                         self.0.splice_children(i..(i + 1), vec![]);
+                        if !self.is_flow_style() && i > 0 {
+                            if let Some(prev) = children.get(i - 1) {
+                                if prev
+                                    .as_token()
+                                    .is_some_and(|t| t.kind() == SyntaxKind::INDENT)
+                                {
+                                    self.0.splice_children((i - 1)..i, vec![]);
+                                }
+                            }
+                        }
 
                         if !self.is_flow_style() && is_last && i > 0 {
                             // Removed the last entry - remove trailing newline/indent from new last entry

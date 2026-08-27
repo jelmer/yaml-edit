@@ -103,7 +103,6 @@ fn sequence_insert_into_existing() {
 }
 
 #[test]
-#[ignore = "known bug: Sequence::remove in block sequence leaves stacked INDENTs that re-parse as nesting"]
 fn sequence_remove_middle() {
     let doc = Document::from_str("items:\n  - a\n  - b\n  - c\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();

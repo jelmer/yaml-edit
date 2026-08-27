@@ -57,6 +57,69 @@ fn has_newline_token(node: &SyntaxNode) -> bool {
     })
 }
 
+/// If `mapping` is an empty MAPPING sitting inside a MAPPING_ENTRY's
+/// VALUE, replace the placeholder `NEWLINE INDENT MAPPING` pattern
+/// with an inline flow-empty `MAPPING {}` so the entry renders as
+/// `key: {}` instead of an unterminated `key:\n    ` shape.
+///
+/// Called after `Mapping::remove` empties out a nested mapping. Without
+/// this, `set_path("a.b.c", v)` then `remove_path("a.b.c")` leaves the
+/// intermediate mappings as empty scaffolds with dangling NEWLINE and
+/// INDENT tokens, producing text like `a:\n  b:\n    ` that no parser
+/// will recognise as a well-formed document.
+///
+/// Rendering as `{}` (rather than dropping the VALUE entirely) preserves
+/// path lookups: `get_path("a.b")` still returns an empty mapping, which
+/// matches user expectation for a key whose value has been emptied out
+/// rather than deleted.
+fn collapse_empty_child_mapping_in_parent(mapping: &SyntaxNode) {
+    let Some(value_node) = mapping.parent() else {
+        return;
+    };
+    if value_node.kind() != SyntaxKind::VALUE {
+        return;
+    }
+    let Some(entry_node) = value_node.parent() else {
+        return;
+    };
+    if entry_node.kind() != SyntaxKind::MAPPING_ENTRY {
+        return;
+    }
+    // The VALUE should contain only whitespace/decoration around this
+    // now-empty MAPPING; if there is more (a comment, a sibling scalar,
+    // an anchor, ...) collapsing would lose information.
+    let has_other_content = value_node.children_with_tokens().any(|el| match el {
+        rowan::NodeOrToken::Node(n) => n != *mapping,
+        rowan::NodeOrToken::Token(t) => !matches!(
+            t.kind(),
+            SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE
+        ),
+    });
+    if has_other_content {
+        return;
+    }
+    // Build a fresh flow-empty VALUE: ` {}` (leading space + inline
+    // MAPPING with LEFT_BRACE + RIGHT_BRACE).
+    let mut builder = GreenNodeBuilder::new();
+    builder.start_node(SyntaxKind::VALUE.into());
+    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+    builder.start_node(SyntaxKind::MAPPING.into());
+    builder.token(SyntaxKind::LEFT_BRACE.into(), "{");
+    builder.token(SyntaxKind::RIGHT_BRACE.into(), "}");
+    builder.finish_node();
+    builder.finish_node();
+    let new_value = SyntaxNode::new_root_mut(builder.finish());
+
+    let Some(value_idx) = entry_node
+        .children_with_tokens()
+        .position(|c| c.as_node().is_some_and(|n| *n == value_node))
+    else {
+        return;
+    };
+    entry_node.splice_children(value_idx..(value_idx + 1), vec![new_value.into()]);
+    ensure_trailing_newline(&entry_node);
+}
+
 /// Append a trailing NEWLINE token to `entry` if it doesn't already end with
 /// one. Used when a block-style entry is about to have a new sibling appended
 /// after it (its trailing newline separates the two entries visually).
@@ -2392,6 +2455,21 @@ impl Mapping {
             .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
 
         self.0.splice_children(i..(i + 1), vec![]);
+
+        // If the mapping is now empty and it sits as the value of a
+        // parent MAPPING_ENTRY, collapse the placeholder tokens
+        // (NEWLINE + INDENT + <empty MAPPING>) that wrapped it. The
+        // parent entry becomes a plain implicit-null value: `key:\n`.
+        // Otherwise a caller who does set_path("a.b.c", v) then
+        // remove_path("a.b.c") ends up with a broken CST whose text
+        // trails off with dangling indentation.
+        if !self
+            .0
+            .children()
+            .any(|c| c.kind() == SyntaxKind::MAPPING_ENTRY)
+        {
+            collapse_empty_child_mapping_in_parent(&self.0);
+        }
 
         if !(is_last && i > 0 && !removed_had_newline) {
             return;

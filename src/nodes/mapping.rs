@@ -50,18 +50,18 @@ fn trailing_newline_reachable(node: &SyntaxNode) -> bool {
     last_non_empty.is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
 }
 
-/// Is `value` a block-style VALUE (key on one line, value laid out on
+/// Is `value` laid out block-style (key on one line, value content on
 /// subsequent lines)?
 ///
-/// A block VALUE holds a NEWLINE as a *direct* child token, sitting
-/// between the COLON and the value's content. An inline flow value --
-/// even a multi-line one like `[\n  a,\n  b\n]` -- keeps its NEWLINEs
-/// nested inside the flow SEQUENCE/MAPPING and has none directly in the
-/// VALUE, so this check distinguishes the two.
+/// Block layout puts a NEWLINE as a *direct* child of VALUE, between
+/// the COLON and the value's content. Inline flow -- even a multi-line
+/// flow like `[\n  a,\n  b\n]` -- keeps its NEWLINEs nested inside the
+/// flow SEQUENCE/MAPPING, so the VALUE has no direct-child NEWLINE.
 ///
-/// A leading TAG or ANCHOR annotation may be wrapped in a TAGGED_NODE
-/// (`k: !!seq\n  - old`) whose own children hold the NEWLINE and
-/// content. Peel it before looking.
+/// A TAG annotation (`k: !!seq\n  - old`) wraps the content in a
+/// TAGGED_NODE whose own children hold the NEWLINE; peel it before
+/// looking. An ANCHOR annotation (`k: &x\n  - old`) sits as a plain
+/// token alongside its NEWLINE inside VALUE, so no peeling is needed.
 fn value_is_block(value: &SyntaxNode) -> bool {
     let carrier = value
         .children()

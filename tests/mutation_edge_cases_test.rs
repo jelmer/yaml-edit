@@ -7,8 +7,9 @@
 //! - Mutating tags on tagged nodes
 //! - Modifying empty collections
 
+use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::YamlFile;
+use yaml_edit::{debug, YamlFile};
 
 /// Test mutating the target of an anchor
 /// When an anchored value is changed, aliases should still reference the anchor
@@ -360,4 +361,53 @@ fn test_replace_multiline_flow_sequence_value_with_scalar() {
     let expected = "{\n  \"Name\": \"yep\",\n  \"Repository\": \"cvs+ssh://_anoncvs@anoncvs.example.org/cvs#yep\",\n  \"Repository-Browse\": \"http://www.example.org/cvs.cgi/contrib/code/yep/\"\n}";
 
     assert_eq!(yaml.to_string(), expected);
+    debug::validate_tree(yaml.syntax()).expect("CST invariants hold after mutation");
+}
+
+/// Adjacent shapes to the lintian-brush regression, covering the same
+/// value_is_block classifier decision:
+///
+/// - `mapping`: old value is a multi-line flow *mapping* (not sequence).
+/// - `anchor`: ANCHOR sits as a direct-child token of VALUE alongside
+///   the flow SEQUENCE -- no TAGGED_NODE wrapper.
+/// - `tag`: TAG wraps the value in a TAGGED_NODE; classifier peels it.
+/// - `nested`: flow-of-flow-mappings, deeper nesting of the same shape.
+///
+/// All must round-trip to a stable CST and produce the expected inline
+/// output.
+#[test]
+fn test_replace_multiline_flow_value_with_scalar_variants() {
+    for (name, input, expected) in [
+        (
+            "mapping",
+            "{\n  \"a\": \"1\",\n  \"nested\": {\n    \"x\": 1,\n    \"y\": 2\n  },\n  \"z\": \"3\"\n}",
+            "{\n  \"a\": \"1\",\n  \"nested\": \"replaced\",\n  \"z\": \"3\"\n}",
+        ),
+        (
+            "anchor",
+            "a: 1\nb: &x [\n  1,\n  2\n]\nc: 3\n",
+            "a: 1\nb: replaced\nc: 3\n",
+        ),
+        (
+            "tag",
+            "a: 1\nb: !!seq [\n  1,\n  2\n]\nc: 3\n",
+            "a: 1\nb: replaced\nc: 3\n",
+        ),
+        (
+            "nested",
+            "a: 1\nb: [\n  {\n    x: 1\n  },\n  {\n    y: 2\n  }\n]\nc: 3\n",
+            "a: 1\nb: replaced\nc: 3\n",
+        ),
+    ] {
+        let yaml = YamlFile::from_str(input).unwrap();
+        let target_key = if name == "mapping" { "nested" } else { "b" };
+        yaml.document()
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .set(target_key, "replaced");
+        assert_eq!(yaml.to_string(), expected, "variant: {name}");
+        debug::validate_tree(yaml.syntax())
+            .unwrap_or_else(|e| panic!("variant {name} invariant violated: {e}"));
+    }
 }

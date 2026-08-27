@@ -30,19 +30,24 @@ enum FlowInsertPos {
 ///
 /// `last_token()` alone can't answer this: it returns the deepest tail
 /// leaf, which may be a zero-width NULL sitting after a NEWLINE inside
-/// the same KEY subtree (`? b\n` under a tagged mapping). Walk the
-/// token stream backwards, skipping empty tokens, and check what's
-/// there.
+/// the same KEY subtree (`? b\n` under a tagged mapping). Walk `node`'s
+/// own token stream backwards, skipping empty tokens, and check what's
+/// there. The walk is strictly bounded to `node`'s subtree; callers
+/// don't need to worry about escaping into siblings.
 fn trailing_newline_reachable(node: &SyntaxNode) -> bool {
-    let mut cur = node.last_token();
-    while let Some(tok) = cur {
-        if tok.text().is_empty() {
-            cur = tok.prev_token();
-            continue;
+    // rowan's descendants_with_tokens isn't DoubleEndedIterator, so
+    // materialise the (usually short) tail slice; the walk is still
+    // bounded to `node`'s subtree, avoiding prev_token()'s tree-wide
+    // reach.
+    let mut last_non_empty = None;
+    for el in node.descendants_with_tokens() {
+        if let Some(t) = el.into_token() {
+            if !t.text().is_empty() {
+                last_non_empty = Some(t);
+            }
         }
-        return tok.kind() == SyntaxKind::NEWLINE;
     }
-    false
+    last_non_empty.is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
 }
 
 /// Does any descendant token of `node` have kind NEWLINE?

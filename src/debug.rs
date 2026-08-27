@@ -202,33 +202,6 @@ pub fn validate_tree(node: &SyntaxNode) -> Result<(), String> {
     Ok(())
 }
 
-/// In debug builds, walk from `node` to the tree root and run
-/// [`validate_tree`]; panic if it returns an error. In release builds
-/// (any build without `debug_assertions`), do nothing.
-///
-/// Intended as a lightweight cross-check at the tail of internal
-/// mutation methods. Roundtrip is intentionally *not* checked here --
-/// re-parsing on every mutation is too expensive to run under
-/// `debug_assertions` in a busy program.
-#[inline]
-pub fn debug_assert_valid(node: &SyntaxNode) {
-    #[cfg(debug_assertions)]
-    {
-        let mut root = node.clone();
-        while let Some(parent) = root.parent() {
-            root = parent;
-        }
-        if let Err(e) = validate_tree(&root) {
-            panic!(
-                "CST invariant violated after mutation: {e}\ntext: {:?}",
-                root.to_string()
-            );
-        }
-    }
-    #[cfg(not(debug_assertions))]
-    let _ = node;
-}
-
 /// Roundtrip check: `parse(node.to_string()).to_string()` must equal
 /// `node.to_string()`, and the re-parse must have no errors.
 ///
@@ -394,15 +367,18 @@ fn entry_is_terminated(entry: &SyntaxNode) -> bool {
 /// NEWLINE (an unterminated source doc, `a: 1\nb: 2`, is legitimate
 /// YAML and must roundtrip).
 fn is_last_entry_in_parent(entry: &SyntaxNode) -> bool {
-    let Some(parent) = entry.parent() else {
-        return true;
-    };
+    // Walk siblings after `entry` looking for another of the same
+    // kind. O(distance-to-next-same-kind-sibling) per call, so the
+    // total cost across all entries in one parent is O(n), not O(n^2).
     let kind = entry.kind();
-    !parent
-        .children()
-        .skip_while(|c| c != entry)
-        .skip(1)
-        .any(|c| c.kind() == kind)
+    let mut sib = entry.next_sibling();
+    while let Some(s) = sib {
+        if s.kind() == kind {
+            return false;
+        }
+        sib = s.next_sibling();
+    }
+    true
 }
 
 /// Does this MAPPING_ENTRY's terminal VALUE hold a zero-width

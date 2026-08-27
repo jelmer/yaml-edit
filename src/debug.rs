@@ -208,6 +208,12 @@ pub fn validate_tree(node: &SyntaxNode) -> Result<(), String> {
 /// This catches classes of bugs where a mutation produces text that
 /// looks acceptable but re-parses into a different structure (e.g.
 /// missing/extra indentation that changes nesting).
+///
+/// Note: this shares our parser's blindspots. If a mutation produces
+/// a text that our parser reads back into the same shape as the
+/// pre-mutation CST, the check passes even when a different YAML
+/// parser would disagree. It is *not* a differential test against an
+/// oracle parser.
 pub fn roundtrip_ok(node: &SyntaxNode) -> Result<(), String> {
     let text = node.to_string();
     let parse = crate::Parse::parse_yaml(&text);
@@ -226,20 +232,6 @@ pub fn roundtrip_ok(node: &SyntaxNode) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-/// Both [`validate_tree`] and [`roundtrip_ok`]. Panics on the first
-/// violation. Intended as a drop-in `debug_assert!`-style helper.
-///
-/// Use this after non-trivial mutations to catch regressions early.
-#[track_caller]
-pub fn assert_invariants(node: &SyntaxNode) {
-    if let Err(e) = validate_tree(node) {
-        panic!("CST invariant violated: {e}");
-    }
-    if let Err(e) = roundtrip_ok(node) {
-        panic!("CST roundtrip failed: {e}");
-    }
 }
 
 fn validate_node(node: &SyntaxNode) -> Result<(), String> {
@@ -403,13 +395,23 @@ fn validate_no_stacked_indents(node: &SyntaxNode) -> Result<(), String> {
     Ok(())
 }
 
-/// A MAPPING_ENTRY should not end with two adjacent NEWLINE tokens.
+/// An entry or collection node should not end with two adjacent NEWLINE
+/// tokens as direct children.
 ///
 /// That shape shows up when a placeholder NEWLINE isn't stripped after a
 /// child collection gains content (see issue #18 and the sequence-under-
 /// empty-key bug). Renders as a spurious blank line.
+///
+/// Checked for MAPPING_ENTRY, SEQUENCE_ENTRY, MAPPING, and SEQUENCE.
 fn validate_no_double_trailing_newline(node: &SyntaxNode) -> Result<(), String> {
-    if node.kind() == SyntaxKind::MAPPING_ENTRY {
+    let checks_apply = matches!(
+        node.kind(),
+        SyntaxKind::MAPPING_ENTRY
+            | SyntaxKind::SEQUENCE_ENTRY
+            | SyntaxKind::MAPPING
+            | SyntaxKind::SEQUENCE
+    );
+    if checks_apply {
         let tokens: Vec<_> = node
             .children_with_tokens()
             .filter_map(|c| c.into_token())
@@ -420,7 +422,8 @@ fn validate_no_double_trailing_newline(node: &SyntaxNode) -> Result<(), String> 
             && tokens[last - 2].kind() == SyntaxKind::NEWLINE
         {
             return Err(format!(
-                "MAPPING_ENTRY {:?} ends with two NEWLINE tokens -- would render as a stray blank line",
+                "{:?} ends with two NEWLINE tokens -- would render as a stray blank line: {:?}",
+                node.kind(),
                 node.text().to_string(),
             ));
         }

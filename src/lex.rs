@@ -305,6 +305,43 @@ fn read_scalar_from<'a>(
     &input[start_idx..end_idx]
 }
 
+/// Like `read_scalar_from` but treats `:` as scalar content when it's
+/// not followed by whitespace (matching YAML plain-scalar semantics),
+/// and `-` as scalar content unconditionally.
+///
+/// Used from the `.` and `-` scalar-prefix branches, where the char
+/// that dispatched us was itself a scalar prefix rather than a
+/// structural indicator.
+fn read_plain_scalar_body_from<'a>(
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
+    input: &'a str,
+    start_idx: usize,
+) -> &'a str {
+    let mut end_idx = start_idx;
+    while let Some((idx, ch)) = chars.peek().copied() {
+        if ch == '\n' || ch == '\r' {
+            break;
+        }
+        if ch.is_whitespace() {
+            break;
+        }
+        // Colon is scalar content unless followed by whitespace or EOF.
+        if ch == ':' {
+            let after = input[idx + ch.len_utf8()..].chars().next();
+            match after {
+                Some(next) if next.is_whitespace() => break,
+                None => break,
+                _ => {}
+            }
+        } else if ch != '-' && is_yaml_special(ch) {
+            break;
+        }
+        end_idx = idx + ch.len_utf8();
+        chars.next();
+    }
+    &input[start_idx..end_idx]
+}
+
 /// Tokenize YAML input with whitespace validation
 pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
     let (tokens, _) = lex_with_validation(input);
@@ -410,8 +447,10 @@ pub fn lex_with_validation_config<'a>(
                     if is_sequence_marker {
                         tokens.push((DASH, &input[token_start..start_idx + 1]));
                     } else {
-                        // This hyphen is part of a scalar value
-                        let text = read_scalar_from(&mut chars, input, start_idx + 1, "-");
+                        // This hyphen is part of a scalar value. Use the
+                        // plain-scalar body reader so embedded `:` (not
+                        // followed by whitespace) stays inside the scalar.
+                        let text = read_plain_scalar_body_from(&mut chars, input, start_idx + 1);
                         let full_text = &input[token_start..token_start + 1 + text.len()];
                         let token_kind = classify_scalar(full_text);
                         tokens.push((token_kind, full_text));
@@ -594,17 +633,16 @@ pub fn lex_with_validation_config<'a>(
                         chars.next(); // consume third .
                         tokens.push((DOC_END, &input[token_start..start_idx + 3]));
                     } else {
-                        // Two dots -- continue as scalar. Allow embedded
-                        // hyphens (they're legal inside a plain scalar).
-                        let rest = read_scalar_from(&mut chars, input, start_idx + 2, "-");
+                        // Two dots -- continue as plain scalar body (allows
+                        // embedded `-` and `:` per YAML plain-scalar rules).
+                        let rest = read_plain_scalar_body_from(&mut chars, input, start_idx + 2);
                         let text = &input[token_start..start_idx + 2 + rest.len()];
                         let token_kind = classify_scalar(text);
                         tokens.push((token_kind, text));
                     }
                 } else {
-                    // Single dot -- part of scalar. Allow embedded
-                    // hyphens (`.foo-bar` is one plain scalar).
-                    let rest = read_scalar_from(&mut chars, input, start_idx + 1, "-");
+                    // Single dot -- part of plain scalar body.
+                    let rest = read_plain_scalar_body_from(&mut chars, input, start_idx + 1);
                     let text = &input[token_start..start_idx + 1 + rest.len()];
                     let token_kind = classify_scalar(text);
                     tokens.push((token_kind, text));

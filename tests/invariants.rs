@@ -147,6 +147,18 @@ fn set_key_with_dot_and_dash_parses_back() {
 }
 
 #[test]
+fn set_key_with_embedded_colon_parses_back() {
+    // A `.`-prefixed key that contains a non-space colon used to be
+    // tokenised as three separate STRING tokens (`.d`, `:5`, `-a`);
+    // the parser then couldn't stitch them back into a mapping entry.
+    // Surfaced by libfuzzer.
+    let doc = Document::from_str("a: null\n").unwrap();
+    doc.as_mapping().unwrap().set(".d:5-a", "");
+    check(&doc);
+    assert_eq!(doc.to_string(), "a: null\n.d:5-a: ''\n");
+}
+
+#[test]
 fn set_with_document_terminator_key() {
     // Document terminator (`...`) and start marker (`---`) at column 0
     // begin a new stream document; used as a bare key they must be

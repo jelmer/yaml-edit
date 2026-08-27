@@ -7,25 +7,41 @@
 use proptest::prelude::*;
 use rowan::ast::AstNode;
 use std::str::FromStr;
+use yaml_edit::path::YamlPath;
 use yaml_edit::{debug, Document};
 
 /// A random-but-plausible mutation to apply.
 #[derive(Debug, Clone)]
 enum Op {
-    /// `mapping.set(key, string_value)`
+    // --- Mapping ops (top-level) ---
     SetString(String, String),
-    /// `mapping.set(key, int_value)`
     SetInt(String, i32),
-    /// `mapping.remove(key)`
     Remove(String),
-    /// `mapping.rename_key(old, new)`
     Rename(String, String),
-    /// `mapping.get_sequence(key)?.push(value)`
-    PushIntoSeq(String, String),
-    /// `mapping.get_sequence(key)?.pop()`
-    PopFromSeq(String),
-    /// `mapping.get_mapping(key)?.set(inner_key, inner_value)`
-    SetInNested(String, String, String),
+    Clear,
+    InsertAfter(String, String, String),
+    InsertBefore(String, String, String),
+    InsertAtIndex(usize, String, String),
+    MoveAfter(String, String, String),
+    MoveBefore(String, String, String),
+    RemoveNthOccurrence(String, usize),
+    ReorderFields(Vec<String>),
+
+    // --- Sequence ops (indexed by a mapping key that holds a sequence) ---
+    SeqPush(String, String),
+    SeqPop(String),
+    SeqInsert(String, usize, String),
+    SeqSet(String, usize, String),
+    SeqRemove(String, usize),
+    SeqClear(String),
+
+    // --- Nested mapping ops (indexed by a mapping key that holds a mapping) ---
+    NestedSet(String, String, String),
+    NestedRemove(String, String),
+
+    // --- Path-based ops ---
+    SetPath(String, String),
+    RemovePath(String),
 }
 
 /// A YAML key that only uses simple characters -- no colons, no quotes,
@@ -40,15 +56,42 @@ fn value_strat() -> impl Strategy<Value = String> {
     "[a-z0-9_]{0,8}".prop_map(String::from)
 }
 
+/// A small non-negative index (0..=6). Most seed docs are tiny; keeping
+/// the range small maximizes the chance of hitting a valid index.
+fn index_strat() -> impl Strategy<Value = usize> {
+    0usize..7
+}
+
+/// A dotted path with 1..=3 segments, each a simple key.
+fn path_strat() -> impl Strategy<Value = String> {
+    prop::collection::vec(key_strat(), 1..=3).prop_map(|segs| segs.join("."))
+}
+
 fn op_strat() -> impl Strategy<Value = Op> {
     prop_oneof![
         (key_strat(), value_strat()).prop_map(|(k, v)| Op::SetString(k, v)),
         (key_strat(), any::<i32>()).prop_map(|(k, v)| Op::SetInt(k, v)),
         key_strat().prop_map(Op::Remove),
         (key_strat(), key_strat()).prop_map(|(a, b)| Op::Rename(a, b)),
-        (key_strat(), value_strat()).prop_map(|(k, v)| Op::PushIntoSeq(k, v)),
-        key_strat().prop_map(Op::PopFromSeq),
-        (key_strat(), key_strat(), value_strat()).prop_map(|(k, ik, v)| Op::SetInNested(k, ik, v)),
+        Just(Op::Clear),
+        (key_strat(), key_strat(), value_strat()).prop_map(|(a, k, v)| Op::InsertAfter(a, k, v)),
+        (key_strat(), key_strat(), value_strat()).prop_map(|(a, k, v)| Op::InsertBefore(a, k, v)),
+        (index_strat(), key_strat(), value_strat())
+            .prop_map(|(i, k, v)| Op::InsertAtIndex(i, k, v)),
+        (key_strat(), key_strat(), value_strat()).prop_map(|(a, k, v)| Op::MoveAfter(a, k, v)),
+        (key_strat(), key_strat(), value_strat()).prop_map(|(a, k, v)| Op::MoveBefore(a, k, v)),
+        (key_strat(), index_strat()).prop_map(|(k, n)| Op::RemoveNthOccurrence(k, n)),
+        prop::collection::vec(key_strat(), 0..=4).prop_map(Op::ReorderFields),
+        (key_strat(), value_strat()).prop_map(|(k, v)| Op::SeqPush(k, v)),
+        key_strat().prop_map(Op::SeqPop),
+        (key_strat(), index_strat(), value_strat()).prop_map(|(k, i, v)| Op::SeqInsert(k, i, v)),
+        (key_strat(), index_strat(), value_strat()).prop_map(|(k, i, v)| Op::SeqSet(k, i, v)),
+        (key_strat(), index_strat()).prop_map(|(k, i)| Op::SeqRemove(k, i)),
+        key_strat().prop_map(Op::SeqClear),
+        (key_strat(), key_strat(), value_strat()).prop_map(|(k, ik, v)| Op::NestedSet(k, ik, v)),
+        (key_strat(), key_strat()).prop_map(|(k, ik)| Op::NestedRemove(k, ik)),
+        (path_strat(), value_strat()).prop_map(|(p, v)| Op::SetPath(p, v)),
+        path_strat().prop_map(Op::RemovePath),
     ]
 }
 
@@ -79,20 +122,71 @@ fn apply(doc: &Document, op: &Op) {
         Op::Rename(a, b) => {
             let _ = mapping.rename_key(a.as_str(), b.as_str());
         }
-        Op::PushIntoSeq(k, v) => {
+        Op::Clear => mapping.clear(),
+        Op::InsertAfter(a, k, v) => {
+            let _ = mapping.insert_after(a.as_str(), k.as_str(), v.as_str());
+        }
+        Op::InsertBefore(a, k, v) => {
+            let _ = mapping.insert_before(a.as_str(), k.as_str(), v.as_str());
+        }
+        Op::InsertAtIndex(i, k, v) => {
+            mapping.insert_at_index(*i, k.as_str(), v.as_str());
+        }
+        Op::MoveAfter(a, k, v) => {
+            let _ = mapping.move_after(a.as_str(), k.as_str(), v.as_str());
+        }
+        Op::MoveBefore(a, k, v) => {
+            let _ = mapping.move_before(a.as_str(), k.as_str(), v.as_str());
+        }
+        Op::RemoveNthOccurrence(k, n) => {
+            let _ = mapping.remove_nth_occurrence(k.as_str(), *n);
+        }
+        Op::ReorderFields(order) => {
+            mapping.reorder_fields(order.iter().map(|s| s.as_str()));
+        }
+        Op::SeqPush(k, v) => {
             if let Some(seq) = mapping.get_sequence(k.as_str()) {
                 seq.push(v.as_str());
             }
         }
-        Op::PopFromSeq(k) => {
+        Op::SeqPop(k) => {
             if let Some(seq) = mapping.get_sequence(k.as_str()) {
                 let _ = seq.pop();
             }
         }
-        Op::SetInNested(k, ik, v) => {
+        Op::SeqInsert(k, i, v) => {
+            if let Some(seq) = mapping.get_sequence(k.as_str()) {
+                seq.insert(*i, v.as_str());
+            }
+        }
+        Op::SeqSet(k, i, v) => {
+            if let Some(seq) = mapping.get_sequence(k.as_str()) {
+                let _ = seq.set(*i, v.as_str());
+            }
+        }
+        Op::SeqRemove(k, i) => {
+            if let Some(seq) = mapping.get_sequence(k.as_str()) {
+                let _ = seq.remove(*i);
+            }
+        }
+        Op::SeqClear(k) => {
+            if let Some(seq) = mapping.get_sequence(k.as_str()) {
+                seq.clear();
+            }
+        }
+        Op::NestedSet(k, ik, v) => {
             if let Some(nested) = mapping.get_mapping(k.as_str()) {
                 nested.set(ik.as_str(), v.as_str());
             }
+        }
+        Op::NestedRemove(k, ik) => {
+            if let Some(nested) = mapping.get_mapping(k.as_str()) {
+                let _ = nested.remove(ik.as_str());
+            }
+        }
+        Op::SetPath(p, v) => doc.set_path(p, v.as_str()),
+        Op::RemovePath(p) => {
+            let _ = doc.remove_path(p);
         }
     }
 }

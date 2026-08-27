@@ -1,4 +1,4 @@
-use super::{Lang, Scalar, Sequence, SyntaxNode};
+use super::{fresh_token, Lang, Scalar, Sequence, SyntaxNode};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::yaml::{
@@ -185,18 +185,6 @@ fn append_comma_space_to_entry(entry: &SyntaxNode) {
             fresh_token(SyntaxKind::WHITESPACE, " ").into(),
         ],
     );
-}
-
-/// Build a standalone `SyntaxToken` of `kind` with `text`, ready to splice
-/// into a parent's child list via `splice_children`.
-fn fresh_token(kind: SyntaxKind, text: &str) -> rowan::SyntaxToken<Lang> {
-    let mut builder = GreenNodeBuilder::new();
-    builder.start_node(SyntaxKind::ROOT.into());
-    builder.token(kind.into(), text);
-    builder.finish_node();
-    SyntaxNode::new_root_mut(builder.finish())
-        .first_token()
-        .expect("just built a token")
 }
 
 /// Walk `entry`'s tokens in document order (descending into child nodes)

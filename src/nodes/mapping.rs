@@ -2428,28 +2428,30 @@ impl Mapping {
                 continue;
             }
 
-            // Found the nth occurrence - remove it
+            // Found the nth occurrence. Only strip the previous
+            // entry's trailing NEWLINE if the removed entry itself
+            // had no trailing NEWLINE (unterminated source) -- same
+            // rule as [`Mapping::remove`].
             let is_last = !children.iter().skip(i + 1).any(|c| {
                 c.as_node()
                     .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
             });
+            let removed_had_newline = node
+                .last_token()
+                .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
 
             self.0.splice_children(i..(i + 1), vec![]);
 
-            if is_last && i > 0 {
-                // Removed the last entry - remove trailing newline from new last entry
-                let prev_entry_node = children[..i].iter().rev().find_map(|c| {
+            if is_last && i > 0 && !removed_had_newline {
+                if let Some(prev_entry_node) = children[..i].iter().rev().find_map(|c| {
                     c.as_node()
                         .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-                })?;
-
-                if let Some(last_token) = prev_entry_node.last_token() {
-                    if last_token.kind() == SyntaxKind::NEWLINE {
-                        let entry_children_count = prev_entry_node.children_with_tokens().count();
-                        prev_entry_node.splice_children(
-                            (entry_children_count - 1)..entry_children_count,
-                            vec![],
-                        );
+                }) {
+                    if let Some(last_token) = prev_entry_node.last_token() {
+                        if last_token.kind() == SyntaxKind::NEWLINE {
+                            let count = prev_entry_node.children_with_tokens().count();
+                            prev_entry_node.splice_children((count - 1)..count, vec![]);
+                        }
                     }
                 }
             }

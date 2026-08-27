@@ -161,37 +161,57 @@ bar: 42
     assert!(reparsed.document().is_some());
 }
 
-/// Test 5MUD: Colon on next line after key
+/// Test 5MUD: Colon on next line after key.
+///
+/// YAML 1.2 test suite marks this valid (see test-data/5MUD/). The
+/// expected result is `{"foo": "bar"}`.
 #[test]
-#[ignore = "Non-spec-compliant: PyYAML and Psych reject this"]
 fn test_5mud_colon_on_next_line() {
     let yaml = r#"---
 { "foo"
   :bar }"#;
 
-    let result = YamlFile::from_str(yaml);
-    assert!(
-        result.is_ok(),
-        "5MUD: Flow mapping with colon on next line should parse. Error: {:?}",
-        result.err()
-    );
+    let file = YamlFile::from_str(yaml).expect("5MUD should parse");
+    let doc = file.document().expect("Should have document");
+    let mapping = doc.as_mapping().expect("Should be a mapping");
+    let value = mapping.get("foo").expect("Should have 'foo' key");
+    let scalar = value.as_scalar().expect("Value should be a scalar");
+    assert_eq!(scalar.as_string(), "bar");
 }
 
-/// Test 8KB6: Multiline plain flow mapping key
+/// Test 8KB6: Multiline plain flow mapping key.
+///
+/// YAML 1.2 test suite marks this valid. The multiline plain scalar
+/// "multi\n  line" folds to "multi line" per the standard line-fold
+/// rules; Scalar::as_string handles the fold when decoding.
 #[test]
-#[ignore = "TODO: Requires multiline plain scalar folding in flow context"]
 fn test_8kb6_multiline_flow_key() {
     let yaml = r#"---
 - { single line, a: b}
 - { multi
   line, a: b}"#;
 
-    let result = YamlFile::from_str(yaml);
-    assert!(
-        result.is_ok(),
-        "8KB6: Multiline flow mapping key should parse. Error: {:?}",
-        result.err()
-    );
+    let file = YamlFile::from_str(yaml).expect("8KB6 should parse");
+    let doc = file.document().expect("Should have document");
+    let seq = doc.as_sequence().expect("Should be a sequence");
+    let items: Vec<_> = seq.values().collect();
+    assert_eq!(items.len(), 2);
+
+    // First item: `{ single line, a: b}` -> keys "single line", "a".
+    let first = items[0].as_mapping().expect("First item is a mapping");
+    let first_keys: Vec<String> = first
+        .iter()
+        .filter_map(|(k, _)| k.as_scalar().map(|s| s.as_string()))
+        .collect();
+    assert_eq!(first_keys, vec!["single line", "a"]);
+
+    // Second item: `{ multi\n  line, a: b}` -> key folds to "multi line".
+    let second = items[1].as_mapping().expect("Second item is a mapping");
+    let second_keys: Vec<String> = second
+        .iter()
+        .filter_map(|(k, _)| k.as_scalar().map(|s| s.as_string()))
+        .collect();
+    assert_eq!(second_keys, vec!["multi line", "a"]);
 }
 
 /// Test 5T43: Double colon in flow mapping
@@ -218,7 +238,9 @@ fn test_5t43_double_colon() {
     let first_val = first_map.get("key").expect("Should have 'key'");
     assert_eq!(first_val.as_scalar().unwrap().as_string(), "value");
 
-    // Second element: { "key"::value } - double colon means :value (with trailing space) is the value
+    // Second element: `{ "key"::value }` -- double colon: the second
+    // `:` starts a plain scalar `:value` (per YAML plain-scalar rules,
+    // colon not followed by whitespace is scalar content).
     let second = seq.get(1).expect("Should have second element");
     let second_map = second
         .as_mapping()
@@ -229,7 +251,7 @@ fn test_5t43_double_colon() {
         "Second mapping should have 1 key"
     );
     let second_val = second_map.get("key").expect("Should have 'key'");
-    assert_eq!(second_val.as_scalar().unwrap().as_string(), ":value ");
+    assert_eq!(second_val.as_scalar().unwrap().as_string(), ":value");
 
     // Verify output is valid YAML
     let output = doc.to_string();

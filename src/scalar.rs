@@ -851,8 +851,32 @@ impl ScalarValue {
 
         // Check if starts with special characters
         if value.starts_with(|ch: char| {
-            matches!(ch, '-' | '?' | '[' | ']' | '{' | '}' | ',' | '>' | '<')
+            matches!(
+                ch,
+                '-' | '?'
+                    | ':'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | ','
+                    | '>'
+                    | '<'
+                    | '!'
+                    | '&'
+                    | '*'
+                    | '%'
+                    | '@'
+                    | '`'
+            )
         }) {
+            return true;
+        }
+
+        // Document terminator (`...`) and start marker (`---`) at
+        // column 0 begin a new stream document, so they must be quoted
+        // when used as a scalar / key.
+        if value.starts_with("...") || value.starts_with("---") {
             return true;
         }
 

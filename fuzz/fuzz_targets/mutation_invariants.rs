@@ -43,12 +43,16 @@ const SEEDS: &[&str] = &[
     "empty_map: {}\nempty_seq: []\n",
 ];
 
-/// A short ASCII-safe key or scalar. Wraps the bytes verbatim so
-/// libfuzzer's coverage feedback stays useful (unlike a raw
-/// `% alphabet_size` mapping, which collapses many distinct inputs
-/// into the same string).
+/// A short ASCII string drawn from an alphabet designed to hit
+/// parser edges while staying representable as a bare YAML key/value:
+/// letters, digits, and a handful of punctuation characters (dash,
+/// underscore, dot, colon, quote, hash, space). Wraps the bytes
+/// verbatim rather than collapsing them through `% alphabet_size`
+/// so libfuzzer's coverage feedback keeps distinguishing inputs.
 #[derive(Debug)]
 struct SafeStr(String);
+
+const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789-_.\"'# :";
 
 impl<'a> Arbitrary<'a> for SafeStr {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
@@ -56,11 +60,7 @@ impl<'a> Arbitrary<'a> for SafeStr {
         let mut s = String::with_capacity(len);
         for _ in 0..len {
             let b = u.arbitrary::<u8>()?;
-            let ch = match b % 28 {
-                0..=25 => char::from(b'a' + (b % 26)),
-                26 => '_',
-                _ => '0',
-            };
+            let ch = ALPHABET[(b as usize) % ALPHABET.len()] as char;
             s.push(ch);
         }
         Ok(SafeStr(s))

@@ -95,6 +95,20 @@ fn parse_empty_sequence_under_key_then_push() {
 }
 
 #[test]
+fn sequence_insert_past_end_without_trailing_newline() {
+    // Regression for a bug found by wiring the invariant check into
+    // the mutation methods: Sequence::insert past the end of an
+    // unterminated source (`- a\n  - b`, no trailing NL) used to
+    // splice the new INDENT+ENTRY straight after the previous entry's
+    // scalar, rendering as `- a\n  - b  - c\n`.
+    let doc = Document::from_str("items:\n  - a\n  - b").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
+    seq.insert(2, "c");
+    check(&doc);
+    assert_eq!(doc.to_string(), "items:\n  - a\n  - b\n  - c\n");
+}
+
+#[test]
 fn sequence_insert_into_existing() {
     let doc = Document::from_str("items:\n  - a\n  - c\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
@@ -121,6 +135,72 @@ fn rename_key() {
 fn mapping_clear() {
     let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
     doc.as_mapping().unwrap().clear();
+    check(&doc);
+}
+
+#[test]
+fn set_key_with_dot_and_dash_parses_back() {
+    let doc = Document::from_str("existing: value\n").unwrap();
+    doc.as_mapping().unwrap().set(".ar-aa", 0);
+    check(&doc);
+    assert_eq!(doc.to_string(), "existing: value\n.ar-aa: 0\n");
+}
+
+#[test]
+fn hash_inside_plain_scalar_stays_in_scalar() {
+    // Per YAML 1.2 4.6.6 `#` starts a comment only when preceded by
+    // whitespace. Inside a plain scalar with no gap the `#` is scalar
+    // content (URLs, fragments, etc.).
+    let doc = Document::from_str("url: http://example.com/foo#bar\n").unwrap();
+    let value = doc.as_mapping().unwrap().get("url").unwrap();
+    let scalar = value.as_scalar().unwrap();
+    assert_eq!(scalar.as_string(), "http://example.com/foo#bar");
+}
+
+#[test]
+fn hash_after_whitespace_is_comment() {
+    // The other side of the rule: with a space, `#` does start a
+    // comment. Make sure we didn't regress.
+    let doc = Document::from_str("url: http://example.com/foo # trailing\n").unwrap();
+    let value = doc.as_mapping().unwrap().get("url").unwrap();
+    let scalar = value.as_scalar().unwrap();
+    assert_eq!(scalar.as_string(), "http://example.com/foo");
+}
+
+#[test]
+fn hash_in_flow_sequence_stays_in_scalar() {
+    // Same rule inside a flow collection.
+    let doc = Document::from_str("- [ http://example.com/foo#bar ]\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    let inner = seq.get(0).unwrap();
+    let inner_seq = inner.as_sequence().unwrap();
+    assert_eq!(inner_seq.len(), 1);
+    let scalar = inner_seq.get(0).unwrap().as_scalar().unwrap().as_string();
+    assert_eq!(scalar, "http://example.com/foo#bar");
+}
+
+#[test]
+fn set_key_with_embedded_colon_parses_back() {
+    // A `.`-prefixed key that contains a non-space colon used to be
+    // tokenised as three separate STRING tokens (`.d`, `:5`, `-a`);
+    // the parser then couldn't stitch them back into a mapping entry.
+    // Surfaced by libfuzzer.
+    let doc = Document::from_str("a: null\n").unwrap();
+    doc.as_mapping().unwrap().set(".d:5-a", "");
+    check(&doc);
+    assert_eq!(doc.to_string(), "a: null\n.d:5-a: ''\n");
+}
+
+#[test]
+fn set_with_document_terminator_key() {
+    // Document terminator (`...`) and start marker (`---`) at column 0
+    // begin a new stream document; used as a bare key they must be
+    // quoted or the resulting text re-parses as a broken document.
+    let doc = Document::from_str("existing: value\n").unwrap();
+    doc.as_mapping().unwrap().set("...", "value");
+    check(&doc);
+    let doc = Document::from_str("existing: value\n").unwrap();
+    doc.as_mapping().unwrap().set("---", "value");
     check(&doc);
 }
 

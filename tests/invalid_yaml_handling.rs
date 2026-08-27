@@ -44,44 +44,29 @@ fn test_invalid_colon_in_plain_scalar() {
 
 #[test]
 fn test_invalid_bracket_colon_combination() {
-    // [::1]:8080 without quotes is invalid YAML (flow sequence followed by unexpected text)
-    // Our parser uses degraded parsing: parses [::1] as a sequence containing a mapping (due to ::),
-    // and ignores the :8080 part after the closing bracket
+    // `ipv6: [::1]:8080` without quotes is invalid YAML overall (a flow
+    // sequence followed by unexpected text). Degraded parsing recovers
+    // the [::1] part as a flow sequence with one plain-scalar item
+    // "::1" (colon-not-followed-by-whitespace is scalar content per
+    // YAML 1.2), and the :8080 tail is dropped.
     let yaml = r#"ipv6: [::1]:8080"#;
 
     let parsed = YamlFile::from_str(yaml).expect("Parser uses degraded parsing");
     let doc = parsed.document().expect("Should have document");
     let mapping = doc.as_mapping().expect("Should be mapping");
 
-    // Verify structure: single key "ipv6"
     assert_eq!(mapping.keys().count(), 1);
-
     let keys: Vec<_> = mapping.keys().collect();
     assert_eq!(keys[0], "ipv6");
 
-    // The value should be a sequence (the [::1] part)
     let value = mapping.get("ipv6").expect("Should have value");
     let seq = value.as_sequence().expect("Value should be sequence");
-
-    // The sequence contains one element
     assert_eq!(seq.len(), 1);
-
-    // Due to the colons in ::1, the parser treats it as a complex key,
-    // creating a mapping with "::1" as a key (with implicit null value, like in a set)
     let elem = seq.get(0).expect("Should have element");
-    let elem_map = elem.as_mapping().expect("Element should be mapping");
+    let scalar = elem.as_scalar().expect("Element should be scalar");
+    assert_eq!(scalar.as_string(), "::1");
 
-    // The mapping has one key: "::1"
-    assert_eq!(elem_map.keys().count(), 1);
-
-    let elem_keys: Vec<_> = elem_map.keys().collect();
-    let first_key = elem_keys[0].as_scalar().expect("Key should be scalar");
-    assert_eq!(first_key.as_string(), "::1");
-
-    // Output should be "ipv6: [::1]" (the :8080 part is dropped)
     assert_eq!(doc.to_string(), "ipv6: [::1]");
-
-    // Verify output is valid YAML
     let reparsed = YamlFile::from_str(&doc.to_string()).expect("Output should be valid YAML");
     assert!(reparsed.document().is_some());
 }

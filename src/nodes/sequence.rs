@@ -371,6 +371,31 @@ impl Sequence {
             target_entry_pos
         };
 
+        // Appending past the last entry (source doc had no trailing
+        // newline)? Ensure the previous entry has one, otherwise our
+        // new INDENT+ENTRY gets glued onto its tail as `- b  - c`.
+        if target_entry_pos == children.len() {
+            if let Some(prev_entry) = children.iter().rev().find_map(|c| {
+                c.as_node()
+                    .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            }) {
+                let has_nl = prev_entry
+                    .last_token()
+                    .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
+                if !has_nl {
+                    let mut nl_builder = GreenNodeBuilder::new();
+                    nl_builder.start_node(SyntaxKind::ROOT.into());
+                    nl_builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                    nl_builder.finish_node();
+                    let nl_node = SyntaxNode::new_root_mut(nl_builder.finish());
+                    if let Some(nl) = nl_node.first_token() {
+                        let end = prev_entry.children_with_tokens().count();
+                        prev_entry.splice_children(end..end, vec![nl.into()]);
+                    }
+                }
+            }
+        }
+
         self.0.splice_children(
             insert_at..insert_at,
             vec![indent_token.into(), new_entry.into()],

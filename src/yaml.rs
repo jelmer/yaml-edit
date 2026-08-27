@@ -32,8 +32,8 @@ pub use crate::nodes::{Lang, SyntaxNode};
 
 // Re-export extracted AST nodes from nodes module
 pub use crate::nodes::{
-    Alias, Comment, Directive, Document, Mapping, MappingEntry, Scalar, ScalarConversionError,
-    Sequence, TaggedNode,
+    Alias, Comment, Directive, Document, Entry, Mapping, MappingEntry, OccupiedEntry, Scalar,
+    ScalarConversionError, Sequence, TaggedNode, VacantEntry,
 };
 
 ast_node!(
@@ -150,6 +150,42 @@ pub(crate) fn ends_with_newline(node: &SyntaxNode) -> bool {
     node.last_token()
         .map(|t| t.kind() == SyntaxKind::NEWLINE)
         .unwrap_or(false)
+}
+
+/// Detach the trailing NEWLINE on `empty_collection`'s enclosing
+/// MAPPING_ENTRY when it was serving as a `key:\n    \n` placeholder.
+///
+/// The freshly built `new_entry` must be checked because it only supplies
+/// its own trailing NEWLINE for some shapes; when it does not, the
+/// placeholder is still needed to terminate the line. See issue #18.
+pub(crate) fn detach_empty_collection_placeholder_newline(
+    empty_collection: &SyntaxNode,
+    new_entry: &SyntaxNode,
+) {
+    if !ends_with_newline(new_entry) {
+        return;
+    }
+    let Some(parent_value) = empty_collection.parent() else {
+        return;
+    };
+    if parent_value.kind() != SyntaxKind::VALUE {
+        return;
+    }
+    let Some(parent_entry) = parent_value.parent() else {
+        return;
+    };
+    if parent_entry.kind() != SyntaxKind::MAPPING_ENTRY {
+        return;
+    }
+    let Some(last) = parent_entry.last_child_or_token() else {
+        return;
+    };
+    if last
+        .as_token()
+        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
+    {
+        last.detach();
+    }
 }
 
 /// Create a newline token and add it to the elements vector

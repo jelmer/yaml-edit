@@ -1155,6 +1155,33 @@ impl Mapping {
         self.0.children().filter_map(MappingEntry::cast)
     }
 
+    /// Return an [`Entry`](crate::Entry) view into the entry for `key`.
+    ///
+    /// Mirrors [`std::collections::BTreeMap::entry`], enabling
+    /// insert-or-update patterns while preserving formatting.
+    ///
+    /// ```rust
+    /// use std::str::FromStr;
+    /// use yaml_edit::Document;
+    ///
+    /// let doc = Document::from_str("name: Alice\n").unwrap();
+    /// let mapping = doc.as_mapping().unwrap();
+    ///
+    /// mapping.entry("age").or_insert(30);
+    /// mapping.entry("name").or_insert("Bob");
+    ///
+    /// assert_eq!(doc.to_string(), "name: Alice\nage: 30\n");
+    /// ```
+    pub fn entry<K: crate::AsYaml>(&self, key: K) -> crate::Entry<'_, K> {
+        match self.find_entry_by_key(&key) {
+            Some(entry) => crate::Entry::Occupied(crate::OccupiedEntry {
+                mapping: self,
+                entry,
+            }),
+            None => crate::Entry::Vacant(crate::VacantEntry { mapping: self, key }),
+        }
+    }
+
     /// Find the child index of a mapping entry by its key.
     ///
     /// Returns the index within the mapping's children (including non-entry
@@ -1378,34 +1405,11 @@ impl Mapping {
 
         self.0.splice_children(insert_pos..insert_pos, new_elements);
 
-        // If the mapping had been empty and sits inside a VALUE whose parent
-        // MAPPING_ENTRY already carries a trailing NEWLINE, that NEWLINE was
-        // a placeholder for the still-empty value ("key:\n    \n") and is
-        // now redundant: the freshly inserted entry brings its own trailing
-        // NEWLINE. Leaving it in place would produce a blank line at the end
-        // of the drilled-in mapping (see issue #18).
+        // If the mapping had been empty and sits inside a `key:\n    \n`
+        // placeholder, strip the outer MAPPING_ENTRY's trailing NEWLINE
+        // that acted as the placeholder marker (see issue #18).
         if count == 0 {
-            let entry_ends_with_nl = new_entry
-                .last_token()
-                .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
-            if entry_ends_with_nl {
-                if let Some(parent_value) = self.0.parent() {
-                    if parent_value.kind() == SyntaxKind::VALUE {
-                        if let Some(parent_entry) = parent_value.parent() {
-                            if parent_entry.kind() == SyntaxKind::MAPPING_ENTRY {
-                                if let Some(last) = parent_entry.last_child_or_token() {
-                                    if last
-                                        .as_token()
-                                        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
-                                    {
-                                        last.detach();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            crate::yaml::detach_empty_collection_placeholder_newline(&self.0, new_entry);
         }
     }
 

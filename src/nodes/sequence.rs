@@ -7,6 +7,32 @@ use rowan::GreenNodeBuilder;
 
 ast_node!(Sequence, SEQUENCE, "A YAML sequence (list)");
 
+/// Does the SEQUENCE's parent VALUE have an INDENT token immediately before
+/// the SEQUENCE (with only NEWLINE tokens between them)?
+///
+/// That is the shape the parser produces for a block sequence under a key
+/// (`key:\n  - a`): the indentation lives in the VALUE, not inside the
+/// SEQUENCE. When present, `Sequence::push` must not emit its own leading
+/// INDENT for the first entry because the parent already supplies one.
+fn parent_value_has_leading_indent(seq: &SyntaxNode) -> bool {
+    let Some(parent) = seq.parent() else {
+        return false;
+    };
+    if parent.kind() != SyntaxKind::VALUE {
+        return false;
+    }
+    let mut saw_indent = false;
+    for child in parent.children_with_tokens() {
+        match &child {
+            rowan::NodeOrToken::Node(n) if n == seq => return saw_indent,
+            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INDENT => saw_indent = true,
+            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::NEWLINE => {}
+            _ => saw_indent = false,
+        }
+    }
+    false
+}
+
 impl Sequence {
     /// Iterate over items in this sequence as raw syntax nodes.
     ///
@@ -77,6 +103,14 @@ impl Sequence {
 }
 
 impl Sequence {
+    /// Create a new empty sequence.
+    pub fn new() -> Self {
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::SEQUENCE.into());
+        builder.finish_node();
+        Sequence(SyntaxNode::new_root_mut(builder.finish()))
+    }
+
     /// Detect the indentation used by entries in this sequence.
     ///
     /// First looks for a top-level INDENT token, then falls back to looking
@@ -212,11 +246,27 @@ impl Sequence {
             }
         }
 
-        // Insert the indent token and new entry before any trailing blank newlines
-        self.0.splice_children(
-            insert_pos..insert_pos,
-            vec![indent_token.into(), new_entry.into()],
-        );
+        // Parser convention: the first entry in a SEQUENCE has no leading
+        // INDENT inside the SEQUENCE; its indentation comes from the parent
+        // VALUE (`NEWLINE INDENT` right before the SEQUENCE). Only later
+        // entries carry an INDENT as a separator after the previous entry's
+        // NEWLINE. Match that when pushing.
+        let entry_is_first = last_entry_index.is_none();
+        let parent_supplies_indent = entry_is_first && parent_value_has_leading_indent(&self.0);
+
+        let mut inserts: Vec<rowan::NodeOrToken<SyntaxNode, _>> = Vec::new();
+        if !parent_supplies_indent {
+            inserts.push(indent_token.into());
+        }
+        inserts.push(new_entry.clone().into());
+
+        self.0.splice_children(insert_pos..insert_pos, inserts);
+
+        // Strip the outer MAPPING_ENTRY's placeholder NEWLINE if this was
+        // the first entry (see issue #18).
+        if entry_is_first {
+            crate::yaml::detach_empty_collection_placeholder_newline(&self.0, &new_entry);
+        }
     }
 
     /// Insert an item at a specific position.
@@ -531,6 +581,12 @@ impl Sequence {
     }
 }
 
+impl Default for Sequence {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // Iterator trait implementations for Sequence
 
 impl<'a> IntoIterator for &'a Sequence {
@@ -574,6 +630,25 @@ impl AsYaml for Sequence {
 mod tests {
     use crate::yaml::YamlFile;
     use std::str::FromStr;
+
+    #[test]
+    fn test_push_into_empty_sequence_under_mapping_placeholder() {
+        // Regression: `mapping.set(k, Sequence::new())` produces the
+        // placeholder shape `k:\n  \n` with an INDENT hint in the parent
+        // VALUE. A follow-up `push` used to double the indent (4 spaces)
+        // and leave a stray trailing newline.
+        use crate::{Document, Sequence};
+        let doc = Document::from_str("existing: value\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        mapping.set("items", Sequence::new());
+        let items = mapping.get_sequence("items").unwrap();
+        items.push("apple");
+        items.push("banana");
+        assert_eq!(
+            doc.to_string(),
+            "existing: value\nitems:\n  - apple\n  - banana\n"
+        );
+    }
 
     #[test]
     fn test_sequence_items_tagged_node() {

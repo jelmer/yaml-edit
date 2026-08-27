@@ -139,11 +139,11 @@ fn mapping_clear() {
 }
 
 #[test]
-#[ignore = "known parser bug: keys like `.ar-aa` (dot-prefix followed by dash) fail to parse. Not the fault of set — surfaced by mutation-roundtrip. Separate issue."]
 fn set_key_with_dot_and_dash_parses_back() {
     let doc = Document::from_str("existing: value\n").unwrap();
     doc.as_mapping().unwrap().set(".ar-aa", 0);
     check(&doc);
+    assert_eq!(doc.to_string(), "existing: value\n.ar-aa: 0\n");
 }
 
 #[test]

@@ -851,7 +851,24 @@ impl ScalarValue {
 
         // Check if starts with special characters
         if value.starts_with(|ch: char| {
-            matches!(ch, '-' | '?' | '[' | ']' | '{' | '}' | ',' | '>' | '<')
+            matches!(
+                ch,
+                '-' | '?'
+                    | ':'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | ','
+                    | '>'
+                    | '<'
+                    | '!'
+                    | '&'
+                    | '*'
+                    | '%'
+                    | '@'
+                    | '`'
+            )
         }) {
             return true;
         }

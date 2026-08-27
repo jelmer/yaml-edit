@@ -896,7 +896,20 @@ impl Parser {
                 self.parse_value_with_base_indent(base_indent);
             }
             Some(SyntaxKind::REFERENCE) => self.parse_alias(),
-            Some(SyntaxKind::TAG) => self.parse_tagged_value(),
+            Some(SyntaxKind::TAG) => {
+                // `!!str a: b` at document / block level -- the tag
+                // annotates the KEY of an implicit mapping, not the
+                // whole document. Detect that shape (TAG [WS] scalar
+                // [WS] COLON) and dispatch to mapping parsing so
+                // parse_mapping_key_value_pair can consume the tag as
+                // part of the KEY. Otherwise fall back to the default
+                // tag-wraps-following-value behaviour.
+                if !self.in_flow_context && !self.in_value_context && self.is_mapping_key() {
+                    self.parse_mapping_with_base_indent(base_indent);
+                } else {
+                    self.parse_tagged_value();
+                }
+            }
             Some(SyntaxKind::MERGE_KEY) => {
                 // Merge key is always a mapping
                 self.parse_mapping_with_base_indent(base_indent);
@@ -2522,13 +2535,26 @@ impl Parser {
         // Plain scalars can contain spaces, so a key may span multiple scalar
         // tokens separated by whitespace before the terminating colon
         // (e.g. `abc cba: value`).
+        //
+        // Any number of leading TAG / ANCHOR tokens annotate the key
+        // (`!!str &a1 "foo":`); skip past them and any WHITESPACE, then
+        // apply the usual scan.
+        let mut saw_scalar = false;
         for kind in self.upcoming_tokens() {
             if kind == SyntaxKind::COLON {
                 return true;
             }
-            if kind != SyntaxKind::WHITESPACE && !is_plain_scalar_kind(kind) {
-                return false;
+            if !saw_scalar && matches!(kind, SyntaxKind::TAG | SyntaxKind::ANCHOR) {
+                continue;
             }
+            if is_plain_scalar_kind(kind) {
+                saw_scalar = true;
+                continue;
+            }
+            if kind == SyntaxKind::WHITESPACE {
+                continue;
+            }
+            return false;
         }
         false
     }
@@ -2735,9 +2761,13 @@ impl Parser {
         // Parse regular key
         self.builder.start_node(SyntaxKind::KEY.into());
 
-        // Handle anchor before key (&a a:)
-        if self.current() == Some(SyntaxKind::ANCHOR) {
-            self.bump(); // consume and emit anchor token to CST
+        // Absorb any number of TAG / ANCHOR annotations preceding the
+        // key scalar (`&anchor a:`, `!!str foo:`, `!!str &a1 "foo":`).
+        while matches!(
+            self.current(),
+            Some(SyntaxKind::ANCHOR) | Some(SyntaxKind::TAG)
+        ) {
+            self.bump(); // consume tag or anchor token
             self.skip_whitespace();
         }
 

@@ -7,29 +7,30 @@ use rowan::GreenNodeBuilder;
 
 ast_node!(Sequence, SEQUENCE, "A YAML sequence (list)");
 
-/// Look at the parent VALUE (if this sequence sits inside one) for an
-/// INDENT token immediately preceding the SEQUENCE. The placeholder shape
-/// left by `set(key, empty_sequence)` (`key:\n  \n`) puts the intended
-/// indent there so a follow-up push knows where to sit.
-fn parent_value_indent_hint(seq: &SyntaxNode) -> Option<rowan::SyntaxToken<Lang>> {
-    let parent = seq.parent()?;
+/// Does the SEQUENCE's parent VALUE have an INDENT token immediately before
+/// the SEQUENCE (with only NEWLINE tokens between them)?
+///
+/// That is the shape the parser produces for a block sequence under a key
+/// (`key:\n  - a`): the indentation lives in the VALUE, not inside the
+/// SEQUENCE. When present, `Sequence::push` must not emit its own leading
+/// INDENT for the first entry because the parent already supplies one.
+fn parent_value_has_leading_indent(seq: &SyntaxNode) -> bool {
+    let Some(parent) = seq.parent() else {
+        return false;
+    };
     if parent.kind() != SyntaxKind::VALUE {
-        return None;
+        return false;
     }
-    let mut prev = None;
+    let mut saw_indent = false;
     for child in parent.children_with_tokens() {
         match &child {
-            rowan::NodeOrToken::Node(n) if n == seq => break,
-            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INDENT => {
-                prev = Some(t.clone());
-            }
+            rowan::NodeOrToken::Node(n) if n == seq => return saw_indent,
+            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INDENT => saw_indent = true,
             rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::NEWLINE => {}
-            _ => {
-                prev = None;
-            }
+            _ => saw_indent = false,
         }
     }
-    prev
+    false
 }
 
 impl Sequence {
@@ -245,14 +246,13 @@ impl Sequence {
             }
         }
 
-        // If the sequence is empty and its parent VALUE already carries an
-        // INDENT hint immediately before this SEQUENCE (the `key:\n  \n`
-        // placeholder shape), the hint acts as this entry's leading
-        // indentation, so don't prepend our own INDENT on top of it.
+        // Parser convention: the first entry in a SEQUENCE has no leading
+        // INDENT inside the SEQUENCE; its indentation comes from the parent
+        // VALUE (`NEWLINE INDENT` right before the SEQUENCE). Only later
+        // entries carry an INDENT as a separator after the previous entry's
+        // NEWLINE. Match that when pushing.
         let entry_is_first = last_entry_index.is_none();
-        let parent_supplies_indent = entry_is_first
-            && parent_value_indent_hint(&self.0)
-                .is_some_and(|hint| hint.text() == indentation.as_str());
+        let parent_supplies_indent = entry_is_first && parent_value_has_leading_indent(&self.0);
 
         let mut inserts: Vec<rowan::NodeOrToken<SyntaxNode, _>> = Vec::new();
         if !parent_supplies_indent {
@@ -260,37 +260,12 @@ impl Sequence {
         }
         inserts.push(new_entry.clone().into());
 
-        // Insert the indent token and new entry before any trailing blank newlines
         self.0.splice_children(insert_pos..insert_pos, inserts);
 
-        // When we've just added the first entry into an empty sequence that
-        // sits inside a MAPPING_ENTRY's VALUE placeholder (`key:\n  \n`), the
-        // MAPPING_ENTRY carries a redundant trailing NEWLINE from the
-        // placeholder state. Our new SEQUENCE_ENTRY already brings its own
-        // trailing NEWLINE, so leaving the placeholder would render an extra
-        // blank line. Strip it (same fix Mapping applies, see issue #18).
+        // Strip the outer MAPPING_ENTRY's placeholder NEWLINE if this was
+        // the first entry (see issue #18).
         if entry_is_first {
-            let entry_ends_with_nl = new_entry
-                .last_token()
-                .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
-            if entry_ends_with_nl {
-                if let Some(parent_value) = self.0.parent() {
-                    if parent_value.kind() == SyntaxKind::VALUE {
-                        if let Some(parent_entry) = parent_value.parent() {
-                            if parent_entry.kind() == SyntaxKind::MAPPING_ENTRY {
-                                if let Some(last) = parent_entry.last_child_or_token() {
-                                    if last
-                                        .as_token()
-                                        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
-                                    {
-                                        last.detach();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            crate::yaml::detach_empty_collection_placeholder_newline(&self.0, &new_entry);
         }
     }
 

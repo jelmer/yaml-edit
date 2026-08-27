@@ -156,11 +156,7 @@ proptest! {
         ..ProptestConfig::default()
     })]
 
-    // Currently ignored: catches real bugs (Sequence::insert missing
-    // newline, Sequence::remove stacked INDENT, Mapping::remove trailing
-    // newline loss) — enabled after those are fixed in follow-up commits.
     #[test]
-    #[ignore = "surfaces known mutation bugs; enable after follow-up fixes"]
     fn seeded_document_mutations_preserve_invariants(
         seed in seed_strat(),
         ops in prop::collection::vec(op_strat(), 0..8),

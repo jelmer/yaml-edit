@@ -924,7 +924,7 @@ config:
         let result = yaml.remove_path("age");
         assert!(result);
 
-        assert_eq!(yaml.to_string(), "name: Alice");
+        assert_eq!(yaml.to_string(), "name: Alice\n");
     }
 
     #[test]
@@ -937,7 +937,7 @@ config:
         let result = yaml.remove_path("server.port");
         assert!(result);
 
-        assert_eq!(yaml.to_string(), "server:\n  host: localhost  ");
+        assert_eq!(yaml.to_string(), "server:\n  host: localhost\n  ");
     }
 
     #[test]
@@ -972,7 +972,7 @@ config:
 
         assert_eq!(
             yaml.to_string(),
-            "app:\n  database:\n    primary:\n      host: db.example.com      "
+            "app:\n  database:\n    primary:\n      host: db.example.com\n      "
         );
     }
 

@@ -2332,27 +2332,33 @@ impl Mapping {
                                     .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
                             });
 
-                            // Remove the entry (detaches its SyntaxNode from the tree)
+                            // If we're removing the last entry and it
+                            // itself had no trailing NEWLINE (unterminated
+                            // source), strip the trailing NEWLINE from
+                            // the new-last entry too -- so the doc keeps
+                            // its "no trailing newline" character.
+                            //
+                            // If the removed entry HAD a trailing NEWLINE
+                            // (terminated source, or a middle removal),
+                            // leave the previous entry's NEWLINE in place
+                            // as the doc's terminator.
+                            let removed_had_newline = node
+                                .last_token()
+                                .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
                             self.0.splice_children(i..(i + 1), vec![]);
-
-                            if is_last && i > 0 {
-                                // Removed the last entry - remove trailing newline from new last entry
-                                // Find the previous MAPPING_ENTRY
+                            if is_last && i > 0 && !removed_had_newline {
                                 if let Some(prev_entry_node) =
                                     children[..i].iter().rev().find_map(|c| {
                                         c.as_node()
                                             .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
                                     })
                                 {
-                                    // Check if it ends with NEWLINE and remove it
                                     if let Some(last_token) = prev_entry_node.last_token() {
                                         if last_token.kind() == SyntaxKind::NEWLINE {
-                                            let entry_children_count =
+                                            let count =
                                                 prev_entry_node.children_with_tokens().count();
-                                            prev_entry_node.splice_children(
-                                                (entry_children_count - 1)..entry_children_count,
-                                                vec![],
-                                            );
+                                            prev_entry_node
+                                                .splice_children((count - 1)..count, vec![]);
                                         }
                                     }
                                 }

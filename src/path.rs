@@ -418,24 +418,24 @@ fn set_path_on_mapping<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegm
     if let Some(nested) = mapping.get_mapping(first_key) {
         // Nested mapping exists, recurse
         set_path_on_mapping(&nested, &segments[1..], value);
-    } else {
-        // Match the parent's style so we don't mix block content into a flow
-        // container. `Mapping::new()` is a bare empty MAPPING (renders block);
-        // `MappingBuilder::new()` produces the flow-empty `{}` form.
-        if mapping.is_flow_style() {
-            let flow_empty = MappingBuilder::new()
-                .build_document()
-                .as_mapping()
-                .expect("MappingBuilder always produces a mapping");
-            mapping.set(first_key, flow_empty);
-        } else {
-            mapping.set(first_key, Mapping::new());
-        }
+        return;
+    }
 
-        // Retrieve and recurse into the newly created mapping
-        if let Some(nested) = mapping.get_mapping(first_key) {
-            set_path_on_mapping(&nested, &segments[1..], value);
-        }
+    // Match the parent's style so we don't mix block content into a flow
+    // container. `Mapping::new()` is a bare empty MAPPING (renders block);
+    // `MappingBuilder::new()` produces the flow-empty `{}` form.
+    if mapping.is_flow_style() {
+        let flow_empty = MappingBuilder::new()
+            .build_document()
+            .as_mapping()
+            .expect("MappingBuilder always produces a mapping");
+        mapping.set(first_key, flow_empty);
+    } else {
+        mapping.set(first_key, Mapping::new());
+    }
+
+    if let Some(nested) = mapping.get_mapping(first_key) {
+        set_path_on_mapping(&nested, &segments[1..], value);
     }
 }
 

@@ -41,25 +41,32 @@ fn ensure_trailing_newline(entry: &SyntaxNode) {
     );
 }
 
-/// Append a `, ` pair to the end of a MAPPING_ENTRY's VALUE — the separator
-/// between two entries inside a flow mapping. Idempotent: if the value's
-/// trailing token stream already ends with a COMMA, do nothing (avoids
-/// stacking separators when we insert between two existing entries).
-fn append_comma_space_to_value(entry: &SyntaxNode) {
-    let Some(value) = entry.children().find(|n| n.kind() == SyntaxKind::VALUE) else {
-        return;
-    };
-    let ends_with_comma = value
+/// Append a `, ` pair to the end of a MAPPING_ENTRY: the separator between
+/// two entries inside a flow mapping. Idempotent: if the entry already ends
+/// with a COMMA (possibly followed by whitespace), do nothing (avoids
+/// stacking separators when inserting next to an entry that already had a
+/// trailing comma).
+///
+/// The parser stores flow separators (COMMA and any following WHITESPACE /
+/// NEWLINE / INDENT) as siblings of KEY / VALUE inside the *previous*
+/// MAPPING_ENTRY, not inside its VALUE.
+fn append_comma_space_to_entry(entry: &SyntaxNode) {
+    let ends_with_comma = entry
         .children_with_tokens()
         .filter_map(|c| c.into_token())
-        .filter(|t| t.kind() != SyntaxKind::WHITESPACE)
+        .filter(|t| {
+            !matches!(
+                t.kind(),
+                SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
+            )
+        })
         .last()
         .is_some_and(|t| t.kind() == SyntaxKind::COMMA);
     if ends_with_comma {
         return;
     }
-    let end = value.children_with_tokens().count();
-    value.splice_children(
+    let end = entry.children_with_tokens().count();
+    entry.splice_children(
         end..end,
         vec![
             fresh_token(SyntaxKind::COMMA, ",").into(),
@@ -1269,7 +1276,7 @@ impl Mapping {
         };
 
         // If a MAPPING_ENTRY precedes the target position, append `, ` to
-        // its VALUE so the two entries are properly delimited.
+        // it so the two entries are properly delimited.
         let prev_entry = self
             .0
             .children_with_tokens()
@@ -1278,31 +1285,26 @@ impl Mapping {
             .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
             .last();
         if let Some(prev) = prev_entry {
-            append_comma_space_to_value(&prev);
+            append_comma_space_to_entry(&prev);
         }
         // If a MAPPING_ENTRY follows the target position, append `, ` to
-        // the *new* entry's VALUE so it separates from the next one.
+        // the *new* entry so it separates from the next one.
         let has_following_entry = self.0.children_with_tokens().skip(target_idx).any(|c| {
             c.as_node()
                 .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
         });
         if has_following_entry {
-            append_comma_space_to_value(new_entry);
+            append_comma_space_to_entry(new_entry);
         }
 
         self.0
             .splice_children(target_idx..target_idx, vec![new_entry.clone().into()]);
     }
 
-    /// Convenience: append to the end of the flow mapping.
-    fn insert_flow_entry_cst(&self, new_entry: &SyntaxNode) {
-        self.insert_flow_entry_cst_at(new_entry, FlowInsertPos::End);
-    }
-
     /// Internal method to insert a new entry at the end (does not check for duplicates)
     fn insert_entry_cst(&self, new_entry: &SyntaxNode) {
         if self.is_flow_style() {
-            self.insert_flow_entry_cst(new_entry);
+            self.insert_flow_entry_cst_at(new_entry, FlowInsertPos::End);
             return;
         }
 
@@ -2826,25 +2828,29 @@ mod tests {
     }
 
     /// Setting into a flow-style mapping (`{...}`) inserts entries inside
-    /// the braces with proper `, ` separators — not on new lines after `}`,
-    /// which would produce broken YAML.
+    /// the braces with proper `, ` separators, not on new lines after `}`
+    /// (which would produce broken YAML).
     #[test]
     fn test_set_into_flow_mapping_inserts_inside_braces() {
         use crate::yaml::Document;
 
-        let doc = Document::from_str("outer: {}").unwrap();
-        let inner_val = doc.as_mapping().unwrap().get("outer").unwrap();
-        let inner = inner_val.as_mapping().unwrap();
-        inner.set("a", "1");
-        inner.set("b", "2");
-        assert_eq!(doc.to_string().trim(), r#"outer: {a: "1", b: "2"}"#);
-
-        // Update in place stays inside the braces too.
-        let doc = Document::from_str("outer: {a: 1}").unwrap();
-        let inner_val = doc.as_mapping().unwrap().get("outer").unwrap();
-        let inner = inner_val.as_mapping().unwrap();
-        inner.set("a", 42);
-        assert_eq!(doc.to_string().trim(), "outer: {a: 42}");
+        // Cases: (input, key to set, expected output)
+        let cases = [
+            ("outer: {}", "a", r#"outer: {a: "X"}"#),
+            ("outer: {a: 1}", "b", r#"outer: {a: 1, b: "X"}"#),
+            // Trailing-comma style: the existing `,` is reused as the
+            // separator instead of stacking a second one.
+            ("outer: {a: 1,}", "b", r#"outer: {a: 1,b: "X"}"#),
+            // Update-in-place stays inside the braces.
+            ("outer: {a: 1}", "a", "outer: {a: \"X\"}"),
+        ];
+        for (input, key, expected) in cases {
+            let doc = Document::from_str(input).unwrap();
+            let inner_val = doc.as_mapping().unwrap().get("outer").unwrap();
+            let inner = inner_val.as_mapping().unwrap();
+            inner.set(key, "X");
+            assert_eq!(doc.to_string().trim(), expected, "input was {input:?}");
+        }
     }
 
     #[test]

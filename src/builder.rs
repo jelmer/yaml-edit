@@ -549,7 +549,7 @@ impl MappingBuilder {
 
     /// Build the mapping into a YamlBuilder.
     pub fn build(mut self) -> YamlBuilder {
-        // See SequenceBuilder::build — same round-trip concern (issue #37).
+        // See SequenceBuilder::build - same round-trip concern (issue #37).
         if self.count == 0 {
             self.builder.token(SyntaxKind::LEFT_BRACE.into(), "{");
             self.builder.token(SyntaxKind::RIGHT_BRACE.into(), "}");

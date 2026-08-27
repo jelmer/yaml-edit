@@ -1,4 +1,4 @@
-use super::{Lang, Scalar, Sequence, SyntaxNode};
+use super::{fresh_token, Lang, Scalar, Sequence, SyntaxNode};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::yaml::{
@@ -50,13 +50,24 @@ fn trailing_newline_reachable(node: &SyntaxNode) -> bool {
     last_non_empty.is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
 }
 
-/// Does any descendant token of `node` have kind NEWLINE?
+/// Is `value` laid out block-style (key on one line, value content on
+/// subsequent lines)?
 ///
-/// Preferred over `node.text().contains('\n')` for structural checks:
-/// avoids materializing the whole subtree as a string, and looks at
-/// the token stream directly.
-fn has_newline_token(node: &SyntaxNode) -> bool {
-    node.descendants_with_tokens().any(|el| {
+/// Block layout puts a NEWLINE as a *direct* child of VALUE, between
+/// the COLON and the value's content. Inline flow -- even a multi-line
+/// flow like `[\n  a,\n  b\n]` -- keeps its NEWLINEs nested inside the
+/// flow SEQUENCE/MAPPING, so the VALUE has no direct-child NEWLINE.
+///
+/// A TAG annotation (`k: !!seq\n  - old`) wraps the content in a
+/// TAGGED_NODE whose own children hold the NEWLINE; peel it before
+/// looking. An ANCHOR annotation (`k: &x\n  - old`) sits as a plain
+/// token alongside its NEWLINE inside VALUE, so no peeling is needed.
+fn value_is_block(value: &SyntaxNode) -> bool {
+    let carrier = value
+        .children()
+        .find(|c| c.kind() == SyntaxKind::TAGGED_NODE)
+        .unwrap_or_else(|| value.clone());
+    carrier.children_with_tokens().any(|el| {
         el.as_token()
             .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
     })
@@ -174,18 +185,6 @@ fn append_comma_space_to_entry(entry: &SyntaxNode) {
             fresh_token(SyntaxKind::WHITESPACE, " ").into(),
         ],
     );
-}
-
-/// Build a standalone `SyntaxToken` of `kind` with `text`, ready to splice
-/// into a parent's child list via `splice_children`.
-fn fresh_token(kind: SyntaxKind, text: &str) -> rowan::SyntaxToken<Lang> {
-    let mut builder = GreenNodeBuilder::new();
-    builder.start_node(SyntaxKind::ROOT.into());
-    builder.token(kind.into(), text);
-    builder.finish_node();
-    SyntaxNode::new_root_mut(builder.finish())
-        .first_token()
-        .expect("just built a token")
 }
 
 /// Walk `entry`'s tokens in document order (descending into child nodes)
@@ -752,7 +751,7 @@ impl MappingEntry {
         value_builder.finish_node();
         let new_value_node = SyntaxNode::new_root_mut(value_builder.finish());
 
-        let old_was_block = self.value().is_some_and(|v| has_newline_token(&v));
+        let old_was_block = self.value().is_some_and(|v| value_is_block(&v));
         if old_was_block {
             self.rebuild_with_inline_value(&new_value_node);
             return;

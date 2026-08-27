@@ -1,4 +1,4 @@
-use super::{Lang, SyntaxNode};
+use super::{fresh_token, Lang, SyntaxNode};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::yaml::ValueNode;
@@ -186,14 +186,7 @@ impl Sequence {
         let indentation = self.detect_indentation();
 
         // Build the INDENT token (separate from the SEQUENCE_ENTRY)
-        let mut indent_builder = GreenNodeBuilder::new();
-        indent_builder.start_node(SyntaxKind::ROOT.into());
-        indent_builder.token(SyntaxKind::INDENT.into(), &indentation);
-        indent_builder.finish_node();
-        let indent_node = SyntaxNode::new_root_mut(indent_builder.finish());
-        let indent_token = indent_node
-            .first_token()
-            .expect("builder always emits an INDENT token");
+        let indent_token = fresh_token(SyntaxKind::INDENT, &indentation);
 
         // Collect children and analyze the sequence structure
         let children: Vec<_> = self.0.children_with_tokens().collect();
@@ -264,17 +257,11 @@ impl Sequence {
                     .unwrap_or(false)
                 {
                     let entry_children_count = node.children_with_tokens().count();
-                    let mut nl_builder = GreenNodeBuilder::new();
-                    nl_builder.start_node(SyntaxKind::ROOT.into());
-                    nl_builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                    nl_builder.finish_node();
-                    let nl_node = SyntaxNode::new_root_mut(nl_builder.finish());
-                    if let Some(token) = nl_node.first_token() {
-                        node.splice_children(
-                            entry_children_count..entry_children_count,
-                            vec![token.into()],
-                        );
-                    }
+                    let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
+                    node.splice_children(
+                        entry_children_count..entry_children_count,
+                        vec![nl.into()],
+                    );
                 }
             }
         }
@@ -326,14 +313,7 @@ impl Sequence {
         let new_entry = SyntaxNode::new_root_mut(builder.finish());
 
         // Build a standalone INDENT to sit before the new entry.
-        let mut indent_builder = GreenNodeBuilder::new();
-        indent_builder.start_node(SyntaxKind::ROOT.into());
-        indent_builder.token(SyntaxKind::INDENT.into(), &indentation);
-        indent_builder.finish_node();
-        let indent_node = SyntaxNode::new_root_mut(indent_builder.finish());
-        let indent_token = indent_node
-            .first_token()
-            .expect("builder always emits an INDENT token");
+        let indent_token = fresh_token(SyntaxKind::INDENT, &indentation);
 
         // Locate the target position. If we're inserting before an
         // existing entry, we want to land right at the INDENT that
@@ -383,15 +363,9 @@ impl Sequence {
                     .last_token()
                     .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
                 if !has_nl {
-                    let mut nl_builder = GreenNodeBuilder::new();
-                    nl_builder.start_node(SyntaxKind::ROOT.into());
-                    nl_builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                    nl_builder.finish_node();
-                    let nl_node = SyntaxNode::new_root_mut(nl_builder.finish());
-                    if let Some(nl) = nl_node.first_token() {
-                        let end = prev_entry.children_with_tokens().count();
-                        prev_entry.splice_children(end..end, vec![nl.into()]);
-                    }
+                    let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
+                    let end = prev_entry.children_with_tokens().count();
+                    prev_entry.splice_children(end..end, vec![nl.into()]);
                 }
             }
         }

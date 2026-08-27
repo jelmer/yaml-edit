@@ -27,6 +27,18 @@ impl rowan::Language for Lang {
 pub type SyntaxNode = rowan::SyntaxNode<Lang>;
 pub type SyntaxToken = rowan::SyntaxToken<Lang>;
 
+/// Build a standalone `SyntaxToken` of `kind` with `text`, ready to
+/// splice into a parent's child list via `splice_children`.
+pub(crate) fn fresh_token(kind: SyntaxKind, text: &str) -> SyntaxToken {
+    let mut builder = rowan::GreenNodeBuilder::new();
+    builder.start_node(SyntaxKind::ROOT.into());
+    builder.token(kind.into(), text);
+    builder.finish_node();
+    SyntaxNode::new_root_mut(builder.finish())
+        .first_token()
+        .expect("just built a token")
+}
+
 /// A macro to create AST node wrappers.
 macro_rules! ast_node {
     ($ast:ident, $kind:ident, $doc:expr) => {

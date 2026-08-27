@@ -7,8 +7,9 @@
 //! - Mutating tags on tagged nodes
 //! - Modifying empty collections
 
+use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::YamlFile;
+use yaml_edit::{debug, YamlFile};
 
 /// Test mutating the target of an anchor
 /// When an anchored value is changed, aliases should still reference the anchor
@@ -336,4 +337,77 @@ fn test_empty_mapping_by_removal() {
     let output = doc.to_string();
     let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
     assert!(reparsed.document().is_some());
+}
+
+/// Replacing a multi-line flow-sequence value with a scalar inside a flow
+/// (JSON-style) mapping should not leave stray whitespace behind.
+///
+/// Regression: lintian-brush upstream-metadata `repository-as-list` fixer
+/// produced a spurious blank line and lost indentation on the following
+/// entry when yaml-edit replaced the `Repository` list with a string.
+#[test]
+fn test_replace_multiline_flow_sequence_value_with_scalar() {
+    let input = "{\n  \"Name\": \"yep\",\n  \"Repository\": [\n    \":extssh:_anoncvs@anoncvs.example.org:/cvs\",\n    \"yep\"\n  ],\n  \"Repository-Browse\": \"http://www.example.org/cvs.cgi/contrib/code/yep/\"\n}";
+
+    let yaml = YamlFile::from_str(input).expect("Should parse JSON-style mapping");
+    let doc = yaml.document().expect("Should have document");
+    let mapping = doc.as_mapping().expect("Should be mapping");
+
+    mapping.set(
+        "Repository",
+        "cvs+ssh://_anoncvs@anoncvs.example.org/cvs#yep",
+    );
+
+    let expected = "{\n  \"Name\": \"yep\",\n  \"Repository\": \"cvs+ssh://_anoncvs@anoncvs.example.org/cvs#yep\",\n  \"Repository-Browse\": \"http://www.example.org/cvs.cgi/contrib/code/yep/\"\n}";
+
+    assert_eq!(yaml.to_string(), expected);
+    debug::validate_tree(yaml.syntax()).expect("CST invariants hold after mutation");
+}
+
+/// Adjacent shapes to the lintian-brush regression, covering the same
+/// value_is_block classifier decision:
+///
+/// - `mapping`: old value is a multi-line flow *mapping* (not sequence).
+/// - `anchor`: ANCHOR sits as a direct-child token of VALUE alongside
+///   the flow SEQUENCE -- no TAGGED_NODE wrapper.
+/// - `tag`: TAG wraps the value in a TAGGED_NODE; classifier peels it.
+/// - `nested`: flow-of-flow-mappings, deeper nesting of the same shape.
+///
+/// All must round-trip to a stable CST and produce the expected inline
+/// output.
+#[test]
+fn test_replace_multiline_flow_value_with_scalar_variants() {
+    for (name, input, expected) in [
+        (
+            "mapping",
+            "{\n  \"a\": \"1\",\n  \"nested\": {\n    \"x\": 1,\n    \"y\": 2\n  },\n  \"z\": \"3\"\n}",
+            "{\n  \"a\": \"1\",\n  \"nested\": \"replaced\",\n  \"z\": \"3\"\n}",
+        ),
+        (
+            "anchor",
+            "a: 1\nb: &x [\n  1,\n  2\n]\nc: 3\n",
+            "a: 1\nb: replaced\nc: 3\n",
+        ),
+        (
+            "tag",
+            "a: 1\nb: !!seq [\n  1,\n  2\n]\nc: 3\n",
+            "a: 1\nb: replaced\nc: 3\n",
+        ),
+        (
+            "nested",
+            "a: 1\nb: [\n  {\n    x: 1\n  },\n  {\n    y: 2\n  }\n]\nc: 3\n",
+            "a: 1\nb: replaced\nc: 3\n",
+        ),
+    ] {
+        let yaml = YamlFile::from_str(input).unwrap();
+        let target_key = if name == "mapping" { "nested" } else { "b" };
+        yaml.document()
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .set(target_key, "replaced");
+        assert_eq!(yaml.to_string(), expected, "variant: {name}");
+        debug::validate_tree(yaml.syntax())
+            .unwrap_or_else(|e| panic!("variant {name} invariant violated: {e}"));
+    }
 }

@@ -11,6 +11,10 @@ use yaml_edit::path::YamlPath;
 use yaml_edit::{debug, Document};
 
 /// A random-but-plausible mutation to apply.
+///
+/// Keep in sync with `fuzz/fuzz_targets/mutation_invariants.rs::Op`.
+/// Both fuzzers should exercise the same mutation surface; the fuzz
+/// target uses `SafeStr` values, this one uses plain `String`.
 #[derive(Debug, Clone)]
 enum Op {
     // --- Mapping ops (top-level) ---

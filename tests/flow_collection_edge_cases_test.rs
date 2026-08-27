@@ -18,34 +18,24 @@ use yaml_edit::YamlFile;
 /// Test simple flow mapping with omitted values
 #[test]
 fn test_simple_flow_omitted_values() {
-    // Flow mapping: {a, b:, c: d}
-    // Parser treats this as: "a" (implicit null), "b:" (key with colon), "c" (value d)
+    // Flow mapping `{a, b:, c: d}` per YAML 1.2: three entries.
+    //   - `a` -> null (implicit key, no value)
+    //   - `b` -> null (`b:` with omitted value)
+    //   - `c` -> `d`
     let yaml = r#"{a, b:, c: d}"#;
 
     let parsed = YamlFile::from_str(yaml).expect("Should parse flow mapping with omitted values");
     let doc = parsed.document().expect("Should have document");
     let mapping = doc.as_mapping().expect("Should be mapping");
 
-    // Verify 3 keys
     assert_eq!(mapping.keys().count(), 3, "Should have 3 keys");
 
-    // Verify key 'a' exists (with implicit null value)
     let a_val = mapping.get("a").expect("Should have key 'a'");
-    assert!(a_val.is_scalar(), "Key 'a' should have scalar value");
-    assert!(
-        a_val.as_scalar().unwrap().is_null(),
-        "Key 'a' should have null value"
-    );
+    assert!(a_val.is_scalar() && a_val.as_scalar().unwrap().is_null());
 
-    // Verify key 'b:' exists (colon is part of the key name, with null value)
-    let b_val = mapping.get("b:").expect("Should have key 'b:'");
-    assert!(b_val.is_scalar(), "Key 'b:' should have scalar value");
-    assert!(
-        b_val.as_scalar().unwrap().is_null(),
-        "Key 'b:' should have null value"
-    );
+    let b_val = mapping.get("b").expect("Should have key 'b'");
+    assert!(b_val.is_scalar() && b_val.as_scalar().unwrap().is_null());
 
-    // Verify key 'c' has value 'd'
     let c_val = mapping.get("c").expect("Should have key 'c'");
     assert_eq!(c_val.as_scalar().unwrap().as_string(), "d");
 
@@ -116,13 +106,15 @@ omitted value:,
         "URL key should have null value"
     );
 
-    // Verify 'omitted value:' key (with colon) exists (with null value)
+    // Verify 'omitted value' key (per YAML 1.2 test suite 4ABK, the
+    // trailing `:` in `omitted value:,` is the mapping indicator, not
+    // part of the key) has null value.
     let omitted_val = mapping
-        .get("omitted value:")
-        .expect("Should have 'omitted value:' key");
+        .get("omitted value")
+        .expect("Should have 'omitted value' key");
     assert!(
         omitted_val.is_scalar() && omitted_val.as_scalar().unwrap().is_null(),
-        "'omitted value:' key should have null value"
+        "'omitted value' key should have null value"
     );
 
     // Verify output is valid YAML

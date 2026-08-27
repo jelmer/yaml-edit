@@ -6719,4 +6719,107 @@ server:
         let _ = parse.tree();
         assert!(parse.has_errors());
     }
+
+    // --- is_mapping_key / tag+anchor-annotated key edge cases ---
+
+    #[test]
+    fn test_tag_only_key() {
+        // `!!str a: b`: TAG annotates the key `a`. Parse as a mapping,
+        // not as a tag applied to the whole document.
+        let yaml = YamlFile::from_str("!!str a: b\n").unwrap();
+        let doc = yaml.document().unwrap();
+        let mapping = doc.as_mapping().expect("root should be a mapping");
+        assert_eq!(mapping.len(), 1);
+        assert_eq!(
+            mapping.get("a").unwrap().to_string().trim(),
+            "b",
+            "value for 'a' should be 'b'"
+        );
+    }
+
+    #[test]
+    fn test_tag_and_anchor_key() {
+        // `!!str &a1 "foo": bar` (YAML 1.2 test suite HMQ5): TAG and
+        // ANCHOR annotate the key. Order shouldn't matter to the
+        // parser.
+        let yaml = YamlFile::from_str("!!str &a1 \"foo\": bar\n").unwrap();
+        let doc = yaml.document().unwrap();
+        let mapping = doc.as_mapping().expect("root should be a mapping");
+        assert_eq!(mapping.len(), 1);
+        assert_eq!(mapping.get("foo").unwrap().to_string().trim(), "bar");
+    }
+
+    #[test]
+    fn test_anchor_only_key() {
+        // `&anchor a: b`: ANCHOR annotates the key without a tag.
+        let yaml = YamlFile::from_str("&anchor a: b\n").unwrap();
+        let doc = yaml.document().unwrap();
+        let mapping = doc.as_mapping().expect("root should be a mapping");
+        assert_eq!(mapping.len(), 1);
+        assert_eq!(mapping.get("a").unwrap().to_string().trim(), "b");
+    }
+
+    #[test]
+    fn test_tag_annotated_value_still_wraps() {
+        // Sanity check that TAG on a *value* (not a key) still goes
+        // through the tag-wraps-following-value branch of parse_value.
+        let yaml = YamlFile::from_str("c: !!int 42\n").unwrap();
+        let doc = yaml.document().unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        // The value node exists and is `!!int 42`. Whether it renders
+        // exactly with the tag depends on formatting; we just want to
+        // confirm the parse structure is present.
+        let value = mapping.get("c").unwrap();
+        assert!(
+            value.to_string().contains("42"),
+            "value for 'c' should contain the scalar 42: {:?}",
+            value.to_string()
+        );
+    }
+
+    #[test]
+    fn test_explicit_key_produces_zero_width_null_value() {
+        // `? a\n` at document level should produce a MAPPING_ENTRY with
+        // a KEY containing `a` and an implicit-null VALUE. The
+        // implicit-null representation used by the debug-invariant
+        // check (ends_with_implicit_null in src/debug.rs) is a
+        // zero-width NULL token as the entry's terminal leaf. Lock
+        // that shape in.
+        use crate::lex::SyntaxKind;
+        let yaml = YamlFile::from_str("? a\n").unwrap();
+        let doc = yaml.document().unwrap();
+        let mapping = doc.as_mapping().expect("should parse as a mapping");
+        assert_eq!(mapping.len(), 1);
+
+        // Find the MAPPING_ENTRY and look at its terminal token.
+        let entry = mapping.entries().next().expect("one entry");
+        let syntax = entry.syntax();
+        let terminal = syntax
+            .last_token()
+            .expect("MAPPING_ENTRY has at least one token");
+        assert!(
+            terminal.kind() == SyntaxKind::NULL && terminal.text().is_empty(),
+            "expected zero-width NULL terminal, got {:?} = {:?}",
+            terminal.kind(),
+            terminal.text()
+        );
+    }
+
+    #[test]
+    fn test_block_scalar_under_tagged_node_validates() {
+        // Block scalars can nest under a TAGGED_NODE (`k: !!str >\n  ...`).
+        // The validator's check_block_scalar_content_indent walks the
+        // SCALAR node's direct children; make sure the tag doesn't
+        // prevent us from parsing and roundtripping.
+        let yaml_text = "k: !!str >\n  wrapped\n  paragraph\n";
+        let yaml = YamlFile::from_str(yaml_text).unwrap();
+        let doc = yaml.document().unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let value = mapping.get("k").expect("k should exist");
+        assert!(
+            value.to_string().contains("wrapped"),
+            "tagged block scalar value should include 'wrapped': {:?}",
+            value.to_string()
+        );
+    }
 }

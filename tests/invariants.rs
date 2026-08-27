@@ -125,6 +125,16 @@ fn mapping_clear() {
 }
 
 #[test]
+#[ignore = "known bug: set_path followed by remove_path on a deep nested key leaves the intermediate mappings as empty scaffolds with dangling INDENT tokens, producing text with trailing whitespace and an unterminated block value. The correct fix requires either collapsing now-empty mappings up the chain or rendering empty inner mappings as `{}`."]
+fn set_path_then_remove_path_leaves_empty_scaffold() {
+    use yaml_edit::path::YamlPath;
+    let doc = Document::from_str("a: 1\nb: 2\nc: 3\n").unwrap();
+    doc.set_path("vvv.vvv.x", "");
+    doc.remove_path("vvv.vvv.x");
+    check(&doc);
+}
+
+#[test]
 fn set_path_after_explicit_key_does_not_leave_blank_line() {
     use yaml_edit::path::YamlPath;
     let doc = Document::from_str("keys: !!set\n  ? a\n  ? b\n").unwrap();

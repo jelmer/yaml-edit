@@ -9,6 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+rowan = "0.16"
 
 [dependencies.yaml-edit]
 path = ".."
@@ -30,6 +31,13 @@ bench = false
 [[bin]]
 name = "multi_document"
 path = "fuzz_targets/multi_document.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mutation_invariants"
+path = "fuzz_targets/mutation_invariants.rs"
 test = false
 doc = false
 bench = false

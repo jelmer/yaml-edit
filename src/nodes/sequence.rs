@@ -278,50 +278,69 @@ impl Sequence {
     pub fn insert(&self, index: usize, value: impl crate::AsYaml) {
         let indentation = self.detect_indentation();
 
-        // Build a newline token
-        let mut newline_builder = GreenNodeBuilder::new();
-        newline_builder.start_node(SyntaxKind::ROOT.into());
-        newline_builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        newline_builder.finish_node();
-        let newline_node = SyntaxNode::new_root_mut(newline_builder.finish());
-        let newline_token = newline_node
-            .first_token()
-            .expect("builder always emits a NEWLINE token");
-
-        // Build the SEQUENCE_ENTRY node using AsYaml
+        // Build the new SEQUENCE_ENTRY, terminated with its own NEWLINE.
+        // Parser convention: the INDENT sits at SEQUENCE level as a
+        // separator before the entry, not inside it.
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
-        builder.token(SyntaxKind::WHITESPACE.into(), &indentation);
         builder.token(SyntaxKind::DASH.into(), "-");
         builder.token(SyntaxKind::WHITESPACE.into(), " ");
-
-        // Build the value content directly using AsYaml
-        value.build_content(&mut builder, 0, false);
-
-        builder.finish_node(); // SEQUENCE_ENTRY
+        let value_ends_with_newline = value.build_content(&mut builder, 0, false);
+        if !value_ends_with_newline {
+            builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        }
+        builder.finish_node();
         let new_entry = SyntaxNode::new_root_mut(builder.finish());
 
-        // Find the position to insert
+        // Build a standalone INDENT to sit before the new entry.
+        let mut indent_builder = GreenNodeBuilder::new();
+        indent_builder.start_node(SyntaxKind::ROOT.into());
+        indent_builder.token(SyntaxKind::INDENT.into(), &indentation);
+        indent_builder.finish_node();
+        let indent_node = SyntaxNode::new_root_mut(indent_builder.finish());
+        let indent_token = indent_node
+            .first_token()
+            .expect("builder always emits an INDENT token");
+
+        // Locate the target position. If we're inserting before an
+        // existing entry, we want to land right at the INDENT that
+        // precedes it (so we don't split the existing NEWLINE-INDENT
+        // pairing that separates entries).
         let children: Vec<_> = self.0.children_with_tokens().collect();
         let mut item_count = 0;
-        let mut insert_pos = children.len();
-
+        let mut target_entry_pos = children.len();
         for (i, child) in children.iter().enumerate() {
-            if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::SEQUENCE_ENTRY {
-                    if item_count == index {
-                        insert_pos = i;
-                        break;
-                    }
-                    item_count += 1;
-                }
+            let Some(node) = child.as_node() else {
+                continue;
+            };
+            if node.kind() != SyntaxKind::SEQUENCE_ENTRY {
+                continue;
             }
+            if item_count == index {
+                target_entry_pos = i;
+                break;
+            }
+            item_count += 1;
         }
 
-        // Insert newline and new entry at the position
+        // The INDENT (if any) that separates the target entry from the
+        // previous one is the child immediately before target_entry_pos.
+        // Insert our new entry+INDENT-separator *before* that INDENT, so
+        // the layout stays `NEWLINE INDENT ENTRY INDENT NEW_ENTRY`.
+        let insert_at = if target_entry_pos > 0
+            && children
+                .get(target_entry_pos - 1)
+                .and_then(|c| c.as_token())
+                .is_some_and(|t| t.kind() == SyntaxKind::INDENT)
+        {
+            target_entry_pos - 1
+        } else {
+            target_entry_pos
+        };
+
         self.0.splice_children(
-            insert_pos..insert_pos,
-            vec![newline_token.into(), new_entry.into()],
+            insert_at..insert_at,
+            vec![indent_token.into(), new_entry.into()],
         );
     }
 

@@ -95,7 +95,6 @@ fn parse_empty_sequence_under_key_then_push() {
 }
 
 #[test]
-#[ignore = "known bug: Sequence::insert into block sequence produces malformed output (no newline between items)"]
 fn sequence_insert_into_existing() {
     let doc = Document::from_str("items:\n  - a\n  - c\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();

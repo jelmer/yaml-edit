@@ -594,15 +594,17 @@ pub fn lex_with_validation_config<'a>(
                         chars.next(); // consume third .
                         tokens.push((DOC_END, &input[token_start..start_idx + 3]));
                     } else {
-                        // Two dots - continue as scalar
-                        let rest = read_scalar_from(&mut chars, input, start_idx + 2, "");
+                        // Two dots -- continue as scalar. Allow embedded
+                        // hyphens (they're legal inside a plain scalar).
+                        let rest = read_scalar_from(&mut chars, input, start_idx + 2, "-");
                         let text = &input[token_start..start_idx + 2 + rest.len()];
                         let token_kind = classify_scalar(text);
                         tokens.push((token_kind, text));
                     }
                 } else {
-                    // Single dot - part of scalar
-                    let rest = read_scalar_from(&mut chars, input, start_idx + 1, "");
+                    // Single dot -- part of scalar. Allow embedded
+                    // hyphens (`.foo-bar` is one plain scalar).
+                    let rest = read_scalar_from(&mut chars, input, start_idx + 1, "-");
                     let text = &input[token_start..start_idx + 1 + rest.len()];
                     let token_kind = classify_scalar(text);
                     tokens.push((token_kind, text));

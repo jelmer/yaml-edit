@@ -177,6 +177,9 @@ fn count_nodes(
 /// - Every MAPPING_ENTRY has exactly one COLON
 /// - Every MAPPING_ENTRY has at most one VALUE
 /// - Block-style MAPPING_ENTRY and SEQUENCE_ENTRY nodes end with NEWLINE
+/// - No two adjacent INDENT tokens (would render as doubled indentation)
+/// - No two adjacent NEWLINE tokens at the tail of a MAPPING_ENTRY (would
+///   render as a stray blank line)
 ///
 /// # Example
 ///
@@ -189,7 +192,50 @@ fn count_nodes(
 /// debug::validate_tree(yaml.syntax()).expect("Tree should be valid");
 /// ```
 pub fn validate_tree(node: &SyntaxNode) -> Result<(), String> {
-    validate_node(node)
+    validate_node(node)?;
+    validate_no_stacked_indents(node)?;
+    validate_no_double_trailing_newline(node)?;
+    Ok(())
+}
+
+/// Roundtrip check: `parse(node.to_string()).to_string()` must equal
+/// `node.to_string()`, and the re-parse must have no errors.
+///
+/// This catches classes of bugs where a mutation produces text that
+/// looks acceptable but re-parses into a different structure (e.g.
+/// missing/extra indentation that changes nesting).
+pub fn roundtrip_ok(node: &SyntaxNode) -> Result<(), String> {
+    let text = node.to_string();
+    let parse = crate::Parse::parse_yaml(&text);
+    if !parse.positioned_errors().is_empty() {
+        return Err(format!(
+            "re-parse produced {} error(s); first: {}",
+            parse.positioned_errors().len(),
+            parse.positioned_errors()[0].message,
+        ));
+    }
+    let round = parse.tree().to_string();
+    if round != text {
+        return Err(format!(
+            "roundtrip mismatch:\n  original: {:?}\n  reparsed: {:?}",
+            text, round,
+        ));
+    }
+    Ok(())
+}
+
+/// Both [`validate_tree`] and [`roundtrip_ok`]. Panics on the first
+/// violation. Intended as a drop-in `debug_assert!`-style helper.
+///
+/// Use this after non-trivial mutations to catch regressions early.
+#[track_caller]
+pub fn assert_invariants(node: &SyntaxNode) {
+    if let Err(e) = validate_tree(node) {
+        panic!("CST invariant violated: {e}");
+    }
+    if let Err(e) = roundtrip_ok(node) {
+        panic!("CST roundtrip failed: {e}");
+    }
 }
 
 fn validate_node(node: &SyntaxNode) -> Result<(), String> {
@@ -264,6 +310,62 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
         validate_node(&child)?;
     }
 
+    Ok(())
+}
+
+/// Walk every node and reject adjacent INDENT tokens.
+///
+/// Two INDENTs concatenate at render time -- the sequence-under-empty-key
+/// bug (fixed for #38) manifested exactly this way (parent VALUE's INDENT
+/// followed by SEQUENCE's own INDENT rendered as 4 spaces).
+fn validate_no_stacked_indents(node: &SyntaxNode) -> Result<(), String> {
+    let mut prev_was_indent = false;
+    for child in node.children_with_tokens() {
+        match &child {
+            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INDENT => {
+                if prev_was_indent {
+                    return Err(format!(
+                        "adjacent INDENT tokens inside {:?} -- would render as stacked indentation",
+                        node.kind()
+                    ));
+                }
+                prev_was_indent = true;
+            }
+            rowan::NodeOrToken::Token(_) => prev_was_indent = false,
+            rowan::NodeOrToken::Node(n) => {
+                prev_was_indent = false;
+                validate_no_stacked_indents(n)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A MAPPING_ENTRY should not end with two adjacent NEWLINE tokens.
+///
+/// That shape shows up when a placeholder NEWLINE isn't stripped after a
+/// child collection gains content (see issue #18 and the sequence-under-
+/// empty-key bug). Renders as a spurious blank line.
+fn validate_no_double_trailing_newline(node: &SyntaxNode) -> Result<(), String> {
+    if node.kind() == SyntaxKind::MAPPING_ENTRY {
+        let tokens: Vec<_> = node
+            .children_with_tokens()
+            .filter_map(|c| c.into_token())
+            .collect();
+        let last = tokens.len();
+        if last >= 2
+            && tokens[last - 1].kind() == SyntaxKind::NEWLINE
+            && tokens[last - 2].kind() == SyntaxKind::NEWLINE
+        {
+            return Err(format!(
+                "MAPPING_ENTRY {:?} ends with two NEWLINE tokens -- would render as a stray blank line",
+                node.text().to_string(),
+            ));
+        }
+    }
+    for child in node.children() {
+        validate_no_double_trailing_newline(&child)?;
+    }
     Ok(())
 }
 

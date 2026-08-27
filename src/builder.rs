@@ -289,6 +289,12 @@ impl SequenceBuilder {
 
     /// Build the sequence into a YamlBuilder.
     pub fn build(mut self) -> YamlBuilder {
+        // An empty collection without `[]`/`{}` serializes as nothing and
+        // reparses as null when placed under a key (issue #37).
+        if self.count == 0 {
+            self.builder.token(SyntaxKind::LEFT_BRACKET.into(), "[");
+            self.builder.token(SyntaxKind::RIGHT_BRACKET.into(), "]");
+        }
         self.builder.finish_node(); // SEQUENCE
         self.builder.finish_node(); // DOCUMENT
         self.builder.finish_node(); // ROOT
@@ -543,6 +549,11 @@ impl MappingBuilder {
 
     /// Build the mapping into a YamlBuilder.
     pub fn build(mut self) -> YamlBuilder {
+        // See SequenceBuilder::build - same round-trip concern (issue #37).
+        if self.count == 0 {
+            self.builder.token(SyntaxKind::LEFT_BRACE.into(), "{");
+            self.builder.token(SyntaxKind::RIGHT_BRACE.into(), "}");
+        }
         self.builder.finish_node(); // MAPPING
         self.builder.finish_node(); // DOCUMENT
         self.builder.finish_node(); // ROOT
@@ -640,15 +651,13 @@ mod tests {
 
     #[test]
     fn test_empty_collections() {
-        // Empty sequence
+        // Empty sequence and mapping serialize to the flow-empty form so
+        // that placing them under a key doesn't reparse as null (issue #37).
         let empty_seq = YamlBuilder::sequence().build().build();
-        let text = empty_seq.to_string();
-        assert_eq!(text.trim(), "");
+        assert_eq!(empty_seq.to_string().trim(), "[]");
 
-        // Empty mapping
         let empty_map = YamlBuilder::mapping().build().build();
-        let text = empty_map.to_string();
-        assert_eq!(text.trim(), "");
+        assert_eq!(empty_map.to_string().trim(), "{}");
     }
 
     #[test]

@@ -418,18 +418,24 @@ fn set_path_on_mapping<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegm
     if let Some(nested) = mapping.get_mapping(first_key) {
         // Nested mapping exists, recurse
         set_path_on_mapping(&nested, &segments[1..], value);
-    } else {
-        // Need to create intermediate structure
-        let empty_mapping = MappingBuilder::new()
+        return;
+    }
+
+    // Match the parent's style so we don't mix block content into a flow
+    // container. `Mapping::new()` is a bare empty MAPPING (renders block);
+    // `MappingBuilder::new()` produces the flow-empty `{}` form.
+    if mapping.is_flow_style() {
+        let flow_empty = MappingBuilder::new()
             .build_document()
             .as_mapping()
             .expect("MappingBuilder always produces a mapping");
-        mapping.set(first_key, &empty_mapping);
+        mapping.set(first_key, flow_empty);
+    } else {
+        mapping.set(first_key, Mapping::new());
+    }
 
-        // Retrieve and recurse into the newly created mapping
-        if let Some(nested) = mapping.get_mapping(first_key) {
-            set_path_on_mapping(&nested, &segments[1..], value);
-        }
+    if let Some(nested) = mapping.get_mapping(first_key) {
+        set_path_on_mapping(&nested, &segments[1..], value);
     }
 }
 
@@ -890,21 +896,22 @@ config:
         yaml.set_path("app.database.primary.host", "db.example.com");
         yaml.set_path("app.database.primary.port", 5432);
 
+        // Parent was flow-style, so the whole nested chain stays flow.
+        assert_eq!(
+            yaml.to_string().trim(),
+            r#"app: {database: {primary: {host: "db.example.com", port: 5432}}}"#
+        );
+
         let host = yaml.get_path("app.database.primary.host");
         assert_eq!(
             host.as_ref()
                 .and_then(|v| v.as_scalar())
-                .map(|s| s.to_string()),
+                .map(|s| s.as_string()),
             Some("db.example.com".to_string())
         );
 
         let port = yaml.get_path("app.database.primary.port");
-        assert_eq!(
-            port.as_ref()
-                .and_then(|v| v.as_scalar())
-                .map(|s| s.to_string()),
-            Some("5432".to_string())
-        );
+        assert_eq!(port.as_ref().and_then(|v| v.to_i64()), Some(5432));
     }
 
     #[test]

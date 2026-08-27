@@ -2713,6 +2713,40 @@ mod tests {
     use crate::yaml::YamlFile;
     use std::str::FromStr;
 
+    /// Regression test for issue #37: setting an empty mapping/sequence built
+    /// via the builder API used to serialize as `key:` (which reparses as
+    /// null) instead of `key: {}` / `key: []`. Also verifies the output
+    /// round-trips: reparsing gives back a collection of the same kind.
+    #[test]
+    fn test_set_empty_collection_serializes_as_flow_empty() {
+        use crate::as_yaml::YamlKind;
+        use crate::builder::{MappingBuilder, SequenceBuilder};
+        use crate::yaml::Document;
+
+        let seq = SequenceBuilder::new()
+            .build_document()
+            .as_sequence()
+            .unwrap();
+        let doc = Document::from_str("name: Alice").unwrap();
+        doc.as_mapping().unwrap().set("foo", seq);
+        assert_eq!(doc.to_string().trim(), "name: Alice\nfoo: []");
+        let reparsed = Document::from_str(&doc.to_string()).unwrap();
+        assert_eq!(
+            reparsed.as_mapping().unwrap().get("foo").unwrap().kind(),
+            YamlKind::Sequence
+        );
+
+        let map = MappingBuilder::new().build_document().as_mapping().unwrap();
+        let doc = Document::from_str("name: Alice").unwrap();
+        doc.as_mapping().unwrap().set("foo", map);
+        assert_eq!(doc.to_string().trim(), "name: Alice\nfoo: {}");
+        let reparsed = Document::from_str(&doc.to_string()).unwrap();
+        assert_eq!(
+            reparsed.as_mapping().unwrap().get("foo").unwrap().kind(),
+            YamlKind::Mapping
+        );
+    }
+
     #[test]
     fn test_mapping_set_new_key() {
         let yaml = "existing: value";

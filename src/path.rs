@@ -25,7 +25,6 @@
 //!
 //! All operations preserve formatting, comments, and whitespace.
 
-use crate::builder::MappingBuilder;
 use crate::yaml::Mapping;
 
 /// Trait for YAML types that support path-based access.
@@ -419,12 +418,10 @@ fn set_path_on_mapping<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegm
         // Nested mapping exists, recurse
         set_path_on_mapping(&nested, &segments[1..], value);
     } else {
-        // Need to create intermediate structure
-        let empty_mapping = MappingBuilder::new()
-            .build_document()
-            .as_mapping()
-            .expect("MappingBuilder always produces a mapping");
-        mapping.set(first_key, &empty_mapping);
+        // Create a block-style placeholder for the intermediate. Not
+        // `MappingBuilder::new()`, whose empty output is `{}` (issue #37) —
+        // that would put subsequent nested inserts into flow context.
+        mapping.set(first_key, Mapping::new());
 
         // Retrieve and recurse into the newly created mapping
         if let Some(nested) = mapping.get_mapping(first_key) {

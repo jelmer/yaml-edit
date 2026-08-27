@@ -337,3 +337,27 @@ fn test_empty_mapping_by_removal() {
     let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
     assert!(reparsed.document().is_some());
 }
+
+/// Replacing a multi-line flow-sequence value with a scalar inside a flow
+/// (JSON-style) mapping should not leave stray whitespace behind.
+///
+/// Regression: lintian-brush upstream-metadata `repository-as-list` fixer
+/// produced a spurious blank line and lost indentation on the following
+/// entry when yaml-edit replaced the `Repository` list with a string.
+#[test]
+fn test_replace_multiline_flow_sequence_value_with_scalar() {
+    let input = "{\n  \"Name\": \"yep\",\n  \"Repository\": [\n    \":extssh:_anoncvs@anoncvs.example.org:/cvs\",\n    \"yep\"\n  ],\n  \"Repository-Browse\": \"http://www.example.org/cvs.cgi/contrib/code/yep/\"\n}";
+
+    let yaml = YamlFile::from_str(input).expect("Should parse JSON-style mapping");
+    let doc = yaml.document().expect("Should have document");
+    let mapping = doc.as_mapping().expect("Should be mapping");
+
+    mapping.set(
+        "Repository",
+        "cvs+ssh://_anoncvs@anoncvs.example.org/cvs#yep",
+    );
+
+    let expected = "{\n  \"Name\": \"yep\",\n  \"Repository\": \"cvs+ssh://_anoncvs@anoncvs.example.org/cvs#yep\",\n  \"Repository-Browse\": \"http://www.example.org/cvs.cgi/contrib/code/yep/\"\n}";
+
+    assert_eq!(yaml.to_string(), expected);
+}

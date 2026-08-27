@@ -50,13 +50,24 @@ fn trailing_newline_reachable(node: &SyntaxNode) -> bool {
     last_non_empty.is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
 }
 
-/// Does any descendant token of `node` have kind NEWLINE?
+/// Is `value` a block-style VALUE (key on one line, value laid out on
+/// subsequent lines)?
 ///
-/// Preferred over `node.text().contains('\n')` for structural checks:
-/// avoids materializing the whole subtree as a string, and looks at
-/// the token stream directly.
-fn has_newline_token(node: &SyntaxNode) -> bool {
-    node.descendants_with_tokens().any(|el| {
+/// A block VALUE holds a NEWLINE as a *direct* child token, sitting
+/// between the COLON and the value's content. An inline flow value --
+/// even a multi-line one like `[\n  a,\n  b\n]` -- keeps its NEWLINEs
+/// nested inside the flow SEQUENCE/MAPPING and has none directly in the
+/// VALUE, so this check distinguishes the two.
+///
+/// A leading TAG or ANCHOR annotation may be wrapped in a TAGGED_NODE
+/// (`k: !!seq\n  - old`) whose own children hold the NEWLINE and
+/// content. Peel it before looking.
+fn value_is_block(value: &SyntaxNode) -> bool {
+    let carrier = value
+        .children()
+        .find(|c| c.kind() == SyntaxKind::TAGGED_NODE)
+        .unwrap_or_else(|| value.clone());
+    carrier.children_with_tokens().any(|el| {
         el.as_token()
             .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
     })
@@ -752,7 +763,7 @@ impl MappingEntry {
         value_builder.finish_node();
         let new_value_node = SyntaxNode::new_root_mut(value_builder.finish());
 
-        let old_was_block = self.value().is_some_and(|v| has_newline_token(&v));
+        let old_was_block = self.value().is_some_and(|v| value_is_block(&v));
         if old_was_block {
             self.rebuild_with_inline_value(&new_value_node);
             return;

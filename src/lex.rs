@@ -943,8 +943,13 @@ pub fn lex_with_validation_config<'a>(
                         continue;
                     }
 
-                    // Check other special characters (excluding hyphen and colon)
-                    if is_yaml_special_except(next_ch, "-:#") {
+                    // Check other special characters (excluding hyphen and colon).
+                    // `&`, `*`, `!`, `?` are node-property / block-key indicators
+                    // that are only meaningful at the start of a node. Once we
+                    // are inside a plain-scalar body they are ordinary content
+                    // per YAML 1.2 §7.1 (a `&anchor` must be followed by
+                    // whitespace to actually be an anchor).
+                    if is_yaml_special_except(next_ch, "-:#&*!?") {
                         // In block context, flow indicators do NOT break scalars
                         if flow_depth == 0 && matches!(next_ch, '[' | ']' | '{' | '}' | ',') {
                             // do nothing, let it be part of the scalar
@@ -1318,6 +1323,42 @@ double: "quoted""#;
             .filter(|(kind, _)| *kind == SyntaxKind::ASTERISK)
             .collect();
         assert_eq!(asterisks.len(), 1);
+    }
+
+    #[test]
+    fn test_indicators_mid_plain_scalar_are_scalar_content() {
+        // Per YAML 1.2 §7.1 the node-property indicators `&`, `*`, `!`
+        // only apply when a scalar starts with them (followed by an
+        // identifier). Mid-scalar they are ordinary content and must
+        // not create phantom ANCHOR / REFERENCE / TAG tokens.
+        for input in ["k: 3.1&1", "k: a&b", "k: a*b", "k: a!b", "k: a?b"] {
+            let tokens = lex(input);
+            let bad: Vec<_> = tokens
+                .iter()
+                .filter(|(kind, _)| {
+                    matches!(
+                        kind,
+                        SyntaxKind::ANCHOR
+                            | SyntaxKind::REFERENCE
+                            | SyntaxKind::TAG
+                            | SyntaxKind::QUESTION
+                    )
+                })
+                .collect();
+            assert!(
+                bad.is_empty(),
+                "{:?} produced structural tokens mid-scalar: {:?}",
+                input,
+                bad
+            );
+        }
+        // And a real anchor still tokenizes as ANCHOR.
+        let tokens = lex("a: &real 1");
+        assert!(
+            tokens.iter().any(|(k, _)| *k == SyntaxKind::ANCHOR),
+            "real anchor should still be recognized: {:?}",
+            tokens
+        );
     }
 
     #[test]

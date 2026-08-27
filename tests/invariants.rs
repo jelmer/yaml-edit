@@ -95,6 +95,20 @@ fn parse_empty_sequence_under_key_then_push() {
 }
 
 #[test]
+fn sequence_insert_past_end_without_trailing_newline() {
+    // Regression for a bug found by wiring the invariant check into
+    // the mutation methods: Sequence::insert past the end of an
+    // unterminated source (`- a\n  - b`, no trailing NL) used to
+    // splice the new INDENT+ENTRY straight after the previous entry's
+    // scalar, rendering as `- a\n  - b  - c\n`.
+    let doc = Document::from_str("items:\n  - a\n  - b").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
+    seq.insert(2, "c");
+    check(&doc);
+    assert_eq!(doc.to_string(), "items:\n  - a\n  - b\n  - c\n");
+}
+
+#[test]
 fn sequence_insert_into_existing() {
     let doc = Document::from_str("items:\n  - a\n  - c\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
@@ -121,6 +135,27 @@ fn rename_key() {
 fn mapping_clear() {
     let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
     doc.as_mapping().unwrap().clear();
+    check(&doc);
+}
+
+#[test]
+#[ignore = "known parser bug: keys like `.ar-aa` (dot-prefix followed by dash) fail to parse. Not the fault of set — surfaced by mutation-roundtrip. Separate issue."]
+fn set_key_with_dot_and_dash_parses_back() {
+    let doc = Document::from_str("existing: value\n").unwrap();
+    doc.as_mapping().unwrap().set(".ar-aa", 0);
+    check(&doc);
+}
+
+#[test]
+fn set_with_document_terminator_key() {
+    // Document terminator (`...`) and start marker (`---`) at column 0
+    // begin a new stream document; used as a bare key they must be
+    // quoted or the resulting text re-parses as a broken document.
+    let doc = Document::from_str("existing: value\n").unwrap();
+    doc.as_mapping().unwrap().set("...", "value");
+    check(&doc);
+    let doc = Document::from_str("existing: value\n").unwrap();
+    doc.as_mapping().unwrap().set("---", "value");
     check(&doc);
 }
 

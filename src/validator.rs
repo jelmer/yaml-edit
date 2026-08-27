@@ -250,6 +250,8 @@ impl Validator {
                 self.check_escape_sequences(node, violations);
                 // Check for content on same line as block scalar indicator
                 self.check_block_scalar_indicator(node, violations);
+                // Check block scalar content indentation consistency
+                self.check_block_scalar_content_indent(node, violations);
                 // Check for trailing content after quoted strings
                 self.check_trailing_content_after_quoted(node, violations);
                 // Check for colons in plain scalar values
@@ -265,6 +267,7 @@ impl Validator {
             SyntaxKind::MAPPING => {
                 self.check_flow_collection_commas(node, violations);
                 self.check_block_mapping_entries_on_same_line(node, violations);
+                self.check_mapping_entry_indentation(node, violations);
                 if self.config.check_duplicate_keys {
                     self.check_duplicate_keys(node, violations);
                 }
@@ -660,6 +663,81 @@ impl Validator {
         }
     }
 
+    /// Check block scalar (`|` or `>`) content indentation.
+    ///
+    /// Once a blank line at indentation N has appeared, no later
+    /// non-blank content line may be at indentation < N (per YAML 1.2
+    /// example 5LLU). This flags the case where the content indent
+    /// implicitly established by empty-line whitespace runs is later
+    /// under-cut.
+    fn check_block_scalar_content_indent(
+        &self,
+        node: &SyntaxNode,
+        violations: &mut Vec<Violation>,
+    ) {
+        let has_block_indicator = node.children_with_tokens().any(|el| {
+            el.as_token().is_some_and(|t| {
+                matches!(
+                    t.kind(),
+                    crate::SyntaxKind::GREATER | crate::SyntaxKind::PIPE
+                )
+            })
+        });
+        if !has_block_indicator {
+            return;
+        }
+
+        // Walk tokens after the block indicator's NEWLINE. Track the
+        // deepest INDENT seen so far (from blank-only lines); flag any
+        // subsequent INDENT + non-blank content whose text is shorter.
+        let mut past_first_newline = false;
+        let mut max_blank_indent = 0usize;
+        let mut pending_indent: Option<rowan::SyntaxToken<crate::Lang>> = None;
+        for child in node.children_with_tokens() {
+            let Some(token) = child.as_token().cloned() else {
+                continue;
+            };
+            if !past_first_newline {
+                if token.kind() == crate::SyntaxKind::NEWLINE {
+                    past_first_newline = true;
+                }
+                continue;
+            }
+            match token.kind() {
+                crate::SyntaxKind::INDENT => {
+                    pending_indent = Some(token);
+                }
+                crate::SyntaxKind::NEWLINE => {
+                    // Blank line: the pending INDENT (if any) tells us
+                    // how far the blank line was padded. Update the
+                    // running maximum.
+                    if let Some(ind) = pending_indent.take() {
+                        max_blank_indent = max_blank_indent.max(ind.text().len());
+                    }
+                }
+                _ => {
+                    // Non-blank content. Compare the pending INDENT to
+                    // the observed max_blank_indent.
+                    if let Some(ind) = pending_indent.take() {
+                        if ind.text().len() < max_blank_indent {
+                            violations.push(Violation {
+                                message: format!(
+                                    "Block scalar content under-indented ({} spaces) relative to preceding blank line ({} spaces)",
+                                    ind.text().len(), max_blank_indent
+                                ),
+                                location: None,
+                                text_range: Some(range_to_text_position(ind.text_range())),
+                                severity: Severity::Error,
+                                rule: Rule::Other,
+                            });
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Check for trailing content after quoted strings
     ///
     /// After a quoted string (double or single) closes, only whitespace, newlines,
@@ -975,6 +1053,84 @@ impl Validator {
         }
     }
 
+    /// Check that sibling MAPPING_ENTRY nodes inside a block mapping
+    /// share a consistent indent.
+    ///
+    /// The parser is deliberately lenient: it accepts
+    ///     k1: v1
+    ///      k2: v2
+    /// and produces two MAPPING_ENTRY children separated by an INDENT
+    /// " " token as a direct child of MAPPING. Similarly for
+    ///     key:
+    ///       ok: 1
+    ///      wrong: 2
+    /// (yaml-test-suite EW3V / DMG6 / N4JP / U44R). Flag inconsistent
+    /// leading indent tokens between block entries.
+    fn check_mapping_entry_indentation(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        // Flow mappings ({...}) don't have INDENT tokens between entries.
+        let first_token = node.first_token();
+        let is_flow_mapping = first_token
+            .as_ref()
+            .is_some_and(|t| t.kind() == crate::SyntaxKind::LEFT_BRACE);
+        if is_flow_mapping {
+            return;
+        }
+
+        // Determine the expected indent for entries in this mapping.
+        //   - Nested mapping (parent VALUE has NEWLINE + INDENT before
+        //     us): use that INDENT's text.
+        //   - Root mapping (child of DOCUMENT): the empty string.
+        //
+        // Then walk direct children. Every INDENT token that precedes a
+        // MAPPING_ENTRY (i.e. separates two entries) must equal the
+        // expected indent. Otherwise the parser has admitted a
+        // wrong-indented sibling that the YAML spec rejects (see
+        // yaml-test-suite EW3V / DMG6 / N4JP / U44R).
+        let expected_indent: String = node
+            .parent()
+            .filter(|p| p.kind() == crate::SyntaxKind::VALUE)
+            .and_then(|parent_value| {
+                // Look for the INDENT token that immediately precedes
+                // this MAPPING in the parent VALUE.
+                let mut last_indent: Option<String> = None;
+                for el in parent_value.children_with_tokens() {
+                    match el {
+                        rowan::NodeOrToken::Node(n) if &n == node => break,
+                        rowan::NodeOrToken::Token(t) if t.kind() == crate::SyntaxKind::INDENT => {
+                            last_indent = Some(t.text().to_string());
+                        }
+                        _ => {}
+                    }
+                }
+                last_indent
+            })
+            .unwrap_or_default();
+
+        let mut seen_entry = false;
+        for child in node.children_with_tokens() {
+            match child {
+                rowan::NodeOrToken::Token(t) if t.kind() == crate::SyntaxKind::INDENT => {
+                    if seen_entry && t.text() != expected_indent {
+                        violations.push(Violation {
+                            message: format!(
+                                "Sibling block mapping entries have inconsistent indentation (expected {:?}, found {:?})",
+                                expected_indent, t.text()
+                            ),
+                            location: None,
+                            text_range: Some(range_to_text_position(t.text_range())),
+                            severity: Severity::Error,
+                            rule: Rule::Other,
+                        });
+                    }
+                }
+                rowan::NodeOrToken::Node(n) if n.kind() == crate::SyntaxKind::MAPPING_ENTRY => {
+                    seen_entry = true;
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Check for SEQUENCE_ENTRY nodes in flow sequences
     ///
     /// Flow sequences (using []) should not have SEQUENCE_ENTRY children.
@@ -1043,17 +1199,18 @@ impl Validator {
             }
         }
 
-        // Check for REFERENCE tokens in descendant SCALAR nodes
-        for desc in node.descendants() {
-            if desc.kind() == crate::SyntaxKind::SCALAR {
-                for token in desc.children_with_tokens() {
-                    if let rowan::NodeOrToken::Token(t) = token {
-                        if t.kind() == crate::SyntaxKind::REFERENCE {
-                            has_alias = true;
-                            break;
-                        }
-                    }
-                }
+        // Check for REFERENCE tokens (used inside SCALAR-shaped values
+        // and inside dedicated ALIAS nodes) anywhere among descendants.
+        // We can't restrict to SCALAR-only because the parser emits
+        // `&b *a` with the ALIAS node as a sibling of the ANCHOR token,
+        // not wrapped in a SCALAR.
+        for token in node
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+        {
+            if token.kind() == crate::SyntaxKind::REFERENCE {
+                has_alias = true;
+                break;
             }
         }
 
@@ -1270,19 +1427,37 @@ impl Validator {
     ///
     /// YAML spec restricts implicit keys (keys without explicit ? marker) to a single line.
     /// This checks if a KEY node in a MAPPING_ENTRY contains newline characters.
+    /// Two variants of "multiline" show up:
+    ///   1. A NEWLINE token as a direct descendant (unquoted key spanning
+    ///      multiple lexed tokens, e.g. yaml-test-suite 8KB6 in flow context).
+    ///   2. A quoted STRING token whose source text contains a raw '\n'
+    ///      (yaml-test-suite 7LBH / D49Q / JKF3). The whole quoted body
+    ///      is one lex token, so a NEWLINE-token check misses it.
     fn check_implicit_key_multiline(
         &self,
         entry_node: &SyntaxNode,
         violations: &mut Vec<Violation>,
     ) {
-        // Find the KEY node within the MAPPING_ENTRY.
+        // Explicit-key entries (`? key\n : value`) are allowed to span
+        // multiple lines by construction; the QUESTION indicator makes
+        // them explicit rather than implicit.
+        let is_explicit = entry_node.children_with_tokens().any(|el| {
+            el.as_token()
+                .is_some_and(|t| t.kind() == crate::SyntaxKind::QUESTION)
+        });
+        if is_explicit {
+            return;
+        }
+
         for child in entry_node.children() {
             if child.kind() != crate::SyntaxKind::KEY {
                 continue;
             }
-            let spans_lines = child.descendants_with_tokens().any(|el| {
-                el.as_token()
-                    .is_some_and(|t| t.kind() == crate::SyntaxKind::NEWLINE)
+            let spans_lines = child.descendants_with_tokens().any(|el| match el {
+                rowan::NodeOrToken::Token(t) => {
+                    t.kind() == crate::SyntaxKind::NEWLINE || t.text().contains('\n')
+                }
+                _ => false,
             });
             if spans_lines {
                 violations.push(Violation {

@@ -417,16 +417,10 @@ mod tests {
         let list = mapping.entry("items").or_insert_sequence();
         list.push("apple");
         list.push("banana");
-        // Content-level checks. Exact formatting of the pushed items is
-        // subject to a pre-existing indentation quirk when pushing into a
-        // freshly-inserted empty sequence; the entry API is not the source
-        // of that, and this test asserts only what belongs to it.
-        assert_eq!(list.len(), 2);
-        let values: Vec<_> = list
-            .values()
-            .map(|v| v.to_string().trim().to_string())
-            .collect();
-        assert_eq!(values, vec!["apple", "banana"]);
+        assert_eq!(
+            doc.to_string(),
+            "existing: value\nitems:\n  - apple\n  - banana\n"
+        );
     }
 
     #[test]

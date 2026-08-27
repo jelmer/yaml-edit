@@ -7,6 +7,31 @@ use rowan::GreenNodeBuilder;
 
 ast_node!(Sequence, SEQUENCE, "A YAML sequence (list)");
 
+/// Look at the parent VALUE (if this sequence sits inside one) for an
+/// INDENT token immediately preceding the SEQUENCE. The placeholder shape
+/// left by `set(key, empty_sequence)` (`key:\n  \n`) puts the intended
+/// indent there so a follow-up push knows where to sit.
+fn parent_value_indent_hint(seq: &SyntaxNode) -> Option<rowan::SyntaxToken<Lang>> {
+    let parent = seq.parent()?;
+    if parent.kind() != SyntaxKind::VALUE {
+        return None;
+    }
+    let mut prev = None;
+    for child in parent.children_with_tokens() {
+        match &child {
+            rowan::NodeOrToken::Node(n) if n == seq => break,
+            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INDENT => {
+                prev = Some(t.clone());
+            }
+            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::NEWLINE => {}
+            _ => {
+                prev = None;
+            }
+        }
+    }
+    prev
+}
+
 impl Sequence {
     /// Iterate over items in this sequence as raw syntax nodes.
     ///
@@ -220,11 +245,53 @@ impl Sequence {
             }
         }
 
+        // If the sequence is empty and its parent VALUE already carries an
+        // INDENT hint immediately before this SEQUENCE (the `key:\n  \n`
+        // placeholder shape), the hint acts as this entry's leading
+        // indentation, so don't prepend our own INDENT on top of it.
+        let entry_is_first = last_entry_index.is_none();
+        let parent_supplies_indent = entry_is_first
+            && parent_value_indent_hint(&self.0)
+                .is_some_and(|hint| hint.text() == indentation.as_str());
+
+        let mut inserts: Vec<rowan::NodeOrToken<SyntaxNode, _>> = Vec::new();
+        if !parent_supplies_indent {
+            inserts.push(indent_token.into());
+        }
+        inserts.push(new_entry.clone().into());
+
         // Insert the indent token and new entry before any trailing blank newlines
-        self.0.splice_children(
-            insert_pos..insert_pos,
-            vec![indent_token.into(), new_entry.into()],
-        );
+        self.0.splice_children(insert_pos..insert_pos, inserts);
+
+        // When we've just added the first entry into an empty sequence that
+        // sits inside a MAPPING_ENTRY's VALUE placeholder (`key:\n  \n`), the
+        // MAPPING_ENTRY carries a redundant trailing NEWLINE from the
+        // placeholder state. Our new SEQUENCE_ENTRY already brings its own
+        // trailing NEWLINE, so leaving the placeholder would render an extra
+        // blank line. Strip it (same fix Mapping applies, see issue #18).
+        if entry_is_first {
+            let entry_ends_with_nl = new_entry
+                .last_token()
+                .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
+            if entry_ends_with_nl {
+                if let Some(parent_value) = self.0.parent() {
+                    if parent_value.kind() == SyntaxKind::VALUE {
+                        if let Some(parent_entry) = parent_value.parent() {
+                            if parent_entry.kind() == SyntaxKind::MAPPING_ENTRY {
+                                if let Some(last) = parent_entry.last_child_or_token() {
+                                    if last
+                                        .as_token()
+                                        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
+                                    {
+                                        last.detach();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Insert an item at a specific position.
@@ -588,6 +655,25 @@ impl AsYaml for Sequence {
 mod tests {
     use crate::yaml::YamlFile;
     use std::str::FromStr;
+
+    #[test]
+    fn test_push_into_empty_sequence_under_mapping_placeholder() {
+        // Regression: `mapping.set(k, Sequence::new())` produces the
+        // placeholder shape `k:\n  \n` with an INDENT hint in the parent
+        // VALUE. A follow-up `push` used to double the indent (4 spaces)
+        // and leave a stray trailing newline.
+        use crate::{Document, Sequence};
+        let doc = Document::from_str("existing: value\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        mapping.set("items", Sequence::new());
+        let items = mapping.get_sequence("items").unwrap();
+        items.push("apple");
+        items.push("banana");
+        assert_eq!(
+            doc.to_string(),
+            "existing: value\nitems:\n  - apple\n  - banana\n"
+        );
+    }
 
     #[test]
     fn test_sequence_items_tagged_node() {

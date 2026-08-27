@@ -305,6 +305,46 @@ fn read_scalar_from<'a>(
     &input[start_idx..end_idx]
 }
 
+/// Is a `:` at `input[colon_idx]` a mapping indicator (rather than
+/// plain-scalar content)?
+///
+/// Per YAML 1.2 the answer is context-dependent. `:` is an indicator
+/// when:
+///   - followed by whitespace or EOF, in any context; or
+///   - inside a flow collection, followed by a flow terminator
+///     (`,`, `]`, `}`).
+///
+/// It is *not* an indicator when embedded in a plain scalar (`http://`,
+/// `::vector`, timestamp bodies, etc.).
+///
+/// `colon_idx` must point at the `:` byte itself; only the char that
+/// follows is inspected. Callers already in flow context should pass a
+/// non-zero `flow_depth`.
+fn is_colon_a_flow_terminator(input: &str, colon_idx: usize, flow_depth: u32) -> bool {
+    let after = input[colon_idx + 1..].chars().next();
+    match after {
+        None => true,
+        Some(ch) if ch.is_whitespace() => true,
+        Some(ch) if flow_depth > 0 && matches!(ch, ',' | ']' | '}') => true,
+        _ => false,
+    }
+}
+
+/// Is a `#` at `input[hash_idx]` the start of a comment (rather than
+/// scalar content)?
+///
+/// Per YAML 1.2 section 6.6, `#` starts a comment only when preceded
+/// by whitespace (or is at the start of the input / a fresh line).
+/// Inside a plain scalar with no preceding whitespace, `#` is scalar
+/// content (URLs, `#frag`, etc.).
+fn is_hash_a_comment_start(input: &str, hash_idx: usize) -> bool {
+    hash_idx == 0
+        || input[..hash_idx]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_whitespace())
+}
+
 /// Like `read_scalar_from` but treats `:` as scalar content when it's
 /// not followed by whitespace (matching YAML plain-scalar semantics),
 /// and `-` as scalar content unconditionally.
@@ -316,34 +356,20 @@ fn read_plain_scalar_body_from<'a>(
     chars: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
     input: &'a str,
     start_idx: usize,
+    flow_depth: u32,
 ) -> &'a str {
     let mut end_idx = start_idx;
     while let Some((idx, ch)) = chars.peek().copied() {
-        if ch == '\n' || ch == '\r' {
+        if ch == '\n' || ch == '\r' || ch.is_whitespace() {
             break;
         }
-        if ch.is_whitespace() {
+        if ch == ':' && is_colon_a_flow_terminator(input, idx, flow_depth) {
             break;
         }
-        // Colon is scalar content unless followed by whitespace or EOF.
-        if ch == ':' {
-            let after = input[idx + ch.len_utf8()..].chars().next();
-            match after {
-                Some(next) if next.is_whitespace() => break,
-                None => break,
-                _ => {}
-            }
-        } else if ch == '#' {
-            // `#` starts a comment only when preceded by whitespace.
-            let preceded_by_ws = idx == 0
-                || input[..idx]
-                    .chars()
-                    .next_back()
-                    .is_some_and(|c| c.is_whitespace());
-            if preceded_by_ws {
-                break;
-            }
-        } else if ch != '-' && is_yaml_special(ch) {
+        if ch == '#' && is_hash_a_comment_start(input, idx) {
+            break;
+        }
+        if ch != ':' && ch != '-' && ch != '#' && is_yaml_special(ch) {
             break;
         }
         end_idx = idx + ch.len_utf8();
@@ -460,7 +486,12 @@ pub fn lex_with_validation_config<'a>(
                         // This hyphen is part of a scalar value. Use the
                         // plain-scalar body reader so embedded `:` (not
                         // followed by whitespace) stays inside the scalar.
-                        let text = read_plain_scalar_body_from(&mut chars, input, start_idx + 1);
+                        let text = read_plain_scalar_body_from(
+                            &mut chars,
+                            input,
+                            start_idx + 1,
+                            flow_depth,
+                        );
                         let full_text = &input[token_start..token_start + 1 + text.len()];
                         let token_kind = classify_scalar(full_text);
                         tokens.push((token_kind, full_text));
@@ -469,38 +500,26 @@ pub fn lex_with_validation_config<'a>(
             }
             '+' => tokens.push((PLUS, &input[token_start..start_idx + 1])),
             ':' => {
-                // Colon is a mapping indicator when
-                //   (a) followed by whitespace or EOF, or
-                //   (b) in flow context, followed by a flow terminator
-                //       (`,` `]` `}`), or
-                //   (c) in flow context, preceded by a scalar-like token
-                //       (STRING, INT, etc.) rather than at the start of a
-                //       fresh value slot. This distinguishes
-                //         { "foo"\n  :bar }    -- COLON after "foo"
-                //       from
-                //         [ ::vector ]         -- `:` starts a plain scalar
-                let after = chars.peek().map(|(_, ch)| *ch);
-                let last_meaningful = tokens
-                    .iter()
-                    .rev()
-                    .find(|(k, _)| !matches!(k, WHITESPACE | INDENT | NEWLINE | COMMENT))
-                    .map(|(k, _)| *k);
-                let preceded_by_scalar = matches!(
-                    last_meaningful,
-                    Some(STRING) | Some(INT) | Some(FLOAT) | Some(BOOL) | Some(NULL)
-                );
-                let is_indicator = match after {
-                    None => true,
-                    Some(ch) if ch.is_whitespace() => true,
-                    Some(ch) if flow_depth > 0 && matches!(ch, ',' | ']' | '}') => true,
-                    _ if flow_depth > 0 && preceded_by_scalar => true,
-                    _ => false,
-                };
-                if is_indicator {
+                // Colon at token boundary. It's a mapping indicator when
+                // its lookahead matches is_colon_a_flow_terminator, OR
+                // when we're in flow context and the immediately
+                // preceding meaningful token was a scalar (i.e., a key
+                // has been laid down and this `:` separates it from the
+                // value):
+                //     { "foo"\n  :bar }    -- COLON after "foo"
+                // vs.
+                //     [ ::vector ]         -- `:` starts a plain scalar
+                let preceded_by_scalar = flow_depth > 0
+                    && tokens
+                        .iter()
+                        .rev()
+                        .find(|(k, _)| !matches!(k, WHITESPACE | INDENT | NEWLINE | COMMENT))
+                        .is_some_and(|(k, _)| matches!(k, STRING | INT | FLOAT | BOOL | NULL));
+                if preceded_by_scalar || is_colon_a_flow_terminator(input, start_idx, flow_depth) {
                     tokens.push((COLON, &input[token_start..start_idx + 1]));
                 } else {
-                    // This colon starts (or continues) a plain scalar such
-                    // as a URL, `::vector`, or a timestamp.
+                    // This colon starts (or continues) a plain scalar
+                    // such as a URL, `::vector`, or a timestamp.
                     let mut end_idx = start_idx + 1;
                     while let Some((idx, next_ch)) = chars.peek().copied() {
                         if next_ch.is_whitespace() {
@@ -509,18 +528,10 @@ pub fn lex_with_validation_config<'a>(
                         if flow_depth > 0 && matches!(next_ch, ',' | ']' | '}') {
                             break;
                         }
-                        // Colon is scalar content unless followed by
-                        // whitespace or a flow terminator; check with
-                        // the same rule recursively.
-                        if next_ch == ':' {
-                            let after2 = input[idx + next_ch.len_utf8()..].chars().next();
-                            match after2 {
-                                None => break,
-                                Some(c) if c.is_whitespace() => break,
-                                Some(c) if flow_depth > 0 && matches!(c, ',' | ']' | '}') => break,
-                                _ => {}
-                            }
-                        } else if is_yaml_special_except(next_ch, ":") {
+                        if next_ch == ':' && is_colon_a_flow_terminator(input, idx, flow_depth) {
+                            break;
+                        }
+                        if next_ch != ':' && is_yaml_special_except(next_ch, ":") {
                             break;
                         }
                         end_idx = idx + next_ch.len_utf8();
@@ -674,14 +685,20 @@ pub fn lex_with_validation_config<'a>(
                     } else {
                         // Two dots -- continue as plain scalar body (allows
                         // embedded `-` and `:` per YAML plain-scalar rules).
-                        let rest = read_plain_scalar_body_from(&mut chars, input, start_idx + 2);
+                        let rest = read_plain_scalar_body_from(
+                            &mut chars,
+                            input,
+                            start_idx + 2,
+                            flow_depth,
+                        );
                         let text = &input[token_start..start_idx + 2 + rest.len()];
                         let token_kind = classify_scalar(text);
                         tokens.push((token_kind, text));
                     }
                 } else {
                     // Single dot -- part of plain scalar body.
-                    let rest = read_plain_scalar_body_from(&mut chars, input, start_idx + 1);
+                    let rest =
+                        read_plain_scalar_body_from(&mut chars, input, start_idx + 1, flow_depth);
                     let text = &input[token_start..start_idx + 1 + rest.len()];
                     let token_kind = classify_scalar(text);
                     tokens.push((token_kind, text));
@@ -914,21 +931,12 @@ pub fn lex_with_validation_config<'a>(
                         continue;
                     }
 
-                    // Check for YAML special characters
-                    // Special handling for colon: only special if followed by whitespace or EOF
+                    // `:` inside a plain scalar breaks the scalar iff
+                    // it's a mapping indicator (see helper for rules).
                     if next_ch == ':' {
-                        // Peek ahead one more to check if colon is followed by whitespace
-                        let next_idx = idx + next_ch.len_utf8();
-                        if next_idx >= input.len() {
-                            // Colon at EOF - stop here (treat as mapping indicator)
+                        if is_colon_a_flow_terminator(input, idx, flow_depth) {
                             break;
-                        } else if let Some(after) = input[next_idx..].chars().next() {
-                            if after.is_whitespace() {
-                                // Colon followed by whitespace - stop here
-                                break;
-                            }
                         }
-                        // Colon not followed by whitespace - continue as part of scalar
                         end_idx = idx + next_ch.len_utf8();
                         chars.next();
                         continue;
@@ -944,17 +952,10 @@ pub fn lex_with_validation_config<'a>(
                         }
                     }
 
-                    // `#` starts a comment only when preceded by
-                    // whitespace (per YAML 1.2 4.6.6). Inside a plain
-                    // scalar with no preceding whitespace, it's part
-                    // of the scalar (e.g., `http://x/#frag`).
+                    // `#` inside a plain scalar breaks the scalar iff
+                    // it's a comment start (see helper for rules).
                     if next_ch == '#' {
-                        let preceded_by_ws = idx == 0
-                            || input[..idx]
-                                .chars()
-                                .next_back()
-                                .is_some_and(|c| c.is_whitespace());
-                        if preceded_by_ws {
+                        if is_hash_a_comment_start(input, idx) {
                             break;
                         }
                         end_idx = idx + next_ch.len_utf8();

@@ -169,13 +169,9 @@ fn test_set_with_field_order_empty_document() {
     }
 
     let result = yaml.to_string();
-    // In flow-style context ({}), strings are quoted
-    let expected = r#"---
-{}
-name: "my-app"
-version: 1.0
-"#;
-    assert_eq!(result, expected);
+    // Inserting into `{}` now appends inside the braces (was: added broken
+    // block-style entries after `}`).
+    assert_eq!(result, "---\n{name: \"my-app\", version: 1.0}");
 }
 
 #[test]
@@ -699,9 +695,6 @@ author: Solo
 
 #[test]
 fn test_set_with_field_order_all_new_fields() {
-    // Note: Starting with "---\n{}" creates INVALID YAML when we add block entries
-    // after the flow mapping. However, as a lossless parser, we preserve this
-    // structure exactly as-is. Other YAML parsers will reject this as invalid.
     let yaml = YamlFile::from_str("---\n{}").unwrap();
 
     if let Some(doc) = yaml.document() {
@@ -716,15 +709,11 @@ fn test_set_with_field_order_all_new_fields() {
     }
 
     let result = yaml.to_string();
+    // Fields land inside the `{}` in the requested order (was: broken
+    // block-style entries appended after `}`).
     assert_eq!(
         result,
-        r#"---
-{}
-name: "test-app"
-version: "0.1.0"
-author: "Tester"
-description: "A test app"
-"#
+        "---\n{name: \"test-app\", version: \"0.1.0\", author: \"Tester\", description: \"A test app\"}"
     );
 }
 

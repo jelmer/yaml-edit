@@ -14,6 +14,60 @@ ast_node!(
     "A key-value pair in a YAML mapping"
 );
 
+/// Where to place a new entry inside a flow-style mapping (`{...}`).
+enum FlowInsertPos {
+    /// At the end (right before the closing `}`).
+    End,
+    /// Right after this existing MAPPING_ENTRY child.
+    After(SyntaxNode),
+    /// Right before this existing MAPPING_ENTRY child.
+    Before(SyntaxNode),
+}
+
+/// Append a trailing NEWLINE token to `entry` if it doesn't already end with
+/// one. Used when a block-style entry is about to have a new sibling appended
+/// after it (its trailing newline separates the two entries visually).
+fn ensure_trailing_newline(entry: &SyntaxNode) {
+    let has_nl = entry
+        .last_token()
+        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
+    if has_nl {
+        return;
+    }
+    let end = entry.children_with_tokens().count();
+    entry.splice_children(
+        end..end,
+        vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
+    );
+}
+
+/// Append a `, ` pair to the end of a MAPPING_ENTRY's VALUE — the separator
+/// between two entries inside a flow mapping. Idempotent: if the value's
+/// trailing token stream already ends with a COMMA, do nothing (avoids
+/// stacking separators when we insert between two existing entries).
+fn append_comma_space_to_value(entry: &SyntaxNode) {
+    let Some(value) = entry.children().find(|n| n.kind() == SyntaxKind::VALUE) else {
+        return;
+    };
+    let ends_with_comma = value
+        .children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .filter(|t| t.kind() != SyntaxKind::WHITESPACE)
+        .last()
+        .is_some_and(|t| t.kind() == SyntaxKind::COMMA);
+    if ends_with_comma {
+        return;
+    }
+    let end = value.children_with_tokens().count();
+    value.splice_children(
+        end..end,
+        vec![
+            fresh_token(SyntaxKind::COMMA, ",").into(),
+            fresh_token(SyntaxKind::WHITESPACE, " ").into(),
+        ],
+    );
+}
+
 /// Build a standalone `SyntaxToken` of `kind` with `text`, ready to splice
 /// into a parent's child list via `splice_children`.
 fn fresh_token(kind: SyntaxKind, text: &str) -> rowan::SyntaxToken<Lang> {
@@ -407,8 +461,10 @@ impl MappingEntry {
             ends_with_newline
         };
 
-        // Every block-style MAPPING_ENTRY ends with NEWLINE (newline ownership model)
-        if !value_ends_with_newline {
+        // Every block-style MAPPING_ENTRY ends with NEWLINE (newline ownership
+        // model). Flow-style entries live inside `{}` on a single line, so
+        // adding a NEWLINE there would break the container.
+        if !flow_context && !value_ends_with_newline {
             builder.token(SyntaxKind::NEWLINE.into(), "\n");
         }
 
@@ -1184,8 +1240,72 @@ impl Mapping {
         self.insert_entry_cst(&new_entry.0);
     }
 
+    /// Insert `new_entry` into a flow-style mapping (`{...}`) at the position
+    /// dictated by `where_at`, wiring up `, ` separators so the entries stay
+    /// syntactically valid inside the braces.
+    fn insert_flow_entry_cst_at(&self, new_entry: &SyntaxNode, where_at: FlowInsertPos) {
+        let brace_pos = self.0.children_with_tokens().position(|c| {
+            c.as_token()
+                .is_some_and(|t| t.kind() == SyntaxKind::RIGHT_BRACE)
+        });
+
+        // Resolve the target index. Anchor by node identity so a subsequent
+        // splice targets the right slot even if we've added separators.
+        let target_idx = match where_at {
+            FlowInsertPos::End => {
+                brace_pos.unwrap_or_else(|| self.0.children_with_tokens().count())
+            }
+            FlowInsertPos::After(ref n) => self
+                .0
+                .children_with_tokens()
+                .position(|c| c.as_node() == Some(n))
+                .map(|i| i + 1)
+                .unwrap_or_else(|| brace_pos.unwrap_or(0)),
+            FlowInsertPos::Before(ref n) => self
+                .0
+                .children_with_tokens()
+                .position(|c| c.as_node() == Some(n))
+                .unwrap_or_else(|| brace_pos.unwrap_or(0)),
+        };
+
+        // If a MAPPING_ENTRY precedes the target position, append `, ` to
+        // its VALUE so the two entries are properly delimited.
+        let prev_entry = self
+            .0
+            .children_with_tokens()
+            .take(target_idx)
+            .filter_map(|c| c.into_node())
+            .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+            .last();
+        if let Some(prev) = prev_entry {
+            append_comma_space_to_value(&prev);
+        }
+        // If a MAPPING_ENTRY follows the target position, append `, ` to
+        // the *new* entry's VALUE so it separates from the next one.
+        let has_following_entry = self.0.children_with_tokens().skip(target_idx).any(|c| {
+            c.as_node()
+                .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+        });
+        if has_following_entry {
+            append_comma_space_to_value(new_entry);
+        }
+
+        self.0
+            .splice_children(target_idx..target_idx, vec![new_entry.clone().into()]);
+    }
+
+    /// Convenience: append to the end of the flow mapping.
+    fn insert_flow_entry_cst(&self, new_entry: &SyntaxNode) {
+        self.insert_flow_entry_cst_at(new_entry, FlowInsertPos::End);
+    }
+
     /// Internal method to insert a new entry at the end (does not check for duplicates)
     fn insert_entry_cst(&self, new_entry: &SyntaxNode) {
+        if self.is_flow_style() {
+            self.insert_flow_entry_cst(new_entry);
+            return;
+        }
+
         // Count children and check if last entry has trailing newline
         let mut count = 0;
         let mut last_mapping_entry: Option<SyntaxNode> = None;
@@ -1571,76 +1691,34 @@ impl Mapping {
             )
             .0;
 
-            // Insert after the target entry, ensuring it has a trailing newline
             if let Some(after_node) = insert_after_node {
-                // Insert after after_node
-                let idx = children
-                    .iter()
-                    .position(|c| c.as_node() == Some(&after_node))
-                    .expect("after_node was found in children earlier");
-
-                // Ensure after_node has a trailing newline
-                let has_trailing_newline = after_node
-                    .last_token()
-                    .map(|t| t.kind() == SyntaxKind::NEWLINE)
-                    .unwrap_or(false);
-
-                if !has_trailing_newline {
-                    // Add trailing newline to after_node
-                    let entry_children_count = after_node.children_with_tokens().count();
-                    let mut nl_builder = GreenNodeBuilder::new();
-                    nl_builder.start_node(SyntaxKind::ROOT.into());
-                    nl_builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                    nl_builder.finish_node();
-                    let nl_node = SyntaxNode::new_root_mut(nl_builder.finish());
-                    if let Some(token) = nl_node.first_token() {
-                        after_node.splice_children(
-                            entry_children_count..entry_children_count,
-                            vec![token.into()],
-                        );
-                    }
+                if flow_context {
+                    self.insert_flow_entry_cst_at(&new_entry, FlowInsertPos::After(after_node));
+                } else {
+                    ensure_trailing_newline(&after_node);
+                    let idx = children
+                        .iter()
+                        .position(|c| c.as_node() == Some(&after_node))
+                        .expect("after_node was found in children earlier");
+                    self.0
+                        .splice_children(idx + 1..idx + 1, vec![new_entry.into()]);
                 }
-
-                // Insert new entry after after_node
-                self.0
-                    .splice_children(idx + 1..idx + 1, vec![new_entry.into()]);
             } else if let Some(before_node) = insert_before_node {
-                // Insert before before_node
-                let idx = children
-                    .iter()
-                    .position(|c| c.as_node() == Some(&before_node))
-                    .expect("before_node was found in children earlier");
-
-                // If there's a previous entry, ensure it has a trailing newline
-                if idx > 0 {
+                if flow_context {
+                    self.insert_flow_entry_cst_at(&new_entry, FlowInsertPos::Before(before_node));
+                } else {
+                    let idx = children
+                        .iter()
+                        .position(|c| c.as_node() == Some(&before_node))
+                        .expect("before_node was found in children earlier");
                     if let Some(prev_entry) = children[..idx].iter().rev().find_map(|c| {
                         c.as_node()
                             .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
                     }) {
-                        let has_trailing_newline = prev_entry
-                            .last_token()
-                            .map(|t| t.kind() == SyntaxKind::NEWLINE)
-                            .unwrap_or(false);
-
-                        if !has_trailing_newline {
-                            let entry_children_count = prev_entry.children_with_tokens().count();
-                            let mut nl_builder = GreenNodeBuilder::new();
-                            nl_builder.start_node(SyntaxKind::ROOT.into());
-                            nl_builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                            nl_builder.finish_node();
-                            let nl_node = SyntaxNode::new_root_mut(nl_builder.finish());
-                            if let Some(token) = nl_node.first_token() {
-                                prev_entry.splice_children(
-                                    entry_children_count..entry_children_count,
-                                    vec![token.into()],
-                                );
-                            }
-                        }
+                        ensure_trailing_newline(prev_entry);
                     }
+                    self.0.splice_children(idx..idx, vec![new_entry.into()]);
                 }
-
-                // Insert new entry before before_node
-                self.0.splice_children(idx..idx, vec![new_entry.into()]);
             } else {
                 // No existing ordered keys, just append using CST
                 self.set_as_yaml(&key, &value);
@@ -2745,6 +2823,28 @@ mod tests {
             reparsed.as_mapping().unwrap().get("foo").unwrap().kind(),
             YamlKind::Mapping
         );
+    }
+
+    /// Setting into a flow-style mapping (`{...}`) inserts entries inside
+    /// the braces with proper `, ` separators — not on new lines after `}`,
+    /// which would produce broken YAML.
+    #[test]
+    fn test_set_into_flow_mapping_inserts_inside_braces() {
+        use crate::yaml::Document;
+
+        let doc = Document::from_str("outer: {}").unwrap();
+        let inner_val = doc.as_mapping().unwrap().get("outer").unwrap();
+        let inner = inner_val.as_mapping().unwrap();
+        inner.set("a", "1");
+        inner.set("b", "2");
+        assert_eq!(doc.to_string().trim(), r#"outer: {a: "1", b: "2"}"#);
+
+        // Update in place stays inside the braces too.
+        let doc = Document::from_str("outer: {a: 1}").unwrap();
+        let inner_val = doc.as_mapping().unwrap().get("outer").unwrap();
+        let inner = inner_val.as_mapping().unwrap();
+        inner.set("a", 42);
+        assert_eq!(doc.to_string().trim(), "outer: {a: 42}");
     }
 
     #[test]

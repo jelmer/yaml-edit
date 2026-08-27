@@ -856,6 +856,13 @@ impl ScalarValue {
             return true;
         }
 
+        // Document terminator (`...`) and start marker (`---`) at
+        // column 0 begin a new stream document, so they must be quoted
+        // when used as a scalar / key.
+        if value.starts_with("...") || value.starts_with("---") {
+            return true;
+        }
+
         // Check for special characters that require quoting
         // : and # need context-aware checking (only ambiguous before whitespace or at end)
         let mut chars = value.chars().peekable();

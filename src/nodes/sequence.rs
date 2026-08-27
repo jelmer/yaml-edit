@@ -33,6 +33,39 @@ fn parent_value_has_leading_indent(seq: &SyntaxNode) -> bool {
     false
 }
 
+/// If `node`'s tail token is a NEWLINE (optionally followed by an
+/// INDENT), return the concatenated text as `Some("\n" | "\n<indent>")`.
+///
+/// Used by [`Sequence::set`] to preserve the trailing separator of a
+/// multi-line value when swapping it out. Walking the CST directly is
+/// safer than `node.text().rfind('\n')` because a NEWLINE nested inside
+/// a block scalar's content would mislead a text-level search.
+fn trailing_newline_indent(node: &SyntaxNode) -> Option<String> {
+    let tokens: Vec<_> = node
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .collect();
+    let mut result = String::new();
+    // Look at the last two tail tokens: [NEWLINE], [NEWLINE, INDENT], or
+    // [.., NEWLINE], [.., NEWLINE, INDENT].
+    let last = tokens.last()?;
+    match last.kind() {
+        SyntaxKind::NEWLINE => {
+            result.push_str(last.text());
+        }
+        SyntaxKind::INDENT => {
+            let prev = tokens.iter().rev().nth(1)?;
+            if prev.kind() != SyntaxKind::NEWLINE {
+                return None;
+            }
+            result.push_str(prev.text());
+            result.push_str(last.text());
+        }
+        _ => return None,
+    }
+    Some(result)
+}
+
 impl Sequence {
     /// Iterate over items in this sequence as raw syntax nodes.
     ///
@@ -278,50 +311,94 @@ impl Sequence {
     pub fn insert(&self, index: usize, value: impl crate::AsYaml) {
         let indentation = self.detect_indentation();
 
-        // Build a newline token
-        let mut newline_builder = GreenNodeBuilder::new();
-        newline_builder.start_node(SyntaxKind::ROOT.into());
-        newline_builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        newline_builder.finish_node();
-        let newline_node = SyntaxNode::new_root_mut(newline_builder.finish());
-        let newline_token = newline_node
-            .first_token()
-            .expect("builder always emits a NEWLINE token");
-
-        // Build the SEQUENCE_ENTRY node using AsYaml
+        // Build the new SEQUENCE_ENTRY, terminated with its own NEWLINE.
+        // Parser convention: the INDENT sits at SEQUENCE level as a
+        // separator before the entry, not inside it.
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
-        builder.token(SyntaxKind::WHITESPACE.into(), &indentation);
         builder.token(SyntaxKind::DASH.into(), "-");
         builder.token(SyntaxKind::WHITESPACE.into(), " ");
-
-        // Build the value content directly using AsYaml
-        value.build_content(&mut builder, 0, false);
-
-        builder.finish_node(); // SEQUENCE_ENTRY
+        let value_ends_with_newline = value.build_content(&mut builder, 0, false);
+        if !value_ends_with_newline {
+            builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        }
+        builder.finish_node();
         let new_entry = SyntaxNode::new_root_mut(builder.finish());
 
-        // Find the position to insert
+        // Build a standalone INDENT to sit before the new entry.
+        let mut indent_builder = GreenNodeBuilder::new();
+        indent_builder.start_node(SyntaxKind::ROOT.into());
+        indent_builder.token(SyntaxKind::INDENT.into(), &indentation);
+        indent_builder.finish_node();
+        let indent_node = SyntaxNode::new_root_mut(indent_builder.finish());
+        let indent_token = indent_node
+            .first_token()
+            .expect("builder always emits an INDENT token");
+
+        // Locate the target position. If we're inserting before an
+        // existing entry, we want to land right at the INDENT that
+        // precedes it (so we don't split the existing NEWLINE-INDENT
+        // pairing that separates entries).
         let children: Vec<_> = self.0.children_with_tokens().collect();
         let mut item_count = 0;
-        let mut insert_pos = children.len();
-
+        let mut target_entry_pos = children.len();
         for (i, child) in children.iter().enumerate() {
-            if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::SEQUENCE_ENTRY {
-                    if item_count == index {
-                        insert_pos = i;
-                        break;
+            let Some(node) = child.as_node() else {
+                continue;
+            };
+            if node.kind() != SyntaxKind::SEQUENCE_ENTRY {
+                continue;
+            }
+            if item_count == index {
+                target_entry_pos = i;
+                break;
+            }
+            item_count += 1;
+        }
+
+        // The INDENT (if any) that separates the target entry from the
+        // previous one is the child immediately before target_entry_pos.
+        // Insert our new entry+INDENT-separator *before* that INDENT, so
+        // the layout stays `NEWLINE INDENT ENTRY INDENT NEW_ENTRY`.
+        let insert_at = if target_entry_pos > 0
+            && children
+                .get(target_entry_pos - 1)
+                .and_then(|c| c.as_token())
+                .is_some_and(|t| t.kind() == SyntaxKind::INDENT)
+        {
+            target_entry_pos - 1
+        } else {
+            target_entry_pos
+        };
+
+        // Appending past the last entry (source doc had no trailing
+        // newline)? Ensure the previous entry has one, otherwise our
+        // new INDENT+ENTRY gets glued onto its tail as `- b  - c`.
+        if target_entry_pos == children.len() {
+            if let Some(prev_entry) = children.iter().rev().find_map(|c| {
+                c.as_node()
+                    .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            }) {
+                let has_nl = prev_entry
+                    .last_token()
+                    .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
+                if !has_nl {
+                    let mut nl_builder = GreenNodeBuilder::new();
+                    nl_builder.start_node(SyntaxKind::ROOT.into());
+                    nl_builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                    nl_builder.finish_node();
+                    let nl_node = SyntaxNode::new_root_mut(nl_builder.finish());
+                    if let Some(nl) = nl_node.first_token() {
+                        let end = prev_entry.children_with_tokens().count();
+                        prev_entry.splice_children(end..end, vec![nl.into()]);
                     }
-                    item_count += 1;
                 }
             }
         }
 
-        // Insert newline and new entry at the position
         self.0.splice_children(
-            insert_pos..insert_pos,
-            vec![newline_token.into(), new_entry.into()],
+            insert_at..insert_at,
+            vec![indent_token.into(), new_entry.into()],
         );
     }
 
@@ -358,13 +435,12 @@ impl Sequence {
                                             | SyntaxKind::TAGGED_NODE
                                     ) =>
                                 {
-                                    // Extract trailing whitespace from the old value node.
-                                    // Multi-line values (e.g. nested mappings) contain a
-                                    // trailing NEWLINE+INDENT that must be preserved.
-                                    let text = n.text().to_string();
-                                    if let Some(last_newline_pos) = text.rfind('\n') {
-                                        trailing_text = Some(text[last_newline_pos..].to_string());
-                                    }
+                                    // Extract trailing NEWLINE(+INDENT) tokens from the old
+                                    // value node's tail. Multi-line values (e.g. nested
+                                    // mappings) end with a NEWLINE and often a following
+                                    // INDENT that must be preserved as the entry's
+                                    // separator from whatever follows.
+                                    trailing_text = trailing_newline_indent(n);
 
                                     // Replace the value node with the new value built from AsYaml
                                     if !value_inserted {
@@ -431,8 +507,28 @@ impl Sequence {
                                 .is_some_and(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
                         });
 
-                        // Remove the entry
+                        // Remove the entry first, then the INDENT that
+                        // separated it from a sibling. Doing them as two
+                        // separate single-child splices sidesteps a
+                        // rowan iteration quirk where a multi-child
+                        // splice can skip elements mid-iteration.
+                        //
+                        // For non-first entries the INDENT sits right
+                        // before this entry (the separator after the
+                        // previous entry's NEWLINE); for the first
+                        // entry any INDENT is a top-level formatting
+                        // one we leave alone.
                         self.0.splice_children(i..(i + 1), vec![]);
+                        if !self.is_flow_style() && i > 0 {
+                            if let Some(prev) = children.get(i - 1) {
+                                if prev
+                                    .as_token()
+                                    .is_some_and(|t| t.kind() == SyntaxKind::INDENT)
+                                {
+                                    self.0.splice_children((i - 1)..i, vec![]);
+                                }
+                            }
+                        }
 
                         if !self.is_flow_style() && is_last && i > 0 {
                             // Removed the last entry - remove trailing newline/indent from new last entry

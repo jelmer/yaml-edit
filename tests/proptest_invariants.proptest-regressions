@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 52ea7af356caacbcc284c8aa2f0d268d3f3dfd0c105f05e873634dc365e8cb0d # shrinks to seed = "a: 1\n", ops = [SetString("a", "")]
+cc 5c7c3c68edae19a737a62d6e3b3a9247b3ab1fd22540ac92c6b04ae58dd649a1 # shrinks to seed = "items:  # a list\n  - one\n  - two  # inline\n", ops = []
+cc eec7a2a430945e67faf4fa7155478e42de4396895b465822329ae76613cfca2b # shrinks to seed = "a: null\n", ops = [InsertAtIndex(0, "b", ""), RemoveNthOccurrence("a", 0)]

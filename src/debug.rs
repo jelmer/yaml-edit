@@ -174,9 +174,13 @@ fn count_nodes(
 ///
 /// Current checks:
 /// - Every MAPPING_ENTRY has exactly one KEY
-/// - Every MAPPING_ENTRY has exactly one COLON
+/// - Every MAPPING_ENTRY has exactly one COLON (zero allowed for
+///   explicit-key entries with implicit-null values)
 /// - Every MAPPING_ENTRY has at most one VALUE
-/// - Block-style MAPPING_ENTRY and SEQUENCE_ENTRY nodes end with NEWLINE
+/// - Block-style MAPPING_ENTRY and SEQUENCE_ENTRY nodes are terminated
+///   by a NEWLINE -- either as their own last token, or via a trailing
+///   comment/newline pair at the parent level, or (for MAPPING_ENTRYs)
+///   an implicit-null value
 /// - No two adjacent INDENT tokens (would render as doubled indentation)
 /// - No two adjacent NEWLINE tokens at the tail of a MAPPING_ENTRY (would
 ///   render as a stray blank line)
@@ -198,12 +202,45 @@ pub fn validate_tree(node: &SyntaxNode) -> Result<(), String> {
     Ok(())
 }
 
+/// In debug builds, walk from `node` to the tree root and run
+/// [`validate_tree`]; panic if it returns an error. In release builds
+/// (any build without `debug_assertions`), do nothing.
+///
+/// Intended as a lightweight cross-check at the tail of internal
+/// mutation methods. Roundtrip is intentionally *not* checked here --
+/// re-parsing on every mutation is too expensive to run under
+/// `debug_assertions` in a busy program.
+#[inline]
+pub fn debug_assert_valid(node: &SyntaxNode) {
+    #[cfg(debug_assertions)]
+    {
+        let mut root = node.clone();
+        while let Some(parent) = root.parent() {
+            root = parent;
+        }
+        if let Err(e) = validate_tree(&root) {
+            panic!(
+                "CST invariant violated after mutation: {e}\ntext: {:?}",
+                root.to_string()
+            );
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = node;
+}
+
 /// Roundtrip check: `parse(node.to_string()).to_string()` must equal
 /// `node.to_string()`, and the re-parse must have no errors.
 ///
 /// This catches classes of bugs where a mutation produces text that
 /// looks acceptable but re-parses into a different structure (e.g.
 /// missing/extra indentation that changes nesting).
+///
+/// Note: this shares our parser's blindspots. If a mutation produces
+/// a text that our parser reads back into the same shape as the
+/// pre-mutation CST, the check passes even when a different YAML
+/// parser would disagree. It is *not* a differential test against an
+/// oracle parser.
 pub fn roundtrip_ok(node: &SyntaxNode) -> Result<(), String> {
     let text = node.to_string();
     let parse = crate::Parse::parse_yaml(&text);
@@ -224,20 +261,6 @@ pub fn roundtrip_ok(node: &SyntaxNode) -> Result<(), String> {
     Ok(())
 }
 
-/// Both [`validate_tree`] and [`roundtrip_ok`]. Panics on the first
-/// violation. Intended as a drop-in `debug_assert!`-style helper.
-///
-/// Use this after non-trivial mutations to catch regressions early.
-#[track_caller]
-pub fn assert_invariants(node: &SyntaxNode) {
-    if let Err(e) = validate_tree(node) {
-        panic!("CST invariant violated: {e}");
-    }
-    if let Err(e) = roundtrip_ok(node) {
-        panic!("CST roundtrip failed: {e}");
-    }
-}
-
 fn validate_node(node: &SyntaxNode) -> Result<(), String> {
     match node.kind() {
         SyntaxKind::MAPPING_ENTRY => {
@@ -252,6 +275,9 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 ));
             }
 
+            // Explicit-key entries (`? key\n : value`) can lack a COLON
+            // when the value is implicit-null (`? key\n`). Otherwise a
+            // MAPPING_ENTRY has exactly one COLON.
             let colons: Vec<_> = node
                 .children_with_tokens()
                 .filter(|c| {
@@ -260,9 +286,20 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                         .unwrap_or(false)
                 })
                 .collect();
-            if colons.len() != 1 {
+            let is_explicit_key = node.children_with_tokens().any(|c| {
+                c.as_token()
+                    .map(|t| t.kind() == SyntaxKind::QUESTION)
+                    .unwrap_or(false)
+            });
+            let expected_colons = if is_explicit_key { 0..=1 } else { 1..=1 };
+            if !expected_colons.contains(&colons.len()) {
                 return Err(format!(
-                    "MAPPING_ENTRY should have exactly 1 COLON, found {}",
+                    "MAPPING_ENTRY should have {} COLON(s), found {}",
+                    if is_explicit_key {
+                        "0 or 1"
+                    } else {
+                        "exactly 1"
+                    },
                     colons.len()
                 ));
             }
@@ -278,29 +315,36 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 ));
             }
 
-            // Check if block-style (not in flow collection)
-            // Block entries should end with NEWLINE
-            if !is_in_flow_collection(node) {
-                if let Some(last_token) = node.last_token() {
-                    if last_token.kind() != SyntaxKind::NEWLINE {
-                        return Err(format!(
-                            "Block-style MAPPING_ENTRY should end with NEWLINE, ends with {:?}",
-                            last_token.kind()
-                        ));
-                    }
-                }
+            // Block MAPPING_ENTRYs must be terminated by a NEWLINE
+            // *somewhere* between themselves and the next sibling entry --
+            // usually inside the entry, sometimes as a trailing
+            // comment+newline at the parent level, sometimes absent
+            // entirely for explicit-key entries with implicit-null
+            // values (`? a\n`).
+            //
+            // The last entry of a mapping is allowed to lack a
+            // terminator: an unterminated source doc (`a: 1\nb: 2`)
+            // is legitimate YAML and must roundtrip.
+            if !is_in_flow_collection(node)
+                && !ends_with_implicit_null(node)
+                && !is_last_entry_in_parent(node)
+                && !entry_is_terminated(node)
+            {
+                return Err(format!(
+                    "Block-style MAPPING_ENTRY not terminated by a NEWLINE (last token: {:?})",
+                    node.last_token().map(|t| t.kind())
+                ));
             }
         }
-        SyntaxKind::SEQUENCE_ENTRY if !is_in_flow_collection(node) => {
-            // Check if block-style
-            if let Some(last_token) = node.last_token() {
-                if last_token.kind() != SyntaxKind::NEWLINE {
-                    return Err(format!(
-                        "Block-style SEQUENCE_ENTRY should end with NEWLINE, ends with {:?}",
-                        last_token.kind()
-                    ));
-                }
-            }
+        SyntaxKind::SEQUENCE_ENTRY
+            if !is_in_flow_collection(node)
+                && !is_last_entry_in_parent(node)
+                && !entry_is_terminated(node) =>
+        {
+            return Err(format!(
+                "Block-style SEQUENCE_ENTRY not terminated by a NEWLINE (last token: {:?})",
+                node.last_token().map(|t| t.kind())
+            ));
         }
         _ => {}
     }
@@ -311,6 +355,68 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Is this entry terminated by a NEWLINE, either as its own last
+/// token or somewhere between itself and the next sibling that starts
+/// meaningful content (another entry, or something that isn't a
+/// trailing WHITESPACE/COMMENT)?
+///
+/// The parser sometimes lifts an entry's terminating NEWLINE out to
+/// the parent when a trailing comment sits between them -- the
+/// SEQUENCE_ENTRY ends with a STRING, then WHITESPACE, COMMENT, and
+/// NEWLINE follow at the SEQUENCE level. That's still a well-formed
+/// terminated entry.
+fn entry_is_terminated(entry: &SyntaxNode) -> bool {
+    if entry
+        .last_token()
+        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
+    {
+        return true;
+    }
+    let mut sib = entry.next_sibling_or_token();
+    while let Some(el) = sib {
+        match el.as_token().map(|t| t.kind()) {
+            Some(SyntaxKind::NEWLINE) => return true,
+            Some(SyntaxKind::WHITESPACE) | Some(SyntaxKind::COMMENT) => {
+                sib = el.next_sibling_or_token();
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Is this entry the last MAPPING_ENTRY / SEQUENCE_ENTRY child of its
+/// parent MAPPING / SEQUENCE?
+///
+/// The last entry of a block collection is allowed to lack a trailing
+/// NEWLINE (an unterminated source doc, `a: 1\nb: 2`, is legitimate
+/// YAML and must roundtrip).
+fn is_last_entry_in_parent(entry: &SyntaxNode) -> bool {
+    let Some(parent) = entry.parent() else {
+        return true;
+    };
+    let kind = entry.kind();
+    !parent
+        .children()
+        .skip_while(|c| c != entry)
+        .skip(1)
+        .any(|c| c.kind() == kind)
+}
+
+/// Does this MAPPING_ENTRY's terminal VALUE hold a zero-width
+/// implicit-null scalar?
+///
+/// The parser emits `SCALAR { NULL "" }` for an entry like `? key\n`
+/// with no explicit value -- the entry's last leaf is that zero-width
+/// NULL, not a NEWLINE. That's valid parser output; the trailing
+/// NEWLINE character lives inside the KEY subtree instead.
+fn ends_with_implicit_null(entry: &SyntaxNode) -> bool {
+    let Some(last_token) = entry.last_token() else {
+        return false;
+    };
+    last_token.kind() == SyntaxKind::NULL && last_token.text().is_empty()
 }
 
 /// Walk every node and reject adjacent INDENT tokens.
@@ -341,13 +447,24 @@ fn validate_no_stacked_indents(node: &SyntaxNode) -> Result<(), String> {
     Ok(())
 }
 
-/// A MAPPING_ENTRY should not end with two adjacent NEWLINE tokens.
+/// An entry should not end with two adjacent NEWLINE tokens as direct
+/// children.
 ///
 /// That shape shows up when a placeholder NEWLINE isn't stripped after a
 /// child collection gains content (see issue #18 and the sequence-under-
 /// empty-key bug). Renders as a spurious blank line.
+///
+/// Only checked for MAPPING_ENTRY and SEQUENCE_ENTRY. Not applied to
+/// MAPPING / SEQUENCE containers themselves: those legitimately carry
+/// bare NEWLINE tokens between entries (blank-line separators are
+/// valid formatting) and at the tail (trailing blank lines are valid
+/// YAML input).
 fn validate_no_double_trailing_newline(node: &SyntaxNode) -> Result<(), String> {
-    if node.kind() == SyntaxKind::MAPPING_ENTRY {
+    let checks_apply = matches!(
+        node.kind(),
+        SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+    );
+    if checks_apply {
         let tokens: Vec<_> = node
             .children_with_tokens()
             .filter_map(|c| c.into_token())
@@ -358,7 +475,8 @@ fn validate_no_double_trailing_newline(node: &SyntaxNode) -> Result<(), String> 
             && tokens[last - 2].kind() == SyntaxKind::NEWLINE
         {
             return Err(format!(
-                "MAPPING_ENTRY {:?} ends with two NEWLINE tokens -- would render as a stray blank line",
+                "{:?} ends with two NEWLINE tokens -- would render as a stray blank line: {:?}",
+                node.kind(),
                 node.text().to_string(),
             ));
         }

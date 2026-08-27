@@ -95,7 +95,6 @@ fn parse_empty_sequence_under_key_then_push() {
 }
 
 #[test]
-#[ignore = "known bug: Sequence::insert into block sequence produces malformed output (no newline between items)"]
 fn sequence_insert_into_existing() {
     let doc = Document::from_str("items:\n  - a\n  - c\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
@@ -104,7 +103,6 @@ fn sequence_insert_into_existing() {
 }
 
 #[test]
-#[ignore = "known bug: Sequence::remove in block sequence leaves stacked INDENTs that re-parse as nesting"]
 fn sequence_remove_middle() {
     let doc = Document::from_str("items:\n  - a\n  - b\n  - c\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
@@ -124,4 +122,30 @@ fn mapping_clear() {
     let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
     doc.as_mapping().unwrap().clear();
     check(&doc);
+}
+
+#[test]
+fn set_path_then_remove_path_collapses_empty_scaffold() {
+    use yaml_edit::path::YamlPath;
+    let doc = Document::from_str("a: 1\nb: 2\nc: 3\n").unwrap();
+    doc.set_path("vvv.vvv.x", "");
+    doc.remove_path("vvv.vvv.x");
+    check(&doc);
+    // The emptied-out innermost mapping collapses into flow-empty `{}`
+    // so path lookups still work (get_path("vvv.vvv") returns the empty
+    // mapping) and the tree is well-formed.
+    assert_eq!(doc.to_string(), "a: 1\nb: 2\nc: 3\nvvv:\n  vvv: {}\n");
+}
+
+#[test]
+fn set_path_after_explicit_key_does_not_leave_blank_line() {
+    use yaml_edit::path::YamlPath;
+    let doc = Document::from_str("keys: !!set\n  ? a\n  ? b\n").unwrap();
+    doc.set_path("a", "");
+    check(&doc);
+    assert!(
+        !doc.to_string().contains("\n\n"),
+        "unexpected blank line: {:?}",
+        doc.to_string()
+    );
 }

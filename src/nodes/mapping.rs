@@ -24,6 +24,102 @@ enum FlowInsertPos {
     Before(SyntaxNode),
 }
 
+/// Does this subtree end with a NEWLINE leaf, or with any run of
+/// zero-width tokens (like an implicit-null NULL "") whose last
+/// non-empty predecessor is a NEWLINE?
+///
+/// `last_token()` alone can't answer this: it returns the deepest tail
+/// leaf, which may be a zero-width NULL sitting after a NEWLINE inside
+/// the same KEY subtree (`? b\n` under a tagged mapping). Walk the
+/// token stream backwards, skipping empty tokens, and check what's
+/// there.
+fn trailing_newline_reachable(node: &SyntaxNode) -> bool {
+    let mut cur = node.last_token();
+    while let Some(tok) = cur {
+        if tok.text().is_empty() {
+            cur = tok.prev_token();
+            continue;
+        }
+        return tok.kind() == SyntaxKind::NEWLINE;
+    }
+    false
+}
+
+/// Does any descendant token of `node` have kind NEWLINE?
+///
+/// Preferred over `node.text().contains('\n')` for structural checks:
+/// avoids materializing the whole subtree as a string, and looks at
+/// the token stream directly.
+fn has_newline_token(node: &SyntaxNode) -> bool {
+    node.descendants_with_tokens().any(|el| {
+        el.as_token()
+            .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
+    })
+}
+
+/// If `mapping` is an empty MAPPING sitting inside a MAPPING_ENTRY's
+/// VALUE, replace the placeholder `NEWLINE INDENT MAPPING` pattern
+/// with an inline flow-empty `MAPPING {}` so the entry renders as
+/// `key: {}` instead of an unterminated `key:\n    ` shape.
+///
+/// Called after `Mapping::remove` empties out a nested mapping. Without
+/// this, `set_path("a.b.c", v)` then `remove_path("a.b.c")` leaves the
+/// intermediate mappings as empty scaffolds with dangling NEWLINE and
+/// INDENT tokens, producing text like `a:\n  b:\n    ` that no parser
+/// will recognise as a well-formed document.
+///
+/// Rendering as `{}` (rather than dropping the VALUE entirely) preserves
+/// path lookups: `get_path("a.b")` still returns an empty mapping, which
+/// matches user expectation for a key whose value has been emptied out
+/// rather than deleted.
+fn collapse_empty_child_mapping_in_parent(mapping: &SyntaxNode) {
+    let Some(value_node) = mapping.parent() else {
+        return;
+    };
+    if value_node.kind() != SyntaxKind::VALUE {
+        return;
+    }
+    let Some(entry_node) = value_node.parent() else {
+        return;
+    };
+    if entry_node.kind() != SyntaxKind::MAPPING_ENTRY {
+        return;
+    }
+    // The VALUE should contain only whitespace/decoration around this
+    // now-empty MAPPING; if there is more (a comment, a sibling scalar,
+    // an anchor, ...) collapsing would lose information.
+    let has_other_content = value_node.children_with_tokens().any(|el| match el {
+        rowan::NodeOrToken::Node(n) => n != *mapping,
+        rowan::NodeOrToken::Token(t) => !matches!(
+            t.kind(),
+            SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE
+        ),
+    });
+    if has_other_content {
+        return;
+    }
+    // Build a fresh flow-empty VALUE: ` {}` (leading space + inline
+    // MAPPING with LEFT_BRACE + RIGHT_BRACE).
+    let mut builder = GreenNodeBuilder::new();
+    builder.start_node(SyntaxKind::VALUE.into());
+    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+    builder.start_node(SyntaxKind::MAPPING.into());
+    builder.token(SyntaxKind::LEFT_BRACE.into(), "{");
+    builder.token(SyntaxKind::RIGHT_BRACE.into(), "}");
+    builder.finish_node();
+    builder.finish_node();
+    let new_value = SyntaxNode::new_root_mut(builder.finish());
+
+    let Some(value_idx) = entry_node
+        .children_with_tokens()
+        .position(|c| c.as_node().is_some_and(|n| *n == value_node))
+    else {
+        return;
+    };
+    entry_node.splice_children(value_idx..(value_idx + 1), vec![new_value.into()]);
+    ensure_trailing_newline(&entry_node);
+}
+
 /// Append a trailing NEWLINE token to `entry` if it doesn't already end with
 /// one. Used when a block-style entry is about to have a new sibling appended
 /// after it (its trailing newline separates the two entries visually).
@@ -651,7 +747,7 @@ impl MappingEntry {
         value_builder.finish_node();
         let new_value_node = SyntaxNode::new_root_mut(value_builder.finish());
 
-        let old_was_block = self.value().is_some_and(|v| v.text().contains_char('\n'));
+        let old_was_block = self.value().is_some_and(|v| has_newline_token(&v));
         if old_was_block {
             self.rebuild_with_inline_value(&new_value_node);
             return;
@@ -1348,19 +1444,15 @@ impl Mapping {
             }
         }
 
-        // Check if the last entry ends with a newline, OR if the mapping itself has a trailing newline
-        // Note: The newline is inside the entry, not a direct child of the mapping
+        // Does the last entry end with a NEWLINE leaf? Checking
+        // last_token().kind() == NEWLINE alone misses the case where
+        // the tail token is a zero-width implicit-null (e.g. `? b\n`
+        // under a tagged mapping) but a real NEWLINE sits just before
+        // it in the token stream. Walk the token tail instead.
         let has_trailing_newline = if let Some(entry) = &last_mapping_entry {
-            entry
-                .last_token()
-                .map(|t| t.kind() == SyntaxKind::NEWLINE)
-                .unwrap_or(false)
+            trailing_newline_reachable(entry)
         } else {
-            // No mapping entries yet - check if mapping itself has a trailing newline token
-            self.0
-                .last_token()
-                .map(|t| t.kind() == SyntaxKind::NEWLINE)
-                .unwrap_or(false)
+            trailing_newline_reachable(&self.0)
         };
 
         let mut new_elements = Vec::new();
@@ -2320,50 +2412,82 @@ impl Mapping {
     pub fn remove(&self, key: impl crate::AsYaml) -> Option<MappingEntry> {
         let children: Vec<_> = self.0.children_with_tokens().collect();
 
-        // Find the entry to remove
         for (i, child) in children.iter().enumerate() {
-            if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                    if let Some(entry) = MappingEntry::cast(node.clone()) {
-                        if entry.key_matches(&key) {
-                            // Check if this is the last MAPPING_ENTRY
-                            let is_last = !children.iter().skip(i + 1).any(|c| {
-                                c.as_node()
-                                    .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-                            });
-
-                            // Remove the entry (detaches its SyntaxNode from the tree)
-                            self.0.splice_children(i..(i + 1), vec![]);
-
-                            if is_last && i > 0 {
-                                // Removed the last entry - remove trailing newline from new last entry
-                                // Find the previous MAPPING_ENTRY
-                                if let Some(prev_entry_node) =
-                                    children[..i].iter().rev().find_map(|c| {
-                                        c.as_node()
-                                            .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-                                    })
-                                {
-                                    // Check if it ends with NEWLINE and remove it
-                                    if let Some(last_token) = prev_entry_node.last_token() {
-                                        if last_token.kind() == SyntaxKind::NEWLINE {
-                                            let entry_children_count =
-                                                prev_entry_node.children_with_tokens().count();
-                                            prev_entry_node.splice_children(
-                                                (entry_children_count - 1)..entry_children_count,
-                                                vec![],
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            return Some(entry);
-                        }
-                    }
-                }
+            let Some(node) = child.as_node() else {
+                continue;
+            };
+            if node.kind() != SyntaxKind::MAPPING_ENTRY {
+                continue;
             }
+            let Some(entry) = MappingEntry::cast(node.clone()) else {
+                continue;
+            };
+            if !entry.key_matches(&key) {
+                continue;
+            }
+            self.remove_entry_at(&children, i, node);
+            return Some(entry);
         }
         None
+    }
+
+    /// Splice the entry at child index `i` out of this mapping, and
+    /// restore the tail-newline convention on the new last entry.
+    ///
+    /// Shared by [`Mapping::remove`] and [`Mapping::remove_nth_occurrence`].
+    /// The rule is: if we're removing the last MAPPING_ENTRY and it had
+    /// no trailing NEWLINE (an unterminated source), strip the trailing
+    /// NEWLINE from the new last entry too so the doc's terminator
+    /// character is preserved. Otherwise leave the previous entry's
+    /// NEWLINE in place.
+    fn remove_entry_at(
+        &self,
+        children: &[rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>],
+        i: usize,
+        removed: &SyntaxNode,
+    ) {
+        let is_last = !children.iter().skip(i + 1).any(|c| {
+            c.as_node()
+                .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+        });
+        let removed_had_newline = removed
+            .last_token()
+            .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
+
+        self.0.splice_children(i..(i + 1), vec![]);
+
+        // If the mapping is now empty and it sits as the value of a
+        // parent MAPPING_ENTRY, collapse the placeholder tokens
+        // (NEWLINE + INDENT + <empty MAPPING>) that wrapped it. The
+        // parent entry becomes a plain implicit-null value: `key:\n`.
+        // Otherwise a caller who does set_path("a.b.c", v) then
+        // remove_path("a.b.c") ends up with a broken CST whose text
+        // trails off with dangling indentation.
+        if !self
+            .0
+            .children()
+            .any(|c| c.kind() == SyntaxKind::MAPPING_ENTRY)
+        {
+            collapse_empty_child_mapping_in_parent(&self.0);
+        }
+
+        if !(is_last && i > 0 && !removed_had_newline) {
+            return;
+        }
+        let Some(prev_entry_node) = children[..i].iter().rev().find_map(|c| {
+            c.as_node()
+                .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+        }) else {
+            return;
+        };
+        if !prev_entry_node
+            .last_token()
+            .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
+        {
+            return;
+        }
+        let count = prev_entry_node.children_with_tokens().count();
+        prev_entry_node.splice_children((count - 1)..count, vec![]);
     }
 
     /// Remove the nth occurrence of a key, returning the removed entry.
@@ -2404,49 +2528,25 @@ impl Mapping {
     pub fn remove_nth_occurrence(&self, key: impl crate::AsYaml, n: usize) -> Option<MappingEntry> {
         let children: Vec<_> = self.0.children_with_tokens().collect();
 
-        // Find the nth entry matching the key
         let mut occurrence_count = 0;
         for (i, child) in children.iter().enumerate() {
-            let node = child.as_node()?;
+            let Some(node) = child.as_node() else {
+                continue;
+            };
             if node.kind() != SyntaxKind::MAPPING_ENTRY {
                 continue;
             }
-
-            let entry = MappingEntry::cast(node.clone())?;
+            let Some(entry) = MappingEntry::cast(node.clone()) else {
+                continue;
+            };
             if !entry.key_matches(&key) {
                 continue;
             }
-
             if occurrence_count != n {
                 occurrence_count += 1;
                 continue;
             }
-
-            // Found the nth occurrence - remove it
-            let is_last = !children.iter().skip(i + 1).any(|c| {
-                c.as_node()
-                    .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-            });
-
-            self.0.splice_children(i..(i + 1), vec![]);
-
-            if is_last && i > 0 {
-                // Removed the last entry - remove trailing newline from new last entry
-                let prev_entry_node = children[..i].iter().rev().find_map(|c| {
-                    c.as_node()
-                        .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-                })?;
-
-                if let Some(last_token) = prev_entry_node.last_token() {
-                    if last_token.kind() == SyntaxKind::NEWLINE {
-                        let entry_children_count = prev_entry_node.children_with_tokens().count();
-                        prev_entry_node.splice_children(
-                            (entry_children_count - 1)..entry_children_count,
-                            vec![],
-                        );
-                    }
-                }
-            }
+            self.remove_entry_at(&children, i, node);
             return Some(entry);
         }
         None

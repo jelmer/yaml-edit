@@ -840,8 +840,12 @@ impl Validator {
     fn check_flow_collection_commas(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // Check first token to see if this is a flow collection - avoid full serialization
         let first_token = node.first_token();
-        let is_flow_mapping = first_token.as_ref().is_some_and(|t| t.text() == "{");
-        let is_flow_sequence = first_token.as_ref().is_some_and(|t| t.text() == "[");
+        let is_flow_mapping = first_token
+            .as_ref()
+            .is_some_and(|t| t.kind() == crate::SyntaxKind::LEFT_BRACE);
+        let is_flow_sequence = first_token
+            .as_ref()
+            .is_some_and(|t| t.kind() == crate::SyntaxKind::LEFT_BRACKET);
 
         if !is_flow_mapping && !is_flow_sequence {
             return;
@@ -1271,21 +1275,24 @@ impl Validator {
         entry_node: &SyntaxNode,
         violations: &mut Vec<Violation>,
     ) {
-        // Find the KEY node within the MAPPING_ENTRY
+        // Find the KEY node within the MAPPING_ENTRY.
         for child in entry_node.children() {
-            if child.kind() == crate::SyntaxKind::KEY {
-                // Check if the key's text contains a newline
-                let key_text = child.text().to_string();
-                if key_text.contains('\n') {
-                    violations.push(Violation {
-                        message: "Implicit key cannot span multiple lines".to_string(),
-                        location: None,
-                        text_range: Some(range_to_text_position(child.text_range())),
-                        severity: Severity::Error,
-                        rule: Rule::Other,
-                    });
-                    return; // Only report once per entry
-                }
+            if child.kind() != crate::SyntaxKind::KEY {
+                continue;
+            }
+            let spans_lines = child.descendants_with_tokens().any(|el| {
+                el.as_token()
+                    .is_some_and(|t| t.kind() == crate::SyntaxKind::NEWLINE)
+            });
+            if spans_lines {
+                violations.push(Violation {
+                    message: "Implicit key cannot span multiple lines".to_string(),
+                    location: None,
+                    text_range: Some(range_to_text_position(child.text_range())),
+                    severity: Severity::Error,
+                    rule: Rule::Other,
+                });
+                return; // Only report once per entry
             }
         }
     }
@@ -1335,7 +1342,9 @@ impl Validator {
 
         // Check if this is a block sequence (not flow)
         let first_token = sequence.first_token();
-        let is_flow_sequence = first_token.as_ref().is_some_and(|t| t.text() == "[");
+        let is_flow_sequence = first_token
+            .as_ref()
+            .is_some_and(|t| t.kind() == crate::SyntaxKind::LEFT_BRACKET);
 
         if is_flow_sequence {
             return; // Flow sequences can be on same line

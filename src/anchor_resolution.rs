@@ -549,22 +549,7 @@ impl std::fmt::Debug for MergedMapping<'_> {
 
 /// Returns `true` if `key` is the YAML merge key `<<`.
 fn is_merge_key(key: &impl crate::AsYaml) -> bool {
-    use crate::as_yaml::YamlNode;
-
-    if let Some(node) = key.as_node() {
-        if let Some(yaml) = YamlNode::from_syntax_peeled(node.clone()) {
-            return node_as_string(&yaml).as_deref() == Some("<<");
-        }
-    }
-
-    // Fallback: build a green node and stringify it. This handles raw `&str`
-    // and similar input types.
-    let mut builder = rowan::GreenNodeBuilder::new();
-    builder.start_node(crate::lex::SyntaxKind::ROOT.into());
-    key.build_content(&mut builder, 0, true);
-    builder.finish_node();
-    let root = crate::yaml::SyntaxNode::new_root(builder.finish());
-    root.text().to_string().trim() == "<<"
+    crate::as_yaml::yaml_eq(key, &"<<")
 }
 
 /// Walk the `<<:` entries of `base` and return the resolved source mappings,

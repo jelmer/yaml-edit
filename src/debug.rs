@@ -202,6 +202,33 @@ pub fn validate_tree(node: &SyntaxNode) -> Result<(), String> {
     Ok(())
 }
 
+/// In debug builds, walk from `node` to the tree root and run
+/// [`validate_tree`]; panic if it returns an error. In release builds
+/// (any build without `debug_assertions`), do nothing.
+///
+/// Intended as a lightweight cross-check at the tail of internal
+/// mutation methods. Roundtrip is intentionally *not* checked here --
+/// re-parsing on every mutation is too expensive to run under
+/// `debug_assertions` in a busy program.
+#[inline]
+pub fn debug_assert_valid(node: &SyntaxNode) {
+    #[cfg(debug_assertions)]
+    {
+        let mut root = node.clone();
+        while let Some(parent) = root.parent() {
+            root = parent;
+        }
+        if let Err(e) = validate_tree(&root) {
+            panic!(
+                "CST invariant violated after mutation: {e}\ntext: {:?}",
+                root.to_string()
+            );
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = node;
+}
+
 /// Roundtrip check: `parse(node.to_string()).to_string()` must equal
 /// `node.to_string()`, and the re-parse must have no errors.
 ///
@@ -294,8 +321,13 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
             // comment+newline at the parent level, sometimes absent
             // entirely for explicit-key entries with implicit-null
             // values (`? a\n`).
+            //
+            // The last entry of a mapping is allowed to lack a
+            // terminator: an unterminated source doc (`a: 1\nb: 2`)
+            // is legitimate YAML and must roundtrip.
             if !is_in_flow_collection(node)
                 && !ends_with_implicit_null(node)
+                && !is_last_entry_in_parent(node)
                 && !entry_is_terminated(node)
             {
                 return Err(format!(
@@ -305,7 +337,9 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
             }
         }
         SyntaxKind::SEQUENCE_ENTRY
-            if !is_in_flow_collection(node) && !entry_is_terminated(node) =>
+            if !is_in_flow_collection(node)
+                && !is_last_entry_in_parent(node)
+                && !entry_is_terminated(node) =>
         {
             return Err(format!(
                 "Block-style SEQUENCE_ENTRY not terminated by a NEWLINE (last token: {:?})",
@@ -353,6 +387,24 @@ fn entry_is_terminated(entry: &SyntaxNode) -> bool {
     false
 }
 
+/// Is this entry the last MAPPING_ENTRY / SEQUENCE_ENTRY child of its
+/// parent MAPPING / SEQUENCE?
+///
+/// The last entry of a block collection is allowed to lack a trailing
+/// NEWLINE (an unterminated source doc, `a: 1\nb: 2`, is legitimate
+/// YAML and must roundtrip).
+fn is_last_entry_in_parent(entry: &SyntaxNode) -> bool {
+    let Some(parent) = entry.parent() else {
+        return true;
+    };
+    let kind = entry.kind();
+    !parent
+        .children()
+        .skip_while(|c| c != entry)
+        .skip(1)
+        .any(|c| c.kind() == kind)
+}
+
 /// Does this MAPPING_ENTRY's terminal VALUE hold a zero-width
 /// implicit-null scalar?
 ///
@@ -395,21 +447,22 @@ fn validate_no_stacked_indents(node: &SyntaxNode) -> Result<(), String> {
     Ok(())
 }
 
-/// An entry or collection node should not end with two adjacent NEWLINE
-/// tokens as direct children.
+/// An entry should not end with two adjacent NEWLINE tokens as direct
+/// children.
 ///
 /// That shape shows up when a placeholder NEWLINE isn't stripped after a
 /// child collection gains content (see issue #18 and the sequence-under-
 /// empty-key bug). Renders as a spurious blank line.
 ///
-/// Checked for MAPPING_ENTRY, SEQUENCE_ENTRY, MAPPING, and SEQUENCE.
+/// Only checked for MAPPING_ENTRY and SEQUENCE_ENTRY. Not applied to
+/// MAPPING / SEQUENCE containers themselves: those legitimately carry
+/// bare NEWLINE tokens between entries (blank-line separators are
+/// valid formatting) and at the tail (trailing blank lines are valid
+/// YAML input).
 fn validate_no_double_trailing_newline(node: &SyntaxNode) -> Result<(), String> {
     let checks_apply = matches!(
         node.kind(),
-        SyntaxKind::MAPPING_ENTRY
-            | SyntaxKind::SEQUENCE_ENTRY
-            | SyntaxKind::MAPPING
-            | SyntaxKind::SEQUENCE
+        SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
     );
     if checks_apply {
         let tokens: Vec<_> = node

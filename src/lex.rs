@@ -320,7 +320,7 @@ fn read_scalar_from<'a>(
 /// `colon_idx` must point at the `:` byte itself; only the char that
 /// follows is inspected. Callers already in flow context should pass a
 /// non-zero `flow_depth`.
-fn is_colon_a_flow_terminator(input: &str, colon_idx: usize, flow_depth: u32) -> bool {
+fn is_colon_a_mapping_indicator(input: &str, colon_idx: usize, flow_depth: u32) -> bool {
     let after = input[colon_idx + 1..].chars().next();
     match after {
         None => true,
@@ -363,7 +363,7 @@ fn read_plain_scalar_body_from<'a>(
         if ch == '\n' || ch == '\r' || ch.is_whitespace() {
             break;
         }
-        if ch == ':' && is_colon_a_flow_terminator(input, idx, flow_depth) {
+        if ch == ':' && is_colon_a_mapping_indicator(input, idx, flow_depth) {
             break;
         }
         if ch == '#' && is_hash_a_comment_start(input, idx) {
@@ -501,7 +501,7 @@ pub fn lex_with_validation_config<'a>(
             '+' => tokens.push((PLUS, &input[token_start..start_idx + 1])),
             ':' => {
                 // Colon at token boundary. It's a mapping indicator when
-                // its lookahead matches is_colon_a_flow_terminator, OR
+                // its lookahead matches is_colon_a_mapping_indicator, OR
                 // when we're in flow context and the immediately
                 // preceding meaningful token was a scalar (i.e., a key
                 // has been laid down and this `:` separates it from the
@@ -515,7 +515,8 @@ pub fn lex_with_validation_config<'a>(
                         .rev()
                         .find(|(k, _)| !matches!(k, WHITESPACE | INDENT | NEWLINE | COMMENT))
                         .is_some_and(|(k, _)| matches!(k, STRING | INT | FLOAT | BOOL | NULL));
-                if preceded_by_scalar || is_colon_a_flow_terminator(input, start_idx, flow_depth) {
+                if preceded_by_scalar || is_colon_a_mapping_indicator(input, start_idx, flow_depth)
+                {
                     tokens.push((COLON, &input[token_start..start_idx + 1]));
                 } else {
                     // This colon starts (or continues) a plain scalar
@@ -528,7 +529,7 @@ pub fn lex_with_validation_config<'a>(
                         if flow_depth > 0 && matches!(next_ch, ',' | ']' | '}') {
                             break;
                         }
-                        if next_ch == ':' && is_colon_a_flow_terminator(input, idx, flow_depth) {
+                        if next_ch == ':' && is_colon_a_mapping_indicator(input, idx, flow_depth) {
                             break;
                         }
                         if next_ch != ':' && is_yaml_special_except(next_ch, ":") {
@@ -934,7 +935,7 @@ pub fn lex_with_validation_config<'a>(
                     // `:` inside a plain scalar breaks the scalar iff
                     // it's a mapping indicator (see helper for rules).
                     if next_ch == ':' {
-                        if is_colon_a_flow_terminator(input, idx, flow_depth) {
+                        if is_colon_a_mapping_indicator(input, idx, flow_depth) {
                             break;
                         }
                         end_idx = idx + next_ch.len_utf8();

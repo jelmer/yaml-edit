@@ -1007,7 +1007,7 @@ pub fn lex_with_validation_config<'a>(
 }
 
 /// Classify a scalar token based on its content
-fn classify_scalar(text: &str) -> SyntaxKind {
+pub(crate) fn classify_scalar(text: &str) -> SyntaxKind {
     use SyntaxKind::*;
 
     // Boolean literals

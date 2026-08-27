@@ -3,14 +3,20 @@
 //! Drive a random mutation sequence against a parsed YAML document and
 //! assert CST invariants after every step.
 //!
-//! The first byte of the fuzz input selects a seed document. The rest
-//! is consumed as an opcode stream: each opcode reads one byte for the
-//! operation kind and small byte-slices for its parameters. After each
-//! mutation, `debug::validate_tree` and `debug::roundtrip_ok` must hold.
+//! The fuzz input is decoded via `arbitrary` into a seed selector and a
+//! Vec<Op>. Each Op maps one-to-one with the proptest opcode set so the
+//! two fuzzers exercise the same surface; the difference is that
+//! libfuzzer runs vastly more iterations under coverage guidance while
+//! proptest supplies shrinking.
+//!
+//! After each mutation, `debug::validate_tree` and `debug::roundtrip_ok`
+//! must hold, and any set-like op is verified to have actually stuck.
 
+use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use rowan::ast::AstNode;
 use std::str::FromStr;
+use yaml_edit::path::YamlPath;
 use yaml_edit::{debug, Document};
 
 const SEEDS: &[&str] = &[
@@ -20,82 +26,176 @@ const SEEDS: &[&str] = &[
     "root:\n  a: 1\n  b: 2\n",
     "mixed:\n  list:\n    - x\n    - y\n  map:\n    k: v\n",
     "existing: value\n",
+    "flow: {a: 1, b: 2}\n",
+    "nums: [1, 2, 3]\n",
+    "mixed_flow: {a: [1, 2], b: {x: y}}\n",
+    "defaults: &d\n  timeout: 30\nprod:\n  <<: *d\n  host: prod\n",
+    "first: &ref value\nsecond: *ref\n",
+    "count: !!int '42'\n",
+    "mapping: !!map\n  a: 1\n  b: 2\n",
+    "literal: |\n  line1\n  line2\n",
+    "folded: >\n  wrapped\n  paragraph\n",
+    "a: 1  # trailing\nb: 2\n",
+    "items:  # a list\n  - one\n  - two  # inline\n",
+    "a: null\n",
+    "a: \"\"\n",
+    "empty_map: {}\nempty_seq: []\n",
 ];
 
-/// Read `n` bytes from `data` (advancing the cursor), decoded as an
-/// ASCII-safe key/value string. Returns `None` if `data` is exhausted.
-fn read_str(data: &mut &[u8], n: usize) -> Option<String> {
-    if data.len() < n {
-        return None;
+/// A short ASCII-safe key or scalar. Wraps the bytes verbatim so
+/// libfuzzer's coverage feedback stays useful (unlike a raw
+/// `% alphabet_size` mapping, which collapses many distinct inputs
+/// into the same string).
+#[derive(Debug)]
+struct SafeStr(String);
+
+impl<'a> Arbitrary<'a> for SafeStr {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let len = u.int_in_range(0u8..=6)? as usize;
+        let mut s = String::with_capacity(len);
+        for _ in 0..len {
+            let b = u.arbitrary::<u8>()?;
+            let ch = match b % 28 {
+                0..=25 => char::from(b'a' + (b % 26)),
+                26 => '_',
+                _ => '0',
+            };
+            s.push(ch);
+        }
+        Ok(SafeStr(s))
     }
-    let (head, tail) = data.split_at(n);
-    *data = tail;
-    let s: String = head
-        .iter()
-        .map(|&b| {
-            let idx = (b as usize) % 27;
-            if idx == 0 {
-                '_'
-            } else {
-                char::from(b'a' + (idx as u8 - 1))
-            }
-        })
-        .collect();
-    Some(s)
 }
 
-fn read_byte(data: &mut &[u8]) -> Option<u8> {
-    let (&first, tail) = data.split_first()?;
-    *data = tail;
-    Some(first)
+#[derive(Debug, Arbitrary)]
+enum Op {
+    // Mapping ops
+    SetString(SafeStr, SafeStr),
+    SetInt(SafeStr, i32),
+    Remove(SafeStr),
+    Rename(SafeStr, SafeStr),
+    Clear,
+    InsertAfter(SafeStr, SafeStr, SafeStr),
+    InsertBefore(SafeStr, SafeStr, SafeStr),
+    InsertAtIndex(u8, SafeStr, SafeStr),
+    MoveAfter(SafeStr, SafeStr, SafeStr),
+    MoveBefore(SafeStr, SafeStr, SafeStr),
+    RemoveNthOccurrence(SafeStr, u8),
+    ReorderFields(Vec<SafeStr>),
+    // Sequence ops
+    SeqPush(SafeStr, SafeStr),
+    SeqPop(SafeStr),
+    SeqInsert(SafeStr, u8, SafeStr),
+    SeqSet(SafeStr, u8, SafeStr),
+    SeqRemove(SafeStr, u8),
+    SeqClear(SafeStr),
+    // Nested mapping ops
+    NestedSet(SafeStr, SafeStr, SafeStr),
+    NestedRemove(SafeStr, SafeStr),
+    // Path-based ops
+    SetPath(Vec<SafeStr>, SafeStr),
+    RemovePath(Vec<SafeStr>),
 }
 
-fn apply_op(doc: &Document, data: &mut &[u8]) -> Option<()> {
-    let mapping = doc.as_mapping()?;
-    let op = read_byte(data)? % 7;
+#[derive(Debug, Arbitrary)]
+struct Input {
+    seed: u8,
+    ops: Vec<Op>,
+}
+
+fn as_str(s: &SafeStr) -> &str {
+    s.0.as_str()
+}
+
+fn dotted(path: &[SafeStr]) -> String {
+    path.iter().map(as_str).collect::<Vec<_>>().join(".")
+}
+
+fn apply(doc: &Document, op: &Op) {
+    let Some(mapping) = doc.as_mapping() else {
+        return;
+    };
     match op {
-        0 => {
-            let k = read_str(data, 3)?;
-            let v = read_str(data, 3)?;
-            mapping.set(k.as_str(), v.as_str());
+        Op::SetString(k, v) => mapping.set(as_str(k), as_str(v)),
+        Op::SetInt(k, v) => mapping.set(as_str(k), *v as i64),
+        Op::Remove(k) => {
+            let _ = mapping.remove(as_str(k));
         }
-        1 => {
-            let k = read_str(data, 3)?;
-            let v = read_byte(data)? as i64;
-            mapping.set(k.as_str(), v);
+        Op::Rename(a, b) => {
+            let _ = mapping.rename_key(as_str(a), as_str(b));
         }
-        2 => {
-            let k = read_str(data, 3)?;
-            let _ = mapping.remove(k.as_str());
+        Op::Clear => mapping.clear(),
+        Op::InsertAfter(a, k, v) => {
+            let _ = mapping.insert_after(as_str(a), as_str(k), as_str(v));
         }
-        3 => {
-            let a = read_str(data, 3)?;
-            let b = read_str(data, 3)?;
-            let _ = mapping.rename_key(a.as_str(), b.as_str());
+        Op::InsertBefore(a, k, v) => {
+            let _ = mapping.insert_before(as_str(a), as_str(k), as_str(v));
         }
-        4 => {
-            let k = read_str(data, 3)?;
-            let v = read_str(data, 3)?;
-            if let Some(seq) = mapping.get_sequence(k.as_str()) {
-                seq.push(v.as_str());
+        Op::InsertAtIndex(i, k, v) => {
+            mapping.insert_at_index(*i as usize, as_str(k), as_str(v));
+        }
+        Op::MoveAfter(a, k, v) => {
+            let _ = mapping.move_after(as_str(a), as_str(k), as_str(v));
+        }
+        Op::MoveBefore(a, k, v) => {
+            let _ = mapping.move_before(as_str(a), as_str(k), as_str(v));
+        }
+        Op::RemoveNthOccurrence(k, n) => {
+            let _ = mapping.remove_nth_occurrence(as_str(k), *n as usize);
+        }
+        Op::ReorderFields(order) => {
+            mapping.reorder_fields(order.iter().map(as_str));
+        }
+        Op::SeqPush(k, v) => {
+            if let Some(seq) = mapping.get_sequence(as_str(k)) {
+                seq.push(as_str(v));
             }
         }
-        5 => {
-            let k = read_str(data, 3)?;
-            if let Some(seq) = mapping.get_sequence(k.as_str()) {
+        Op::SeqPop(k) => {
+            if let Some(seq) = mapping.get_sequence(as_str(k)) {
                 let _ = seq.pop();
             }
         }
-        _ => {
-            let k = read_str(data, 3)?;
-            let ik = read_str(data, 3)?;
-            let v = read_str(data, 3)?;
-            if let Some(nested) = mapping.get_mapping(k.as_str()) {
-                nested.set(ik.as_str(), v.as_str());
+        Op::SeqInsert(k, i, v) => {
+            if let Some(seq) = mapping.get_sequence(as_str(k)) {
+                seq.insert(*i as usize, as_str(v));
+            }
+        }
+        Op::SeqSet(k, i, v) => {
+            if let Some(seq) = mapping.get_sequence(as_str(k)) {
+                let _ = seq.set(*i as usize, as_str(v));
+            }
+        }
+        Op::SeqRemove(k, i) => {
+            if let Some(seq) = mapping.get_sequence(as_str(k)) {
+                let _ = seq.remove(*i as usize);
+            }
+        }
+        Op::SeqClear(k) => {
+            if let Some(seq) = mapping.get_sequence(as_str(k)) {
+                seq.clear();
+            }
+        }
+        Op::NestedSet(k, ik, v) => {
+            if let Some(nested) = mapping.get_mapping(as_str(k)) {
+                nested.set(as_str(ik), as_str(v));
+            }
+        }
+        Op::NestedRemove(k, ik) => {
+            if let Some(nested) = mapping.get_mapping(as_str(k)) {
+                let _ = nested.remove(as_str(ik));
+            }
+        }
+        Op::SetPath(p, v) => {
+            if !p.is_empty() {
+                doc.set_path(&dotted(p), as_str(v));
+            }
+        }
+        Op::RemovePath(p) => {
+            if !p.is_empty() {
+                let _ = doc.remove_path(&dotted(p));
             }
         }
     }
-    Some(())
 }
 
 fn assert_ok(doc: &Document) {
@@ -108,20 +208,16 @@ fn assert_ok(doc: &Document) {
     }
 }
 
-fuzz_target!(|data: &[u8]| {
-    let Some((&seed_byte, mut rest)) = data.split_first() else {
-        return;
-    };
-    let seed = SEEDS[(seed_byte as usize) % SEEDS.len()];
+fuzz_target!(|input: Input| {
+    let seed = SEEDS[(input.seed as usize) % SEEDS.len()];
     let Ok(doc) = Document::from_str(seed) else {
         return;
     };
     assert_ok(&doc);
-    // Bound the mutation count so a single fuzz iteration is quick.
-    for _ in 0..16 {
-        if apply_op(&doc, &mut rest).is_none() {
-            break;
-        }
+    // Bound the mutation count so a single fuzz iteration stays quick;
+    // libfuzzer will still explore long sequences by chaining runs.
+    for op in input.ops.iter().take(32) {
+        apply(&doc, op);
         assert_ok(&doc);
     }
 });

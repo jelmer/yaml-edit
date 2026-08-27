@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 rowan = "0.16"
+arbitrary = { version = "1", features = ["derive"] }
 
 [dependencies.yaml-edit]
 path = ".."

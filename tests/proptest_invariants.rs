@@ -98,14 +98,41 @@ fn op_strat() -> impl Strategy<Value = Op> {
 /// A seed YAML document -- one of a handful of hand-picked shapes that
 /// exercise the common structures without depending on the parser
 /// handling weird inputs.
+///
+/// Kept as valid, parseable YAML -- the goal is to stress the *mutation*
+/// paths against a spread of representative starting shapes (block,
+/// flow, anchors, tags, block scalars, comments), not to fuzz the
+/// parser itself.
 fn seed_strat() -> impl Strategy<Value = &'static str> {
     prop_oneof![
+        // Simple block shapes.
         Just("a: 1\n"),
         Just("a: 1\nb: 2\nc: 3\n"),
         Just("items:\n  - one\n  - two\n"),
         Just("root:\n  a: 1\n  b: 2\n"),
         Just("mixed:\n  list:\n    - x\n    - y\n  map:\n    k: v\n"),
         Just("existing: value\n"),
+        // Flow-style collections.
+        Just("flow: {a: 1, b: 2}\n"),
+        Just("nums: [1, 2, 3]\n"),
+        Just("mixed_flow: {a: [1, 2], b: {x: y}}\n"),
+        // Anchors and aliases.
+        Just("defaults: &d\n  timeout: 30\nprod:\n  <<: *d\n  host: prod\n"),
+        Just("first: &ref value\nsecond: *ref\n"),
+        // Tagged scalars and collections.
+        Just("count: !!int '42'\n"),
+        Just("keys: !!set\n  ? a\n  ? b\n"),
+        Just("mapping: !!map\n  a: 1\n  b: 2\n"),
+        // Block scalars.
+        Just("literal: |\n  line1\n  line2\n"),
+        Just("folded: >\n  wrapped\n  paragraph\n"),
+        // Comments interleaved with data.
+        Just("a: 1  # trailing\nb: 2\n"),
+        Just("items:  # a list\n  - one\n  - two  # inline\n"),
+        // Empty and near-empty.
+        Just("a: null\n"),
+        Just("a: \"\"\n"),
+        Just("empty_map: {}\nempty_seq: []\n"),
     ]
 }
 

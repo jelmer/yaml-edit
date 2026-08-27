@@ -174,9 +174,13 @@ fn count_nodes(
 ///
 /// Current checks:
 /// - Every MAPPING_ENTRY has exactly one KEY
-/// - Every MAPPING_ENTRY has exactly one COLON
+/// - Every MAPPING_ENTRY has exactly one COLON (zero allowed for
+///   explicit-key entries with implicit-null values)
 /// - Every MAPPING_ENTRY has at most one VALUE
-/// - Block-style MAPPING_ENTRY and SEQUENCE_ENTRY nodes end with NEWLINE
+/// - Block-style MAPPING_ENTRY and SEQUENCE_ENTRY nodes are terminated
+///   by a NEWLINE -- either as their own last token, or via a trailing
+///   comment/newline pair at the parent level, or (for MAPPING_ENTRYs)
+///   an implicit-null value
 /// - No two adjacent INDENT tokens (would render as doubled indentation)
 /// - No two adjacent NEWLINE tokens at the tail of a MAPPING_ENTRY (would
 ///   render as a stray blank line)
@@ -252,6 +256,9 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 ));
             }
 
+            // Explicit-key entries (`? key\n : value`) can lack a COLON
+            // when the value is implicit-null (`? key\n`). Otherwise a
+            // MAPPING_ENTRY has exactly one COLON.
             let colons: Vec<_> = node
                 .children_with_tokens()
                 .filter(|c| {
@@ -260,9 +267,20 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                         .unwrap_or(false)
                 })
                 .collect();
-            if colons.len() != 1 {
+            let is_explicit_key = node.children_with_tokens().any(|c| {
+                c.as_token()
+                    .map(|t| t.kind() == SyntaxKind::QUESTION)
+                    .unwrap_or(false)
+            });
+            let expected_colons = if is_explicit_key { 0..=1 } else { 1..=1 };
+            if !expected_colons.contains(&colons.len()) {
                 return Err(format!(
-                    "MAPPING_ENTRY should have exactly 1 COLON, found {}",
+                    "MAPPING_ENTRY should have {} COLON(s), found {}",
+                    if is_explicit_key {
+                        "0 or 1"
+                    } else {
+                        "exactly 1"
+                    },
                     colons.len()
                 ));
             }
@@ -278,29 +296,29 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 ));
             }
 
-            // Check if block-style (not in flow collection)
-            // Block entries should end with NEWLINE
-            if !is_in_flow_collection(node) {
-                if let Some(last_token) = node.last_token() {
-                    if last_token.kind() != SyntaxKind::NEWLINE {
-                        return Err(format!(
-                            "Block-style MAPPING_ENTRY should end with NEWLINE, ends with {:?}",
-                            last_token.kind()
-                        ));
-                    }
-                }
+            // Block MAPPING_ENTRYs must be terminated by a NEWLINE
+            // *somewhere* between themselves and the next sibling entry --
+            // usually inside the entry, sometimes as a trailing
+            // comment+newline at the parent level, sometimes absent
+            // entirely for explicit-key entries with implicit-null
+            // values (`? a\n`).
+            if !is_in_flow_collection(node)
+                && !ends_with_implicit_null(node)
+                && !entry_is_terminated(node)
+            {
+                return Err(format!(
+                    "Block-style MAPPING_ENTRY not terminated by a NEWLINE (last token: {:?})",
+                    node.last_token().map(|t| t.kind())
+                ));
             }
         }
-        SyntaxKind::SEQUENCE_ENTRY if !is_in_flow_collection(node) => {
-            // Check if block-style
-            if let Some(last_token) = node.last_token() {
-                if last_token.kind() != SyntaxKind::NEWLINE {
-                    return Err(format!(
-                        "Block-style SEQUENCE_ENTRY should end with NEWLINE, ends with {:?}",
-                        last_token.kind()
-                    ));
-                }
-            }
+        SyntaxKind::SEQUENCE_ENTRY
+            if !is_in_flow_collection(node) && !entry_is_terminated(node) =>
+        {
+            return Err(format!(
+                "Block-style SEQUENCE_ENTRY not terminated by a NEWLINE (last token: {:?})",
+                node.last_token().map(|t| t.kind())
+            ));
         }
         _ => {}
     }
@@ -311,6 +329,50 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Is this entry terminated by a NEWLINE, either as its own last
+/// token or somewhere between itself and the next sibling that starts
+/// meaningful content (another entry, or something that isn't a
+/// trailing WHITESPACE/COMMENT)?
+///
+/// The parser sometimes lifts an entry's terminating NEWLINE out to
+/// the parent when a trailing comment sits between them -- the
+/// SEQUENCE_ENTRY ends with a STRING, then WHITESPACE, COMMENT, and
+/// NEWLINE follow at the SEQUENCE level. That's still a well-formed
+/// terminated entry.
+fn entry_is_terminated(entry: &SyntaxNode) -> bool {
+    if entry
+        .last_token()
+        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
+    {
+        return true;
+    }
+    let mut sib = entry.next_sibling_or_token();
+    while let Some(el) = sib {
+        match el.as_token().map(|t| t.kind()) {
+            Some(SyntaxKind::NEWLINE) => return true,
+            Some(SyntaxKind::WHITESPACE) | Some(SyntaxKind::COMMENT) => {
+                sib = el.next_sibling_or_token();
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Does this MAPPING_ENTRY's terminal VALUE hold a zero-width
+/// implicit-null scalar?
+///
+/// The parser emits `SCALAR { NULL "" }` for an entry like `? key\n`
+/// with no explicit value -- the entry's last leaf is that zero-width
+/// NULL, not a NEWLINE. That's valid parser output; the trailing
+/// NEWLINE character lives inside the KEY subtree instead.
+fn ends_with_implicit_null(entry: &SyntaxNode) -> bool {
+    let Some(last_token) = entry.last_token() else {
+        return false;
+    };
+    last_token.kind() == SyntaxKind::NULL && last_token.text().is_empty()
 }
 
 /// Walk every node and reject adjacent INDENT tokens.

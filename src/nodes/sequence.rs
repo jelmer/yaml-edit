@@ -77,6 +77,14 @@ impl Sequence {
 }
 
 impl Sequence {
+    /// Create a new empty sequence.
+    pub fn new() -> Self {
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::SEQUENCE.into());
+        builder.finish_node();
+        Sequence(SyntaxNode::new_root_mut(builder.finish()))
+    }
+
     /// Detect the indentation used by entries in this sequence.
     ///
     /// First looks for a top-level INDENT token, then falls back to looking
@@ -528,6 +536,12 @@ impl Sequence {
     pub fn end_position(&self, source_text: &str) -> crate::LineColumn {
         let range = self.byte_range();
         crate::byte_offset_to_line_column(source_text, range.end as usize)
+    }
+}
+
+impl Default for Sequence {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

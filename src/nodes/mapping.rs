@@ -1155,6 +1155,33 @@ impl Mapping {
         self.0.children().filter_map(MappingEntry::cast)
     }
 
+    /// Return an [`Entry`](crate::Entry) view into the entry for `key`.
+    ///
+    /// Mirrors [`std::collections::BTreeMap::entry`], enabling
+    /// insert-or-update patterns while preserving formatting.
+    ///
+    /// ```rust
+    /// use std::str::FromStr;
+    /// use yaml_edit::Document;
+    ///
+    /// let doc = Document::from_str("name: Alice\n").unwrap();
+    /// let mapping = doc.as_mapping().unwrap();
+    ///
+    /// mapping.entry("age").or_insert(30);
+    /// mapping.entry("name").or_insert("Bob");
+    ///
+    /// assert_eq!(doc.to_string(), "name: Alice\nage: 30\n");
+    /// ```
+    pub fn entry<K: crate::AsYaml>(&self, key: K) -> crate::Entry<'_, K> {
+        match self.find_entry_by_key(&key) {
+            Some(entry) => crate::Entry::Occupied(crate::OccupiedEntry {
+                mapping: self,
+                entry,
+            }),
+            None => crate::Entry::Vacant(crate::VacantEntry { mapping: self, key }),
+        }
+    }
+
     /// Find the child index of a mapping entry by its key.
     ///
     /// Returns the index within the mapping's children (including non-entry

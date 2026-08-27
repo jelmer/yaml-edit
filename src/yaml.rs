@@ -32,8 +32,8 @@ pub use crate::nodes::{Lang, SyntaxNode};
 
 // Re-export extracted AST nodes from nodes module
 pub use crate::nodes::{
-    Alias, Comment, Directive, Document, Mapping, MappingEntry, Scalar, ScalarConversionError,
-    Sequence, TaggedNode,
+    Alias, Comment, Directive, Document, Entry, Mapping, MappingEntry, OccupiedEntry, Scalar,
+    ScalarConversionError, Sequence, TaggedNode, VacantEntry,
 };
 
 ast_node!(

@@ -147,6 +147,39 @@ fn set_key_with_dot_and_dash_parses_back() {
 }
 
 #[test]
+fn hash_inside_plain_scalar_stays_in_scalar() {
+    // Per YAML 1.2 4.6.6 `#` starts a comment only when preceded by
+    // whitespace. Inside a plain scalar with no gap the `#` is scalar
+    // content (URLs, fragments, etc.).
+    let doc = Document::from_str("url: http://example.com/foo#bar\n").unwrap();
+    let value = doc.as_mapping().unwrap().get("url").unwrap();
+    let scalar = value.as_scalar().unwrap();
+    assert_eq!(scalar.as_string(), "http://example.com/foo#bar");
+}
+
+#[test]
+fn hash_after_whitespace_is_comment() {
+    // The other side of the rule: with a space, `#` does start a
+    // comment. Make sure we didn't regress.
+    let doc = Document::from_str("url: http://example.com/foo # trailing\n").unwrap();
+    let value = doc.as_mapping().unwrap().get("url").unwrap();
+    let scalar = value.as_scalar().unwrap();
+    assert_eq!(scalar.as_string(), "http://example.com/foo");
+}
+
+#[test]
+fn hash_in_flow_sequence_stays_in_scalar() {
+    // Same rule inside a flow collection.
+    let doc = Document::from_str("- [ http://example.com/foo#bar ]\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    let inner = seq.get(0).unwrap();
+    let inner_seq = inner.as_sequence().unwrap();
+    assert_eq!(inner_seq.len(), 1);
+    let scalar = inner_seq.get(0).unwrap().as_scalar().unwrap().as_string();
+    assert_eq!(scalar, "http://example.com/foo#bar");
+}
+
+#[test]
 fn set_key_with_embedded_colon_parses_back() {
     // A `.`-prefixed key that contains a non-space colon used to be
     // tokenised as three separate STRING tokens (`.d`, `:5`, `-a`);

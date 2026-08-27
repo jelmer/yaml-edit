@@ -333,6 +333,16 @@ fn read_plain_scalar_body_from<'a>(
                 None => break,
                 _ => {}
             }
+        } else if ch == '#' {
+            // `#` starts a comment only when preceded by whitespace.
+            let preceded_by_ws = idx == 0
+                || input[..idx]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_whitespace());
+            if preceded_by_ws {
+                break;
+            }
         } else if ch != '-' && is_yaml_special(ch) {
             break;
         }
@@ -459,36 +469,65 @@ pub fn lex_with_validation_config<'a>(
             }
             '+' => tokens.push((PLUS, &input[token_start..start_idx + 1])),
             ':' => {
-                // In flow collections, colon is always a structural character
-                // In block context, colon only indicates mapping if followed by whitespace
-                if flow_depth > 0 {
-                    // Inside flow collection: always tokenize as COLON
+                // Colon is a mapping indicator when
+                //   (a) followed by whitespace or EOF, or
+                //   (b) in flow context, followed by a flow terminator
+                //       (`,` `]` `}`), or
+                //   (c) in flow context, preceded by a scalar-like token
+                //       (STRING, INT, etc.) rather than at the start of a
+                //       fresh value slot. This distinguishes
+                //         { "foo"\n  :bar }    -- COLON after "foo"
+                //       from
+                //         [ ::vector ]         -- `:` starts a plain scalar
+                let after = chars.peek().map(|(_, ch)| *ch);
+                let last_meaningful = tokens
+                    .iter()
+                    .rev()
+                    .find(|(k, _)| !matches!(k, WHITESPACE | INDENT | NEWLINE | COMMENT))
+                    .map(|(k, _)| *k);
+                let preceded_by_scalar = matches!(
+                    last_meaningful,
+                    Some(STRING) | Some(INT) | Some(FLOAT) | Some(BOOL) | Some(NULL)
+                );
+                let is_indicator = match after {
+                    None => true,
+                    Some(ch) if ch.is_whitespace() => true,
+                    Some(ch) if flow_depth > 0 && matches!(ch, ',' | ']' | '}') => true,
+                    _ if flow_depth > 0 && preceded_by_scalar => true,
+                    _ => false,
+                };
+                if is_indicator {
                     tokens.push((COLON, &input[token_start..start_idx + 1]));
-                } else if let Some((_, next_ch)) = chars.peek() {
-                    if next_ch.is_whitespace() {
-                        // This is a mapping indicator in block context
-                        tokens.push((COLON, &input[token_start..start_idx + 1]));
-                    } else {
-                        // This colon is part of a plain scalar (e.g., URLs, timestamps)
-                        // Continue reading the scalar
-                        let mut end_idx = start_idx + 1;
-                        while let Some((idx, next_ch)) = chars.peek() {
-                            if next_ch.is_whitespace() {
-                                break;
-                            }
-                            // Check for special chars, but exclude colon since we're already in a scalar with colon
-                            if is_yaml_special_except(*next_ch, ":") {
-                                break;
-                            }
-                            end_idx = *idx + next_ch.len_utf8();
-                            chars.next();
-                        }
-                        let text = &input[token_start..end_idx];
-                        tokens.push((classify_scalar(text), text));
-                    }
                 } else {
-                    // Colon at end of input
-                    tokens.push((COLON, &input[token_start..start_idx + 1]));
+                    // This colon starts (or continues) a plain scalar such
+                    // as a URL, `::vector`, or a timestamp.
+                    let mut end_idx = start_idx + 1;
+                    while let Some((idx, next_ch)) = chars.peek().copied() {
+                        if next_ch.is_whitespace() {
+                            break;
+                        }
+                        if flow_depth > 0 && matches!(next_ch, ',' | ']' | '}') {
+                            break;
+                        }
+                        // Colon is scalar content unless followed by
+                        // whitespace or a flow terminator; check with
+                        // the same rule recursively.
+                        if next_ch == ':' {
+                            let after2 = input[idx + next_ch.len_utf8()..].chars().next();
+                            match after2 {
+                                None => break,
+                                Some(c) if c.is_whitespace() => break,
+                                Some(c) if flow_depth > 0 && matches!(c, ',' | ']' | '}') => break,
+                                _ => {}
+                            }
+                        } else if is_yaml_special_except(next_ch, ":") {
+                            break;
+                        }
+                        end_idx = idx + next_ch.len_utf8();
+                        chars.next();
+                    }
+                    let text = &input[token_start..end_idx];
+                    tokens.push((classify_scalar(text), text));
                 }
             }
             '?' => tokens.push((QUESTION, &input[token_start..start_idx + 1])),
@@ -649,7 +688,19 @@ pub fn lex_with_validation_config<'a>(
                 }
             }
 
-            // Comments
+            // Comments.
+            //
+            // Per YAML 1.2 section 6.6, `#` starts a comment only when
+            // preceded by whitespace. At outer-token boundary we have
+            // one of two situations:
+            //   - `#` at the start of the document / a fresh line, or
+            //     after a whitespace/newline: legitimate comment.
+            //   - `#` glued to the tail of a non-whitespace token
+            //     (e.g., `]#foo`): the input violates 4.6.6. The
+            //     validator's check_comment_token_whitespace flags
+            //     this at validation time; the lexer still emits a
+            //     COMMENT token so downstream error reporting has
+            //     something to point at.
             '#' => {
                 let mut end_idx = start_idx + 1;
                 while let Some((idx, ch)) = chars.peek() {
@@ -884,13 +935,31 @@ pub fn lex_with_validation_config<'a>(
                     }
 
                     // Check other special characters (excluding hyphen and colon)
-                    if is_yaml_special_except(next_ch, "-:") {
+                    if is_yaml_special_except(next_ch, "-:#") {
                         // In block context, flow indicators do NOT break scalars
                         if flow_depth == 0 && matches!(next_ch, '[' | ']' | '{' | '}' | ',') {
                             // do nothing, let it be part of the scalar
                         } else {
                             break;
                         }
+                    }
+
+                    // `#` starts a comment only when preceded by
+                    // whitespace (per YAML 1.2 4.6.6). Inside a plain
+                    // scalar with no preceding whitespace, it's part
+                    // of the scalar (e.g., `http://x/#frag`).
+                    if next_ch == '#' {
+                        let preceded_by_ws = idx == 0
+                            || input[..idx]
+                                .chars()
+                                .next_back()
+                                .is_some_and(|c| c.is_whitespace());
+                        if preceded_by_ws {
+                            break;
+                        }
+                        end_idx = idx + next_ch.len_utf8();
+                        chars.next();
+                        continue;
                     }
 
                     // Special case: check if hyphen is a sequence marker

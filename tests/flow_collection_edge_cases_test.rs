@@ -238,7 +238,9 @@ fn test_5t43_double_colon() {
     let first_val = first_map.get("key").expect("Should have 'key'");
     assert_eq!(first_val.as_scalar().unwrap().as_string(), "value");
 
-    // Second element: { "key"::value } - double colon means :value (with trailing space) is the value
+    // Second element: `{ "key"::value }` -- double colon: the second
+    // `:` starts a plain scalar `:value` (per YAML plain-scalar rules,
+    // colon not followed by whitespace is scalar content).
     let second = seq.get(1).expect("Should have second element");
     let second_map = second
         .as_mapping()
@@ -249,7 +251,7 @@ fn test_5t43_double_colon() {
         "Second mapping should have 1 key"
     );
     let second_val = second_map.get("key").expect("Should have 'key'");
-    assert_eq!(second_val.as_scalar().unwrap().as_string(), ":value ");
+    assert_eq!(second_val.as_scalar().unwrap().as_string(), ":value");
 
     // Verify output is valid YAML
     let output = doc.to_string();

@@ -33,6 +33,39 @@ fn parent_value_has_leading_indent(seq: &SyntaxNode) -> bool {
     false
 }
 
+/// If `node`'s tail token is a NEWLINE (optionally followed by an
+/// INDENT), return the concatenated text as `Some("\n" | "\n<indent>")`.
+///
+/// Used by [`Sequence::set`] to preserve the trailing separator of a
+/// multi-line value when swapping it out. Walking the CST directly is
+/// safer than `node.text().rfind('\n')` because a NEWLINE nested inside
+/// a block scalar's content would mislead a text-level search.
+fn trailing_newline_indent(node: &SyntaxNode) -> Option<String> {
+    let tokens: Vec<_> = node
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .collect();
+    let mut result = String::new();
+    // Look at the last two tail tokens: [NEWLINE], [NEWLINE, INDENT], or
+    // [.., NEWLINE], [.., NEWLINE, INDENT].
+    let last = tokens.last()?;
+    match last.kind() {
+        SyntaxKind::NEWLINE => {
+            result.push_str(last.text());
+        }
+        SyntaxKind::INDENT => {
+            let prev = tokens.iter().rev().nth(1)?;
+            if prev.kind() != SyntaxKind::NEWLINE {
+                return None;
+            }
+            result.push_str(prev.text());
+            result.push_str(last.text());
+        }
+        _ => return None,
+    }
+    Some(result)
+}
+
 impl Sequence {
     /// Iterate over items in this sequence as raw syntax nodes.
     ///
@@ -377,13 +410,12 @@ impl Sequence {
                                             | SyntaxKind::TAGGED_NODE
                                     ) =>
                                 {
-                                    // Extract trailing whitespace from the old value node.
-                                    // Multi-line values (e.g. nested mappings) contain a
-                                    // trailing NEWLINE+INDENT that must be preserved.
-                                    let text = n.text().to_string();
-                                    if let Some(last_newline_pos) = text.rfind('\n') {
-                                        trailing_text = Some(text[last_newline_pos..].to_string());
-                                    }
+                                    // Extract trailing NEWLINE(+INDENT) tokens from the old
+                                    // value node's tail. Multi-line values (e.g. nested
+                                    // mappings) end with a NEWLINE and often a following
+                                    // INDENT that must be preserved as the entry's
+                                    // separator from whatever follows.
+                                    trailing_text = trailing_newline_indent(n);
 
                                     // Replace the value node with the new value built from AsYaml
                                     if !value_inserted {

@@ -123,3 +123,12 @@ fn mapping_clear() {
     doc.as_mapping().unwrap().clear();
     check(&doc);
 }
+
+#[test]
+#[ignore = "known bug: set_path on a doc whose last entry is a !!set with explicit-key implicit-null values inserts a stray blank line before the new entry, and later mutations leave the outer MAPPING with a bare trailing NEWLINE child"]
+fn set_path_after_explicit_key_set_leaves_blank_line() {
+    use yaml_edit::path::YamlPath;
+    let doc = Document::from_str("keys: !!set\n  ? a\n  ? b\n").unwrap();
+    doc.set_path("a", "");
+    check(&doc);
+}

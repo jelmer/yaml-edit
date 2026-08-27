@@ -43,6 +43,7 @@ pub struct Violation {
 
 /// Severity level of a spec violation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum Severity {
     /// Error: Strictly invalid per YAML 1.2 spec
     Error,
@@ -52,6 +53,7 @@ pub enum Severity {
 
 /// Specific YAML spec rules that can be violated
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Rule {
     /// Invalid indentation
     InvalidIndentation,

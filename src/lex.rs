@@ -498,7 +498,38 @@ pub fn lex_with_validation_config<'a>(
                     }
                 }
             }
-            '+' => tokens.push((PLUS, &input[token_start..start_idx + 1])),
+            '+' => {
+                // `+` is a chomping indicator when it appears inside a
+                // block-scalar header (`|+`, `|2+`, `>+`, `>2+`). Detect
+                // that by looking at the current line: the last non-digit
+                // byte before this `+` must be `|` or `>`. Otherwise, if
+                // the next char begins a plain-scalar body (digit, `.`,
+                // letter, ...) this `+` is a sign prefix and belongs in
+                // the same scalar token -- so `+.INF` lexes as one FLOAT
+                // rather than PLUS + FLOAT. A bare `+` followed by
+                // whitespace stays PLUS.
+                let line_start = input[..start_idx]
+                    .rfind(['\n', '\r'])
+                    .map(|p| p + 1)
+                    .unwrap_or(0);
+                let is_chomping_indicator = input[line_start..start_idx]
+                    .bytes()
+                    .rev()
+                    .find(|b| !b.is_ascii_digit())
+                    .is_some_and(|b| b == b'|' || b == b'>');
+                let next_starts_scalar = chars
+                    .peek()
+                    .is_some_and(|(_, c)| !c.is_whitespace() && !is_yaml_special(*c));
+                if !is_chomping_indicator && next_starts_scalar {
+                    let text =
+                        read_plain_scalar_body_from(&mut chars, input, start_idx + 1, flow_depth);
+                    let full_text = &input[token_start..token_start + 1 + text.len()];
+                    let token_kind = classify_scalar(full_text);
+                    tokens.push((token_kind, full_text));
+                } else {
+                    tokens.push((PLUS, &input[token_start..start_idx + 1]));
+                }
+            }
             ':' => {
                 // Colon at token boundary. It's a mapping indicator when
                 // its lookahead matches is_colon_a_mapping_indicator, OR

@@ -36,7 +36,7 @@ Alias`) returned by navigation methods like `Mapping::get()`.
 Never rebuild entire nodes. Use rowan's `splice_children` to replace only the
 parts that changed. This preserves formatting on everything else.
 
-When using `splice_children`, collect the new children into a `Vec` first —
+When using `splice_children`, collect the new children into a `Vec` first -
 passing an iterator directly causes borrow conflicts:
 
 ```rust
@@ -83,10 +83,16 @@ Two factory methods with explicit intent:
 
 ```rust
 ScalarValue::string("123")  // always a string, no type detection
-ScalarValue::parse("123")   // detects type → integer
+ScalarValue::parse("123")   // detects type -> integer
 ```
 
 ## Newline ownership
+
+The full set of CST structural invariants lives in the module-level doc
+comment at the top of `src/nodes/mod.rs` -- newline placement, INDENT
+placement, entry termination, flow separators, and the rule against
+whole-node rebuilds. That file is the authoritative spec for anyone
+editing mutation code; the summary here is a quick reference.
 
 YAML newlines are terminators, not separators. Every block-style
 `MAPPING_ENTRY` and `SEQUENCE_ENTRY` owns its trailing `NEWLINE` token as a
@@ -95,11 +101,11 @@ itself.
 
 ```
 MAPPING_ENTRY
-  KEY → SCALAR "host"
+  KEY -> SCALAR "host"
   COLON
   WHITESPACE
-  VALUE → SCALAR "localhost"
-  NEWLINE                      ← owned by the entry
+  VALUE -> SCALAR "localhost"
+  NEWLINE                      <- owned by the entry
 ```
 
 When inserting or replacing entries, check whether the entry already ends with
@@ -128,24 +134,24 @@ config:
 DOCUMENT
   MAPPING
     MAPPING_ENTRY
-      KEY → SCALAR "config"
+      KEY -> SCALAR "config"
       COLON
       VALUE
         NEWLINE
         INDENT "  "
         MAPPING
           MAPPING_ENTRY
-            KEY → SCALAR "host"
+            KEY -> SCALAR "host"
             COLON
             WHITESPACE
-            VALUE → SCALAR "localhost"
+            VALUE -> SCALAR "localhost"
             NEWLINE
           INDENT "  "
           MAPPING_ENTRY
-            KEY → SCALAR "port"
+            KEY -> SCALAR "port"
             COLON
             WHITESPACE
-            VALUE → SCALAR "8080"
+            VALUE -> SCALAR "8080"
             NEWLINE
       NEWLINE
 ```
@@ -182,9 +188,14 @@ kept separate intentionally.
 
 ## Checklist
 
+- Read the CST-invariants doc at the top of `src/nodes/mod.rs` before
+  editing mutation code
 - Use `splice_children` for mutations - don't rebuild nodes
 - Methods take `&self`, not `&mut self` (interior mutability)
 - Test that formatting is preserved (lossless round-trip)
+- Call `debug::validate_tree` + `debug::roundtrip_ok` (or the
+  `assert_cst_ok` / `assert_file_cst_ok` test helpers) after every
+  mutation in new tests
 - Use `debug::print_tree()` to understand the CST structure
 - Use `assert_eq!` with exact expected values in tests
 

@@ -52,7 +52,7 @@ impl Document {
     /// that can work with partial or invalid input.
     ///
     /// Unlike [`Document::from_str`], this does not return an error if the
-    /// input contains multiple documents — only the first document is returned.
+    /// input contains multiple documents - only the first document is returned.
     ///
     /// # Example
     /// ```
@@ -78,7 +78,7 @@ impl Document {
     /// not round-trip to the original text. Use this when you only need the
     /// document's content and are happy to lose stream-scoped presentation.
     ///
-    /// Multiple documents are still rejected — use [`YamlFile::from_str`] for
+    /// Multiple documents are still rejected - use [`YamlFile::from_str`] for
     /// multi-document streams.
     ///
     /// # Example

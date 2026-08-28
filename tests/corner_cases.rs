@@ -46,7 +46,7 @@ fn top_mapping(yaml: &str) -> Mapping {
     parse_ok(yaml).document().unwrap().as_mapping().unwrap()
 }
 
-// ---------- A. Basic multi-word keys ----------
+// A. Basic multi-word keys
 
 #[test]
 fn a1_basic_two_word_key() {
@@ -98,7 +98,7 @@ fn a6_multi_word_scalar_no_colon() {
     assert_eq!(scalar.as_string(), "abc cba");
 }
 
-// ---------- B. Multi-word values ----------
+// B. Multi-word values
 
 #[test]
 fn b1_value_with_spaces() {
@@ -119,7 +119,7 @@ fn b2_value_with_spaces_then_key() {
     assert_eq!(get_scalar(&mapping, "key2"), Some("value".into()));
 }
 
-// ---------- C. Comments ----------
+// C. Comments
 
 #[test]
 fn c1_comment_after_value() {
@@ -152,7 +152,7 @@ fn c3_comment_after_multi_word_value() {
 // lexer, which unconditionally treats `#` as a comment start. This is a
 // pre-existing limitation independent of the multi-word scalar fix.
 
-// ---------- D. Colons in keys ----------
+// D. Colons in keys
 
 #[test]
 fn d1_url_key_with_colon() {
@@ -164,7 +164,7 @@ fn d1_url_key_with_colon() {
     );
 }
 
-// ---------- E. Sequences ----------
+// E. Sequences
 
 #[test]
 fn e1_sequence_item_multi_word() {
@@ -205,7 +205,7 @@ fn e3_nested_multi_word_key() {
     assert_eq!(get_scalar(inner, "foo"), Some("3".into()));
 }
 
-// ---------- F. Flow context ----------
+// F. Flow context
 
 #[test]
 fn f1_flow_mapping_multi_word_key() {
@@ -234,7 +234,7 @@ fn f3_flow_mapping_multi_word_value() {
     assert_eq!(get_scalar(&top_mapping(yaml), "a"), Some("b c d".into()));
 }
 
-// ---------- G. Special characters mid-scalar ----------
+// G. Special characters mid-scalar
 
 #[test]
 fn g1_hyphen_at_word_end_in_key() {
@@ -266,7 +266,7 @@ fn g3_bool_words_as_key() {
     );
 }
 
-// ---------- H. Multi-line ----------
+// H. Multi-line
 
 #[test]
 fn h1_multi_line_plain_scalar_value() {
@@ -280,7 +280,7 @@ fn h1_multi_line_plain_scalar_value() {
     );
 }
 
-// ---------- I. Round-trip stability ----------
+// I. Round-trip stability
 
 #[test]
 fn i1_roundtrip_issue_30_original() {
@@ -293,7 +293,7 @@ fn i2_roundtrip_with_indent_and_comments() {
     assert_roundtrip(yaml);
 }
 
-// ---------- J. Setter round-trip ----------
+// J. Setter round-trip
 
 #[test]
 fn j1_read_then_serialize() {

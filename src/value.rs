@@ -7,7 +7,7 @@ use std::fmt;
 /// Represents any YAML value - scalar, sequence, mapping, or special collections.
 ///
 /// **Deprecated:** Prefer using syntax tree types (`Mapping`, `Sequence`,
-/// `Scalar`) and the `AsYaml` trait instead — they preserve formatting and
+/// `Scalar`) and the `AsYaml` trait instead - they preserve formatting and
 /// work with the CST directly. `YamlValue` loses all formatting information.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum YamlValue {

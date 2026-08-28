@@ -4,12 +4,12 @@
 //! [`MappingView`] abstracts over "anything that looks like a YAML mapping
 //! for the purposes of reading it." It lets you write code that works
 //! generically against both the underlying CST [`Mapping`] and the
-//! alias/merge-key–resolving [`MergedMapping`](crate::anchor_resolution::MergedMapping)
+//! alias/merge-key-resolving [`MergedMapping`](crate::anchor_resolution::MergedMapping)
 //! view.
 //!
 //! Iterators are returned as boxed trait objects so the trait stays
 //! object-safe and works on the crate's MSRV. Most uses pay one heap
-//! allocation per iteration — negligible for an editing library.
+//! allocation per iteration - negligible for an editing library.
 //!
 //! # Example
 //!
@@ -48,7 +48,7 @@
 use crate::as_yaml::YamlNode;
 
 /// A read-only "view" of a YAML mapping, implemented by both the CST
-/// [`Mapping`](crate::yaml::Mapping) and the alias/merge-key–resolving
+/// [`Mapping`](crate::yaml::Mapping) and the alias/merge-key-resolving
 /// [`MergedMapping`](crate::anchor_resolution::MergedMapping).
 ///
 /// See the [module docs](self) for an overview and example.
@@ -137,7 +137,7 @@ mod tests {
     use crate::Document;
     use std::str::FromStr;
 
-    /// A function generic over `impl MappingView` — proves the trait is
+    /// A function generic over `impl MappingView` - proves the trait is
     /// usable as an abstraction over both `Mapping` and `MergedMapping`.
     fn collect_keys<M: MappingView + ?Sized>(view: &M) -> Vec<String> {
         view.keys()

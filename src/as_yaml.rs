@@ -6,11 +6,11 @@
 //!
 //! - **CST types** ([`Document`](crate::yaml::Document), [`Mapping`](crate::yaml::Mapping),
 //!   [`Sequence`](crate::nodes::sequence::Sequence), [`Scalar`](crate::yaml::Scalar),
-//!   [`TaggedNode`](crate::yaml::TaggedNode)) — format-preserving wrappers around the
+//!   [`TaggedNode`](crate::yaml::TaggedNode)) - format-preserving wrappers around the
 //!   concrete syntax tree.  Parse a file to get these; navigate and mutate them in place.
 //!
-//! - **Input types** (`&str`, `i64`, `bool`, [`MappingBuilder`](crate::builder::MappingBuilder), …)
-//!   — supply these to mutation methods such as
+//! - **Input types** (`&str`, `i64`, `bool`, [`MappingBuilder`](crate::builder::MappingBuilder), …):
+//!   supply these to mutation methods such as
 //!   [`Mapping::set`](crate::yaml::Mapping::set).  They implement [`AsYaml`] but are
 //!   never returned from navigation methods.
 //!
@@ -117,7 +117,7 @@ where
         };
     }
 
-    // Left side is raw — try the right side's node instead (symmetric).
+    // Left side is raw - try the right side's node instead (symmetric).
     if let Some(node) = b.as_node() {
         use crate::lex::SyntaxKind;
         return match node.kind() {
@@ -135,7 +135,7 @@ where
         };
     }
 
-    // Both sides are raw — compare by kind, then decoded scalar string.
+    // Both sides are raw - compare by kind, then decoded scalar string.
     if a.kind() != b.kind() {
         return false;
     }
@@ -256,7 +256,7 @@ fn mapping_eq_rhs<B: AsYaml + ?Sized>(lhs: &Mapping, rhs: &B) -> bool {
     if lhs_pairs.len() != rhs_pairs.len() {
         return false;
     }
-    // pairs() yields raw KEY/VALUE wrapper nodes — peel them before comparing.
+    // pairs() yields raw KEY/VALUE wrapper nodes - peel them before comparing.
     lhs_pairs
         .iter()
         .zip(rhs_pairs.iter())
@@ -556,7 +556,7 @@ impl AsYaml for YamlNode {
     }
 }
 
-/// `yaml_node == "some_string"` — compares the node's semantic value.
+/// `yaml_node == "some_string"` - compares the node's semantic value.
 impl PartialEq<str> for YamlNode {
     fn eq(&self, other: &str) -> bool {
         yaml_eq(self, &other)
@@ -584,8 +584,8 @@ impl fmt::Display for YamlNode {
 /// Blanket impl: any reference to an `AsYaml` type also implements `AsYaml`.
 ///
 /// The `?Sized` bound makes this work for trait objects (`&dyn AsYaml`),
-/// which lets [`MappingView`](crate::MappingView) — whose methods take
-/// `&dyn AsYaml` — forward keys to inherent methods that take
+/// which lets [`MappingView`](crate::MappingView) - whose methods take
+/// `&dyn AsYaml` - forward keys to inherent methods that take
 /// `impl AsYaml`.
 impl<T: AsYaml + ?Sized> AsYaml for &T {
     fn as_node(&self) -> Option<&SyntaxNode> {

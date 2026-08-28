@@ -2075,9 +2075,7 @@ question: "? key""#;
     assert_eq!(output, yaml);
 }
 
-// ========================================
-// Error Recovery and Robustness
-// ========================================
+// Error recovery
 
 #[test]
 fn test_handles_windows_line_endings() {

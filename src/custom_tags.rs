@@ -179,7 +179,7 @@ use std::sync::{Arc, RwLock};
 /// All handlers work with `YamlValue` for serialization/deserialization,
 /// ensuring type safety and proper error handling.
 ///
-/// Primarily for internal use — custom tag handlers are typically registered through
+/// Primarily for internal use - custom tag handlers are typically registered through
 /// the tag registry system rather than implemented directly.
 pub trait CustomTagHandler: Send + Sync {
     /// Convert a YamlValue to the custom type representation

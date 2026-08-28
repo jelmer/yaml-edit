@@ -4,7 +4,7 @@ This document covers the architecture and key patterns in `yaml-edit`.
 
 ## Lossless editing
 
-The primary goal is lossless editing — modifying YAML files while preserving
+The primary goal is lossless editing - modifying YAML files while preserving
 formatting, comments, whitespace, quote styles, key ordering, and
 anchors/aliases. This distinguishes `yaml-edit` from libraries that parse into
 a data model and re-serialize, losing formatting.
@@ -161,28 +161,28 @@ kept separate intentionally.
 
 ## Code organization
 
-- `lib.rs` — public API re-exports
-- `yaml.rs` — core types, `YamlFile`, parser
-- `lex.rs` — lexer, token types (`SyntaxKind`)
-- `parse.rs` — parse result types
-- `nodes/` — AST node wrappers (`Document`, `Mapping`, `Sequence`, …)
-- `as_yaml.rs` — `AsYaml` trait, `YamlNode` enum, tagged collection types
-- `value.rs` — `YamlValue` (deprecated)
-- `scalar.rs` — `ScalarValue` and type detection
-- `builder.rs` — fluent builder API
-- `path.rs` — dot-separated path access
-- `error.rs` — error types
-- `schema.rs` — schema validation (Failsafe, JSON, Core)
-- `custom_tags.rs` — custom tag registry
-- `visitor.rs` — visitor pattern traversal
-- `anchor_resolution.rs` — anchor/alias resolution
-- `error_recovery.rs` — parse error recovery
-- `validator.rs` — YAML spec validation
-- `debug.rs` — tree visualization
+- `lib.rs` - public API re-exports
+- `yaml.rs` - core types, `YamlFile`, parser
+- `lex.rs` - lexer, token types (`SyntaxKind`)
+- `parse.rs` - parse result types
+- `nodes/` - AST node wrappers (`Document`, `Mapping`, `Sequence`, …)
+- `as_yaml.rs` - `AsYaml` trait, `YamlNode` enum, tagged collection types
+- `value.rs` - `YamlValue` (deprecated)
+- `scalar.rs` - `ScalarValue` and type detection
+- `builder.rs` - fluent builder API
+- `path.rs` - dot-separated path access
+- `error.rs` - error types
+- `schema.rs` - schema validation (Failsafe, JSON, Core)
+- `custom_tags.rs` - custom tag registry
+- `visitor.rs` - visitor pattern traversal
+- `anchor_resolution.rs` - anchor/alias resolution
+- `error_recovery.rs` - parse error recovery
+- `validator.rs` - YAML spec validation
+- `debug.rs` - tree visualization
 
 ## Checklist
 
-- Use `splice_children` for mutations — don't rebuild nodes
+- Use `splice_children` for mutations - don't rebuild nodes
 - Methods take `&self`, not `&mut self` (interior mutability)
 - Test that formatting is preserved (lossless round-trip)
 - Use `debug::print_tree()` to understand the CST structure

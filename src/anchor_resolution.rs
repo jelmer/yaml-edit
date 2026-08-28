@@ -206,7 +206,7 @@ impl DocumentResolvedExt for crate::yaml::Document {
             }
         }
 
-        // Check for merge keys — must use CST Mapping, not YamlValue::Mapping (BTreeMap)
+        // Check for merge keys - must use CST Mapping, not YamlValue::Mapping (BTreeMap)
         if let Some(node) = mapping.get_node(&key) {
             if let Some(result_mapping) = crate::yaml::Mapping::cast(node) {
                 if has_merge_keys(&result_mapping) {
@@ -367,7 +367,7 @@ fn merge_from_alias(
 ///
 /// `MergedMapping` is a lightweight, zero-copy view: it borrows the underlying
 /// mapping and an [`AnchorRegistry`]. The underlying syntax tree is not
-/// modified — every lookup walks the CST on demand and resolves aliases via
+/// modified - every lookup walks the CST on demand and resolves aliases via
 /// the registry.
 ///
 /// Direct keys in the base mapping always shadow keys contributed by merge
@@ -440,7 +440,7 @@ impl<'a> MergedMapping<'a> {
     ///
     /// Direct entries in the base mapping take precedence over keys
     /// contributed by `<<:` merge sources. The synthetic `<<` key itself is
-    /// hidden — looking it up returns `None`.
+    /// hidden - looking it up returns `None`.
     ///
     /// If the matched value is an alias (`*name`), the resolved target node
     /// is returned. If no such anchor is defined, the alias is left
@@ -805,7 +805,7 @@ m:
 
         // x only in a
         assert_eq!(m.get("x").unwrap().to_i64(), Some(1));
-        // y in both — a wins (first listed)
+        // y in both - a wins (first listed)
         assert_eq!(m.get("y").unwrap().to_i64(), Some(1));
         // z only in b
         assert_eq!(m.get("z").unwrap().to_i64(), Some(2));

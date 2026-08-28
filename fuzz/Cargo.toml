@@ -50,3 +50,10 @@ path = "fuzz_targets/cross_parser_saphyr.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "quoted_scalar_saphyr"
+path = "fuzz_targets/quoted_scalar_saphyr.rs"
+test = false
+doc = false
+bench = false

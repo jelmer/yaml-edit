@@ -1042,44 +1042,19 @@ pub fn lex_with_validation_config<'a>(
     (tokens, whitespace_errors)
 }
 
-/// Classify a scalar token based on its content
-pub(crate) fn classify_scalar(text: &str) -> SyntaxKind {
-    use SyntaxKind::*;
-
-    // Boolean literals
-    match text {
-        "true" | "false" | "True" | "False" | "TRUE" | "FALSE" => return BOOL,
-        "null" | "Null" | "NULL" | "~" => return NULL,
-        _ => {}
+/// Map a plain-scalar's semantic classification onto the concrete
+/// [`SyntaxKind`] the tokenizer emits. The classification itself lives
+/// in [`ScalarValue::classify_plain`](crate::ScalarValue::classify_plain);
+/// this function only translates enum variants.
+fn classify_scalar(text: &str) -> SyntaxKind {
+    use crate::CoreScalarType;
+    match crate::scalar::ScalarValue::classify_plain(text) {
+        CoreScalarType::Null => SyntaxKind::NULL,
+        CoreScalarType::Boolean => SyntaxKind::BOOL,
+        CoreScalarType::Integer => SyntaxKind::INT,
+        CoreScalarType::Float => SyntaxKind::FLOAT,
+        CoreScalarType::String => SyntaxKind::STRING,
     }
-
-    // Try to parse as integer (handles 0x, 0o, 0b, octal, decimal)
-    if crate::scalar::ScalarValue::parse_integer(text).is_some() {
-        return INT;
-    }
-
-    // YAML special float values (infinity and NaN)
-    // Note: Must check these before general f64 parsing because Rust's parse::<f64>()
-    // accepts "infinity" and "inf" which should only be treated as floats in YAML
-    // when written as ".inf", not as bare "infinity" or "inf"
-    match text {
-        ".inf" | ".Inf" | ".INF" | "+.inf" | "+.Inf" | "+.INF" | "-.inf" | "-.Inf" | "-.INF"
-        | ".nan" | ".NaN" | ".NAN" => return FLOAT,
-        // Rust's parse::<f64>() accepts "infinity" and "inf", but in YAML these
-        // should be treated as strings unless written as ".inf"
-        "infinity" | "inf" | "Infinity" | "Inf" | "INFINITY" | "INF" | "-infinity" | "-inf"
-        | "-Infinity" | "-Inf" | "-INFINITY" | "-INF" | "+infinity" | "+inf" | "+Infinity"
-        | "+Inf" | "+INFINITY" | "+INF" | "nan" | "NaN" | "NAN" => return STRING,
-        _ => {}
-    }
-
-    // Try to parse as float
-    if text.parse::<f64>().is_ok() {
-        return FLOAT;
-    }
-
-    // Everything else is a string
-    STRING
 }
 
 /// Common set of YAML special characters

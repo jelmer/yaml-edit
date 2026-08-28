@@ -1065,8 +1065,12 @@ quote2: 'say "hi"'
         let quote1 = mapping.get("quote1").unwrap();
         let quote2 = mapping.get("quote2").unwrap();
 
-        // Escaped newlines should equal actual newlines
-        assert!(yaml_eq(&newline1, &newline2));
+        // Per YAML 1.2 §7.3.2, an escaped `\n` is a literal newline
+        // while a raw line-break in a double-quoted scalar folds to a
+        // space. So `"line1\nline2"` and the raw multi-line version
+        // are NOT equal.
+        assert!(!yaml_eq(&newline1, &newline2));
+        assert!(yaml_eq(&newline2, &"line1 line2"));
 
         // Escaped tabs should equal actual tabs
         assert!(yaml_eq(&tab1, &tab2));
@@ -1352,21 +1356,18 @@ mapping:
 
     #[test]
     fn test_yaml_eq_line_folding_escapes() {
+        // Per YAML 1.2 §7.3.2, `\<line-break>` is a line-continuation
+        // that emits nothing (and drops any leading whitespace on the
+        // continuation line, treating it as indentation). So
+        // `"line1\<nl> line2"` decodes to `"line1line2"` -- no space.
         let yaml = r#"
-folded1: "line1\
+folded: "line1\
  line2"
-folded2: "line1 line2"
 "#;
-
         let doc = Document::from_str(yaml).unwrap();
         let mapping = doc.as_mapping().unwrap();
-
-        let folded1 = mapping.get("folded1").unwrap();
-        let folded2 = mapping.get("folded2").unwrap();
-
-        // Per YAML spec, backslash at end of line folds to a space
-        assert!(yaml_eq(&folded1, &folded2));
-        assert!(yaml_eq(&folded1, &"line1 line2"));
+        let folded = mapping.get("folded").unwrap();
+        assert!(yaml_eq(&folded, &"line1line2"));
     }
 
     #[test]

@@ -1,13 +1,300 @@
 use super::{Lang, SyntaxNode};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
-use crate::scalar::ScalarValue;
 use crate::yaml::ValueNode;
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
 use std::fmt;
 
 ast_node!(Scalar, SCALAR, "A YAML scalar value");
+
+/// Emit the YAML 1.2 §6.5 fold decision for a run of `n` line breaks:
+///   * n = 0: nothing (no break happened).
+///   * n = 1: a single space (single break folds).
+///   * n >= 2: n - 1 literal newlines (blank lines preserved as `\n`).
+fn push_fold(out: &mut String, n: usize) {
+    match n {
+        0 => {}
+        1 => out.push(' '),
+        _ => {
+            for _ in 1..n {
+                out.push('\n');
+            }
+        }
+    }
+}
+
+/// State for the fold logic in `decode_double_quoted`.
+///
+/// A source line either has "no break yet on this run" (`Inline`, with
+/// possibly-pending same-line whitespace that we might yet trim), or is
+/// mid-break-run (`InBreakRun`, tracking whether the run started with a
+/// raw newline and how many extra breaks came after).
+///
+/// The invariant "extras and raw-leading only matter mid-run" is
+/// encoded in the enum shape, so we cannot represent an
+/// `extras > 0, in_break_run = false` combination that the previous
+/// separate-locals version could accidentally reach.
+enum RunState {
+    Inline { pending_ws: String },
+    InBreakRun { raw_leading: bool, extras: usize },
+}
+
+impl RunState {
+    fn new() -> Self {
+        Self::Inline {
+            pending_ws: String::new(),
+        }
+    }
+
+    /// A break run led by a raw newline. Its fold decision includes
+    /// the leading break's contribution.
+    fn raw_led() -> Self {
+        Self::InBreakRun {
+            raw_leading: true,
+            extras: 0,
+        }
+    }
+
+    /// A break run led by a `\<line-break>` escape. Its fold decision
+    /// counts only subsequent breaks; the escape's own break is
+    /// silently swallowed.
+    fn escape_led() -> Self {
+        Self::InBreakRun {
+            raw_leading: false,
+            extras: 0,
+        }
+    }
+
+    /// Emit the fold decision for whatever state we're in, then reset
+    /// to `Inline` with empty pending whitespace.
+    ///
+    /// The break count fed to `push_fold` is the number of physical
+    /// line breaks in the run, EXCEPT that an escape-led run with no
+    /// other breaks emits nothing (the leading `\<line-break>` cancels
+    /// the fold-to-space that a raw leading break would produce).
+    fn flush(&mut self, out: &mut String) {
+        match self {
+            Self::Inline { pending_ws } => {
+                out.push_str(pending_ws);
+            }
+            Self::InBreakRun {
+                raw_leading,
+                extras,
+            } => {
+                // A raw leading break always counts; an escape-led
+                // run only counts once there are other breaks after
+                // it, so `\<newline>` alone produces nothing.
+                let leading_counts = *raw_leading || *extras > 0;
+                let breaks = if leading_counts { *extras + 1 } else { 0 };
+                push_fold(out, breaks);
+            }
+        }
+        *self = Self::new();
+    }
+}
+
+/// Decode a double-quoted scalar body in one pass, resolving escape
+/// sequences and folding raw line breaks together.
+///
+/// Follows YAML 1.2.2 §6.5 (flow folding) and §7.3.2 (double-quoted
+/// escapes). A break run is any contiguous sequence of blanks, raw
+/// line breaks, and `\<line-break>` escapes. The fold output depends
+/// on whether the run started with a raw newline and how many extras
+/// followed:
+///
+///   * no leading raw break, no extras => nothing (used when a run
+///     starts with `\<line-break>` and contains no further breaks --
+///     the escape swallows the fold-to-space contribution),
+///   * leading raw break, no extras => one space,
+///   * any N extras => N literal newlines.
+///
+/// `\<line-break>` participates in the fold like a raw break BUT it
+/// does not set `raw_leading`, so a `\<line-break>` at the start of a
+/// run drops the fold-to-space and later escapes just count as extras.
+/// This matches saphyr's scanner, which is validated against the
+/// yaml-test-suite (Spec Example 7.5).
+fn decode_double_quoted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut state = RunState::new();
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\n' => match &mut state {
+                RunState::Inline { .. } => state = RunState::raw_led(),
+                RunState::InBreakRun { extras, .. } => *extras += 1,
+            },
+            ' ' | '\t' => match &mut state {
+                RunState::InBreakRun { .. } => {
+                    // Whitespace inside a break run is inter-break
+                    // indent; stripped, not content.
+                }
+                RunState::Inline { pending_ws } => {
+                    pending_ws.push(ch);
+                }
+            },
+            '\\' if matches!(chars.peek(), Some('\n')) => {
+                // `\<line-break>` closes any current run (so its
+                // fold decision uses the raw breaks it collected)
+                // and starts a fresh run with `raw_leading = false`
+                // so the escape's break contributes nothing on its
+                // own. Preceding same-line whitespace is preserved
+                // because `flush` on `Inline` writes `pending_ws`
+                // out verbatim (the `\` protects it from fold-time
+                // trimming).
+                state.flush(&mut out);
+                chars.next(); // consume '\n'
+                state = RunState::escape_led();
+            }
+            '\\' => {
+                state.flush(&mut out);
+                decode_one_escape(&mut chars, &mut out);
+            }
+            _ => {
+                state.flush(&mut out);
+                out.push(ch);
+            }
+        }
+    }
+    state.flush(&mut out);
+    out
+}
+
+/// Handle a single `\<x>` escape sequence. `chars` is positioned just
+/// after the backslash; consumes the escape body and pushes the
+/// decoded characters to `out`. Unknown escapes are passed through
+/// verbatim to match the previous decoder's behavior.
+fn decode_one_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, out: &mut String) {
+    let Some(escaped) = chars.next() else {
+        out.push('\\');
+        return;
+    };
+    match escaped {
+        // YAML 1.2.2 Table 5.7 escape sequences.
+        '0' => out.push('\0'),
+        'a' => out.push('\x07'),
+        'b' => out.push('\x08'),
+        't' | '\t' => out.push('\t'),
+        'n' => out.push('\n'),
+        'v' => out.push('\x0B'),
+        'f' => out.push('\x0C'),
+        'r' => out.push('\r'),
+        'e' => out.push('\x1B'),
+        ' ' => out.push(' '),
+        '"' => out.push('"'),
+        '/' => out.push('/'),
+        '\\' => out.push('\\'),
+        'N' => out.push('\u{85}'),   // next line
+        '_' => out.push('\u{a0}'),   // non-breaking space
+        'L' => out.push('\u{2028}'), // line separator
+        'P' => out.push('\u{2029}'), // paragraph separator
+        'x' => decode_hex_escape(chars, out, 2, 'x'),
+        'u' => decode_hex_escape(chars, out, 4, 'u'),
+        'U' => decode_hex_escape(chars, out, 8, 'U'),
+        // Anything else is an error per spec. Preserve both the
+        // backslash and the following character verbatim so callers
+        // can see the raw text -- silently dropping the backslash
+        // would corrupt data. The saphyr cross-check target skips
+        // scalars that contain invalid escapes for exactly this
+        // reason: comparing recovery strategies is not this decoder's
+        // job.
+        other => {
+            out.push('\\');
+            out.push(other);
+        }
+    }
+}
+
+/// Decode a `\xHH`, `\uHHHH`, or `\UHHHHHHHH` escape. On any failure
+/// (short, non-hex, invalid code point) the raw escape is emitted
+/// verbatim so callers can still reach later content.
+fn decode_hex_escape(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    out: &mut String,
+    width: usize,
+    prefix: char,
+) {
+    let mut collected = String::with_capacity(width);
+    for _ in 0..width {
+        match chars.peek() {
+            Some(c) if c.is_ascii_hexdigit() => {
+                collected.push(*c);
+                chars.next();
+            }
+            _ => break,
+        }
+    }
+    if collected.len() == width {
+        if let Some(ch) = u32::from_str_radix(&collected, 16)
+            .ok()
+            .and_then(char::from_u32)
+        {
+            out.push(ch);
+            return;
+        }
+    }
+    out.push('\\');
+    out.push(prefix);
+    out.push_str(&collected);
+}
+
+/// Apply YAML 1.2 §6.5 flow-scalar line folding:
+///   * Trailing whitespace on each line and leading whitespace on the
+///     next are stripped.
+///   * A single line break between non-empty content folds to a space.
+///   * A run of `n >= 2` consecutive line breaks folds to `n - 1`
+///     line breaks (i.e. one blank line becomes a literal `\n`).
+///
+/// Callers strip the quotes and process escapes first; this function
+/// only handles the line-break folding step, which is common to both
+/// single- and double-quoted scalars and to multi-line plain scalars.
+fn fold_flow_line_breaks(text: &str) -> String {
+    if !text.contains('\n') {
+        return text.to_string();
+    }
+    // Split on `\n`. Each split yields `n+1` pieces for `n` line breaks,
+    // so `["foo", "bar"]` came from `"foo\nbar"` (1 break) and folds to
+    // `"foo bar"`; `["foo", "", "bar"]` came from 2 breaks and folds to
+    // `"foo\nbar"`. In general a run of `k` empty pieces between two
+    // non-empty pieces represents `k+1` breaks and folds to `k` newlines.
+    // A trailing run of `k` empty pieces after the last non-empty piece
+    // is `k` breaks and folds to `max(k-1, 0)` newlines (a single trailing
+    // break becomes a space, per YAML 1.2 §6.5).
+    //
+    // Whitespace-trimming: strip trailing whitespace on any line that is
+    // followed by a newline, and leading whitespace on any line that
+    // follows a newline. That means the first piece only trims trailing
+    // (no preceding newline) and the last piece only trims leading
+    // (no following newline) -- trailing content whitespace on the very
+    // last line is content, not fold-trim territory.
+    let mut result = String::with_capacity(text.len());
+    let mut lines = text.split('\n').peekable();
+    let first = lines.next().unwrap();
+    result.push_str(first.trim_end_matches([' ', '\t']));
+    let mut pending_empties: usize = 0;
+    while let Some(line) = lines.next() {
+        let is_last = lines.peek().is_none();
+        let trimmed = if is_last {
+            line.trim_start_matches([' ', '\t'])
+        } else {
+            line.trim_matches([' ', '\t'])
+        };
+        if trimmed.is_empty() {
+            pending_empties += 1;
+            continue;
+        }
+        // `pending_empties` empty pieces between two non-empty pieces
+        // represents `pending_empties + 1` line breaks.
+        push_fold(&mut result, pending_empties + 1);
+        pending_empties = 0;
+        result.push_str(trimmed);
+    }
+    // Trailing empty pieces after the last non-empty piece: the count
+    // is already the number of trailing line breaks.
+    push_fold(&mut result, pending_empties);
+    result
+}
 
 /// Chomping indicator for block scalars
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,51 +343,36 @@ impl Scalar {
 
         // Handle quoted strings
         if text.starts_with('"') && text.ends_with('"') {
-            // Double-quoted string - handle escape sequences
-            ScalarValue::parse_escape_sequences(&text[1..text.len() - 1])
+            // Double-quoted: single pass that resolves escapes and
+            // folds raw line breaks together, because escape-produced
+            // whitespace must not be trimmed by fold rules while raw
+            // whitespace at line boundaries must be.
+            decode_double_quoted(&text[1..text.len() - 1])
         } else if text.starts_with('\'') && text.ends_with('\'') {
-            // Single-quoted string - handle '' -> ' escape and fold multi-line strings
+            // Single-quoted string: `''` -> `'` then flow line-folding.
             let content = &text[1..text.len() - 1];
             let unescaped = content.replace("''", "'");
-            // Only fold lines if actually multi-line
-            if unescaped.contains('\n') {
-                // Fold line breaks (newlines + indentation) to spaces per YAML spec
-                // Using fold() avoids intermediate Vec allocation
-                let mut result = String::new();
-                for (i, line) in unescaped.lines().enumerate() {
-                    if i > 0 {
-                        result.push(' ');
-                    }
-                    result.push_str(line.trim());
-                }
-                result
-            } else {
-                unescaped
-            }
+            fold_flow_line_breaks(&unescaped)
         } else if text.starts_with('|') || text.starts_with('>') {
             // Block scalar (literal or folded)
             Self::parse_block_scalar(&text)
-        } else {
-            // Plain scalar - fold lines if multi-line
-            if text.contains('\n') {
-                // Multi-line plain scalar: fold newlines to spaces
-                // Using manual iteration avoids intermediate Vec allocation
-                let mut result = String::new();
-                let mut first = true;
-                for line in text.lines() {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        if !first {
-                            result.push(' ');
-                        }
-                        result.push_str(trimmed);
-                        first = false;
+        } else if text.contains('\n') {
+            // Multi-line plain scalar: fold newlines to spaces.
+            let mut result = String::new();
+            let mut first = true;
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    if !first {
+                        result.push(' ');
                     }
+                    result.push_str(trimmed);
+                    first = false;
                 }
-                result
-            } else {
-                text
             }
+            result
+        } else {
+            text
         }
     }
 
@@ -591,5 +863,88 @@ items: ["first", "second"]
         let yaml = ">\n  a\n\u{4f1}b\n";
         // We only care that it does not panic.
         let _ = super::Scalar::parse_block_scalar(yaml);
+    }
+
+    #[test]
+    fn test_flow_scalar_line_folding() {
+        use std::str::FromStr;
+        // Per YAML 1.2 §6.5 a single line-break in a flow scalar folds
+        // to a space; a run of n breaks folds to n-1 breaks.
+        let cases: &[(&str, &str)] = &[
+            // Double-quoted, single break -> space.
+            ("k: \"foo\nbar\"\n", "foo bar"),
+            // Double-quoted, blank line -> single \n.
+            ("k: \"foo\n\nbar\"\n", "foo\nbar"),
+            // Double-quoted, two blank lines -> two \n.
+            ("k: \"foo\n\n\nbar\"\n", "foo\n\nbar"),
+            // Single-quoted, same rules.
+            ("k: 'foo\nbar'\n", "foo bar"),
+            ("k: 'foo\n\nbar'\n", "foo\nbar"),
+            // Trailing single break folds to space; trailing run
+            // folds to n-1 newlines.
+            ("k: \"a\n\"\n", "a "),
+            ("k: \"a\n\n\"\n", "a\n"),
+            // Line-continuation `\<newline>` in double-quoted emits
+            // nothing, and leading whitespace on the continuation
+            // line is stripped (treated as indentation).
+            ("k: \"foo\\\nbar\"\n", "foobar"),
+            ("k: \"foo\\\n bar\"\n", "foobar"),
+            // `\<space>` is a literal-space escape; the following
+            // raw newline folds normally (single -> space), so this
+            // yields two spaces before Y and one space between Y and /.
+            ("k: \"\\ \nY \\/&\"\n", "  Y /&"),
+            // Whitespace immediately before `\<newline>` is protected
+            // by the escape: the `\` prevents the space from being
+            // trimmed as trailing whitespace.
+            ("k: \" \\\n\"\n", " "),
+            // Trailing whitespace on the last line of a multi-line
+            // single-quoted scalar is content (there is no following
+            // newline to trigger fold-time trimming).
+            ("k: 'a\nb '\n", "a b "),
+            // Mixed raw and escaped line breaks per YAML 1.2 §7.3.2:
+            // an escaped break in a run cancels the fold-to-space
+            // contribution of THAT break, but subsequent raw breaks
+            // still count toward the fold. Reference: saphyr, which
+            // is validated against the yaml-test-suite.
+            //
+            // e   -> nothing (`\<nl>` swallows one break)
+            ("k: \"a\\\nb\"\n", "ab"),
+            // en  -> `\n` (escape then raw = 1 leftover break)
+            ("k: \"a\\\n\nb\"\n", "a\nb"),
+            // ne  -> space (raw first flushes as space, escape starts
+            //        a new empty run)
+            ("k: \"a\n\\\nb\"\n", "a b"),
+            // enn -> `\n\n` (escape + 2 raw)
+            ("k: \"a\\\n\n\nb\"\n", "a\n\nb"),
+            // nen -> ` \n` (raw flushes to space, then escape+raw ->
+            //        `\n`)
+            ("k: \"a\n\\\n\nb\"\n", "a \nb"),
+            // nne -> `\n` (2 raw flush to `\n`, escape starts empty
+            //        run, nothing more)
+            ("k: \"a\n\n\\\nb\"\n", "a\nb"),
+            // een -> `\n` (first escape starts empty run, second
+            //        escape closes and reopens, raw becomes extra)
+            ("k: \"a\\\n\\\n\nb\"\n", "a\nb"),
+            // Unicode named escapes from YAML 1.2 Table 5.7 (NEL,
+            // NBSP, line separator, paragraph separator).
+            ("k: \"\\N\"\n", "\u{85}"),
+            ("k: \"\\_\"\n", "\u{a0}"),
+            ("k: \"\\L\"\n", "\u{2028}"),
+            ("k: \"\\P\"\n", "\u{2029}"),
+            // `\<tab>` is the same as `\t`.
+            ("k: \"\\\tx\"\n", "\tx"),
+        ];
+        for (yaml, expected) in cases {
+            let doc = crate::yaml::Document::from_str(yaml).unwrap();
+            let sc = match doc.as_mapping().unwrap().get("k").unwrap() {
+                crate::as_yaml::YamlNode::Scalar(s) => s,
+                _ => panic!("expected scalar"),
+            };
+            assert_eq!(
+                &sc.as_string(),
+                expected,
+                "input {yaml:?}: expected {expected:?}"
+            );
+        }
     }
 }

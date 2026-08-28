@@ -1070,9 +1070,57 @@ fn is_yaml_special_except(ch: char, exclude: &str) -> bool {
     YAML_SPECIAL_CHARS.contains(ch) && !exclude.contains(ch)
 }
 
+/// Check whether `name` is a well-formed anchor/alias name for this lexer.
+///
+/// The lexer terminates an anchor (`&name`) or alias (`*name`) token at the
+/// first whitespace or YAML-special character (see [`read_scalar_from`]), so
+/// names containing those would be silently truncated on round-trip. A name
+/// is valid if it is non-empty and contains no whitespace or characters from
+/// [`YAML_SPECIAL_CHARS`].
+pub(crate) fn is_valid_anchor_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name
+            .chars()
+            .any(|c| c.is_whitespace() || is_yaml_special(c))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_valid_anchor_name() {
+        assert!(is_valid_anchor_name("shared"));
+        assert!(is_valid_anchor_name("shared_1"));
+        assert!(is_valid_anchor_name("anchor.dotted"));
+        assert!(is_valid_anchor_name("naïve"));
+
+        assert!(!is_valid_anchor_name(""));
+        assert!(!is_valid_anchor_name("has space"));
+        assert!(!is_valid_anchor_name("has\ttab"));
+        assert!(!is_valid_anchor_name("has\nnewline"));
+        assert!(!is_valid_anchor_name("*star"));
+        assert!(!is_valid_anchor_name("&amp"));
+        assert!(!is_valid_anchor_name("comma,name"));
+        assert!(!is_valid_anchor_name("bracket]name"));
+        assert!(!is_valid_anchor_name("colon:name"));
+    }
+
+    /// Names accepted by [`is_valid_anchor_name`] must round-trip through the
+    /// lexer as a single `REFERENCE` token, so `Alias::new` and the lexer stay
+    /// in agreement.
+    #[test]
+    fn test_valid_anchor_names_round_trip_through_lexer() {
+        for name in ["shared", "shared_1", "anchor.dotted", "naïve"] {
+            let input = format!("*{name}");
+            let tokens = lex(&input);
+            assert_eq!(
+                tokens,
+                vec![(SyntaxKind::REFERENCE, input.as_str())],
+                "name {name:?} did not round-trip as a single REFERENCE token"
+            );
+        }
+    }
 
     #[test]
     fn test_simple_mapping() {

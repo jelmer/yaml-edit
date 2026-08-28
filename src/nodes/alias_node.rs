@@ -13,6 +13,12 @@ impl Alias {
     /// [`AsYaml`], so it can be passed to [`Mapping::set`](crate::Mapping::set)
     /// and other mutation APIs without parsing a snippet.
     ///
+    /// # Panics
+    ///
+    /// Panics if `name` is empty or contains whitespace or YAML special
+    /// characters (`:+-?[]{},'|>&*!%"#`). Such names would not round-trip
+    /// through the lexer as a single alias token.
+    ///
     /// # Examples
     ///
     /// ```
@@ -25,7 +31,12 @@ impl Alias {
     /// assert_eq!(doc.to_string(), "shared: &shared value\nservice_a: *shared\n");
     /// ```
     pub fn new(name: impl AsRef<str>) -> Self {
-        let text = format!("*{}", name.as_ref());
+        let name = name.as_ref();
+        assert!(
+            crate::lex::is_valid_anchor_name(name),
+            "alias name must be non-empty and contain no whitespace or YAML special characters, got {name:?}"
+        );
+        let text = format!("*{name}");
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::ALIAS.into());
         builder.token(SyntaxKind::REFERENCE.into(), &text);
@@ -351,5 +362,36 @@ items:
         let colors = colors_node.as_sequence().unwrap();
         colors.set(1, Alias::new("red"));
         assert_eq!(doc.to_string(), "colors:\n  - &red '#FF0000'\n  - *red\n");
+    }
+
+    #[test]
+    #[should_panic(expected = "alias name must be non-empty")]
+    fn test_alias_new_rejects_empty() {
+        let _ = crate::Alias::new("");
+    }
+
+    #[test]
+    #[should_panic(expected = "alias name must be non-empty")]
+    fn test_alias_new_rejects_whitespace() {
+        let _ = crate::Alias::new("bad name");
+    }
+
+    #[test]
+    #[should_panic(expected = "alias name must be non-empty")]
+    fn test_alias_new_rejects_leading_star() {
+        let _ = crate::Alias::new("*already_starred");
+    }
+
+    #[test]
+    #[should_panic(expected = "alias name must be non-empty")]
+    fn test_alias_new_rejects_flow_indicator() {
+        let _ = crate::Alias::new("bad,name");
+    }
+
+    #[test]
+    fn test_alias_new_accepts_unicode_letters() {
+        let alias = crate::Alias::new("naïve_anchor_ĳ");
+        assert_eq!(alias.name(), "naïve_anchor_ĳ");
+        assert_eq!(alias.value(), "*naïve_anchor_ĳ");
     }
 }

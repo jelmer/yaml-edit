@@ -2,10 +2,37 @@ use super::{Lang, SyntaxNode};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use rowan::ast::AstNode;
+use rowan::GreenNodeBuilder;
 
 ast_node!(Alias, ALIAS, "A YAML alias reference (e.g., *anchor_name)");
 
 impl Alias {
+    /// Construct an alias that serializes as `*name`.
+    ///
+    /// `name` is the anchor name without the `*` prefix. The node implements
+    /// [`AsYaml`], so it can be passed to [`Mapping::set`](crate::Mapping::set)
+    /// and other mutation APIs without parsing a snippet.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::str::FromStr;
+    /// use yaml_edit::{Alias, Document};
+    ///
+    /// let doc = Document::from_str("shared: &shared value\nservice_a: old\n").unwrap();
+    /// let mapping = doc.as_mapping().unwrap();
+    /// mapping.set("service_a", Alias::new("shared"));
+    /// assert_eq!(doc.to_string(), "shared: &shared value\nservice_a: *shared\n");
+    /// ```
+    pub fn new(name: impl AsRef<str>) -> Self {
+        let text = format!("*{}", name.as_ref());
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::ALIAS.into());
+        builder.token(SyntaxKind::REFERENCE.into(), &text);
+        builder.finish_node();
+        Alias(SyntaxNode::new_root_mut(builder.finish()))
+    }
+
     /// Get the full text of this alias including the `*` prefix
     pub fn value(&self) -> String {
         self.0.text().to_string()
@@ -59,8 +86,9 @@ impl AsYaml for Alias {
         _indent: usize,
         _flow_context: bool,
     ) -> bool {
+        builder.start_node(SyntaxKind::ALIAS.into());
         crate::as_yaml::copy_node_content(builder, &self.0);
-        // Aliases don't end with newlines
+        builder.finish_node();
         false
     }
 
@@ -281,5 +309,47 @@ items:
 
         // Should preserve the exact whitespace
         assert_eq!(output, yaml);
+    }
+
+    #[test]
+    fn test_alias_new_name_and_value() {
+        let alias = crate::Alias::new("shared");
+        assert_eq!(alias.name(), "shared");
+        assert_eq!(alias.value(), "*shared");
+        assert_eq!(alias.to_string(), "*shared");
+    }
+
+    #[test]
+    fn test_alias_new_set_replaces_value_and_keeps_anchor() {
+        use crate::Alias;
+
+        let doc = Document::from_str("shared: &shared value\nservice_a: old\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        mapping.set("service_a", Alias::new("shared"));
+        assert_eq!(
+            doc.to_string(),
+            "shared: &shared value\nservice_a: *shared\n"
+        );
+
+        let service_a = mapping.get("service_a").unwrap();
+        match service_a {
+            YamlNode::Alias(alias) => {
+                assert_eq!(alias.name(), "shared");
+                assert_eq!(alias.value(), "*shared");
+            }
+            other => panic!("Expected alias, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_alias_new_set_into_sequence() {
+        use crate::Alias;
+
+        let doc = Document::from_str("colors:\n  - &red '#FF0000'\n  - old\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let colors_node = mapping.get("colors").unwrap();
+        let colors = colors_node.as_sequence().unwrap();
+        colors.set(1, Alias::new("red"));
+        assert_eq!(doc.to_string(), "colors:\n  - &red '#FF0000'\n  - *red\n");
     }
 }

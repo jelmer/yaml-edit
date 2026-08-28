@@ -27,6 +27,22 @@ impl YamlBuilder {
         }
     }
 
+    /// Start building from an alias (`*name`).
+    ///
+    /// `name` is the anchor name without the `*` prefix.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use yaml_edit::YamlBuilder;
+    ///
+    /// let yaml = YamlBuilder::alias("shared").build();
+    /// assert_eq!(yaml.to_string(), "*shared");
+    /// ```
+    pub fn alias(name: impl AsRef<str>) -> Self {
+        Self::scalar(crate::yaml::Alias::new(name))
+    }
+
     /// Start building from a sequence.
     pub fn sequence() -> SequenceBuilder {
         SequenceBuilder::new()
@@ -586,6 +602,21 @@ mod tests {
     fn test_scalar_builder() {
         let yaml = YamlBuilder::scalar("hello world").build();
         assert_eq!(yaml.to_string(), "hello world");
+    }
+
+    #[test]
+    fn test_alias_builder() {
+        let yaml = YamlBuilder::alias("shared").build();
+        assert_eq!(yaml.to_string(), "*shared");
+    }
+
+    #[test]
+    fn test_mapping_builder_alias_value() {
+        let yaml = YamlBuilder::mapping()
+            .pair("ref", crate::yaml::Alias::new("shared"))
+            .build()
+            .build();
+        assert_eq!(yaml.to_string(), "ref: *shared");
     }
 
     #[test]

@@ -1,10 +1,14 @@
 use std::str::FromStr;
 use yaml_edit::{Document, YamlFile};
 
+mod common;
+use common::{assert_cst_ok, assert_file_cst_ok};
+
 #[test]
 fn test_insert_at_index_empty_document() {
     let yaml = YamlFile::from_str("").unwrap();
     yaml.insert_at_index(0, "first", "value");
+    assert_file_cst_ok(&yaml);
 
     // Verify via API first
     let doc = yaml.document().expect("Should have document");
@@ -25,6 +29,7 @@ fn test_insert_at_index_update_existing() {
 
     // Update existing key
     yaml.insert_at_index(2, "first", "updated");
+    assert_file_cst_ok(&yaml);
 
     // Verify via API first
     let doc = yaml.document().expect("Should have document");
@@ -45,6 +50,7 @@ fn test_insert_at_index_new_key_at_beginning() {
 
     // Insert new key at beginning
     yaml.insert_at_index(0, "zero", "0");
+    assert_file_cst_ok(&yaml);
 
     // Verify via API first
     let doc = yaml.document().expect("Should have document");
@@ -89,6 +95,7 @@ fn test_insert_at_index_new_key_in_middle() {
 
     // Insert new key in middle
     yaml.insert_at_index(1, "second", "2");
+    assert_file_cst_ok(&yaml);
 
     // Verify via API first
     let doc = yaml.document().expect("Should have document");
@@ -139,6 +146,7 @@ fn test_insert_at_index_preserves_document_structure() {
 
     // Insert new key
     yaml.insert_at_index(1, "author", "developer");
+    assert_file_cst_ok(&yaml);
 
     // Document structure should still be valid
     let doc_after = yaml.document().expect("Should still have document");
@@ -165,10 +173,13 @@ fn test_insert_at_index_preserves_document_structure() {
 fn test_document_insert_at_index() {
     let doc = Document::new();
     doc.set("first", 1);
+    assert_cst_ok(&doc);
     doc.set("second", 2);
+    assert_cst_ok(&doc);
 
     // Insert new key
     doc.insert_at_index(1, "middle", 1.5);
+    assert_cst_ok(&doc);
 
     let output = doc.to_string();
     let expected = "---
@@ -190,8 +201,11 @@ fn test_insert_special_characters() {
 
     // Test various special characters
     yaml.insert_at_index(1, "special:key", "value:with:colons");
+    assert_file_cst_ok(&yaml);
     yaml.insert_at_index(0, "key with spaces", "value with spaces");
+    assert_file_cst_ok(&yaml);
     yaml.insert_at_index(2, "key@symbol", "value#hash");
+    assert_file_cst_ok(&yaml);
 
     // Verify via API first
     let doc = yaml.document().expect("Should have document");
@@ -253,6 +267,7 @@ fn test_insert_maintains_pairs_count() {
 
     // Update existing key
     yaml.insert_at_index(1, "b", "updated");
+    assert_file_cst_ok(&yaml);
 
     let doc_after = yaml.document().expect("Should have document");
     let mapping_after = doc_after.as_mapping().expect("Should be mapping");
@@ -261,6 +276,7 @@ fn test_insert_maintains_pairs_count() {
 
     // Insert new key
     yaml.insert_at_index(2, "d", "4");
+    assert_file_cst_ok(&yaml);
 
     let doc_final = yaml.document().expect("Should have document");
     let mapping_final = doc_final.as_mapping().expect("Should be mapping");

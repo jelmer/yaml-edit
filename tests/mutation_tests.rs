@@ -16,6 +16,9 @@
 use std::str::FromStr;
 use yaml_edit::YamlFile;
 
+mod common;
+use common::assert_file_cst_ok;
+
 #[test]
 fn test_simple_value_replacement() {
     let yaml = YamlFile::from_str("key: value").unwrap();
@@ -25,6 +28,7 @@ fn test_simple_value_replacement() {
             mapping.set("key", "new_value");
         }
     }
+    assert_file_cst_ok(&yaml);
 
     assert_eq!(yaml.to_string(), "key: new_value");
 
@@ -43,6 +47,7 @@ fn test_value_replacement_preserves_whitespace() {
             mapping.set("key", "new_value");
         }
     }
+    assert_file_cst_ok(&yaml);
 
     assert_eq!(yaml.to_string(), "key: new_value  # comment");
 
@@ -61,6 +66,7 @@ fn test_boolean_value_replacement() {
             mapping.set("debug", false);
         }
     }
+    assert_file_cst_ok(&yaml);
 
     assert_eq!(yaml.to_string(), "debug: false  # For now");
 
@@ -85,6 +91,7 @@ fn test_nested_mapping_mutation() {
             });
         }
     }
+    assert_file_cst_ok(&yaml);
 
     let expected = r#"database:
   name: prod_db
@@ -112,6 +119,7 @@ fn test_nested_mapping_add_new_key() {
             });
         }
     }
+    assert_file_cst_ok(&yaml);
 
     let expected = r#"database:
   name: dev_db
@@ -137,10 +145,13 @@ debug: true"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             mapping.set("host", "0.0.0.0");
+            assert_file_cst_ok(&yaml);
             mapping.set("port", 3000);
+            assert_file_cst_ok(&yaml);
             mapping.set("debug", false);
         }
     }
+    assert_file_cst_ok(&yaml);
 
     let expected = r#"host: 0.0.0.0
 port: 3000
@@ -162,6 +173,7 @@ fn test_add_new_root_key() {
             mapping.set("new_key", "new_value");
         }
     }
+    assert_file_cst_ok(&yaml);
 
     let expected = r#"existing: value
 new_key: new_value
@@ -191,6 +203,7 @@ server:
             });
         }
     }
+    assert_file_cst_ok(&yaml);
 
     let expected = r#"# Config
 server:
@@ -222,11 +235,14 @@ fn test_nested_mapping_mutations_propagate() {
             // Get the nested database mapping and modify it
             if let Some(db) = mapping.get_mapping("database") {
                 db.set("name", "prod_db");
+                assert_file_cst_ok(&yaml);
                 db.set("password", "secret123");
+                assert_file_cst_ok(&yaml);
                 db.set("max_connections", 50);
             }
         }
     }
+    assert_file_cst_ok(&yaml);
 
     let expected =
         "database:\n  name: prod_db\n  user: admin\n  max_connections: 50\n  password: secret123\n";
@@ -255,12 +271,14 @@ fn test_deeply_nested_mutations() {
                 if let Some(db) = server.get_mapping("database") {
                     if let Some(primary) = db.get_mapping("primary") {
                         primary.set("host", "prod.example.com");
+                        assert_file_cst_ok(&yaml);
                         primary.set("ssl", true);
                     }
                 }
             }
         }
     }
+    assert_file_cst_ok(&yaml);
 
     let expected = "server:\n  database:\n    primary:\n      host: prod.example.com\n      port: 5432\n      ssl: true\n";
 

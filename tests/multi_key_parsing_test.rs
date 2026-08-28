@@ -1,6 +1,9 @@
 use std::fs;
 use yaml_edit::{Document, YamlFile};
 
+mod common;
+use common::assert_cst_ok;
+
 #[test]
 fn test_multi_key_yaml_parsing() {
     let yaml_content = r#"---
@@ -150,6 +153,7 @@ third: https://third.example.com
 
     // Edit a value
     doc.set("second", "https://updated.example.com");
+    assert_cst_ok(&doc);
 
     // Verify the edit worked and other keys remain unchanged
     assert_eq!(
@@ -167,6 +171,7 @@ third: https://third.example.com
 
     // Add a new key
     doc.set("fourth", "https://fourth.example.com");
+    assert_cst_ok(&doc);
     assert_eq!(doc.keys().count(), 4);
     assert_eq!(
         doc.get_string("fourth").unwrap(),

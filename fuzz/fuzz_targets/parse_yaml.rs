@@ -10,7 +10,7 @@ fuzz_target!(|data: &[u8]| {
         if yaml_str.len() > 1_000_000 {
             return;
         }
-        
+
         // Parse the YAML - should never panic
         let parse = Parse::parse_yaml(yaml_str);
         let _ = parse.tree();

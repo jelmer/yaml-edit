@@ -1,8 +1,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use yaml_edit::YamlFile;
 use std::str::FromStr;
+use yaml_edit::YamlFile;
 
 fuzz_target!(|data: &[u8]| {
     // Convert bytes to string, handling invalid UTF-8 gracefully

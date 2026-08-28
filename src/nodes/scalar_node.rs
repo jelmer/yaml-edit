@@ -8,10 +8,7 @@ use std::fmt;
 
 ast_node!(Scalar, SCALAR, "A YAML scalar value");
 
-/// Emit the YAML 1.2 §6.5 fold decision for a run of `n` line breaks:
-///   * n = 0: nothing (no break happened).
-///   * n = 1: a single space (single break folds).
-///   * n >= 2: n - 1 literal newlines (blank lines preserved as `\n`).
+/// YAML 1.2 §6.5 fold: 0 breaks -> nothing, 1 -> space, n>=2 -> n-1 `\n`.
 fn push_fold(out: &mut String, n: usize) {
     match n {
         0 => {}
@@ -24,17 +21,7 @@ fn push_fold(out: &mut String, n: usize) {
     }
 }
 
-/// State for the fold logic in `decode_double_quoted`.
-///
-/// A source line either has "no break yet on this run" (`Inline`, with
-/// possibly-pending same-line whitespace that we might yet trim), or is
-/// mid-break-run (`InBreakRun`, tracking whether the run started with a
-/// raw newline and how many extra breaks came after).
-///
-/// The invariant "extras and raw-leading only matter mid-run" is
-/// encoded in the enum shape, so we cannot represent an
-/// `extras > 0, in_break_run = false` combination that the previous
-/// separate-locals version could accidentally reach.
+/// Break-run state for `decode_double_quoted`.
 enum RunState {
     Inline { pending_ws: String },
     InBreakRun { raw_leading: bool, extras: usize },
@@ -47,8 +34,6 @@ impl RunState {
         }
     }
 
-    /// A break run led by a raw newline. Its fold decision includes
-    /// the leading break's contribution.
     fn raw_led() -> Self {
         Self::InBreakRun {
             raw_leading: true,
@@ -56,9 +41,6 @@ impl RunState {
         }
     }
 
-    /// A break run led by a `\<line-break>` escape. Its fold decision
-    /// counts only subsequent breaks; the escape's own break is
-    /// silently swallowed.
     fn escape_led() -> Self {
         Self::InBreakRun {
             raw_leading: false,
@@ -66,25 +48,17 @@ impl RunState {
         }
     }
 
-    /// Emit the fold decision for whatever state we're in, then reset
-    /// to `Inline` with empty pending whitespace.
-    ///
-    /// The break count fed to `push_fold` is the number of physical
-    /// line breaks in the run, EXCEPT that an escape-led run with no
-    /// other breaks emits nothing (the leading `\<line-break>` cancels
-    /// the fold-to-space that a raw leading break would produce).
+    /// Emit the fold for the current run, then reset to `Inline`.
+    /// An escape-led run with no other breaks emits nothing; the
+    /// leading `\<line-break>` cancels the fold-to-space that a raw
+    /// leading break would produce.
     fn flush(&mut self, out: &mut String) {
         match self {
-            Self::Inline { pending_ws } => {
-                out.push_str(pending_ws);
-            }
+            Self::Inline { pending_ws } => out.push_str(pending_ws),
             Self::InBreakRun {
                 raw_leading,
                 extras,
             } => {
-                // A raw leading break always counts; an escape-led
-                // run only counts once there are other breaks after
-                // it, so `\<newline>` alone produces nothing.
                 let leading_counts = *raw_leading || *extras > 0;
                 let breaks = if leading_counts { *extras + 1 } else { 0 };
                 push_fold(out, breaks);
@@ -94,26 +68,9 @@ impl RunState {
     }
 }
 
-/// Decode a double-quoted scalar body in one pass, resolving escape
-/// sequences and folding raw line breaks together.
-///
-/// Follows YAML 1.2.2 §6.5 (flow folding) and §7.3.2 (double-quoted
-/// escapes). A break run is any contiguous sequence of blanks, raw
-/// line breaks, and `\<line-break>` escapes. The fold output depends
-/// on whether the run started with a raw newline and how many extras
-/// followed:
-///
-///   * no leading raw break, no extras => nothing (used when a run
-///     starts with `\<line-break>` and contains no further breaks --
-///     the escape swallows the fold-to-space contribution),
-///   * leading raw break, no extras => one space,
-///   * any N extras => N literal newlines.
-///
-/// `\<line-break>` participates in the fold like a raw break BUT it
-/// does not set `raw_leading`, so a `\<line-break>` at the start of a
-/// run drops the fold-to-space and later escapes just count as extras.
-/// This matches saphyr's scanner, which is validated against the
-/// yaml-test-suite (Spec Example 7.5).
+/// Single-pass double-quoted decoder implementing YAML 1.2.2 §6.5
+/// (flow folding) and §7.3.2 (double-quoted escapes). Cross-checked
+/// against saphyr's scanner and Spec Example 7.5.
 fn decode_double_quoted(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut state = RunState::new();
@@ -126,25 +83,16 @@ fn decode_double_quoted(text: &str) -> String {
                 RunState::InBreakRun { extras, .. } => *extras += 1,
             },
             ' ' | '\t' => match &mut state {
-                RunState::InBreakRun { .. } => {
-                    // Whitespace inside a break run is inter-break
-                    // indent; stripped, not content.
-                }
-                RunState::Inline { pending_ws } => {
-                    pending_ws.push(ch);
-                }
+                // Inter-break indent inside a break run is stripped.
+                RunState::InBreakRun { .. } => {}
+                RunState::Inline { pending_ws } => pending_ws.push(ch),
             },
+            // `\<line-break>` closes any current run then opens an
+            // escape-led one; the `\` also protects preceding
+            // same-line whitespace from fold-time trimming.
             '\\' if matches!(chars.peek(), Some('\n')) => {
-                // `\<line-break>` closes any current run (so its
-                // fold decision uses the raw breaks it collected)
-                // and starts a fresh run with `raw_leading = false`
-                // so the escape's break contributes nothing on its
-                // own. Preceding same-line whitespace is preserved
-                // because `flush` on `Inline` writes `pending_ws`
-                // out verbatim (the `\` protects it from fold-time
-                // trimming).
                 state.flush(&mut out);
-                chars.next(); // consume '\n'
+                chars.next();
                 state = RunState::escape_led();
             }
             '\\' => {
@@ -161,10 +109,8 @@ fn decode_double_quoted(text: &str) -> String {
     out
 }
 
-/// Handle a single `\<x>` escape sequence. `chars` is positioned just
-/// after the backslash; consumes the escape body and pushes the
-/// decoded characters to `out`. Unknown escapes are passed through
-/// verbatim to match the previous decoder's behavior.
+/// Consume one escape body (backslash already consumed) and push the
+/// decoded characters. Unknown escapes pass through verbatim.
 fn decode_one_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, out: &mut String) {
     let Some(escaped) = chars.next() else {
         out.push('\\');
@@ -192,13 +138,8 @@ fn decode_one_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, out: 
         'x' => decode_hex_escape(chars, out, 2, 'x'),
         'u' => decode_hex_escape(chars, out, 4, 'u'),
         'U' => decode_hex_escape(chars, out, 8, 'U'),
-        // Anything else is an error per spec. Preserve both the
-        // backslash and the following character verbatim so callers
-        // can see the raw text -- silently dropping the backslash
-        // would corrupt data. The saphyr cross-check target skips
-        // scalars that contain invalid escapes for exactly this
-        // reason: comparing recovery strategies is not this decoder's
-        // job.
+        // Invalid escape per spec; preserve verbatim rather than
+        // silently drop the backslash.
         other => {
             out.push('\\');
             out.push(other);
@@ -206,9 +147,8 @@ fn decode_one_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, out: 
     }
 }
 
-/// Decode a `\xHH`, `\uHHHH`, or `\UHHHHHHHH` escape. On any failure
-/// (short, non-hex, invalid code point) the raw escape is emitted
-/// verbatim so callers can still reach later content.
+/// Decode `\xHH`, `\uHHHH`, or `\UHHHHHHHH`. On failure, emits the
+/// raw escape prefix and the digits we did consume.
 fn decode_hex_escape(
     chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
     out: &mut String,
@@ -239,35 +179,17 @@ fn decode_hex_escape(
     out.push_str(&collected);
 }
 
-/// Apply YAML 1.2 §6.5 flow-scalar line folding:
-///   * Trailing whitespace on each line and leading whitespace on the
-///     next are stripped.
-///   * A single line break between non-empty content folds to a space.
-///   * A run of `n >= 2` consecutive line breaks folds to `n - 1`
-///     line breaks (i.e. one blank line becomes a literal `\n`).
+/// YAML 1.2 §6.5 flow-scalar line folding, without escape handling.
+/// Used by single-quoted (after `''`->`'`); double-quoted has its
+/// own single-pass decoder that interleaves fold with escapes.
 ///
-/// Callers strip the quotes and process escapes first; this function
-/// only handles the line-break folding step, which is common to both
-/// single- and double-quoted scalars and to multi-line plain scalars.
+/// Whitespace at line boundaries is fold-trimmed; content whitespace
+/// on the first line's trailing side and the last line's leading
+/// side is preserved.
 fn fold_flow_line_breaks(text: &str) -> String {
     if !text.contains('\n') {
         return text.to_string();
     }
-    // Split on `\n`. Each split yields `n+1` pieces for `n` line breaks,
-    // so `["foo", "bar"]` came from `"foo\nbar"` (1 break) and folds to
-    // `"foo bar"`; `["foo", "", "bar"]` came from 2 breaks and folds to
-    // `"foo\nbar"`. In general a run of `k` empty pieces between two
-    // non-empty pieces represents `k+1` breaks and folds to `k` newlines.
-    // A trailing run of `k` empty pieces after the last non-empty piece
-    // is `k` breaks and folds to `max(k-1, 0)` newlines (a single trailing
-    // break becomes a space, per YAML 1.2 §6.5).
-    //
-    // Whitespace-trimming: strip trailing whitespace on any line that is
-    // followed by a newline, and leading whitespace on any line that
-    // follows a newline. That means the first piece only trims trailing
-    // (no preceding newline) and the last piece only trims leading
-    // (no following newline) -- trailing content whitespace on the very
-    // last line is content, not fold-trim territory.
     let mut result = String::with_capacity(text.len());
     let mut lines = text.split('\n').peekable();
     let first = lines.next().unwrap();
@@ -284,14 +206,10 @@ fn fold_flow_line_breaks(text: &str) -> String {
             pending_empties += 1;
             continue;
         }
-        // `pending_empties` empty pieces between two non-empty pieces
-        // represents `pending_empties + 1` line breaks.
         push_fold(&mut result, pending_empties + 1);
         pending_empties = 0;
         result.push_str(trimmed);
     }
-    // Trailing empty pieces after the last non-empty piece: the count
-    // is already the number of trailing line breaks.
     push_fold(&mut result, pending_empties);
     result
 }
@@ -341,23 +259,14 @@ impl Scalar {
     pub fn as_string(&self) -> String {
         let text = self.value();
 
-        // Handle quoted strings
         if text.starts_with('"') && text.ends_with('"') {
-            // Double-quoted: single pass that resolves escapes and
-            // folds raw line breaks together, because escape-produced
-            // whitespace must not be trimmed by fold rules while raw
-            // whitespace at line boundaries must be.
             decode_double_quoted(&text[1..text.len() - 1])
         } else if text.starts_with('\'') && text.ends_with('\'') {
-            // Single-quoted string: `''` -> `'` then flow line-folding.
-            let content = &text[1..text.len() - 1];
-            let unescaped = content.replace("''", "'");
+            let unescaped = text[1..text.len() - 1].replace("''", "'");
             fold_flow_line_breaks(&unescaped)
         } else if text.starts_with('|') || text.starts_with('>') {
-            // Block scalar (literal or folded)
             Self::parse_block_scalar(&text)
         } else if text.contains('\n') {
-            // Multi-line plain scalar: fold newlines to spaces.
             let mut result = String::new();
             let mut first = true;
             for line in text.lines() {
@@ -743,8 +652,107 @@ impl TryFrom<&Scalar> for bool {
 
 #[cfg(test)]
 mod tests {
+    use super::{decode_double_quoted, push_fold};
     use crate::Document;
     use std::str::FromStr;
+
+    #[test]
+    fn test_push_fold_rule() {
+        let cases = [(0, ""), (1, " "), (2, "\n"), (3, "\n\n"), (5, "\n\n\n\n")];
+        for (n, expected) in cases {
+            let mut out = String::new();
+            push_fold(&mut out, n);
+            assert_eq!(&out, expected, "push_fold({n})");
+        }
+    }
+
+    #[test]
+    fn test_decode_double_quoted_no_breaks() {
+        // Content-only cases: no fold interaction.
+        assert_eq!(decode_double_quoted(""), "");
+        assert_eq!(decode_double_quoted("abc"), "abc");
+        assert_eq!(decode_double_quoted("a  b"), "a  b");
+        // Trailing whitespace on the last (only) line is content.
+        assert_eq!(decode_double_quoted("a "), "a ");
+    }
+
+    #[test]
+    fn test_decode_double_quoted_escapes() {
+        // Table 5.7 sample.
+        assert_eq!(decode_double_quoted("\\n"), "\n");
+        assert_eq!(decode_double_quoted("\\t"), "\t");
+        assert_eq!(decode_double_quoted("\\r"), "\r");
+        assert_eq!(decode_double_quoted("\\0"), "\0");
+        assert_eq!(decode_double_quoted("\\\\"), "\\");
+        assert_eq!(decode_double_quoted("\\\""), "\"");
+        assert_eq!(decode_double_quoted("\\ "), " ");
+        assert_eq!(decode_double_quoted("\\N"), "\u{85}");
+        assert_eq!(decode_double_quoted("\\_"), "\u{a0}");
+        assert_eq!(decode_double_quoted("\\L"), "\u{2028}");
+        assert_eq!(decode_double_quoted("\\P"), "\u{2029}");
+        assert_eq!(decode_double_quoted("\\x26"), "&");
+        assert_eq!(decode_double_quoted("\\u00e9"), "é");
+        // Alternate `\<tab>` spelling of `\t`.
+        assert_eq!(decode_double_quoted("\\\t"), "\t");
+        // Unknown escape passes through verbatim.
+        assert_eq!(decode_double_quoted("\\z"), "\\z");
+    }
+
+    #[test]
+    fn test_decode_double_quoted_hex_fallbacks() {
+        // Short / non-hex escapes emit the raw prefix + whatever hex
+        // digits we consumed, and the loop continues on unconsumed
+        // input.
+        assert_eq!(decode_double_quoted("\\xZZ"), "\\xZZ");
+        assert_eq!(decode_double_quoted("\\x1G"), "\\x1G");
+        assert_eq!(decode_double_quoted("\\uABC"), "\\uABC");
+        // Surrogate code points aren't valid chars.
+        assert_eq!(decode_double_quoted("\\uD800"), "\\uD800");
+    }
+
+    #[test]
+    fn test_decode_double_quoted_fold_raw_breaks() {
+        // n=1 -> space, n=2 -> \n, n=3 -> \n\n.
+        assert_eq!(decode_double_quoted("a\nb"), "a b");
+        assert_eq!(decode_double_quoted("a\n\nb"), "a\nb");
+        assert_eq!(decode_double_quoted("a\n\n\nb"), "a\n\nb");
+        // Trailing raw breaks apply the same rule.
+        assert_eq!(decode_double_quoted("a\n"), "a ");
+        assert_eq!(decode_double_quoted("a\n\n"), "a\n");
+        // Trailing whitespace on a source line preceding a break is
+        // trimmed; leading whitespace on the next line likewise.
+        assert_eq!(decode_double_quoted("a  \n  b"), "a b");
+    }
+
+    #[test]
+    fn test_decode_double_quoted_line_continuation() {
+        // Single escape swallows the break entirely.
+        assert_eq!(decode_double_quoted("a\\\nb"), "ab");
+        // Leading whitespace on the continuation line is stripped.
+        assert_eq!(decode_double_quoted("a\\\n b"), "ab");
+        // Whitespace before `\<nl>` is protected from trimming.
+        assert_eq!(decode_double_quoted(" \\\n"), " ");
+    }
+
+    #[test]
+    fn test_decode_double_quoted_mixed_break_runs() {
+        // See RunState::flush: escape at head of a run cancels the
+        // fold-to-space; subsequent raw breaks still count.
+        assert_eq!(decode_double_quoted("a\\\n\nb"), "a\nb");
+        assert_eq!(decode_double_quoted("a\n\\\nb"), "a b");
+        assert_eq!(decode_double_quoted("a\\\n\n\nb"), "a\n\nb");
+        assert_eq!(decode_double_quoted("a\n\\\n\nb"), "a \nb");
+        assert_eq!(decode_double_quoted("a\n\n\\\nb"), "a\nb");
+    }
+
+    #[test]
+    fn test_decode_double_quoted_spec_example_7_5() {
+        // YAML 1.2.2 Spec Example 7.5: mixed folding, tabs, and
+        // escaped-space content.
+        let input = "folded \nto a space,\t\n \nto a line feed, or \t\\\n \\ \tnon-content";
+        let expected = "folded to a space,\nto a line feed, or \t \tnon-content";
+        assert_eq!(decode_double_quoted(input), expected);
+    }
 
     #[test]
     fn test_json_array_quoted_strings_cst_structure() {

@@ -498,7 +498,38 @@ pub fn lex_with_validation_config<'a>(
                     }
                 }
             }
-            '+' => tokens.push((PLUS, &input[token_start..start_idx + 1])),
+            '+' => {
+                // `+` is a chomping indicator when it appears inside a
+                // block-scalar header (`|+`, `|2+`, `>+`, `>2+`). Detect
+                // that by looking at the current line: the last non-digit
+                // byte before this `+` must be `|` or `>`. Otherwise, if
+                // the next char begins a plain-scalar body (digit, `.`,
+                // letter, ...) this `+` is a sign prefix and belongs in
+                // the same scalar token -- so `+.INF` lexes as one FLOAT
+                // rather than PLUS + FLOAT. A bare `+` followed by
+                // whitespace stays PLUS.
+                let line_start = input[..start_idx]
+                    .rfind(['\n', '\r'])
+                    .map(|p| p + 1)
+                    .unwrap_or(0);
+                let is_chomping_indicator = input[line_start..start_idx]
+                    .bytes()
+                    .rev()
+                    .find(|b| !b.is_ascii_digit())
+                    .is_some_and(|b| b == b'|' || b == b'>');
+                let next_starts_scalar = chars
+                    .peek()
+                    .is_some_and(|(_, c)| !c.is_whitespace() && !is_yaml_special(*c));
+                if !is_chomping_indicator && next_starts_scalar {
+                    let text =
+                        read_plain_scalar_body_from(&mut chars, input, start_idx + 1, flow_depth);
+                    let full_text = &input[token_start..token_start + 1 + text.len()];
+                    let token_kind = classify_scalar(full_text);
+                    tokens.push((token_kind, full_text));
+                } else {
+                    tokens.push((PLUS, &input[token_start..start_idx + 1]));
+                }
+            }
             ':' => {
                 // Colon at token boundary. It's a mapping indicator when
                 // its lookahead matches is_colon_a_mapping_indicator, OR
@@ -943,8 +974,13 @@ pub fn lex_with_validation_config<'a>(
                         continue;
                     }
 
-                    // Check other special characters (excluding hyphen and colon)
-                    if is_yaml_special_except(next_ch, "-:#") {
+                    // Check other special characters (excluding hyphen and colon).
+                    // `&`, `*`, `!`, `?` are node-property / block-key indicators
+                    // that are only meaningful at the start of a node. Once we
+                    // are inside a plain-scalar body they are ordinary content
+                    // per YAML 1.2 §7.1 (a `&anchor` must be followed by
+                    // whitespace to actually be an anchor).
+                    if is_yaml_special_except(next_ch, "-:#&*!?") {
                         // In block context, flow indicators do NOT break scalars
                         if flow_depth == 0 && matches!(next_ch, '[' | ']' | '{' | '}' | ',') {
                             // do nothing, let it be part of the scalar
@@ -1006,44 +1042,19 @@ pub fn lex_with_validation_config<'a>(
     (tokens, whitespace_errors)
 }
 
-/// Classify a scalar token based on its content
+/// Map a plain-scalar's semantic classification onto the concrete
+/// [`SyntaxKind`] the tokenizer emits. The classification itself lives
+/// in [`ScalarValue::classify_plain`](crate::ScalarValue::classify_plain);
+/// this function only translates enum variants.
 fn classify_scalar(text: &str) -> SyntaxKind {
-    use SyntaxKind::*;
-
-    // Boolean literals
-    match text {
-        "true" | "false" | "True" | "False" | "TRUE" | "FALSE" => return BOOL,
-        "null" | "Null" | "NULL" | "~" => return NULL,
-        _ => {}
+    use crate::CoreScalarType;
+    match crate::scalar::ScalarValue::classify_plain(text) {
+        CoreScalarType::Null => SyntaxKind::NULL,
+        CoreScalarType::Boolean => SyntaxKind::BOOL,
+        CoreScalarType::Integer => SyntaxKind::INT,
+        CoreScalarType::Float => SyntaxKind::FLOAT,
+        CoreScalarType::String => SyntaxKind::STRING,
     }
-
-    // Try to parse as integer (handles 0x, 0o, 0b, octal, decimal)
-    if crate::scalar::ScalarValue::parse_integer(text).is_some() {
-        return INT;
-    }
-
-    // YAML special float values (infinity and NaN)
-    // Note: Must check these before general f64 parsing because Rust's parse::<f64>()
-    // accepts "infinity" and "inf" which should only be treated as floats in YAML
-    // when written as ".inf", not as bare "infinity" or "inf"
-    match text {
-        ".inf" | ".Inf" | ".INF" | "+.inf" | "+.Inf" | "+.INF" | "-.inf" | "-.Inf" | "-.INF"
-        | ".nan" | ".NaN" | ".NAN" => return FLOAT,
-        // Rust's parse::<f64>() accepts "infinity" and "inf", but in YAML these
-        // should be treated as strings unless written as ".inf"
-        "infinity" | "inf" | "Infinity" | "Inf" | "INFINITY" | "INF" | "-infinity" | "-inf"
-        | "-Infinity" | "-Inf" | "-INFINITY" | "-INF" | "+infinity" | "+inf" | "+Infinity"
-        | "+Inf" | "+INFINITY" | "+INF" | "nan" | "NaN" | "NAN" => return STRING,
-        _ => {}
-    }
-
-    // Try to parse as float
-    if text.parse::<f64>().is_ok() {
-        return FLOAT;
-    }
-
-    // Everything else is a string
-    STRING
 }
 
 /// Common set of YAML special characters
@@ -1318,6 +1329,42 @@ double: "quoted""#;
             .filter(|(kind, _)| *kind == SyntaxKind::ASTERISK)
             .collect();
         assert_eq!(asterisks.len(), 1);
+    }
+
+    #[test]
+    fn test_indicators_mid_plain_scalar_are_scalar_content() {
+        // Per YAML 1.2 §7.1 the node-property indicators `&`, `*`, `!`
+        // only apply when a scalar starts with them (followed by an
+        // identifier). Mid-scalar they are ordinary content and must
+        // not create phantom ANCHOR / REFERENCE / TAG tokens.
+        for input in ["k: 3.1&1", "k: a&b", "k: a*b", "k: a!b", "k: a?b"] {
+            let tokens = lex(input);
+            let bad: Vec<_> = tokens
+                .iter()
+                .filter(|(kind, _)| {
+                    matches!(
+                        kind,
+                        SyntaxKind::ANCHOR
+                            | SyntaxKind::REFERENCE
+                            | SyntaxKind::TAG
+                            | SyntaxKind::QUESTION
+                    )
+                })
+                .collect();
+            assert!(
+                bad.is_empty(),
+                "{:?} produced structural tokens mid-scalar: {:?}",
+                input,
+                bad
+            );
+        }
+        // And a real anchor still tokenizes as ANCHOR.
+        let tokens = lex("a: &real 1");
+        assert!(
+            tokens.iter().any(|(k, _)| *k == SyntaxKind::ANCHOR),
+            "real anchor should still be recognized: {:?}",
+            tokens
+        );
     }
 
     #[test]

@@ -11,6 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 rowan = "0.16"
 arbitrary = { version = "1", features = ["derive"] }
+saphyr = "0.0.12"
 
 [dependencies.yaml-edit]
 path = ".."
@@ -39,6 +40,13 @@ bench = false
 [[bin]]
 name = "mutation_invariants"
 path = "fuzz_targets/mutation_invariants.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cross_parser_saphyr"
+path = "fuzz_targets/cross_parser_saphyr.rs"
 test = false
 doc = false
 bench = false

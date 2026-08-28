@@ -34,6 +34,39 @@ pub enum ScalarStyle {
     Folded,
 }
 
+/// The five scalar types recognised by the YAML 1.2 core schema.
+///
+/// Returned by [`ScalarValue::classify_plain`], which is the single
+/// source of truth for plain-scalar tag resolution. This is a strict
+/// subset of [`ScalarType`], which additionally covers yaml-edit's
+/// out-of-band types (`Timestamp`, `Binary`, `Regex`) used when
+/// constructing new values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CoreScalarType {
+    /// `!!null`
+    Null,
+    /// `!!bool`
+    Boolean,
+    /// `!!int`
+    Integer,
+    /// `!!float`
+    Float,
+    /// `!!str` (the fallback when no other tag matches)
+    String,
+}
+
+impl From<CoreScalarType> for ScalarType {
+    fn from(t: CoreScalarType) -> Self {
+        match t {
+            CoreScalarType::Null => ScalarType::Null,
+            CoreScalarType::Boolean => ScalarType::Boolean,
+            CoreScalarType::Integer => ScalarType::Integer,
+            CoreScalarType::Float => ScalarType::Float,
+            CoreScalarType::String => ScalarType::String,
+        }
+    }
+}
+
 /// Type of a scalar value
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScalarType {
@@ -543,6 +576,57 @@ impl ScalarValue {
         parsed.map(|n| if is_negative { -n } else { n })
     }
 
+    /// Classify a plain (unquoted) scalar's text per the YAML 1.2 core
+    /// schema tag-resolution rules.
+    ///
+    /// This is the single source of truth for what a plain scalar
+    /// resolves to; the lexer and [`from_scalar`](Self::from_scalar)
+    /// both delegate here so token-emit-time and CST-inspection-time
+    /// classification cannot drift.
+    ///
+    /// Note that [`auto_detect_type`](Self::auto_detect_type) is
+    /// deliberately more permissive (recognises YAML 1.1 `yes`/`no`
+    /// booleans, timestamps, base64) and is meant for constructing new
+    /// values from arbitrary strings, not for reading spec-conformant
+    /// YAML back out.
+    pub fn classify_plain(value: &str) -> CoreScalarType {
+        match value {
+            "true" | "false" | "True" | "False" | "TRUE" | "FALSE" => {
+                return CoreScalarType::Boolean
+            }
+            "null" | "Null" | "NULL" | "~" => return CoreScalarType::Null,
+            _ => {}
+        }
+
+        if Self::parse_integer(value).is_some() {
+            return CoreScalarType::Integer;
+        }
+
+        // YAML 1.2 spells infinity/NaN with a leading dot: `.inf`, `.Inf`,
+        // `.INF` (plus optional `+`/`-`), and `.nan`, `.NaN`, `.NAN`.
+        // Rust's `f64::from_str` also accepts bare `inf`, `nan`,
+        // `infinity`, etc. in any casing, but per the spec those are
+        // strings when written without the leading dot.
+        match value {
+            ".inf" | ".Inf" | ".INF" | "+.inf" | "+.Inf" | "+.INF" | "-.inf" | "-.Inf"
+            | "-.INF" | ".nan" | ".NaN" | ".NAN" => return CoreScalarType::Float,
+            _ => {}
+        }
+        let body = value.strip_prefix(['+', '-']).unwrap_or(value);
+        if body.eq_ignore_ascii_case("inf")
+            || body.eq_ignore_ascii_case("infinity")
+            || body.eq_ignore_ascii_case("nan")
+        {
+            return CoreScalarType::String;
+        }
+
+        if value.parse::<f64>().is_ok() {
+            return CoreScalarType::Float;
+        }
+
+        CoreScalarType::String
+    }
+
     /// Auto-detect the most appropriate scalar type from a string value
     pub fn auto_detect_type(value: &str) -> ScalarType {
         // Check for null values first
@@ -633,34 +717,33 @@ impl ScalarValue {
     /// rather than guessing based on heuristics. This is the correct way to convert
     /// parsed YAML into ScalarValue.
     pub fn from_scalar(scalar: &crate::yaml::Scalar) -> Self {
-        use crate::lex::SyntaxKind;
-        use rowan::ast::AstNode;
-
         let value = scalar.as_string();
-
-        // Get the token kind from the first token in the scalar
-        let syntax_node = scalar.syntax();
-        let scalar_type = if let Some(token) = syntax_node.first_token() {
-            match token.kind() {
-                SyntaxKind::INT => ScalarType::Integer,
-                SyntaxKind::FLOAT => ScalarType::Float,
-                SyntaxKind::BOOL => ScalarType::Boolean,
-                SyntaxKind::NULL => ScalarType::Null,
-                SyntaxKind::STRING => ScalarType::String,
-                _ => ScalarType::String, // fallback
-            }
-        } else {
-            ScalarType::String
-        };
-
-        // Determine style based on the actual text (with quotes if present)
         let raw_text = scalar.value();
+
         let style = if raw_text.starts_with('"') && raw_text.ends_with('"') {
             ScalarStyle::DoubleQuoted
         } else if raw_text.starts_with('\'') && raw_text.ends_with('\'') {
             ScalarStyle::SingleQuoted
+        } else if raw_text.starts_with('|') {
+            ScalarStyle::Literal
+        } else if raw_text.starts_with('>') {
+            ScalarStyle::Folded
         } else {
             ScalarStyle::Plain
+        };
+
+        // Quoted and block scalars are always !!str per YAML 1.2 tag
+        // resolution. Plain scalars go through the core-schema
+        // classifier, which stays correct even when the plain-scalar
+        // text spans multiple lexer tokens (e.g. multi-line plain
+        // scalars, which yield STRING + NEWLINE + INDENT + STRING).
+        // `trim_end` because the lexer may absorb trailing whitespace
+        // into the scalar text; leading whitespace can't appear because
+        // it would have been emitted as INDENT.
+        let scalar_type = if style != ScalarStyle::Plain {
+            ScalarType::String
+        } else {
+            Self::classify_plain(raw_text.trim_end()).into()
         };
 
         Self {
@@ -2215,6 +2298,86 @@ mod tests {
         let scalar = crate::yaml::Scalar::cast(node.syntax().clone()).unwrap();
         let sv = ScalarValue::from_scalar(&scalar);
         assert_eq!(sv.style, ScalarStyle::SingleQuoted);
+    }
+
+    #[test]
+    fn test_from_scalar_ampersand_in_plain_is_string() {
+        // `3.1&1` is a single plain scalar with literal content `3.1&1`.
+        // Per YAML 1.2 core-schema tag resolution it must resolve to
+        // !!str, not !!float.
+        use crate::yaml::Document;
+        use rowan::ast::AstNode;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("k: 3.1&1\n").unwrap();
+        let node = doc.as_mapping().unwrap().get("k").unwrap();
+        let scalar = crate::yaml::Scalar::cast(node.syntax().clone()).unwrap();
+        let sv = ScalarValue::from_scalar(&scalar);
+        assert_eq!(sv.scalar_type(), ScalarType::String);
+        assert_eq!(sv.style, ScalarStyle::Plain);
+    }
+
+    #[test]
+    fn test_from_scalar_signed_yaml_infinity_is_float() {
+        // `+.INF` is one !!float per YAML 1.2 even though Rust's
+        // `f64::from_str` wouldn't accept the bare token on its own.
+        use crate::yaml::Document;
+        use rowan::ast::AstNode;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("k: +.INF\n").unwrap();
+        let node = doc.as_mapping().unwrap().get("k").unwrap();
+        let scalar = crate::yaml::Scalar::cast(node.syntax().clone()).unwrap();
+        let sv = ScalarValue::from_scalar(&scalar);
+        assert_eq!(sv.scalar_type(), ScalarType::Float);
+    }
+
+    #[test]
+    fn test_classify_plain_bare_inf_nan_is_string() {
+        // Per YAML 1.2 only the dotted spellings are !!float; bare
+        // `inf`, `nan`, `infinity` in any casing are strings even
+        // though Rust's `f64::from_str` accepts them.
+        for input in [
+            "inf", "Inf", "InF", "INF", "iNf", "nan", "NaN", "NAN", "nAn", "infinity", "Infinity",
+            "INFINITY", "+inf", "-Inf", "+nan",
+        ] {
+            assert_eq!(
+                ScalarValue::classify_plain(input),
+                CoreScalarType::String,
+                "bare {input:?} should classify as String"
+            );
+        }
+        // But the dotted spellings still resolve to Float.
+        for input in [".inf", ".Inf", ".INF", "+.inf", "-.INF", ".nan"] {
+            assert_eq!(
+                ScalarValue::classify_plain(input),
+                CoreScalarType::Float,
+                "{input:?} should classify as Float"
+            );
+        }
+    }
+
+    #[test]
+    fn test_from_scalar_block_style_is_string() {
+        // Block scalars (| and >) always resolve to !!str regardless of
+        // content, and their style must be reported as Literal or Folded.
+        use crate::yaml::Document;
+        use rowan::ast::AstNode;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("k: |\n  1\n").unwrap();
+        let node = doc.as_mapping().unwrap().get("k").unwrap();
+        let scalar = crate::yaml::Scalar::cast(node.syntax().clone()).unwrap();
+        let sv = ScalarValue::from_scalar(&scalar);
+        assert_eq!(sv.style, ScalarStyle::Literal);
+        assert_eq!(sv.scalar_type(), ScalarType::String);
+
+        let doc = Document::from_str("k: >\n  x\n").unwrap();
+        let node = doc.as_mapping().unwrap().get("k").unwrap();
+        let scalar = crate::yaml::Scalar::cast(node.syntax().clone()).unwrap();
+        let sv = ScalarValue::from_scalar(&scalar);
+        assert_eq!(sv.style, ScalarStyle::Folded);
+        assert_eq!(sv.scalar_type(), ScalarType::String);
     }
 
     #[test]

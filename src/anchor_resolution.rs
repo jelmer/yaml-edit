@@ -152,6 +152,11 @@ pub trait DocumentResolvedExt {
     /// This method resolves aliases (*alias) to their anchored values (&anchor),
     /// and supports merge keys (<<) for combining mappings.
     ///
+    /// Resolution is read-only. To write a merge or alias back, pass a mapping
+    /// that already contains `<<: *name` (or an alias node) to
+    /// [`Mapping::set`](crate::Mapping::set). `set` does not infer a merge
+    /// from a resolved object.
+    ///
     /// # Examples
     ///
     /// ```
@@ -377,6 +382,9 @@ fn merge_from_alias(
 ///
 /// Returned values are [`YamlNode`](crate::as_yaml::YamlNode)s backed by real
 /// CST nodes, so they preserve the original formatting and quoting style.
+///
+/// This view is read-only. [`Mapping::set`](crate::Mapping::set) replaces the
+/// value node you pass; it does not turn a resolved map back into `<<: *name`.
 ///
 /// # Examples
 ///

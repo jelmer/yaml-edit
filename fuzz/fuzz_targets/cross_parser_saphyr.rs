@@ -42,27 +42,109 @@ fn saphyr_kind(s: &ScalarOwned) -> Kind {
     }
 }
 
-/// yaml-edit accepts some scalar forms that YAML 1.2 core schema
-/// rejects (mostly YAML 1.1 legacy). Skip these in the oracle so
-/// documented permissiveness doesn't flag as a divergence.
-fn is_yaml_edit_extension(text: &str) -> bool {
-    let signed = text.starts_with(['+', '-']);
-    let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
-    // Uppercase `0O` / `0X` integer prefixes (spec is lowercase only)
-    // and signed non-decimal integers (`+0x1e`, `-0o7`, `+0b10`) --
-    // spec allows a sign on decimals only.
-    if unsigned.starts_with("0X") || unsigned.starts_with("0O") {
-        return true;
+/// Match the YAML 1.2 core-schema tag-resolution regexes exactly.
+/// Returns `None` for inputs that don't strictly match any of the
+/// null/bool/int/float patterns -- both parsers may legitimately
+/// disagree on those (leniency zone), so the oracle skips them.
+fn strict_core_schema_kind(text: &str) -> Option<Kind> {
+    // Null
+    if matches!(text, "null" | "Null" | "NULL" | "~") {
+        return Some(Kind::Null);
     }
-    if signed
-        && (unsigned.starts_with("0x")
-            || unsigned.starts_with("0o")
-            || unsigned.starts_with("0b")
-            || unsigned.starts_with("0B"))
+    // Bool
+    if matches!(text, "true" | "True" | "TRUE" | "false" | "False" | "FALSE") {
+        return Some(Kind::Bool);
+    }
+    // Int: 0 | -? [1-9] [0-9]* | 0o [0-7]+ | 0x [0-9a-fA-F]+
+    // Per spec, only decimals may carry a sign; `-0x1` and `-0o7` are
+    // NOT valid ints. Skip inputs that match the regex but overflow
+    // i64 -- both parsers legitimately fall back to string there.
+    if text == "0" {
+        return Some(Kind::Int);
+    }
+    if let Some(hex) = text.strip_prefix("0x") {
+        if !hex.is_empty()
+            && hex.bytes().all(|b| b.is_ascii_hexdigit())
+            && i64::from_str_radix(hex, 16).is_ok()
+        {
+            return Some(Kind::Int);
+        }
+    }
+    if let Some(oct) = text.strip_prefix("0o") {
+        if !oct.is_empty()
+            && oct.bytes().all(|b| b.is_ascii_digit() && b < b'8')
+            && i64::from_str_radix(oct, 8).is_ok()
+        {
+            return Some(Kind::Int);
+        }
+    }
+    let decimal_body = text.strip_prefix('-').unwrap_or(text);
+    if decimal_body.starts_with(|c: char| c.is_ascii_digit() && c != '0')
+        && decimal_body.bytes().all(|b| b.is_ascii_digit())
+        && text.parse::<i64>().is_ok()
     {
-        return true;
+        return Some(Kind::Int);
     }
-    false
+    // Float: [-+]? ( \. [0-9]+ | [0-9]+ (\. [0-9]*)? ) ([eE] [-+]? [0-9]+)?
+    // plus the dotted infinity/NaN literals.
+    if matches!(
+        text,
+        ".inf"
+            | ".Inf"
+            | ".INF"
+            | "+.inf"
+            | "+.Inf"
+            | "+.INF"
+            | "-.inf"
+            | "-.Inf"
+            | "-.INF"
+            | ".nan"
+            | ".NaN"
+            | ".NAN"
+    ) {
+        return Some(Kind::Float);
+    }
+    // Skip float-regex inputs that overflow/underflow -- both parsers
+    // are entitled to string-fall-back there.
+    if matches_float_regex(text) && text.parse::<f64>().map(f64::is_finite).unwrap_or(false) {
+        return Some(Kind::Float);
+    }
+    None
+}
+
+/// Match `[-+]? ( \. [0-9]+ | [0-9]+ (\. [0-9]*)? ) ([eE] [-+]? [0-9]+)?`,
+/// with the additional constraint that the pattern must contain
+/// either a decimal point or an exponent (a pure digit string is an
+/// integer, not a float).
+fn matches_float_regex(text: &str) -> bool {
+    let body = text.strip_prefix(['+', '-']).unwrap_or(text);
+    let (mantissa, exp) = match body.find(['e', 'E']) {
+        Some(i) => (&body[..i], Some(&body[i + 1..])),
+        None => (body, None),
+    };
+    let has_dot = mantissa.contains('.');
+    if !has_dot && exp.is_none() {
+        return false;
+    }
+    let mantissa_ok = if let Some(after_dot) = mantissa.strip_prefix('.') {
+        !after_dot.is_empty() && after_dot.bytes().all(|b| b.is_ascii_digit())
+    } else if let Some(dot) = mantissa.find('.') {
+        let (whole, rest) = mantissa.split_at(dot);
+        let frac = &rest[1..];
+        !whole.is_empty()
+            && whole.bytes().all(|b| b.is_ascii_digit())
+            && frac.bytes().all(|b| b.is_ascii_digit())
+    } else {
+        !mantissa.is_empty() && mantissa.bytes().all(|b| b.is_ascii_digit())
+    };
+    if !mantissa_ok {
+        return false;
+    }
+    let Some(exp) = exp else {
+        return true;
+    };
+    let exp_body = exp.strip_prefix(['+', '-']).unwrap_or(exp);
+    !exp_body.is_empty() && exp_body.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn yaml_edit_kind(t: ScalarType) -> Option<Kind> {
@@ -89,24 +171,36 @@ fn walk(node: YamlNode, input: &str) {
                 return;
             }
             let text = scalar.value();
-            let trimmed = text.trim();
+            // Match what `from_scalar` does: trim trailing whitespace
+            // only. Plain scalars can't start with whitespace anyway
+            // (the lexer would have emitted an INDENT), and using the
+            // same trim keeps our "spec-strict" check and yaml-edit's
+            // classify_plain looking at the same string.
+            let trimmed = text.trim_end();
             // Empty plain scalars are a spec ambiguity around
             // implicit null; not the surface this oracle polices.
             if trimmed.is_empty() {
                 return;
             }
-            if is_yaml_edit_extension(trimmed) {
+            // Only assert when the raw text strictly matches a YAML 1.2
+            // core-schema pattern. Non-matching text sits in a leniency
+            // zone where both parsers can legitimately disagree (e.g.
+            // yaml-edit accepts YAML 1.1 legacy octal, saphyr accepts
+            // decimals with leading zeros); flagging those buries real
+            // bugs. When we do have a strict-spec answer, use it as the
+            // ground truth and require both parsers to agree.
+            let Some(strict) = strict_core_schema_kind(trimmed) else {
                 return;
-            }
+            };
             let Some(mine) = yaml_edit_kind(sv.scalar_type()) else {
                 return;
             };
             let theirs = saphyr_kind(&ScalarOwned::parse_from_cow(Cow::Borrowed(trimmed)));
 
-            if mine != theirs {
+            if mine != strict || theirs != strict {
                 panic!(
-                    "scalar-type divergence for value {:?} -- yaml-edit resolved as {:?}, saphyr as {:?}\ninput:\n{}",
-                    text, mine, theirs, input,
+                    "scalar-type divergence for value {:?} -- spec says {:?}, yaml-edit says {:?}, saphyr says {:?}\ninput:\n{}",
+                    text, strict, mine, theirs, input,
                 );
             }
         }

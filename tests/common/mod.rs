@@ -6,24 +6,34 @@
 #![allow(dead_code)]
 
 use rowan::ast::AstNode;
-use yaml_edit::{debug, Document, Lang, YamlFile};
+use yaml_edit::{debug, Document, YamlFile};
 
-/// Assert that `doc`'s tree satisfies the structural invariants and roundtrips.
+/// Assert that a `Document`'s CST is structurally valid and roundtrips
+/// through the parser without change.
+///
+/// Call after every mutation in mutation-oriented tests. Catches
+/// silent CST corruption (missing/duplicate NEWLINE, stacked INDENT,
+/// unterminated block entries) even when the pre- and post-mutation
+/// text look identical to the eye.
+#[track_caller]
 pub fn assert_cst_ok(doc: &Document) {
-    check(doc);
-}
-
-/// Assert that `file`'s tree satisfies the structural invariants and roundtrips.
-pub fn assert_file_cst_ok(file: &YamlFile) {
-    check(file);
-}
-
-fn check<N: AstNode<Language = Lang> + std::fmt::Display>(node: &N) {
-    let syntax = node.syntax();
+    let syntax = doc.syntax();
     if let Err(e) = debug::validate_tree(syntax) {
-        panic!("invariant violated: {e}\n---\n{node}\n---");
+        panic!("CST invariant violated: {e}\n---\n{doc}\n---");
     }
     if let Err(e) = debug::roundtrip_ok(syntax) {
-        panic!("roundtrip failed: {e}\n---\n{node}\n---");
+        panic!("roundtrip failed: {e}\n---\n{doc}\n---");
+    }
+}
+
+/// Like [`assert_cst_ok`], but for a whole `YamlFile` (multi-document).
+#[track_caller]
+pub fn assert_file_cst_ok(file: &YamlFile) {
+    let syntax = file.syntax();
+    if let Err(e) = debug::validate_tree(syntax) {
+        panic!("CST invariant violated: {e}\n---\n{file}\n---");
+    }
+    if let Err(e) = debug::roundtrip_ok(syntax) {
+        panic!("roundtrip failed: {e}\n---\n{file}\n---");
     }
 }

@@ -207,7 +207,7 @@ pub use lex::{
     WhitespaceError, WhitespaceErrorCategory,
 };
 pub use parse::Parse;
-pub use scalar::{ScalarStyle, ScalarType, ScalarValue};
+pub use scalar::{CoreScalarType, ScalarStyle, ScalarType, ScalarValue};
 pub use schema::{
     CustomSchema, CustomValidationResult, Schema, SchemaValidator, ValidationError,
     ValidationErrorKind, ValidationResult,

@@ -406,6 +406,7 @@ impl Sequence {
                                         SyntaxKind::SCALAR
                                             | SyntaxKind::MAPPING
                                             | SyntaxKind::SEQUENCE
+                                            | SyntaxKind::ALIAS
                                             | SyntaxKind::TAGGED_NODE
                                     ) =>
                                 {
@@ -763,6 +764,25 @@ mod tests {
         assert_eq!(
             values[1].as_scalar().map(|s| s.as_string()),
             Some("bar".to_string())
+        );
+    }
+
+    #[test]
+    fn test_sequence_set_alias() {
+        let yaml = "colors:\n  - *red\n  - keep\n";
+        let parsed = YamlFile::from_str(yaml).unwrap();
+        let doc = parsed.document().unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let colors_node = mapping.get("colors").unwrap();
+        let seq = colors_node.as_sequence().unwrap();
+
+        assert!(seq.set(0, "blue"));
+        assert_eq!(parsed.to_string(), "colors:\n  - blue\n  - keep\n");
+
+        let first = seq.get(0).unwrap();
+        assert_eq!(
+            first.as_scalar().map(|s| s.as_string()),
+            Some("blue".to_string())
         );
     }
 

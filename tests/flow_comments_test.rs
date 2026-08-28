@@ -189,10 +189,6 @@ flow_mapping: {
     assert_eq!(val3.as_scalar().unwrap().as_string(), "value3");
 }
 
-// ========================================
-// Comment Edge Cases
-// ========================================
-
 #[test]
 fn test_comment_with_only_whitespace() {
     // Comment with only whitespace after # character

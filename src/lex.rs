@@ -1478,7 +1478,7 @@ double: "quoted""#;
         let tokens = lex(input);
 
         // Print tokens for debugging
-        println!("Comprehensive tokens:");
+        println!("Tokens:");
         for (i, (kind, text)) in tokens.iter().enumerate() {
             println!("  {}: {:?} = {:?}", i, kind, text);
         }

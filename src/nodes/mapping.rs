@@ -188,7 +188,7 @@ fn append_comma_space_to_entry(entry: &SyntaxNode) {
 }
 
 /// Walk `entry`'s tokens in document order (descending into child nodes)
-/// looking for a COMMENT on the same line as the key — that is, the first
+/// looking for a COMMENT on the same line as the key - that is, the first
 /// COMMENT after the entry's COLON and before the first NEWLINE. Returns
 /// the comment's text plus the WHITESPACE that precedes it (defaulting to
 /// `"  "` for comments with no leading space); `None` if the key line has
@@ -224,7 +224,7 @@ fn find_key_line_comment(entry: &SyntaxNode) -> Option<(String, String)> {
     None
 }
 
-/// True if `source` is a block scalar (literal `|` or folded `>`) — its
+/// True if `source` is a block scalar (literal `|` or folded `>`) - its
 /// first token is the block indicator that must sit on the same line as
 /// the key.
 fn is_block_scalar(source: &SyntaxNode) -> bool {
@@ -263,7 +263,7 @@ fn build_block_value_node(source: &SyntaxNode, target: usize) -> (SyntaxNode, bo
 
     let mut value_builder = GreenNodeBuilder::new();
     value_builder.start_node(SyntaxKind::VALUE.into());
-    // "key: &anchor" — a leading space then the anchor sits on the key line.
+    // "key: &anchor" - a leading space then the anchor sits on the key line.
     if let Some(a) = anchor.as_deref() {
         value_builder.token(SyntaxKind::WHITESPACE.into(), " ");
         value_builder.token(SyntaxKind::ANCHOR.into(), a);
@@ -331,7 +331,7 @@ fn build_tagged_value_node(source: &SyntaxNode, target: usize) -> (SyntaxNode, b
     let ends_with_newline = match inner {
         None => false,
         Some(inner) if node_is_inline(&inner) => {
-            // e.g. `!!str value` — content on same line, verbatim copy.
+            // e.g. `!!str value` - content on same line, verbatim copy.
             value_builder.token(SyntaxKind::WHITESPACE.into(), " ");
             value_builder.start_node(inner.kind().into());
             let n = crate::as_yaml::copy_node_content_reindent(&mut value_builder, &inner, 0);
@@ -373,7 +373,7 @@ fn source_anchor_text(source: &SyntaxNode) -> Option<String> {
     None
 }
 
-/// Find the content indent of a block scalar — the INDENT token right after
+/// Find the content indent of a block scalar - the INDENT token right after
 /// the `|`/`>` indicator and its NEWLINE. Returns `None` if the scalar is
 /// empty (no content lines).
 fn block_scalar_content_indent(scalar: &SyntaxNode) -> Option<usize> {
@@ -683,11 +683,11 @@ impl MappingEntry {
         // level, or at MAPPING level (for explicit-key entries).
         if value_ends_with_newline {
             // Drop the MAPPING_ENTRY-level trailing NEWLINE that was the
-            // OLD entry's terminator — the new VALUE has its own.
+            // OLD entry's terminator - the new VALUE has its own.
             self.detach_last_if_newline();
         } else if !self.ends_with_newline() {
             // New value doesn't provide one and the entry doesn't have
-            // one — append so we don't glue onto the next entry.
+            // one - append so we don't glue onto the next entry.
             self.append(vec![fresh_token(SyntaxKind::NEWLINE, "\n")]);
         }
         let entry_ends_with_nl = self.ends_with_newline();
@@ -798,7 +798,7 @@ impl MappingEntry {
         // block VALUE (`k:  # note\n  - block`), detach it: the new inline
         // `new_value_node` already carries the rescued comment inside
         // itself. Leaving the old tokens would duplicate the comment and
-        // — since comments extend to end of line — swallow the new value.
+        // - since comments extend to end of line - swallow the new value.
         let stale: Vec<_> = self
             .0
             .children_with_tokens()
@@ -819,7 +819,7 @@ impl MappingEntry {
             vec![new_value_node.clone().into()],
         );
 
-        // Ensure a single WHITESPACE sits between COLON and VALUE — the
+        // Ensure a single WHITESPACE sits between COLON and VALUE - the
         // old block VALUE typically had none.
         if let Some(idx) = self.value_index() {
             let prev_is_ws = idx.checked_sub(1).is_some_and(|p| {
@@ -925,7 +925,7 @@ impl Mapping {
 
     /// Get the raw content syntax node for `key` (for advanced CST access).
     ///
-    /// Returns the content node inside the `VALUE` wrapper — i.e. the actual
+    /// Returns the content node inside the `VALUE` wrapper - i.e. the actual
     /// `SCALAR`, `MAPPING`, or `SEQUENCE` node. Returns `None` if the key does
     /// not exist. For most use cases prefer [`get`](Self::get).
     pub(crate) fn get_node(&self, key: impl crate::AsYaml) -> Option<SyntaxNode> {
@@ -951,7 +951,7 @@ impl Mapping {
     /// mapping.
     ///
     /// Because [`Mapping`] uses interior mutability via rowan's `SyntaxNode`,
-    /// the closure receives a shared reference — mutations are still possible
+    /// the closure receives a shared reference - mutations are still possible
     /// through the node's `set`, `remove`, and other `&self` methods.
     pub fn modify_mapping<F>(&self, key: impl crate::AsYaml, f: F) -> bool
     where
@@ -1308,7 +1308,7 @@ impl Mapping {
 
     /// Set a key-value pair, replacing the existing value if the key exists or
     /// appending a new entry if it does not. Accepts any value that implements
-    /// [`AsYaml`](crate::AsYaml) — scalars, mappings, sequences, etc.
+    /// [`AsYaml`](crate::AsYaml) - scalars, mappings, sequences, etc.
     ///
     /// This method always succeeds; it never silently ignores input. See also
     /// [`insert_after`](Self::insert_after) and [`insert_before`](Self::insert_before)
@@ -1853,7 +1853,7 @@ impl Mapping {
     /// Move a key-value pair to immediately after an existing key.
     ///
     /// If `new_key` already exists in the mapping, it is first **removed** from its
-    /// current position and then re-inserted after `after_key` with the new value —
+    /// current position and then re-inserted after `after_key` with the new value -
     /// so the key ends up at the requested position regardless of where it was before.
     ///
     /// If `after_key` is not found, returns `false` and leaves the mapping unchanged.
@@ -2685,7 +2685,7 @@ impl Mapping {
             return true;
         }
 
-        // Key doesn't exist yet — delegate to move_after, which already contains
+        // Key doesn't exist yet - delegate to move_after, which already contains
         // the correct insertion logic (including newline handling for entries
         // that lack a trailing newline). The two methods differ only in what
         // they do when the key *already* exists.
@@ -2717,7 +2717,7 @@ impl Mapping {
             return self.find_entry_by_key(&before_key).is_some();
         }
 
-        // Key doesn't exist yet — delegate to move_before, which already contains
+        // Key doesn't exist yet - delegate to move_before, which already contains
         // the correct insertion logic. The two methods differ only in what they do
         // when the key *already* exists.
         self.move_before(before_key, key, value)
@@ -3331,10 +3331,6 @@ last: '999'"#;
         }
     }
 
-    // Tests from mapping_operations_test.rs
-
-    // ===== Basic accessor tests =====
-
     #[test]
     fn test_mapping_keys() {
         let yaml = YamlFile::from_str("name: Alice\nage: 30\ncity: NYC").unwrap();
@@ -3396,8 +3392,6 @@ last: '999'"#;
         assert!(!mapping.is_empty());
         assert!(mapping.contains_key("key"));
     }
-
-    // ===== Mutation tests =====
 
     #[test]
     fn test_mapping_ops_set_new_key() {
@@ -3567,8 +3561,6 @@ downloads: 1000
         assert_eq!(yaml.to_string(), expected);
     }
 
-    // ===== Nested structure tests =====
-
     #[test]
     fn test_mapping_get_nested_mapping() {
         let yaml = YamlFile::from_str("user:\n  name: Alice\n  age: 30").unwrap();
@@ -3612,8 +3604,6 @@ downloads: 1000
         assert_eq!(mapping.get_mapping("user"), None);
         assert_eq!(mapping.get_sequence("items"), None);
     }
-
-    // ===== Rename key tests =====
 
     #[test]
     fn test_rename_key_nonexistent() {
@@ -3667,8 +3657,6 @@ downloads: 1000
         assert_eq!(keys, vec!["name", "age", "location"]);
     }
 
-    // ===== Multiple value type tests =====
-
     #[test]
     fn test_mapping_with_different_value_types() {
         let yaml = YamlFile::from_str("string: hello\nnumber: 42\nbool: true").unwrap();
@@ -3704,8 +3692,6 @@ downloads: 1000
             Some("hello".to_string())
         );
     }
-
-    // ===== Edge case tests =====
 
     #[test]
     fn test_empty_mapping_operations() {
@@ -3764,8 +3750,6 @@ downloads: 1000
         let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
         assert_eq!(keys, vec!["a", "b"]);
     }
-
-    // ===== Collection method tests =====
 
     #[test]
     fn test_mapping_len_empty() {

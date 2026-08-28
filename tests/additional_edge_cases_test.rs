@@ -1,16 +1,7 @@
-//! Additional edge cases from section 3 of better.md
-//!
-//! Tests cover:
-//! - Block scalar edge cases (mixed indentation, line endings, empty blocks)
-//! - Comment edge cases (inside quotes, Unicode, at EOF)
-//! - Flow collection edge cases (deeply nested, trailing commas)
+//! Additional edge cases: block scalars, comments, flow collections, and document streams.
 
 use std::str::FromStr;
 use yaml_edit::YamlFile;
-
-// ========================================
-// Block Scalar Edge Cases (Section 3.1)
-// ========================================
 
 /// Test Windows line endings (CRLF) in block scalars
 #[test]
@@ -177,10 +168,6 @@ block: |
     assert_eq!(output, yaml);
 }
 
-// ========================================
-// Comment Edge Cases (Section 3.3)
-// ========================================
-
 /// Test comment inside quoted string (should be literal, not a comment)
 #[test]
 fn test_comment_inside_quoted_string() {
@@ -311,10 +298,6 @@ fn test_comment_after_directive() {
     let tree = parsed.tree();
     assert!(tree.document().is_some());
 }
-
-// ========================================
-// Flow Collection Edge Cases (Section 3.4)
-// ========================================
 
 /// Test deeply nested flow collections (5 levels)
 #[test]
@@ -450,10 +433,6 @@ nested: {key: value}
     let output = doc.to_string();
     assert_eq!(output, yaml);
 }
-
-// ========================================
-// Document Stream Edge Cases (Section 3.6)
-// ========================================
 
 /// Test multiple documents with different schemas (flow vs block)
 #[test]

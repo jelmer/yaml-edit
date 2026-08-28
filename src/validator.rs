@@ -2126,7 +2126,7 @@ mod tests {
     #[test]
     fn test_validator_directive_with_tagged_node_content() {
         // A document with a tagged scalar following a directive should NOT be
-        // reported as "directive without content" — TAGGED_NODE is real content.
+        // reported as "directive without content" - TAGGED_NODE is real content.
         let yaml = "%YAML 1.2\n---\n!custom foo\n";
         let doc = crate::YamlFile::from_str(yaml).unwrap().document().unwrap();
         let validator = Validator::new();

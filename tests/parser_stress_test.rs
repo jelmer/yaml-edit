@@ -1,4 +1,4 @@
-//! Stress tests for YAML parser to ensure robustness
+//! Stress tests for the YAML parser.
 //!
 //! These tests verify parser behavior with:
 //! - Deep nesting and large documents

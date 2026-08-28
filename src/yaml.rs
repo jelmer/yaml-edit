@@ -105,7 +105,7 @@ impl ValueNode for Scalar {
     fn is_inline(&self) -> bool {
         // Block scalars (literal `|` and folded `>`) span multiple lines
         // starting on a NEW line after their indicator, so they don't
-        // render inline. Everything else — plain, quoted, tagged scalars —
+        // render inline. Everything else - plain, quoted, tagged scalars -
         // sits on the same line as its key.
         !self
             .0
@@ -1545,7 +1545,7 @@ impl Parser {
                 break;
             }
 
-            // No mapping key found — exit
+            // No mapping key found - exit
             if !self.is_mapping_key() && !self.is_complex_mapping_key() {
                 break;
             }
@@ -1701,7 +1701,7 @@ impl Parser {
                 break;
             }
 
-            // No dash — exit
+            // No dash - exit
             if self.current() != Some(SyntaxKind::DASH) {
                 break;
             }
@@ -2231,7 +2231,7 @@ impl Parser {
         while self.current().is_some() && self.is_mapping_key() {
             let tokens_before_iter = self.tokens.len();
             // is_mapping_key() returns true for QUESTION, but
-            // parse_mapping_key_value_pair does not consume a `?` key — that
+            // parse_mapping_key_value_pair does not consume a `?` key - that
             // would loop forever. Re-enter explicit-key handling for `?`.
             if self.current() == Some(SyntaxKind::QUESTION) {
                 self.parse_explicit_key_entries();
@@ -2846,7 +2846,7 @@ impl Parser {
                 self.skip_ws_and_newlines();
                 if self.current_line_indent > base_indent {
                     // Nested value is more indented than the enclosing mapping's
-                    // base indent — belongs to this key.
+                    // base indent - belongs to this key.
                     self.parse_value_with_base_indent(self.current_line_indent);
                     has_value = true;
                 } else if self.current_line_indent == base_indent
@@ -6712,7 +6712,7 @@ server:
     fn test_parse_mapping_with_stray_close_brace_does_not_hang() {
         // Regression: parse_mapping_with_base_indent must make progress when
         // is_mapping_key() is fooled by `}:` (or `]:`) appearing as a stray
-        // delimiter — the missing-colon recovery inserts a synthetic token
+        // delimiter - the missing-colon recovery inserts a synthetic token
         // without advancing the input.
         let input = "\0:\n\n}:\n\n{";
         let parse = crate::Parse::parse_yaml(input);

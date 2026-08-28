@@ -156,7 +156,7 @@ fn scalar_replaces_block_value_keeps_space() {
 
 #[test]
 fn preserves_anchor_on_block_source() {
-    // Anchors aren't reachable via the plain builders — parse the source.
+    // Anchors aren't reachable via the plain builders - parse the source.
     let src_file = YamlFile::from_str("k: &myanchor\n  - a\n  - b\n").unwrap();
     let src = src_file
         .document()
@@ -175,7 +175,7 @@ fn preserves_anchor_on_block_source() {
 
 #[test]
 fn reindents_tagged_block_value() {
-    // Tags aren't reachable via the plain builders — parse the source.
+    // Tags aren't reachable via the plain builders - parse the source.
     let src_file = YamlFile::from_str("k: !!omap\n  - alpha: 1\n  - beta: 2\n").unwrap();
     let src = src_file
         .document()

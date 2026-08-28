@@ -1315,6 +1315,29 @@ impl Mapping {
     /// which return `bool` to indicate whether the anchor key was found.
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
+    ///
+    /// `set` replaces the value with the node you pass. It does not infer
+    /// YAML 1.1 merge keys from a resolved map. To keep identity, pass an
+    /// alias node (`*name`) or a mapping that already contains `<<: *name`.
+    /// Merge **reads** (`get_resolved()`, `merged()`) stay separate from
+    /// this CST replace.
+    ///
+    /// ```
+    /// use std::str::FromStr;
+    /// use yaml_edit::Document;
+    ///
+    /// let doc = Document::from_str(
+    ///     "shared: &shared\n  timeout: 30\n  retries: 3\nservice_a: old\n",
+    /// )
+    /// .unwrap();
+    /// let mapping = doc.as_mapping().unwrap();
+    /// let merge = Document::from_str("<<: *shared\ntimeout: 60\n").unwrap();
+    /// mapping.set("service_a", merge.as_mapping().unwrap());
+    /// assert_eq!(
+    ///     doc.to_string(),
+    ///     "shared: &shared\n  timeout: 30\n  retries: 3\nservice_a:\n  <<: *shared\n  timeout: 60\n"
+    /// );
+    /// ```
     pub fn set(&self, key: impl crate::AsYaml, value: impl crate::AsYaml) {
         self.set_as_yaml(key, value);
     }

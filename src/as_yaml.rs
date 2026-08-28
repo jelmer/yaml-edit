@@ -538,7 +538,9 @@ impl AsYaml for YamlNode {
         _flow_context: bool,
     ) -> bool {
         let node = self.syntax();
+        builder.start_node(node.kind().into());
         copy_node_content(builder, node);
+        builder.finish_node();
         node.last_token()
             .map(|t| t.kind() == crate::lex::SyntaxKind::NEWLINE)
             .unwrap_or(false)
@@ -1012,6 +1014,25 @@ mod tests {
     use super::*;
     use crate::yaml::{Document, YamlFile};
     use std::str::FromStr;
+
+    #[test]
+    fn test_set_yaml_node_alias_round_trips_as_alias() {
+        let doc = Document::from_str("shared: &shared value\na: *shared\nb: old\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        mapping.set("b", mapping.get("a").unwrap());
+        assert_eq!(
+            doc.to_string(),
+            "shared: &shared value\na: *shared\nb: *shared\n"
+        );
+
+        match mapping.get("b").unwrap() {
+            YamlNode::Alias(alias) => {
+                assert_eq!(alias.name(), "shared");
+                assert_eq!(alias.value(), "*shared");
+            }
+            other => panic!("Expected alias, got {:?}", other),
+        }
+    }
 
     #[test]
     fn test_yaml_eq_different_quoting_styles() {

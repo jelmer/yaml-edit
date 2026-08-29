@@ -456,11 +456,7 @@ pub fn lex_with_validation_config<'a>(
                     // AND it's followed by whitespace or end of input
 
                     // Check if preceded only by whitespace from start of line
-                    // Look for either \n or \r as line breaks
-                    let line_start_pos = input[..token_start]
-                        .rfind(['\n', '\r'])
-                        .map(|pos| pos + 1)
-                        .unwrap_or(0);
+                    let line_start_pos = current_line_start;
                     let before_dash = &input[line_start_pos..token_start];
                     let only_whitespace_before = before_dash.chars().all(|c| c == ' ' || c == '\t');
 
@@ -508,10 +504,7 @@ pub fn lex_with_validation_config<'a>(
                 // the same scalar token -- so `+.INF` lexes as one FLOAT
                 // rather than PLUS + FLOAT. A bare `+` followed by
                 // whitespace stays PLUS.
-                let line_start = input[..start_idx]
-                    .rfind(['\n', '\r'])
-                    .map(|p| p + 1)
-                    .unwrap_or(0);
+                let line_start = current_line_start;
                 let is_chomping_indicator = input[line_start..start_idx]
                     .bytes()
                     .rev()
@@ -1004,8 +997,7 @@ pub fn lex_with_validation_config<'a>(
                     if next_ch == '-' {
                         // A hyphen is only a sequence marker if it's at line start
                         // and this scalar is already complete (we're at a word boundary)
-                        let line_start = input[..idx].rfind('\n').map(|p| p + 1).unwrap_or(0);
-                        let before_hyphen = &input[line_start..idx];
+                        let before_hyphen = &input[current_line_start..idx];
 
                         // If there's only whitespace before the hyphen, it might be a sequence marker
                         // Break here to let the main loop handle it
@@ -1104,6 +1096,18 @@ mod tests {
         assert!(!is_valid_anchor_name("comma,name"));
         assert!(!is_valid_anchor_name("bracket]name"));
         assert!(!is_valid_anchor_name("colon:name"));
+    }
+
+    #[test]
+    fn test_embedded_hyphens_stay_in_one_plain_scalar() {
+        let input = format!("k: {}\n", "a-".repeat(200));
+        let kinds: Vec<_> = lex(&input).into_iter().map(|(k, _)| k).collect();
+        assert!(kinds.contains(&SyntaxKind::STRING) || kinds.contains(&SyntaxKind::SCALAR));
+        let dash_count = kinds.iter().filter(|k| **k == SyntaxKind::DASH).count();
+        assert_eq!(dash_count, 0);
+        let seq = lex("- a\n- b\n");
+        let seq_dashes = seq.iter().filter(|(k, _)| *k == SyntaxKind::DASH).count();
+        assert_eq!(seq_dashes, 2);
     }
 
     /// Names accepted by [`is_valid_anchor_name`] must round-trip through the

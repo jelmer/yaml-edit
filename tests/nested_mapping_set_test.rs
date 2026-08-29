@@ -4,6 +4,9 @@
 use std::str::FromStr;
 use yaml_edit::{Mapping, MappingBuilder, Sequence, SequenceBuilder, YamlFile};
 
+mod common;
+use common::{assert_cst_ok, assert_file_cst_ok};
+
 /// Parse `yaml` and return the file plus its root mapping.
 fn parse(yaml: &str) -> (YamlFile, Mapping) {
     let file = YamlFile::from_str(yaml).unwrap();
@@ -44,6 +47,7 @@ fn block_sequence_in_nested_mapping() {
         "gui:\n  theme:\n    activeBorderColor:\n      - \"#old\"\n      - bold\n    other: keep\n",
     );
     dig(&root, &["gui", "theme"]).set("activeBorderColor", seq(&["\"#new\"", "bold"]));
+    assert_file_cst_ok(&tf);
     // See block_sequence_in_root_mapping about the single-quoting of `"#new"`.
     assert_eq!(
         tf.to_string(),
@@ -56,6 +60,7 @@ fn block_mapping_in_nested_mapping() {
     let (tf, root) = parse("outer:\n  inner:\n    replaced:\n      old_key: old\n    keep: yes\n");
     dig(&root, &["outer", "inner"])
         .set("replaced", map(&[("new_key", "new"), ("another", "value")]));
+    assert_file_cst_ok(&tf);
     assert_eq!(
         tf.to_string(),
         "outer:\n  inner:\n    replaced:\n      new_key: new\n      another: value\n    keep: yes\n"
@@ -66,6 +71,7 @@ fn block_mapping_in_nested_mapping() {
 fn block_sequence_in_root_mapping() {
     let (tf, root) = parse("activeBorderColor:\n  - \"#old\"\n  - bold\nother: keep\n");
     root.set("activeBorderColor", seq(&["\"#new\"", "bold"]));
+    assert_file_cst_ok(&tf);
     // The scalar `"#new"` starts with `#`, so the SequenceBuilder wraps
     // it in single quotes to keep it a scalar rather than a comment start.
     assert_eq!(
@@ -81,6 +87,7 @@ fn replaces_inline_scalar_with_block_sequence() {
     // duplicate the entry's trailing NEWLINE.
     let (tf, root) = parse("a: 1\nb: 2\nc: 3\n");
     root.set("b", seq(&["x", "y"]));
+    assert_file_cst_ok(&tf);
     assert_eq!(tf.to_string(), "a: 1\nb:\n  - x\n  - y\nc: 3\n");
 }
 
@@ -101,6 +108,7 @@ fn preserves_relative_indent_of_nested_source() {
 
     let (tf, root) = parse("outer:\n  inner:\n    tgt: old\n");
     dig(&root, &["outer", "inner"]).set("tgt", &src);
+    assert_file_cst_ok(&tf);
     assert_eq!(
         tf.to_string(),
         "outer:\n  inner:\n    tgt:\n      a:\n        - x:\n            nested: 1\n          other: v\n"
@@ -111,6 +119,7 @@ fn preserves_relative_indent_of_nested_source() {
 fn inserts_new_block_key_with_proper_indent() {
     let (tf, root) = parse("outer:\n  inner:\n    old: v\n");
     dig(&root, &["outer", "inner"]).set("newkey", seq(&["a", "b"]));
+    assert_file_cst_ok(&tf);
     assert_eq!(
         tf.to_string(),
         "outer:\n  inner:\n    old: v\n    newkey:\n      - a\n      - b\n"
@@ -123,6 +132,7 @@ fn preserves_inline_comment_on_replaced_value() {
     // value by moving up to the `key:` line.
     let (tf, root) = parse("outer:\n  key: old  # important comment\n");
     dig(&root, &["outer"]).set("key", seq(&["a", "b"]));
+    assert_file_cst_ok(&tf);
     assert_eq!(
         tf.to_string(),
         "outer:\n  key:  # important comment\n    - a\n    - b\n"
@@ -144,6 +154,7 @@ fn replaces_scalar_with_literal_block_scalar() {
         .unwrap();
     let (tf, root) = parse("outer:\n  key: old\n");
     dig(&root, &["outer"]).set("key", &src);
+    assert_file_cst_ok(&tf);
     assert_eq!(tf.to_string(), "outer:\n  key: |\n    line1\n    line2\n");
 }
 
@@ -151,6 +162,7 @@ fn replaces_scalar_with_literal_block_scalar() {
 fn scalar_replaces_block_value_keeps_space() {
     let (tf, root) = parse("k:\n  - a\n  - b\n");
     root.set("k", "modified");
+    assert_file_cst_ok(&tf);
     assert_eq!(tf.to_string(), "k: modified\n");
 }
 
@@ -167,6 +179,7 @@ fn preserves_anchor_on_block_source() {
         .unwrap();
     let (tf, root) = parse("outer:\n  key: old\n");
     dig(&root, &["outer"]).set("key", &src);
+    assert_file_cst_ok(&tf);
     assert_eq!(
         tf.to_string(),
         "outer:\n  key: &myanchor\n    - a\n    - b\n"
@@ -186,6 +199,7 @@ fn reindents_tagged_block_value() {
         .unwrap();
     let (tf, root) = parse("outer:\n  key: old\n");
     dig(&root, &["outer"]).set("key", &src);
+    assert_file_cst_ok(&tf);
     assert_eq!(
         tf.to_string(),
         "outer:\n  key: !!omap\n    - alpha: 1\n    - beta: 2\n"
@@ -204,6 +218,7 @@ fn preserves_anchor_on_inline_source() {
         .unwrap();
     let (tf, root) = parse("outer:\n  key: old\n");
     dig(&root, &["outer"]).set("key", &src);
+    assert_file_cst_ok(&tf);
     assert_eq!(tf.to_string(), "outer:\n  key: &a hello\n");
 }
 
@@ -212,6 +227,7 @@ fn scalar_replaces_block_value_with_anchor_or_tag() {
     for target in ["k: &a\n  - old\n", "k: !!seq\n  - old\n"] {
         let (tf, root) = parse(target);
         root.set("k", "new");
+        assert_file_cst_ok(&tf);
         assert_eq!(tf.to_string(), "k: new\n");
     }
 }
@@ -220,6 +236,7 @@ fn scalar_replaces_block_value_with_anchor_or_tag() {
 fn explicit_key_scalar_to_block_no_blank_line() {
     let (tf, root) = parse("? mykey\n: old_scalar\n");
     root.set("mykey", seq(&["a"]));
+    assert_file_cst_ok(&tf);
     assert_eq!(tf.to_string(), "? mykey\n:\n  - a\n");
 }
 
@@ -227,6 +244,7 @@ fn explicit_key_scalar_to_block_no_blank_line() {
 fn preserves_blank_line_between_entries() {
     let (tf, root) = parse("a: 1\n\nb: 2\n");
     root.set("a", seq(&["x"]));
+    assert_file_cst_ok(&tf);
     assert_eq!(tf.to_string(), "a:\n  - x\n\nb: 2\n");
 }
 
@@ -234,6 +252,7 @@ fn preserves_blank_line_between_entries() {
 fn scalar_over_block_preserves_key_line_comment() {
     let (tf, root) = parse("k:  # sticky\n  - old\n");
     root.set("k", "new");
+    assert_file_cst_ok(&tf);
     assert_eq!(tf.to_string(), "k:  new  # sticky\n");
 }
 
@@ -247,6 +266,7 @@ fn set_path_creates_intermediate_mappings_with_indent() {
 
     let doc = Document::from_str("managers:\n  pm:\n    runtime: claude-code\n").unwrap();
     doc.set_path("managers.pm.interfaces.telegram.bot_token_env", "TOKEN");
+    assert_cst_ok(&doc);
     assert_eq!(
         doc.to_string(),
         "managers:\n  pm:\n    runtime: claude-code\n    interfaces:\n      telegram:\n        bot_token_env: TOKEN\n"
@@ -256,14 +276,17 @@ fn set_path_creates_intermediate_mappings_with_indent() {
 #[test]
 fn round_trip_scalar_block_preserves_comment() {
     let (tf, root) = parse("key: initial  # sticky\n");
-    // scalar → block
+    // scalar to block
     root.set("key", seq(&["item0"]));
+    assert_file_cst_ok(&tf);
     assert_eq!(tf.to_string(), "key:  # sticky\n  - item0\n");
-    // block → scalar
+    // block to scalar
     root.set("key", "back");
+    assert_file_cst_ok(&tf);
     assert_eq!(tf.to_string(), "key: back  # sticky\n");
-    // scalar → mapping. MappingBuilder passes string values through, so
+    // scalar to mapping. MappingBuilder passes string values through, so
     // numeric-looking string values get quoted to preserve their type.
     root.set("key", map(&[("a", "1"), ("b", "2")]));
+    assert_file_cst_ok(&tf);
     assert_eq!(tf.to_string(), "key:  # sticky\n  a: '1'\n  b: '2'\n");
 }

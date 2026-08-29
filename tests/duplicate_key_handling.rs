@@ -18,6 +18,9 @@
 use std::str::FromStr;
 use yaml_edit::Document;
 
+mod common;
+use common::assert_cst_ok;
+
 #[test]
 fn test_find_all_entries_by_key() {
     let yaml = r#"
@@ -69,6 +72,7 @@ Reference: Third
     for entry in refs.into_iter().skip(1) {
         entry.remove();
     }
+    assert_cst_ok(&doc);
 
     // Verify only one Reference remains
     let remaining: Vec<_> = mapping.find_all_entries_by_key("Reference").collect();
@@ -100,6 +104,7 @@ Reference: Third
 
     // Remove the second occurrence (index 1)
     let removed = mapping.remove_nth_occurrence("Reference", 1);
+    assert_cst_ok(&doc);
     assert!(removed.is_some());
 
     let removed_value = removed
@@ -147,6 +152,7 @@ Reference: Third
 
     // Remove the first occurrence (index 0)
     let removed = mapping.remove_nth_occurrence("Reference", 0);
+    assert_cst_ok(&doc);
     assert!(removed.is_some());
 
     let removed_value = removed
@@ -189,6 +195,7 @@ Reference: Third
 
     // Remove the last occurrence (index 2)
     let removed = mapping.remove_nth_occurrence("Reference", 2);
+    assert_cst_ok(&doc);
     assert!(removed.is_some());
 
     let removed_value = removed
@@ -230,6 +237,7 @@ Reference: Second
 
     // Try to remove the third occurrence (index 2) when only 2 exist
     let removed = mapping.remove_nth_occurrence("Reference", 2);
+    assert_cst_ok(&doc);
     assert!(removed.is_none());
 
     // Verify both entries still exist
@@ -249,6 +257,7 @@ Reference: Second
 
     // Try to remove from a non-existent key
     let removed = mapping.remove_nth_occurrence("NotFound", 0);
+    assert_cst_ok(&doc);
     assert!(removed.is_none());
 
     // Verify all entries still exist
@@ -275,6 +284,7 @@ Reference: Third
     for entry in refs.into_iter().skip(1) {
         entry.remove();
     }
+    assert_cst_ok(&doc);
 
     let result = doc.to_string();
     let expected = "Name: Slugify\nReference: First\nArchive: GitHub\nVersion: 1.0\n";

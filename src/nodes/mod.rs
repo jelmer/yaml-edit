@@ -1,4 +1,107 @@
 //! AST node types for YAML.
+//!
+//! # CST invariants
+//!
+//! yaml-edit is a lossless editor: every mutation produces text that
+//! re-parses into the same tree shape (see [`crate::debug::roundtrip_ok`]
+//! and [`crate::debug::validate_tree`]). To keep that property, all
+//! mutation helpers in this module must uphold the following invariants
+//! on the concrete syntax tree.
+//!
+//! ## Where whitespace lives
+//!
+//! For a block-style mapping entry `key:\n  - a`, the NEWLINE after
+//! `key:` and the INDENT before the SEQUENCE both live inside the parent
+//! VALUE, *not* inside the child SEQUENCE. The SEQUENCE_ENTRYs
+//! themselves carry only the DASH, WHITESPACE, and content:
+//!
+//! ```text
+//! MAPPING_ENTRY
+//!   KEY ...
+//!   COLON ":"
+//!   VALUE
+//!     NEWLINE "\n"
+//!     INDENT "  "
+//!     SEQUENCE
+//!       SEQUENCE_ENTRY
+//!         DASH "-"
+//!         WHITESPACE " "
+//!         SCALAR ...
+//! ```
+//!
+//! Consequence: when constructing a fresh block SEQUENCE or MAPPING to
+//! splice under a key, do **not** prepend its own leading INDENT for the
+//! first entry - the parent VALUE already carries one. Duplicating it
+//! renders as doubled indentation and violates the no-stacked-INDENT
+//! check in [`crate::debug::validate_tree`].
+//!
+//! For flow-style values (`{a: 1}`, `[1, 2]`) all separators live
+//! *inside* the flow SEQUENCE / MAPPING: the parent VALUE has no direct
+//! NEWLINE child. `value_is_block` in `mapping.rs` distinguishes the two
+//! by looking for a NEWLINE token as a direct child of VALUE.
+//!
+//! ## Entry termination
+//!
+//! Block-style MAPPING_ENTRY and SEQUENCE_ENTRY nodes are terminated by
+//! a NEWLINE. That terminator normally lives as the entry's own last
+//! token, but the parser sometimes lifts it out when a trailing comment
+//! separates it from the next sibling:
+//!
+//! ```text
+//! # SEQUENCE_ENTRY ends with STRING; the NEWLINE lives at the SEQUENCE
+//! # level after the following COMMENT.
+//! SEQUENCE
+//!   SEQUENCE_ENTRY
+//!     DASH "-"
+//!     SCALAR ("a")
+//!   WHITESPACE "  "
+//!   COMMENT "# note"
+//!   NEWLINE "\n"
+//!   SEQUENCE_ENTRY ...
+//! ```
+//!
+//! Two carve-outs:
+//! - The **last** entry of a block collection may lack a terminator
+//!   (unterminated sources like `a: 1\nb: 2` are legitimate YAML and
+//!   must roundtrip).
+//! - An **explicit-key** MAPPING_ENTRY (`? key\n`) with an implicit-null
+//!   value has a zero-width `SCALAR { NULL "" }` as its last leaf; the
+//!   NEWLINE lives inside the KEY subtree.
+//!
+//! When inserting a new sibling entry after an existing one, mutation
+//! helpers must first ensure the predecessor is terminated
+//! (`ensure_trailing_newline` in `mapping.rs` / `sequence.rs`).
+//!
+//! ## No stacked INDENTs, no double trailing NEWLINEs
+//!
+//! Two adjacent INDENT tokens as direct children of the same node
+//! concatenate at render time and produce visibly-wrong indentation
+//! (this was the shape of issue #38). Two adjacent NEWLINE tokens at the
+//! tail of a MAPPING_ENTRY or SEQUENCE_ENTRY render as a stray blank
+//! line (issue #18).
+//!
+//! Both are checked by [`crate::debug::validate_tree`]; mutation helpers
+//! must not produce either. Note the check for double NEWLINE is scoped
+//! to *entries*, not their parent MAPPING / SEQUENCE containers: bare
+//! NEWLINEs between entries (blank-line separators) are valid formatting
+//! and appear at the container level.
+//!
+//! ## Flow separators live on the previous entry
+//!
+//! Inside a flow mapping or sequence, the COMMA (and any following
+//! WHITESPACE / NEWLINE / INDENT) between two entries is stored as
+//! trailing siblings of the *previous* entry's KEY / VALUE / SCALAR,
+//! not inside the entry it precedes. Inserters that append a new entry
+//! must add a `, ` suffix to the entry they follow, not a `,` prefix on
+//! themselves.
+//!
+//! ## Prefer targeted splices over whole-node rebuilds
+//!
+//! Reconstructing an entire MAPPING or SEQUENCE from a builder discards
+//! anchors, tags, comments, quoting styles, and any tokens the fix
+//! didn't know about. Mutation helpers should locate the specific
+//! `NodeOrToken` range they need to change and use `splice_children`,
+//! preserving the surrounding tokens.
 
 use crate::lex::SyntaxKind;
 

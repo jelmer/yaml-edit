@@ -1,3 +1,6 @@
+mod common;
+use common::assert_file_cst_ok;
+
 #[test]
 fn test_explicit_key_mutations() {
     use std::str::FromStr;
@@ -32,6 +35,7 @@ fn test_explicit_key_mutations() {
 
     // Change value1 to newvalue
     mapping.set("key1", "newvalue");
+    assert_file_cst_ok(&doc);
 
     // Verify mutation via API
     assert_eq!(
@@ -68,6 +72,7 @@ fn test_explicit_key_mutations() {
 
     // Add new key
     mapping2.set("newkey", "newvalue");
+    assert_file_cst_ok(&doc2);
 
     // Verify addition via API
     assert_eq!(mapping2.len(), 2);

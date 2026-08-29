@@ -534,16 +534,28 @@ impl AsYaml for YamlNode {
     fn build_content(
         &self,
         builder: &mut rowan::GreenNodeBuilder,
-        _indent: usize,
-        _flow_context: bool,
+        indent: usize,
+        flow_context: bool,
     ) -> bool {
-        let node = self.syntax();
-        builder.start_node(node.kind().into());
-        copy_node_content(builder, node);
-        builder.finish_node();
-        node.last_token()
-            .map(|t| t.kind() == crate::lex::SyntaxKind::NEWLINE)
-            .unwrap_or(false)
+        match self {
+            YamlNode::Scalar(s) => s.build_content(builder, indent, flow_context),
+            YamlNode::Mapping(m) => m.build_content(builder, indent, flow_context),
+            YamlNode::Sequence(s) => s.build_content(builder, indent, flow_context),
+            YamlNode::Alias(a) => {
+                let node = a.syntax();
+                builder.start_node(node.kind().into());
+                let inner = a.build_content(builder, indent, flow_context);
+                builder.finish_node();
+                inner
+            }
+            YamlNode::TaggedNode(t) => {
+                let node = t.syntax();
+                builder.start_node(node.kind().into());
+                let inner = t.build_content(builder, indent, flow_context);
+                builder.finish_node();
+                inner
+            }
+        }
     }
 
     fn is_inline(&self) -> bool {
@@ -1016,7 +1028,7 @@ mod tests {
     use std::str::FromStr;
 
     #[test]
-    fn test_set_yaml_node_alias_round_trips_as_alias() {
+    fn test_mapping_set_preserves_alias_kind() {
         let doc = Document::from_str("shared: &shared value\na: *shared\nb: old\n").unwrap();
         let mapping = doc.as_mapping().unwrap();
         mapping.set("b", mapping.get("a").unwrap());

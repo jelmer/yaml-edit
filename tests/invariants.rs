@@ -241,21 +241,21 @@ fn set_path_after_explicit_key_does_not_leave_blank_line() {
 // fix time.
 
 #[test]
-#[ignore = "Sequence::pop on last item leaves broken scaffold; should collapse to `key: []`"]
-fn sequence_pop_last_item_leaves_broken_scaffold() {
+fn sequence_pop_last_item_collapses_to_flow_empty() {
     let doc = Document::from_str("s:\n  - a\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.pop();
-    // Current: "s:\n  " (invalid). Wanted: "s: []\n".
     assert_eq!(doc.to_string(), "s: []\n");
     check(&doc);
     let reparsed = Document::from_str(&doc.to_string()).unwrap();
-    assert!(reparsed.as_mapping().and_then(|m| m.get_sequence("s")).is_some());
+    assert!(reparsed
+        .as_mapping()
+        .and_then(|m| m.get_sequence("s"))
+        .is_some());
 }
 
 #[test]
-#[ignore = "Sequence::remove on last item leaves broken scaffold; should collapse to `key: []`"]
-fn sequence_remove_last_item_leaves_broken_scaffold() {
+fn sequence_remove_last_item_collapses_to_flow_empty() {
     let doc = Document::from_str("s:\n  - a\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.remove(0);
@@ -264,12 +264,35 @@ fn sequence_remove_last_item_leaves_broken_scaffold() {
 }
 
 #[test]
-#[ignore = "Sequence::clear on non-empty block sequence leaves broken scaffold"]
-fn sequence_clear_block_leaves_broken_scaffold() {
+fn sequence_clear_block_collapses_to_flow_empty() {
     let doc = Document::from_str("s:\n  - a\n  - b\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.clear();
     assert_eq!(doc.to_string(), "s: []\n");
+    check(&doc);
+}
+
+#[test]
+fn sequence_remove_last_entry_preserves_following_mapping_entry() {
+    // The new-last SEQUENCE_ENTRY's trailing NEWLINE doubles as the
+    // separator between the containing MAPPING_ENTRY and its next
+    // sibling; removing the sequence's last entry must not strip it.
+    let doc = Document::from_str("s:\n  - a\n  - b\n  - c\na: ''\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.pop();
+    check(&doc);
+    assert_eq!(doc.to_string(), "s:\n  - a\n  - b\na: ''\n");
+}
+
+#[test]
+fn sequence_remove_first_entry_preserves_new_first_indent() {
+    // The INDENT that separated entry 0 from entry 1 must be dropped
+    // when entry 0 goes, otherwise it becomes a leading INDENT inside
+    // SEQUENCE that stacks with the parent VALUE's INDENT.
+    let doc = Document::from_str("s:\n  - a\n  - b\n  - c\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.remove(0);
+    assert_eq!(doc.to_string(), "s:\n  - b\n  - c\n");
     check(&doc);
 }
 

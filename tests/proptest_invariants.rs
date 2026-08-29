@@ -152,11 +152,10 @@ fn seed_strat() -> impl Strategy<Value = &'static str> {
 // versions -- see fuzz/fuzz_targets/mutation_invariants.rs for the full
 // rationale on each check.
 //
-// Several helpers are `#[allow(dead_code)]` while their matching Op
-// branch is suppressed (see the `Op::Seq*` arms in `apply`). Once the
-// corresponding known-bug tests in tests/invariants.rs are fixed and
-// un-ignored, the Op suppressions can be lifted and the helpers will
-// be called again.
+// The insert helper is `#[allow(dead_code)]` while its matching Op
+// branch is suppressed (see `Op::SeqInsert` in `apply`); un-suppressing
+// is gated on the corresponding known-bug tests in tests/invariants.rs
+// being fixed and un-ignored.
 
 fn reparse_seq(doc: &Document, key: &str, op: &str) -> Sequence {
     let text = doc.to_string();
@@ -202,7 +201,6 @@ fn assert_seq_push_stuck(seq: &Sequence, before: usize, v: &str, doc: &Document,
     }
 }
 
-#[allow(dead_code)]
 fn assert_seq_pop_stuck(seq: &Sequence, before: usize, popped: bool, doc: &Document, key: &str) {
     let op = "SeqPop";
     let after = seq.len();
@@ -214,17 +212,16 @@ fn assert_seq_pop_stuck(seq: &Sequence, before: usize, popped: bool, doc: &Docum
         );
     }
     if popped && before == 0 {
-        panic!("{op}: reported pop of an empty sequence, text: {:?}", doc.to_string());
+        panic!(
+            "{op}: reported pop of an empty sequence, text: {:?}",
+            doc.to_string()
+        );
     }
     if !popped && before > 0 {
-        panic!("{op}: refused to pop a non-empty sequence, text: {:?}", doc.to_string());
-    }
-    // Known bug: emptying a block sequence under a key ("s:\n  - a\n"
-    // -> pop) leaves "s:\n  ", which re-parses without the sequence at
-    // key. Skip the re-parse check in that specific shape so the fuzz
-    // can surface other issues.
-    if after == 0 && before > 0 {
-        return;
+        panic!(
+            "{op}: refused to pop a non-empty sequence, text: {:?}",
+            doc.to_string()
+        );
     }
     let reparsed = reparse_seq(doc, key, op);
     if reparsed.len() != after {
@@ -315,7 +312,6 @@ fn assert_seq_set_stuck(
     }
 }
 
-#[allow(dead_code)]
 fn assert_seq_remove_stuck(
     seq: &Sequence,
     before: usize,
@@ -339,11 +335,6 @@ fn assert_seq_remove_stuck(
             doc.to_string()
         );
     }
-    // Known bug: emptying a block sequence under a key leaves the
-    // scaffold behind, so re-parse loses the sequence.
-    if after == 0 && before > 0 {
-        return;
-    }
     let reparsed = reparse_seq(doc, key, &op);
     if reparsed.len() != after {
         panic!(
@@ -354,8 +345,7 @@ fn assert_seq_remove_stuck(
     }
 }
 
-#[allow(dead_code)]
-fn assert_seq_clear_stuck(seq: &Sequence, doc: &Document, _key: &str) {
+fn assert_seq_clear_stuck(seq: &Sequence, doc: &Document, key: &str) {
     let op = "SeqClear";
     if !seq.is_empty() {
         panic!(
@@ -364,8 +354,14 @@ fn assert_seq_clear_stuck(seq: &Sequence, doc: &Document, _key: &str) {
             doc.to_string()
         );
     }
-    // Known bug: same emptying-under-key issue -- clear on a block
-    // sequence loses it on re-parse. Skip the re-parse check.
+    let reparsed = reparse_seq(doc, key, op);
+    if !reparsed.is_empty() {
+        panic!(
+            "{op}: reparse drift: reparsed len {} (expected 0), text: {:?}",
+            reparsed.len(),
+            doc.to_string()
+        );
+    }
 }
 
 fn apply(doc: &Document, op: &Op) {
@@ -415,10 +411,12 @@ fn apply(doc: &Document, op: &Op) {
                 assert_seq_push_stuck(&seq, before, v.as_str(), doc, k.as_str());
             }
         }
-        Op::SeqPop(_k) => {
-            // Temporarily disabled while investigating the empty-sequence
-            // scaffold bug -- pop on the last item leaves broken CST that
-            // fires other invariants downstream, masking further failures.
+        Op::SeqPop(k) => {
+            if let Some(seq) = mapping.get_sequence(k.as_str()) {
+                let before = seq.len();
+                let popped = seq.pop();
+                assert_seq_pop_stuck(&seq, before, popped.is_some(), doc, k.as_str());
+            }
         }
         Op::SeqInsert(_k, _i, _v) => {
             // Temporarily disabled -- multiple insert bugs (flow,
@@ -431,11 +429,18 @@ fn apply(doc: &Document, op: &Op) {
                 assert_seq_set_stuck(&seq, before, *i, v.as_str(), ok, doc, k.as_str());
             }
         }
-        Op::SeqRemove(_k, _i) => {
-            // Temporarily disabled -- same emptying-scaffold bug.
+        Op::SeqRemove(k, i) => {
+            if let Some(seq) = mapping.get_sequence(k.as_str()) {
+                let before = seq.len();
+                let removed = seq.remove(*i);
+                assert_seq_remove_stuck(&seq, before, *i, removed.is_some(), doc, k.as_str());
+            }
         }
-        Op::SeqClear(_k) => {
-            // Temporarily disabled -- same emptying-scaffold bug.
+        Op::SeqClear(k) => {
+            if let Some(seq) = mapping.get_sequence(k.as_str()) {
+                seq.clear();
+                assert_seq_clear_stuck(&seq, doc, k.as_str());
+            }
         }
         Op::NestedSet(k, ik, v) => {
             if let Some(nested) = mapping.get_mapping(k.as_str()) {

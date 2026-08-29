@@ -12,3 +12,4 @@ cc 0b563a284745d21fd61010f7a93e900a274e0a164cb5235161d1f9c1cd01e536 # shrinks to
 cc 5dc5778388af44edd40b1f10188a4f9fb679b97c5656f2b0e60f305b3a516181 # shrinks to seed = "s: [x]\n", ops = [SeqPush("s", "")]
 cc 4e1085bf0df69b32be08313a232685e3e8e94aa6ddcc94668c6cf4d895aa2d91 # shrinks to seed = "s: [x]\n", ops = [SeqInsert("s", 0, "")]
 cc bf13dc1349c7c1227fb1dfbab9435788ae504dba281c44af1f2c95d75fd42eac # shrinks to seed = "s:\n  - a\n", ops = [SeqInsert("s", 0, "")]
+cc 2f7adfbbfb3937da1452f93914d960f884baab8c7e240353d8dbafbbdb43a3ec # shrinks to seed = "s:\n  - a\n  - b\n  - c\n", ops = [SeqRemove("s", 0)]

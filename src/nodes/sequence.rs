@@ -66,6 +66,128 @@ fn trailing_newline_indent(node: &SyntaxNode) -> Option<String> {
     Some(result)
 }
 
+/// Does `sequence`'s enclosing MAPPING_ENTRY (via VALUE) have no
+/// following MAPPING_ENTRY sibling? True means removing tokens off the
+/// sequence's tail can't strand a following entry that relied on the
+/// separator NEWLINE; false means the separator must be preserved.
+///
+/// Returns `false` if the sequence isn't under a MAPPING_ENTRY at all
+/// (top-level sequence, nested under another sequence, etc.) so the
+/// caller stays conservative.
+fn mapping_entry_is_last_in_mapping(sequence: &SyntaxNode) -> bool {
+    let Some(value) = sequence.parent() else {
+        return false;
+    };
+    if value.kind() != SyntaxKind::VALUE {
+        return false;
+    }
+    let Some(entry) = value.parent() else {
+        return false;
+    };
+    if entry.kind() != SyntaxKind::MAPPING_ENTRY {
+        return false;
+    }
+    let Some(parent_mapping) = entry.parent() else {
+        return false;
+    };
+    if parent_mapping.kind() != SyntaxKind::MAPPING {
+        return false;
+    }
+    // Any MAPPING_ENTRY sibling *after* this one means we must keep
+    // whatever separator is currently in place.
+    let mut seen_self = false;
+    for child in parent_mapping.children() {
+        if child == entry {
+            seen_self = true;
+            continue;
+        }
+        if seen_self && child.kind() == SyntaxKind::MAPPING_ENTRY {
+            return false;
+        }
+    }
+    true
+}
+
+/// If `sequence` is an empty block SEQUENCE sitting inside a
+/// MAPPING_ENTRY's VALUE, replace the placeholder `NEWLINE INDENT
+/// SEQUENCE` pattern in that VALUE with an inline flow-empty
+/// `SEQUENCE []` so the entry renders as `key: []` instead of an
+/// unterminated `key:\n  ` shape.
+///
+/// The block-empty shape (`key:\n  ` with an empty SEQUENCE) is
+/// what's left over after `pop`/`remove`/`clear` drains the last
+/// item. Re-parsing it drops the key entirely because the parser
+/// sees `key:` followed by whitespace as an implicit-null value with
+/// no sequence attached. Mirrors
+/// [`collapse_empty_child_mapping_in_parent`](crate::yaml::Mapping)
+/// for mappings.
+fn collapse_empty_child_sequence_in_parent(sequence: &SyntaxNode) {
+    // Only collapse block sequences -- flow `[]` already renders
+    // correctly when empty.
+    let is_flow = sequence.children_with_tokens().any(|c| {
+        c.as_token()
+            .is_some_and(|t| t.kind() == SyntaxKind::LEFT_BRACKET)
+    });
+    if is_flow {
+        return;
+    }
+    let Some(value_node) = sequence.parent() else {
+        return;
+    };
+    if value_node.kind() != SyntaxKind::VALUE {
+        return;
+    }
+    let Some(entry_node) = value_node.parent() else {
+        return;
+    };
+    if entry_node.kind() != SyntaxKind::MAPPING_ENTRY {
+        return;
+    }
+    // Bail if the VALUE carries anything beyond decoration around the
+    // now-empty SEQUENCE: comment, sibling scalar, anchor, tag, etc.
+    let has_other_content = value_node.children_with_tokens().any(|el| match el {
+        rowan::NodeOrToken::Node(n) => n != *sequence,
+        rowan::NodeOrToken::Token(t) => !matches!(
+            t.kind(),
+            SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE
+        ),
+    });
+    if has_other_content {
+        return;
+    }
+    // Build a fresh flow-empty VALUE: ` []` (leading space + inline
+    // SEQUENCE with LEFT_BRACKET + RIGHT_BRACKET).
+    let mut builder = GreenNodeBuilder::new();
+    builder.start_node(SyntaxKind::VALUE.into());
+    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+    builder.start_node(SyntaxKind::SEQUENCE.into());
+    builder.token(SyntaxKind::LEFT_BRACKET.into(), "[");
+    builder.token(SyntaxKind::RIGHT_BRACKET.into(), "]");
+    builder.finish_node();
+    builder.finish_node();
+    let new_value = SyntaxNode::new_root_mut(builder.finish());
+
+    let Some(value_idx) = entry_node
+        .children_with_tokens()
+        .position(|c| c.as_node() == Some(&value_node))
+    else {
+        return;
+    };
+    entry_node.splice_children(value_idx..(value_idx + 1), vec![new_value.into()]);
+
+    // Ensure the entry ends with a NEWLINE -- the fresh VALUE we spliced
+    // in doesn't carry one, and without it the next sibling entry
+    // glues onto our tail.
+    let has_nl = entry_node
+        .last_token()
+        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
+    if !has_nl {
+        let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
+        let end = entry_node.children_with_tokens().count();
+        entry_node.splice_children(end..end, vec![nl.into()]);
+    }
+}
+
 impl Sequence {
     /// Iterate over items in this sequence as raw syntax nodes.
     ///
@@ -594,23 +716,47 @@ impl Sequence {
                                     self.0.splice_children((i - 1)..i, vec![]);
                                 }
                             }
+                        } else if !self.is_flow_style() && i == 0 {
+                            // Removed the first entry of a block sequence.
+                            // The INDENT that used to separate this entry
+                            // from its successor is now a leading INDENT
+                            // inside the SEQUENCE and would stack with the
+                            // parent VALUE's INDENT (`  ` + `  ` -> `    `),
+                            // shifting the new-first entry a level in.
+                            if let Some(next) = children.get(i + 1) {
+                                if next
+                                    .as_token()
+                                    .is_some_and(|t| t.kind() == SyntaxKind::INDENT)
+                                {
+                                    self.0.splice_children(i..(i + 1), vec![]);
+                                }
+                            }
                         }
 
-                        if !self.is_flow_style() && is_last && i > 0 {
-                            // Removed the last entry - remove trailing newline/indent from new last entry
-                            // Find the previous SEQUENCE_ENTRY
+                        if !self.is_flow_style()
+                            && is_last
+                            && i > 0
+                            && mapping_entry_is_last_in_mapping(&self.0)
+                        {
+                            // Removed the last entry of a block sequence
+                            // that itself terminates its enclosing mapping.
+                            // Strip trailing whitespace/newline off the new
+                            // last entry so we don't emit a stray blank
+                            // line at the end of the document.
+                            //
+                            // When the enclosing MAPPING_ENTRY has a
+                            // following sibling, the new-last-entry's
+                            // NEWLINE is still needed as the separator
+                            // between mapping entries -- do not touch it.
                             if let Some(prev_entry_node) =
                                 children[..i].iter().rev().find_map(|c| {
                                     c.as_node()
                                         .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
                                 })
                             {
-                                // Remove trailing NEWLINE and INDENT tokens
                                 let entry_children: Vec<_> =
                                     prev_entry_node.children_with_tokens().collect();
                                 let mut remove_count = 0;
-
-                                // Count trailing NEWLINE, INDENT, and WHITESPACE tokens from the end
                                 for child in entry_children.iter().rev() {
                                     if let Some(token) = child.as_token() {
                                         if matches!(
@@ -634,6 +780,13 @@ impl Sequence {
                                         .splice_children((total - remove_count)..total, vec![]);
                                 }
                             }
+                        }
+                        // If we just drained the last entry from a block
+                        // sequence under a key, collapse the placeholder
+                        // scaffold to `key: []` so re-parse still finds
+                        // the (now-empty) sequence at that key.
+                        if self.is_empty() {
+                            collapse_empty_child_sequence_in_parent(&self.0);
                         }
                         return removed_value;
                     }

@@ -171,9 +171,12 @@ fn apply(doc: &Document, op: &Op) {
                 assert_seq_push_stuck(&seq, before, as_str(v), doc, as_str(k));
             }
         }
-        Op::SeqPop(_k) => {
-            // Skipped: emptying a block sequence leaves a broken
-            // `key:\n  ` scaffold. See known_bugs::pop_last.
+        Op::SeqPop(k) => {
+            if let Some(seq) = mapping.get_sequence(as_str(k)) {
+                let before = seq.len();
+                let popped = seq.pop();
+                assert_seq_pop_stuck(&seq, before, popped.is_some(), doc, as_str(k));
+            }
         }
         Op::SeqInsert(_k, _i, _v) => {
             // Skipped: multiple insert bugs (flow, single-entry
@@ -187,11 +190,19 @@ fn apply(doc: &Document, op: &Op) {
                 assert_seq_set_stuck(&seq, before, idx, as_str(v), ok, doc, as_str(k));
             }
         }
-        Op::SeqRemove(_k, _i) => {
-            // Skipped: emptying-scaffold bug (same class as SeqPop).
+        Op::SeqRemove(k, i) => {
+            if let Some(seq) = mapping.get_sequence(as_str(k)) {
+                let before = seq.len();
+                let idx = *i as usize;
+                let removed = seq.remove(idx);
+                assert_seq_remove_stuck(&seq, before, idx, removed.is_some(), doc, as_str(k));
+            }
         }
-        Op::SeqClear(_k) => {
-            // Skipped: emptying-scaffold bug.
+        Op::SeqClear(k) => {
+            if let Some(seq) = mapping.get_sequence(as_str(k)) {
+                seq.clear();
+                assert_seq_clear_stuck(&seq, doc, as_str(k));
+            }
         }
         Op::NestedSet(k, ik, v) => {
             if let Some(nested) = mapping.get_mapping(as_str(k)) {
@@ -274,7 +285,6 @@ fn assert_seq_push_stuck(seq: &Sequence, before: usize, v: &str, doc: &Document,
 
 /// Verify that `pop()` on `seq` actually stuck: the length shrunk by one
 /// iff pop returned Some, and the sequence re-parses with the same length.
-#[allow(dead_code)]
 fn assert_seq_pop_stuck(seq: &Sequence, before: usize, popped: bool, doc: &Document, key: &str) {
     let op = "SeqPop";
     let after = seq.len();
@@ -392,7 +402,6 @@ fn assert_seq_set_stuck(
 /// Verify that `remove(i)` on `seq` actually stuck. Returns Option;
 /// Some means index was in range and item was removed, None means
 /// out of range and nothing changed.
-#[allow(dead_code)]
 fn assert_seq_remove_stuck(
     seq: &Sequence,
     before: usize,
@@ -429,7 +438,6 @@ fn assert_seq_remove_stuck(
 /// Verify that `clear()` on `seq` actually stuck. The in-memory sequence
 /// must be empty, and the re-parsed sequence at the same key must also
 /// be empty.
-#[allow(dead_code)]
 fn assert_seq_clear_stuck(seq: &Sequence, doc: &Document, key: &str) {
     let op = "SeqClear";
     if !seq.is_empty() {

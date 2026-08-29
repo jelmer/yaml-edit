@@ -715,9 +715,15 @@ mod tests {
     #[test]
     fn test_json_handler_deserialize_returns_err_not_panic() {
         let handler = JsonHandler;
-        assert!(handler.deserialize("[1,2]").is_err());
-        assert!(handler.deserialize("{\"a\":1}").is_err());
-        assert!(handler.deserialize("\"").is_err());
+        let array = handler.deserialize("[1,2]").unwrap_err();
+        assert_eq!(array.tag, "!json");
+        assert_eq!(array.message, "JSON arrays are not supported");
+        let object = handler.deserialize("{\"a\":1}").unwrap_err();
+        assert_eq!(object.tag, "!json");
+        assert_eq!(object.message, "JSON objects are not supported");
+        let quote = handler.deserialize("\"").unwrap_err();
+        assert_eq!(quote.tag, "!json");
+        assert_eq!(quote.message, "Unterminated quoted string");
         assert_eq!(
             handler
                 .deserialize("\"hello\"")

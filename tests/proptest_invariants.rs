@@ -151,11 +151,6 @@ fn seed_strat() -> impl Strategy<Value = &'static str> {
 // Sequence-mutation post-conditions. Kept in sync with the fuzz target's
 // versions -- see fuzz/fuzz_targets/mutation_invariants.rs for the full
 // rationale on each check.
-//
-// The insert helper is `#[allow(dead_code)]` while its matching Op
-// branch is suppressed (see `Op::SeqInsert` in `apply`); un-suppressing
-// is gated on the corresponding known-bug tests in tests/invariants.rs
-// being fixed and un-ignored.
 
 fn reparse_seq(doc: &Document, key: &str, op: &str) -> Sequence {
     let text = doc.to_string();
@@ -233,7 +228,6 @@ fn assert_seq_pop_stuck(seq: &Sequence, before: usize, popped: bool, doc: &Docum
     }
 }
 
-#[allow(dead_code)]
 fn assert_seq_insert_stuck(
     seq: &Sequence,
     before: usize,
@@ -418,9 +412,17 @@ fn apply(doc: &Document, op: &Op) {
                 assert_seq_pop_stuck(&seq, before, popped.is_some(), doc, k.as_str());
             }
         }
-        Op::SeqInsert(_k, _i, _v) => {
-            // Temporarily disabled -- multiple insert bugs (flow,
-            // single-entry indent) mask further failures.
+        Op::SeqInsert(k, i, v) => {
+            if let Some(seq) = mapping.get_sequence(k.as_str()) {
+                // Skip insert into any flow sequence -- known bugs
+                // 7 and 9. Block insert is fixed.
+                if seq.is_flow_style() {
+                    return;
+                }
+                let before = seq.len();
+                seq.insert(*i, v.as_str());
+                assert_seq_insert_stuck(&seq, before, *i, v.as_str(), doc, k.as_str());
+            }
         }
         Op::SeqSet(k, i, v) => {
             if let Some(seq) = mapping.get_sequence(k.as_str()) {

@@ -335,8 +335,7 @@ fn sequence_insert_into_nonempty_flow() {
 }
 
 #[test]
-#[ignore = "Sequence::insert into single-entry block emits new INDENT inside SEQUENCE that stacks with the parent VALUE's INDENT"]
-fn sequence_insert_into_single_entry_block_indent() {
+fn sequence_insert_at_head_into_single_entry_block() {
     let doc = Document::from_str("s:\n  - a\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.insert(0, "b");

@@ -178,9 +178,18 @@ fn apply(doc: &Document, op: &Op) {
                 assert_seq_pop_stuck(&seq, before, popped.is_some(), doc, as_str(k));
             }
         }
-        Op::SeqInsert(_k, _i, _v) => {
-            // Skipped: multiple insert bugs (flow, single-entry
-            // indent). See known_bugs.
+        Op::SeqInsert(k, i, v) => {
+            if let Some(seq) = mapping.get_sequence(as_str(k)) {
+                // Skip insert into any flow sequence -- see
+                // known_bugs (bugs 7, 9). Block insert is fixed.
+                if seq.is_flow_style() {
+                    return;
+                }
+                let before = seq.len();
+                let idx = *i as usize;
+                seq.insert(idx, as_str(v));
+                assert_seq_insert_stuck(&seq, before, idx, as_str(v), doc, as_str(k));
+            }
         }
         Op::SeqSet(k, i, v) => {
             if let Some(seq) = mapping.get_sequence(as_str(k)) {
@@ -314,7 +323,6 @@ fn assert_seq_pop_stuck(seq: &Sequence, before: usize, popped: bool, doc: &Docum
 /// Verify that `insert(i, v)` on `seq` actually stuck. The docs promise
 /// that an out-of-range index appends, so the effective position is
 /// `min(i, before)`.
-#[allow(dead_code)]
 fn assert_seq_insert_stuck(
     seq: &Sequence,
     before: usize,

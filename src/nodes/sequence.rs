@@ -583,6 +583,25 @@ impl Sequence {
             }
         }
 
+        // Inserting at the head of a SEQUENCE whose parent VALUE
+        // supplies the leading INDENT? Don't emit our own leading
+        // INDENT for the new entry (it would stack), but do give the
+        // displaced old-first entry an INDENT of its own so it stays
+        // at the right column.
+        let inserting_at_head = target_entry_pos < children.len()
+            && children[..target_entry_pos].iter().all(|c| {
+                c.as_node()
+                    .is_none_or(|n| n.kind() != SyntaxKind::SEQUENCE_ENTRY)
+            });
+        if inserting_at_head && parent_value_has_leading_indent(&self.0) {
+            let old_first_indent = fresh_token(SyntaxKind::INDENT, &indentation);
+            self.0.splice_children(
+                insert_at..insert_at,
+                vec![new_entry.into(), old_first_indent.into()],
+            );
+            return;
+        }
+
         self.0.splice_children(
             insert_at..insert_at,
             vec![indent_token.into(), new_entry.into()],

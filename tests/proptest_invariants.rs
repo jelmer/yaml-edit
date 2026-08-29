@@ -149,12 +149,7 @@ fn seed_strat() -> impl Strategy<Value = &'static str> {
         Just("first: &ref value\nsecond: *ref\n"),
         // Tagged scalars and collections.
         Just("count: !!int '42'\n"),
-        // The !!set seed is intentionally omitted: the parser has a
-        // pre-existing bug where a column-0 mapping entry appended
-        // after a !!set block gets absorbed into the set. Adding it
-        // back once the parser is fixed will let this proptest cover
-        // set-adjacent shapes too.
-        // Just("keys: !!set\n  ? a\n  ? b\n"),
+        Just("keys: !!set\n  ? a\n  ? b\n"),
         Just("mapping: !!map\n  a: 1\n  b: 2\n"),
         // Block scalars.
         Just("literal: |\n  line1\n  line2\n"),

@@ -1404,17 +1404,22 @@ impl Parser {
                 if self.current() == Some(SyntaxKind::INDENT) {
                     self.bump(); // consume indent
                 }
+                // Anchor the inner block on the indent we just
+                // consumed so a column-0 sibling entry dedents out of
+                // this tagged collection instead of being absorbed.
+                let inner_base = self.current_line_indent;
                 if is_mapping {
-                    self.parse_mapping();
+                    self.parse_mapping_with_base_indent(inner_base);
                 } else {
-                    self.parse_sequence();
+                    self.parse_sequence_with_base_indent(inner_base);
                 }
             }
             _ => {
+                let inner_base = self.current_line_indent;
                 if is_mapping {
-                    self.parse_mapping();
+                    self.parse_mapping_with_base_indent(inner_base);
                 } else {
-                    self.parse_sequence();
+                    self.parse_sequence_with_base_indent(inner_base);
                 }
             }
         }
@@ -1582,10 +1587,6 @@ impl Parser {
             }
         }
         false
-    }
-
-    fn parse_mapping(&mut self) {
-        self.parse_mapping_with_base_indent(0);
     }
 
     fn parse_mapping_with_base_indent(&mut self, base_indent: usize) {

@@ -298,13 +298,12 @@ fn set_path_nested_sequence_indices() {
 }
 
 #[test]
-#[ignore = "parser bug: column-0 key after `!!set` block gets absorbed by the set"]
-fn parser_absorbs_column0_key_after_tagged_set() {
-    // Not a mutation bug -- the writer produces well-formed YAML.
-    // Our parser, given `keys: !!set\n  ? a\n  ? b\na: ''\n`, wraps
-    // the trailing `a: ''` inside the !!set mapping instead of
-    // making it a top-level sibling. Column-0 should end the set.
-    use rowan::ast::AstNode;
+fn parser_terminates_tagged_block_at_column_zero() {
+    // Given `keys: !!set\n  ? a\n  ? b\na: ''\n`, the trailing
+    // `a: ''` at column 0 belongs at the top level, not inside the
+    // !!set block. parse_tagged_collection needs to anchor the
+    // inner block on the indent it consumed so a dedent-to-zero
+    // terminates it properly.
     let src = "keys: !!set\n  ? a\n  ? b\na: ''\n";
     let doc = Document::from_str(src).unwrap();
     let keys: Vec<String> = doc
@@ -314,7 +313,7 @@ fn parser_absorbs_column0_key_after_tagged_set() {
         .filter_map(|k| k.as_scalar().map(|s| s.as_string()))
         .collect();
     assert_eq!(keys, vec!["keys".to_string(), "a".to_string()]);
-    let _ = doc.syntax();
+    check(&doc);
 }
 
 #[test]

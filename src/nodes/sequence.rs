@@ -204,10 +204,76 @@ impl Sequence {
         "  ".to_string()
     }
 
+    /// Reshape an empty flow sequence (`[]`) into an empty block sequence
+    /// with a `NEWLINE INDENT` scaffold on the parent VALUE, matching how
+    /// the parser lays out `key:\n  <content>` for block collections under
+    /// a key.
+    ///
+    /// The SEQUENCE ends up with zero children; the two brackets are
+    /// dropped. The scaffold gives the follow-up push somewhere to hang
+    /// its INDENT.
+    fn convert_empty_flow_to_block(&self) {
+        // Compute the target indent width from the enclosing mapping (if any).
+        // Nested contexts widen; top-level defaults to 2.
+        let indent_width = self
+            .0
+            .parent()
+            .filter(|p| p.kind() == SyntaxKind::VALUE)
+            .and_then(|v| v.parent())
+            .filter(|e| e.kind() == SyntaxKind::MAPPING_ENTRY)
+            .and_then(|e| e.parent())
+            .filter(|m| m.kind() == SyntaxKind::MAPPING)
+            .and_then(crate::nodes::Mapping::cast)
+            .map(|m| m.detect_indentation_level() + 2)
+            .unwrap_or(2);
+        let indent_text = " ".repeat(indent_width);
+
+        // Drop every child of the SEQUENCE (the `[` `]` and any whitespace).
+        // Detach the collected snapshot rather than range-splicing: rowan's
+        // splice_children walks the sibling list as it detaches, which skips
+        // subsequent elements when their prev/next links get rewritten.
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        for child in children {
+            child.detach();
+        }
+
+        // Prepend `NEWLINE INDENT` in the parent VALUE, right before this
+        // SEQUENCE, unless a NEWLINE (and optional INDENT) is already there.
+        let Some(parent) = self.0.parent() else {
+            return;
+        };
+        if parent.kind() != SyntaxKind::VALUE {
+            return;
+        }
+        let seq_pos = parent
+            .children_with_tokens()
+            .position(|c| c.as_node() == Some(&self.0))
+            .unwrap_or(0);
+        let already_scaffolded = seq_pos >= 1
+            && parent
+                .children_with_tokens()
+                .nth(seq_pos - 1)
+                .and_then(|c| c.into_token())
+                .is_some_and(|t| t.kind() == SyntaxKind::INDENT || t.kind() == SyntaxKind::NEWLINE);
+        if already_scaffolded {
+            return;
+        }
+        let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
+        let indent = fresh_token(SyntaxKind::INDENT, &indent_text);
+        parent.splice_children(seq_pos..seq_pos, vec![nl.into(), indent.into()]);
+    }
+
     /// Add an item to the end of the sequence.
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn push(&self, value: impl crate::AsYaml) {
+        // An empty flow sequence (`[]`) cannot host a block entry. Convert
+        // it to the empty-block-under-key form (`\n  ` scaffold in the
+        // parent VALUE) before falling through to the block push path.
+        if self.is_flow_style() && self.is_empty() {
+            self.convert_empty_flow_to_block();
+        }
+
         let indentation = self.detect_indentation();
 
         // Build the INDENT token (separate from the SEQUENCE_ENTRY)
@@ -726,6 +792,35 @@ impl AsYaml for Sequence {
 mod tests {
     use crate::yaml::YamlFile;
     use std::str::FromStr;
+
+    #[test]
+    fn test_push_into_empty_flow_sequence_reshapes_to_block() {
+        // Regression: `push` on an empty flow sequence `[]` used to append
+        // the block entry after the `]`, producing `seq: []  - item1\n`.
+        // Now the `[]` is dropped and the parent VALUE gets a NEWLINE+INDENT
+        // scaffold, so the entry lands correctly.
+        use crate::path::YamlPath;
+        use crate::Document;
+        let doc = Document::from_str("seq: []").unwrap();
+        let seq = doc.get_path("seq").unwrap().as_sequence().unwrap().clone();
+        seq.push("item1");
+        assert_eq!(doc.to_string(), "seq: \n  - item1\n");
+    }
+
+    #[test]
+    fn test_push_into_empty_flow_sequence_nested_indent() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        let doc = Document::from_str("a:\n  seq: []\n").unwrap();
+        let seq = doc
+            .get_path("a.seq")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .clone();
+        seq.push("item1");
+        assert_eq!(doc.to_string(), "a:\n  seq: \n    - item1\n");
+    }
 
     #[test]
     fn test_push_deeply_nested_block_sequence_inherits_indent() {

@@ -146,9 +146,13 @@ impl Sequence {
 
     /// Detect the indentation used by entries in this sequence.
     ///
-    /// First looks for a top-level INDENT token, then falls back to looking
-    /// for WHITESPACE immediately before DASH inside SEQUENCE_ENTRY nodes.
-    /// Returns `"  "` (two spaces) if no indentation can be detected.
+    /// Looks first for a top-level INDENT token (separator between entries),
+    /// then for WHITESPACE immediately before DASH inside SEQUENCE_ENTRY
+    /// nodes (the leading-DASH indent style), and finally falls back to the
+    /// INDENT token that precedes the SEQUENCE in its parent VALUE. That is
+    /// where the parser stores the column for a single-entry block sequence
+    /// under a key. Returns `"  "` (two spaces) if no indentation can be
+    /// detected.
     fn detect_indentation(&self) -> String {
         // First try top-level INDENT tokens
         if let Some(ind) = self.0.children_with_tokens().find_map(|child| {
@@ -161,7 +165,8 @@ impl Sequence {
         }
 
         // Fall back: look for WHITESPACE before DASH inside entry nodes
-        self.0
+        if let Some(indent) = self
+            .0
             .children()
             .filter(|c| c.kind() == SyntaxKind::SEQUENCE_ENTRY)
             .find_map(|entry| {
@@ -176,7 +181,27 @@ impl Sequence {
                     }
                 })
             })
-            .unwrap_or_else(|| "  ".to_string())
+        {
+            return indent;
+        }
+
+        // For a block sequence under a key, the parser stores the entry
+        // column as an INDENT in the parent VALUE (right before the SEQUENCE).
+        if let Some(parent) = self.0.parent() {
+            if parent.kind() == SyntaxKind::VALUE {
+                for child in parent.children_with_tokens() {
+                    match &child {
+                        rowan::NodeOrToken::Node(n) if n == &self.0 => break,
+                        rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INDENT => {
+                            return t.text().to_string();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        "  ".to_string()
     }
 
     /// Add an item to the end of the sequence.
@@ -701,6 +726,28 @@ impl AsYaml for Sequence {
 mod tests {
     use crate::yaml::YamlFile;
     use std::str::FromStr;
+
+    #[test]
+    fn test_push_deeply_nested_block_sequence_inherits_indent() {
+        // Regression: `push` fell back to a 2-space INDENT for the new entry
+        // because the sequence has no top-level INDENT (single entry) and its
+        // one entry starts with DASH, not WHITESPACE. The correct column lives
+        // on the parent VALUE's INDENT (the one before the SEQUENCE node).
+        use crate::path::YamlPath;
+        use crate::Document;
+        let doc = Document::from_str("a:\n  b:\n    c:\n      - existing\n").unwrap();
+        let seq = doc
+            .get_path("a.b.c")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .clone();
+        seq.push("new_item");
+        assert_eq!(
+            doc.to_string(),
+            "a:\n  b:\n    c:\n      - existing\n      - new_item\n"
+        );
+    }
 
     #[test]
     fn test_push_into_empty_sequence_under_mapping_placeholder() {

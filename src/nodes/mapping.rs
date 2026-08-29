@@ -1179,12 +1179,12 @@ impl Mapping {
             if let Some(b) = lbrace {
                 children.push(b);
             }
+            let last = ordered.len().saturating_sub(1);
             for (i, entry) in ordered.iter().enumerate() {
-                if i > 0 {
-                    children.push(fresh_token(SyntaxKind::COMMA, ",").into());
-                    children.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
-                }
                 strip_trailing_flow_separator(entry);
+                if i != last {
+                    append_comma_space_to_entry(entry);
+                }
                 children.push(entry.clone().into());
             }
             if let Some(b) = rbrace {
@@ -1202,7 +1202,7 @@ impl Mapping {
                     {
                         next_entry.next().expect("entry count is unchanged").into()
                     } else {
-                        child.into()
+                        child
                     }
                 })
                 .collect()

@@ -55,10 +55,10 @@ impl Scalar {
         let text = self.value();
 
         // Handle quoted strings
-        if text.starts_with('"') && text.ends_with('"') {
+        if text.len() >= 2 && text.starts_with('"') && text.ends_with('"') {
             // Double-quoted string - handle escape sequences
             ScalarValue::parse_escape_sequences(&text[1..text.len() - 1])
-        } else if text.starts_with('\'') && text.ends_with('\'') {
+        } else if text.len() >= 2 && text.starts_with('\'') && text.ends_with('\'') {
             // Single-quoted string - handle '' -> ' escape and fold multi-line strings
             let content = &text[1..text.len() - 1];
             let unescaped = content.replace("''", "'");
@@ -248,8 +248,9 @@ impl Scalar {
     /// Check if this scalar is quoted
     pub fn is_quoted(&self) -> bool {
         let text = self.value();
-        (text.starts_with('"') && text.ends_with('"'))
-            || (text.starts_with('\'') && text.ends_with('\''))
+        text.len() >= 2
+            && ((text.starts_with('"') && text.ends_with('"'))
+                || (text.starts_with('\'') && text.ends_with('\'')))
     }
 
     /// Get the raw content of this scalar with outer quotes stripped, but
@@ -473,6 +474,20 @@ impl TryFrom<&Scalar> for bool {
 mod tests {
     use crate::Document;
     use std::str::FromStr;
+
+    #[test]
+    fn test_unterminated_quote_as_string_does_not_panic() {
+        let (doc, errors) = Document::from_str_relaxed("\"");
+        assert!(!errors.is_empty());
+        let scalar = doc.as_scalar().expect("relaxed parse keeps a scalar");
+        assert_eq!(scalar.as_string(), "\"");
+        assert_eq!(scalar.unquoted_value(), "\"");
+
+        let (doc, _) = Document::from_str_relaxed("'");
+        let scalar = doc.as_scalar().expect("relaxed parse keeps a scalar");
+        assert_eq!(scalar.as_string(), "'");
+        assert_eq!(scalar.unquoted_value(), "'");
+    }
 
     #[test]
     fn test_json_array_quoted_strings_cst_structure() {

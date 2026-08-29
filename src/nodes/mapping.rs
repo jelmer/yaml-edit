@@ -538,16 +538,21 @@ impl MappingEntry {
             builder.finish_node();
             ends_with_newline
         } else {
-            // Build VALUE
-            // Note: For explicit keys, we don't add a space here because
-            // the VALUE building logic below will add it for inline values
+            // For inline values, put the separator WHITESPACE at the
+            // MAPPING_ENTRY level (between COLON and VALUE), matching
+            // the parser convention. That way `set_value`'s targeted
+            // splice, which only replaces the VALUE node in place,
+            // preserves the space between key and new value.
+            let inline = value.is_inline();
+            if inline {
+                builder.token(SyntaxKind::WHITESPACE.into(), " ");
+            }
             builder.start_node(SyntaxKind::VALUE.into());
-            let ends_with_newline = match (value.is_inline(), value.kind()) {
-                // Inline values (scalars, flow collections) go on same line with space
+            let ends_with_newline = match (inline, value.kind()) {
                 (true, _) => {
-                    builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                    // Note: TAGGED_NODE values (!!set, !!omap, !!pairs) are inline but may
-                    // end with newlines from their block-style content
+                    // TAGGED_NODE values (!!set, !!omap, !!pairs) are
+                    // inline but may end with newlines from their
+                    // block-style content.
                     value.build_content(&mut builder, 0, flow_context)
                 }
                 // Block mappings and sequences start on new line but don't get pre-indented
@@ -1135,14 +1140,40 @@ impl Mapping {
     {
         let order_keys: Vec<K> = order.into_iter().collect();
 
-        // Collect all MAPPING_ENTRY nodes
-        let entry_nodes: Vec<SyntaxNode> = self
-            .0
-            .children()
-            .filter(|child| child.kind() == SyntaxKind::MAPPING_ENTRY)
+        // Split the child list into three chunks around the entries:
+        //   [ leading tokens ] [ MAPPING_ENTRY nodes ] [ trailing tokens ]
+        // The leading and trailing chunks carry the structural
+        // decoration (LEFT_BRACE/RIGHT_BRACE for flow, and any leading
+        // NEWLINE/INDENT/COMMENT decoration) that must survive the
+        // splice. Between-entry separators live inside each entry
+        // (insert_at_index / insert_entry_cst ensure that), so we do
+        // not need to reconstruct them here.
+        let all: Vec<_> = self.0.children_with_tokens().collect();
+        let first_entry_idx = all
+            .iter()
+            .position(|c| {
+                c.as_node()
+                    .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+            })
+            .unwrap_or(all.len());
+        let last_entry_idx = all
+            .iter()
+            .rposition(|c| {
+                c.as_node()
+                    .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+            })
+            .map(|i| i + 1)
+            .unwrap_or(first_entry_idx);
+
+        let leading = all[..first_entry_idx].to_vec();
+        let trailing = all[last_entry_idx..].to_vec();
+
+        let entry_nodes: Vec<SyntaxNode> = all[first_entry_idx..last_entry_idx]
+            .iter()
+            .filter_map(|c| c.as_node().cloned())
+            .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
             .collect();
 
-        // Build ordered list: entries in specified order first, then unordered entries.
         let mut ordered_entries: Vec<SyntaxNode> = Vec::new();
         let mut remaining_entries: Vec<SyntaxNode> = entry_nodes;
 
@@ -1158,15 +1189,18 @@ impl Mapping {
             }
         }
 
-        let new_children: Vec<_> = ordered_entries
+        let new_children: Vec<_> = leading
             .into_iter()
-            .chain(remaining_entries)
-            .map(|node| node.into())
+            .chain(
+                ordered_entries
+                    .into_iter()
+                    .chain(remaining_entries)
+                    .map(|node| node.into()),
+            )
+            .chain(trailing)
             .collect();
 
-        // Replace all children
-        let children_count = self.0.children_with_tokens().count();
-        self.0.splice_children(0..children_count, new_children);
+        self.0.splice_children(0..all.len(), new_children);
     }
 }
 
@@ -2587,6 +2621,33 @@ impl Mapping {
         for key in keys {
             self.remove(key);
         }
+        // A top-level (document-root) mapping has no enclosing
+        // MAPPING_ENTRY for `remove` to collapse into `key: {}`, so an
+        // emptied top-level mapping renders as `""` and re-parses as
+        // no-mapping. Inject an explicit `{}` so the doc round-trips
+        // and downstream code still sees a (now-empty) mapping.
+        if !self.is_empty() {
+            return;
+        }
+        let has_map_entry_parent = self
+            .0
+            .parent()
+            .filter(|p| p.kind() == SyntaxKind::VALUE)
+            .and_then(|v| v.parent())
+            .is_some_and(|e| e.kind() == SyntaxKind::MAPPING_ENTRY);
+        if has_map_entry_parent {
+            return;
+        }
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        if !children.is_empty() {
+            // Something already inhabits the MAPPING (comments, an
+            // orphan token, etc.); don't clobber it.
+            return;
+        }
+        let lbrace = super::fresh_token(SyntaxKind::LEFT_BRACE, "{");
+        let rbrace = super::fresh_token(SyntaxKind::RIGHT_BRACE, "}");
+        self.0
+            .splice_children(0..0, vec![lbrace.into(), rbrace.into()]);
     }
 
     /// Rename a key while preserving its value and formatting.
@@ -2772,6 +2833,24 @@ impl Mapping {
         let key_indent = self.detect_indentation_level();
         let new_entry =
             MappingEntry::new_at_indent(&key, &value, flow_context, use_explicit_keys, key_indent);
+
+        // Flow-style mappings need their comma-and-brace bookkeeping
+        // handled by insert_flow_entry_cst_at; the block-style splice
+        // below would drop the entry after the RIGHT_BRACE and produce
+        // a mixed-style shape that re-parses to no such key.
+        if flow_context {
+            let entry_count = self.entries().count();
+            let actual_index = index.min(entry_count);
+            let where_at = if let Some(target) =
+                self.entries().nth(actual_index).map(|e| e.syntax().clone())
+            {
+                FlowInsertPos::Before(target)
+            } else {
+                FlowInsertPos::End
+            };
+            self.insert_flow_entry_cst_at(&new_entry.0, where_at);
+            return;
+        }
 
         // Count existing entries to determine actual insertion position
         let entry_count = self.entries().count();

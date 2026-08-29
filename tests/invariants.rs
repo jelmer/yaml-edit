@@ -285,6 +285,40 @@ fn sequence_remove_last_entry_preserves_following_mapping_entry() {
 }
 
 #[test]
+#[ignore = "parser bug: column-0 key after `!!set` block gets absorbed by the set"]
+fn parser_absorbs_column0_key_after_tagged_set() {
+    // Not a mutation bug -- the writer produces well-formed YAML.
+    // Our parser, given `keys: !!set\n  ? a\n  ? b\na: ''\n`, wraps
+    // the trailing `a: ''` inside the !!set mapping instead of
+    // making it a top-level sibling. Column-0 should end the set.
+    use rowan::ast::AstNode;
+    let src = "keys: !!set\n  ? a\n  ? b\na: ''\n";
+    let doc = Document::from_str(src).unwrap();
+    let keys: Vec<String> = doc
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .filter_map(|k| k.as_scalar().map(|s| s.as_string()))
+        .collect();
+    assert_eq!(keys, vec!["keys".to_string(), "a".to_string()]);
+    let _ = doc.syntax();
+}
+
+#[test]
+fn top_level_mapping_clear_renders_flow_empty() {
+    // A top-level mapping has no enclosing MAPPING_ENTRY to collapse
+    // into `key: {}`; without the explicit `{}` fallback in clear()
+    // the doc renders as empty text and re-parses to no-mapping.
+    let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
+    doc.as_mapping().unwrap().clear();
+    assert_eq!(doc.to_string(), "{}");
+    check(&doc);
+    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+    assert!(reparsed.as_mapping().is_some());
+    assert!(reparsed.as_mapping().unwrap().is_empty());
+}
+
+#[test]
 fn reorder_after_add_preserves_entry_separator() {
     // insert_at_index used to prepend a NEWLINE at the MAPPING level as
     // a separator when the previous entry lacked one. reorder_fields

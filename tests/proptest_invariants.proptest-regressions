@@ -15,3 +15,7 @@ cc bf13dc1349c7c1227fb1dfbab9435788ae504dba281c44af1f2c95d75fd42eac # shrinks to
 cc 2f7adfbbfb3937da1452f93914d960f884baab8c7e240353d8dbafbbdb43a3ec # shrinks to seed = "s:\n  - a\n  - b\n  - c\n", ops = [SeqRemove("s", 0)]
 cc a8b102adaff2a81dbfc23378f526c12e46caa7f61d5cea5a11601cae7563ee31 # shrinks to seed = "s:\n  - a\n  - b\n  - c\n", ops = [SeqPop("s"), InsertAtIndex(1, "a", ""), ReorderFields([])]
 cc 9ab4111c2783668de23f83878c421ba1173ea98261198d6afa00d09091728ae9 # shrinks to seed = "s:\n  - a\n  - b\n  - c\n", ops = [SeqPop("s"), SetString("a", ""), ReorderFields([])]
+cc ee3c784f81cb43de7376b6e7e946a4978c0ecea2ae383436b224d12a5186b91a # shrinks to seed = "a: 1\n", ops = [Clear, InsertAtIndex(0, "a", "")]
+cc 67f1fae3c2bbed36056e8b2d3cf339d157cba145eff4aff9eb15027b9c26a3b6 # shrinks to seed = "a: 1\n", ops = [Clear, ReorderFields([]), SetString("a", "")]
+cc 4f8ba834415de763bcc3811973fd3b6134c0fd4c8dac67025600c36a198ec53b # shrinks to seed = "keys: !!set\n  ? a\n  ? b\n", ops = [SetString("a", "")]
+cc b6aa19e7fabd7e1c3cd79e61ae04a5683f398e8c4e98652ad0d8853c2a9b98bd # shrinks to seed = "a: 1\n", ops = [SetInt("g", 0), InsertAtIndex(0, "g", "")]

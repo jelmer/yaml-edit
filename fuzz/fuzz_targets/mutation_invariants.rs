@@ -160,12 +160,6 @@ fn apply(doc: &Document, op: &Op) {
         }
         Op::SeqPush(k, v) => {
             if let Some(seq) = mapping.get_sequence(as_str(k)) {
-                // Skip pushes that trip known bugs (see
-                // tests/known_bugs.rs) so the fuzz can explore further
-                // shapes instead of tripping on the same trap.
-                if seq.is_flow_style() {
-                    return;
-                }
                 let before = seq.len();
                 seq.push(as_str(v));
                 assert_seq_push_stuck(&seq, before, as_str(v), doc, as_str(k));
@@ -180,12 +174,6 @@ fn apply(doc: &Document, op: &Op) {
         }
         Op::SeqInsert(k, i, v) => {
             if let Some(seq) = mapping.get_sequence(as_str(k)) {
-                // Skip insert into a non-empty flow sequence (known
-                // bug 9). Block insert and empty-flow insert are
-                // fixed.
-                if seq.is_flow_style() && !seq.is_empty() {
-                    return;
-                }
                 let before = seq.len();
                 let idx = *i as usize;
                 seq.insert(idx, as_str(v));

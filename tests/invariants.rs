@@ -308,26 +308,20 @@ fn sequence_insert_into_empty_flow_reshapes_to_block() {
 }
 
 #[test]
-#[ignore = "Sequence::push into non-empty flow produces mixed-style output that reparses as one string"]
-fn sequence_push_into_nonempty_flow() {
+fn sequence_push_into_nonempty_flow_stays_flow() {
     let doc = Document::from_str("s: [x]\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.push("y");
-    let reparsed = Document::from_str(&doc.to_string()).unwrap();
-    let seq2 = reparsed.as_mapping().unwrap().get_sequence("s").unwrap();
-    assert_eq!(seq2.len(), 2);
+    assert_eq!(doc.to_string(), "s: [x, y]\n");
     check(&doc);
 }
 
 #[test]
-#[ignore = "Sequence::insert into non-empty flow produces mixed-style output"]
-fn sequence_insert_into_nonempty_flow() {
+fn sequence_insert_into_nonempty_flow_stays_flow() {
     let doc = Document::from_str("s: [x]\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.insert(0, "y");
-    let reparsed = Document::from_str(&doc.to_string()).unwrap();
-    let seq2 = reparsed.as_mapping().unwrap().get_sequence("s").unwrap();
-    assert_eq!(seq2.len(), 2);
+    assert_eq!(doc.to_string(), "s: [y, x]\n");
     check(&doc);
 }
 

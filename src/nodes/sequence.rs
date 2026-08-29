@@ -396,6 +396,14 @@ impl Sequence {
             self.convert_empty_flow_to_block();
         }
 
+        // A non-empty flow sequence stays flow: splice `, <item>`
+        // before the closing bracket rather than emitting a block
+        // entry that would produce mixed-style output.
+        if self.is_flow_style() {
+            self.insert_flow(usize::MAX, value);
+            return;
+        }
+
         let indentation = self.detect_indentation();
 
         // Build the INDENT token (separate from the SEQUENCE_ENTRY)
@@ -502,6 +510,77 @@ impl Sequence {
         }
     }
 
+    /// Splice a new entry into a non-empty *flow* sequence at `index`
+    /// (or append when `index >= len`).
+    ///
+    /// Flow entries are separated by `COMMA WHITESPACE` and every
+    /// entry except the last carries that separator as its own tail.
+    /// Inserting means picking a target position among the existing
+    /// SEQUENCE_ENTRY nodes and splicing a new entry there, plus
+    /// giving whichever entry now precedes it the trailing
+    /// `, ` separator.
+    fn insert_flow(&self, index: usize, value: impl crate::AsYaml) {
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
+        // flow_context=false: YAML flow permits plain scalars; only
+        // JSON-flavored callers need the aggressive quoting that
+        // flow_context=true triggers.
+        value.build_content(&mut builder, 0, false);
+        builder.finish_node();
+        let new_entry = SyntaxNode::new_root_mut(builder.finish());
+
+        // Collect the current children; we need positions of the
+        // SEQUENCE_ENTRY nodes and the RIGHT_BRACKET.
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        let entry_positions: Vec<usize> = children
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                c.as_node()
+                    .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+                    .map(|_| i)
+            })
+            .collect();
+        let right_bracket_pos = children
+            .iter()
+            .position(|c| {
+                c.as_token()
+                    .is_some_and(|t| t.kind() == SyntaxKind::RIGHT_BRACKET)
+            })
+            .expect("flow SEQUENCE must have a RIGHT_BRACKET");
+
+        let comma = fresh_token(SyntaxKind::COMMA, ",");
+        let sep_ws = fresh_token(SyntaxKind::WHITESPACE, " ");
+
+        if index >= entry_positions.len() {
+            // Append: put `, ` on the previous last entry (if it isn't
+            // already carrying a trailing comma), then splice the new
+            // entry just before the RIGHT_BRACKET.
+            if let Some(&last_pos) = entry_positions.last() {
+                let last_entry = children[last_pos].as_node().expect("SEQUENCE_ENTRY");
+                let ends_with_comma = last_entry
+                    .last_token()
+                    .is_some_and(|t| t.kind() == SyntaxKind::COMMA);
+                if !ends_with_comma {
+                    let end = last_entry.children_with_tokens().count();
+                    last_entry.splice_children(end..end, vec![comma.into(), sep_ws.into()]);
+                }
+            }
+            self.0
+                .splice_children(right_bracket_pos..right_bracket_pos, vec![new_entry.into()]);
+            return;
+        }
+
+        // Insert before the entry currently at `index`. Give the new
+        // entry its own `, ` tail so the displaced entry stays
+        // properly separated.
+        let target_pos = entry_positions[index];
+        let end = new_entry.children_with_tokens().count();
+        new_entry.splice_children(end..end, vec![comma.into(), sep_ws.into()]);
+        self.0
+            .splice_children(target_pos..target_pos, vec![new_entry.into()]);
+    }
+
     /// Insert an item at a specific position.
     ///
     /// If `index` is out of bounds, the item is appended at the end.
@@ -514,6 +593,14 @@ impl Sequence {
         // like `push` does.
         if self.is_flow_style() && self.is_empty() {
             self.convert_empty_flow_to_block();
+        }
+
+        // A non-empty flow sequence stays flow: splice a comma-
+        // separated flow entry at the target position instead of
+        // emitting a block entry inside the brackets.
+        if self.is_flow_style() {
+            self.insert_flow(index, value);
+            return;
         }
 
         let indentation = self.detect_indentation();

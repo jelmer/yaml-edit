@@ -395,11 +395,6 @@ fn apply(doc: &Document, op: &Op) {
         }
         Op::SeqPush(k, v) => {
             if let Some(seq) = mapping.get_sequence(k.as_str()) {
-                // Skip push into any flow sequence -- push emits block
-                // entries and the mixed-style output is broken.
-                if seq.is_flow_style() {
-                    return;
-                }
                 let before = seq.len();
                 seq.push(v.as_str());
                 assert_seq_push_stuck(&seq, before, v.as_str(), doc, k.as_str());
@@ -414,12 +409,6 @@ fn apply(doc: &Document, op: &Op) {
         }
         Op::SeqInsert(k, i, v) => {
             if let Some(seq) = mapping.get_sequence(k.as_str()) {
-                // Skip insert into a non-empty flow sequence (known
-                // bug 9). Block insert and empty-flow insert are
-                // fixed.
-                if seq.is_flow_style() && !seq.is_empty() {
-                    return;
-                }
                 let before = seq.len();
                 seq.insert(*i, v.as_str());
                 assert_seq_insert_stuck(&seq, before, *i, v.as_str(), doc, k.as_str());

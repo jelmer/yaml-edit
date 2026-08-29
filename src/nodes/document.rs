@@ -201,6 +201,12 @@ impl Document {
     pub fn set(&self, key: impl crate::AsYaml, value: impl crate::AsYaml) {
         if let Some(mapping) = self.as_mapping() {
             mapping.set(key, value);
+        } else if self.root_node().is_none() {
+            let mapping = Mapping::new();
+            mapping.set(key, value);
+            let child_count = self.0.children_with_tokens().count();
+            self.0
+                .splice_children(child_count..child_count, vec![mapping.0.into()]);
         }
     }
 
@@ -222,6 +228,12 @@ impl Document {
         let field_order: Vec<K> = field_order.into_iter().collect();
         if let Some(mapping) = self.as_mapping() {
             mapping.set_with_field_order(key, value, field_order);
+        } else if self.root_node().is_none() {
+            let mapping = Mapping::new();
+            mapping.set_with_field_order(key, value, field_order);
+            let child_count = self.0.children_with_tokens().count();
+            self.0
+                .splice_children(child_count..child_count, vec![mapping.0.into()]);
         }
     }
 
@@ -1567,5 +1579,9 @@ Repository: https://github.com/example/example.git
         assert!(doc.get("k").is_none());
         assert!(doc.as_sequence().is_some());
         assert!(doc.as_mapping().is_none());
+
+        let empty = Document::new();
+        empty.set("k", "v");
+        assert_eq!(empty.get_string("k"), Some("v".to_string()));
     }
 }

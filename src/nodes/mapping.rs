@@ -1158,15 +1158,77 @@ impl Mapping {
             }
         }
 
-        let new_children: Vec<_> = ordered_entries
+        let ordered: Vec<SyntaxNode> = ordered_entries
             .into_iter()
             .chain(remaining_entries)
-            .map(|node| node.into())
             .collect();
 
-        // Replace all children
+        let new_children: Vec<_> = if self.is_flow_style() {
+            let existing: Vec<_> = self.0.children_with_tokens().collect();
+            let lbrace = existing.iter().find_map(|c| {
+                c.as_token()
+                    .filter(|t| t.kind() == SyntaxKind::LEFT_BRACE)
+                    .map(|t| t.clone().into())
+            });
+            let rbrace = existing.iter().find_map(|c| {
+                c.as_token()
+                    .filter(|t| t.kind() == SyntaxKind::RIGHT_BRACE)
+                    .map(|t| t.clone().into())
+            });
+            let mut children = Vec::new();
+            if let Some(b) = lbrace {
+                children.push(b);
+            }
+            for (i, entry) in ordered.iter().enumerate() {
+                if i > 0 {
+                    children.push(fresh_token(SyntaxKind::COMMA, ",").into());
+                    children.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
+                }
+                strip_trailing_flow_separator(entry);
+                children.push(entry.clone().into());
+            }
+            if let Some(b) = rbrace {
+                children.push(b);
+            }
+            children
+        } else {
+            let mut next_entry = ordered.into_iter().peekable();
+            self.0
+                .children_with_tokens()
+                .map(|child| {
+                    if child
+                        .as_node()
+                        .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+                    {
+                        next_entry.next().expect("entry count is unchanged").into()
+                    } else {
+                        child.into()
+                    }
+                })
+                .collect()
+        };
+
         let children_count = self.0.children_with_tokens().count();
         self.0.splice_children(0..children_count, new_children);
+    }
+}
+
+fn strip_trailing_flow_separator(entry: &SyntaxNode) {
+    loop {
+        let count = entry.children_with_tokens().count();
+        if count == 0 {
+            break;
+        }
+        let last_kind = entry
+            .children_with_tokens()
+            .nth(count - 1)
+            .and_then(|c| c.as_token().map(|t| t.kind()));
+        match last_kind {
+            Some(SyntaxKind::COMMA | SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE) => {
+                entry.splice_children((count - 1)..count, vec![]);
+            }
+            _ => break,
+        }
     }
 }
 
@@ -2956,6 +3018,15 @@ mod tests {
             reparsed.as_mapping().unwrap().get("foo").unwrap().kind(),
             YamlKind::Mapping
         );
+    }
+
+    #[test]
+    fn test_reorder_fields_keeps_flow_braces() {
+        use crate::yaml::Document;
+        let doc = Document::from_str("{b: 2, a: 1}\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        mapping.reorder_fields(["a", "b"]);
+        assert_eq!(doc.to_string().trim_end(), "{a: 1, b: 2}");
     }
 
     /// Setting into a flow-style mapping (`{...}`) inserts entries inside

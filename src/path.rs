@@ -187,17 +187,22 @@ pub fn parse_path(path: &str) -> Vec<PathSegment> {
 
                 // Parse the index until we hit ']'
                 let mut index_str = String::new();
+                let mut closed = false;
                 while let Some(&next_ch) = chars.peek() {
                     if next_ch == ']' {
                         chars.next(); // consume the ']'
+                        closed = true;
                         break;
                     }
                     index_str.push(chars.next().unwrap());
                 }
 
-                // Parse the index
-                if let Ok(index) = index_str.parse::<usize>() {
-                    segments.push(PathSegment::Index(index));
+                if !closed {
+                    return vec![];
+                }
+                match index_str.parse::<usize>() {
+                    Ok(index) => segments.push(PathSegment::Index(index)),
+                    Err(_) => return vec![],
                 }
             }
             _ => {
@@ -585,6 +590,13 @@ mod tests {
                 PathSegment::Key("d".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn test_parse_path_invalid_brackets_is_empty() {
+        assert_eq!(parse_path("items[abc].name"), Vec::<PathSegment>::new());
+        assert_eq!(parse_path("items[].name"), Vec::<PathSegment>::new());
+        assert_eq!(parse_path("items[0"), Vec::<PathSegment>::new());
     }
 
     #[test]

@@ -285,6 +285,23 @@ fn sequence_remove_last_entry_preserves_following_mapping_entry() {
 }
 
 #[test]
+fn reorder_after_add_preserves_entry_separator() {
+    // insert_at_index used to prepend a NEWLINE at the MAPPING level as
+    // a separator when the previous entry lacked one. reorder_fields
+    // rebuilds the mapping's child list from the entry nodes alone
+    // and dropped the standalone NEWLINE, smooshing entries together.
+    // Fix: the previous entry gets its NEWLINE appended inside itself.
+    let doc = Document::from_str("s:\n  - a\n  - b\n  - c\n").unwrap();
+    doc.as_mapping().unwrap().get_sequence("s").unwrap().pop();
+    doc.as_mapping().unwrap().insert_at_index(1, "a", "");
+    doc.as_mapping()
+        .unwrap()
+        .reorder_fields(std::iter::empty::<&str>());
+    check(&doc);
+    assert_eq!(doc.to_string(), "s:\n  - a\n  - b\na: ''\n");
+}
+
+#[test]
 fn sequence_remove_first_entry_preserves_new_first_indent() {
     // The INDENT that separated entry 0 from entry 1 must be dropped
     // when entry 0 goes, otherwise it becomes a leading INDENT inside

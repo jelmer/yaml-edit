@@ -1487,33 +1487,33 @@ impl Mapping {
         // Always insert at the end - the newline is inside the last entry, not a separate child
         let insert_pos = count;
 
-        // Add indentation if needed
+        // Ensure the previous last entry owns its terminating NEWLINE
+        // before we add a new sibling. Putting the NEWLINE at MAPPING
+        // level as a standalone token is fragile: reorder_fields
+        // rebuilds the child list from entry nodes alone and would
+        // drop a standalone separator token, smooshing the entries
+        // back together.
+        if count > 0 && !has_trailing_newline {
+            if let Some(prev_entry) = &last_mapping_entry {
+                let nl = super::fresh_token(SyntaxKind::NEWLINE, "\n");
+                let end = prev_entry.children_with_tokens().count();
+                prev_entry.splice_children(end..end, vec![nl.into()]);
+            }
+        }
+
+        // Add indentation if needed (as a standalone token; INDENT is
+        // conventionally at MAPPING level).
         let indent_level = self.detect_indentation_level();
         if indent_level > 0 && count > 0 {
             let mut builder = rowan::GreenNodeBuilder::new();
             builder.start_node(SyntaxKind::ROOT.into());
-            // Only add NEWLINE if we're NOT inserting before an existing trailing newline
-            if !has_trailing_newline {
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
-            }
             builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent_level));
             builder.finish_node();
             let node = SyntaxNode::new_root_mut(builder.finish());
-            // Get ALL tokens, not just the first one
             for child in node.children_with_tokens() {
                 if let rowan::NodeOrToken::Token(token) = child {
                     new_elements.push(token.into());
                 }
-            }
-        } else if count > 0 && !has_trailing_newline {
-            // Only add newline if there isn't already one
-            let mut builder = rowan::GreenNodeBuilder::new();
-            builder.start_node(SyntaxKind::ROOT.into());
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-            builder.finish_node();
-            let node = SyntaxNode::new_root_mut(builder.finish());
-            if let Some(token) = node.first_token() {
-                new_elements.push(token.into());
             }
         }
 
@@ -2800,21 +2800,25 @@ impl Mapping {
 
         // Add spacing before the new entry if not at position 0
         if insert_pos > 0 {
-            // Check if previous element ends with newline
-            // (normally entries own their newlines, but the last entry might not have one
-            // if the file didn't end with a newline)
-            let needs_newline =
-                if let Some(prev) = self.0.children_with_tokens().nth(insert_pos - 1) {
-                    match prev {
-                        rowan::NodeOrToken::Token(t) => t.kind() != SyntaxKind::NEWLINE,
-                        rowan::NodeOrToken::Node(n) => !ends_with_newline(&n),
+            // Ensure the previous MAPPING_ENTRY (if any) carries its
+            // own trailing NEWLINE. That way each entry is a
+            // self-contained unit and reorder_fields (which rebuilds
+            // the child list from entry nodes alone) can't drop the
+            // separator by omitting standalone tokens.
+            if let Some(prev_node) = self.0.children_with_tokens().nth(insert_pos - 1) {
+                if let rowan::NodeOrToken::Node(prev) = &prev_node {
+                    if prev.kind() == SyntaxKind::MAPPING_ENTRY && !ends_with_newline(prev) {
+                        let nl = super::fresh_token(SyntaxKind::NEWLINE, "\n");
+                        let end = prev.children_with_tokens().count();
+                        prev.splice_children(end..end, vec![nl.into()]);
                     }
-                } else {
-                    false
-                };
-
-            if needs_newline {
-                add_newline_token(&mut new_elements);
+                } else if let rowan::NodeOrToken::Token(t) = &prev_node {
+                    if t.kind() != SyntaxKind::NEWLINE {
+                        // Previous is a stray token that isn't a
+                        // newline; insert one as a standalone.
+                        add_newline_token(&mut new_elements);
+                    }
+                }
             }
 
             // Add indentation

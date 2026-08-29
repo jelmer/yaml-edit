@@ -1035,6 +1035,30 @@ mod tests {
     }
 
     #[test]
+    fn test_implicit_null_item_shares_indexes_with_set_and_remove() {
+        use crate::Document;
+        let doc = Document::from_str("- a\n- \n- c\n").unwrap();
+        let seq = doc.as_sequence().unwrap();
+        assert_eq!(seq.len(), 3);
+        assert_eq!(seq.get(0).unwrap().as_scalar().unwrap().as_string(), "a");
+        assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().as_string(), "");
+        assert_eq!(seq.get(2).unwrap().as_scalar().unwrap().as_string(), "c");
+
+        assert!(seq.set(1, "x"));
+        assert_eq!(doc.to_string(), "- a\n- x\n- c\n");
+
+        let doc = Document::from_str("- a\n- \n- c\n").unwrap();
+        let seq = doc.as_sequence().unwrap();
+        let removed = seq.remove(1);
+        assert_eq!(
+            removed.and_then(|n| n.as_scalar().map(|s| s.as_string())),
+            Some(String::new())
+        );
+        assert_eq!(seq.len(), 2);
+        assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().as_string(), "c");
+    }
+
+    #[test]
     fn test_sequence_items_tagged_node() {
         // Tagged scalars inside sequences were previously skipped by items() because
         // TAGGED_NODE was not listed in the kind filter.

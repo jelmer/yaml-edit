@@ -1572,18 +1572,9 @@ impl Validator {
 
     /// Helper to calculate column position from text offset
     fn get_column(&self, text: &str, offset: usize) -> usize {
-        let mut col = 0;
-        for (i, ch) in text.char_indices() {
-            if i >= offset {
-                break;
-            }
-            if ch == '\n' {
-                col = 0;
-            } else {
-                col += 1;
-            }
-        }
-        col
+        let offset = offset.min(text.len());
+        let line_start = text[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        text[line_start..offset].chars().count()
     }
 
     /// Check sequence items have consistent indentation (ZVH3)
@@ -1805,6 +1796,27 @@ mod tests {
 
         // Simple valid YAML should have no violations
         assert_eq!(violations.len(), 0);
+    }
+
+    #[test]
+    fn test_validator_inconsistent_sequence_indent() {
+        let even = Document::from_str("- a\n- b\n").unwrap();
+        let even_v = Validator::new().validate(&even);
+        assert!(
+            !even_v
+                .iter()
+                .any(|v| v.message.contains("Inconsistent sequence item indentation")),
+            "{even_v:?}"
+        );
+
+        let mixed = Document::from_str("- a\n - b\n").unwrap();
+        let mixed_v = Validator::new().validate(&mixed);
+        assert!(
+            mixed_v
+                .iter()
+                .any(|v| v.message.contains("Inconsistent sequence item indentation")),
+            "{mixed_v:?}"
+        );
     }
 
     #[test]

@@ -1016,7 +1016,7 @@ mod tests {
     use std::str::FromStr;
 
     #[test]
-    fn test_set_yaml_node_alias_round_trips_as_alias() {
+    fn test_mapping_set_preserves_alias_kind() {
         let doc = Document::from_str("shared: &shared value\na: *shared\nb: old\n").unwrap();
         let mapping = doc.as_mapping().unwrap();
         mapping.set("b", mapping.get("a").unwrap());

@@ -17,7 +17,7 @@ use libfuzzer_sys::fuzz_target;
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::path::YamlPath;
-use yaml_edit::{debug, Document};
+use yaml_edit::{debug, Document, Sequence};
 
 const SEEDS: &[&str] = &[
     "a: 1\n",
@@ -151,7 +151,9 @@ fn apply(doc: &Document, op: &Op) {
         }
         Op::SeqPush(k, v) => {
             if let Some(seq) = mapping.get_sequence(as_str(k)) {
+                let before = seq.len();
                 seq.push(as_str(v));
+                assert_seq_push_stuck(&seq, before, as_str(v), doc, as_str(k));
             }
         }
         Op::SeqPop(k) => {
@@ -199,6 +201,70 @@ fn apply(doc: &Document, op: &Op) {
                 let _ = doc.remove_path(&dotted(p));
             }
         }
+    }
+}
+
+/// Verify that `push(v)` on `seq` actually stuck: the in-memory sequence
+/// grew by one and the last item is a scalar equal to `v`, and the same
+/// property holds after `doc.to_string()` is round-tripped through the
+/// parser and the sequence looked up by `key` in the resulting mapping.
+///
+/// The re-parse leg catches mutations that leave the CST looking fine
+/// but produce text that, when re-parsed, parses into a different shape
+/// (e.g. an entry emitted after the `]` of an empty flow sequence).
+fn assert_seq_push_stuck(seq: &Sequence, before: usize, v: &str, doc: &Document, key: &str) {
+    let after = seq.len();
+    if after != before + 1 {
+        panic!(
+            "SeqPush({:?}): len {} -> {} (expected {}), text: {:?}",
+            v,
+            before,
+            after,
+            before + 1,
+            doc.to_string()
+        );
+    }
+    let last_text = seq
+        .last()
+        .as_ref()
+        .and_then(|n| n.as_scalar().map(|s| s.as_string()));
+    if last_text.as_deref() != Some(v) {
+        panic!(
+            "SeqPush({:?}): last item = {:?}, text: {:?}",
+            v,
+            last_text,
+            doc.to_string()
+        );
+    }
+    // Re-parse and re-verify. If the fresh parse can't find the sequence
+    // at `key` any more, or its length or last-item text has drifted, the
+    // mutation produced invalid or misplaced YAML.
+    let text = doc.to_string();
+    let Ok(reparsed) = Document::from_str(&text) else {
+        panic!(
+            "SeqPush({:?}): re-parse failed, text: {:?}",
+            v, text
+        );
+    };
+    let Some(reparsed_seq) = reparsed
+        .as_mapping()
+        .and_then(|m| m.get_sequence(key))
+    else {
+        panic!(
+            "SeqPush({:?}): re-parsed doc has no sequence at key {:?}, text: {:?}",
+            v, key, text
+        );
+    };
+    let r_len = reparsed_seq.len();
+    let r_last = reparsed_seq
+        .last()
+        .as_ref()
+        .and_then(|n| n.as_scalar().map(|s| s.as_string()));
+    if r_len != after || r_last.as_deref() != Some(v) {
+        panic!(
+            "SeqPush({:?}): reparse drift: len {} vs {}, last {:?} vs {:?}, text: {:?}",
+            v, after, r_len, Some(v), r_last, text
+        );
     }
 }
 

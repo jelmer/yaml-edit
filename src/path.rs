@@ -503,7 +503,17 @@ fn set_path_on_sequence<V: crate::AsYaml>(
             set_path_on_sequence(&nested, &segments[1..], value);
             return;
         }
-        sequence.set(index, crate::yaml::Sequence::new());
+        // Nested-sequence-under-sequence: use SequenceBuilder to
+        // create a flow-empty `[]`. A block SEQUENCE nested inline
+        // after `- ` renders as a compact-block shape that re-parses
+        // as a plain scalar, so we need to keep the inner sequence
+        // flow. push/insert see `inside_flow_container` and preserve
+        // that flow style through the subsequent set.
+        let flow_empty = crate::builder::SequenceBuilder::new()
+            .build_document()
+            .as_sequence()
+            .expect("SequenceBuilder always produces a sequence");
+        sequence.set(index, flow_empty);
         if let Some(nested) = sequence.get(index).and_then(|n| n.as_sequence().cloned()) {
             set_path_on_sequence(&nested, &segments[1..], value);
         }
@@ -514,7 +524,11 @@ fn set_path_on_sequence<V: crate::AsYaml>(
         set_path_on_mapping(&nested, &segments[1..], value);
         return;
     }
-    sequence.set(index, Mapping::new());
+    let flow_empty = crate::builder::MappingBuilder::new()
+        .build_document()
+        .as_mapping()
+        .expect("MappingBuilder always produces a mapping");
+    sequence.set(index, flow_empty);
     if let Some(nested) = sequence.get(index).and_then(|n| n.as_mapping().cloned()) {
         set_path_on_mapping(&nested, &segments[1..], value);
     }
@@ -1192,11 +1206,18 @@ config:
 
     #[test]
     fn test_set_path_creates_intermediate_sequence() {
+        // Nested collections created inline after `- ` render in
+        // flow style (`- {c: "value"}`) so re-parse can find the
+        // key. A block mapping inline after the dash would render
+        // as a compact-block shape that re-parses ambiguously.
         use crate::yaml::Document;
         use std::str::FromStr;
         let doc = Document::from_str("base: true\n").unwrap();
         doc.set_path("a.b[0].c", "value");
-        assert_eq!(doc.to_string(), "base: true\na:\n  b:\n    - c: value\n\n");
+        assert_eq!(
+            doc.to_string(),
+            "base: true\na:\n  b:\n    - {c: \"value\"}\n"
+        );
     }
 
     #[test]

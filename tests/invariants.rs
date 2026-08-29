@@ -281,8 +281,10 @@ fn sequence_remove_last_entry_preserves_following_mapping_entry() {
 }
 
 #[test]
-#[ignore = "set_path with nested Index segments produces broken compact block that reparses as a plain scalar"]
 fn set_path_nested_sequence_indices() {
+    // Nested index paths on fresh intermediates render as `outer
+    // block, inner flow` (`s:\n  - [hi]\n`) rather than a compact
+    // block that re-parses as a plain scalar.
     use yaml_edit::path::YamlPath;
     let doc = Document::from_str("a: 1\n").unwrap();
     doc.set_path("s[0][0]", "hi");

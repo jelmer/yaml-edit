@@ -7,10 +7,22 @@ use rowan::GreenNodeBuilder;
 
 ast_node!(Sequence, SEQUENCE, "A YAML sequence (list)");
 
-/// True if any ancestor of `node` is a flow container (`{...}` or `[...]`).
-/// A block SEQUENCE_ENTRY inside a flow ancestor would render as
-/// invalid mixed YAML.
+/// True if `node` cannot become block style: it lives inside a flow
+/// container (`{...}` or `[...]`) or sits inline inside a
+/// SEQUENCE_ENTRY (`- []` with the collection immediately after the
+/// dash, no NEWLINE + INDENT scaffold in between). In either case a
+/// block SEQUENCE_ENTRY spliced in would render as invalid mixed
+/// YAML that re-parses as a plain scalar.
 fn inside_flow_container(node: &SyntaxNode) -> bool {
+    if let Some(parent) = node.parent() {
+        if parent.kind() == SyntaxKind::SEQUENCE_ENTRY {
+            // The collection appears inline after `- `. A block
+            // conversion here would need a NEWLINE + deeper INDENT
+            // that we can't fabricate without knowing the outer
+            // sequence's column; keep it flow.
+            return true;
+        }
+    }
     let mut cur = node.parent();
     while let Some(p) = cur {
         let opener = match p.kind() {

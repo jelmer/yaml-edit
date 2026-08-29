@@ -2777,6 +2777,16 @@ impl Mapping {
         let entry_count = self.entries().count();
         let actual_index = index.min(entry_count);
 
+        if flow_context {
+            let where_at = self
+                .entries()
+                .nth(actual_index)
+                .map(|e| FlowInsertPos::Before(e.0))
+                .unwrap_or(FlowInsertPos::End);
+            self.insert_flow_entry_cst_at(&new_entry.0, where_at);
+            return;
+        }
+
         // Find the position in children_with_tokens corresponding to the nth entry
         let mut entry_positions = Vec::new();
         for (i, child) in self.0.children_with_tokens().enumerate() {
@@ -2955,6 +2965,19 @@ mod tests {
         assert_eq!(
             reparsed.as_mapping().unwrap().get("foo").unwrap().kind(),
             YamlKind::Mapping
+        );
+    }
+
+    #[test]
+    fn test_insert_at_index_appends_inside_flow_braces() {
+        use crate::yaml::Document;
+        let doc = Document::from_str("{a: 1, b: 2}\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        mapping.insert_at_index(2, "c", 3);
+        assert_eq!(doc.to_string().trim_end(), "{a: 1, b: 2, c: 3}");
+        assert_eq!(
+            mapping.get("c").unwrap().as_scalar().unwrap().as_string(),
+            "3"
         );
     }
 

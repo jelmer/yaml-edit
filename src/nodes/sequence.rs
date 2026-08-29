@@ -66,6 +66,31 @@ fn trailing_newline_indent(node: &SyntaxNode) -> Option<String> {
     Some(result)
 }
 
+fn append_comma_space_to_seq_entry(entry: &SyntaxNode) {
+    let ends_with_comma = entry
+        .children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .filter(|t| {
+            !matches!(
+                t.kind(),
+                SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
+            )
+        })
+        .last()
+        .is_some_and(|t| t.kind() == SyntaxKind::COMMA);
+    if ends_with_comma {
+        return;
+    }
+    let end = entry.children_with_tokens().count();
+    entry.splice_children(
+        end..end,
+        vec![
+            fresh_token(SyntaxKind::COMMA, ",").into(),
+            fresh_token(SyntaxKind::WHITESPACE, " ").into(),
+        ],
+    );
+}
+
 impl Sequence {
     /// Iterate over items in this sequence as raw syntax nodes.
     ///
@@ -213,18 +238,17 @@ impl Sequence {
 
         let has_prev = actual > 0;
         let has_next = actual < entry_positions.len();
-        let mut elems = Vec::new();
         if has_prev && !has_next {
-            elems.push(fresh_token(SyntaxKind::COMMA, ",").into());
-            elems.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
+            if let Some(prev) = children[entry_positions[actual - 1]].as_node() {
+                append_comma_space_to_seq_entry(prev);
+            }
         }
-        elems.push(new_entry.into());
         if has_next {
-            elems.push(fresh_token(SyntaxKind::COMMA, ",").into());
-            elems.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
+            append_comma_space_to_seq_entry(&new_entry);
         }
 
-        self.0.splice_children(insert_pos..insert_pos, elems);
+        self.0
+            .splice_children(insert_pos..insert_pos, vec![new_entry.into()]);
     }
 
     /// Add an item to the end of the sequence.

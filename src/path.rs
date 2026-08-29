@@ -394,9 +394,12 @@ impl YamlPath for Mapping {
     }
 }
 
-/// Set a value at a path on a mapping, creating intermediate mappings as needed.
+/// Set a value at a path on a mapping, creating intermediate mappings or
+/// sequences as needed.
 ///
-/// This function uses only the public API (get_mapping, set) and does NOT rebuild nodes.
+/// Uses only the public API (get_mapping, get_sequence, set) and does NOT
+/// rebuild nodes. Recurses through `set_path_on_sequence` when a segment
+/// dives into a sequence.
 fn set_path_on_mapping<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegment], value: V) {
     if segments.is_empty() {
         return;
@@ -414,9 +417,25 @@ fn set_path_on_mapping<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegm
         return;
     }
 
-    // Try to navigate to existing nested mapping
+    // What container does the next segment expect at `first_key`?
+    let next_wants_sequence = matches!(segments[1], PathSegment::Index(_));
+
+    if next_wants_sequence {
+        if let Some(nested) = mapping.get_sequence(first_key) {
+            set_path_on_sequence(&nested, &segments[1..], value);
+            return;
+        }
+        // Create an empty sequence at `first_key` and recurse into it.
+        // `Sequence::new()` yields a bare empty SEQUENCE that Mapping::set
+        // will splice under the key.
+        mapping.set(first_key, crate::yaml::Sequence::new());
+        if let Some(nested) = mapping.get_sequence(first_key) {
+            set_path_on_sequence(&nested, &segments[1..], value);
+        }
+        return;
+    }
+
     if let Some(nested) = mapping.get_mapping(first_key) {
-        // Nested mapping exists, recurse
         set_path_on_mapping(&nested, &segments[1..], value);
         return;
     }
@@ -435,6 +454,59 @@ fn set_path_on_mapping<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegm
     }
 
     if let Some(nested) = mapping.get_mapping(first_key) {
+        set_path_on_mapping(&nested, &segments[1..], value);
+    }
+}
+
+/// Set a value at a path on a sequence, growing it and creating intermediate
+/// containers as needed.
+///
+/// The segments slice must start with an `Index`. Missing entries up to
+/// `index` are pushed as null scalars; the target entry is replaced (single-
+/// segment path) or descended into (multi-segment path).
+fn set_path_on_sequence<V: crate::AsYaml>(
+    sequence: &crate::yaml::Sequence,
+    segments: &[PathSegment],
+    value: V,
+) {
+    if segments.is_empty() {
+        return;
+    }
+    let index = match &segments[0] {
+        PathSegment::Index(i) => *i,
+        PathSegment::Key(_) => return, // Can't key into a sequence
+    };
+
+    // Grow the sequence with null placeholders until `index` is in range.
+    while sequence.len() <= index {
+        sequence.push(crate::scalar::ScalarValue::null());
+    }
+
+    if segments.len() == 1 {
+        sequence.set(index, value);
+        return;
+    }
+
+    let next_wants_sequence = matches!(segments[1], PathSegment::Index(_));
+
+    if next_wants_sequence {
+        if let Some(nested) = sequence.get(index).and_then(|n| n.as_sequence().cloned()) {
+            set_path_on_sequence(&nested, &segments[1..], value);
+            return;
+        }
+        sequence.set(index, crate::yaml::Sequence::new());
+        if let Some(nested) = sequence.get(index).and_then(|n| n.as_sequence().cloned()) {
+            set_path_on_sequence(&nested, &segments[1..], value);
+        }
+        return;
+    }
+
+    if let Some(nested) = sequence.get(index).and_then(|n| n.as_mapping().cloned()) {
+        set_path_on_mapping(&nested, &segments[1..], value);
+        return;
+    }
+    sequence.set(index, Mapping::new());
+    if let Some(nested) = sequence.get(index).and_then(|n| n.as_mapping().cloned()) {
         set_path_on_mapping(&nested, &segments[1..], value);
     }
 }
@@ -1106,6 +1178,36 @@ config:
                 .and_then(|v| v.as_scalar())
                 .map(|s| s.to_string()),
             Some("5432".to_string())
+        );
+    }
+
+    #[test]
+    fn test_set_path_creates_intermediate_sequence() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+        let doc = Document::from_str("base: true\n").unwrap();
+        doc.set_path("a.b[0].c", "value");
+        assert_eq!(doc.to_string(), "base: true\na:\n  b:\n    - c: value\n\n");
+    }
+
+    #[test]
+    fn test_set_path_into_existing_sequence_by_index() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+        let doc = Document::from_str("items:\n  - a\n  - b\n").unwrap();
+        doc.set_path("items[1]", "B");
+        assert_eq!(doc.to_string(), "items:\n  - a\n  - B\n");
+    }
+
+    #[test]
+    fn test_set_path_grows_sequence_with_nulls() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+        let doc = Document::from_str("items:\n  - a\n").unwrap();
+        doc.set_path("items[3]", "z");
+        assert_eq!(
+            doc.to_string(),
+            "items:\n  - a\n  - null\n  - null\n  - z\n"
         );
     }
 }

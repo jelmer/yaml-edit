@@ -1873,6 +1873,76 @@ impl Mapping {
         crate::as_yaml::source_base_indent(&self.0)
     }
 
+    /// If a MAPPING_ENTRY whose KEY matches `key` exists, remove it (plus a
+    /// trailing NEWLINE if any) and return the refreshed children list. If
+    /// no such entry exists, return the current children unchanged.
+    fn remove_mapping_entry_by_key(
+        &self,
+        key: &impl crate::AsYaml,
+    ) -> Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>> {
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+
+        for (i, child) in children.iter().enumerate() {
+            let Some(node) = child.as_node() else {
+                continue;
+            };
+            if node.kind() != SyntaxKind::MAPPING_ENTRY {
+                continue;
+            }
+            let matches = node
+                .children()
+                .any(|c| c.kind() == SyntaxKind::KEY && key_content_matches(&c, key));
+            if !matches {
+                continue;
+            }
+            let trailing_newline = children
+                .get(i + 1)
+                .and_then(|c| c.as_token())
+                .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
+            let end = if trailing_newline { i + 2 } else { i + 1 };
+            self.0.splice_children(i..end, vec![]);
+            return self.0.children_with_tokens().collect();
+        }
+
+        children
+    }
+
+    /// Handle the unwrapped (no MAPPING_ENTRY) legacy shape: if `key` appears
+    /// as a bare KEY or SCALAR followed by a VALUE, replace just that VALUE
+    /// and return true.
+    fn replace_unwrapped_value(
+        &self,
+        key: &impl crate::AsYaml,
+        new_value: &impl crate::AsYaml,
+    ) -> bool {
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        for (i, child) in children.iter().enumerate() {
+            let Some(node) = child.as_node() else {
+                continue;
+            };
+            if !matches!(node.kind(), SyntaxKind::KEY | SyntaxKind::SCALAR)
+                || !key_content_matches(node, key)
+            {
+                continue;
+            }
+            for (offset, later) in children[i + 1..].iter().enumerate() {
+                if let Some(n) = later.as_node() {
+                    if n.kind() == SyntaxKind::VALUE {
+                        let mut value_builder = GreenNodeBuilder::new();
+                        Document::build_value_content(&mut value_builder, new_value, 2);
+                        let new_value_node = SyntaxNode::new_root_mut(value_builder.finish());
+                        let j = i + 1 + offset;
+                        self.0
+                            .splice_children(j..j + 1, vec![new_value_node.into()]);
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        false
+    }
+
     /// Move a key-value pair to immediately after an existing key.
     ///
     /// If `new_key` already exists in the mapping, it is first **removed** from its
@@ -1890,66 +1960,10 @@ impl Mapping {
         new_key: impl crate::AsYaml,
         new_value: impl crate::AsYaml,
     ) -> bool {
-        self.move_after_impl(after_key, new_key, new_value)
-    }
-
-    /// Internal implementation for move_after
-    fn move_after_impl(
-        &self,
-        after_key: impl crate::AsYaml,
-        new_key: impl crate::AsYaml,
-        new_value: impl crate::AsYaml,
-    ) -> bool {
-        let children: Vec<_> = self.0.children_with_tokens().collect();
+        let children: Vec<_> = self.remove_mapping_entry_by_key(&new_key);
         let mut insert_position = None;
         let mut found_key = false;
         let mut last_value_end = 0;
-
-        // First, check if the new key already exists and remove it
-        let mut i = 0;
-        let mut removed_existing = false;
-        while i < children.len() {
-            if let Some(node) = children[i].as_node() {
-                if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                    // Look inside the MAPPING_ENTRY for the KEY
-                    for key_child in node.children() {
-                        if key_child.kind() == SyntaxKind::KEY
-                            && key_content_matches(&key_child, &new_key)
-                        {
-                            // Found existing key, remove this entire MAPPING_ENTRY
-                            let mut remove_range = i..i + 1;
-
-                            // Also remove any trailing newline
-                            if i + 1 < children.len() {
-                                if let Some(token) = children[i + 1].as_token() {
-                                    if token.kind() == SyntaxKind::NEWLINE {
-                                        remove_range = i..i + 2;
-                                    }
-                                }
-                            }
-
-                            self.0.splice_children(remove_range, vec![]);
-                            removed_existing = true;
-                            break;
-                        }
-                    }
-                    if removed_existing {
-                        // Need to refresh children list after removal
-                        break;
-                    }
-                }
-            }
-            if !removed_existing {
-                i += 1;
-            }
-        }
-
-        // If we removed an existing key, refresh the children list
-        let children = if removed_existing {
-            self.0.children_with_tokens().collect()
-        } else {
-            children
-        };
 
         // Find the position after the specified key's value
         for (i, child) in children.iter().enumerate() {
@@ -2168,89 +2182,14 @@ impl Mapping {
         new_key: impl crate::AsYaml,
         new_value: impl crate::AsYaml,
     ) -> bool {
-        self.move_before_impl(before_key, new_key, new_value)
-    }
-
-    /// Internal implementation for move_before
-    fn move_before_impl(
-        &self,
-        before_key: impl crate::AsYaml,
-        new_key: impl crate::AsYaml,
-        new_value: impl crate::AsYaml,
-    ) -> bool {
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        let mut insert_position = None;
-
-        // First, check if the new key already exists and remove it
-        let mut i = 0;
-        let mut removed_existing = false;
-        while i < children.len() {
-            if let Some(node) = children[i].as_node() {
-                if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                    // Look inside the MAPPING_ENTRY for the KEY
-                    for key_child in node.children() {
-                        if key_child.kind() == SyntaxKind::KEY
-                            && key_content_matches(&key_child, &new_key)
-                        {
-                            // Found existing key, remove this entire MAPPING_ENTRY
-                            let mut remove_range = i..i + 1;
-
-                            // Also remove any trailing newline
-                            if i + 1 < children.len() {
-                                if let Some(token) = children[i + 1].as_token() {
-                                    if token.kind() == SyntaxKind::NEWLINE {
-                                        remove_range = i..i + 2;
-                                    }
-                                }
-                            }
-
-                            self.0.splice_children(remove_range, vec![]);
-                            removed_existing = true;
-                            break;
-                        }
-                    }
-                    if removed_existing {
-                        // Need to refresh children list after removal
-                        break;
-                    }
-                } else if (node.kind() == SyntaxKind::KEY || node.kind() == SyntaxKind::SCALAR)
-                    && key_content_matches(node, &new_key)
-                {
-                    // Found existing key, find its VALUE node and replace just that
-                    // Look for colon, then VALUE node
-                    for (offset, child_j) in children[(i + 1)..].iter().enumerate() {
-                        if let Some(node) = child_j.as_node() {
-                            if node.kind() == SyntaxKind::VALUE {
-                                // Found the VALUE node to replace
-                                // Build new VALUE node using the helper
-                                let mut value_builder = GreenNodeBuilder::new();
-                                Document::build_value_content(&mut value_builder, &new_value, 2);
-                                let new_value_node =
-                                    SyntaxNode::new_root_mut(value_builder.finish());
-
-                                // Replace just the VALUE node
-                                let j = i + 1 + offset;
-                                self.0
-                                    .splice_children(j..j + 1, vec![new_value_node.into()]);
-                                return true;
-                            }
-                        }
-                    }
-                    // If no VALUE node found, something's wrong with the structure
-                    return false;
-                }
-            }
-            if !removed_existing {
-                i += 1;
-            }
+        // If new_key exists as a bare KEY/SCALAR (no wrapping MAPPING_ENTRY),
+        // just swap its VALUE in place and we're done.
+        if self.replace_unwrapped_value(&new_key, &new_value) {
+            return true;
         }
 
-        // If we removed an existing key, refresh the children list
-        let children = if removed_existing {
-            self.0.children_with_tokens().collect()
-        } else {
-            children
-        };
+        let children: Vec<_> = self.remove_mapping_entry_by_key(&new_key);
+        let mut insert_position = None;
 
         // Find the position before the specified key
         for (i, child) in children.iter().enumerate() {

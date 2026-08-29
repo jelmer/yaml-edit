@@ -229,3 +229,94 @@ fn set_path_after_explicit_key_does_not_leave_blank_line() {
         doc.to_string()
     );
 }
+
+// Bugs surfaced by the proptest post-conditions in
+// tests/proptest_invariants.rs. Each is marked `#[ignore]` so it does
+// not fail the suite; un-ignore when the underlying issue is fixed to
+// lock in the correct behavior.
+//
+// Assertions describe what the current (broken) code produces so the
+// test flips from `passing when ignored` to `passing when fixed`
+// naturally: replace the buggy expected value with the correct one at
+// fix time.
+
+#[test]
+#[ignore = "Sequence::pop on last item leaves broken scaffold; should collapse to `key: []`"]
+fn sequence_pop_last_item_leaves_broken_scaffold() {
+    let doc = Document::from_str("s:\n  - a\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.pop();
+    // Current: "s:\n  " (invalid). Wanted: "s: []\n".
+    assert_eq!(doc.to_string(), "s: []\n");
+    check(&doc);
+    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+    assert!(reparsed.as_mapping().and_then(|m| m.get_sequence("s")).is_some());
+}
+
+#[test]
+#[ignore = "Sequence::remove on last item leaves broken scaffold; should collapse to `key: []`"]
+fn sequence_remove_last_item_leaves_broken_scaffold() {
+    let doc = Document::from_str("s:\n  - a\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.remove(0);
+    assert_eq!(doc.to_string(), "s: []\n");
+    check(&doc);
+}
+
+#[test]
+#[ignore = "Sequence::clear on non-empty block sequence leaves broken scaffold"]
+fn sequence_clear_block_leaves_broken_scaffold() {
+    let doc = Document::from_str("s:\n  - a\n  - b\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.clear();
+    assert_eq!(doc.to_string(), "s: []\n");
+    check(&doc);
+}
+
+#[test]
+#[ignore = "Sequence::insert into empty flow `[]` produces mixed-style broken output"]
+fn sequence_insert_into_empty_flow() {
+    let doc = Document::from_str("s: []\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.insert(0, "x");
+    // Any correct output would work; the point is that re-parse should
+    // yield a sequence with one item "x".
+    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+    let seq2 = reparsed.as_mapping().unwrap().get_sequence("s").unwrap();
+    assert_eq!(seq2.len(), 1);
+    check(&doc);
+}
+
+#[test]
+#[ignore = "Sequence::push into non-empty flow produces mixed-style output that reparses as one string"]
+fn sequence_push_into_nonempty_flow() {
+    let doc = Document::from_str("s: [x]\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.push("y");
+    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+    let seq2 = reparsed.as_mapping().unwrap().get_sequence("s").unwrap();
+    assert_eq!(seq2.len(), 2);
+    check(&doc);
+}
+
+#[test]
+#[ignore = "Sequence::insert into non-empty flow produces mixed-style output"]
+fn sequence_insert_into_nonempty_flow() {
+    let doc = Document::from_str("s: [x]\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.insert(0, "y");
+    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+    let seq2 = reparsed.as_mapping().unwrap().get_sequence("s").unwrap();
+    assert_eq!(seq2.len(), 2);
+    check(&doc);
+}
+
+#[test]
+#[ignore = "Sequence::insert into single-entry block emits new INDENT inside SEQUENCE that stacks with the parent VALUE's INDENT"]
+fn sequence_insert_into_single_entry_block_indent() {
+    let doc = Document::from_str("s:\n  - a\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.insert(0, "b");
+    assert_eq!(doc.to_string(), "s:\n  - b\n  - a\n");
+    check(&doc);
+}

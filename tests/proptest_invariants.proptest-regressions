@@ -7,3 +7,8 @@
 cc 52ea7af356caacbcc284c8aa2f0d268d3f3dfd0c105f05e873634dc365e8cb0d # shrinks to seed = "a: 1\n", ops = [SetString("a", "")]
 cc 5c7c3c68edae19a737a62d6e3b3a9247b3ab1fd22540ac92c6b04ae58dd649a1 # shrinks to seed = "items:  # a list\n  - one\n  - two  # inline\n", ops = []
 cc eec7a2a430945e67faf4fa7155478e42de4396895b465822329ae76613cfca2b # shrinks to seed = "a: null\n", ops = [InsertAtIndex(0, "b", ""), RemoveNthOccurrence("a", 0)]
+cc 0efa6886dd8d89bc57055e3f86a27e1e11a5e613c7f5967be0c3b6fc3612648d # shrinks to seed = "s:\n  - a\n", ops = [SeqPop("s")]
+cc 0b563a284745d21fd61010f7a93e900a274e0a164cb5235161d1f9c1cd01e536 # shrinks to seed = "s: []\n", ops = [SeqInsert("s", 0, "")]
+cc 5dc5778388af44edd40b1f10188a4f9fb679b97c5656f2b0e60f305b3a516181 # shrinks to seed = "s: [x]\n", ops = [SeqPush("s", "")]
+cc 4e1085bf0df69b32be08313a232685e3e8e94aa6ddcc94668c6cf4d895aa2d91 # shrinks to seed = "s: [x]\n", ops = [SeqInsert("s", 0, "")]
+cc bf13dc1349c7c1227fb1dfbab9435788ae504dba281c44af1f2c95d75fd42eac # shrinks to seed = "s:\n  - a\n", ops = [SeqInsert("s", 0, "")]

@@ -136,6 +136,37 @@ fn collapse_empty_child_mapping_in_parent(mapping: &SyntaxNode) {
     ensure_trailing_newline(&entry_node);
 }
 
+/// If `mapping` is an emptied top-level (document-root) MAPPING with
+/// no enclosing MAPPING_ENTRY, inject a flow-empty `{}` so the doc
+/// renders as `"{}"` instead of empty text and re-parses to a mapping
+/// again. See [`collapse_empty_child_mapping_in_parent`] for the
+/// nested counterpart.
+fn ensure_top_level_empty_renders_as_flow(mapping: &SyntaxNode) {
+    let has_entry = mapping
+        .children()
+        .any(|c| c.kind() == SyntaxKind::MAPPING_ENTRY);
+    if has_entry {
+        return;
+    }
+    let has_map_entry_parent = mapping
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::VALUE)
+        .and_then(|v| v.parent())
+        .is_some_and(|e| e.kind() == SyntaxKind::MAPPING_ENTRY);
+    if has_map_entry_parent {
+        return;
+    }
+    let children_count = mapping.children_with_tokens().count();
+    if children_count != 0 {
+        // Something else lives here (comment, orphan token, etc.).
+        // Don't clobber it.
+        return;
+    }
+    let lbrace = super::fresh_token(SyntaxKind::LEFT_BRACE, "{");
+    let rbrace = super::fresh_token(SyntaxKind::RIGHT_BRACE, "}");
+    mapping.splice_children(0..0, vec![lbrace.into(), rbrace.into()]);
+}
+
 /// Append a trailing NEWLINE token to `entry` if it doesn't already end with
 /// one. Used when a block-style entry is about to have a new sibling appended
 /// after it (its trailing newline separates the two entries visually).
@@ -1934,6 +1965,32 @@ impl Mapping {
         new_key: impl crate::AsYaml,
         new_value: impl crate::AsYaml,
     ) -> bool {
+        if self.is_flow_style() {
+            if let Some(existing) = self.find_entry_by_key(&new_key) {
+                if let Some(idx) = self
+                    .0
+                    .children_with_tokens()
+                    .position(|c| c.as_node() == Some(existing.syntax()))
+                {
+                    self.0.splice_children(idx..idx + 1, vec![]);
+                }
+            }
+            let Some(target) = self.find_entry_by_key(&after_key) else {
+                return false;
+            };
+            let use_explicit_keys = self.uses_explicit_keys();
+            let key_indent = self.detect_indentation_level();
+            let entry = MappingEntry::new_at_indent(
+                &new_key,
+                &new_value,
+                true,
+                use_explicit_keys,
+                key_indent,
+            );
+            self.insert_flow_entry_cst_at(&entry.0, FlowInsertPos::After(target.syntax().clone()));
+            return true;
+        }
+
         let children: Vec<_> = self.0.children_with_tokens().collect();
         let mut insert_position = None;
         let mut found_key = false;
@@ -2212,6 +2269,38 @@ impl Mapping {
         new_key: impl crate::AsYaml,
         new_value: impl crate::AsYaml,
     ) -> bool {
+        // Flow-style mappings need dedicated bookkeeping: build the
+        // new entry in flow style (no NEWLINE), delegate placement to
+        // insert_flow_entry_cst_at, and let it wire up `, ` separators
+        // and bracket-relative positioning.
+        if self.is_flow_style() {
+            // Remove any existing entry with the same key (contract:
+            // move, not duplicate).
+            if let Some(existing) = self.find_entry_by_key(&new_key) {
+                if let Some(idx) = self
+                    .0
+                    .children_with_tokens()
+                    .position(|c| c.as_node() == Some(existing.syntax()))
+                {
+                    self.0.splice_children(idx..idx + 1, vec![]);
+                }
+            }
+            let Some(target) = self.find_entry_by_key(&before_key) else {
+                return false;
+            };
+            let use_explicit_keys = self.uses_explicit_keys();
+            let key_indent = self.detect_indentation_level();
+            let entry = MappingEntry::new_at_indent(
+                &new_key,
+                &new_value,
+                true,
+                use_explicit_keys,
+                key_indent,
+            );
+            self.insert_flow_entry_cst_at(&entry.0, FlowInsertPos::Before(target.syntax().clone()));
+            return true;
+        }
+
         let children: Vec<_> = self.0.children_with_tokens().collect();
         let mut insert_position = None;
 
@@ -2520,10 +2609,16 @@ impl Mapping {
         // If the mapping is now empty and it sits as the value of a
         // parent MAPPING_ENTRY, collapse the placeholder tokens
         // (NEWLINE + INDENT + <empty MAPPING>) that wrapped it. The
-        // parent entry becomes a plain implicit-null value: `key:\n`.
-        // Otherwise a caller who does set_path("a.b.c", v) then
-        // remove_path("a.b.c") ends up with a broken CST whose text
-        // trails off with dangling indentation.
+        // parent entry becomes `key: {}`. Otherwise a caller who does
+        // set_path("a.b.c", v) then remove_path("a.b.c") ends up with
+        // a broken CST whose text trails off with dangling
+        // indentation.
+        //
+        // Top-level empty mappings are left as-is (rendering to `""`)
+        // by remove because the caller may still add more entries;
+        // injecting a `{}` here would poison a subsequent block-style
+        // `set`. `Mapping::clear`, which signals explicit intent to
+        // leave the mapping empty, does inject `{}`.
         if !self
             .0
             .children()
@@ -2621,33 +2716,7 @@ impl Mapping {
         for key in keys {
             self.remove(key);
         }
-        // A top-level (document-root) mapping has no enclosing
-        // MAPPING_ENTRY for `remove` to collapse into `key: {}`, so an
-        // emptied top-level mapping renders as `""` and re-parses as
-        // no-mapping. Inject an explicit `{}` so the doc round-trips
-        // and downstream code still sees a (now-empty) mapping.
-        if !self.is_empty() {
-            return;
-        }
-        let has_map_entry_parent = self
-            .0
-            .parent()
-            .filter(|p| p.kind() == SyntaxKind::VALUE)
-            .and_then(|v| v.parent())
-            .is_some_and(|e| e.kind() == SyntaxKind::MAPPING_ENTRY);
-        if has_map_entry_parent {
-            return;
-        }
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        if !children.is_empty() {
-            // Something already inhabits the MAPPING (comments, an
-            // orphan token, etc.); don't clobber it.
-            return;
-        }
-        let lbrace = super::fresh_token(SyntaxKind::LEFT_BRACE, "{");
-        let rbrace = super::fresh_token(SyntaxKind::RIGHT_BRACE, "}");
-        self.0
-            .splice_children(0..0, vec![lbrace.into(), rbrace.into()]);
+        ensure_top_level_empty_renders_as_flow(&self.0);
     }
 
     /// Rename a key while preserving its value and formatting.

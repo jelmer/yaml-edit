@@ -19,3 +19,6 @@ cc ee3c784f81cb43de7376b6e7e946a4978c0ecea2ae383436b224d12a5186b91a # shrinks to
 cc 67f1fae3c2bbed36056e8b2d3cf339d157cba145eff4aff9eb15027b9c26a3b6 # shrinks to seed = "a: 1\n", ops = [Clear, ReorderFields([]), SetString("a", "")]
 cc 4f8ba834415de763bcc3811973fd3b6134c0fd4c8dac67025600c36a198ec53b # shrinks to seed = "keys: !!set\n  ? a\n  ? b\n", ops = [SetString("a", "")]
 cc b6aa19e7fabd7e1c3cd79e61ae04a5683f398e8c4e98652ad0d8853c2a9b98bd # shrinks to seed = "a: 1\n", ops = [SetInt("g", 0), InsertAtIndex(0, "g", "")]
+cc 34bc5dd2653dba87eb5aece1a92f05f9ebfb576f74a99a4257c8cf4d058f9083 # shrinks to seed = "s: []\n", ops = [Remove("s")]
+cc 7217722cfb80ddce636240c06fb33748110842fe4491fa504f8f855e7feac595 # shrinks to seed = "a: 1\n", ops = [Clear, SetInt("f", 0), InsertBefore("f", "a", "a")]
+cc f1ae10076509ab758c0e89de36df5828e5407b3e0a308550b9ce43ea8fde9d1c # shrinks to seed = "a: 1\nb: 2\nc: 3\n", ops = [Rename("a", "b"), Rename("b", "a")]

@@ -305,6 +305,26 @@ fn parser_absorbs_column0_key_after_tagged_set() {
 }
 
 #[test]
+fn insert_before_in_flow_mapping_stays_flow() {
+    // insert_before/move_before used to build a block-style entry
+    // (with trailing NEWLINE) and splice it inside the `{}` of a
+    // flow mapping, producing `{a: a\nf: 0}` -- a mixed shape that
+    // re-parses with `a` as the multi-line scalar `"a f"`.
+    let doc = Document::from_str("{f: 0}").unwrap();
+    doc.as_mapping().unwrap().insert_before("f", "a", "hi");
+    assert_eq!(doc.to_string(), "{a: \"hi\", f: 0}");
+    check(&doc);
+}
+
+#[test]
+fn insert_after_in_flow_mapping_stays_flow() {
+    let doc = Document::from_str("{f: 0}").unwrap();
+    doc.as_mapping().unwrap().insert_after("f", "a", "hi");
+    assert_eq!(doc.to_string(), "{f: 0, a: \"hi\"}");
+    check(&doc);
+}
+
+#[test]
 fn top_level_mapping_clear_renders_flow_empty() {
     // A top-level mapping has no enclosing MAPPING_ENTRY to collapse
     // into `key: {}`; without the explicit `{}` fallback in clear()

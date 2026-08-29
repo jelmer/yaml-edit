@@ -179,10 +179,62 @@ impl Sequence {
             .unwrap_or_else(|| "  ".to_string())
     }
 
+    fn insert_flow_item(&self, index: usize, value: impl crate::AsYaml) {
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
+        value.build_content(&mut builder, 0, false);
+        builder.finish_node();
+        let new_entry = SyntaxNode::new_root_mut(builder.finish());
+
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        let mut entry_positions = Vec::new();
+        let mut rbracket = None;
+        for (i, child) in children.iter().enumerate() {
+            if child
+                .as_node()
+                .is_some_and(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            {
+                entry_positions.push(i);
+            }
+            if child
+                .as_token()
+                .is_some_and(|t| t.kind() == SyntaxKind::RIGHT_BRACKET)
+            {
+                rbracket = Some(i);
+            }
+        }
+
+        let actual = index.min(entry_positions.len());
+        let insert_pos = if actual < entry_positions.len() {
+            entry_positions[actual]
+        } else {
+            rbracket.unwrap_or(children.len())
+        };
+
+        let has_prev = actual > 0;
+        let has_next = actual < entry_positions.len();
+        let mut elems = Vec::new();
+        if has_prev && !has_next {
+            elems.push(fresh_token(SyntaxKind::COMMA, ",").into());
+            elems.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
+        }
+        elems.push(new_entry.into());
+        if has_next {
+            elems.push(fresh_token(SyntaxKind::COMMA, ",").into());
+            elems.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
+        }
+
+        self.0.splice_children(insert_pos..insert_pos, elems);
+    }
+
     /// Add an item to the end of the sequence.
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn push(&self, value: impl crate::AsYaml) {
+        if self.is_flow_style() {
+            self.insert_flow_item(self.len(), value);
+            return;
+        }
         let indentation = self.detect_indentation();
 
         // Build the INDENT token (separate from the SEQUENCE_ENTRY)
@@ -296,6 +348,10 @@ impl Sequence {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn insert(&self, index: usize, value: impl crate::AsYaml) {
+        if self.is_flow_style() {
+            self.insert_flow_item(index, value);
+            return;
+        }
         let indentation = self.detect_indentation();
 
         // Build the new SEQUENCE_ENTRY, terminated with its own NEWLINE.
@@ -1352,6 +1408,25 @@ scores:
 
         let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
         assert_eq!(values, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_flow_sequence_push_serializes_inside_brackets() {
+        use crate::Document;
+        let doc = Document::from_str("items: [a, b]\n").unwrap();
+        let seq = doc.get_sequence("items").unwrap();
+        seq.push("c");
+        assert_eq!(doc.to_string(), "items: [a, b, c]\n");
+
+        let doc = Document::from_str("items: []\n").unwrap();
+        let seq = doc.get_sequence("items").unwrap();
+        seq.push("c");
+        assert_eq!(doc.to_string(), "items: [c]\n");
+
+        let doc = Document::from_str("items: [b, c]\n").unwrap();
+        let seq = doc.get_sequence("items").unwrap();
+        seq.insert(0, "a");
+        assert_eq!(doc.to_string(), "items: [a, b, c]\n");
     }
 
     #[test]

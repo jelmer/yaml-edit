@@ -297,13 +297,10 @@ fn sequence_remove_first_entry_preserves_new_first_indent() {
 }
 
 #[test]
-#[ignore = "Sequence::insert into empty flow `[]` produces mixed-style broken output"]
-fn sequence_insert_into_empty_flow() {
+fn sequence_insert_into_empty_flow_reshapes_to_block() {
     let doc = Document::from_str("s: []\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.insert(0, "x");
-    // Any correct output would work; the point is that re-parse should
-    // yield a sequence with one item "x".
     let reparsed = Document::from_str(&doc.to_string()).unwrap();
     let seq2 = reparsed.as_mapping().unwrap().get_sequence("s").unwrap();
     assert_eq!(seq2.len(), 1);

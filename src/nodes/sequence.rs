@@ -509,6 +509,13 @@ impl Sequence {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn insert(&self, index: usize, value: impl crate::AsYaml) {
+        // An empty flow sequence (`[]`) cannot host a block entry;
+        // reshape it into the empty-block-under-key form first, just
+        // like `push` does.
+        if self.is_flow_style() && self.is_empty() {
+            self.convert_empty_flow_to_block();
+        }
+
         let indentation = self.detect_indentation();
 
         // Build the new SEQUENCE_ENTRY, terminated with its own NEWLINE.

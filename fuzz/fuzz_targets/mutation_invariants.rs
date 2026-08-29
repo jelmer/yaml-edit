@@ -180,9 +180,10 @@ fn apply(doc: &Document, op: &Op) {
         }
         Op::SeqInsert(k, i, v) => {
             if let Some(seq) = mapping.get_sequence(as_str(k)) {
-                // Skip insert into any flow sequence -- see
-                // known_bugs (bugs 7, 9). Block insert is fixed.
-                if seq.is_flow_style() {
+                // Skip insert into a non-empty flow sequence (known
+                // bug 9). Block insert and empty-flow insert are
+                // fixed.
+                if seq.is_flow_style() && !seq.is_empty() {
                     return;
                 }
                 let before = seq.len();

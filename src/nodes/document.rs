@@ -201,16 +201,6 @@ impl Document {
     pub fn set(&self, key: impl crate::AsYaml, value: impl crate::AsYaml) {
         if let Some(mapping) = self.as_mapping() {
             mapping.set(key, value);
-            // Changes are applied directly via splice_children, no need to replace
-        } else {
-            // If document is not a mapping, create one and add it to the document
-            let mapping = Mapping::new();
-            mapping.set(key, value);
-
-            // Add the mapping node directly to the document
-            let child_count = self.0.children_with_tokens().count();
-            self.0
-                .splice_children(child_count..child_count, vec![mapping.0.into()]);
         }
     }
 
@@ -232,14 +222,6 @@ impl Document {
         let field_order: Vec<K> = field_order.into_iter().collect();
         if let Some(mapping) = self.as_mapping() {
             mapping.set_with_field_order(key, value, field_order);
-            // Changes are applied directly via splice_children, no need to replace
-        } else {
-            // If document is not a mapping, create one and splice it in.
-            let mapping = Mapping::new();
-            mapping.set_with_field_order(key, value, field_order);
-            let child_count = self.0.children_with_tokens().count();
-            self.0
-                .splice_children(child_count..child_count, vec![mapping.0.into()]);
         }
     }
 
@@ -1574,6 +1556,16 @@ Repository: https://github.com/example/example.git
         let (doc, errors) = Document::from_str_relaxed("");
         assert!(errors.is_empty());
         // Default document when nothing is parsed
+        assert!(doc.as_mapping().is_none());
+    }
+
+    #[test]
+    fn test_set_on_sequence_document_does_not_append_mapping() {
+        let doc = Document::from_str("- a\n- b\n").unwrap();
+        doc.set("k", "v");
+        assert_eq!(doc.to_string(), "- a\n- b\n");
+        assert!(doc.get("k").is_none());
+        assert!(doc.as_sequence().is_some());
         assert!(doc.as_mapping().is_none());
     }
 }

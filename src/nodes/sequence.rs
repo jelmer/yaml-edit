@@ -1056,6 +1056,12 @@ mod tests {
         );
         assert_eq!(seq.len(), 2);
         assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().as_string(), "c");
+
+        let doc = Document::from_str("- a\n-\n- c\n").unwrap();
+        let seq = doc.as_sequence().unwrap();
+        assert_eq!(seq.len(), 3);
+        assert!(seq.set(1, "x"));
+        assert_eq!(doc.to_string(), "- a\n-x\n- c\n");
     }
 
     #[test]

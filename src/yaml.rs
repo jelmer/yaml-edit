@@ -690,9 +690,10 @@ impl FromStr for YamlFile {
     }
 }
 
-/// Maximum nesting depth for flow collections. Beyond this, the parser
-/// returns an error rather than risking stack overflow or unbounded RSS
-/// growth from pathological input like `{{{{...}}}}`.
+/// Maximum nesting depth for collections and stacked node properties.
+/// Beyond this, the parser returns an error rather than risking stack
+/// overflow or unbounded RSS growth from pathological input like
+/// `{{{{...}}}}` or a long `a:\n  a:\n  ...` chain.
 const MAX_FLOW_DEPTH: usize = 256;
 
 /// Internal parser state
@@ -711,6 +712,8 @@ struct Parser {
     current_line_indent: usize,
     /// Current depth of nested flow collections ([...] / {...}).
     flow_depth: usize,
+    /// Depth of `parse_value_with_base_indent` recursion (block and flow).
+    nesting_depth: usize,
 }
 
 impl Parser {
@@ -737,6 +740,7 @@ impl Parser {
             in_value_context: false,
             current_line_indent: 0,
             flow_depth: 0,
+            nesting_depth: 0,
         }
     }
 
@@ -879,6 +883,17 @@ impl Parser {
     }
 
     fn parse_value_with_base_indent(&mut self, base_indent: usize) {
+        if self.nesting_depth >= MAX_FLOW_DEPTH {
+            self.add_error(
+                format!("Collection nested too deeply (limit {MAX_FLOW_DEPTH})"),
+                ParseErrorKind::Other,
+            );
+            if self.current().is_some() {
+                self.bump();
+            }
+            return;
+        }
+        self.nesting_depth += 1;
         match self.current() {
             Some(SyntaxKind::COMMENT) => {
                 // Preserve the comment and continue parsing the actual value
@@ -970,6 +985,7 @@ impl Parser {
             }
             _ => self.parse_scalar(),
         }
+        self.nesting_depth -= 1;
     }
 
     fn parse_alias(&mut self) {
@@ -6684,6 +6700,28 @@ server:
     #[test]
     fn test_parse_deeply_nested_flow_sequence_does_not_blow_up() {
         let input = "[".repeat(2000);
+        let parse = crate::Parse::parse_yaml(&input);
+        let _ = parse.tree();
+        assert!(parse.has_errors());
+    }
+
+    #[test]
+    fn test_parse_deeply_nested_block_mapping_does_not_blow_up() {
+        let mut input = String::new();
+        for i in 0..2000 {
+            input.push_str(&"  ".repeat(i));
+            input.push_str("k:\n");
+        }
+        input.push_str(&"  ".repeat(2000));
+        input.push_str("v\n");
+        let parse = crate::Parse::parse_yaml(&input);
+        let _ = parse.tree();
+        assert!(parse.has_errors());
+    }
+
+    #[test]
+    fn test_parse_stacked_anchors_does_not_blow_up() {
+        let input = format!("{}v", "&x ".repeat(2000));
         let parse = crate::Parse::parse_yaml(&input);
         let _ = parse.tree();
         assert!(parse.has_errors());

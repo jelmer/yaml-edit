@@ -15,9 +15,13 @@
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use rowan::ast::AstNode;
-use std::str::FromStr;
-use yaml_edit::path::YamlPath;
-use yaml_edit::{debug, Document, Sequence};
+use yaml_edit::debug;
+
+// The mutation post-conditions are shared with the proptest target.
+// `include!` pulls them in verbatim because fuzz targets are separate
+// crates and can't `mod common;` into the tests directory. The include
+// brings its own `use` statements for Document, FromStr, YamlPath.
+include!("../../tests/common/mutation_checks.rs");
 
 const SEEDS: &[&str] = &[
     "a: 1\n",
@@ -128,23 +132,51 @@ fn apply(doc: &Document, op: &Op) {
         return;
     };
     match op {
-        Op::SetString(k, v) => mapping.set(as_str(k), as_str(v)),
-        Op::SetInt(k, v) => mapping.set(as_str(k), *v as i64),
+        Op::SetString(k, v) => {
+            mapping.set(as_str(k), as_str(v));
+            assert_mapping_set_stuck(&mapping, as_str(k), as_str(v), doc);
+        }
+        Op::SetInt(k, v) => {
+            mapping.set(as_str(k), *v as i64);
+            let expected = (*v as i64).to_string();
+            assert_mapping_set_stuck(&mapping, as_str(k), &expected, doc);
+        }
         Op::Remove(k) => {
-            let _ = mapping.remove(as_str(k));
+            let existed = mapping.contains_key(as_str(k));
+            let entry = mapping.remove(as_str(k));
+            if entry.is_some() != existed {
+                panic!(
+                    "MappingRemove({:?}): returned {:?} but contains_key was {}",
+                    as_str(k),
+                    entry.is_some(),
+                    existed
+                );
+            }
+            assert_mapping_remove_stuck(&mapping, as_str(k), existed, doc);
         }
         Op::Rename(a, b) => {
-            let _ = mapping.rename_key(as_str(a), as_str(b));
+            let renamed = mapping.rename_key(as_str(a), as_str(b));
+            assert_mapping_rename_stuck(&mapping, as_str(b), renamed, doc);
         }
-        Op::Clear => mapping.clear(),
+        Op::Clear => {
+            mapping.clear();
+            assert_mapping_clear_stuck(&mapping, doc);
+        }
         Op::InsertAfter(a, k, v) => {
-            let _ = mapping.insert_after(as_str(a), as_str(k), as_str(v));
+            let inserted = mapping.insert_after(as_str(a), as_str(k), as_str(v));
+            if inserted {
+                assert_mapping_insert_stuck(&mapping, as_str(k), as_str(v), doc, "InsertAfter");
+            }
         }
         Op::InsertBefore(a, k, v) => {
-            let _ = mapping.insert_before(as_str(a), as_str(k), as_str(v));
+            let inserted = mapping.insert_before(as_str(a), as_str(k), as_str(v));
+            if inserted {
+                assert_mapping_insert_stuck(&mapping, as_str(k), as_str(v), doc, "InsertBefore");
+            }
         }
         Op::InsertAtIndex(i, k, v) => {
             mapping.insert_at_index(*i as usize, as_str(k), as_str(v));
+            assert_mapping_insert_stuck(&mapping, as_str(k), as_str(v), doc, "InsertAtIndex");
         }
         Op::MoveAfter(a, k, v) => {
             let _ = mapping.move_after(as_str(a), as_str(k), as_str(v));
@@ -214,245 +246,21 @@ fn apply(doc: &Document, op: &Op) {
         }
         Op::SetPath(p, v) => {
             if !p.is_empty() {
-                doc.set_path(&dotted(p), as_str(v));
+                let path = dotted(p);
+                doc.set_path(&path, as_str(v));
+                assert_set_path_stuck(doc, &path, as_str(v));
             }
         }
         Op::RemovePath(p) => {
             if !p.is_empty() {
-                let _ = doc.remove_path(&dotted(p));
+                let path = dotted(p);
+                let removed = doc.remove_path(&path);
+                assert_remove_path_stuck(doc, &path, removed);
             }
         }
     }
 }
 
-/// Re-parse `doc`'s text and look up the sequence at `key` in the fresh
-/// tree. Panics with `op` context if either the re-parse fails or the
-/// sequence has vanished. Used by every post-condition helper to catch
-/// mutations that leave the in-memory CST looking fine but produce text
-/// that re-parses into a different shape.
-fn reparse_seq(doc: &Document, key: &str, op: &str) -> Sequence {
-    let text = doc.to_string();
-    let reparsed = Document::from_str(&text)
-        .unwrap_or_else(|e| panic!("{op}: re-parse failed ({e}), text: {text:?}"));
-    reparsed
-        .as_mapping()
-        .and_then(|m| m.get_sequence(key))
-        .unwrap_or_else(|| {
-            panic!("{op}: re-parsed doc has no sequence at key {key:?}, text: {text:?}")
-        })
-}
-
-/// Return the item at `index` as a string, if it's a scalar. Non-scalar
-/// items yield `None`, which callers should treat as "skip the value
-/// check" -- pushed scalars round-trip predictably; nested mappings
-/// don't.
-fn scalar_at(seq: &Sequence, index: usize) -> Option<String> {
-    seq.get(index)
-        .as_ref()
-        .and_then(|n| n.as_scalar().map(|s| s.as_string()))
-}
-
-/// Verify that `push(v)` on `seq` actually stuck: the in-memory sequence
-/// grew by one and the last item is a scalar equal to `v`, and the same
-/// property holds after `doc.to_string()` is round-tripped.
-fn assert_seq_push_stuck(seq: &Sequence, before: usize, v: &str, doc: &Document, key: &str) {
-    let op = format!("SeqPush({v:?})");
-    let after = seq.len();
-    if after != before + 1 {
-        panic!(
-            "{op}: len {before} -> {after} (expected {}), text: {:?}",
-            before + 1,
-            doc.to_string()
-        );
-    }
-    let last = scalar_at(seq, after - 1);
-    if last.as_deref() != Some(v) {
-        panic!("{op}: last item = {last:?}, text: {:?}", doc.to_string());
-    }
-    let reparsed = reparse_seq(doc, key, &op);
-    let r_len = reparsed.len();
-    let r_last = scalar_at(&reparsed, r_len.saturating_sub(1));
-    if r_len != after || r_last.as_deref() != Some(v) {
-        panic!(
-            "{op}: reparse drift: len {after} vs {r_len}, last {:?} vs {r_last:?}, text: {:?}",
-            Some(v),
-            doc.to_string()
-        );
-    }
-}
-
-/// Verify that `pop()` on `seq` actually stuck: the length shrunk by one
-/// iff pop returned Some, and the sequence re-parses with the same length.
-fn assert_seq_pop_stuck(seq: &Sequence, before: usize, popped: bool, doc: &Document, key: &str) {
-    let op = "SeqPop";
-    let after = seq.len();
-    let expected = if popped { before - 1 } else { before };
-    if after != expected {
-        panic!(
-            "{op}: popped={popped} len {before} -> {after} (expected {expected}), text: {:?}",
-            doc.to_string()
-        );
-    }
-    if popped && before == 0 {
-        panic!("{op}: reported pop of an empty sequence, text: {:?}", doc.to_string());
-    }
-    if !popped && before > 0 {
-        panic!("{op}: refused to pop a non-empty sequence, text: {:?}", doc.to_string());
-    }
-    let reparsed = reparse_seq(doc, key, op);
-    if reparsed.len() != after {
-        panic!(
-            "{op}: reparse drift: len {after} vs {}, text: {:?}",
-            reparsed.len(),
-            doc.to_string()
-        );
-    }
-}
-
-/// Verify that `insert(i, v)` on `seq` actually stuck. The docs promise
-/// that an out-of-range index appends, so the effective position is
-/// `min(i, before)`.
-fn assert_seq_insert_stuck(
-    seq: &Sequence,
-    before: usize,
-    i: usize,
-    v: &str,
-    doc: &Document,
-    key: &str,
-) {
-    let op = format!("SeqInsert({i}, {v:?})");
-    let after = seq.len();
-    if after != before + 1 {
-        panic!(
-            "{op}: len {before} -> {after} (expected {}), text: {:?}",
-            before + 1,
-            doc.to_string()
-        );
-    }
-    let effective = i.min(before);
-    let at = scalar_at(seq, effective);
-    if at.as_deref() != Some(v) {
-        panic!(
-            "{op}: item at effective index {effective} = {at:?}, text: {:?}",
-            doc.to_string()
-        );
-    }
-    let reparsed = reparse_seq(doc, key, &op);
-    let r_at = scalar_at(&reparsed, effective);
-    if reparsed.len() != after || r_at.as_deref() != Some(v) {
-        panic!(
-            "{op}: reparse drift: len {after} vs {}, at {effective} {:?} vs {r_at:?}, text: {:?}",
-            reparsed.len(),
-            Some(v),
-            doc.to_string()
-        );
-    }
-}
-
-/// Verify that `set(i, v)` on `seq` actually stuck. Returns bool:
-/// `true` means the index was in range and the item was replaced;
-/// `false` means the index was out of range and nothing changed.
-fn assert_seq_set_stuck(
-    seq: &Sequence,
-    before: usize,
-    i: usize,
-    v: &str,
-    ok: bool,
-    doc: &Document,
-    key: &str,
-) {
-    let op = format!("SeqSet({i}, {v:?})");
-    let after = seq.len();
-    if after != before {
-        panic!(
-            "{op}: ok={ok} len {before} -> {after} (expected unchanged), text: {:?}",
-            doc.to_string()
-        );
-    }
-    if ok != (i < before) {
-        panic!(
-            "{op}: ok={ok} but i={i} vs before={before}, text: {:?}",
-            doc.to_string()
-        );
-    }
-    if ok {
-        let at = scalar_at(seq, i);
-        if at.as_deref() != Some(v) {
-            panic!(
-                "{op}: item at {i} = {at:?}, text: {:?}",
-                doc.to_string()
-            );
-        }
-        let reparsed = reparse_seq(doc, key, &op);
-        let r_at = scalar_at(&reparsed, i);
-        if reparsed.len() != after || r_at.as_deref() != Some(v) {
-            panic!(
-                "{op}: reparse drift: len {after} vs {}, at {i} {:?} vs {r_at:?}, text: {:?}",
-                reparsed.len(),
-                Some(v),
-                doc.to_string()
-            );
-        }
-    }
-}
-
-/// Verify that `remove(i)` on `seq` actually stuck. Returns Option;
-/// Some means index was in range and item was removed, None means
-/// out of range and nothing changed.
-fn assert_seq_remove_stuck(
-    seq: &Sequence,
-    before: usize,
-    i: usize,
-    removed: bool,
-    doc: &Document,
-    key: &str,
-) {
-    let op = format!("SeqRemove({i})");
-    let after = seq.len();
-    let expected = if removed { before - 1 } else { before };
-    if after != expected {
-        panic!(
-            "{op}: removed={removed} len {before} -> {after} (expected {expected}), text: {:?}",
-            doc.to_string()
-        );
-    }
-    if removed != (i < before) {
-        panic!(
-            "{op}: removed={removed} but i={i} vs before={before}, text: {:?}",
-            doc.to_string()
-        );
-    }
-    let reparsed = reparse_seq(doc, key, &op);
-    if reparsed.len() != after {
-        panic!(
-            "{op}: reparse drift: len {after} vs {}, text: {:?}",
-            reparsed.len(),
-            doc.to_string()
-        );
-    }
-}
-
-/// Verify that `clear()` on `seq` actually stuck. The in-memory sequence
-/// must be empty, and the re-parsed sequence at the same key must also
-/// be empty.
-fn assert_seq_clear_stuck(seq: &Sequence, doc: &Document, key: &str) {
-    let op = "SeqClear";
-    if !seq.is_empty() {
-        panic!(
-            "{op}: seq not empty after clear (len={}), text: {:?}",
-            seq.len(),
-            doc.to_string()
-        );
-    }
-    let reparsed = reparse_seq(doc, key, op);
-    if !reparsed.is_empty() {
-        panic!(
-            "{op}: reparse drift: reparsed len {} (expected 0), text: {:?}",
-            reparsed.len(),
-            doc.to_string()
-        );
-    }
-}
 
 fn assert_ok(doc: &Document) {
     let syntax = doc.syntax();

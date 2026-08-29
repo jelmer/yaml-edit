@@ -7,43 +7,33 @@ use rowan::GreenNodeBuilder;
 
 ast_node!(Sequence, SEQUENCE, "A YAML sequence (list)");
 
-/// Does the SEQUENCE's parent VALUE have an INDENT token immediately before
-/// the SEQUENCE (with only NEWLINE tokens between them)?
-///
-/// That is the shape the parser produces for a block sequence under a key
-/// (`key:\n  - a`): the indentation lives in the VALUE, not inside the
-/// SEQUENCE. When present, `Sequence::push` must not emit its own leading
-/// INDENT for the first entry because the parent already supplies one.
-/// Does any ancestor of `node` use flow style (`{...}` or `[...]`)?
-/// A block SEQUENCE_ENTRY placed inside a flow ancestor would splash
-/// a `- x` inside braces, producing invalid mixed YAML.
+/// True if any ancestor of `node` is a flow container (`{...}` or `[...]`).
+/// A block SEQUENCE_ENTRY inside a flow ancestor would render as
+/// invalid mixed YAML.
 fn inside_flow_container(node: &SyntaxNode) -> bool {
     let mut cur = node.parent();
     while let Some(p) = cur {
-        match p.kind() {
-            SyntaxKind::MAPPING => {
-                if p.children_with_tokens().any(|c| {
-                    c.as_token()
-                        .is_some_and(|t| t.kind() == SyntaxKind::LEFT_BRACE)
-                }) {
-                    return true;
-                }
+        let opener = match p.kind() {
+            SyntaxKind::MAPPING => Some(SyntaxKind::LEFT_BRACE),
+            SyntaxKind::SEQUENCE => Some(SyntaxKind::LEFT_BRACKET),
+            _ => None,
+        };
+        if let Some(open) = opener {
+            if p.children_with_tokens()
+                .any(|c| c.as_token().is_some_and(|t| t.kind() == open))
+            {
+                return true;
             }
-            SyntaxKind::SEQUENCE => {
-                if p.children_with_tokens().any(|c| {
-                    c.as_token()
-                        .is_some_and(|t| t.kind() == SyntaxKind::LEFT_BRACKET)
-                }) {
-                    return true;
-                }
-            }
-            _ => {}
         }
         cur = p.parent();
     }
     false
 }
 
+/// Does the SEQUENCE's parent VALUE carry the leading INDENT for this
+/// sequence? True for the block-under-key shape (`key:\n  - a`): the
+/// first entry's indentation lives in VALUE, not inside SEQUENCE, so
+/// mutation helpers must not emit their own leading INDENT for it.
 fn parent_value_has_leading_indent(seq: &SyntaxNode) -> bool {
     let Some(parent) = seq.parent() else {
         return false;
@@ -96,14 +86,11 @@ fn trailing_newline_indent(node: &SyntaxNode) -> Option<String> {
     Some(result)
 }
 
-/// Does `sequence`'s enclosing MAPPING_ENTRY (via VALUE) have no
-/// following MAPPING_ENTRY sibling? True means removing tokens off the
-/// sequence's tail can't strand a following entry that relied on the
-/// separator NEWLINE; false means the separator must be preserved.
-///
-/// Returns `false` if the sequence isn't under a MAPPING_ENTRY at all
-/// (top-level sequence, nested under another sequence, etc.) so the
-/// caller stays conservative.
+/// True if `sequence`'s enclosing MAPPING_ENTRY is the last entry of
+/// its MAPPING. Callers use this to know whether trimming trailing
+/// whitespace off the sequence would strand a following mapping entry
+/// that relied on the separator NEWLINE. Conservative `false` when
+/// the sequence isn't under a MAPPING_ENTRY at all.
 fn mapping_entry_is_last_in_mapping(sequence: &SyntaxNode) -> bool {
     let Some(value) = sequence.parent() else {
         return false;
@@ -138,85 +125,9 @@ fn mapping_entry_is_last_in_mapping(sequence: &SyntaxNode) -> bool {
     true
 }
 
-/// If `sequence` is an empty block SEQUENCE sitting inside a
-/// MAPPING_ENTRY's VALUE, replace the placeholder `NEWLINE INDENT
-/// SEQUENCE` pattern in that VALUE with an inline flow-empty
-/// `SEQUENCE []` so the entry renders as `key: []` instead of an
-/// unterminated `key:\n  ` shape.
-///
-/// The block-empty shape (`key:\n  ` with an empty SEQUENCE) is
-/// what's left over after `pop`/`remove`/`clear` drains the last
-/// item. Re-parsing it drops the key entirely because the parser
-/// sees `key:` followed by whitespace as an implicit-null value with
-/// no sequence attached. Mirrors
-/// [`collapse_empty_child_mapping_in_parent`](crate::yaml::Mapping)
-/// for mappings.
-fn collapse_empty_child_sequence_in_parent(sequence: &SyntaxNode) {
-    // Only collapse block sequences -- flow `[]` already renders
-    // correctly when empty.
-    let is_flow = sequence.children_with_tokens().any(|c| {
-        c.as_token()
-            .is_some_and(|t| t.kind() == SyntaxKind::LEFT_BRACKET)
-    });
-    if is_flow {
-        return;
-    }
-    let Some(value_node) = sequence.parent() else {
-        return;
-    };
-    if value_node.kind() != SyntaxKind::VALUE {
-        return;
-    }
-    let Some(entry_node) = value_node.parent() else {
-        return;
-    };
-    if entry_node.kind() != SyntaxKind::MAPPING_ENTRY {
-        return;
-    }
-    // Bail if the VALUE carries anything beyond decoration around the
-    // now-empty SEQUENCE: comment, sibling scalar, anchor, tag, etc.
-    let has_other_content = value_node.children_with_tokens().any(|el| match el {
-        rowan::NodeOrToken::Node(n) => n != *sequence,
-        rowan::NodeOrToken::Token(t) => !matches!(
-            t.kind(),
-            SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE
-        ),
-    });
-    if has_other_content {
-        return;
-    }
-    // Build a fresh flow-empty VALUE: ` []` (leading space + inline
-    // SEQUENCE with LEFT_BRACKET + RIGHT_BRACKET).
-    let mut builder = GreenNodeBuilder::new();
-    builder.start_node(SyntaxKind::VALUE.into());
-    builder.token(SyntaxKind::WHITESPACE.into(), " ");
-    builder.start_node(SyntaxKind::SEQUENCE.into());
-    builder.token(SyntaxKind::LEFT_BRACKET.into(), "[");
-    builder.token(SyntaxKind::RIGHT_BRACKET.into(), "]");
-    builder.finish_node();
-    builder.finish_node();
-    let new_value = SyntaxNode::new_root_mut(builder.finish());
-
-    let Some(value_idx) = entry_node
-        .children_with_tokens()
-        .position(|c| c.as_node() == Some(&value_node))
-    else {
-        return;
-    };
-    entry_node.splice_children(value_idx..(value_idx + 1), vec![new_value.into()]);
-
-    // Ensure the entry ends with a NEWLINE -- the fresh VALUE we spliced
-    // in doesn't carry one, and without it the next sibling entry
-    // glues onto our tail.
-    let has_nl = entry_node
-        .last_token()
-        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
-    if !has_nl {
-        let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
-        let end = entry_node.children_with_tokens().count();
-        entry_node.splice_children(end..end, vec![nl.into()]);
-    }
-}
+// The collapse helper is shared with Mapping; it lives in yaml.rs
+// as `collapse_empty_child_collection_in_parent`.
+use crate::yaml::collapse_empty_child_collection_in_parent as collapse_empty_child_sequence_in_parent;
 
 impl Sequence {
     /// Iterate over items in this sequence as raw syntax nodes.
@@ -356,17 +267,10 @@ impl Sequence {
         "  ".to_string()
     }
 
-    /// Reshape an empty flow sequence (`[]`) into an empty block sequence
-    /// with a `NEWLINE INDENT` scaffold on the parent VALUE, matching how
-    /// the parser lays out `key:\n  <content>` for block collections under
-    /// a key.
-    ///
-    /// The SEQUENCE ends up with zero children; the two brackets are
-    /// dropped. The scaffold gives the follow-up push somewhere to hang
-    /// its INDENT.
+    /// Reshape an empty flow sequence (`[]`) into an empty block
+    /// sequence with a `NEWLINE INDENT` scaffold on the parent VALUE,
+    /// so a follow-up push has somewhere to hang its INDENT.
     fn convert_empty_flow_to_block(&self) {
-        // Compute the target indent width from the enclosing mapping (if any).
-        // Nested contexts widen; top-level defaults to 2.
         let indent_width = self
             .0
             .parent()
@@ -380,10 +284,10 @@ impl Sequence {
             .unwrap_or(2);
         let indent_text = " ".repeat(indent_width);
 
-        // Drop every child of the SEQUENCE (the `[` `]` and any whitespace).
-        // Detach the collected snapshot rather than range-splicing: rowan's
-        // splice_children walks the sibling list as it detaches, which skips
-        // subsequent elements when their prev/next links get rewritten.
+        // Detach the snapshot rather than range-splicing: rowan's
+        // splice_children walks the live sibling list as it detaches,
+        // which skips subsequent elements when their prev/next links
+        // get rewritten.
         let children: Vec<_> = self.0.children_with_tokens().collect();
         for child in children {
             child.detach();
@@ -419,18 +323,12 @@ impl Sequence {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn push(&self, value: impl crate::AsYaml) {
-        // An empty flow sequence (`[]`) cannot host a block entry.
-        // If it sits at the top level or as a plain block-mapping
-        // value, convert to the empty-block-under-key form; if it
-        // sits inside another flow container, stay flow so we don't
-        // splash a `- x` inside a `{}` and produce invalid mixed YAML.
+        // Top-level empty flow (`seq: []`) converts to block so we
+        // can emit a `- x` entry; empty flow *inside* another flow
+        // container has to stay flow to avoid mixed-style output.
         if self.is_flow_style() && self.is_empty() && !inside_flow_container(&self.0) {
             self.convert_empty_flow_to_block();
         }
-
-        // A non-empty flow sequence stays flow: splice `, <item>`
-        // before the closing bracket rather than emitting a block
-        // entry that would produce mixed-style output.
         if self.is_flow_style() {
             self.insert_flow(usize::MAX, value);
             return;
@@ -542,27 +440,20 @@ impl Sequence {
         }
     }
 
-    /// Splice a new entry into a non-empty *flow* sequence at `index`
-    /// (or append when `index >= len`).
-    ///
-    /// Flow entries are separated by `COMMA WHITESPACE` and every
-    /// entry except the last carries that separator as its own tail.
-    /// Inserting means picking a target position among the existing
-    /// SEQUENCE_ENTRY nodes and splicing a new entry there, plus
-    /// giving whichever entry now precedes it the trailing
-    /// `, ` separator.
+    /// Splice a new flow entry at `index` (or append when
+    /// `index >= len`), wiring up `, ` separators. The flow separator
+    /// convention is that every entry except the last carries a
+    /// trailing `, ` as its own tail (see the flow-separator note in
+    /// [`crate::nodes`]).
     fn insert_flow(&self, index: usize, value: impl crate::AsYaml) {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
         // flow_context=false: YAML flow permits plain scalars; only
-        // JSON-flavored callers need the aggressive quoting that
-        // flow_context=true triggers.
+        // JSON-flavored callers want the aggressive quoting.
         value.build_content(&mut builder, 0, false);
         builder.finish_node();
         let new_entry = SyntaxNode::new_root_mut(builder.finish());
 
-        // Collect the current children; we need positions of the
-        // SEQUENCE_ENTRY nodes and the RIGHT_BRACKET.
         let children: Vec<_> = self.0.children_with_tokens().collect();
         let entry_positions: Vec<usize> = children
             .iter()
@@ -585,9 +476,8 @@ impl Sequence {
         let sep_ws = fresh_token(SyntaxKind::WHITESPACE, " ");
 
         if index >= entry_positions.len() {
-            // Append: put `, ` on the previous last entry (if it isn't
-            // already carrying a trailing comma), then splice the new
-            // entry just before the RIGHT_BRACKET.
+            // Append: add `, ` to the previous last entry, then
+            // splice before the `]`.
             if let Some(&last_pos) = entry_positions.last() {
                 let last_entry = children[last_pos].as_node().expect("SEQUENCE_ENTRY");
                 let ends_with_comma = last_entry
@@ -603,9 +493,8 @@ impl Sequence {
             return;
         }
 
-        // Insert before the entry currently at `index`. Give the new
-        // entry its own `, ` tail so the displaced entry stays
-        // properly separated.
+        // Insert before the entry at `index`; the new entry carries
+        // its own `, ` tail to keep the displaced entry separated.
         let target_pos = entry_positions[index];
         let end = new_entry.children_with_tokens().count();
         new_entry.splice_children(end..end, vec![comma.into(), sep_ws.into()]);
@@ -620,15 +509,10 @@ impl Sequence {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn insert(&self, index: usize, value: impl crate::AsYaml) {
-        // Same rule as `push`: convert empty flow to block only when
-        // the sequence isn't already nested inside a flow container.
+        // Same rule as `push`; see there for the "why".
         if self.is_flow_style() && self.is_empty() && !inside_flow_container(&self.0) {
             self.convert_empty_flow_to_block();
         }
-
-        // A non-empty flow sequence stays flow: splice a comma-
-        // separated flow entry at the target position instead of
-        // emitting a block entry inside the brackets.
         if self.is_flow_style() {
             self.insert_flow(index, value);
             return;

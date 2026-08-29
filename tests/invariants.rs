@@ -230,15 +230,11 @@ fn set_path_after_explicit_key_does_not_leave_blank_line() {
     );
 }
 
-// Bugs surfaced by the proptest post-conditions in
-// tests/proptest_invariants.rs. Each is marked `#[ignore]` so it does
-// not fail the suite; un-ignore when the underlying issue is fixed to
-// lock in the correct behavior.
-//
-// Assertions describe what the current (broken) code produces so the
-// test flips from `passing when ignored` to `passing when fixed`
-// naturally: replace the buggy expected value with the correct one at
-// fix time.
+// Regression tests for bugs surfaced by the post-conditioned mutation
+// proptest in `tests/proptest_invariants.rs`. Most are now-passing
+// regressions; the two `#[ignore]`d ones document deeper bugs still to
+// fix. Un-ignore them (and update the assertion to the correct output)
+// when addressed.
 
 #[test]
 fn sequence_pop_last_item_collapses_to_flow_empty() {

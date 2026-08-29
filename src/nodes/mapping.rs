@@ -73,79 +73,17 @@ fn value_is_block(value: &SyntaxNode) -> bool {
     })
 }
 
-/// If `mapping` is an empty MAPPING sitting inside a MAPPING_ENTRY's
-/// VALUE, replace the placeholder `NEWLINE INDENT MAPPING` pattern
-/// with an inline flow-empty `MAPPING {}` so the entry renders as
-/// `key: {}` instead of an unterminated `key:\n    ` shape.
-///
-/// Called after `Mapping::remove` empties out a nested mapping. Without
-/// this, `set_path("a.b.c", v)` then `remove_path("a.b.c")` leaves the
-/// intermediate mappings as empty scaffolds with dangling NEWLINE and
-/// INDENT tokens, producing text like `a:\n  b:\n    ` that no parser
-/// will recognise as a well-formed document.
-///
-/// Rendering as `{}` (rather than dropping the VALUE entirely) preserves
-/// path lookups: `get_path("a.b")` still returns an empty mapping, which
-/// matches user expectation for a key whose value has been emptied out
-/// rather than deleted.
-fn collapse_empty_child_mapping_in_parent(mapping: &SyntaxNode) {
-    let Some(value_node) = mapping.parent() else {
-        return;
-    };
-    if value_node.kind() != SyntaxKind::VALUE {
-        return;
-    }
-    let Some(entry_node) = value_node.parent() else {
-        return;
-    };
-    if entry_node.kind() != SyntaxKind::MAPPING_ENTRY {
-        return;
-    }
-    // The VALUE should contain only whitespace/decoration around this
-    // now-empty MAPPING; if there is more (a comment, a sibling scalar,
-    // an anchor, ...) collapsing would lose information.
-    let has_other_content = value_node.children_with_tokens().any(|el| match el {
-        rowan::NodeOrToken::Node(n) => n != *mapping,
-        rowan::NodeOrToken::Token(t) => !matches!(
-            t.kind(),
-            SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE
-        ),
-    });
-    if has_other_content {
-        return;
-    }
-    // Build a fresh flow-empty VALUE: ` {}` (leading space + inline
-    // MAPPING with LEFT_BRACE + RIGHT_BRACE).
-    let mut builder = GreenNodeBuilder::new();
-    builder.start_node(SyntaxKind::VALUE.into());
-    builder.token(SyntaxKind::WHITESPACE.into(), " ");
-    builder.start_node(SyntaxKind::MAPPING.into());
-    builder.token(SyntaxKind::LEFT_BRACE.into(), "{");
-    builder.token(SyntaxKind::RIGHT_BRACE.into(), "}");
-    builder.finish_node();
-    builder.finish_node();
-    let new_value = SyntaxNode::new_root_mut(builder.finish());
+use crate::yaml::collapse_empty_child_collection_in_parent as collapse_empty_child_mapping_in_parent;
 
-    let Some(value_idx) = entry_node
-        .children_with_tokens()
-        .position(|c| c.as_node().is_some_and(|n| *n == value_node))
-    else {
-        return;
-    };
-    entry_node.splice_children(value_idx..(value_idx + 1), vec![new_value.into()]);
-    ensure_trailing_newline(&entry_node);
-}
-
-/// If `mapping` is an emptied top-level (document-root) MAPPING with
-/// no enclosing MAPPING_ENTRY, inject a flow-empty `{}` so the doc
-/// renders as `"{}"` instead of empty text and re-parses to a mapping
-/// again. See [`collapse_empty_child_mapping_in_parent`] for the
-/// nested counterpart.
+/// Inject a flow-empty `{}` into a MAPPING that has been drained down
+/// to zero children. Only fires on a truly-orphan MAPPING (no
+/// MAPPING_ENTRY parent, no lingering child tokens); the nested
+/// counterpart lives in [`crate::yaml::collapse_empty_child_collection_in_parent`].
 fn ensure_top_level_empty_renders_as_flow(mapping: &SyntaxNode) {
-    let has_entry = mapping
+    if mapping
         .children()
-        .any(|c| c.kind() == SyntaxKind::MAPPING_ENTRY);
-    if has_entry {
+        .any(|c| c.kind() == SyntaxKind::MAPPING_ENTRY)
+    {
         return;
     }
     let has_map_entry_parent = mapping
@@ -156,10 +94,8 @@ fn ensure_top_level_empty_renders_as_flow(mapping: &SyntaxNode) {
     if has_map_entry_parent {
         return;
     }
-    let children_count = mapping.children_with_tokens().count();
-    if children_count != 0 {
-        // Something else lives here (comment, orphan token, etc.).
-        // Don't clobber it.
+    if mapping.children_with_tokens().next().is_some() {
+        // Comment / orphan tokens live here; leave them alone.
         return;
     }
     let lbrace = super::fresh_token(SyntaxKind::LEFT_BRACE, "{");
@@ -1171,14 +1107,13 @@ impl Mapping {
     {
         let order_keys: Vec<K> = order.into_iter().collect();
 
-        // Split the child list into three chunks around the entries:
-        //   [ leading tokens ] [ MAPPING_ENTRY nodes ] [ trailing tokens ]
-        // The leading and trailing chunks carry the structural
-        // decoration (LEFT_BRACE/RIGHT_BRACE for flow, and any leading
-        // NEWLINE/INDENT/COMMENT decoration) that must survive the
-        // splice. Between-entry separators live inside each entry
-        // (insert_at_index / insert_entry_cst ensure that), so we do
-        // not need to reconstruct them here.
+        // Chunk the children into [leading | entries | trailing] and
+        // reshuffle the entry chunk only. `leading`/`trailing` carry
+        // structural decoration -- flow braces, leading indent tokens,
+        // any trailing NEWLINE that used to terminate the mapping.
+        // Between-entry separators are expected to live *inside* each
+        // entry (insert_at_index/insert_entry_cst ensure that); any
+        // inter-entry standalone tokens end up in `trailing` here.
         let all: Vec<_> = self.0.children_with_tokens().collect();
         let first_entry_idx = all
             .iter()
@@ -1516,6 +1451,42 @@ impl Mapping {
             .splice_children(target_idx..target_idx, vec![new_entry.clone().into()]);
     }
 
+    /// Move-or-insert `new_key: new_value` relative to `ref_key` in a
+    /// flow-style mapping. Shared body of the flow branches in
+    /// `move_before_impl` / `move_after_impl`. Returns `false` if
+    /// `ref_key` is not present (nothing to anchor on).
+    fn move_flow_around(
+        &self,
+        ref_key: &impl crate::AsYaml,
+        new_key: &impl crate::AsYaml,
+        new_value: &impl crate::AsYaml,
+        where_at: fn(SyntaxNode) -> FlowInsertPos,
+    ) -> bool {
+        // Contract: move, not duplicate. Drop any prior entry with the
+        // same key first.
+        if let Some(existing) = self.find_entry_by_key(new_key) {
+            if let Some(idx) = self
+                .0
+                .children_with_tokens()
+                .position(|c| c.as_node() == Some(existing.syntax()))
+            {
+                self.0.splice_children(idx..idx + 1, vec![]);
+            }
+        }
+        let Some(target) = self.find_entry_by_key(ref_key) else {
+            return false;
+        };
+        let entry = MappingEntry::new_at_indent(
+            new_key,
+            new_value,
+            /* flow_context */ true,
+            self.uses_explicit_keys(),
+            self.detect_indentation_level(),
+        );
+        self.insert_flow_entry_cst_at(&entry.0, where_at(target.syntax().clone()));
+        true
+    }
+
     /// Internal method to insert a new entry at the end (does not check for duplicates)
     fn insert_entry_cst(&self, new_entry: &SyntaxNode) {
         if self.is_flow_style() {
@@ -1548,16 +1519,10 @@ impl Mapping {
         };
 
         let mut new_elements = Vec::new();
-
-        // Always insert at the end - the newline is inside the last entry, not a separate child
         let insert_pos = count;
 
-        // Ensure the previous last entry owns its terminating NEWLINE
-        // before we add a new sibling. Putting the NEWLINE at MAPPING
-        // level as a standalone token is fragile: reorder_fields
-        // rebuilds the child list from entry nodes alone and would
-        // drop a standalone separator token, smooshing the entries
-        // back together.
+        // Give the previous entry its own trailing NEWLINE (see
+        // insert_at_index for why standalone separators are fragile).
         if count > 0 && !has_trailing_newline {
             if let Some(prev_entry) = &last_mapping_entry {
                 let nl = super::fresh_token(SyntaxKind::NEWLINE, "\n");
@@ -1566,8 +1531,6 @@ impl Mapping {
             }
         }
 
-        // Add indentation if needed (as a standalone token; INDENT is
-        // conventionally at MAPPING level).
         let indent_level = self.detect_indentation_level();
         if indent_level > 0 && count > 0 {
             let mut builder = rowan::GreenNodeBuilder::new();
@@ -1966,29 +1929,7 @@ impl Mapping {
         new_value: impl crate::AsYaml,
     ) -> bool {
         if self.is_flow_style() {
-            if let Some(existing) = self.find_entry_by_key(&new_key) {
-                if let Some(idx) = self
-                    .0
-                    .children_with_tokens()
-                    .position(|c| c.as_node() == Some(existing.syntax()))
-                {
-                    self.0.splice_children(idx..idx + 1, vec![]);
-                }
-            }
-            let Some(target) = self.find_entry_by_key(&after_key) else {
-                return false;
-            };
-            let use_explicit_keys = self.uses_explicit_keys();
-            let key_indent = self.detect_indentation_level();
-            let entry = MappingEntry::new_at_indent(
-                &new_key,
-                &new_value,
-                true,
-                use_explicit_keys,
-                key_indent,
-            );
-            self.insert_flow_entry_cst_at(&entry.0, FlowInsertPos::After(target.syntax().clone()));
-            return true;
+            return self.move_flow_around(&after_key, &new_key, &new_value, FlowInsertPos::After);
         }
 
         let children: Vec<_> = self.0.children_with_tokens().collect();
@@ -2269,36 +2210,8 @@ impl Mapping {
         new_key: impl crate::AsYaml,
         new_value: impl crate::AsYaml,
     ) -> bool {
-        // Flow-style mappings need dedicated bookkeeping: build the
-        // new entry in flow style (no NEWLINE), delegate placement to
-        // insert_flow_entry_cst_at, and let it wire up `, ` separators
-        // and bracket-relative positioning.
         if self.is_flow_style() {
-            // Remove any existing entry with the same key (contract:
-            // move, not duplicate).
-            if let Some(existing) = self.find_entry_by_key(&new_key) {
-                if let Some(idx) = self
-                    .0
-                    .children_with_tokens()
-                    .position(|c| c.as_node() == Some(existing.syntax()))
-                {
-                    self.0.splice_children(idx..idx + 1, vec![]);
-                }
-            }
-            let Some(target) = self.find_entry_by_key(&before_key) else {
-                return false;
-            };
-            let use_explicit_keys = self.uses_explicit_keys();
-            let key_indent = self.detect_indentation_level();
-            let entry = MappingEntry::new_at_indent(
-                &new_key,
-                &new_value,
-                true,
-                use_explicit_keys,
-                key_indent,
-            );
-            self.insert_flow_entry_cst_at(&entry.0, FlowInsertPos::Before(target.syntax().clone()));
-            return true;
+            return self.move_flow_around(&before_key, &new_key, &new_value, FlowInsertPos::Before);
         }
 
         let children: Vec<_> = self.0.children_with_tokens().collect();
@@ -2606,19 +2519,12 @@ impl Mapping {
 
         self.0.splice_children(i..(i + 1), vec![]);
 
-        // If the mapping is now empty and it sits as the value of a
-        // parent MAPPING_ENTRY, collapse the placeholder tokens
-        // (NEWLINE + INDENT + <empty MAPPING>) that wrapped it. The
-        // parent entry becomes `key: {}`. Otherwise a caller who does
-        // set_path("a.b.c", v) then remove_path("a.b.c") ends up with
-        // a broken CST whose text trails off with dangling
-        // indentation.
-        //
-        // Top-level empty mappings are left as-is (rendering to `""`)
-        // by remove because the caller may still add more entries;
-        // injecting a `{}` here would poison a subsequent block-style
-        // `set`. `Mapping::clear`, which signals explicit intent to
-        // leave the mapping empty, does inject `{}`.
+        // Nested mapping drained by remove: collapse to `key: {}` so
+        // `set_path("a.b.c", v) + remove_path(...)` doesn't leave a
+        // dangling indent scaffold. Top-level drain is left alone here
+        // -- callers may add more entries and injecting `{}` would
+        // poison subsequent block-style `set`s; `Mapping::clear`
+        // handles the explicit-empty case.
         if !self
             .0
             .children()
@@ -2903,20 +2809,15 @@ impl Mapping {
         let new_entry =
             MappingEntry::new_at_indent(&key, &value, flow_context, use_explicit_keys, key_indent);
 
-        // Flow-style mappings need their comma-and-brace bookkeeping
-        // handled by insert_flow_entry_cst_at; the block-style splice
-        // below would drop the entry after the RIGHT_BRACE and produce
-        // a mixed-style shape that re-parses to no such key.
+        // Flow needs bracket-aware placement (see insert_flow_entry_cst_at);
+        // the block splice below would drop after `}`.
         if flow_context {
-            let entry_count = self.entries().count();
-            let actual_index = index.min(entry_count);
-            let where_at = if let Some(target) =
-                self.entries().nth(actual_index).map(|e| e.syntax().clone())
-            {
-                FlowInsertPos::Before(target)
-            } else {
-                FlowInsertPos::End
-            };
+            let actual_index = index.min(self.entries().count());
+            let where_at = self
+                .entries()
+                .nth(actual_index)
+                .map(|e| FlowInsertPos::Before(e.syntax().clone()))
+                .unwrap_or(FlowInsertPos::End);
             self.insert_flow_entry_cst_at(&new_entry.0, where_at);
             return;
         }
@@ -2943,16 +2844,12 @@ impl Mapping {
             self.0.children_with_tokens().count()
         };
 
-        // Build the elements to insert
         let mut new_elements = Vec::new();
 
-        // Add spacing before the new entry if not at position 0
         if insert_pos > 0 {
-            // Ensure the previous MAPPING_ENTRY (if any) carries its
-            // own trailing NEWLINE. That way each entry is a
-            // self-contained unit and reorder_fields (which rebuilds
-            // the child list from entry nodes alone) can't drop the
-            // separator by omitting standalone tokens.
+            // Give the previous entry its own trailing NEWLINE (so
+            // reorder_fields, which rebuilds the child list from
+            // entry nodes alone, doesn't lose the separator).
             if let Some(prev_node) = self.0.children_with_tokens().nth(insert_pos - 1) {
                 if let rowan::NodeOrToken::Node(prev) = &prev_node {
                     if prev.kind() == SyntaxKind::MAPPING_ENTRY && !ends_with_newline(prev) {
@@ -2962,8 +2859,6 @@ impl Mapping {
                     }
                 } else if let rowan::NodeOrToken::Token(t) = &prev_node {
                     if t.kind() != SyntaxKind::NEWLINE {
-                        // Previous is a stray token that isn't a
-                        // newline; insert one as a standalone.
                         add_newline_token(&mut new_elements);
                     }
                 }

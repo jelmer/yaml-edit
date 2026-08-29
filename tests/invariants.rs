@@ -285,6 +285,21 @@ fn sequence_remove_last_entry_preserves_following_mapping_entry() {
 }
 
 #[test]
+#[ignore = "set_path with nested Index segments produces broken compact block that reparses as a plain scalar"]
+fn set_path_nested_sequence_indices() {
+    use yaml_edit::path::YamlPath;
+    let doc = Document::from_str("a: 1\n").unwrap();
+    doc.set_path("s[0][0]", "hi");
+    check(&doc);
+    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+    let got = reparsed
+        .get_path("s[0][0]")
+        .as_ref()
+        .and_then(|n| n.as_scalar().map(|s| s.as_string()));
+    assert_eq!(got.as_deref(), Some("hi"));
+}
+
+#[test]
 #[ignore = "parser bug: column-0 key after `!!set` block gets absorbed by the set"]
 fn parser_absorbs_column0_key_after_tagged_set() {
     // Not a mutation bug -- the writer produces well-formed YAML.

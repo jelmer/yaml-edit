@@ -66,9 +66,30 @@ fn index_strat() -> impl Strategy<Value = usize> {
     0usize..7
 }
 
-/// A dotted path with 1..=3 segments, each a simple key.
+/// A path with 1..=3 segments. Bare keys (`a`), or a bare key
+/// followed by at most one index (`items[0]`, `items[0].name`).
+/// Nested-sequence indices (`s[0][0]`) are known-broken (see
+/// set_path_nested_sequence_indices in tests/invariants.rs) and
+/// excluded here so the fuzz can keep exploring.
 fn path_strat() -> impl Strategy<Value = String> {
-    prop::collection::vec(key_strat(), 1..=3).prop_map(|segs| segs.join("."))
+    (
+        key_strat(),
+        prop::option::of(0usize..4),
+        prop::option::of(key_strat()),
+    )
+        .prop_map(|(k0, idx, k1)| {
+            let mut out = k0;
+            if let Some(i) = idx {
+                out.push('[');
+                out.push_str(&i.to_string());
+                out.push(']');
+            }
+            if let Some(k) = k1 {
+                out.push('.');
+                out.push_str(&k);
+            }
+            out
+        })
 }
 
 fn op_strat() -> impl Strategy<Value = Op> {
@@ -531,6 +552,65 @@ fn assert_mapping_insert_stuck(mapping: &Mapping, k: &str, v: &str, doc: &Docume
     }
 }
 
+/// Verify that `doc.set_path(path, v)` landed `v` at `path` -- both
+/// in-memory and after re-parse. set_path is a no-op when the doc has
+/// no root mapping, so an empty-doc call is not a failure.
+fn assert_set_path_stuck(doc: &Document, path: &str, v: &str) {
+    let op = format!("SetPath({path:?}, {v:?})");
+    // If the doc has no root mapping, set_path silently returned.
+    if doc.as_mapping().is_none() {
+        return;
+    }
+    let got = doc
+        .get_path(path)
+        .as_ref()
+        .and_then(|n| n.as_scalar().map(|s| s.as_string()));
+    if got.as_deref() != Some(v) {
+        panic!(
+            "{op}: get_path returned {got:?} in memory, text: {:?}",
+            doc.to_string()
+        );
+    }
+    let text = doc.to_string();
+    let Ok(reparsed) = Document::from_str(&text) else {
+        panic!("{op}: re-parse failed, text: {text:?}");
+    };
+    let r_got = reparsed
+        .get_path(path)
+        .as_ref()
+        .and_then(|n| n.as_scalar().map(|s| s.as_string()));
+    if r_got.as_deref() != Some(v) {
+        panic!("{op}: reparse drift: get_path returned {r_got:?}, text: {text:?}");
+    }
+}
+
+/// Verify that `doc.remove_path(path)` did what it claimed and that
+/// the path is gone after re-parse.
+fn assert_remove_path_stuck(doc: &Document, path: &str, removed: bool) {
+    let op = format!("RemovePath({path:?})");
+    if doc.as_mapping().is_none() {
+        return;
+    }
+    if removed && doc.get_path(path).is_some() {
+        panic!(
+            "{op}: reported removed but path still present, text: {:?}",
+            doc.to_string()
+        );
+    }
+    // Only require re-parse to hide the path when remove reported
+    // success; a `false` return may leave a pre-existing state.
+    if !removed {
+        return;
+    }
+    let text = doc.to_string();
+    let Ok(reparsed) = Document::from_str(&text) else {
+        panic!("{op}: re-parse failed, text: {text:?}");
+    };
+    if reparsed.get_path(path).is_some() {
+        panic!("{op}: reparse drift: path came back, text: {text:?}");
+    }
+}
+
 fn apply(doc: &Document, op: &Op) {
     let Some(mapping) = doc.as_mapping() else {
         return;
@@ -646,9 +726,13 @@ fn apply(doc: &Document, op: &Op) {
                 let _ = nested.remove(ik.as_str());
             }
         }
-        Op::SetPath(p, v) => doc.set_path(p, v.as_str()),
+        Op::SetPath(p, v) => {
+            doc.set_path(p, v.as_str());
+            assert_set_path_stuck(doc, p, v.as_str());
+        }
         Op::RemovePath(p) => {
-            let _ = doc.remove_path(p);
+            let removed = doc.remove_path(p);
+            assert_remove_path_stuck(doc, p, removed);
         }
     }
 }

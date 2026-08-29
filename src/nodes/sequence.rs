@@ -14,6 +14,36 @@ ast_node!(Sequence, SEQUENCE, "A YAML sequence (list)");
 /// (`key:\n  - a`): the indentation lives in the VALUE, not inside the
 /// SEQUENCE. When present, `Sequence::push` must not emit its own leading
 /// INDENT for the first entry because the parent already supplies one.
+/// Does any ancestor of `node` use flow style (`{...}` or `[...]`)?
+/// A block SEQUENCE_ENTRY placed inside a flow ancestor would splash
+/// a `- x` inside braces, producing invalid mixed YAML.
+fn inside_flow_container(node: &SyntaxNode) -> bool {
+    let mut cur = node.parent();
+    while let Some(p) = cur {
+        match p.kind() {
+            SyntaxKind::MAPPING => {
+                if p.children_with_tokens().any(|c| {
+                    c.as_token()
+                        .is_some_and(|t| t.kind() == SyntaxKind::LEFT_BRACE)
+                }) {
+                    return true;
+                }
+            }
+            SyntaxKind::SEQUENCE => {
+                if p.children_with_tokens().any(|c| {
+                    c.as_token()
+                        .is_some_and(|t| t.kind() == SyntaxKind::LEFT_BRACKET)
+                }) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        cur = p.parent();
+    }
+    false
+}
+
 fn parent_value_has_leading_indent(seq: &SyntaxNode) -> bool {
     let Some(parent) = seq.parent() else {
         return false;
@@ -389,10 +419,12 @@ impl Sequence {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn push(&self, value: impl crate::AsYaml) {
-        // An empty flow sequence (`[]`) cannot host a block entry. Convert
-        // it to the empty-block-under-key form (`\n  ` scaffold in the
-        // parent VALUE) before falling through to the block push path.
-        if self.is_flow_style() && self.is_empty() {
+        // An empty flow sequence (`[]`) cannot host a block entry.
+        // If it sits at the top level or as a plain block-mapping
+        // value, convert to the empty-block-under-key form; if it
+        // sits inside another flow container, stay flow so we don't
+        // splash a `- x` inside a `{}` and produce invalid mixed YAML.
+        if self.is_flow_style() && self.is_empty() && !inside_flow_container(&self.0) {
             self.convert_empty_flow_to_block();
         }
 
@@ -588,10 +620,9 @@ impl Sequence {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn insert(&self, index: usize, value: impl crate::AsYaml) {
-        // An empty flow sequence (`[]`) cannot host a block entry;
-        // reshape it into the empty-block-under-key form first, just
-        // like `push` does.
-        if self.is_flow_style() && self.is_empty() {
+        // Same rule as `push`: convert empty flow to block only when
+        // the sequence isn't already nested inside a flow container.
+        if self.is_flow_style() && self.is_empty() && !inside_flow_container(&self.0) {
             self.convert_empty_flow_to_block();
         }
 

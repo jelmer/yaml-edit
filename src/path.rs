@@ -425,10 +425,19 @@ fn set_path_on_mapping<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegm
             set_path_on_sequence(&nested, &segments[1..], value);
             return;
         }
-        // Create an empty sequence at `first_key` and recurse into it.
-        // `Sequence::new()` yields a bare empty SEQUENCE that Mapping::set
-        // will splice under the key.
-        mapping.set(first_key, crate::yaml::Sequence::new());
+        // Match the parent's style: nested-under-flow keeps flow, so
+        // the intermediate sequence is created via SequenceBuilder
+        // (renders as `[]`). Nested-under-block gets a bare empty
+        // SEQUENCE (renders as block after push).
+        if mapping.is_flow_style() {
+            let flow_empty = crate::builder::SequenceBuilder::new()
+                .build_document()
+                .as_sequence()
+                .expect("SequenceBuilder always produces a sequence");
+            mapping.set(first_key, flow_empty);
+        } else {
+            mapping.set(first_key, crate::yaml::Sequence::new());
+        }
         if let Some(nested) = mapping.get_sequence(first_key) {
             set_path_on_sequence(&nested, &segments[1..], value);
         }

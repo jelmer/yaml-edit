@@ -1,4 +1,4 @@
-use super::{fresh_token, Lang, Scalar, Sequence, SyntaxNode};
+use super::{fresh_token, Lang, Scalar, Sequence, SyntaxNode, SyntaxToken};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::yaml::{
@@ -1107,64 +1107,60 @@ impl Mapping {
     {
         let order_keys: Vec<K> = order.into_iter().collect();
 
-        // Chunk the children into [leading | entries | trailing] and
-        // reshuffle the entry chunk only. `leading`/`trailing` carry
-        // structural decoration -- flow braces, leading indent tokens,
-        // any trailing NEWLINE that used to terminate the mapping.
-        // Between-entry separators are expected to live *inside* each
-        // entry (insert_at_index/insert_entry_cst ensure that); any
-        // inter-entry standalone tokens end up in `trailing` here.
+        // Group children into [leading | (entry, postscript)* | trailing].
+        // Leading is everything before the first entry. Each entry
+        // carries a postscript of the standalone tokens that followed
+        // it up to the next entry (typically NEWLINE+INDENT or a
+        // between-entry comment); reshuffling entries with their
+        // postscript keeps those tokens associated with the entry
+        // they visually followed. Trailing is anything after the last
+        // entry that didn't get claimed as a postscript.
         let all: Vec<_> = self.0.children_with_tokens().collect();
-        let first_entry_idx = all
-            .iter()
-            .position(|c| {
-                c.as_node()
-                    .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-            })
-            .unwrap_or(all.len());
-        let last_entry_idx = all
-            .iter()
-            .rposition(|c| {
-                c.as_node()
-                    .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-            })
-            .map(|i| i + 1)
-            .unwrap_or(first_entry_idx);
 
-        let leading = all[..first_entry_idx].to_vec();
-        let trailing = all[last_entry_idx..].to_vec();
+        let mut groups: Vec<(SyntaxNode, Vec<rowan::NodeOrToken<SyntaxNode, SyntaxToken>>)> =
+            Vec::new();
+        let mut leading = Vec::new();
+        let mut trailing = Vec::new();
+        for child in &all {
+            match child.as_node() {
+                Some(n) if n.kind() == SyntaxKind::MAPPING_ENTRY => {
+                    groups.push((n.clone(), Vec::new()));
+                }
+                _ => {
+                    if let Some((_, postscript)) = groups.last_mut() {
+                        postscript.push(child.clone());
+                    } else {
+                        leading.push(child.clone());
+                    }
+                }
+            }
+        }
+        // The last group's postscript is really trailing decoration
+        // (it followed the mapping's last entry with no entry after).
+        if let Some((_, last_postscript)) = groups.last_mut() {
+            trailing = std::mem::take(last_postscript);
+        }
 
-        let entry_nodes: Vec<SyntaxNode> = all[first_entry_idx..last_entry_idx]
-            .iter()
-            .filter_map(|c| c.as_node().cloned())
-            .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-            .collect();
-
-        let mut ordered_entries: Vec<SyntaxNode> = Vec::new();
-        let mut remaining_entries: Vec<SyntaxNode> = entry_nodes;
-
+        let mut ordered = Vec::new();
         for order_key in &order_keys {
-            if let Some(pos) = remaining_entries.iter().position(|entry| {
+            if let Some(pos) = groups.iter().position(|(entry, _)| {
                 entry
                     .children()
                     .find(|n| n.kind() == SyntaxKind::KEY)
                     .map(|k| key_content_matches(&k, order_key))
                     .unwrap_or(false)
             }) {
-                ordered_entries.push(remaining_entries.remove(pos));
+                ordered.push(groups.remove(pos));
             }
         }
+        ordered.extend(groups);
 
-        let new_children: Vec<_> = leading
-            .into_iter()
-            .chain(
-                ordered_entries
-                    .into_iter()
-                    .chain(remaining_entries)
-                    .map(|node| node.into()),
-            )
-            .chain(trailing)
-            .collect();
+        let mut new_children = leading;
+        for (entry, postscript) in ordered {
+            new_children.push(entry.into());
+            new_children.extend(postscript);
+        }
+        new_children.extend(trailing);
 
         self.0.splice_children(0..all.len(), new_children);
     }

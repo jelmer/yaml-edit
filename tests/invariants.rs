@@ -351,6 +351,27 @@ fn top_level_mapping_clear_renders_flow_empty() {
 }
 
 #[test]
+fn reorder_keeps_between_entry_comment_attached_to_predecessor() {
+    // A comment between two entries counts as the predecessor's
+    // postscript: it stays glued to the entry it visually followed
+    // (`a`) rather than being lifted to the end of the mapping.
+    let doc = Document::from_str("a: 1\n# note\nb: 2\n").unwrap();
+    doc.as_mapping().unwrap().reorder_fields(["b", "a"]);
+    check(&doc);
+    assert_eq!(doc.to_string(), "b: 2\na: 1\n# note\n");
+}
+
+#[test]
+fn reorder_noop_preserves_between_entry_comment() {
+    let doc = Document::from_str("a: 1\n# note\nb: 2\n").unwrap();
+    doc.as_mapping()
+        .unwrap()
+        .reorder_fields(std::iter::empty::<&str>());
+    check(&doc);
+    assert_eq!(doc.to_string(), "a: 1\n# note\nb: 2\n");
+}
+
+#[test]
 fn reorder_after_add_preserves_entry_separator() {
     // insert_at_index used to prepend a NEWLINE at the MAPPING level as
     // a separator when the previous entry lacked one. reorder_fields

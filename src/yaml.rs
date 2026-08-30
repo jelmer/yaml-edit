@@ -242,26 +242,27 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
         return;
     }
 
-    let mut builder = rowan::GreenNodeBuilder::new();
-    builder.start_node(SyntaxKind::VALUE.into());
-    builder.token(SyntaxKind::WHITESPACE.into(), " ");
-    builder.start_node(collection.kind().into());
-    builder.token(open_kind.into(), open_txt);
-    builder.token(close_kind.into(), close_txt);
-    builder.finish_node();
-    builder.finish_node();
-    let new_value = SyntaxNode::new_root_mut(builder.finish());
+    // Targeted edit: keep the VALUE node, drop the block-empty
+    // collection plus its NEWLINE/INDENT/WHITESPACE decoration in
+    // place, and splice a WHITESPACE + fresh flow-empty collection
+    // in its place. Leaves the VALUE wrapper (and anything the
+    // has_other check let through) intact.
+    let value_children: Vec<_> = value_node.children_with_tokens().collect();
+    for c in &value_children {
+        c.detach();
+    }
+    let ws = crate::nodes::fresh_token(SyntaxKind::WHITESPACE, " ");
+    let mut inner_builder = rowan::GreenNodeBuilder::new();
+    inner_builder.start_node(collection.kind().into());
+    inner_builder.token(open_kind.into(), open_txt);
+    inner_builder.token(close_kind.into(), close_txt);
+    inner_builder.finish_node();
+    let new_collection = SyntaxNode::new_root_mut(inner_builder.finish());
+    value_node.splice_children(0..0, vec![ws.into(), new_collection.into()]);
 
-    let Some(value_idx) = entry_node
-        .children_with_tokens()
-        .position(|c| c.as_node() == Some(&value_node))
-    else {
-        return;
-    };
-    entry_node.splice_children(value_idx..(value_idx + 1), vec![new_value.into()]);
-
-    // The fresh VALUE doesn't carry a NEWLINE; without one the next
-    // sibling entry would glue onto our tail.
+    // The next sibling entry needs a NEWLINE separator inside this
+    // entry (see the "entry termination" invariant in
+    // src/nodes/mod.rs).
     if !ends_with_newline(&entry_node) {
         let nl = crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n");
         let end = entry_node.children_with_tokens().count();

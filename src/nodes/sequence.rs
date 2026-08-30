@@ -603,7 +603,7 @@ impl Sequence {
         let inserting_at_head = target_entry_pos < children.len()
             && children[..target_entry_pos].iter().all(|c| {
                 c.as_node()
-                    .is_none_or(|n| n.kind() != SyntaxKind::SEQUENCE_ENTRY)
+                    .map_or(true, |n| n.kind() != SyntaxKind::SEQUENCE_ENTRY)
             });
         if inserting_at_head && parent_value_has_leading_indent(&self.0) {
             let old_first_indent = fresh_token(SyntaxKind::INDENT, &indentation);

@@ -208,8 +208,8 @@ fn set_with_document_terminator_key() {
 fn set_path_then_remove_path_collapses_empty_scaffold() {
     use yaml_edit::path::YamlPath;
     let doc = Document::from_str("a: 1\nb: 2\nc: 3\n").unwrap();
-    doc.set_path("vvv.vvv.x", "");
-    doc.remove_path("vvv.vvv.x");
+    doc.try_set_path("vvv.vvv.x", "").expect("set_path");
+    doc.try_remove_path("vvv.vvv.x").expect("remove_path");
     check(&doc);
     // The emptied-out innermost mapping collapses into flow-empty `{}`
     // so path lookups still work (get_path("vvv.vvv") returns the empty
@@ -221,7 +221,7 @@ fn set_path_then_remove_path_collapses_empty_scaffold() {
 fn set_path_after_explicit_key_does_not_leave_blank_line() {
     use yaml_edit::path::YamlPath;
     let doc = Document::from_str("keys: !!set\n  ? a\n  ? b\n").unwrap();
-    doc.set_path("a", "");
+    doc.try_set_path("a", "").expect("set_path");
     check(&doc);
     assert!(
         !doc.to_string().contains("\n\n"),
@@ -287,11 +287,12 @@ fn set_path_nested_sequence_indices() {
     // block that re-parses as a plain scalar.
     use yaml_edit::path::YamlPath;
     let doc = Document::from_str("a: 1\n").unwrap();
-    doc.set_path("s[0][0]", "hi");
+    doc.try_set_path("s[0][0]", "hi").expect("set_path");
     check(&doc);
     let reparsed = Document::from_str(&doc.to_string()).unwrap();
     let got = reparsed
-        .get_path("s[0][0]")
+        .try_get_path("s[0][0]")
+        .ok()
         .as_ref()
         .and_then(|n| n.as_scalar().map(|s| s.as_string()));
     assert_eq!(got.as_deref(), Some("hi"));

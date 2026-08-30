@@ -98,12 +98,12 @@
 //! let yaml = Document::from_str("server:\n  host: localhost").unwrap();
 //!
 //! // Get nested values
-//! let host = yaml.get_path("server.host");
+//! let host = yaml.try_get_path("server.host").ok();
 //! assert!(host.is_some());
 //!
 //! // Set nested values (creates intermediate mappings)
-//! yaml.set_path("server.port", 8080);
-//! yaml.set_path("database.host", "db.example.com");
+//! yaml.try_set_path("server.port", 8080).unwrap();
+//! yaml.try_set_path("database.host", "db.example.com").unwrap();
 //! ```
 //!
 //! ## Iterating Over Collections

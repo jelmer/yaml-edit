@@ -477,10 +477,11 @@ fn test_set_path_new_numeric_key() {
     let seed = "s:\n  - a\n  - b\n  - c\n";
     let doc = yaml_edit::Document::from_str(seed).expect("parse seed");
 
-    doc.set_path("997", "");
+    doc.try_set_path("997", "").expect("set_path");
 
     let got = doc
-        .get_path("997")
+        .try_get_path("997")
+        .ok()
         .as_ref()
         .and_then(|n| n.as_scalar().map(|s| s.as_string()));
     assert_eq!(
@@ -507,21 +508,25 @@ fn test_set_empty_path_is_a_noop() {
     let doc = yaml_edit::Document::from_str(seed).expect("parse seed");
     let before = doc.to_string();
 
-    doc.set_path("", "anything");
-
-    assert_eq!(
-        doc.to_string(),
-        before,
-        "set_path(\"\", ...) should be a no-op"
-    );
-    assert!(
-        doc.get_path("").is_none(),
-        "get_path(\"\") should always return None"
-    );
-    assert!(
-        !doc.remove_path(""),
-        "remove_path(\"\") should return false"
-    );
+    // Deliberately exercise the loose (deprecated) shims here to lock
+    // in their swallow-on-error semantics.
+    #[allow(deprecated)]
+    {
+        doc.set_path("", "anything");
+        assert_eq!(
+            doc.to_string(),
+            before,
+            "set_path(\"\", ...) should be a no-op"
+        );
+        assert!(
+            doc.get_path("").is_none(),
+            "get_path(\"\") should always return None"
+        );
+        assert!(
+            !doc.remove_path(""),
+            "remove_path(\"\") should return false"
+        );
+    }
 
     // try_ variants distinguish the reason.
     assert_eq!(

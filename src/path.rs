@@ -3,7 +3,17 @@
 //! Provides convenient dot-separated path syntax for accessing nested YAML values
 //! like `"server.host"` or `"database.primary.port"`.
 //!
-//! Operations: [`get_path`](YamlPath::get_path), [`set_path`](YamlPath::set_path), [`remove_path`](YamlPath::remove_path)
+//! Operations:
+//! [`try_get_path`](YamlPath::try_get_path),
+//! [`try_set_path`](YamlPath::try_set_path),
+//! [`try_remove_path`](YamlPath::try_remove_path).
+//! The `try_` variants return [`Result<_, PathError>`](PathError) so
+//! malformed paths, empty paths, missing keys, and container-type
+//! mismatches are visible rather than silently swallowed.
+//!
+//! The legacy `get_path` / `set_path` / `remove_path` methods still
+//! exist as thin wrappers that discard `PathError`; they are deprecated
+//! and will emit warnings.
 //!
 //! # Example
 //!
@@ -14,13 +24,13 @@
 //! let yaml = Document::from_str("server:\n  host: localhost\n  port: 8080\n").unwrap();
 //!
 //! // Get nested values
-//! let host = yaml.get_path("server.host");
+//! let host = yaml.try_get_path("server.host").ok();
 //!
 //! // Set nested values (creates intermediate mappings)
-//! yaml.set_path("database.primary.host", "db.example.com");
+//! yaml.try_set_path("database.primary.host", "db.example.com").unwrap();
 //!
 //! // Remove nested values
-//! yaml.remove_path("server.port");
+//! yaml.try_remove_path("server.port").unwrap();
 //! ```
 //!
 //! All operations preserve formatting, comments, and whitespace.
@@ -38,12 +48,13 @@ use crate::yaml::Mapping;
 ///     host: value
 /// ```
 ///
-/// Each method has both a "loose" variant (`get_path`, `set_path`,
-/// `remove_path`) that silently no-ops on invalid input and a `try_`
-/// variant that returns [`PathError`] instead. Prefer the `try_`
-/// variants for new code so parse errors, empty paths, missing keys,
-/// and container-type mismatches surface where they happen rather than
-/// being swallowed.
+/// The `try_` methods ([`try_get_path`](Self::try_get_path),
+/// [`try_set_path`](Self::try_set_path),
+/// [`try_remove_path`](Self::try_remove_path)) return
+/// `Result<_, PathError>` and are the recommended API. The older
+/// [`get_path`](Self::get_path) / [`set_path`](Self::set_path) /
+/// [`remove_path`](Self::remove_path) methods are deprecated wrappers
+/// that discard the error and silently no-op.
 pub trait YamlPath {
     /// Get a value at a nested path, returning a specific [`PathError`]
     /// on failure instead of `None`.
@@ -85,9 +96,10 @@ pub trait YamlPath {
     /// Get a value at a nested path.
     ///
     /// This is a lossy wrapper around
-    /// [`try_get_path`](Self::try_get_path): every error becomes `None`.
-    /// New code should prefer the `try_` variant so parse errors and
-    /// type mismatches are visible.
+    /// [`try_get_path`](Self::try_get_path): every error becomes `None`,
+    /// so callers cannot distinguish "path parsed but nothing found"
+    /// from "path was malformed" or "descended through the wrong
+    /// container type."
     ///
     /// # Examples
     ///
@@ -96,9 +108,14 @@ pub trait YamlPath {
     /// use std::str::FromStr;
     ///
     /// let yaml = Document::from_str("server:\n  host: localhost\n").unwrap();
+    /// #[allow(deprecated)]
     /// let host = yaml.get_path("server.host");
     /// assert!(host.is_some());
     /// ```
+    #[deprecated(
+        since = "0.4.0",
+        note = "use try_get_path; get_path swallows PathError as None"
+    )]
     fn get_path(&self, path: &str) -> Option<crate::as_yaml::YamlNode> {
         self.try_get_path(path).ok()
     }
@@ -106,8 +123,8 @@ pub trait YamlPath {
     /// Set a value at a nested path.
     ///
     /// Lossy wrapper around [`try_set_path`](Self::try_set_path): every
-    /// error is silently ignored. New code should prefer the `try_`
-    /// variant.
+    /// error is silently ignored. Callers get no signal that the write
+    /// failed (bad path, no root, descending through a scalar, ...).
     ///
     /// # Examples
     ///
@@ -116,9 +133,15 @@ pub trait YamlPath {
     /// use std::str::FromStr;
     ///
     /// let yaml = Document::from_str("name: test\n").unwrap();
+    /// #[allow(deprecated)]
     /// yaml.set_path("server.host", "localhost");
+    /// #[allow(deprecated)]
     /// yaml.set_path("server.port", 8080);
     /// ```
+    #[deprecated(
+        since = "0.4.0",
+        note = "use try_set_path; set_path silently ignores PathError"
+    )]
     fn set_path(&self, path: &str, value: impl crate::AsYaml) {
         let _ = self.try_set_path(path, value);
     }
@@ -137,9 +160,16 @@ pub trait YamlPath {
     /// use std::str::FromStr;
     ///
     /// let yaml = Document::from_str("server:\n  host: localhost\n  port: 8080\n").unwrap();
-    /// assert_eq!(yaml.remove_path("server.port"), true);
-    /// assert_eq!(yaml.remove_path("server.missing"), false);
+    /// #[allow(deprecated)]
+    /// {
+    ///     assert_eq!(yaml.remove_path("server.port"), true);
+    ///     assert_eq!(yaml.remove_path("server.missing"), false);
+    /// }
     /// ```
+    #[deprecated(
+        since = "0.4.0",
+        note = "use try_remove_path; remove_path swallows PathError as false"
+    )]
     fn remove_path(&self, path: &str) -> bool {
         self.try_remove_path(path).is_ok()
     }
@@ -867,7 +897,7 @@ items:
         let doc = Document::from_str(yaml).unwrap();
 
         // Test bracket notation
-        let name = doc.get_path("items[0].name");
+        let name = doc.try_get_path("items[0].name").ok();
         assert_eq!(
             name.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -875,7 +905,7 @@ items:
             Some("first".to_string())
         );
 
-        let value = doc.get_path("items[1].value");
+        let value = doc.try_get_path("items[1].value").ok();
         assert_eq!(
             value
                 .as_ref()
@@ -900,7 +930,7 @@ items:
         let doc = Document::from_str(yaml).unwrap();
 
         // Test numeric dot notation
-        let name = doc.get_path("items.0.name");
+        let name = doc.try_get_path("items.0.name").ok();
         assert_eq!(
             name.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -908,7 +938,7 @@ items:
             Some("first".to_string())
         );
 
-        let value = doc.get_path("items.1.value");
+        let value = doc.try_get_path("items.1.value").ok();
         assert_eq!(
             value
                 .as_ref()
@@ -926,10 +956,10 @@ items:
         doc.set("key.with.dots", "test value");
 
         // Without escaping - should not find it (looking for nested keys)
-        assert!(doc.get_path("key.with.dots").is_none());
+        assert!(doc.try_get_path("key.with.dots").is_err());
 
         // With escaping - should find it
-        let value = doc.get_path("key\\.with\\.dots");
+        let value = doc.try_get_path("key\\.with\\.dots").ok();
         assert_eq!(
             value
                 .as_ref()
@@ -952,7 +982,7 @@ items:
         let doc = Document::from_str(yaml).unwrap();
 
         // Get from root sequence
-        let item = doc.get_path("0");
+        let item = doc.try_get_path("0").ok();
         assert_eq!(
             item.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -960,7 +990,7 @@ items:
             Some("first".to_string())
         );
 
-        let item = doc.get_path("2");
+        let item = doc.try_get_path("2").ok();
         assert_eq!(
             item.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -983,11 +1013,11 @@ items:
         let doc = Document::from_str(yaml).unwrap();
 
         // Remove nested key inside array element
-        assert!(doc.remove_path("items[0].nested.key"));
-        assert!(doc.get_path("items[0].nested.key").is_none());
+        assert!(doc.try_remove_path("items[0].nested.key").is_ok());
+        assert!(doc.try_get_path("items[0].nested.key").is_err());
 
         // The nested mapping should still exist but be empty
-        assert!(doc.get_path("items[0].nested").is_some());
+        assert!(doc.try_get_path("items[0].nested").is_ok());
     }
 
     #[test]
@@ -1007,7 +1037,7 @@ config:
         let mapping = doc.as_mapping().unwrap();
 
         // Access through mapping using indices
-        let host = mapping.get_path("config.servers[0].host");
+        let host = mapping.try_get_path("config.servers[0].host").ok();
         assert_eq!(
             host.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -1015,7 +1045,7 @@ config:
             Some("server1.com".to_string())
         );
 
-        let port = mapping.get_path("config.servers.1.port");
+        let port = mapping.try_get_path("config.servers.1.port").ok();
         assert_eq!(
             port.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -1031,7 +1061,7 @@ config:
 
         let yaml = Document::from_str("name: Alice\nage: 30\n").unwrap();
 
-        let name = yaml.get_path("name");
+        let name = yaml.try_get_path("name").ok();
         assert_eq!(
             name.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -1039,7 +1069,7 @@ config:
             Some("Alice".to_string())
         );
 
-        let age = yaml.get_path("age");
+        let age = yaml.try_get_path("age").ok();
         assert_eq!(
             age.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -1055,7 +1085,7 @@ config:
 
         let yaml = Document::from_str("server:\n  host: localhost\n  port: 8080\n").unwrap();
 
-        let host = yaml.get_path("server.host");
+        let host = yaml.try_get_path("server.host").ok();
         assert_eq!(
             host.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -1063,7 +1093,7 @@ config:
             Some("localhost".to_string())
         );
 
-        let port = yaml.get_path("server.port");
+        let port = yaml.try_get_path("server.port").ok();
         assert_eq!(
             port.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -1082,7 +1112,7 @@ config:
         )
         .unwrap();
 
-        let host = yaml.get_path("app.database.primary.host");
+        let host = yaml.try_get_path("app.database.primary.host").ok();
         assert_eq!(
             host.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -1090,7 +1120,7 @@ config:
             Some("db.example.com".to_string())
         );
 
-        let port = yaml.get_path("app.database.primary.port");
+        let port = yaml.try_get_path("app.database.primary.port").ok();
         assert_eq!(
             port.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -1106,9 +1136,16 @@ config:
 
         let yaml = Document::from_str("name: Alice\n").unwrap();
 
-        assert_eq!(yaml.get_path("missing"), None);
-        assert_eq!(yaml.get_path("name.nested"), None);
-        assert_eq!(yaml.get_path(""), None);
+        assert!(matches!(
+            yaml.try_get_path("missing"),
+            Err(PathError::NotFound { .. })
+        ));
+        // `name` is a scalar, `.nested` tries to descend into it.
+        assert!(matches!(
+            yaml.try_get_path("name.nested"),
+            Err(PathError::TypeMismatch { .. })
+        ));
+        assert_eq!(yaml.try_get_path(""), Err(PathError::EmptyPath));
     }
 
     #[test]
@@ -1118,7 +1155,7 @@ config:
 
         let yaml = Document::from_str("name: Alice\nage: 30\n").unwrap();
 
-        yaml.set_path("name", "Bob");
+        yaml.try_set_path("name", "Bob").expect("set_path");
 
         assert_eq!(yaml.to_string(), "name: Bob\nage: 30\n");
     }
@@ -1130,7 +1167,7 @@ config:
 
         let yaml = Document::from_str("name: Alice\n").unwrap();
 
-        yaml.set_path("age", 30);
+        yaml.try_set_path("age", 30).expect("set_path");
 
         assert_eq!(yaml.to_string(), "name: Alice\nage: 30\n");
     }
@@ -1142,7 +1179,7 @@ config:
 
         let yaml = Document::from_str("server:\n  host: localhost\n  port: 8080\n").unwrap();
 
-        yaml.set_path("server.port", 9000);
+        yaml.try_set_path("server.port", 9000).expect("set_path");
 
         assert_eq!(
             yaml.to_string(),
@@ -1157,7 +1194,7 @@ config:
 
         let yaml = Document::from_str("server:\n  host: localhost\n").unwrap();
 
-        yaml.set_path("server.port", 8080);
+        yaml.try_set_path("server.port", 8080).expect("set_path");
 
         assert_eq!(
             yaml.to_string(),
@@ -1172,7 +1209,8 @@ config:
 
         let yaml = Document::from_str("name: test\n").unwrap();
 
-        yaml.set_path("server.database.host", "localhost");
+        yaml.try_set_path("server.database.host", "localhost")
+            .expect("set_path");
 
         assert_eq!(
             yaml.to_string(),
@@ -1180,7 +1218,7 @@ config:
         );
 
         // Verify we can retrieve it
-        let host = yaml.get_path("server.database.host");
+        let host = yaml.try_get_path("server.database.host").ok();
         assert_eq!(
             host.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -1196,8 +1234,10 @@ config:
 
         let yaml = Document::from_str("app: {}\n").unwrap();
 
-        yaml.set_path("app.database.primary.host", "db.example.com");
-        yaml.set_path("app.database.primary.port", 5432);
+        yaml.try_set_path("app.database.primary.host", "db.example.com")
+            .expect("set_path");
+        yaml.try_set_path("app.database.primary.port", 5432)
+            .expect("set_path");
 
         // Parent was flow-style, so the whole nested chain stays flow.
         assert_eq!(
@@ -1205,7 +1245,7 @@ config:
             r#"app: {database: {primary: {host: "db.example.com", port: 5432}}}"#
         );
 
-        let host = yaml.get_path("app.database.primary.host");
+        let host = yaml.try_get_path("app.database.primary.host").ok();
         assert_eq!(
             host.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -1213,7 +1253,7 @@ config:
             Some("db.example.com".to_string())
         );
 
-        let port = yaml.get_path("app.database.primary.port");
+        let port = yaml.try_get_path("app.database.primary.port").ok();
         assert_eq!(port.as_ref().and_then(|v| v.to_i64()), Some(5432));
     }
 
@@ -1224,7 +1264,7 @@ config:
 
         let yaml = Document::from_str("name: Alice\nage: 30\n").unwrap();
 
-        let result = yaml.remove_path("age");
+        let result = yaml.try_remove_path("age").is_ok();
         assert!(result);
 
         assert_eq!(yaml.to_string(), "name: Alice\n");
@@ -1237,7 +1277,7 @@ config:
 
         let yaml = Document::from_str("server:\n  host: localhost\n  port: 8080\n").unwrap();
 
-        let result = yaml.remove_path("server.port");
+        let result = yaml.try_remove_path("server.port").is_ok();
         assert!(result);
 
         assert_eq!(yaml.to_string(), "server:\n  host: localhost\n  ");
@@ -1250,10 +1290,10 @@ config:
 
         let yaml = Document::from_str("name: Alice\n").unwrap();
 
-        let result = yaml.remove_path("missing");
+        let result = yaml.try_remove_path("missing").is_ok();
         assert!(!result);
 
-        let result = yaml.remove_path("name.nested");
+        let result = yaml.try_remove_path("name.nested").is_ok();
         assert!(!result);
 
         // Document should be unchanged
@@ -1270,7 +1310,7 @@ config:
         )
         .unwrap();
 
-        let result = yaml.remove_path("app.database.primary.port");
+        let result = yaml.try_remove_path("app.database.primary.port").is_ok();
         assert!(result);
 
         assert_eq!(
@@ -1288,7 +1328,7 @@ config:
         let mapping = yaml.as_mapping().unwrap();
 
         // Get from mapping
-        let host = mapping.get_path("server.host");
+        let host = mapping.try_get_path("server.host").ok();
         assert_eq!(
             host.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -1297,18 +1337,18 @@ config:
         );
 
         // Set on mapping
-        mapping.set_path("server.port", 8080);
+        mapping.try_set_path("server.port", 8080).expect("set_path");
         assert_eq!(
             yaml.to_string(),
             "server:\n  host: localhost\n  port: 8080\n"
         );
 
         // Remove from mapping
-        let result = mapping.remove_path("server.port");
+        let result = mapping.try_remove_path("server.port").is_ok();
         assert!(result);
 
         // Try to remove non-existent path from mapping
-        let result_missing = mapping.remove_path("nonexistent.path");
+        let result_missing = mapping.try_remove_path("nonexistent.path").is_ok();
         assert!(!result_missing);
     }
 
@@ -1321,12 +1361,12 @@ config:
         let mapping = yaml.as_mapping().unwrap();
 
         // A single-segment path removes the key directly from the mapping.
-        assert!(mapping.remove_path("a"));
-        assert!(mapping.get_path("a").is_none());
-        assert!(mapping.get_path("b").is_some());
+        assert!(mapping.try_remove_path("a").is_ok());
+        assert!(mapping.try_get_path("a").is_err());
+        assert!(mapping.try_get_path("b").is_ok());
 
         // Removing a missing single-segment key returns false.
-        assert!(!mapping.remove_path("missing"));
+        assert!(mapping.try_remove_path("missing").is_err());
     }
 
     #[test]
@@ -1336,7 +1376,8 @@ config:
 
         let yaml = Document::from_str("server:\n  host: localhost  # production server\n").unwrap();
 
-        yaml.set_path("server.host", "newhost");
+        yaml.try_set_path("server.host", "newhost")
+            .expect("set_path");
 
         assert_eq!(
             yaml.to_string(),
@@ -1352,35 +1393,41 @@ config:
         let yaml = Document::from_str("name: test\n").unwrap();
 
         // Create nested structure
-        yaml.set_path("server.host", "localhost");
-        yaml.set_path("server.port", 8080);
-        yaml.set_path("database.host", "db.local");
-        yaml.set_path("database.port", 5432);
+        yaml.try_set_path("server.host", "localhost")
+            .expect("set_path");
+        yaml.try_set_path("server.port", 8080).expect("set_path");
+        yaml.try_set_path("database.host", "db.local")
+            .expect("set_path");
+        yaml.try_set_path("database.port", 5432).expect("set_path");
 
         // Verify all values
         assert_eq!(
-            yaml.get_path("server.host")
+            yaml.try_get_path("server.host")
+                .ok()
                 .as_ref()
                 .and_then(|v| v.as_scalar())
                 .map(|s| s.to_string()),
             Some("localhost".to_string())
         );
         assert_eq!(
-            yaml.get_path("server.port")
+            yaml.try_get_path("server.port")
+                .ok()
                 .as_ref()
                 .and_then(|v| v.as_scalar())
                 .map(|s| s.to_string()),
             Some("8080".to_string())
         );
         assert_eq!(
-            yaml.get_path("database.host")
+            yaml.try_get_path("database.host")
+                .ok()
                 .as_ref()
                 .and_then(|v| v.as_scalar())
                 .map(|s| s.to_string()),
             Some("db.local".to_string())
         );
         assert_eq!(
-            yaml.get_path("database.port")
+            yaml.try_get_path("database.port")
+                .ok()
                 .as_ref()
                 .and_then(|v| v.as_scalar())
                 .map(|s| s.to_string()),
@@ -1388,23 +1435,25 @@ config:
         );
 
         // Remove some values
-        yaml.remove_path("server.port");
-        yaml.remove_path("database.host");
+        yaml.try_remove_path("server.port").expect("remove_path");
+        yaml.try_remove_path("database.host").expect("remove_path");
 
         // Verify removals
-        assert_eq!(yaml.get_path("server.port"), None);
-        assert_eq!(yaml.get_path("database.host"), None);
+        assert!(yaml.try_get_path("server.port").is_err());
+        assert!(yaml.try_get_path("database.host").is_err());
 
         // Verify remaining values still exist
         assert_eq!(
-            yaml.get_path("server.host")
+            yaml.try_get_path("server.host")
+                .ok()
                 .as_ref()
                 .and_then(|v| v.as_scalar())
                 .map(|s| s.to_string()),
             Some("localhost".to_string())
         );
         assert_eq!(
-            yaml.get_path("database.port")
+            yaml.try_get_path("database.port")
+                .ok()
                 .as_ref()
                 .and_then(|v| v.as_scalar())
                 .map(|s| s.to_string()),
@@ -1421,7 +1470,7 @@ config:
         use crate::yaml::Document;
         use std::str::FromStr;
         let doc = Document::from_str("base: true\n").unwrap();
-        doc.set_path("a.b[0].c", "value");
+        doc.try_set_path("a.b[0].c", "value").expect("set_path");
         assert_eq!(
             doc.to_string(),
             "base: true\na:\n  b:\n    - {c: \"value\"}\n"
@@ -1433,7 +1482,7 @@ config:
         use crate::yaml::Document;
         use std::str::FromStr;
         let doc = Document::from_str("items:\n  - a\n  - b\n").unwrap();
-        doc.set_path("items[1]", "B");
+        doc.try_set_path("items[1]", "B").expect("set_path");
         assert_eq!(doc.to_string(), "items:\n  - a\n  - B\n");
     }
 
@@ -1442,7 +1491,7 @@ config:
         use crate::yaml::Document;
         use std::str::FromStr;
         let doc = Document::from_str("items:\n  - a\n").unwrap();
-        doc.set_path("items[3]", "z");
+        doc.try_set_path("items[3]", "z").expect("set_path");
         assert_eq!(
             doc.to_string(),
             "items:\n  - a\n  - null\n  - null\n  - z\n"

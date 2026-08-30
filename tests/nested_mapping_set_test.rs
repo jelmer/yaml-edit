@@ -265,7 +265,8 @@ fn set_path_creates_intermediate_mappings_with_indent() {
     use yaml_edit::Document;
 
     let doc = Document::from_str("managers:\n  pm:\n    runtime: claude-code\n").unwrap();
-    doc.set_path("managers.pm.interfaces.telegram.bot_token_env", "TOKEN");
+    doc.try_set_path("managers.pm.interfaces.telegram.bot_token_env", "TOKEN")
+        .expect("set_path");
     assert_cst_ok(&doc);
     assert_eq!(
         doc.to_string(),

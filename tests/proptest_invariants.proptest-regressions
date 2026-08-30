@@ -23,3 +23,4 @@ cc 34bc5dd2653dba87eb5aece1a92f05f9ebfb576f74a99a4257c8cf4d058f9083 # shrinks to
 cc 7217722cfb80ddce636240c06fb33748110842fe4491fa504f8f855e7feac595 # shrinks to seed = "a: 1\n", ops = [Clear, SetInt("f", 0), InsertBefore("f", "a", "a")]
 cc f1ae10076509ab758c0e89de36df5828e5407b3e0a308550b9ce43ea8fde9d1c # shrinks to seed = "a: 1\nb: 2\nc: 3\n", ops = [Rename("a", "b"), Rename("b", "a")]
 cc 9fffc4fb07204cb8821080394f8c6e3b6c6eb92b6724748c417977a4a51e9cd4 # shrinks to seed = "a: 1\n", ops = [SetPath("s[0][0]", "")]
+cc 2ed88fc0ebd9d814a3c54990bc998c0517845d933520d7d698fc801ea2e5fda1 # shrinks to seed = "a: 1\n", ops = [SetInt("d", 0), SetPath("d.a", "")]

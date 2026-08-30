@@ -288,12 +288,18 @@ fn apply(doc: &Document, op: &Op) {
             }
         }
         Op::SetPath(p, v) => {
-            doc.set_path(p, v.as_str());
-            assert_set_path_stuck(doc, p, v.as_str());
+            // Use try_set_path so we only assert the post-condition when
+            // the set actually succeeded. Errors (type mismatches,
+            // empty path) are legitimate outcomes and shouldn't fail
+            // the post-condition check.
+            if doc.try_set_path(p, v.as_str()).is_ok() {
+                assert_set_path_stuck(doc, p, v.as_str());
+            }
         }
         Op::RemovePath(p) => {
-            let removed = doc.remove_path(p);
-            assert_remove_path_stuck(doc, p, removed);
+            if doc.try_remove_path(p).is_ok() {
+                assert_remove_path_stuck(doc, p, true);
+            }
         }
     }
 }

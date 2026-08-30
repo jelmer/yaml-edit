@@ -3,7 +3,17 @@
 //! Provides convenient dot-separated path syntax for accessing nested YAML values
 //! like `"server.host"` or `"database.primary.port"`.
 //!
-//! Operations: [`get_path`](YamlPath::get_path), [`set_path`](YamlPath::set_path), [`remove_path`](YamlPath::remove_path)
+//! Operations:
+//! [`try_get_path`](YamlPath::try_get_path),
+//! [`try_set_path`](YamlPath::try_set_path),
+//! [`try_remove_path`](YamlPath::try_remove_path).
+//! The `try_` variants return [`Result<_, PathError>`](PathError) so
+//! malformed paths, empty paths, missing keys, and container-type
+//! mismatches are visible rather than silently swallowed.
+//!
+//! The legacy `get_path` / `set_path` / `remove_path` methods still
+//! exist as thin wrappers that discard `PathError`; they are deprecated
+//! and will emit warnings.
 //!
 //! # Example
 //!
@@ -14,13 +24,13 @@
 //! let yaml = Document::from_str("server:\n  host: localhost\n  port: 8080\n").unwrap();
 //!
 //! // Get nested values
-//! let host = yaml.get_path("server.host");
+//! let host = yaml.try_get_path("server.host").ok();
 //!
 //! // Set nested values (creates intermediate mappings)
-//! yaml.set_path("database.primary.host", "db.example.com");
+//! yaml.try_set_path("database.primary.host", "db.example.com").unwrap();
 //!
 //! // Remove nested values
-//! yaml.remove_path("server.port");
+//! yaml.try_remove_path("server.port").unwrap();
 //! ```
 //!
 //! All operations preserve formatting, comments, and whitespace.
@@ -37,16 +47,59 @@ use crate::yaml::Mapping;
 ///   database:
 ///     host: value
 /// ```
+///
+/// The `try_` methods ([`try_get_path`](Self::try_get_path),
+/// [`try_set_path`](Self::try_set_path),
+/// [`try_remove_path`](Self::try_remove_path)) return
+/// `Result<_, PathError>` and are the recommended API. The older
+/// [`get_path`](Self::get_path) / [`set_path`](Self::set_path) /
+/// [`remove_path`](Self::remove_path) methods are deprecated wrappers
+/// that discard the error and silently no-op.
 pub trait YamlPath {
+    /// Get a value at a nested path, returning a specific [`PathError`]
+    /// on failure instead of `None`.
+    ///
+    /// # Errors
+    ///
+    /// - [`PathError::Parse`] for a malformed path.
+    /// - [`PathError::EmptyPath`] when the path parses to zero segments.
+    /// - [`PathError::NoRoot`] when the receiver has no value to descend into.
+    /// - [`PathError::TypeMismatch`] when a segment tries to descend into a
+    ///   value of the wrong container type.
+    /// - [`PathError::NotFound`] when a segment addresses a key/index that
+    ///   does not exist.
+    fn try_get_path(&self, path: &str) -> Result<crate::as_yaml::YamlNode, PathError>;
+
+    /// Set a value at a nested path, creating intermediate mappings /
+    /// sequences as needed. Returns a specific [`PathError`] on failure
+    /// instead of silently no-oping.
+    ///
+    /// # Errors
+    ///
+    /// - [`PathError::Parse`] for a malformed path.
+    /// - [`PathError::EmptyPath`] when the path parses to zero segments.
+    /// - [`PathError::NoRoot`] when the receiver has no root mapping to
+    ///   write into (Document with no root, or with a scalar/sequence root).
+    /// - [`PathError::TypeMismatch`] when an intermediate segment lands on
+    ///   a scalar that cannot be turned into a container.
+    fn try_set_path(&self, path: &str, value: impl crate::AsYaml) -> Result<(), PathError>;
+
+    /// Remove a value at a nested path. Returns the removed
+    /// [`YamlNode`](crate::as_yaml::YamlNode) on success, or a specific
+    /// [`PathError`] describing why the removal did not happen.
+    ///
+    /// # Errors
+    ///
+    /// Same shape as [`try_get_path`](Self::try_get_path).
+    fn try_remove_path(&self, path: &str) -> Result<crate::as_yaml::YamlNode, PathError>;
+
     /// Get a value at a nested path.
     ///
-    /// # Arguments
-    ///
-    /// * `path` - Dot-separated path like `"server.host"` or `"db.primary.port"`
-    ///
-    /// # Returns
-    ///
-    /// `Some(YamlNode)` if the path exists, `None` otherwise.
+    /// This is a lossy wrapper around
+    /// [`try_get_path`](Self::try_get_path): every error becomes `None`,
+    /// so callers cannot distinguish "path parsed but nothing found"
+    /// from "path was malformed" or "descended through the wrong
+    /// container type."
     ///
     /// # Examples
     ///
@@ -55,17 +108,23 @@ pub trait YamlPath {
     /// use std::str::FromStr;
     ///
     /// let yaml = Document::from_str("server:\n  host: localhost\n").unwrap();
+    /// #[allow(deprecated)]
     /// let host = yaml.get_path("server.host");
     /// assert!(host.is_some());
     /// ```
-    fn get_path(&self, path: &str) -> Option<crate::as_yaml::YamlNode>;
+    #[deprecated(
+        since = "0.4.0",
+        note = "use try_get_path; get_path swallows PathError as None"
+    )]
+    fn get_path(&self, path: &str) -> Option<crate::as_yaml::YamlNode> {
+        self.try_get_path(path).ok()
+    }
 
-    /// Set a value at a nested path, creating intermediate mappings if needed.
+    /// Set a value at a nested path.
     ///
-    /// # Arguments
-    ///
-    /// * `path` - Dot-separated path like `"server.host"`
-    /// * `value` - Value to set (can be any type implementing `AsYaml`)
+    /// Lossy wrapper around [`try_set_path`](Self::try_set_path): every
+    /// error is silently ignored. Callers get no signal that the write
+    /// failed (bad path, no root, descending through a scalar, ...).
     ///
     /// # Examples
     ///
@@ -74,20 +133,25 @@ pub trait YamlPath {
     /// use std::str::FromStr;
     ///
     /// let yaml = Document::from_str("name: test\n").unwrap();
+    /// #[allow(deprecated)]
     /// yaml.set_path("server.host", "localhost");
+    /// #[allow(deprecated)]
     /// yaml.set_path("server.port", 8080);
     /// ```
-    fn set_path(&self, path: &str, value: impl crate::AsYaml);
+    #[deprecated(
+        since = "0.4.0",
+        note = "use try_set_path; set_path silently ignores PathError"
+    )]
+    fn set_path(&self, path: &str, value: impl crate::AsYaml) {
+        let _ = self.try_set_path(path, value);
+    }
 
-    /// Remove a value at a nested path.
+    /// Remove a value at a nested path. Returns `true` if a value was
+    /// removed.
     ///
-    /// # Arguments
-    ///
-    /// * `path` - Dot-separated path to the value to remove
-    ///
-    /// # Returns
-    ///
-    /// `true` if the value was found and removed, `false` otherwise.
+    /// Lossy wrapper around [`try_remove_path`](Self::try_remove_path):
+    /// every error is reported as `false`, indistinguishable from
+    /// "path was well-formed but key not present."
     ///
     /// # Examples
     ///
@@ -96,10 +160,19 @@ pub trait YamlPath {
     /// use std::str::FromStr;
     ///
     /// let yaml = Document::from_str("server:\n  host: localhost\n  port: 8080\n").unwrap();
-    /// assert_eq!(yaml.remove_path("server.port"), true);
-    /// assert_eq!(yaml.remove_path("server.missing"), false);
+    /// #[allow(deprecated)]
+    /// {
+    ///     assert_eq!(yaml.remove_path("server.port"), true);
+    ///     assert_eq!(yaml.remove_path("server.missing"), false);
+    /// }
     /// ```
-    fn remove_path(&self, path: &str) -> bool;
+    #[deprecated(
+        since = "0.4.0",
+        note = "use try_remove_path; remove_path swallows PathError as false"
+    )]
+    fn remove_path(&self, path: &str) -> bool {
+        self.try_remove_path(path).is_ok()
+    }
 }
 
 /// Represents a segment in a YAML path.
@@ -134,6 +207,65 @@ impl std::fmt::Display for PathParseError {
 }
 
 impl std::error::Error for PathParseError {}
+
+/// Error returned by [`try_get_path`](YamlPath::try_get_path) /
+/// [`try_set_path`](YamlPath::try_set_path) /
+/// [`try_remove_path`](YamlPath::try_remove_path).
+///
+/// Distinguishes the several ways a path operation can fail so callers
+/// can react appropriately, instead of getting the previous silent
+/// no-op or ambiguous `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    /// The path string is malformed (unclosed `[`, non-`usize` index).
+    Parse(PathParseError),
+    /// The path parsed to zero segments (typically the empty string or
+    /// a run of stray dots).
+    EmptyPath,
+    /// The receiver has no root value to descend into: `Document` was
+    /// empty, or the requested operation needed a root mapping and the
+    /// document's root is a scalar / sequence.
+    NoRoot,
+    /// A segment tried to descend into a value of the wrong container
+    /// type -- e.g. treating a scalar as a mapping in `foo.bar` when
+    /// `foo` is a scalar. `at` is the segment index (`"foo"` in the
+    /// example above) that led to the type mismatch.
+    TypeMismatch {
+        /// The segment whose value was not the expected container type.
+        at: String,
+    },
+    /// The target segment does not exist. Applies to
+    /// [`try_get_path`](YamlPath::try_get_path) and
+    /// [`try_remove_path`](YamlPath::try_remove_path); `try_set_path`
+    /// creates missing intermediates and never reports this. `at` is
+    /// the missing segment.
+    NotFound {
+        /// The segment that could not be resolved.
+        at: String,
+    },
+}
+
+impl std::fmt::Display for PathError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PathError::Parse(e) => write!(f, "path parse error: {e}"),
+            PathError::EmptyPath => write!(f, "path is empty (no segments)"),
+            PathError::NoRoot => write!(f, "document has no root to descend into"),
+            PathError::TypeMismatch { at } => {
+                write!(f, "path segment {at:?} is not a container")
+            }
+            PathError::NotFound { at } => write!(f, "path segment {at:?} not found"),
+        }
+    }
+}
+
+impl std::error::Error for PathError {}
+
+impl From<PathParseError> for PathError {
+    fn from(e: PathParseError) -> Self {
+        PathError::Parse(e)
+    }
+}
 
 /// Parse a path string into components.
 ///
@@ -265,178 +397,197 @@ pub fn parse_path(path: &str) -> Vec<PathSegment> {
     try_parse_path(path).unwrap_or_default()
 }
 
-fn path_segments(path: &str) -> Option<Vec<PathSegment>> {
-    let segments = try_parse_path(path).ok()?;
+/// Parse `path` into a non-empty segment list, mapping the two
+/// failure modes ("unparseable" and "empty") to distinct `PathError`
+/// variants.
+fn path_segments_required(path: &str) -> Result<Vec<PathSegment>, PathError> {
+    let segments = try_parse_path(path)?;
     if segments.is_empty() {
-        None
+        Err(PathError::EmptyPath)
     } else {
-        Some(segments)
+        Ok(segments)
+    }
+}
+
+/// Format a segment for use in a `PathError::TypeMismatch` / `NotFound`
+/// message. Mirrors the input syntax the user would type.
+fn segment_display(segment: &PathSegment) -> String {
+    match segment {
+        PathSegment::Key(key) => key.clone(),
+        PathSegment::Index(index) => format!("[{index}]"),
     }
 }
 
 /// Navigate through a YAML structure following path segments.
 ///
-/// Handles both mapping keys and sequence indices.
+/// Handles both mapping keys and sequence indices. A numeric segment
+/// like `997` in `foo.997` parses as `Index(997)` even though the user
+/// may have meant it as a mapping key: when the current node is a
+/// mapping, fall back to looking up the stringified form. Errors
+/// distinguish "wrong container type" from "key/index not present".
 fn navigate_path(
     mut current: crate::as_yaml::YamlNode,
     segments: &[PathSegment],
-) -> Option<crate::as_yaml::YamlNode> {
+) -> Result<crate::as_yaml::YamlNode, PathError> {
     for segment in segments {
-        match segment {
-            PathSegment::Key(key) => {
-                // Navigate through a mapping
-                let mapping = current.as_mapping()?;
-                current = mapping.get(key)?;
-            }
-            PathSegment::Index(index) => {
-                // Navigate through a sequence
-                let sequence = current.as_sequence()?;
-                current = sequence.get(*index)?;
+        current = descend_one(current, segment)?;
+    }
+    Ok(current)
+}
+
+fn descend_one(
+    current: crate::as_yaml::YamlNode,
+    segment: &PathSegment,
+) -> Result<crate::as_yaml::YamlNode, PathError> {
+    match segment {
+        PathSegment::Key(key) => {
+            let mapping = current
+                .as_mapping()
+                .ok_or_else(|| PathError::TypeMismatch {
+                    at: segment_display(segment),
+                })?;
+            mapping.get(key).ok_or_else(|| PathError::NotFound {
+                at: segment_display(segment),
+            })
+        }
+        PathSegment::Index(index) => {
+            if let Some(seq) = current.as_sequence() {
+                seq.get(*index).ok_or_else(|| PathError::NotFound {
+                    at: segment_display(segment),
+                })
+            } else if let Some(map) = current.as_mapping() {
+                // Fallback: numeric segment used as a mapping key.
+                map.get(index.to_string().as_str())
+                    .ok_or_else(|| PathError::NotFound {
+                        at: segment_display(segment),
+                    })
+            } else {
+                Err(PathError::TypeMismatch {
+                    at: segment_display(segment),
+                })
             }
         }
     }
+}
 
-    Some(current)
+/// Interpret a segment as a mapping key. `Index(n)` is stringified so
+/// paths like `foo.997` (parsed as `foo` + `Index(997)`) still address
+/// a mapping key `"997"`.
+fn segment_key(segment: &PathSegment) -> String {
+    match segment {
+        PathSegment::Key(key) => key.clone(),
+        PathSegment::Index(index) => index.to_string(),
+    }
 }
 
 // Implementation for Document
 impl YamlPath for crate::yaml::Document {
-    fn get_path(&self, path: &str) -> Option<crate::as_yaml::YamlNode> {
-        let segments = path_segments(path)?;
+    fn try_get_path(&self, path: &str) -> Result<crate::as_yaml::YamlNode, PathError> {
+        let segments = path_segments_required(path)?;
 
         // Start from the document's root content
         let root = if let Some(m) = self.as_mapping() {
             crate::as_yaml::YamlNode::Mapping(m)
         } else if let Some(s) = self.as_sequence() {
             crate::as_yaml::YamlNode::Sequence(s)
-        } else {
-            let sc = self.as_scalar()?;
+        } else if let Some(sc) = self.as_scalar() {
             crate::as_yaml::YamlNode::Scalar(sc)
+        } else {
+            return Err(PathError::NoRoot);
         };
 
-        // Navigate through the path segments
         navigate_path(root, &segments)
     }
 
-    fn set_path(&self, path: &str, value: impl crate::AsYaml) {
-        let Some(segments) = path_segments(path) else {
-            return;
-        };
+    fn try_set_path(&self, path: &str, value: impl crate::AsYaml) -> Result<(), PathError> {
+        let segments = path_segments_required(path)?;
 
-        // Get the root mapping (can only set paths on mappings at the root)
-        let mapping = match self.as_mapping() {
-            Some(m) => m,
-            None => return,
-        };
+        // Only a root mapping can hold new-key insertions; a scalar or
+        // sequence root has no place to graft `foo.bar` under.
+        let mapping = self.as_mapping().ok_or(PathError::NoRoot)?;
 
-        set_path_impl(&mapping, &segments, value);
+        set_path_on_mapping(&mapping, &segments, value)
     }
 
-    fn remove_path(&self, path: &str) -> bool {
-        let Some(segments) = path_segments(path) else {
-            return false;
-        };
+    fn try_remove_path(&self, path: &str) -> Result<crate::as_yaml::YamlNode, PathError> {
+        let segments = path_segments_required(path)?;
 
-        // Start from document root
         let root = if let Some(m) = self.as_mapping() {
             crate::as_yaml::YamlNode::Mapping(m)
         } else if let Some(s) = self.as_sequence() {
             crate::as_yaml::YamlNode::Sequence(s)
         } else {
-            return false;
+            return Err(PathError::NoRoot);
         };
 
         remove_path_impl(root, &segments)
     }
 }
 
-/// Set a value at a path, creating intermediate mappings as needed.
+/// Remove a value at a nested path. Returns the removed
+/// [`YamlNode`](crate::as_yaml::YamlNode) on success. Errors carry the
+/// specific reason (type mismatch vs. not-found).
 ///
-/// This is used by Document::set_path() to handle the full path navigation.
-fn set_path_impl<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegment], value: V) {
-    set_path_on_mapping(mapping, segments, value);
-}
-
-/// Remove a value at a nested path.
-///
-/// This is used by Document::remove_path() to handle the full path navigation.
-fn remove_path_impl(root: crate::as_yaml::YamlNode, segments: &[PathSegment]) -> bool {
-    if segments.is_empty() {
-        return false;
-    }
+/// Removing by index from a sequence is intentionally unsupported (it
+/// would shift every subsequent element) and reported as a
+/// `PathError::TypeMismatch` at that segment.
+fn remove_path_impl(
+    root: crate::as_yaml::YamlNode,
+    segments: &[PathSegment],
+) -> Result<crate::as_yaml::YamlNode, PathError> {
+    debug_assert!(!segments.is_empty(), "caller must reject empty paths");
 
     if segments.len() == 1 {
-        // Base case: remove from the current node
-        match &segments[0] {
-            PathSegment::Key(key) => {
-                if let Some(mapping) = root.as_mapping() {
-                    return mapping.remove(key.as_str()).is_some();
+        let seg = &segments[0];
+        let key = match seg {
+            PathSegment::Key(key) => key.clone(),
+            PathSegment::Index(index) => {
+                // Numeric segment on a mapping falls back to the
+                // stringified key. On a sequence, index removal is
+                // unsupported.
+                if root.as_mapping().is_none() {
+                    return Err(PathError::TypeMismatch {
+                        at: segment_display(seg),
+                    });
                 }
+                index.to_string()
             }
-            PathSegment::Index(_) => {
-                // Removing by index from a sequence is not supported
-                // (would require shifting all subsequent elements)
-                return false;
-            }
-        }
-        return false;
+        };
+        let mapping = root.as_mapping().ok_or_else(|| PathError::TypeMismatch {
+            at: segment_display(seg),
+        })?;
+        // Grab the value before removal so we can return it. If the
+        // entry has no VALUE child (unusual: implicit-null entry), fall
+        // back to a null scalar.
+        let value = mapping
+            .get(key.as_str())
+            .ok_or_else(|| PathError::NotFound {
+                at: segment_display(seg),
+            })?;
+        mapping.remove(key.as_str());
+        return Ok(value);
     }
 
-    // Navigate to the parent and recurse
-    match &segments[0] {
-        PathSegment::Key(key) => {
-            if let Some(mapping) = root.as_mapping() {
-                if let Some(nested) = mapping.get(key.as_str()) {
-                    return remove_path_impl(nested, &segments[1..]);
-                }
-            }
-        }
-        PathSegment::Index(index) => {
-            if let Some(sequence) = root.as_sequence() {
-                if let Some(nested) = sequence.get(*index) {
-                    return remove_path_impl(nested, &segments[1..]);
-                }
-            }
-        }
-    }
-
-    false
+    // Descend one level and recurse.
+    let nested = descend_one(root, &segments[0])?;
+    remove_path_impl(nested, &segments[1..])
 }
 
 // Implementation for Mapping
 impl YamlPath for Mapping {
-    fn get_path(&self, path: &str) -> Option<crate::as_yaml::YamlNode> {
-        let segments = path_segments(path)?;
-
-        // Start from the first segment (must be a key for mappings)
-        let first_key = match &segments[0] {
-            PathSegment::Key(key) => key.as_str(),
-            PathSegment::Index(_) => return None, // Can't index into a mapping directly
-        };
-
-        if segments.len() == 1 {
-            return self.get(first_key);
-        }
-
-        // Get the value at the first key and navigate the rest
-        let current = self.get(first_key)?;
-        navigate_path(current, &segments[1..])
+    fn try_get_path(&self, path: &str) -> Result<crate::as_yaml::YamlNode, PathError> {
+        let segments = path_segments_required(path)?;
+        navigate_path(crate::as_yaml::YamlNode::Mapping(self.clone()), &segments)
     }
 
-    fn set_path(&self, path: &str, value: impl crate::AsYaml) {
-        let Some(segments) = path_segments(path) else {
-            return;
-        };
-
-        set_path_on_mapping(self, &segments, value);
+    fn try_set_path(&self, path: &str, value: impl crate::AsYaml) -> Result<(), PathError> {
+        let segments = path_segments_required(path)?;
+        set_path_on_mapping(self, &segments, value)
     }
 
-    fn remove_path(&self, path: &str) -> bool {
-        let Some(segments) = path_segments(path) else {
-            return false;
-        };
-
-        remove_path_from_mapping(self, &segments)
+    fn try_remove_path(&self, path: &str) -> Result<crate::as_yaml::YamlNode, PathError> {
+        let segments = path_segments_required(path)?;
+        remove_path_impl(crate::as_yaml::YamlNode::Mapping(self.clone()), &segments)
     }
 }
 
@@ -446,30 +597,49 @@ impl YamlPath for Mapping {
 /// Uses only the public API (get_mapping, get_sequence, set) and does NOT
 /// rebuild nodes. Recurses through `set_path_on_sequence` when a segment
 /// dives into a sequence.
-fn set_path_on_mapping<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegment], value: V) {
-    if segments.is_empty() {
-        return;
-    }
+///
+/// Errors when an intermediate segment lands on an existing scalar (we
+/// won't overwrite user data implicitly).
+fn set_path_on_mapping<V: crate::AsYaml>(
+    mapping: &Mapping,
+    segments: &[PathSegment],
+    value: V,
+) -> Result<(), PathError> {
+    debug_assert!(!segments.is_empty(), "caller must reject empty paths");
 
-    // First segment must be a key for mappings
-    let first_key = match &segments[0] {
-        PathSegment::Key(key) => key.as_str(),
-        PathSegment::Index(_) => return, // Can't set by index on a mapping
-    };
+    // First segment: numeric segments (from `foo.997`) are stringified
+    // so they still address a mapping key.
+    let first_key_owned = segment_key(&segments[0]);
+    let first_key = first_key_owned.as_str();
 
     if segments.len() == 1 {
         // Base case: set directly
         mapping.set(first_key, value);
-        return;
+        return Ok(());
     }
 
     // What container does the next segment expect at `first_key`?
     let next_wants_sequence = matches!(segments[1], PathSegment::Index(_));
 
+    // Reject descending through a scalar. `get(first_key)` returns the
+    // existing value if any; if it's a non-null scalar we'd have to
+    // overwrite user data to continue. Null placeholders are treated
+    // as "vacant" and get replaced by the appropriate container.
+    if let Some(existing) = mapping.get(first_key) {
+        if let Some(sc) = existing.as_scalar() {
+            let s = sc.as_string();
+            let is_null_placeholder = s.is_empty() || s.eq_ignore_ascii_case("null") || s == "~";
+            if !is_null_placeholder {
+                return Err(PathError::TypeMismatch {
+                    at: segment_display(&segments[0]),
+                });
+            }
+        }
+    }
+
     if next_wants_sequence {
         if let Some(nested) = mapping.get_sequence(first_key) {
-            set_path_on_sequence(&nested, &segments[1..], value);
-            return;
+            return set_path_on_sequence(&nested, &segments[1..], value);
         }
         // Match the parent's style: nested-under-flow keeps flow, so
         // the intermediate sequence is created via SequenceBuilder
@@ -484,15 +654,14 @@ fn set_path_on_mapping<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegm
         } else {
             mapping.set(first_key, crate::yaml::Sequence::new());
         }
-        if let Some(nested) = mapping.get_sequence(first_key) {
-            set_path_on_sequence(&nested, &segments[1..], value);
-        }
-        return;
+        let nested = mapping
+            .get_sequence(first_key)
+            .expect("we just inserted this key as a sequence");
+        return set_path_on_sequence(&nested, &segments[1..], value);
     }
 
     if let Some(nested) = mapping.get_mapping(first_key) {
-        set_path_on_mapping(&nested, &segments[1..], value);
-        return;
+        return set_path_on_mapping(&nested, &segments[1..], value);
     }
 
     // Match the parent's style so we don't mix block content into a flow
@@ -508,9 +677,10 @@ fn set_path_on_mapping<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegm
         mapping.set(first_key, Mapping::new());
     }
 
-    if let Some(nested) = mapping.get_mapping(first_key) {
-        set_path_on_mapping(&nested, &segments[1..], value);
-    }
+    let nested = mapping
+        .get_mapping(first_key)
+        .expect("we just inserted this key as a mapping");
+    set_path_on_mapping(&nested, &segments[1..], value)
 }
 
 /// Set a value at a path on a sequence, growing it and creating intermediate
@@ -523,13 +693,19 @@ fn set_path_on_sequence<V: crate::AsYaml>(
     sequence: &crate::yaml::Sequence,
     segments: &[PathSegment],
     value: V,
-) {
-    if segments.is_empty() {
-        return;
-    }
+) -> Result<(), PathError> {
+    debug_assert!(!segments.is_empty(), "caller must reject empty paths");
+
     let index = match &segments[0] {
         PathSegment::Index(i) => *i,
-        PathSegment::Key(_) => return, // Can't key into a sequence
+        // A string segment on a sequence is a real type mismatch: we
+        // have no reasonable coercion to try (unlike numeric-on-mapping,
+        // which stringifies).
+        PathSegment::Key(_) => {
+            return Err(PathError::TypeMismatch {
+                at: segment_display(&segments[0]),
+            });
+        }
     };
 
     // Grow the sequence with null placeholders until `index` is in range.
@@ -539,15 +715,30 @@ fn set_path_on_sequence<V: crate::AsYaml>(
 
     if segments.len() == 1 {
         sequence.set(index, value);
-        return;
+        return Ok(());
+    }
+
+    // Descending through an existing scalar is fine when that scalar is
+    // a null placeholder (either one we just pushed to grow the
+    // sequence, or an existing `null` the user chose). Reject only when
+    // we'd have to overwrite a non-null user value.
+    if let Some(existing) = sequence.get(index) {
+        if let Some(sc) = existing.as_scalar() {
+            let s = sc.as_string();
+            let is_null_placeholder = s.is_empty() || s.eq_ignore_ascii_case("null") || s == "~";
+            if !is_null_placeholder {
+                return Err(PathError::TypeMismatch {
+                    at: segment_display(&segments[0]),
+                });
+            }
+        }
     }
 
     let next_wants_sequence = matches!(segments[1], PathSegment::Index(_));
 
     if next_wants_sequence {
         if let Some(nested) = sequence.get(index).and_then(|n| n.as_sequence().cloned()) {
-            set_path_on_sequence(&nested, &segments[1..], value);
-            return;
+            return set_path_on_sequence(&nested, &segments[1..], value);
         }
         // Nested-sequence-under-sequence: use SequenceBuilder to
         // create a flow-empty `[]`. A block SEQUENCE nested inline
@@ -560,51 +751,26 @@ fn set_path_on_sequence<V: crate::AsYaml>(
             .as_sequence()
             .expect("SequenceBuilder always produces a sequence");
         sequence.set(index, flow_empty);
-        if let Some(nested) = sequence.get(index).and_then(|n| n.as_sequence().cloned()) {
-            set_path_on_sequence(&nested, &segments[1..], value);
-        }
-        return;
+        let nested = sequence
+            .get(index)
+            .and_then(|n| n.as_sequence().cloned())
+            .expect("we just inserted a sequence at this index");
+        return set_path_on_sequence(&nested, &segments[1..], value);
     }
 
     if let Some(nested) = sequence.get(index).and_then(|n| n.as_mapping().cloned()) {
-        set_path_on_mapping(&nested, &segments[1..], value);
-        return;
+        return set_path_on_mapping(&nested, &segments[1..], value);
     }
     let flow_empty = crate::builder::MappingBuilder::new()
         .build_document()
         .as_mapping()
         .expect("MappingBuilder always produces a mapping");
     sequence.set(index, flow_empty);
-    if let Some(nested) = sequence.get(index).and_then(|n| n.as_mapping().cloned()) {
-        set_path_on_mapping(&nested, &segments[1..], value);
-    }
-}
-
-/// Remove a value at a path from a mapping.
-///
-/// This function uses only the public API and does NOT rebuild nodes.
-fn remove_path_from_mapping(mapping: &Mapping, segments: &[PathSegment]) -> bool {
-    if segments.is_empty() {
-        return false;
-    }
-
-    // First segment must be a key for mappings
-    let first_key = match &segments[0] {
-        PathSegment::Key(key) => key.as_str(),
-        PathSegment::Index(_) => return false, // Can't index into a mapping
-    };
-
-    if segments.len() == 1 {
-        // Base case: remove directly
-        return mapping.remove(first_key).is_some();
-    }
-
-    // Navigate to the parent mapping and recurse
-    if let Some(nested) = mapping.get_mapping(first_key) {
-        remove_path_from_mapping(&nested, &segments[1..])
-    } else {
-        false // Path doesn't exist
-    }
+    let nested = sequence
+        .get(index)
+        .and_then(|n| n.as_mapping().cloned())
+        .expect("we just inserted a mapping at this index");
+    set_path_on_mapping(&nested, &segments[1..], value)
 }
 
 #[cfg(test)]
@@ -731,7 +897,7 @@ items:
         let doc = Document::from_str(yaml).unwrap();
 
         // Test bracket notation
-        let name = doc.get_path("items[0].name");
+        let name = doc.try_get_path("items[0].name").ok();
         assert_eq!(
             name.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -739,7 +905,7 @@ items:
             Some("first".to_string())
         );
 
-        let value = doc.get_path("items[1].value");
+        let value = doc.try_get_path("items[1].value").ok();
         assert_eq!(
             value
                 .as_ref()
@@ -764,7 +930,7 @@ items:
         let doc = Document::from_str(yaml).unwrap();
 
         // Test numeric dot notation
-        let name = doc.get_path("items.0.name");
+        let name = doc.try_get_path("items.0.name").ok();
         assert_eq!(
             name.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -772,7 +938,7 @@ items:
             Some("first".to_string())
         );
 
-        let value = doc.get_path("items.1.value");
+        let value = doc.try_get_path("items.1.value").ok();
         assert_eq!(
             value
                 .as_ref()
@@ -790,10 +956,10 @@ items:
         doc.set("key.with.dots", "test value");
 
         // Without escaping - should not find it (looking for nested keys)
-        assert!(doc.get_path("key.with.dots").is_none());
+        assert!(doc.try_get_path("key.with.dots").is_err());
 
         // With escaping - should find it
-        let value = doc.get_path("key\\.with\\.dots");
+        let value = doc.try_get_path("key\\.with\\.dots").ok();
         assert_eq!(
             value
                 .as_ref()
@@ -816,7 +982,7 @@ items:
         let doc = Document::from_str(yaml).unwrap();
 
         // Get from root sequence
-        let item = doc.get_path("0");
+        let item = doc.try_get_path("0").ok();
         assert_eq!(
             item.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -824,7 +990,7 @@ items:
             Some("first".to_string())
         );
 
-        let item = doc.get_path("2");
+        let item = doc.try_get_path("2").ok();
         assert_eq!(
             item.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -847,11 +1013,11 @@ items:
         let doc = Document::from_str(yaml).unwrap();
 
         // Remove nested key inside array element
-        assert!(doc.remove_path("items[0].nested.key"));
-        assert!(doc.get_path("items[0].nested.key").is_none());
+        assert!(doc.try_remove_path("items[0].nested.key").is_ok());
+        assert!(doc.try_get_path("items[0].nested.key").is_err());
 
         // The nested mapping should still exist but be empty
-        assert!(doc.get_path("items[0].nested").is_some());
+        assert!(doc.try_get_path("items[0].nested").is_ok());
     }
 
     #[test]
@@ -871,7 +1037,7 @@ config:
         let mapping = doc.as_mapping().unwrap();
 
         // Access through mapping using indices
-        let host = mapping.get_path("config.servers[0].host");
+        let host = mapping.try_get_path("config.servers[0].host").ok();
         assert_eq!(
             host.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -879,7 +1045,7 @@ config:
             Some("server1.com".to_string())
         );
 
-        let port = mapping.get_path("config.servers.1.port");
+        let port = mapping.try_get_path("config.servers.1.port").ok();
         assert_eq!(
             port.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -895,7 +1061,7 @@ config:
 
         let yaml = Document::from_str("name: Alice\nage: 30\n").unwrap();
 
-        let name = yaml.get_path("name");
+        let name = yaml.try_get_path("name").ok();
         assert_eq!(
             name.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -903,7 +1069,7 @@ config:
             Some("Alice".to_string())
         );
 
-        let age = yaml.get_path("age");
+        let age = yaml.try_get_path("age").ok();
         assert_eq!(
             age.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -919,7 +1085,7 @@ config:
 
         let yaml = Document::from_str("server:\n  host: localhost\n  port: 8080\n").unwrap();
 
-        let host = yaml.get_path("server.host");
+        let host = yaml.try_get_path("server.host").ok();
         assert_eq!(
             host.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -927,7 +1093,7 @@ config:
             Some("localhost".to_string())
         );
 
-        let port = yaml.get_path("server.port");
+        let port = yaml.try_get_path("server.port").ok();
         assert_eq!(
             port.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -946,7 +1112,7 @@ config:
         )
         .unwrap();
 
-        let host = yaml.get_path("app.database.primary.host");
+        let host = yaml.try_get_path("app.database.primary.host").ok();
         assert_eq!(
             host.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -954,7 +1120,7 @@ config:
             Some("db.example.com".to_string())
         );
 
-        let port = yaml.get_path("app.database.primary.port");
+        let port = yaml.try_get_path("app.database.primary.port").ok();
         assert_eq!(
             port.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -970,9 +1136,16 @@ config:
 
         let yaml = Document::from_str("name: Alice\n").unwrap();
 
-        assert_eq!(yaml.get_path("missing"), None);
-        assert_eq!(yaml.get_path("name.nested"), None);
-        assert_eq!(yaml.get_path(""), None);
+        assert!(matches!(
+            yaml.try_get_path("missing"),
+            Err(PathError::NotFound { .. })
+        ));
+        // `name` is a scalar, `.nested` tries to descend into it.
+        assert!(matches!(
+            yaml.try_get_path("name.nested"),
+            Err(PathError::TypeMismatch { .. })
+        ));
+        assert_eq!(yaml.try_get_path(""), Err(PathError::EmptyPath));
     }
 
     #[test]
@@ -982,7 +1155,7 @@ config:
 
         let yaml = Document::from_str("name: Alice\nage: 30\n").unwrap();
 
-        yaml.set_path("name", "Bob");
+        yaml.try_set_path("name", "Bob").expect("set_path");
 
         assert_eq!(yaml.to_string(), "name: Bob\nage: 30\n");
     }
@@ -994,7 +1167,7 @@ config:
 
         let yaml = Document::from_str("name: Alice\n").unwrap();
 
-        yaml.set_path("age", 30);
+        yaml.try_set_path("age", 30).expect("set_path");
 
         assert_eq!(yaml.to_string(), "name: Alice\nage: 30\n");
     }
@@ -1006,7 +1179,7 @@ config:
 
         let yaml = Document::from_str("server:\n  host: localhost\n  port: 8080\n").unwrap();
 
-        yaml.set_path("server.port", 9000);
+        yaml.try_set_path("server.port", 9000).expect("set_path");
 
         assert_eq!(
             yaml.to_string(),
@@ -1021,7 +1194,7 @@ config:
 
         let yaml = Document::from_str("server:\n  host: localhost\n").unwrap();
 
-        yaml.set_path("server.port", 8080);
+        yaml.try_set_path("server.port", 8080).expect("set_path");
 
         assert_eq!(
             yaml.to_string(),
@@ -1036,7 +1209,8 @@ config:
 
         let yaml = Document::from_str("name: test\n").unwrap();
 
-        yaml.set_path("server.database.host", "localhost");
+        yaml.try_set_path("server.database.host", "localhost")
+            .expect("set_path");
 
         assert_eq!(
             yaml.to_string(),
@@ -1044,7 +1218,7 @@ config:
         );
 
         // Verify we can retrieve it
-        let host = yaml.get_path("server.database.host");
+        let host = yaml.try_get_path("server.database.host").ok();
         assert_eq!(
             host.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -1060,8 +1234,10 @@ config:
 
         let yaml = Document::from_str("app: {}\n").unwrap();
 
-        yaml.set_path("app.database.primary.host", "db.example.com");
-        yaml.set_path("app.database.primary.port", 5432);
+        yaml.try_set_path("app.database.primary.host", "db.example.com")
+            .expect("set_path");
+        yaml.try_set_path("app.database.primary.port", 5432)
+            .expect("set_path");
 
         // Parent was flow-style, so the whole nested chain stays flow.
         assert_eq!(
@@ -1069,7 +1245,7 @@ config:
             r#"app: {database: {primary: {host: "db.example.com", port: 5432}}}"#
         );
 
-        let host = yaml.get_path("app.database.primary.host");
+        let host = yaml.try_get_path("app.database.primary.host").ok();
         assert_eq!(
             host.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -1077,7 +1253,7 @@ config:
             Some("db.example.com".to_string())
         );
 
-        let port = yaml.get_path("app.database.primary.port");
+        let port = yaml.try_get_path("app.database.primary.port").ok();
         assert_eq!(port.as_ref().and_then(|v| v.to_i64()), Some(5432));
     }
 
@@ -1088,7 +1264,7 @@ config:
 
         let yaml = Document::from_str("name: Alice\nage: 30\n").unwrap();
 
-        let result = yaml.remove_path("age");
+        let result = yaml.try_remove_path("age").is_ok();
         assert!(result);
 
         assert_eq!(yaml.to_string(), "name: Alice\n");
@@ -1101,7 +1277,7 @@ config:
 
         let yaml = Document::from_str("server:\n  host: localhost\n  port: 8080\n").unwrap();
 
-        let result = yaml.remove_path("server.port");
+        let result = yaml.try_remove_path("server.port").is_ok();
         assert!(result);
 
         assert_eq!(yaml.to_string(), "server:\n  host: localhost\n  ");
@@ -1114,10 +1290,10 @@ config:
 
         let yaml = Document::from_str("name: Alice\n").unwrap();
 
-        let result = yaml.remove_path("missing");
+        let result = yaml.try_remove_path("missing").is_ok();
         assert!(!result);
 
-        let result = yaml.remove_path("name.nested");
+        let result = yaml.try_remove_path("name.nested").is_ok();
         assert!(!result);
 
         // Document should be unchanged
@@ -1134,7 +1310,7 @@ config:
         )
         .unwrap();
 
-        let result = yaml.remove_path("app.database.primary.port");
+        let result = yaml.try_remove_path("app.database.primary.port").is_ok();
         assert!(result);
 
         assert_eq!(
@@ -1152,7 +1328,7 @@ config:
         let mapping = yaml.as_mapping().unwrap();
 
         // Get from mapping
-        let host = mapping.get_path("server.host");
+        let host = mapping.try_get_path("server.host").ok();
         assert_eq!(
             host.as_ref()
                 .and_then(|v| v.as_scalar())
@@ -1161,18 +1337,18 @@ config:
         );
 
         // Set on mapping
-        mapping.set_path("server.port", 8080);
+        mapping.try_set_path("server.port", 8080).expect("set_path");
         assert_eq!(
             yaml.to_string(),
             "server:\n  host: localhost\n  port: 8080\n"
         );
 
         // Remove from mapping
-        let result = mapping.remove_path("server.port");
+        let result = mapping.try_remove_path("server.port").is_ok();
         assert!(result);
 
         // Try to remove non-existent path from mapping
-        let result_missing = mapping.remove_path("nonexistent.path");
+        let result_missing = mapping.try_remove_path("nonexistent.path").is_ok();
         assert!(!result_missing);
     }
 
@@ -1185,12 +1361,12 @@ config:
         let mapping = yaml.as_mapping().unwrap();
 
         // A single-segment path removes the key directly from the mapping.
-        assert!(mapping.remove_path("a"));
-        assert!(mapping.get_path("a").is_none());
-        assert!(mapping.get_path("b").is_some());
+        assert!(mapping.try_remove_path("a").is_ok());
+        assert!(mapping.try_get_path("a").is_err());
+        assert!(mapping.try_get_path("b").is_ok());
 
         // Removing a missing single-segment key returns false.
-        assert!(!mapping.remove_path("missing"));
+        assert!(mapping.try_remove_path("missing").is_err());
     }
 
     #[test]
@@ -1200,7 +1376,8 @@ config:
 
         let yaml = Document::from_str("server:\n  host: localhost  # production server\n").unwrap();
 
-        yaml.set_path("server.host", "newhost");
+        yaml.try_set_path("server.host", "newhost")
+            .expect("set_path");
 
         assert_eq!(
             yaml.to_string(),
@@ -1216,35 +1393,41 @@ config:
         let yaml = Document::from_str("name: test\n").unwrap();
 
         // Create nested structure
-        yaml.set_path("server.host", "localhost");
-        yaml.set_path("server.port", 8080);
-        yaml.set_path("database.host", "db.local");
-        yaml.set_path("database.port", 5432);
+        yaml.try_set_path("server.host", "localhost")
+            .expect("set_path");
+        yaml.try_set_path("server.port", 8080).expect("set_path");
+        yaml.try_set_path("database.host", "db.local")
+            .expect("set_path");
+        yaml.try_set_path("database.port", 5432).expect("set_path");
 
         // Verify all values
         assert_eq!(
-            yaml.get_path("server.host")
+            yaml.try_get_path("server.host")
+                .ok()
                 .as_ref()
                 .and_then(|v| v.as_scalar())
                 .map(|s| s.to_string()),
             Some("localhost".to_string())
         );
         assert_eq!(
-            yaml.get_path("server.port")
+            yaml.try_get_path("server.port")
+                .ok()
                 .as_ref()
                 .and_then(|v| v.as_scalar())
                 .map(|s| s.to_string()),
             Some("8080".to_string())
         );
         assert_eq!(
-            yaml.get_path("database.host")
+            yaml.try_get_path("database.host")
+                .ok()
                 .as_ref()
                 .and_then(|v| v.as_scalar())
                 .map(|s| s.to_string()),
             Some("db.local".to_string())
         );
         assert_eq!(
-            yaml.get_path("database.port")
+            yaml.try_get_path("database.port")
+                .ok()
                 .as_ref()
                 .and_then(|v| v.as_scalar())
                 .map(|s| s.to_string()),
@@ -1252,23 +1435,25 @@ config:
         );
 
         // Remove some values
-        yaml.remove_path("server.port");
-        yaml.remove_path("database.host");
+        yaml.try_remove_path("server.port").expect("remove_path");
+        yaml.try_remove_path("database.host").expect("remove_path");
 
         // Verify removals
-        assert_eq!(yaml.get_path("server.port"), None);
-        assert_eq!(yaml.get_path("database.host"), None);
+        assert!(yaml.try_get_path("server.port").is_err());
+        assert!(yaml.try_get_path("database.host").is_err());
 
         // Verify remaining values still exist
         assert_eq!(
-            yaml.get_path("server.host")
+            yaml.try_get_path("server.host")
+                .ok()
                 .as_ref()
                 .and_then(|v| v.as_scalar())
                 .map(|s| s.to_string()),
             Some("localhost".to_string())
         );
         assert_eq!(
-            yaml.get_path("database.port")
+            yaml.try_get_path("database.port")
+                .ok()
                 .as_ref()
                 .and_then(|v| v.as_scalar())
                 .map(|s| s.to_string()),
@@ -1285,7 +1470,7 @@ config:
         use crate::yaml::Document;
         use std::str::FromStr;
         let doc = Document::from_str("base: true\n").unwrap();
-        doc.set_path("a.b[0].c", "value");
+        doc.try_set_path("a.b[0].c", "value").expect("set_path");
         assert_eq!(
             doc.to_string(),
             "base: true\na:\n  b:\n    - {c: \"value\"}\n"
@@ -1297,7 +1482,7 @@ config:
         use crate::yaml::Document;
         use std::str::FromStr;
         let doc = Document::from_str("items:\n  - a\n  - b\n").unwrap();
-        doc.set_path("items[1]", "B");
+        doc.try_set_path("items[1]", "B").expect("set_path");
         assert_eq!(doc.to_string(), "items:\n  - a\n  - B\n");
     }
 
@@ -1306,7 +1491,7 @@ config:
         use crate::yaml::Document;
         use std::str::FromStr;
         let doc = Document::from_str("items:\n  - a\n").unwrap();
-        doc.set_path("items[3]", "z");
+        doc.try_set_path("items[3]", "z").expect("set_path");
         assert_eq!(
             doc.to_string(),
             "items:\n  - a\n  - null\n  - null\n  - z\n"

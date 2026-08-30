@@ -910,7 +910,10 @@ impl ScalarValue {
             return true;
         }
 
-        // Check if starts with special characters
+        // Check if starts with special characters. `#` is included because a
+        // plain scalar starting with `#` reads as a comment: at column 0 the
+        // whole line becomes one, and after whitespace (e.g. `key: #x`) the
+        // `#x` becomes a trailing comment and the value is lost.
         if value.starts_with(|ch: char| {
             matches!(
                 ch,
@@ -926,6 +929,7 @@ impl ScalarValue {
                     | '!'
                     | '&'
                     | '*'
+                    | '#'
                     | '%'
                     | '@'
                     | '`'

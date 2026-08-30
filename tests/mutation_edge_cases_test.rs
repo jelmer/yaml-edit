@@ -411,3 +411,179 @@ fn test_replace_multiline_flow_value_with_scalar_variants() {
             .unwrap_or_else(|e| panic!("variant {name} invariant violated: {e}"));
     }
 }
+
+/// Regression from mutation_invariants fuzz: setting a value under a key
+/// that starts with `#` used to render the key unquoted, but `#` is a
+/// comment indicator, so the re-parse dropped the entry (or misread it as
+/// a comment) and the mutation didn't stick. The key must be quoted on
+/// output so it round-trips.
+#[test]
+fn test_set_key_starting_with_hash_reparses() {
+    let seed = "literal: |\n  line1\n  line2\n";
+    let doc = yaml_edit::Document::from_str(seed).expect("parse seed");
+    let mapping = doc.as_mapping().expect("root mapping");
+
+    mapping.set("#aaaaa", "");
+
+    // After the mutation, the mapping itself sees the key.
+    assert!(mapping.contains_key("#aaaaa"), "in-memory: key missing");
+
+    // And the serialised form must reparse to the same key/value.
+    let text = doc.to_string();
+    let reparsed = yaml_edit::Document::from_str(&text)
+        .unwrap_or_else(|e| panic!("reparse failed: {e}\ntext:\n{text}"));
+    let reparsed_mapping = reparsed
+        .as_mapping()
+        .unwrap_or_else(|| panic!("reparsed root is not a mapping, text:\n{text}"));
+    assert!(
+        reparsed_mapping.contains_key("#aaaaa"),
+        "reparse drift: key `#aaaaa` missing after round-trip\ntext:\n{text}"
+    );
+}
+
+/// Regression from mutation_invariants fuzz: setting a key whose
+/// text starts with a `.` and contains numeric-looking content used
+/// to serialise unquoted (`.999 a: ''`). The reparse of that line
+/// then didn't recover the key, breaking round-trip.
+#[test]
+fn test_set_key_starting_with_dot_and_digits_reparses() {
+    let seed = "a: \"\"\n";
+    let doc = yaml_edit::Document::from_str(seed).expect("parse seed");
+    let mapping = doc.as_mapping().expect("root mapping");
+
+    mapping.set(".999 a", "");
+
+    let text = doc.to_string();
+    let reparsed = yaml_edit::Document::from_str(&text)
+        .unwrap_or_else(|e| panic!("reparse failed: {e}\ntext:\n{text}"));
+    let reparsed_mapping = reparsed
+        .as_mapping()
+        .unwrap_or_else(|| panic!("reparsed root is not a mapping, text:\n{text}"));
+    assert!(
+        reparsed_mapping.contains_key(".999 a"),
+        "reparse drift: key `.999 a` missing after round-trip\ntext:\n{text}"
+    );
+}
+
+/// Regression from mutation_invariants fuzz: `set_path("997", "")`
+/// on a document whose root is a mapping (`s: [...]`) - the new
+/// key `997` was not present after the set; `get_path("997")`
+/// returned None. A single-segment set_path that names a new key
+/// should insert it.
+#[test]
+fn test_set_path_new_numeric_key() {
+    use yaml_edit::path::YamlPath;
+
+    let seed = "s:\n  - a\n  - b\n  - c\n";
+    let doc = yaml_edit::Document::from_str(seed).expect("parse seed");
+
+    doc.try_set_path("997", "").expect("set_path");
+
+    let got = doc
+        .try_get_path("997")
+        .ok()
+        .as_ref()
+        .and_then(|n| n.as_scalar().map(|s| s.as_string()));
+    assert_eq!(
+        got.as_deref(),
+        Some(""),
+        "set_path(\"997\", \"\") did not stick: get_path(\"997\") returned {got:?}\ntext:\n{doc}"
+    );
+}
+
+/// Regression from mutation_invariants fuzz: `set_path("", ...)` on a
+/// document tripped the fuzz post-condition because `get_path("")`
+/// returned `None` after the set. The library's contract is that an
+/// empty path is invalid and both operations no-op silently, so a
+/// document that reaches `set_path("", ...)` must be unchanged and
+/// `get_path("")` afterwards must consistently return `None`.
+///
+/// The `try_` variants surface the same condition as
+/// `PathError::EmptyPath`.
+#[test]
+fn test_set_empty_path_is_a_noop() {
+    use yaml_edit::path::{PathError, YamlPath};
+
+    let seed = "folded: >\n  wrapped\n  paragraph\n";
+    let doc = yaml_edit::Document::from_str(seed).expect("parse seed");
+    let before = doc.to_string();
+
+    // Deliberately exercise the loose (deprecated) shims here to lock
+    // in their swallow-on-error semantics.
+    #[allow(deprecated)]
+    {
+        doc.set_path("", "anything");
+        assert_eq!(
+            doc.to_string(),
+            before,
+            "set_path(\"\", ...) should be a no-op"
+        );
+        assert!(
+            doc.get_path("").is_none(),
+            "get_path(\"\") should always return None"
+        );
+        assert!(
+            !doc.remove_path(""),
+            "remove_path(\"\") should return false"
+        );
+    }
+
+    // try_ variants distinguish the reason.
+    assert_eq!(
+        doc.try_get_path(""),
+        Err(PathError::EmptyPath),
+        "try_get_path reports the specific reason"
+    );
+    assert_eq!(
+        doc.try_set_path("", "anything"),
+        Err(PathError::EmptyPath),
+        "try_set_path reports the specific reason"
+    );
+    assert!(
+        matches!(doc.try_remove_path(""), Err(PathError::EmptyPath)),
+        "try_remove_path reports the specific reason"
+    );
+}
+
+/// The try_ variants surface the specific failure modes the silent
+/// versions used to swallow. This exercises each `PathError` variant.
+#[test]
+fn test_try_path_reports_specific_errors() {
+    use yaml_edit::path::{PathError, YamlPath};
+
+    // NoRoot: a document whose root is a scalar has no mapping to set
+    // paths under.
+    let doc = yaml_edit::Document::from_str("just_a_scalar\n").expect("parse");
+    assert!(matches!(
+        doc.try_set_path("foo", "bar"),
+        Err(PathError::NoRoot)
+    ));
+
+    // Parse error: unclosed bracket.
+    let doc = yaml_edit::Document::from_str("a: 1\n").expect("parse");
+    assert!(matches!(
+        doc.try_set_path("a[0", "x"),
+        Err(PathError::Parse(_))
+    ));
+
+    // NotFound: intermediate key present but leaf is missing.
+    let doc = yaml_edit::Document::from_str("a:\n  b: 1\n").expect("parse");
+    assert!(matches!(
+        doc.try_get_path("a.missing"),
+        Err(PathError::NotFound { .. })
+    ));
+
+    // TypeMismatch on get: descending through a scalar.
+    let doc = yaml_edit::Document::from_str("a: hello\n").expect("parse");
+    assert!(matches!(
+        doc.try_get_path("a.b"),
+        Err(PathError::TypeMismatch { .. })
+    ));
+
+    // TypeMismatch on set: cannot descend through an existing scalar.
+    let doc = yaml_edit::Document::from_str("a: hello\n").expect("parse");
+    assert!(matches!(
+        doc.try_set_path("a.b", "x"),
+        Err(PathError::TypeMismatch { .. })
+    ));
+}

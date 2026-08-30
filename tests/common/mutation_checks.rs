@@ -366,7 +366,8 @@ pub fn assert_set_path_stuck(doc: &Document, path: &str, v: &str) {
     }
     let op = format!("SetPath({path:?}, {v:?})");
     let got = doc
-        .get_path(path)
+        .try_get_path(path)
+        .ok()
         .as_ref()
         .and_then(|n| n.as_scalar().map(|s| s.as_string()));
     if got.as_deref() != Some(v) {
@@ -379,7 +380,8 @@ pub fn assert_set_path_stuck(doc: &Document, path: &str, v: &str) {
     let reparsed = Document::from_str(&text)
         .unwrap_or_else(|e| panic!("{op}: re-parse failed ({e}), text: {text:?}"));
     let r_got = reparsed
-        .get_path(path)
+        .try_get_path(path)
+        .ok()
         .as_ref()
         .and_then(|n| n.as_scalar().map(|s| s.as_string()));
     if r_got.as_deref() != Some(v) {
@@ -392,13 +394,13 @@ pub fn assert_remove_path_stuck(doc: &Document, path: &str, removed: bool) {
         return;
     }
     let op = format!("RemovePath({path:?})");
-    if doc.get_path(path).is_some() {
+    if doc.try_get_path(path).is_ok() {
         panic!("{op}: path still present, text: {:?}", doc.to_string());
     }
     let text = doc.to_string();
     let reparsed = Document::from_str(&text)
         .unwrap_or_else(|e| panic!("{op}: re-parse failed ({e}), text: {text:?}"));
-    if reparsed.get_path(path).is_some() {
+    if reparsed.try_get_path(path).is_ok() {
         panic!("{op}: reparse drift: path came back, text: {text:?}");
     }
 }

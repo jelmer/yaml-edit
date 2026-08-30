@@ -973,7 +973,12 @@ mod tests {
         use crate::path::YamlPath;
         use crate::Document;
         let doc = Document::from_str("seq: []").unwrap();
-        let seq = doc.get_path("seq").unwrap().as_sequence().unwrap().clone();
+        let seq = doc
+            .try_get_path("seq")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .clone();
         seq.push("item1");
         assert_eq!(doc.to_string(), "seq: \n  - item1\n");
     }
@@ -984,7 +989,7 @@ mod tests {
         use crate::Document;
         let doc = Document::from_str("a:\n  seq: []\n").unwrap();
         let seq = doc
-            .get_path("a.seq")
+            .try_get_path("a.seq")
             .unwrap()
             .as_sequence()
             .unwrap()
@@ -1003,7 +1008,7 @@ mod tests {
         use crate::Document;
         let doc = Document::from_str("a:\n  b:\n    c:\n      - existing\n").unwrap();
         let seq = doc
-            .get_path("a.b.c")
+            .try_get_path("a.b.c")
             .unwrap()
             .as_sequence()
             .unwrap()
@@ -1834,7 +1839,7 @@ scores:
         let yaml_str = "items:\n  - name: first\n    value: 1\n  - name: second\n    value: 2\n";
         let doc = Document::from_str(yaml_str).unwrap();
 
-        let items_node = doc.get_path("items").unwrap();
+        let items_node = doc.try_get_path("items").unwrap();
         let items = items_node.as_sequence().unwrap();
 
         assert_eq!(items.len(), 2);

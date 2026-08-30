@@ -245,17 +245,23 @@ fn apply(doc: &Document, op: &Op) {
             }
         }
         Op::SetPath(p, v) => {
+            // Use try_set_path so we only run the post-condition when
+            // the set actually succeeded. Errors (empty path, type
+            // mismatch, descending through a scalar) are legitimate
+            // outcomes; the assertion should not treat them as bugs.
             if !p.is_empty() {
                 let path = dotted(p);
-                doc.set_path(&path, as_str(v));
-                assert_set_path_stuck(doc, &path, as_str(v));
+                if doc.try_set_path(&path, as_str(v)).is_ok() {
+                    assert_set_path_stuck(doc, &path, as_str(v));
+                }
             }
         }
         Op::RemovePath(p) => {
             if !p.is_empty() {
                 let path = dotted(p);
-                let removed = doc.remove_path(&path);
-                assert_remove_path_stuck(doc, &path, removed);
+                if doc.try_remove_path(&path).is_ok() {
+                    assert_remove_path_stuck(doc, &path, true);
+                }
             }
         }
     }

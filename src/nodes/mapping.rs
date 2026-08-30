@@ -2738,7 +2738,7 @@ impl Mapping {
         // Check if the new key already exists - if so, just update it
         if self.find_entry_by_key(&key).is_some() {
             self.set_as_yaml(&key, &value);
-            return true;
+            return self.find_entry_by_key(&after_key).is_some();
         }
 
         // Key doesn't exist yet - delegate to move_after, which already contains
@@ -3001,6 +3001,23 @@ mod tests {
         assert_eq!(
             reparsed.as_mapping().unwrap().get("foo").unwrap().kind(),
             YamlKind::Mapping
+        );
+    }
+
+    #[test]
+    fn test_insert_after_existing_key_missing_ref_returns_false() {
+        use crate::yaml::Document;
+        let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        assert!(!mapping.insert_after("missing", "a", "99"));
+        assert_eq!(
+            mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+            "99"
+        );
+        assert!(!mapping.insert_before("missing", "b", "88"));
+        assert_eq!(
+            mapping.get("b").unwrap().as_scalar().unwrap().as_string(),
+            "88"
         );
     }
 

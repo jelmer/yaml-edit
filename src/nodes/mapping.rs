@@ -1359,18 +1359,19 @@ impl Mapping {
 
         // First, look for an existing entry with this key
         for (i, child) in self.0.children_with_tokens().enumerate() {
-            if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                    if let Some(entry) = MappingEntry::cast(node.clone()) {
-                        // Check if this entry matches our key by comparing using yaml_eq
-                        if let Some(entry_key_node) = entry.key() {
-                            if key_content_matches(&entry_key_node, &key) {
-                                // Found it! Update the value in place
-                                entry.set_value(value, flow_context);
+            if let Some(node) = child
+                .as_node()
+                .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+            {
+                if let Some(entry) = MappingEntry::cast(node.clone()) {
+                    // Check if this entry matches our key by comparing using yaml_eq
+                    if let Some(entry_key_node) = entry.key() {
+                        if key_content_matches(&entry_key_node, &key) {
+                            // Found it! Update the value in place
+                            entry.set_value(value, flow_context);
 
-                                self.0.splice_children(i..i + 1, vec![entry.0.into()]);
-                                return;
-                            }
+                            self.0.splice_children(i..i + 1, vec![entry.0.into()]);
+                            return;
                         }
                     }
                 }
@@ -1488,10 +1489,11 @@ impl Mapping {
 
         for child in self.0.children_with_tokens() {
             count += 1;
-            if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                    last_mapping_entry = Some(node.clone());
-                }
+            if let Some(node) = child
+                .as_node()
+                .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+            {
+                last_mapping_entry = Some(node.clone());
             }
         }
 
@@ -1747,14 +1749,15 @@ impl Mapping {
         // First check if the key already exists - if so, just update it
         let children: Vec<_> = self.0.children_with_tokens().collect();
         for child in children.iter() {
-            if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                    if let Some(key_node) = entry_key(node) {
-                        if key_content_matches(&key_node, &key) {
-                            // Key exists, update its value using unified method
-                            self.set_as_yaml(&key, &value);
-                            return;
-                        }
+            if let Some(node) = child
+                .as_node()
+                .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+            {
+                if let Some(key_node) = entry_key(node) {
+                    if key_content_matches(&key_node, &key) {
+                        // Key exists, update its value using unified method
+                        self.set_as_yaml(&key, &value);
+                        return;
                     }
                 }
             }
@@ -1774,13 +1777,14 @@ impl Mapping {
             // Look backwards in field_order to find the last existing key before this one
             for field in field_order.iter().take(key_index).rev() {
                 for child in children.iter() {
-                    if let Some(node) = child.as_node() {
-                        if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                            if let Some(key_node) = entry_key(node) {
-                                if key_content_matches(&key_node, field) {
-                                    insert_after_node = Some(node.clone());
-                                    break;
-                                }
+                    if let Some(node) = child
+                        .as_node()
+                        .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+                    {
+                        if let Some(key_node) = entry_key(node) {
+                            if key_content_matches(&key_node, field) {
+                                insert_after_node = Some(node.clone());
+                                break;
                             }
                         }
                     }
@@ -1794,20 +1798,21 @@ impl Mapping {
             // that comes after this one in field_order
             if insert_after_node.is_none() {
                 for child in children.iter() {
-                    if let Some(node) = child.as_node() {
-                        if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                            if let Some(existing_key_node) = entry_key(node) {
-                                // Find this existing key's position in field_order
-                                let existing_key_position = field_order.iter().position(|field| {
-                                    key_content_matches(&existing_key_node, field)
-                                });
+                    if let Some(node) = child
+                        .as_node()
+                        .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+                    {
+                        if let Some(existing_key_node) = entry_key(node) {
+                            // Find this existing key's position in field_order
+                            let existing_key_position = field_order
+                                .iter()
+                                .position(|field| key_content_matches(&existing_key_node, field));
 
-                                // If this existing key comes after our new key in field_order, insert before it
-                                if let Some(existing_pos) = existing_key_position {
-                                    if existing_pos > key_index {
-                                        insert_before_node = Some(node.clone());
-                                        break;
-                                    }
+                            // If this existing key comes after our new key in field_order, insert before it
+                            if let Some(existing_pos) = existing_key_position {
+                                if existing_pos > key_index {
+                                    insert_before_node = Some(node.clone());
+                                    break;
                                 }
                             }
                         }
@@ -2384,10 +2389,11 @@ impl Mapping {
         // Count existing MAPPING_ENTRY nodes to find insertion point
         let mut entry_indices = Vec::new();
         for (i, child) in children.iter().enumerate() {
-            if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                    entry_indices.push(i);
-                }
+            if child
+                .as_node()
+                .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+            {
+                entry_indices.push(i);
             }
         }
 
@@ -2614,40 +2620,43 @@ impl Mapping {
         let children: Vec<_> = self.0.children_with_tokens().collect();
 
         for (i, child) in children.iter().enumerate() {
-            if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                    if let Some(key_node) = entry_key(node) {
-                        if key_content_matches(&key_node, &old_key) {
-                            let entry_children: Vec<_> = node.children_with_tokens().collect();
+            let Some(node) = child
+                .as_node()
+                .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+            else {
+                continue;
+            };
+            let Some(key_node) = entry_key(node) else {
+                continue;
+            };
+            if !key_content_matches(&key_node, &old_key) {
+                continue;
+            }
 
-                            let mut builder = GreenNodeBuilder::new();
-                            builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
+            let mut builder = GreenNodeBuilder::new();
+            builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
-                            for entry_child in entry_children {
-                                match entry_child {
-                                    rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::KEY => {
-                                        // Replace the KEY node using AsYaml::build_content
-                                        builder.start_node(SyntaxKind::KEY.into());
-                                        new_key.build_content(&mut builder, 0, false);
-                                        builder.finish_node(); // KEY
-                                    }
-                                    rowan::NodeOrToken::Node(n) => {
-                                        crate::yaml::copy_node_to_builder(&mut builder, &n);
-                                    }
-                                    rowan::NodeOrToken::Token(t) => {
-                                        builder.token(t.kind().into(), t.text());
-                                    }
-                                }
-                            }
-
-                            builder.finish_node();
-                            let new_entry = SyntaxNode::new_root_mut(builder.finish());
-                            self.0.splice_children(i..i + 1, vec![new_entry.into()]);
-                            return true;
-                        }
+            for entry_child in node.children_with_tokens() {
+                match entry_child {
+                    rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::KEY => {
+                        // Replace the KEY node using AsYaml::build_content
+                        builder.start_node(SyntaxKind::KEY.into());
+                        new_key.build_content(&mut builder, 0, false);
+                        builder.finish_node(); // KEY
+                    }
+                    rowan::NodeOrToken::Node(n) => {
+                        crate::yaml::copy_node_to_builder(&mut builder, &n);
+                    }
+                    rowan::NodeOrToken::Token(t) => {
+                        builder.token(t.kind().into(), t.text());
                     }
                 }
             }
+
+            builder.finish_node();
+            let new_entry = SyntaxNode::new_root_mut(builder.finish());
+            self.0.splice_children(i..i + 1, vec![new_entry.into()]);
+            return true;
         }
         false
     }

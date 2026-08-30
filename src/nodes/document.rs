@@ -484,7 +484,7 @@ impl Document {
     ///
     /// Returns `0` if the document is not a mapping or is empty.
     pub fn len(&self) -> usize {
-        self.as_mapping().map(|m| m.len()).unwrap_or(0)
+        self.as_mapping().map_or(0, |m| m.len())
     }
 
     /// Get a nested mapping value for a key.
@@ -507,15 +507,13 @@ impl Document {
     /// the key was found and renamed, `false` if `old_key` does not exist.
     pub fn rename_key(&self, old_key: impl crate::AsYaml, new_key: impl crate::AsYaml) -> bool {
         self.as_mapping()
-            .map(|m| m.rename_key(old_key, new_key))
-            .unwrap_or(false)
+            .is_some_and(|m| m.rename_key(old_key, new_key))
     }
 
     /// Returns `true` if `key` exists and its value is a sequence.
     pub fn is_sequence(&self, key: impl crate::AsYaml) -> bool {
         self.get(key)
-            .map(|node| node.as_sequence().is_some())
-            .unwrap_or(false)
+            .is_some_and(|node| node.as_sequence().is_some())
     }
 
     /// Reorder fields in the document's root mapping according to the specified order.
@@ -739,8 +737,7 @@ impl AsYaml for Document {
         crate::as_yaml::copy_node_content(builder, &self.0);
         self.0
             .last_token()
-            .map(|t| t.kind() == SyntaxKind::NEWLINE)
-            .unwrap_or(false)
+            .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
     }
 
     fn is_inline(&self) -> bool {

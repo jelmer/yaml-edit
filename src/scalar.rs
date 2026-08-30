@@ -16,7 +16,7 @@ fn base64_encode(input: &[u8]) -> String {
 fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     general_purpose::STANDARD
         .decode(input.trim())
-        .map_err(|e| format!("Base64 decode error: {}", e))
+        .map_err(|e| format!("Base64 decode error: {e}"))
 }
 
 /// Style of scalar representation in YAML
@@ -172,9 +172,8 @@ impl ScalarValue {
                                 chars.next(); // consume the newline
                                               // In YAML, escaped line breaks are folded to nothing
                                 continue;
-                            } else {
-                                result.push(' ');
                             }
+                            result.push(' ');
                         }
                         '\n' => {
                             // Escaped line break - removes the line break
@@ -1024,14 +1023,14 @@ impl ScalarValue {
             ScalarStyle::Folded => self.to_folded(),
         };
 
-        format!("{}{}", tag_prefix, content)
+        format!("{tag_prefix}{content}")
     }
 
     /// Convert to single-quoted string
     fn to_single_quoted(&self) -> String {
         // Escape single quotes by doubling them
         let escaped = self.value.replace('\'', "''");
-        format!("'{}'", escaped)
+        format!("'{escaped}'")
     }
 
     /// Convert to double-quoted string
@@ -1054,11 +1053,11 @@ impl ScalarValue {
                     // Handle Unicode characters and control characters
                     let code_point = c as u32;
                     if code_point <= 0xFF {
-                        result.push_str(&format!("\\x{:02X}", code_point));
+                        result.push_str(&format!("\\x{code_point:02X}"));
                     } else if code_point <= 0xFFFF {
-                        result.push_str(&format!("\\u{:04X}", code_point));
+                        result.push_str(&format!("\\u{code_point:04X}"));
                     } else {
-                        result.push_str(&format!("\\U{:08X}", code_point));
+                        result.push_str(&format!("\\U{code_point:08X}"));
                     }
                 }
                 c => result.push(c),
@@ -1097,12 +1096,12 @@ impl ScalarValue {
                     if line.trim().is_empty() {
                         String::new()
                     } else {
-                        format!("{}{}", indent_str, line)
+                        format!("{indent_str}{line}")
                     }
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            format!("|\n{}", indented)
+            format!("|\n{indented}")
         }
     }
 
@@ -1125,12 +1124,12 @@ impl ScalarValue {
                     if line.trim().is_empty() {
                         String::new()
                     } else {
-                        format!("{}{}", indent_str, line)
+                        format!("{indent_str}{line}")
                     }
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            format!(">\n{}", indented)
+            format!(">\n{indented}")
         }
     }
 

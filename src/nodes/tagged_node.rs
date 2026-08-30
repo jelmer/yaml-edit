@@ -124,9 +124,9 @@ impl AsYaml for TaggedNode {
     }
 
     fn kind(&self) -> YamlKind {
-        self.tag()
-            .map(|t| YamlKind::Tagged(std::borrow::Cow::Owned(t)))
-            .unwrap_or(YamlKind::Scalar)
+        self.tag().map_or(YamlKind::Scalar, |t| {
+            YamlKind::Tagged(std::borrow::Cow::Owned(t))
+        })
     }
 
     fn build_content(

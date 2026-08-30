@@ -60,7 +60,7 @@ pub enum YamlError {
 impl fmt::Display for YamlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            YamlError::Io(err) => write!(f, "I/O error: {}", err),
+            YamlError::Io(err) => write!(f, "I/O error: {err}"),
 
             YamlError::Parse {
                 message,
@@ -69,11 +69,11 @@ impl fmt::Display for YamlError {
             } => {
                 write!(f, "Parse error")?;
                 if let (Some(line), Some(column)) = (line, column) {
-                    write!(f, " at line {}, column {}", line, column)?;
+                    write!(f, " at line {line}, column {column}")?;
                 } else if let Some(line) = line {
-                    write!(f, " at line {}", line)?;
+                    write!(f, " at line {line}")?;
                 }
-                write!(f, ": {}", message)
+                write!(f, ": {message}")
             }
 
             YamlError::KeyNotFound {
@@ -81,9 +81,9 @@ impl fmt::Display for YamlError {
                 available_keys,
                 path,
             } => {
-                write!(f, "Key '{}' not found", key)?;
+                write!(f, "Key '{key}' not found")?;
                 if !path.is_empty() {
-                    write!(f, " at path '{}'", path)?;
+                    write!(f, " at path '{path}'")?;
                 }
                 if !available_keys.is_empty() {
                     write!(f, ". Available keys: [{}]", available_keys.join(", "))?;
@@ -98,11 +98,10 @@ impl fmt::Display for YamlError {
             } => {
                 write!(
                     f,
-                    "Type mismatch: expected '{}', but found '{}'",
-                    expected, actual
+                    "Type mismatch: expected '{expected}', but found '{actual}'"
                 )?;
                 if !path.is_empty() {
-                    write!(f, " at path '{}'", path)?;
+                    write!(f, " at path '{path}'")?;
                 }
                 Ok(())
             }
@@ -114,17 +113,16 @@ impl fmt::Display for YamlError {
             } => {
                 write!(
                     f,
-                    "Index {} is out of bounds (sequence has {} elements)",
-                    index, length
+                    "Index {index} is out of bounds (sequence has {length} elements)"
                 )?;
                 if !path.is_empty() {
-                    write!(f, " at path '{}'", path)?;
+                    write!(f, " at path '{path}'")?;
                 }
                 Ok(())
             }
 
             YamlError::InvalidOperation { operation, reason } => {
-                write!(f, "Invalid operation '{}': {}", operation, reason)
+                write!(f, "Invalid operation '{operation}': {reason}")
             }
         }
     }

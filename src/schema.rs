@@ -111,10 +111,7 @@ impl ValidationError {
                 constraint_name,
                 actual_value,
             } => {
-                format!(
-                    "custom constraint '{}' failed for value '{}'",
-                    constraint_name, actual_value
-                )
+                format!("custom constraint '{constraint_name}' failed for value '{actual_value}'")
             }
             ValidationErrorKind::CoercionFailed {
                 from_type,
@@ -296,7 +293,7 @@ impl CustomSchema {
                 return Err(ValidationError::custom_constraint_failed(
                     path,
                     &self.name,
-                    format!("{}: {}", constraint, reason),
+                    format!("{constraint}: {reason}"),
                     content.trim(),
                 ));
             }
@@ -513,7 +510,7 @@ impl SchemaValidator {
     /// Validate a sequence
     fn validate_sequence(&self, seq: &Sequence, path: &str, errors: &mut Vec<ValidationError>) {
         for (i, item) in seq.items().enumerate() {
-            let item_path = format!("{}[{}]", path, i);
+            let item_path = format!("{path}[{i}]");
             self.validate_node(&item, &item_path, errors);
         }
     }
@@ -526,7 +523,7 @@ impl SchemaValidator {
 
             // Keys in YAML are typically strings and don't need schema validation
             // The schema applies to the values, not the keys
-            let value_path = format!("{}.{}", path, key_name);
+            let value_path = format!("{path}.{key_name}");
             self.validate_node(&value_node, &value_path, errors);
         }
     }
@@ -644,14 +641,14 @@ impl SchemaValidator {
         } else if let Some(sequence) = document.as_sequence() {
             // Recursively check sequence items for coercion
             for (i, item) in sequence.items().enumerate() {
-                let item_path = format!("{}[{}]", path, i);
+                let item_path = format!("{path}[{i}]");
                 self.check_coercion_node(&item, &item_path, errors);
             }
         } else if let Some(mapping) = document.as_mapping() {
             // Recursively check mapping key-value pairs for coercion
             for (key_node, value_node) in mapping.pairs() {
                 let key_name = key_node.text().to_string().trim().to_string();
-                let value_path = format!("{}.{}", path, key_name);
+                let value_path = format!("{path}.{key_name}");
                 self.check_coercion_node(&value_node, &value_path, errors);
             }
         }
@@ -705,13 +702,13 @@ impl SchemaValidator {
             }
         } else if let Some(sequence) = extract_sequence(node) {
             for (i, item) in sequence.items().enumerate() {
-                let item_path = format!("{}[{}]", path, i);
+                let item_path = format!("{path}[{i}]");
                 self.check_coercion_node(&item, &item_path, errors);
             }
         } else if let Some(mapping) = extract_mapping(node) {
             for (key_node, value_node) in mapping.pairs() {
                 let key_name = key_node.text().to_string().trim().to_string();
-                let value_path = format!("{}.{}", path, key_name);
+                let value_path = format!("{path}.{key_name}");
                 self.check_coercion_node(&value_node, &value_path, errors);
             }
         }

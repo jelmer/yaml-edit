@@ -177,15 +177,12 @@ fn scalar_semantic_value(scalar: &Scalar) -> Option<(crate::lex::SyntaxKind, Str
     let normalized = match kind {
         SyntaxKind::INT => {
             // Normalize all integer representations to their numeric value
-            ScalarValue::parse_integer(text)
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| text.to_string())
+            ScalarValue::parse_integer(text).map_or_else(|| text.to_string(), |v| v.to_string())
         }
         SyntaxKind::FLOAT => {
             // Normalize float representations
             text.parse::<f64>()
-                .map(|v| v.to_string())
-                .unwrap_or_else(|_| text.to_string())
+                .map_or_else(|_| text.to_string(), |v| v.to_string())
         }
         SyntaxKind::BOOL => {
             // Normalize booleans to lowercase
@@ -390,8 +387,7 @@ impl YamlNode {
             YamlNode::Alias(_) => YamlKind::Alias,
             YamlNode::TaggedNode(t) => t
                 .tag()
-                .map(|tag| YamlKind::Tagged(Cow::Owned(tag)))
-                .unwrap_or(YamlKind::Scalar),
+                .map_or(YamlKind::Scalar, |tag| YamlKind::Tagged(Cow::Owned(tag))),
         }
     }
 

@@ -282,8 +282,7 @@ impl Sequence {
             .and_then(|e| e.parent())
             .filter(|m| m.kind() == SyntaxKind::MAPPING)
             .and_then(crate::nodes::Mapping::cast)
-            .map(|m| m.detect_indentation_level() + 2)
-            .unwrap_or(2);
+            .map_or(2, |m| m.detect_indentation_level() + 2);
         let indent_text = " ".repeat(indent_width);
 
         // Detach a snapshot; range-splicing walks the live sibling
@@ -350,8 +349,7 @@ impl Sequence {
                 if node.kind() == SyntaxKind::SEQUENCE_ENTRY {
                     last_entry_has_newline = node
                         .last_token()
-                        .map(|t| t.kind() == SyntaxKind::NEWLINE)
-                        .unwrap_or(false);
+                        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
                     last_entry_index = Some(i);
                     break;
                 }
@@ -403,8 +401,7 @@ impl Sequence {
             if let Some(node) = children[last_idx].as_node() {
                 if !node
                     .last_token()
-                    .map(|t| t.kind() == SyntaxKind::NEWLINE)
-                    .unwrap_or(false)
+                    .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
                 {
                     let entry_children_count = node.children_with_tokens().count();
                     let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
@@ -964,8 +961,7 @@ impl AsYaml for Sequence {
         builder.finish_node();
         self.0
             .last_token()
-            .map(|t| t.kind() == SyntaxKind::NEWLINE)
-            .unwrap_or(false)
+            .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
     }
 
     fn is_inline(&self) -> bool {

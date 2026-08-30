@@ -137,14 +137,14 @@ pub fn print_stats(node: &SyntaxNode) {
     let mut node_vec: Vec<_> = node_counts.iter().collect();
     node_vec.sort_by_key(|(_, count)| std::cmp::Reverse(**count));
     for (kind, count) in node_vec {
-        println!("  {:?}: {}", kind, count);
+        println!("  {kind:?}: {count}");
     }
 
     println!("\n=== Token Counts ===");
     let mut token_vec: Vec<_> = token_counts.iter().collect();
     token_vec.sort_by_key(|(_, count)| std::cmp::Reverse(**count));
     for (kind, count) in token_vec {
-        println!("  {:?}: {}", kind, count);
+        println!("  {kind:?}: {count}");
     }
 }
 
@@ -227,8 +227,7 @@ pub fn roundtrip_ok(node: &SyntaxNode) -> Result<(), String> {
     let round = parse.tree().to_string();
     if round != text {
         return Err(format!(
-            "roundtrip mismatch:\n  original: {:?}\n  reparsed: {:?}",
-            text, round,
+            "roundtrip mismatch:\n  original: {text:?}\n  reparsed: {round:?}",
         ));
     }
     Ok(())
@@ -253,16 +252,11 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
             // MAPPING_ENTRY has exactly one COLON.
             let colons: Vec<_> = node
                 .children_with_tokens()
-                .filter(|c| {
-                    c.as_token()
-                        .map(|t| t.kind() == SyntaxKind::COLON)
-                        .unwrap_or(false)
-                })
+                .filter(|c| c.as_token().is_some_and(|t| t.kind() == SyntaxKind::COLON))
                 .collect();
             let is_explicit_key = node.children_with_tokens().any(|c| {
                 c.as_token()
-                    .map(|t| t.kind() == SyntaxKind::QUESTION)
-                    .unwrap_or(false)
+                    .is_some_and(|t| t.kind() == SyntaxKind::QUESTION)
             });
             let expected_colons = if is_explicit_key { 0..=1 } else { 1..=1 };
             if !expected_colons.contains(&colons.len()) {
@@ -351,7 +345,7 @@ fn entry_is_terminated(entry: &SyntaxNode) -> bool {
     while let Some(el) = sib {
         match el.as_token().map(|t| t.kind()) {
             Some(SyntaxKind::NEWLINE) => return true,
-            Some(SyntaxKind::WHITESPACE) | Some(SyntaxKind::COMMENT) => {
+            Some(SyntaxKind::WHITESPACE | SyntaxKind::COMMENT) => {
                 sib = el.next_sibling_or_token();
             }
             _ => return false,
@@ -594,7 +588,7 @@ impl<'a> fmt::Display for PrettyDebug<'a, Mapping> {
         writeln!(f, "Mapping [")?;
 
         for (key, value) in self.0.iter() {
-            write!(f, "  {:?}: ", key)?;
+            write!(f, "  {key:?}: ")?;
             format_node(f, &value, 1)?;
             writeln!(f)?;
         }
@@ -608,7 +602,7 @@ impl<'a> fmt::Display for PrettyDebug<'a, Sequence> {
         writeln!(f, "Sequence [")?;
 
         for (i, value) in self.0.values().enumerate() {
-            write!(f, "  [{}]: ", i)?;
+            write!(f, "  [{i}]: ")?;
             format_node(f, &value, 1)?;
             writeln!(f)?;
         }
@@ -626,7 +620,7 @@ impl<'a> fmt::Display for PrettyDebug<'a, Scalar> {
 fn write_indented(f: &mut fmt::Formatter<'_>, text: &str, indent: usize) -> fmt::Result {
     let indent_str = "  ".repeat(indent);
     for line in text.lines() {
-        writeln!(f, "{}{}", indent_str, line)?;
+        writeln!(f, "{indent_str}{line}")?;
     }
     Ok(())
 }
@@ -642,22 +636,22 @@ fn format_node(f: &mut fmt::Formatter<'_>, node: &YamlNode, indent: usize) -> fm
         YamlNode::Mapping(m) => {
             writeln!(f, "Mapping {{")?;
             for (k, v) in m.iter() {
-                write!(f, "{}  ", indent_str)?;
+                write!(f, "{indent_str}  ")?;
                 format_node(f, &k, 0)?;
                 write!(f, ": ")?;
                 format_node(f, &v, indent + 1)?;
                 writeln!(f)?;
             }
-            write!(f, "{}}}", indent_str)?;
+            write!(f, "{indent_str}}}")?;
         }
         YamlNode::Sequence(s) => {
             writeln!(f, "Sequence [")?;
             for (i, v) in s.values().enumerate() {
-                write!(f, "{}  [{}]: ", indent_str, i)?;
+                write!(f, "{indent_str}  [{i}]: ")?;
                 format_node(f, &v, indent + 1)?;
                 writeln!(f)?;
             }
-            write!(f, "{}]", indent_str)?;
+            write!(f, "{indent_str}]")?;
         }
         YamlNode::Alias(a) => {
             write!(f, "Alias(*{})", a.name())?;
@@ -761,13 +755,13 @@ impl<'a> fmt::Display for VisualDiff<'a> {
         writeln!(f, "\nBefore:")?;
         writeln!(f, "-------")?;
         for line in self.before.to_string().lines() {
-            writeln!(f, "  {}", line)?;
+            writeln!(f, "  {line}")?;
         }
 
         writeln!(f, "\nAfter:")?;
         writeln!(f, "------")?;
         for line in self.after.to_string().lines() {
-            writeln!(f, "  {}", line)?;
+            writeln!(f, "  {line}")?;
         }
 
         writeln!(f, "\nChanges:")?;
@@ -838,11 +832,11 @@ fn graphviz_node(
 
     // Create node
     let label = format!("{:?}", node.kind());
-    result.push_str(&format!("  n{} [label=\"{}\"];\n", node_id, label));
+    result.push_str(&format!("  n{node_id} [label=\"{label}\"];\n"));
 
     // Link to parent
     if let Some(pid) = parent_id {
-        result.push_str(&format!("  n{} -> n{};\n", pid, node_id));
+        result.push_str(&format!("  n{pid} -> n{node_id};\n"));
     }
 
     // Process children
@@ -863,10 +857,9 @@ fn graphviz_node(
                     .replace('\r', "\\\\r");
                 let label = format!("{:?}\\n{:?}", t.kind(), text);
                 result.push_str(&format!(
-                    "  n{} [label=\"{}\", shape=ellipse, style=filled, fillcolor=lightgray];\n",
-                    token_id, label
+                    "  n{token_id} [label=\"{label}\", shape=ellipse, style=filled, fillcolor=lightgray];\n"
                 ));
-                result.push_str(&format!("  n{} -> n{};\n", node_id, token_id));
+                result.push_str(&format!("  n{node_id} -> n{token_id};\n"));
             }
         }
     }

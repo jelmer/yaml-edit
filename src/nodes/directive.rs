@@ -51,7 +51,7 @@ impl Directive {
 
     /// Create a new YAML version directive
     pub fn new_yaml_version(version: &str) -> Self {
-        let directive_text = format!("%YAML {}", version);
+        let directive_text = format!("%YAML {version}");
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::DIRECTIVE.into());
         builder.token(SyntaxKind::DIRECTIVE.into(), &directive_text);
@@ -61,7 +61,7 @@ impl Directive {
 
     /// Create a new TAG directive
     pub fn new_tag(handle: &str, prefix: &str) -> Self {
-        let directive_text = format!("%TAG {} {}", handle, prefix);
+        let directive_text = format!("%TAG {handle} {prefix}");
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::DIRECTIVE.into());
         builder.token(SyntaxKind::DIRECTIVE.into(), &directive_text);

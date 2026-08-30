@@ -199,11 +199,7 @@ development:
         // Find the merge key entry by iterating (can't use get() since << is MERGE_KEY token, not STRING)
         let merge_entry = dev_mapping
             .iter()
-            .find(|(k, _)| {
-                k.as_scalar()
-                    .map(|s| s.as_string() == "<<")
-                    .unwrap_or(false)
-            })
+            .find(|(k, _)| k.as_scalar().is_some_and(|s| s.as_string() == "<<"))
             .expect("Should have merge key entry");
 
         // The value should be an alias

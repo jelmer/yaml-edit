@@ -135,8 +135,7 @@ impl ErrorRecoveryContext {
     pub fn current_context(&self) -> ParseContext {
         self.recovery_stack
             .last()
-            .map(|r| r.context)
-            .unwrap_or(ParseContext::Document)
+            .map_or(ParseContext::Document, |r| r.context)
     }
 
     /// Create a positioned error with current location
@@ -150,7 +149,7 @@ impl ErrorRecoveryContext {
         let range = self.current_range(length);
 
         PositionedParseError {
-            message: format!("{}:{}: {}", line, column, message),
+            message: format!("{line}:{column}: {message}"),
             range: range.into(),
             code: None,
             kind,
@@ -172,7 +171,7 @@ impl ErrorRecoveryContext {
                         RecoveryStrategy::InsertToken(SyntaxKind::RIGHT_BRACKET)
                     }
                     _ => match found {
-                        Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACKET) => {
+                        Some(SyntaxKind::COMMA | SyntaxKind::RIGHT_BRACKET) => {
                             RecoveryStrategy::SkipToken
                         }
                         _ => {
@@ -191,7 +190,7 @@ impl ErrorRecoveryContext {
                         RecoveryStrategy::InsertToken(SyntaxKind::RIGHT_BRACE)
                     }
                     _ => match found {
-                        Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACE) => {
+                        Some(SyntaxKind::COMMA | SyntaxKind::RIGHT_BRACE) => {
                             RecoveryStrategy::SkipToken
                         }
                         _ => {
@@ -267,12 +266,11 @@ impl ErrorRecoveryContext {
         let end = range.end().into();
 
         // Find line boundaries
-        let line_start = self.text[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line_start = self.text[..start].rfind('\n').map_or(0, |i| i + 1);
 
         let line_end = self.text[end..]
             .find('\n')
-            .map(|i| end + i)
-            .unwrap_or(self.text.len());
+            .map_or(self.text.len(), |i| end + i);
 
         let line = &self.text[line_start..line_end];
         let error_start = start - line_start;
@@ -287,7 +285,7 @@ impl ErrorRecoveryContext {
             indicator.push('^');
         }
 
-        format!("{}\n{}", line, indicator)
+        format!("{line}\n{indicator}")
     }
 }
 
@@ -345,15 +343,15 @@ impl ErrorBuilder {
         }
 
         if let Some(found) = self.found {
-            parts.push(format!("Found: {}", found));
+            parts.push(format!("Found: {found}"));
         }
 
         if let Some(context) = self.context {
-            parts.push(format!("Context: {}", context));
+            parts.push(format!("Context: {context}"));
         }
 
         if let Some(suggestion) = self.suggestion {
-            parts.push(format!("Suggestion: {}", suggestion));
+            parts.push(format!("Suggestion: {suggestion}"));
         }
 
         parts.join(". ")

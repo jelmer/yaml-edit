@@ -122,7 +122,7 @@ impl SequenceBuilder {
             (true, _) => value.build_content(&mut self.builder, self.indent, false),
             // Block mappings and sequences start on same line as dash
             // Their content will handle indentation via copy_node_content_with_indent
-            (false, YamlKind::Mapping) | (false, YamlKind::Sequence) => {
+            (false, YamlKind::Mapping | YamlKind::Sequence) => {
                 value.build_content(&mut self.builder, self.indent + 2, false)
             }
             // Block scalars (literal/folded) need newline before them

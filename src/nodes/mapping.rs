@@ -520,8 +520,7 @@ impl MappingEntry {
                 }
                 // Block mappings and sequences start on new line but don't get pre-indented
                 // They handle their own indentation via copy_node_content_with_indent
-                (false, crate::as_yaml::YamlKind::Mapping)
-                | (false, crate::as_yaml::YamlKind::Sequence) => {
+                (false, crate::as_yaml::YamlKind::Mapping | crate::as_yaml::YamlKind::Sequence) => {
                     builder.token(SyntaxKind::NEWLINE.into(), "\n");
                     value.build_content(&mut builder, 0, flow_context)
                 }
@@ -1187,8 +1186,7 @@ impl Mapping {
         self.0.children_with_tokens().any(|child| {
             child
                 .as_token()
-                .map(|token| token.kind() == SyntaxKind::LEFT_BRACE)
-                .unwrap_or(false)
+                .is_some_and(|token| token.kind() == SyntaxKind::LEFT_BRACE)
         })
     }
 
@@ -1413,8 +1411,7 @@ impl Mapping {
                 .0
                 .children_with_tokens()
                 .position(|c| c.as_node() == Some(n))
-                .map(|i| i + 1)
-                .unwrap_or_else(|| brace_pos.unwrap_or(0)),
+                .map_or_else(|| brace_pos.unwrap_or(0), |i| i + 1),
             FlowInsertPos::Before(ref n) => self
                 .0
                 .children_with_tokens()
@@ -1991,8 +1988,7 @@ impl Mapping {
                             children
                                 .get(i - 1)
                                 .and_then(|c| c.as_token())
-                                .map(|t| t.kind() != SyntaxKind::INDENT)
-                                .unwrap_or(true)
+                                .map_or(true, |t| t.kind() != SyntaxKind::INDENT)
                         } else {
                             true
                         };
@@ -2068,8 +2064,7 @@ impl Mapping {
                         children
                             .get(i - 1)
                             .and_then(|c| c.as_token())
-                            .map(|t| t.kind() != SyntaxKind::INDENT)
-                            .unwrap_or(true)
+                            .map_or(true, |t| t.kind() != SyntaxKind::INDENT)
                     } else {
                         true
                     };
@@ -2120,8 +2115,7 @@ impl Mapping {
                     // Check if it ends with NEWLINE
                     let has_newline = prev_entry
                         .last_token()
-                        .map(|t| t.kind() == SyntaxKind::NEWLINE)
-                        .unwrap_or(false);
+                        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
 
                     // If not, add one to the previous entry (not to the mapping)
                     if !has_newline {
@@ -2143,15 +2137,11 @@ impl Mapping {
 
             // Add indentation if needed
             // Check if we're inserting at root level by looking at the previous element
-            let needs_indent = if pos > 0 {
-                children
+            let needs_indent = pos > 0
+                && children
                     .get(pos - 1)
                     .and_then(|c| c.as_token())
-                    .map(|t| t.kind() == SyntaxKind::INDENT)
-                    .unwrap_or(false)
-            } else {
-                false
-            };
+                    .is_some_and(|t| t.kind() == SyntaxKind::INDENT);
 
             if needs_indent {
                 let indent_level = self.detect_indentation_level();
@@ -2813,8 +2803,9 @@ impl Mapping {
             let where_at = self
                 .entries()
                 .nth(actual_index)
-                .map(|e| FlowInsertPos::Before(e.syntax().clone()))
-                .unwrap_or(FlowInsertPos::End);
+                .map_or(FlowInsertPos::End, |e| {
+                    FlowInsertPos::Before(e.syntax().clone())
+                });
             self.insert_flow_entry_cst_at(&new_entry.0, where_at);
             return;
         }
@@ -2956,8 +2947,7 @@ impl AsYaml for Mapping {
         builder.finish_node();
         self.0
             .last_token()
-            .map(|t| t.kind() == SyntaxKind::NEWLINE)
-            .unwrap_or(false)
+            .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
     }
 
     fn is_inline(&self) -> bool {
@@ -3380,8 +3370,7 @@ last: '999'"#;
                 value
                     .as_scalar()
                     .and_then(|s| s.to_string().parse::<i32>().ok())
-                    .map(|n| n % 2 == 0)
-                    .unwrap_or(false)
+                    .is_some_and(|n| n % 2 == 0)
             })
             .count();
 

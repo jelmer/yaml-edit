@@ -507,7 +507,7 @@ fn set_path_on_sequence<V: crate::AsYaml>(
         // create a flow-empty `[]`. A block SEQUENCE nested inline
         // after `- ` renders as a compact-block shape that re-parses
         // as a plain scalar, so we need to keep the inner sequence
-        // flow. push/insert see `inside_flow_container` and preserve
+        // flow. push/insert see `must_render_flow` and preserve
         // that flow style through the subsequent set.
         let flow_empty = crate::builder::SequenceBuilder::new()
             .build_document()

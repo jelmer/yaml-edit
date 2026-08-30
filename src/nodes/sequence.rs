@@ -7,21 +7,15 @@ use rowan::GreenNodeBuilder;
 
 ast_node!(Sequence, SEQUENCE, "A YAML sequence (list)");
 
-/// True if `node` cannot become block style: it lives inside a flow
-/// container (`{...}` or `[...]`) or sits inline inside a
-/// SEQUENCE_ENTRY (`- []` with the collection immediately after the
-/// dash, no NEWLINE + INDENT scaffold in between). In either case a
-/// block SEQUENCE_ENTRY spliced in would render as invalid mixed
-/// YAML that re-parses as a plain scalar.
-fn inside_flow_container(node: &SyntaxNode) -> bool {
-    if let Some(parent) = node.parent() {
-        if parent.kind() == SyntaxKind::SEQUENCE_ENTRY {
-            // The collection appears inline after `- `. A block
-            // conversion here would need a NEWLINE + deeper INDENT
-            // that we can't fabricate without knowing the outer
-            // sequence's column; keep it flow.
-            return true;
-        }
+/// True if `node` cannot be rendered as a block collection: any
+/// flow ancestor forbids it, and so does sitting inline after a `- `
+/// (no NEWLINE + INDENT scaffold to hang a block entry off).
+fn must_render_flow(node: &SyntaxNode) -> bool {
+    if node
+        .parent()
+        .is_some_and(|p| p.kind() == SyntaxKind::SEQUENCE_ENTRY)
+    {
+        return true;
     }
     let mut cur = node.parent();
     while let Some(p) = cur {
@@ -219,15 +213,11 @@ impl Sequence {
         Sequence(SyntaxNode::new_root_mut(builder.finish()))
     }
 
-    /// Detect the indentation used by entries in this sequence.
-    ///
-    /// Looks first for a top-level INDENT token (separator between entries),
-    /// then for WHITESPACE immediately before DASH inside SEQUENCE_ENTRY
-    /// nodes (the leading-DASH indent style), and finally falls back to the
-    /// INDENT token that precedes the SEQUENCE in its parent VALUE. That is
-    /// where the parser stores the column for a single-entry block sequence
-    /// under a key. Returns `"  "` (two spaces) if no indentation can be
-    /// detected.
+    /// Indentation string used by entries in this sequence: a
+    /// top-level INDENT if present, else WHITESPACE before DASH inside
+    /// an entry, else the parent VALUE's INDENT (the parser's storage
+    /// for single-entry block sequences under a key). Defaults to two
+    /// spaces.
     fn detect_indentation(&self) -> String {
         // First try top-level INDENT tokens
         if let Some(ind) = self.0.children_with_tokens().find_map(|child| {
@@ -296,17 +286,14 @@ impl Sequence {
             .unwrap_or(2);
         let indent_text = " ".repeat(indent_width);
 
-        // Detach the snapshot rather than range-splicing: rowan's
-        // splice_children walks the live sibling list as it detaches,
-        // which skips subsequent elements when their prev/next links
-        // get rewritten.
+        // Detach a snapshot; range-splicing walks the live sibling
+        // list mid-detach and skips subsequent elements.
         let children: Vec<_> = self.0.children_with_tokens().collect();
         for child in children {
             child.detach();
         }
 
-        // Prepend `NEWLINE INDENT` in the parent VALUE, right before this
-        // SEQUENCE, unless a NEWLINE (and optional INDENT) is already there.
+        // Prepend `NEWLINE INDENT` in the parent VALUE if not already scaffolded.
         let Some(parent) = self.0.parent() else {
             return;
         };
@@ -338,7 +325,7 @@ impl Sequence {
         // Top-level empty flow (`seq: []`) converts to block so we
         // can emit a `- x` entry; empty flow *inside* another flow
         // container has to stay flow to avoid mixed-style output.
-        if self.is_flow_style() && self.is_empty() && !inside_flow_container(&self.0) {
+        if self.is_flow_style() && self.is_empty() && !must_render_flow(&self.0) {
             self.convert_empty_flow_to_block();
         }
         if self.is_flow_style() {
@@ -476,13 +463,17 @@ impl Sequence {
                     .map(|_| i)
             })
             .collect();
-        let right_bracket_pos = children
-            .iter()
-            .position(|c| {
-                c.as_token()
-                    .is_some_and(|t| t.kind() == SyntaxKind::RIGHT_BRACKET)
-            })
-            .expect("flow SEQUENCE must have a RIGHT_BRACKET");
+        let Some(right_bracket_pos) = children.iter().position(|c| {
+            c.as_token()
+                .is_some_and(|t| t.kind() == SyntaxKind::RIGHT_BRACKET)
+        }) else {
+            // Callers check `is_flow_style()` first, which requires
+            // a LEFT_BRACKET; the matching RIGHT_BRACKET is a parser
+            // invariant. Bail defensively on malformed CSTs rather
+            // than corrupting the tree further.
+            debug_assert!(false, "flow SEQUENCE missing RIGHT_BRACKET");
+            return;
+        };
 
         let comma = fresh_token(SyntaxKind::COMMA, ",");
         let sep_ws = fresh_token(SyntaxKind::WHITESPACE, " ");
@@ -522,7 +513,7 @@ impl Sequence {
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn insert(&self, index: usize, value: impl crate::AsYaml) {
         // Same rule as `push`; see there for the "why".
-        if self.is_flow_style() && self.is_empty() && !inside_flow_container(&self.0) {
+        if self.is_flow_style() && self.is_empty() && !must_render_flow(&self.0) {
             self.convert_empty_flow_to_block();
         }
         if self.is_flow_style() {

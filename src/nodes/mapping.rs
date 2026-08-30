@@ -1,4 +1,4 @@
-use super::{fresh_token, Lang, Scalar, Sequence, SyntaxNode, SyntaxToken};
+use super::{fresh_token, Lang, Scalar, Sequence, SyntaxNode};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::yaml::{
@@ -75,10 +75,10 @@ fn value_is_block(value: &SyntaxNode) -> bool {
 
 use crate::yaml::collapse_empty_child_collection_in_parent as collapse_empty_child_mapping_in_parent;
 
-/// Inject a flow-empty `{}` into a MAPPING that has been drained down
-/// to zero children. Only fires on a truly-orphan MAPPING (no
-/// MAPPING_ENTRY parent, no lingering child tokens); the nested
-/// counterpart lives in [`crate::yaml::collapse_empty_child_collection_in_parent`].
+/// Inject a `{}` into a truly-orphan empty MAPPING (no entries, no
+/// MAPPING_ENTRY parent, no lingering tokens) so it renders as `{}`
+/// rather than empty text. The nested counterpart is
+/// [`crate::yaml::collapse_empty_child_collection_in_parent`].
 fn ensure_top_level_empty_renders_as_flow(mapping: &SyntaxNode) {
     if mapping
         .children()
@@ -91,11 +91,7 @@ fn ensure_top_level_empty_renders_as_flow(mapping: &SyntaxNode) {
         .filter(|p| p.kind() == SyntaxKind::VALUE)
         .and_then(|v| v.parent())
         .is_some_and(|e| e.kind() == SyntaxKind::MAPPING_ENTRY);
-    if has_map_entry_parent {
-        return;
-    }
-    if mapping.children_with_tokens().next().is_some() {
-        // Comment / orphan tokens live here; leave them alone.
+    if has_map_entry_parent || mapping.children_with_tokens().next().is_some() {
         return;
     }
     let lbrace = super::fresh_token(SyntaxKind::LEFT_BRACE, "{");
@@ -1107,52 +1103,57 @@ impl Mapping {
     {
         let order_keys: Vec<K> = order.into_iter().collect();
 
-        // Group children into [leading | (entry, postscript)* | trailing].
-        // Leading is everything before the first entry. Each entry
-        // carries a postscript of the standalone tokens that followed
-        // it up to the next entry (typically NEWLINE+INDENT or a
-        // between-entry comment); reshuffling entries with their
-        // postscript keeps those tokens associated with the entry
-        // they visually followed. Trailing is anything after the last
-        // entry that didn't get claimed as a postscript.
+        // Slice the children into leading decoration, (entry, tokens
+        // that follow it up to the next entry), and trailing
+        // decoration. Reshuffling (entry, postscript) pairs keeps a
+        // between-entry comment glued to the entry it visually
+        // followed.
         let all: Vec<_> = self.0.children_with_tokens().collect();
+        let entry_indices: Vec<usize> = all
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                c.as_node()
+                    .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+                    .map(|_| i)
+            })
+            .collect();
 
-        let mut groups: Vec<(SyntaxNode, Vec<rowan::NodeOrToken<SyntaxNode, SyntaxToken>>)> =
-            Vec::new();
-        let mut leading = Vec::new();
-        let mut trailing = Vec::new();
-        for child in &all {
-            match child.as_node() {
-                Some(n) if n.kind() == SyntaxKind::MAPPING_ENTRY => {
-                    groups.push((n.clone(), Vec::new()));
-                }
-                _ => {
-                    if let Some((_, postscript)) = groups.last_mut() {
-                        postscript.push(child.clone());
-                    } else {
-                        leading.push(child.clone());
-                    }
-                }
-            }
-        }
-        // The last group's postscript is really trailing decoration
-        // (it followed the mapping's last entry with no entry after).
-        if let Some((_, last_postscript)) = groups.last_mut() {
-            trailing = std::mem::take(last_postscript);
+        let leading = all[..*entry_indices.first().unwrap_or(&all.len())].to_vec();
+        let trailing = entry_indices
+            .last()
+            .map(|&i| all[i + 1..].to_vec())
+            .unwrap_or_default();
+
+        // Each entry pairs with the tokens between it and the next
+        // entry (empty for the last entry -- that spillover becomes
+        // `trailing` above).
+        let mut groups: Vec<(SyntaxNode, Vec<_>)> = entry_indices
+            .windows(2)
+            .map(|w| {
+                let entry = all[w[0]].as_node().cloned().unwrap();
+                let postscript = all[w[0] + 1..w[1]].to_vec();
+                (entry, postscript)
+            })
+            .collect();
+        if let Some(&last) = entry_indices.last() {
+            groups.push((all[last].as_node().cloned().unwrap(), Vec::new()));
         }
 
-        let mut ordered = Vec::new();
-        for order_key in &order_keys {
-            if let Some(pos) = groups.iter().position(|(entry, _)| {
-                entry
-                    .children()
-                    .find(|n| n.kind() == SyntaxKind::KEY)
-                    .map(|k| key_content_matches(&k, order_key))
-                    .unwrap_or(false)
-            }) {
-                ordered.push(groups.remove(pos));
-            }
-        }
+        let mut ordered: Vec<_> = order_keys
+            .iter()
+            .filter_map(|order_key| {
+                groups
+                    .iter()
+                    .position(|(entry, _)| {
+                        entry
+                            .children()
+                            .find(|n| n.kind() == SyntaxKind::KEY)
+                            .is_some_and(|k| key_content_matches(&k, order_key))
+                    })
+                    .map(|pos| groups.remove(pos))
+            })
+            .collect();
         ordered.extend(groups);
 
         let mut new_children = leading;

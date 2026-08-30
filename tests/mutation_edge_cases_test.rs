@@ -464,3 +464,28 @@ fn test_set_key_starting_with_dot_and_digits_reparses() {
         "reparse drift: key `.999 a` missing after round-trip\ntext:\n{text}"
     );
 }
+
+/// Regression from mutation_invariants fuzz: `set_path("997", "")`
+/// on a document whose root is a mapping (`s: [...]`) - the new
+/// key `997` was not present after the set; `get_path("997")`
+/// returned None. A single-segment set_path that names a new key
+/// should insert it.
+#[test]
+fn test_set_path_new_numeric_key() {
+    use yaml_edit::path::YamlPath;
+
+    let seed = "s:\n  - a\n  - b\n  - c\n";
+    let doc = yaml_edit::Document::from_str(seed).expect("parse seed");
+
+    doc.set_path("997", "");
+
+    let got = doc
+        .get_path("997")
+        .as_ref()
+        .and_then(|n| n.as_scalar().map(|s| s.as_string()));
+    assert_eq!(
+        got.as_deref(),
+        Some(""),
+        "set_path(\"997\", \"\") did not stick: get_path(\"997\") returned {got:?}\ntext:\n{doc}"
+    );
+}

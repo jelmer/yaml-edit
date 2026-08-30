@@ -37,6 +37,9 @@ use crate::yaml::Mapping;
 ///   database:
 ///     host: value
 /// ```
+///
+/// An empty or otherwise unparseable path is treated as invalid: reads
+/// return `None`, writes and removals are no-ops.
 pub trait YamlPath {
     /// Get a value at a nested path.
     ///
@@ -46,7 +49,8 @@ pub trait YamlPath {
     ///
     /// # Returns
     ///
-    /// `Some(YamlNode)` if the path exists, `None` otherwise.
+    /// `Some(YamlNode)` if the path exists, `None` otherwise. Returns
+    /// `None` for an empty or otherwise unparseable path.
     ///
     /// # Examples
     ///
@@ -66,6 +70,9 @@ pub trait YamlPath {
     ///
     /// * `path` - Dot-separated path like `"server.host"`
     /// * `value` - Value to set (can be any type implementing `AsYaml`)
+    ///
+    /// A no-op when the path is empty or unparseable, or when the
+    /// receiver has no root mapping to write into.
     ///
     /// # Examples
     ///
@@ -276,27 +283,47 @@ fn path_segments(path: &str) -> Option<Vec<PathSegment>> {
 
 /// Navigate through a YAML structure following path segments.
 ///
-/// Handles both mapping keys and sequence indices.
+/// Handles both mapping keys and sequence indices. A numeric segment
+/// like `997` in `foo.997` parses as `Index(997)` even though the user
+/// may have meant it as a mapping key: when the current node is a
+/// mapping, fall back to looking up the stringified form.
 fn navigate_path(
     mut current: crate::as_yaml::YamlNode,
     segments: &[PathSegment],
 ) -> Option<crate::as_yaml::YamlNode> {
     for segment in segments {
-        match segment {
-            PathSegment::Key(key) => {
-                // Navigate through a mapping
-                let mapping = current.as_mapping()?;
-                current = mapping.get(key)?;
-            }
-            PathSegment::Index(index) => {
-                // Navigate through a sequence
-                let sequence = current.as_sequence()?;
-                current = sequence.get(*index)?;
+        current = descend_one(current, segment)?;
+    }
+    Some(current)
+}
+
+fn descend_one(
+    current: crate::as_yaml::YamlNode,
+    segment: &PathSegment,
+) -> Option<crate::as_yaml::YamlNode> {
+    match segment {
+        PathSegment::Key(key) => current.as_mapping().and_then(|m| m.get(key)),
+        PathSegment::Index(index) => {
+            if let Some(seq) = current.as_sequence() {
+                seq.get(*index)
+            } else if let Some(map) = current.as_mapping() {
+                // Fallback: numeric segment used as a mapping key.
+                map.get(index.to_string().as_str())
+            } else {
+                None
             }
         }
     }
+}
 
-    Some(current)
+/// Interpret a segment as a mapping key. `Index(n)` is stringified so
+/// paths like `foo.997` (parsed as `foo` + `Index(997)`) still address
+/// a mapping key `"997"`.
+fn segment_key(segment: &PathSegment) -> String {
+    match segment {
+        PathSegment::Key(key) => key.clone(),
+        PathSegment::Index(index) => index.to_string(),
+    }
 }
 
 // Implementation for Document
@@ -366,40 +393,33 @@ fn remove_path_impl(root: crate::as_yaml::YamlNode, segments: &[PathSegment]) ->
     }
 
     if segments.len() == 1 {
-        // Base case: remove from the current node
+        // Base case: remove from the current node.
         match &segments[0] {
             PathSegment::Key(key) => {
                 if let Some(mapping) = root.as_mapping() {
                     return mapping.remove(key.as_str()).is_some();
                 }
             }
-            PathSegment::Index(_) => {
-                // Removing by index from a sequence is not supported
-                // (would require shifting all subsequent elements)
+            PathSegment::Index(index) => {
+                // Numeric segment on a mapping: fall back to the
+                // stringified key (mirrors set_path / get_path).
+                if let Some(mapping) = root.as_mapping() {
+                    return mapping.remove(index.to_string().as_str()).is_some();
+                }
+                // On a sequence, remove-by-index is intentionally
+                // unsupported (would require shifting all subsequent
+                // elements).
                 return false;
             }
         }
         return false;
     }
 
-    // Navigate to the parent and recurse
-    match &segments[0] {
-        PathSegment::Key(key) => {
-            if let Some(mapping) = root.as_mapping() {
-                if let Some(nested) = mapping.get(key.as_str()) {
-                    return remove_path_impl(nested, &segments[1..]);
-                }
-            }
-        }
-        PathSegment::Index(index) => {
-            if let Some(sequence) = root.as_sequence() {
-                if let Some(nested) = sequence.get(*index) {
-                    return remove_path_impl(nested, &segments[1..]);
-                }
-            }
-        }
+    // Navigate to the parent and recurse using the shared descent that
+    // also handles numeric-segment-on-mapping fallback.
+    if let Some(nested) = descend_one(root, &segments[0]) {
+        return remove_path_impl(nested, &segments[1..]);
     }
-
     false
 }
 
@@ -408,18 +428,17 @@ impl YamlPath for Mapping {
     fn get_path(&self, path: &str) -> Option<crate::as_yaml::YamlNode> {
         let segments = path_segments(path)?;
 
-        // Start from the first segment (must be a key for mappings)
-        let first_key = match &segments[0] {
-            PathSegment::Key(key) => key.as_str(),
-            PathSegment::Index(_) => return None, // Can't index into a mapping directly
-        };
+        // Start from the first segment. A numeric segment like `997`
+        // from `try_parse_path` arrives as Index; on a mapping treat it
+        // as the stringified key so `foo.997`-style paths still resolve.
+        let first_key = segment_key(&segments[0]);
 
         if segments.len() == 1 {
-            return self.get(first_key);
+            return self.get(first_key.as_str());
         }
 
         // Get the value at the first key and navigate the rest
-        let current = self.get(first_key)?;
+        let current = self.get(first_key.as_str())?;
         navigate_path(current, &segments[1..])
     }
 
@@ -451,11 +470,10 @@ fn set_path_on_mapping<V: crate::AsYaml>(mapping: &Mapping, segments: &[PathSegm
         return;
     }
 
-    // First segment must be a key for mappings
-    let first_key = match &segments[0] {
-        PathSegment::Key(key) => key.as_str(),
-        PathSegment::Index(_) => return, // Can't set by index on a mapping
-    };
+    // First segment: numeric segments (from `foo.997`) are stringified
+    // so they still address a mapping key.
+    let first_key_owned = segment_key(&segments[0]);
+    let first_key = first_key_owned.as_str();
 
     if segments.len() == 1 {
         // Base case: set directly

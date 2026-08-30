@@ -111,6 +111,30 @@ pub enum PathSegment {
     Index(usize),
 }
 
+/// Error from [`try_parse_path`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathParseError {
+    /// A `[` was not closed by `]`.
+    UnclosedIndex,
+    /// The text between `[` and `]` is not a `usize` index.
+    InvalidIndex(String),
+}
+
+impl std::fmt::Display for PathParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PathParseError::UnclosedIndex => {
+                write!(f, "unclosed '[' in path")
+            }
+            PathParseError::InvalidIndex(text) => {
+                write!(f, "invalid path index [{text}]")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PathParseError {}
+
 /// Parse a path string into components.
 ///
 /// Supports multiple syntaxes:
@@ -119,33 +143,42 @@ pub enum PathSegment {
 /// - Array indices with dots: `"items.0.name"` → `[Key("items"), Index(0), Key("name")]`
 /// - Escaped dots: `"key\\.with\\.dots"` → `[Key("key.with.dots")]`
 ///
+/// An empty path returns an empty list. A malformed `[...]` index is an
+/// error (unclosed `]` or a non-`usize` index).
+///
 /// # Examples
 ///
 /// ```
-/// use yaml_edit::path::{parse_path, PathSegment};
+/// use yaml_edit::path::{try_parse_path, PathSegment};
 ///
-/// let segments = parse_path("server.host");
+/// let segments = try_parse_path("server.host").unwrap();
 /// assert_eq!(segments, vec![
 ///     PathSegment::Key("server".to_string()),
 ///     PathSegment::Key("host".to_string())
 /// ]);
 ///
-/// let segments = parse_path("items[0].name");
+/// let segments = try_parse_path("items[0].name").unwrap();
 /// assert_eq!(segments, vec![
 ///     PathSegment::Key("items".to_string()),
 ///     PathSegment::Index(0),
 ///     PathSegment::Key("name".to_string())
 /// ]);
 ///
-/// let segments = parse_path("items.0");
+/// let segments = try_parse_path("items.0").unwrap();
 /// assert_eq!(segments, vec![
 ///     PathSegment::Key("items".to_string()),
 ///     PathSegment::Index(0)
 /// ]);
 /// ```
-pub fn parse_path(path: &str) -> Vec<PathSegment> {
+///
+/// # Errors
+///
+/// Returns [`PathParseError::UnclosedIndex`] when a `[` has no matching `]`,
+/// or [`PathParseError::InvalidIndex`] when the brackets do not contain a
+/// `usize`.
+pub fn try_parse_path(path: &str) -> Result<Vec<PathSegment>, PathParseError> {
     if path.is_empty() {
-        return vec![];
+        return Ok(vec![]);
     }
 
     let mut segments = Vec::new();
@@ -187,17 +220,22 @@ pub fn parse_path(path: &str) -> Vec<PathSegment> {
 
                 // Parse the index until we hit ']'
                 let mut index_str = String::new();
+                let mut closed = false;
                 while let Some(&next_ch) = chars.peek() {
                     if next_ch == ']' {
                         chars.next(); // consume the ']'
+                        closed = true;
                         break;
                     }
                     index_str.push(chars.next().unwrap());
                 }
 
-                // Parse the index
-                if let Ok(index) = index_str.parse::<usize>() {
-                    segments.push(PathSegment::Index(index));
+                if !closed {
+                    return Err(PathParseError::UnclosedIndex);
+                }
+                match index_str.parse::<usize>() {
+                    Ok(index) => segments.push(PathSegment::Index(index)),
+                    Err(_) => return Err(PathParseError::InvalidIndex(index_str)),
                 }
             }
             _ => {
@@ -215,7 +253,25 @@ pub fn parse_path(path: &str) -> Vec<PathSegment> {
         }
     }
 
-    segments
+    Ok(segments)
+}
+
+/// Parse a path string into components.
+///
+/// Invalid bracket indexes used to return an empty `Vec`, which callers
+/// could not tell from a real empty path. Prefer [`try_parse_path`].
+#[deprecated(note = "use try_parse_path; a bad [index] used to return an empty Vec")]
+pub fn parse_path(path: &str) -> Vec<PathSegment> {
+    try_parse_path(path).unwrap_or_default()
+}
+
+fn path_segments(path: &str) -> Option<Vec<PathSegment>> {
+    let segments = try_parse_path(path).ok()?;
+    if segments.is_empty() {
+        None
+    } else {
+        Some(segments)
+    }
 }
 
 /// Navigate through a YAML structure following path segments.
@@ -246,10 +302,7 @@ fn navigate_path(
 // Implementation for Document
 impl YamlPath for crate::yaml::Document {
     fn get_path(&self, path: &str) -> Option<crate::as_yaml::YamlNode> {
-        let segments = parse_path(path);
-        if segments.is_empty() {
-            return None;
-        }
+        let segments = path_segments(path)?;
 
         // Start from the document's root content
         let root = if let Some(m) = self.as_mapping() {
@@ -266,10 +319,9 @@ impl YamlPath for crate::yaml::Document {
     }
 
     fn set_path(&self, path: &str, value: impl crate::AsYaml) {
-        let segments = parse_path(path);
-        if segments.is_empty() {
+        let Some(segments) = path_segments(path) else {
             return;
-        }
+        };
 
         // Get the root mapping (can only set paths on mappings at the root)
         let mapping = match self.as_mapping() {
@@ -281,10 +333,9 @@ impl YamlPath for crate::yaml::Document {
     }
 
     fn remove_path(&self, path: &str) -> bool {
-        let segments = parse_path(path);
-        if segments.is_empty() {
+        let Some(segments) = path_segments(path) else {
             return false;
-        }
+        };
 
         // Start from document root
         let root = if let Some(m) = self.as_mapping() {
@@ -355,10 +406,7 @@ fn remove_path_impl(root: crate::as_yaml::YamlNode, segments: &[PathSegment]) ->
 // Implementation for Mapping
 impl YamlPath for Mapping {
     fn get_path(&self, path: &str) -> Option<crate::as_yaml::YamlNode> {
-        let segments = parse_path(path);
-        if segments.is_empty() {
-            return None;
-        }
+        let segments = path_segments(path)?;
 
         // Start from the first segment (must be a key for mappings)
         let first_key = match &segments[0] {
@@ -376,19 +424,17 @@ impl YamlPath for Mapping {
     }
 
     fn set_path(&self, path: &str, value: impl crate::AsYaml) {
-        let segments = parse_path(path);
-        if segments.is_empty() {
+        let Some(segments) = path_segments(path) else {
             return;
-        }
+        };
 
         set_path_on_mapping(self, &segments, value);
     }
 
     fn remove_path(&self, path: &str) -> bool {
-        let segments = parse_path(path);
-        if segments.is_empty() {
+        let Some(segments) = path_segments(path) else {
             return false;
-        }
+        };
 
         remove_path_from_mapping(self, &segments)
     }
@@ -567,17 +613,20 @@ mod tests {
 
     #[test]
     fn test_parse_path_basic() {
-        assert_eq!(parse_path(""), Vec::<PathSegment>::new());
-        assert_eq!(parse_path("key"), vec![PathSegment::Key("key".to_string())]);
+        assert_eq!(try_parse_path("").unwrap(), Vec::<PathSegment>::new());
         assert_eq!(
-            parse_path("a.b"),
+            try_parse_path("key").unwrap(),
+            vec![PathSegment::Key("key".to_string())]
+        );
+        assert_eq!(
+            try_parse_path("a.b").unwrap(),
             vec![
                 PathSegment::Key("a".to_string()),
                 PathSegment::Key("b".to_string())
             ]
         );
         assert_eq!(
-            parse_path("a.b.c.d"),
+            try_parse_path("a.b.c.d").unwrap(),
             vec![
                 PathSegment::Key("a".to_string()),
                 PathSegment::Key("b".to_string()),
@@ -588,13 +637,36 @@ mod tests {
     }
 
     #[test]
+    fn test_try_parse_path_invalid_brackets() {
+        assert_eq!(
+            try_parse_path("items[abc].name"),
+            Err(PathParseError::InvalidIndex("abc".to_string()))
+        );
+        assert_eq!(
+            try_parse_path("items[].name"),
+            Err(PathParseError::InvalidIndex(String::new()))
+        );
+        assert_eq!(
+            try_parse_path("items[0"),
+            Err(PathParseError::UnclosedIndex)
+        );
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_parse_path_deprecated_wrapper_empty_on_bad_index() {
+        assert_eq!(parse_path("items[abc].name"), Vec::<PathSegment>::new());
+        assert_eq!(parse_path("items[0"), Vec::<PathSegment>::new());
+    }
+
+    #[test]
     fn test_parse_path_with_array_indices() {
         assert_eq!(
-            parse_path("items[0]"),
+            try_parse_path("items[0]").unwrap(),
             vec![PathSegment::Key("items".to_string()), PathSegment::Index(0)]
         );
         assert_eq!(
-            parse_path("items[0].name"),
+            try_parse_path("items[0].name").unwrap(),
             vec![
                 PathSegment::Key("items".to_string()),
                 PathSegment::Index(0),
@@ -602,7 +674,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            parse_path("data.items[5].value"),
+            try_parse_path("data.items[5].value").unwrap(),
             vec![
                 PathSegment::Key("data".to_string()),
                 PathSegment::Key("items".to_string()),
@@ -615,11 +687,11 @@ mod tests {
     #[test]
     fn test_parse_path_with_numeric_indices() {
         assert_eq!(
-            parse_path("items.0"),
+            try_parse_path("items.0").unwrap(),
             vec![PathSegment::Key("items".to_string()), PathSegment::Index(0)]
         );
         assert_eq!(
-            parse_path("items.0.name"),
+            try_parse_path("items.0.name").unwrap(),
             vec![
                 PathSegment::Key("items".to_string()),
                 PathSegment::Index(0),
@@ -631,11 +703,11 @@ mod tests {
     #[test]
     fn test_parse_path_with_escaping() {
         assert_eq!(
-            parse_path("key\\.with\\.dots"),
+            try_parse_path("key\\.with\\.dots").unwrap(),
             vec![PathSegment::Key("key.with.dots".to_string())]
         );
         assert_eq!(
-            parse_path("a.key\\.with\\.dots.b"),
+            try_parse_path("a.key\\.with\\.dots.b").unwrap(),
             vec![
                 PathSegment::Key("a".to_string()),
                 PathSegment::Key("key.with.dots".to_string()),

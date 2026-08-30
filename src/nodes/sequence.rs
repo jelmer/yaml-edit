@@ -7,13 +7,39 @@ use rowan::GreenNodeBuilder;
 
 ast_node!(Sequence, SEQUENCE, "A YAML sequence (list)");
 
-/// Does the SEQUENCE's parent VALUE have an INDENT token immediately before
-/// the SEQUENCE (with only NEWLINE tokens between them)?
-///
-/// That is the shape the parser produces for a block sequence under a key
-/// (`key:\n  - a`): the indentation lives in the VALUE, not inside the
-/// SEQUENCE. When present, `Sequence::push` must not emit its own leading
-/// INDENT for the first entry because the parent already supplies one.
+/// True if `node` cannot be rendered as a block collection: any
+/// flow ancestor forbids it, and so does sitting inline after a `- `
+/// (no NEWLINE + INDENT scaffold to hang a block entry off).
+fn must_render_flow(node: &SyntaxNode) -> bool {
+    if node
+        .parent()
+        .is_some_and(|p| p.kind() == SyntaxKind::SEQUENCE_ENTRY)
+    {
+        return true;
+    }
+    let mut cur = node.parent();
+    while let Some(p) = cur {
+        let opener = match p.kind() {
+            SyntaxKind::MAPPING => Some(SyntaxKind::LEFT_BRACE),
+            SyntaxKind::SEQUENCE => Some(SyntaxKind::LEFT_BRACKET),
+            _ => None,
+        };
+        if let Some(open) = opener {
+            if p.children_with_tokens()
+                .any(|c| c.as_token().is_some_and(|t| t.kind() == open))
+            {
+                return true;
+            }
+        }
+        cur = p.parent();
+    }
+    false
+}
+
+/// Does the SEQUENCE's parent VALUE carry the leading INDENT for this
+/// sequence? True for the block-under-key shape (`key:\n  - a`): the
+/// first entry's indentation lives in VALUE, not inside SEQUENCE, so
+/// mutation helpers must not emit their own leading INDENT for it.
 fn parent_value_has_leading_indent(seq: &SyntaxNode) -> bool {
     let Some(parent) = seq.parent() else {
         return false;
@@ -65,6 +91,49 @@ fn trailing_newline_indent(node: &SyntaxNode) -> Option<String> {
     }
     Some(result)
 }
+
+/// True if `sequence`'s enclosing MAPPING_ENTRY is the last entry of
+/// its MAPPING. Callers use this to know whether trimming trailing
+/// whitespace off the sequence would strand a following mapping entry
+/// that relied on the separator NEWLINE. Conservative `false` when
+/// the sequence isn't under a MAPPING_ENTRY at all.
+fn mapping_entry_is_last_in_mapping(sequence: &SyntaxNode) -> bool {
+    let Some(value) = sequence.parent() else {
+        return false;
+    };
+    if value.kind() != SyntaxKind::VALUE {
+        return false;
+    }
+    let Some(entry) = value.parent() else {
+        return false;
+    };
+    if entry.kind() != SyntaxKind::MAPPING_ENTRY {
+        return false;
+    }
+    let Some(parent_mapping) = entry.parent() else {
+        return false;
+    };
+    if parent_mapping.kind() != SyntaxKind::MAPPING {
+        return false;
+    }
+    // Any MAPPING_ENTRY sibling *after* this one means we must keep
+    // whatever separator is currently in place.
+    let mut seen_self = false;
+    for child in parent_mapping.children() {
+        if child == entry {
+            seen_self = true;
+            continue;
+        }
+        if seen_self && child.kind() == SyntaxKind::MAPPING_ENTRY {
+            return false;
+        }
+    }
+    true
+}
+
+// The collapse helper is shared with Mapping; it lives in yaml.rs
+// as `collapse_empty_child_collection_in_parent`.
+use crate::yaml::collapse_empty_child_collection_in_parent as collapse_empty_child_sequence_in_parent;
 
 impl Sequence {
     /// Iterate over items in this sequence as raw syntax nodes.
@@ -144,11 +213,11 @@ impl Sequence {
         Sequence(SyntaxNode::new_root_mut(builder.finish()))
     }
 
-    /// Detect the indentation used by entries in this sequence.
-    ///
-    /// First looks for a top-level INDENT token, then falls back to looking
-    /// for WHITESPACE immediately before DASH inside SEQUENCE_ENTRY nodes.
-    /// Returns `"  "` (two spaces) if no indentation can be detected.
+    /// Indentation string used by entries in this sequence: a
+    /// top-level INDENT if present, else WHITESPACE before DASH inside
+    /// an entry, else the parent VALUE's INDENT (the parser's storage
+    /// for single-entry block sequences under a key). Defaults to two
+    /// spaces.
     fn detect_indentation(&self) -> String {
         // First try top-level INDENT tokens
         if let Some(ind) = self.0.children_with_tokens().find_map(|child| {
@@ -161,7 +230,8 @@ impl Sequence {
         }
 
         // Fall back: look for WHITESPACE before DASH inside entry nodes
-        self.0
+        if let Some(indent) = self
+            .0
             .children()
             .filter(|c| c.kind() == SyntaxKind::SEQUENCE_ENTRY)
             .find_map(|entry| {
@@ -176,13 +246,93 @@ impl Sequence {
                     }
                 })
             })
-            .unwrap_or_else(|| "  ".to_string())
+        {
+            return indent;
+        }
+
+        // For a block sequence under a key, the parser stores the entry
+        // column as an INDENT in the parent VALUE (right before the SEQUENCE).
+        if let Some(parent) = self.0.parent() {
+            if parent.kind() == SyntaxKind::VALUE {
+                for child in parent.children_with_tokens() {
+                    match &child {
+                        rowan::NodeOrToken::Node(n) if n == &self.0 => break,
+                        rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INDENT => {
+                            return t.text().to_string();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        "  ".to_string()
+    }
+
+    /// Reshape an empty flow sequence (`[]`) into an empty block
+    /// sequence with a `NEWLINE INDENT` scaffold on the parent VALUE,
+    /// so a follow-up push has somewhere to hang its INDENT.
+    fn convert_empty_flow_to_block(&self) {
+        let indent_width = self
+            .0
+            .parent()
+            .filter(|p| p.kind() == SyntaxKind::VALUE)
+            .and_then(|v| v.parent())
+            .filter(|e| e.kind() == SyntaxKind::MAPPING_ENTRY)
+            .and_then(|e| e.parent())
+            .filter(|m| m.kind() == SyntaxKind::MAPPING)
+            .and_then(crate::nodes::Mapping::cast)
+            .map(|m| m.detect_indentation_level() + 2)
+            .unwrap_or(2);
+        let indent_text = " ".repeat(indent_width);
+
+        // Detach a snapshot; range-splicing walks the live sibling
+        // list mid-detach and skips subsequent elements.
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        for child in children {
+            child.detach();
+        }
+
+        // Prepend `NEWLINE INDENT` in the parent VALUE if not already scaffolded.
+        let Some(parent) = self.0.parent() else {
+            return;
+        };
+        if parent.kind() != SyntaxKind::VALUE {
+            return;
+        }
+        let seq_pos = parent
+            .children_with_tokens()
+            .position(|c| c.as_node() == Some(&self.0))
+            .unwrap_or(0);
+        let already_scaffolded = seq_pos >= 1
+            && parent
+                .children_with_tokens()
+                .nth(seq_pos - 1)
+                .and_then(|c| c.into_token())
+                .is_some_and(|t| t.kind() == SyntaxKind::INDENT || t.kind() == SyntaxKind::NEWLINE);
+        if already_scaffolded {
+            return;
+        }
+        let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
+        let indent = fresh_token(SyntaxKind::INDENT, &indent_text);
+        parent.splice_children(seq_pos..seq_pos, vec![nl.into(), indent.into()]);
     }
 
     /// Add an item to the end of the sequence.
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn push(&self, value: impl crate::AsYaml) {
+        // Top-level empty flow (`seq: []`) converts to block so we
+        // can emit a `- x` entry; empty flow *inside* another flow
+        // container has to stay flow to avoid mixed-style output.
+        if self.is_flow_style() && self.is_empty() && !must_render_flow(&self.0) {
+            self.convert_empty_flow_to_block();
+        }
+        if self.is_flow_style() {
+            self.insert_flow(usize::MAX, value);
+            return;
+        }
+
         let indentation = self.detect_indentation();
 
         // Build the INDENT token (separate from the SEQUENCE_ENTRY)
@@ -289,6 +439,72 @@ impl Sequence {
         }
     }
 
+    /// Splice a new flow entry at `index` (or append when
+    /// `index >= len`), wiring up `, ` separators. The flow separator
+    /// convention is that every entry except the last carries a
+    /// trailing `, ` as its own tail (see the flow-separator note in
+    /// [`crate::nodes`]).
+    fn insert_flow(&self, index: usize, value: impl crate::AsYaml) {
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
+        // flow_context=false: YAML flow permits plain scalars; only
+        // JSON-flavored callers want the aggressive quoting.
+        value.build_content(&mut builder, 0, false);
+        builder.finish_node();
+        let new_entry = SyntaxNode::new_root_mut(builder.finish());
+
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        let entry_positions: Vec<usize> = children
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                c.as_node()
+                    .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+                    .map(|_| i)
+            })
+            .collect();
+        let Some(right_bracket_pos) = children.iter().position(|c| {
+            c.as_token()
+                .is_some_and(|t| t.kind() == SyntaxKind::RIGHT_BRACKET)
+        }) else {
+            // Callers check `is_flow_style()` first, which requires
+            // a LEFT_BRACKET; the matching RIGHT_BRACKET is a parser
+            // invariant. Bail defensively on malformed CSTs rather
+            // than corrupting the tree further.
+            debug_assert!(false, "flow SEQUENCE missing RIGHT_BRACKET");
+            return;
+        };
+
+        let comma = fresh_token(SyntaxKind::COMMA, ",");
+        let sep_ws = fresh_token(SyntaxKind::WHITESPACE, " ");
+
+        if index >= entry_positions.len() {
+            // Append: add `, ` to the previous last entry, then
+            // splice before the `]`.
+            if let Some(&last_pos) = entry_positions.last() {
+                let last_entry = children[last_pos].as_node().expect("SEQUENCE_ENTRY");
+                let ends_with_comma = last_entry
+                    .last_token()
+                    .is_some_and(|t| t.kind() == SyntaxKind::COMMA);
+                if !ends_with_comma {
+                    let end = last_entry.children_with_tokens().count();
+                    last_entry.splice_children(end..end, vec![comma.into(), sep_ws.into()]);
+                }
+            }
+            self.0
+                .splice_children(right_bracket_pos..right_bracket_pos, vec![new_entry.into()]);
+            return;
+        }
+
+        // Insert before the entry at `index`; the new entry carries
+        // its own `, ` tail to keep the displaced entry separated.
+        let target_pos = entry_positions[index];
+        let end = new_entry.children_with_tokens().count();
+        new_entry.splice_children(end..end, vec![comma.into(), sep_ws.into()]);
+        self.0
+            .splice_children(target_pos..target_pos, vec![new_entry.into()]);
+    }
+
     /// Insert an item at a specific position.
     ///
     /// If `index` is out of bounds, the item is appended at the end.
@@ -296,6 +512,15 @@ impl Sequence {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn insert(&self, index: usize, value: impl crate::AsYaml) {
+        // Same rule as `push`; see there for the "why".
+        if self.is_flow_style() && self.is_empty() && !must_render_flow(&self.0) {
+            self.convert_empty_flow_to_block();
+        }
+        if self.is_flow_style() {
+            self.insert_flow(index, value);
+            return;
+        }
+
         let indentation = self.detect_indentation();
 
         // Build the new SEQUENCE_ENTRY, terminated with its own NEWLINE.
@@ -368,6 +593,25 @@ impl Sequence {
                     prev_entry.splice_children(end..end, vec![nl.into()]);
                 }
             }
+        }
+
+        // Inserting at the head of a SEQUENCE whose parent VALUE
+        // supplies the leading INDENT? Don't emit our own leading
+        // INDENT for the new entry (it would stack), but do give the
+        // displaced old-first entry an INDENT of its own so it stays
+        // at the right column.
+        let inserting_at_head = target_entry_pos < children.len()
+            && children[..target_entry_pos].iter().all(|c| {
+                c.as_node()
+                    .map_or(true, |n| n.kind() != SyntaxKind::SEQUENCE_ENTRY)
+            });
+        if inserting_at_head && parent_value_has_leading_indent(&self.0) {
+            let old_first_indent = fresh_token(SyntaxKind::INDENT, &indentation);
+            self.0.splice_children(
+                insert_at..insert_at,
+                vec![new_entry.into(), old_first_indent.into()],
+            );
+            return;
         }
 
         self.0.splice_children(
@@ -503,23 +747,47 @@ impl Sequence {
                                     self.0.splice_children((i - 1)..i, vec![]);
                                 }
                             }
+                        } else if !self.is_flow_style() && i == 0 {
+                            // Removed the first entry of a block sequence.
+                            // The INDENT that used to separate this entry
+                            // from its successor is now a leading INDENT
+                            // inside the SEQUENCE and would stack with the
+                            // parent VALUE's INDENT (`  ` + `  ` -> `    `),
+                            // shifting the new-first entry a level in.
+                            if let Some(next) = children.get(i + 1) {
+                                if next
+                                    .as_token()
+                                    .is_some_and(|t| t.kind() == SyntaxKind::INDENT)
+                                {
+                                    self.0.splice_children(i..(i + 1), vec![]);
+                                }
+                            }
                         }
 
-                        if !self.is_flow_style() && is_last && i > 0 {
-                            // Removed the last entry - remove trailing newline/indent from new last entry
-                            // Find the previous SEQUENCE_ENTRY
+                        if !self.is_flow_style()
+                            && is_last
+                            && i > 0
+                            && mapping_entry_is_last_in_mapping(&self.0)
+                        {
+                            // Removed the last entry of a block sequence
+                            // that itself terminates its enclosing mapping.
+                            // Strip trailing whitespace/newline off the new
+                            // last entry so we don't emit a stray blank
+                            // line at the end of the document.
+                            //
+                            // When the enclosing MAPPING_ENTRY has a
+                            // following sibling, the new-last-entry's
+                            // NEWLINE is still needed as the separator
+                            // between mapping entries -- do not touch it.
                             if let Some(prev_entry_node) =
                                 children[..i].iter().rev().find_map(|c| {
                                     c.as_node()
                                         .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
                                 })
                             {
-                                // Remove trailing NEWLINE and INDENT tokens
                                 let entry_children: Vec<_> =
                                     prev_entry_node.children_with_tokens().collect();
                                 let mut remove_count = 0;
-
-                                // Count trailing NEWLINE, INDENT, and WHITESPACE tokens from the end
                                 for child in entry_children.iter().rev() {
                                     if let Some(token) = child.as_token() {
                                         if matches!(
@@ -543,6 +811,13 @@ impl Sequence {
                                         .splice_children((total - remove_count)..total, vec![]);
                                 }
                             }
+                        }
+                        // If we just drained the last entry from a block
+                        // sequence under a key, collapse the placeholder
+                        // scaffold to `key: []` so re-parse still finds
+                        // the (now-empty) sequence at that key.
+                        if self.is_empty() {
+                            collapse_empty_child_sequence_in_parent(&self.0);
                         }
                         return removed_value;
                     }
@@ -701,6 +976,57 @@ impl AsYaml for Sequence {
 mod tests {
     use crate::yaml::YamlFile;
     use std::str::FromStr;
+
+    #[test]
+    fn test_push_into_empty_flow_sequence_reshapes_to_block() {
+        // Regression: `push` on an empty flow sequence `[]` used to append
+        // the block entry after the `]`, producing `seq: []  - item1\n`.
+        // Now the `[]` is dropped and the parent VALUE gets a NEWLINE+INDENT
+        // scaffold, so the entry lands correctly.
+        use crate::path::YamlPath;
+        use crate::Document;
+        let doc = Document::from_str("seq: []").unwrap();
+        let seq = doc.get_path("seq").unwrap().as_sequence().unwrap().clone();
+        seq.push("item1");
+        assert_eq!(doc.to_string(), "seq: \n  - item1\n");
+    }
+
+    #[test]
+    fn test_push_into_empty_flow_sequence_nested_indent() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        let doc = Document::from_str("a:\n  seq: []\n").unwrap();
+        let seq = doc
+            .get_path("a.seq")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .clone();
+        seq.push("item1");
+        assert_eq!(doc.to_string(), "a:\n  seq: \n    - item1\n");
+    }
+
+    #[test]
+    fn test_push_deeply_nested_block_sequence_inherits_indent() {
+        // Regression: `push` fell back to a 2-space INDENT for the new entry
+        // because the sequence has no top-level INDENT (single entry) and its
+        // one entry starts with DASH, not WHITESPACE. The correct column lives
+        // on the parent VALUE's INDENT (the one before the SEQUENCE node).
+        use crate::path::YamlPath;
+        use crate::Document;
+        let doc = Document::from_str("a:\n  b:\n    c:\n      - existing\n").unwrap();
+        let seq = doc
+            .get_path("a.b.c")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .clone();
+        seq.push("new_item");
+        assert_eq!(
+            doc.to_string(),
+            "a:\n  b:\n    c:\n      - existing\n      - new_item\n"
+        );
+    }
 
     #[test]
     fn test_push_into_empty_sequence_under_mapping_placeholder() {

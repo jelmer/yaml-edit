@@ -15,9 +15,13 @@
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use rowan::ast::AstNode;
-use std::str::FromStr;
-use yaml_edit::path::YamlPath;
-use yaml_edit::{debug, Document};
+use yaml_edit::debug;
+
+// The mutation post-conditions are shared with the proptest target.
+// `include!` pulls them in verbatim because fuzz targets are separate
+// crates and can't `mod common;` into the tests directory. The include
+// brings its own `use` statements for Document, FromStr, YamlPath.
+include!("../../tests/common/mutation_checks.rs");
 
 const SEEDS: &[&str] = &[
     "a: 1\n",
@@ -41,6 +45,15 @@ const SEEDS: &[&str] = &[
     "a: null\n",
     "a: \"\"\n",
     "empty_map: {}\nempty_seq: []\n",
+    // Short-name seeds so the fuzz's <=6-char keys can actually reach
+    // the sequences and mappings inside. Otherwise a key like
+    // `empty_seq` (9 chars) is unreachable.
+    "s: []\n",
+    "s: [x]\n",
+    "s:\n  - a\n",
+    "s:\n  - a\n  - b\n  - c\n",
+    "m: {}\n",
+    "m: {a: 1}\n",
 ];
 
 /// A short ASCII string drawn from an alphabet designed to hit
@@ -119,23 +132,51 @@ fn apply(doc: &Document, op: &Op) {
         return;
     };
     match op {
-        Op::SetString(k, v) => mapping.set(as_str(k), as_str(v)),
-        Op::SetInt(k, v) => mapping.set(as_str(k), *v as i64),
+        Op::SetString(k, v) => {
+            mapping.set(as_str(k), as_str(v));
+            assert_mapping_set_stuck(&mapping, as_str(k), as_str(v), doc);
+        }
+        Op::SetInt(k, v) => {
+            mapping.set(as_str(k), *v as i64);
+            let expected = (*v as i64).to_string();
+            assert_mapping_set_stuck(&mapping, as_str(k), &expected, doc);
+        }
         Op::Remove(k) => {
-            let _ = mapping.remove(as_str(k));
+            let existed = mapping.contains_key(as_str(k));
+            let entry = mapping.remove(as_str(k));
+            if entry.is_some() != existed {
+                panic!(
+                    "MappingRemove({:?}): returned {:?} but contains_key was {}",
+                    as_str(k),
+                    entry.is_some(),
+                    existed
+                );
+            }
+            assert_mapping_remove_stuck(&mapping, as_str(k), existed, doc);
         }
         Op::Rename(a, b) => {
-            let _ = mapping.rename_key(as_str(a), as_str(b));
+            let renamed = mapping.rename_key(as_str(a), as_str(b));
+            assert_mapping_rename_stuck(&mapping, as_str(b), renamed, doc);
         }
-        Op::Clear => mapping.clear(),
+        Op::Clear => {
+            mapping.clear();
+            assert_mapping_clear_stuck(&mapping, doc);
+        }
         Op::InsertAfter(a, k, v) => {
-            let _ = mapping.insert_after(as_str(a), as_str(k), as_str(v));
+            let inserted = mapping.insert_after(as_str(a), as_str(k), as_str(v));
+            if inserted {
+                assert_mapping_insert_stuck(&mapping, as_str(k), as_str(v), doc, "InsertAfter");
+            }
         }
         Op::InsertBefore(a, k, v) => {
-            let _ = mapping.insert_before(as_str(a), as_str(k), as_str(v));
+            let inserted = mapping.insert_before(as_str(a), as_str(k), as_str(v));
+            if inserted {
+                assert_mapping_insert_stuck(&mapping, as_str(k), as_str(v), doc, "InsertBefore");
+            }
         }
         Op::InsertAtIndex(i, k, v) => {
             mapping.insert_at_index(*i as usize, as_str(k), as_str(v));
+            assert_mapping_insert_stuck(&mapping, as_str(k), as_str(v), doc, "InsertAtIndex");
         }
         Op::MoveAfter(a, k, v) => {
             let _ = mapping.move_after(as_str(a), as_str(k), as_str(v));
@@ -151,32 +192,46 @@ fn apply(doc: &Document, op: &Op) {
         }
         Op::SeqPush(k, v) => {
             if let Some(seq) = mapping.get_sequence(as_str(k)) {
+                let before = seq.len();
                 seq.push(as_str(v));
+                assert_seq_push_stuck(&seq, before, as_str(v), doc, as_str(k));
             }
         }
         Op::SeqPop(k) => {
             if let Some(seq) = mapping.get_sequence(as_str(k)) {
-                let _ = seq.pop();
+                let before = seq.len();
+                let popped = seq.pop();
+                assert_seq_pop_stuck(&seq, before, popped.is_some(), doc, as_str(k));
             }
         }
         Op::SeqInsert(k, i, v) => {
             if let Some(seq) = mapping.get_sequence(as_str(k)) {
-                seq.insert(*i as usize, as_str(v));
+                let before = seq.len();
+                let idx = *i as usize;
+                seq.insert(idx, as_str(v));
+                assert_seq_insert_stuck(&seq, before, idx, as_str(v), doc, as_str(k));
             }
         }
         Op::SeqSet(k, i, v) => {
             if let Some(seq) = mapping.get_sequence(as_str(k)) {
-                let _ = seq.set(*i as usize, as_str(v));
+                let before = seq.len();
+                let idx = *i as usize;
+                let ok = seq.set(idx, as_str(v));
+                assert_seq_set_stuck(&seq, before, idx, as_str(v), ok, doc, as_str(k));
             }
         }
         Op::SeqRemove(k, i) => {
             if let Some(seq) = mapping.get_sequence(as_str(k)) {
-                let _ = seq.remove(*i as usize);
+                let before = seq.len();
+                let idx = *i as usize;
+                let removed = seq.remove(idx);
+                assert_seq_remove_stuck(&seq, before, idx, removed.is_some(), doc, as_str(k));
             }
         }
         Op::SeqClear(k) => {
             if let Some(seq) = mapping.get_sequence(as_str(k)) {
                 seq.clear();
+                assert_seq_clear_stuck(&seq, doc, as_str(k));
             }
         }
         Op::NestedSet(k, ik, v) => {
@@ -191,16 +246,21 @@ fn apply(doc: &Document, op: &Op) {
         }
         Op::SetPath(p, v) => {
             if !p.is_empty() {
-                doc.set_path(&dotted(p), as_str(v));
+                let path = dotted(p);
+                doc.set_path(&path, as_str(v));
+                assert_set_path_stuck(doc, &path, as_str(v));
             }
         }
         Op::RemovePath(p) => {
             if !p.is_empty() {
-                let _ = doc.remove_path(&dotted(p));
+                let path = dotted(p);
+                let removed = doc.remove_path(&path);
+                assert_remove_path_stuck(doc, &path, removed);
             }
         }
     }
 }
+
 
 fn assert_ok(doc: &Document) {
     let syntax = doc.syntax();

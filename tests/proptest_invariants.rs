@@ -10,6 +10,9 @@ use std::str::FromStr;
 use yaml_edit::path::YamlPath;
 use yaml_edit::{debug, Document};
 
+mod common;
+use common::mutation_checks::*;
+
 /// A random-but-plausible mutation to apply.
 ///
 /// Keep in sync with `fuzz/fuzz_targets/mutation_invariants.rs::Op`.
@@ -66,9 +69,30 @@ fn index_strat() -> impl Strategy<Value = usize> {
     0usize..7
 }
 
-/// A dotted path with 1..=3 segments, each a simple key.
+/// A path with 1..=3 segments. Bare keys (`a`), or a bare key
+/// followed by at most one index (`items[0]`, `items[0].name`).
+/// Nested-sequence indices (`s[0][0]`) are known-broken (see
+/// set_path_nested_sequence_indices in tests/invariants.rs) and
+/// excluded here so the fuzz can keep exploring.
 fn path_strat() -> impl Strategy<Value = String> {
-    prop::collection::vec(key_strat(), 1..=3).prop_map(|segs| segs.join("."))
+    (
+        key_strat(),
+        prop::option::of(0usize..4),
+        prop::option::of(key_strat()),
+    )
+        .prop_map(|(k0, idx, k1)| {
+            let mut out = k0;
+            if let Some(i) = idx {
+                out.push('[');
+                out.push_str(&i.to_string());
+                out.push(']');
+            }
+            if let Some(k) = k1 {
+                out.push('.');
+                out.push_str(&k);
+            }
+            out
+        })
 }
 
 fn op_strat() -> impl Strategy<Value = Op> {
@@ -137,6 +161,14 @@ fn seed_strat() -> impl Strategy<Value = &'static str> {
         Just("a: null\n"),
         Just("a: \"\"\n"),
         Just("empty_map: {}\nempty_seq: []\n"),
+        // Short-name seeds so key_strat's <=6-char keys can actually
+        // reach the sequences and mappings inside.
+        Just("s: []\n"),
+        Just("s: [x]\n"),
+        Just("s:\n  - a\n"),
+        Just("s:\n  - a\n  - b\n  - c\n"),
+        Just("m: {}\n"),
+        Just("m: {a: 1}\n"),
     ]
 }
 
@@ -145,23 +177,52 @@ fn apply(doc: &Document, op: &Op) {
         return;
     };
     match op {
-        Op::SetString(k, v) => mapping.set(k.as_str(), v.as_str()),
-        Op::SetInt(k, v) => mapping.set(k.as_str(), *v as i64),
+        Op::SetString(k, v) => {
+            mapping.set(k.as_str(), v.as_str());
+            assert_mapping_set_stuck(&mapping, k.as_str(), v.as_str(), doc);
+        }
+        Op::SetInt(k, v) => {
+            mapping.set(k.as_str(), *v as i64);
+            let expected = (*v as i64).to_string();
+            assert_mapping_set_stuck(&mapping, k.as_str(), &expected, doc);
+        }
         Op::Remove(k) => {
-            let _ = mapping.remove(k.as_str());
+            let existed = mapping.contains_key(k.as_str());
+            let entry = mapping.remove(k.as_str());
+            // remove() returns Some iff the key existed.
+            if entry.is_some() != existed {
+                panic!(
+                    "MappingRemove({:?}): returned {:?} but contains_key was {}",
+                    k,
+                    entry.is_some(),
+                    existed
+                );
+            }
+            assert_mapping_remove_stuck(&mapping, k.as_str(), existed, doc);
         }
         Op::Rename(a, b) => {
-            let _ = mapping.rename_key(a.as_str(), b.as_str());
+            let renamed = mapping.rename_key(a.as_str(), b.as_str());
+            assert_mapping_rename_stuck(&mapping, b.as_str(), renamed, doc);
         }
-        Op::Clear => mapping.clear(),
+        Op::Clear => {
+            mapping.clear();
+            assert_mapping_clear_stuck(&mapping, doc);
+        }
         Op::InsertAfter(a, k, v) => {
-            let _ = mapping.insert_after(a.as_str(), k.as_str(), v.as_str());
+            let inserted = mapping.insert_after(a.as_str(), k.as_str(), v.as_str());
+            if inserted {
+                assert_mapping_insert_stuck(&mapping, k.as_str(), v.as_str(), doc, "InsertAfter");
+            }
         }
         Op::InsertBefore(a, k, v) => {
-            let _ = mapping.insert_before(a.as_str(), k.as_str(), v.as_str());
+            let inserted = mapping.insert_before(a.as_str(), k.as_str(), v.as_str());
+            if inserted {
+                assert_mapping_insert_stuck(&mapping, k.as_str(), v.as_str(), doc, "InsertBefore");
+            }
         }
         Op::InsertAtIndex(i, k, v) => {
             mapping.insert_at_index(*i, k.as_str(), v.as_str());
+            assert_mapping_insert_stuck(&mapping, k.as_str(), v.as_str(), doc, "InsertAtIndex");
         }
         Op::MoveAfter(a, k, v) => {
             let _ = mapping.move_after(a.as_str(), k.as_str(), v.as_str());
@@ -177,32 +238,43 @@ fn apply(doc: &Document, op: &Op) {
         }
         Op::SeqPush(k, v) => {
             if let Some(seq) = mapping.get_sequence(k.as_str()) {
+                let before = seq.len();
                 seq.push(v.as_str());
+                assert_seq_push_stuck(&seq, before, v.as_str(), doc, k.as_str());
             }
         }
         Op::SeqPop(k) => {
             if let Some(seq) = mapping.get_sequence(k.as_str()) {
-                let _ = seq.pop();
+                let before = seq.len();
+                let popped = seq.pop();
+                assert_seq_pop_stuck(&seq, before, popped.is_some(), doc, k.as_str());
             }
         }
         Op::SeqInsert(k, i, v) => {
             if let Some(seq) = mapping.get_sequence(k.as_str()) {
+                let before = seq.len();
                 seq.insert(*i, v.as_str());
+                assert_seq_insert_stuck(&seq, before, *i, v.as_str(), doc, k.as_str());
             }
         }
         Op::SeqSet(k, i, v) => {
             if let Some(seq) = mapping.get_sequence(k.as_str()) {
-                let _ = seq.set(*i, v.as_str());
+                let before = seq.len();
+                let ok = seq.set(*i, v.as_str());
+                assert_seq_set_stuck(&seq, before, *i, v.as_str(), ok, doc, k.as_str());
             }
         }
         Op::SeqRemove(k, i) => {
             if let Some(seq) = mapping.get_sequence(k.as_str()) {
-                let _ = seq.remove(*i);
+                let before = seq.len();
+                let removed = seq.remove(*i);
+                assert_seq_remove_stuck(&seq, before, *i, removed.is_some(), doc, k.as_str());
             }
         }
         Op::SeqClear(k) => {
             if let Some(seq) = mapping.get_sequence(k.as_str()) {
                 seq.clear();
+                assert_seq_clear_stuck(&seq, doc, k.as_str());
             }
         }
         Op::NestedSet(k, ik, v) => {
@@ -215,9 +287,13 @@ fn apply(doc: &Document, op: &Op) {
                 let _ = nested.remove(ik.as_str());
             }
         }
-        Op::SetPath(p, v) => doc.set_path(p, v.as_str()),
+        Op::SetPath(p, v) => {
+            doc.set_path(p, v.as_str());
+            assert_set_path_stuck(doc, p, v.as_str());
+        }
         Op::RemovePath(p) => {
-            let _ = doc.remove_path(p);
+            let removed = doc.remove_path(p);
+            assert_remove_path_stuck(doc, p, removed);
         }
     }
 }

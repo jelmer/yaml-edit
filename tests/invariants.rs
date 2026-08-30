@@ -229,3 +229,211 @@ fn set_path_after_explicit_key_does_not_leave_blank_line() {
         doc.to_string()
     );
 }
+
+// Regression tests for bugs surfaced by the post-conditioned mutation
+// proptest in `tests/proptest_invariants.rs`. Most are now-passing
+// regressions; the two `#[ignore]`d ones document deeper bugs still to
+// fix. Un-ignore them (and update the assertion to the correct output)
+// when addressed.
+
+#[test]
+fn sequence_pop_last_item_collapses_to_flow_empty() {
+    let doc = Document::from_str("s:\n  - a\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.pop();
+    assert_eq!(doc.to_string(), "s: []\n");
+    check(&doc);
+    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+    assert!(reparsed
+        .as_mapping()
+        .and_then(|m| m.get_sequence("s"))
+        .is_some());
+}
+
+#[test]
+fn sequence_remove_last_item_collapses_to_flow_empty() {
+    let doc = Document::from_str("s:\n  - a\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.remove(0);
+    assert_eq!(doc.to_string(), "s: []\n");
+    check(&doc);
+}
+
+#[test]
+fn sequence_clear_block_collapses_to_flow_empty() {
+    let doc = Document::from_str("s:\n  - a\n  - b\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.clear();
+    assert_eq!(doc.to_string(), "s: []\n");
+    check(&doc);
+}
+
+#[test]
+fn sequence_remove_last_entry_preserves_following_mapping_entry() {
+    // The new-last SEQUENCE_ENTRY's trailing NEWLINE doubles as the
+    // separator between the containing MAPPING_ENTRY and its next
+    // sibling; removing the sequence's last entry must not strip it.
+    let doc = Document::from_str("s:\n  - a\n  - b\n  - c\na: ''\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.pop();
+    check(&doc);
+    assert_eq!(doc.to_string(), "s:\n  - a\n  - b\na: ''\n");
+}
+
+#[test]
+fn set_path_nested_sequence_indices() {
+    // Nested index paths on fresh intermediates render as `outer
+    // block, inner flow` (`s:\n  - [hi]\n`) rather than a compact
+    // block that re-parses as a plain scalar.
+    use yaml_edit::path::YamlPath;
+    let doc = Document::from_str("a: 1\n").unwrap();
+    doc.set_path("s[0][0]", "hi");
+    check(&doc);
+    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+    let got = reparsed
+        .get_path("s[0][0]")
+        .as_ref()
+        .and_then(|n| n.as_scalar().map(|s| s.as_string()));
+    assert_eq!(got.as_deref(), Some("hi"));
+}
+
+#[test]
+fn parser_terminates_tagged_block_at_column_zero() {
+    // Given `keys: !!set\n  ? a\n  ? b\na: ''\n`, the trailing
+    // `a: ''` at column 0 belongs at the top level, not inside the
+    // !!set block. parse_tagged_collection needs to anchor the
+    // inner block on the indent it consumed so a dedent-to-zero
+    // terminates it properly.
+    let src = "keys: !!set\n  ? a\n  ? b\na: ''\n";
+    let doc = Document::from_str(src).unwrap();
+    let keys: Vec<String> = doc
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .filter_map(|k| k.as_scalar().map(|s| s.as_string()))
+        .collect();
+    assert_eq!(keys, vec!["keys".to_string(), "a".to_string()]);
+    check(&doc);
+}
+
+#[test]
+fn insert_before_in_flow_mapping_stays_flow() {
+    // insert_before/move_before used to build a block-style entry
+    // (with trailing NEWLINE) and splice it inside the `{}` of a
+    // flow mapping, producing `{a: a\nf: 0}` -- a mixed shape that
+    // re-parses with `a` as the multi-line scalar `"a f"`.
+    let doc = Document::from_str("{f: 0}").unwrap();
+    doc.as_mapping().unwrap().insert_before("f", "a", "hi");
+    assert_eq!(doc.to_string(), "{a: \"hi\", f: 0}");
+    check(&doc);
+}
+
+#[test]
+fn insert_after_in_flow_mapping_stays_flow() {
+    let doc = Document::from_str("{f: 0}").unwrap();
+    doc.as_mapping().unwrap().insert_after("f", "a", "hi");
+    assert_eq!(doc.to_string(), "{f: 0, a: \"hi\"}");
+    check(&doc);
+}
+
+#[test]
+fn top_level_mapping_clear_renders_flow_empty() {
+    // A top-level mapping has no enclosing MAPPING_ENTRY to collapse
+    // into `key: {}`; without the explicit `{}` fallback in clear()
+    // the doc renders as empty text and re-parses to no-mapping.
+    let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
+    doc.as_mapping().unwrap().clear();
+    assert_eq!(doc.to_string(), "{}");
+    check(&doc);
+    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+    assert!(reparsed.as_mapping().is_some());
+    assert!(reparsed.as_mapping().unwrap().is_empty());
+}
+
+#[test]
+fn reorder_keeps_between_entry_comment_attached_to_predecessor() {
+    // A comment between two entries counts as the predecessor's
+    // postscript: it stays glued to the entry it visually followed
+    // (`a`) rather than being lifted to the end of the mapping.
+    let doc = Document::from_str("a: 1\n# note\nb: 2\n").unwrap();
+    doc.as_mapping().unwrap().reorder_fields(["b", "a"]);
+    check(&doc);
+    assert_eq!(doc.to_string(), "b: 2\na: 1\n# note\n");
+}
+
+#[test]
+fn reorder_noop_preserves_between_entry_comment() {
+    let doc = Document::from_str("a: 1\n# note\nb: 2\n").unwrap();
+    doc.as_mapping()
+        .unwrap()
+        .reorder_fields(std::iter::empty::<&str>());
+    check(&doc);
+    assert_eq!(doc.to_string(), "a: 1\n# note\nb: 2\n");
+}
+
+#[test]
+fn reorder_after_add_preserves_entry_separator() {
+    // insert_at_index used to prepend a NEWLINE at the MAPPING level as
+    // a separator when the previous entry lacked one. reorder_fields
+    // rebuilds the mapping's child list from the entry nodes alone
+    // and dropped the standalone NEWLINE, smooshing entries together.
+    // Fix: the previous entry gets its NEWLINE appended inside itself.
+    let doc = Document::from_str("s:\n  - a\n  - b\n  - c\n").unwrap();
+    doc.as_mapping().unwrap().get_sequence("s").unwrap().pop();
+    doc.as_mapping().unwrap().insert_at_index(1, "a", "");
+    doc.as_mapping()
+        .unwrap()
+        .reorder_fields(std::iter::empty::<&str>());
+    check(&doc);
+    assert_eq!(doc.to_string(), "s:\n  - a\n  - b\na: ''\n");
+}
+
+#[test]
+fn sequence_remove_first_entry_preserves_new_first_indent() {
+    // The INDENT that separated entry 0 from entry 1 must be dropped
+    // when entry 0 goes, otherwise it becomes a leading INDENT inside
+    // SEQUENCE that stacks with the parent VALUE's INDENT.
+    let doc = Document::from_str("s:\n  - a\n  - b\n  - c\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.remove(0);
+    assert_eq!(doc.to_string(), "s:\n  - b\n  - c\n");
+    check(&doc);
+}
+
+#[test]
+fn sequence_insert_into_empty_flow_reshapes_to_block() {
+    let doc = Document::from_str("s: []\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.insert(0, "x");
+    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+    let seq2 = reparsed.as_mapping().unwrap().get_sequence("s").unwrap();
+    assert_eq!(seq2.len(), 1);
+    check(&doc);
+}
+
+#[test]
+fn sequence_push_into_nonempty_flow_stays_flow() {
+    let doc = Document::from_str("s: [x]\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.push("y");
+    assert_eq!(doc.to_string(), "s: [x, y]\n");
+    check(&doc);
+}
+
+#[test]
+fn sequence_insert_into_nonempty_flow_stays_flow() {
+    let doc = Document::from_str("s: [x]\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.insert(0, "y");
+    assert_eq!(doc.to_string(), "s: [y, x]\n");
+    check(&doc);
+}
+
+#[test]
+fn sequence_insert_at_head_into_single_entry_block() {
+    let doc = Document::from_str("s:\n  - a\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.insert(0, "b");
+    assert_eq!(doc.to_string(), "s:\n  - b\n  - a\n");
+    check(&doc);
+}

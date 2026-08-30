@@ -188,6 +188,88 @@ pub(crate) fn detach_empty_collection_placeholder_newline(
     }
 }
 
+/// If `collection` is an empty block MAPPING or SEQUENCE sitting
+/// inside a MAPPING_ENTRY's VALUE, replace the `NEWLINE INDENT
+/// COLLECTION` placeholder with an inline flow-empty
+/// (` {}` or ` []`) so the entry renders as `key: {}` / `key: []`
+/// instead of an unterminated `key:\n    ` shape.
+///
+/// Skips flow collections (`{}` / `[]` already render correctly) and
+/// VALUEs carrying anything beyond decoration around the collection
+/// (comments, sibling scalars, anchors, tags).
+pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode) {
+    let (open_kind, close_kind, open_txt, close_txt) = match collection.kind() {
+        SyntaxKind::MAPPING => (SyntaxKind::LEFT_BRACE, SyntaxKind::RIGHT_BRACE, "{", "}"),
+        SyntaxKind::SEQUENCE => (
+            SyntaxKind::LEFT_BRACKET,
+            SyntaxKind::RIGHT_BRACKET,
+            "[",
+            "]",
+        ),
+        _ => return,
+    };
+
+    // Flow collections already render correctly when empty.
+    let is_flow = collection
+        .children_with_tokens()
+        .any(|c| c.as_token().is_some_and(|t| t.kind() == open_kind));
+    if is_flow {
+        return;
+    }
+
+    let Some(value_node) = collection.parent() else {
+        return;
+    };
+    if value_node.kind() != SyntaxKind::VALUE {
+        return;
+    }
+    let Some(entry_node) = value_node.parent() else {
+        return;
+    };
+    if entry_node.kind() != SyntaxKind::MAPPING_ENTRY {
+        return;
+    }
+
+    // Bail if the VALUE carries anything beyond decoration.
+    let has_other = value_node.children_with_tokens().any(|el| match el {
+        rowan::NodeOrToken::Node(n) => &n != collection,
+        rowan::NodeOrToken::Token(t) => !matches!(
+            t.kind(),
+            SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE
+        ),
+    });
+    if has_other {
+        return;
+    }
+
+    // Targeted edit: keep the VALUE node, drop the block-empty
+    // collection plus its NEWLINE/INDENT/WHITESPACE decoration in
+    // place, and splice a WHITESPACE + fresh flow-empty collection
+    // in its place. Leaves the VALUE wrapper (and anything the
+    // has_other check let through) intact.
+    let value_children: Vec<_> = value_node.children_with_tokens().collect();
+    for c in &value_children {
+        c.detach();
+    }
+    let ws = crate::nodes::fresh_token(SyntaxKind::WHITESPACE, " ");
+    let mut inner_builder = rowan::GreenNodeBuilder::new();
+    inner_builder.start_node(collection.kind().into());
+    inner_builder.token(open_kind.into(), open_txt);
+    inner_builder.token(close_kind.into(), close_txt);
+    inner_builder.finish_node();
+    let new_collection = SyntaxNode::new_root_mut(inner_builder.finish());
+    value_node.splice_children(0..0, vec![ws.into(), new_collection.into()]);
+
+    // The next sibling entry needs a NEWLINE separator inside this
+    // entry (see the "entry termination" invariant in
+    // src/nodes/mod.rs).
+    if !ends_with_newline(&entry_node) {
+        let nl = crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n");
+        let end = entry_node.children_with_tokens().count();
+        entry_node.splice_children(end..end, vec![nl.into()]);
+    }
+}
+
 /// Create a newline token and add it to the elements vector
 pub(crate) fn add_newline_token(
     elements: &mut Vec<rowan::NodeOrToken<rowan::SyntaxNode<Lang>, rowan::SyntaxToken<Lang>>>,
@@ -1323,17 +1405,22 @@ impl Parser {
                 if self.current() == Some(SyntaxKind::INDENT) {
                     self.bump(); // consume indent
                 }
+                // Anchor the inner block on the indent we just
+                // consumed so a column-0 sibling entry dedents out of
+                // this tagged collection instead of being absorbed.
+                let inner_base = self.current_line_indent;
                 if is_mapping {
-                    self.parse_mapping();
+                    self.parse_mapping_with_base_indent(inner_base);
                 } else {
-                    self.parse_sequence();
+                    self.parse_sequence_with_base_indent(inner_base);
                 }
             }
             _ => {
+                let inner_base = self.current_line_indent;
                 if is_mapping {
-                    self.parse_mapping();
+                    self.parse_mapping_with_base_indent(inner_base);
                 } else {
-                    self.parse_sequence();
+                    self.parse_sequence_with_base_indent(inner_base);
                 }
             }
         }
@@ -1501,10 +1588,6 @@ impl Parser {
             }
         }
         false
-    }
-
-    fn parse_mapping(&mut self) {
-        self.parse_mapping_with_base_indent(0);
     }
 
     fn parse_mapping_with_base_indent(&mut self, base_indent: usize) {

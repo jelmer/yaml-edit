@@ -5,6 +5,8 @@
 
 #![allow(dead_code)]
 
+pub mod mutation_checks;
+
 use rowan::ast::AstNode;
 use yaml_edit::{debug, Document, YamlFile};
 

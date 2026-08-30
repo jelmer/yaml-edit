@@ -12,7 +12,7 @@ use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
 
 /// Where to place a new entry inside a flow-style mapping (`{...}`).
-pub(super) enum FlowInsertPos {
+pub(in crate::nodes) enum FlowInsertPos {
     /// At the end (right before the closing `}`).
     End,
     /// Right after this existing MAPPING_ENTRY child.

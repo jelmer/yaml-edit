@@ -280,13 +280,14 @@ fn yaml_test_suite() {
 
     results.report();
 
-    // For now, we don't fail the test suite - just report results
-    // Once we improve compliance, we can make this stricter
-    if results.failed > 0 {
-        println!(
-            "\nNote: Some tests failed. This is expected as yaml-edit is still in development."
-        );
-        println!("Run with VERBOSE=1 to see detailed failure information.");
-        println!("Run with LIMIT=N to test only the first N cases.");
-    }
+    // Fail the test on any regression. The suite currently passes 100%
+    // of its cases; any new failure means either yaml-edit broke a case
+    // it used to handle, or the harness's coarse pass criteria (see
+    // `run_test`) started letting through a genuine bug. Investigate,
+    // don't downgrade the assertion.
+    assert_eq!(
+        results.failed, 0,
+        "{} YAML test suite case(s) failed. Run with VERBOSE=1 for details, LIMIT=N to narrow.",
+        results.failed,
+    );
 }

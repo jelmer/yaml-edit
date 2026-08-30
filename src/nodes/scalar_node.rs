@@ -36,7 +36,7 @@ impl fmt::Display for ScalarConversionError {
                 write!(f, "Cannot convert quoted scalar to numeric/boolean type")
             }
             ScalarConversionError::ParseError(msg) => {
-                write!(f, "Failed to parse scalar: {}", msg)
+                write!(f, "Failed to parse scalar: {msg}")
             }
         }
     }
@@ -134,8 +134,7 @@ impl Scalar {
         let base_indent = content_lines
             .iter()
             .find(|line| !line.trim().is_empty())
-            .map(|line| line.chars().take_while(|c| *c == ' ').count())
-            .unwrap_or(0);
+            .map_or(0, |line| line.chars().take_while(|c| *c == ' ').count());
 
         // Count trailing empty lines for Keep chomping
         let trailing_empty_count = content_lines
@@ -175,8 +174,7 @@ impl Scalar {
                 let strip_bytes = line
                     .char_indices()
                     .nth(strip)
-                    .map(|(i, _)| i)
-                    .unwrap_or(line.len());
+                    .map_or(line.len(), |(i, _)| i);
                 let stripped = &line[strip_bytes..];
 
                 if is_literal {
@@ -463,8 +461,7 @@ impl TryFrom<&Scalar> for bool {
             "yes" | "Yes" | "YES" | "on" | "On" | "ON" => Ok(true),
             "no" | "No" | "NO" | "off" | "Off" | "OFF" => Ok(false),
             _ => Err(ScalarConversionError::ParseError(format!(
-                "'{}' is not a recognized boolean value",
-                value
+                "'{value}' is not a recognized boolean value"
             ))),
         }
     }

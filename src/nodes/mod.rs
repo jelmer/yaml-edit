@@ -142,6 +142,21 @@ pub(crate) fn fresh_token(kind: SyntaxKind, text: &str) -> SyntaxToken {
         .expect("just built a token")
 }
 
+/// The first direct child node of `parent` with the given `kind`, if any.
+pub(crate) fn child_of_kind(parent: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
+    parent.children().find(|n| n.kind() == kind)
+}
+
+/// The `KEY` child of a `MAPPING_ENTRY`.
+pub(crate) fn entry_key(entry: &SyntaxNode) -> Option<SyntaxNode> {
+    child_of_kind(entry, SyntaxKind::KEY)
+}
+
+/// The `VALUE` child of a `MAPPING_ENTRY` or `SEQUENCE_ENTRY`.
+pub(crate) fn entry_value(entry: &SyntaxNode) -> Option<SyntaxNode> {
+    child_of_kind(entry, SyntaxKind::VALUE)
+}
+
 /// A macro to create AST node wrappers.
 macro_rules! ast_node {
     ($ast:ident, $kind:ident, $doc:expr) => {

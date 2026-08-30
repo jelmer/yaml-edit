@@ -817,8 +817,7 @@ pub fn lex_with_validation_config<'a>(
                     if line_length > max_len {
                         whitespace_errors.push(WhitespaceError {
                             message: format!(
-                                "Line too long ({} > {} characters)",
-                                line_length, max_len
+                                "Line too long ({line_length} > {max_len} characters)"
                             ),
                             range: current_line_start..start_idx,
                             category: WhitespaceErrorCategory::LineTooLong,
@@ -852,8 +851,7 @@ pub fn lex_with_validation_config<'a>(
                     if line_length > max_len {
                         whitespace_errors.push(WhitespaceError {
                             message: format!(
-                                "Line too long ({} > {} characters)",
-                                line_length, max_len
+                                "Line too long ({line_length} > {max_len} characters)"
                             ),
                             range: current_line_start..start_idx,
                             category: WhitespaceErrorCategory::LineTooLong,
@@ -1021,10 +1019,7 @@ pub fn lex_with_validation_config<'a>(
         let final_line_length = input.len() - current_line_start;
         if final_line_length > max_len && final_line_length > 0 {
             whitespace_errors.push(WhitespaceError {
-                message: format!(
-                    "Line too long ({} > {} characters)",
-                    final_line_length, max_len
-                ),
+                message: format!("Line too long ({final_line_length} > {max_len} characters)"),
                 range: current_line_start..input.len(),
                 category: WhitespaceErrorCategory::LineTooLong,
             });

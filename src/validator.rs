@@ -234,7 +234,7 @@ impl Validator {
                     content
                 };
                 violations.push(Violation {
-                    message: format!("Invalid content in document: {:?}", preview),
+                    message: format!("Invalid content in document: {preview:?}"),
                     location: None,
                     text_range: Some(range_to_text_position(node.text_range())),
                     severity: Severity::Error,
@@ -532,7 +532,7 @@ impl Validator {
         for (directive_type, count) in directive_counts {
             if count > 1 {
                 violations.push(Violation {
-                    message: format!("Duplicate {} directive", directive_type),
+                    message: format!("Duplicate {directive_type} directive"),
                     location: None,
                     text_range: None,
                     severity: Severity::Error,
@@ -588,7 +588,7 @@ impl Validator {
 
                     if !valid_escapes.contains(&next) {
                         violations.push(Violation {
-                            message: format!("Invalid escape sequence: \\{}", next),
+                            message: format!("Invalid escape sequence: \\{next}"),
                             location: None,
                             text_range: Some(range_to_text_position(node.text_range())),
                             severity: Severity::Error,
@@ -967,8 +967,7 @@ impl Validator {
         if entry_count > 1 && comma_count < entry_count - 1 {
             violations.push(Violation {
                 message: format!(
-                    "Flow collection missing commas: {} entries but only {} commas",
-                    entry_count, comma_count
+                    "Flow collection missing commas: {entry_count} entries but only {comma_count} commas"
                 ),
                 location: None,
                 text_range: None,
@@ -1342,7 +1341,7 @@ impl Validator {
         for ch in invalid_chars {
             if tag_text.contains(ch) {
                 violations.push(Violation {
-                    message: format!("Invalid character '{}' in tag", ch),
+                    message: format!("Invalid character '{ch}' in tag"),
                     location: None,
                     text_range: Some(range_to_text_position(token.text_range())),
                     severity: Severity::Error,
@@ -1573,7 +1572,7 @@ impl Validator {
     /// Helper to calculate column position from text offset
     fn get_column(&self, text: &str, offset: usize) -> usize {
         let offset = offset.min(text.len());
-        let line_start = text[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line_start = text[..offset].rfind('\n').map_or(0, |i| i + 1);
         text[line_start..offset].chars().count()
     }
 
@@ -1753,7 +1752,7 @@ impl Validator {
                             if s.is_empty() {
                                 "\"\"".to_string()
                             } else {
-                                format!("{:?}", s)
+                                format!("{s:?}")
                             }
                         };
 

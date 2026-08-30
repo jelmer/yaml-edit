@@ -73,31 +73,26 @@ pub trait ValueNode: rowan::ast::AstNode<Language = Lang> {
 
 impl ValueNode for Mapping {
     fn is_inline(&self) -> bool {
-        // Check if this is a flow-style mapping (empty or has braces)
-        if self.0.children_with_tokens().any(|c| {
-            c.as_token()
-                .map(|t| t.kind() == SyntaxKind::LEFT_BRACE || t.kind() == SyntaxKind::RIGHT_BRACE)
-                .unwrap_or(false)
-        }) {
-            return true;
-        }
-        false
+        // Flow-style mappings contain brace tokens.
+        self.0.children_with_tokens().any(|c| {
+            c.as_token().is_some_and(|t| {
+                matches!(t.kind(), SyntaxKind::LEFT_BRACE | SyntaxKind::RIGHT_BRACE)
+            })
+        })
     }
 }
 
 impl ValueNode for Sequence {
     fn is_inline(&self) -> bool {
-        // Check if this is a flow-style sequence (has brackets)
-        if self.0.children_with_tokens().any(|c| {
-            c.as_token()
-                .map(|t| {
-                    t.kind() == SyntaxKind::LEFT_BRACKET || t.kind() == SyntaxKind::RIGHT_BRACKET
-                })
-                .unwrap_or(false)
-        }) {
-            return true;
-        }
-        false
+        // Flow-style sequences contain bracket tokens.
+        self.0.children_with_tokens().any(|c| {
+            c.as_token().is_some_and(|t| {
+                matches!(
+                    t.kind(),
+                    SyntaxKind::LEFT_BRACKET | SyntaxKind::RIGHT_BRACKET
+                )
+            })
+        })
     }
 }
 
@@ -148,8 +143,7 @@ impl ValueNode for TaggedNode {
 /// Check if a syntax node ends with a newline token
 pub(crate) fn ends_with_newline(node: &SyntaxNode) -> bool {
     node.last_token()
-        .map(|t| t.kind() == SyntaxKind::NEWLINE)
-        .unwrap_or(false)
+        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
 }
 
 /// Detach the trailing NEWLINE on `empty_collection`'s enclosing
@@ -217,18 +211,18 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
         return;
     }
 
-    let Some(value_node) = collection.parent() else {
+    let Some(value_node) = collection
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::VALUE)
+    else {
         return;
     };
-    if value_node.kind() != SyntaxKind::VALUE {
-        return;
-    }
-    let Some(entry_node) = value_node.parent() else {
+    let Some(entry_node) = value_node
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::MAPPING_ENTRY)
+    else {
         return;
     };
-    if entry_node.kind() != SyntaxKind::MAPPING_ENTRY {
-        return;
-    }
 
     // Bail if the VALUE carries anything beyond decoration.
     let has_other = value_node.children_with_tokens().any(|el| match el {
@@ -396,11 +390,7 @@ fn extract_content_node(wrapper: &SyntaxNode) -> Option<SyntaxNode> {
 
 /// Smart cast that handles wrapper nodes automatically
 fn smart_cast<T: AstNode<Language = Lang>>(node: SyntaxNode) -> Option<T> {
-    if let Some(content) = extract_content_node(&node) {
-        T::cast(content)
-    } else {
-        None
-    }
+    extract_content_node(&node).and_then(T::cast)
 }
 
 /// Extract a Scalar from any node (handles wrappers automatically)
@@ -1056,7 +1046,7 @@ impl Parser {
                 // Check if next line has indented content
                 self.bump(); // consume newline
                 if self.current() == Some(SyntaxKind::INDENT) {
-                    let indent_level = self.tokens.last().map(|(_, text)| text.len()).unwrap_or(0);
+                    let indent_level = self.tokens.last().map_or(0, |(_, text)| text.len());
                     self.bump(); // consume indent
                     self.parse_value_with_base_indent(indent_level);
                 } else {
@@ -1108,7 +1098,7 @@ impl Parser {
                 };
                 let error_msg = self.create_detailed_error(
                     "Unterminated quoted string",
-                    &format!("closing quote {}", expected_quote),
+                    &format!("closing quote {expected_quote}"),
                     self.current_text(),
                 );
                 self.add_error_and_recover(
@@ -1169,10 +1159,9 @@ impl Parser {
 
                                 // Continue consuming scalar content on next line
                                 continue;
-                            } else {
-                                // Next line is not a continuation - stop here
-                                break;
                             }
+                            // Next line is not a continuation - stop here
+                            break;
                         }
 
                         // In block context, stop at flow collection delimiters
@@ -1209,13 +1198,10 @@ impl Parser {
                     // Check if this is a quoted string (STRING token starting with quote)
                     // Quoted strings are complete in a single token and should not consume
                     // trailing newlines/whitespace
-                    let is_quoted_string = if let Some(SyntaxKind::STRING) = self.current() {
-                        self.current_text()
-                            .map(|text| text.starts_with('"') || text.starts_with('\''))
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    };
+                    let is_quoted_string = matches!(self.current(), Some(SyntaxKind::STRING))
+                        && self
+                            .current_text()
+                            .is_some_and(|text| text.starts_with('"') || text.starts_with('\''));
 
                     self.bump(); // Consume the initial typed token
 
@@ -1574,10 +1560,7 @@ impl Parser {
             let current = self.current();
 
             // COLON or QUESTION at start of line means end of block scalar
-            if matches!(
-                current,
-                Some(SyntaxKind::COLON) | Some(SyntaxKind::QUESTION)
-            ) {
+            if matches!(current, Some(SyntaxKind::COLON | SyntaxKind::QUESTION)) {
                 return true;
             }
 
@@ -1748,7 +1731,7 @@ impl Parser {
             if self.tokens.len() == tokens_before_iter {
                 let unexpected = self.current_text().unwrap_or("").to_string();
                 self.add_error(
-                    format!("Unexpected token in mapping: {:?}", unexpected),
+                    format!("Unexpected token in mapping: {unexpected:?}"),
                     ParseErrorKind::Other,
                 );
                 self.bump();
@@ -1820,7 +1803,7 @@ impl Parser {
                 // Check if next line is indented (nested content for sequence item)
                 self.bump(); // consume newline
                 if self.current() == Some(SyntaxKind::INDENT) {
-                    let indent_level = self.tokens.last().map(|(_, text)| text.len()).unwrap_or(0);
+                    let indent_level = self.tokens.last().map_or(0, |(_, text)| text.len());
                     self.bump(); // consume indent
                                  // Parse the indented content as the sequence item value
                     self.parse_value_with_base_indent(indent_level);
@@ -1883,7 +1866,7 @@ impl Parser {
         // Check if value is omitted (implicit null)
         if matches!(
             self.current(),
-            Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACKET)
+            Some(SyntaxKind::COMMA | SyntaxKind::RIGHT_BRACKET)
         ) {
             // Omitted value - leave VALUE node empty
         } else {
@@ -1953,10 +1936,7 @@ impl Parser {
 
         if self.flow_depth >= MAX_FLOW_DEPTH {
             self.add_error(
-                format!(
-                    "Flow collection nested too deeply (limit {})",
-                    MAX_FLOW_DEPTH
-                ),
+                format!("Flow collection nested too deeply (limit {MAX_FLOW_DEPTH})"),
                 ParseErrorKind::Other,
             );
             // Consume everything up to a closing delimiter to recover, then
@@ -2029,7 +2009,7 @@ impl Parser {
             if self.tokens.len() == tokens_before {
                 let unexpected = self.current_text().unwrap_or("").to_string();
                 self.add_error(
-                    format!("Unexpected token in flow sequence: {:?}", unexpected),
+                    format!("Unexpected token in flow sequence: {unexpected:?}"),
                     ParseErrorKind::Other,
                 );
                 self.bump();
@@ -2064,10 +2044,7 @@ impl Parser {
 
         if self.flow_depth >= MAX_FLOW_DEPTH {
             self.add_error(
-                format!(
-                    "Flow collection nested too deeply (limit {})",
-                    MAX_FLOW_DEPTH
-                ),
+                format!("Flow collection nested too deeply (limit {MAX_FLOW_DEPTH})"),
                 ParseErrorKind::Other,
             );
             while let Some(kind) = self.current() {
@@ -2131,7 +2108,7 @@ impl Parser {
                 // In YAML, `key:,` or `key:}` means key has null value
                 if matches!(
                     self.current(),
-                    Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACE)
+                    Some(SyntaxKind::COMMA | SyntaxKind::RIGHT_BRACE)
                 ) {
                     // Omitted value - create VALUE node with implicit null scalar
                     self.builder.start_node(SyntaxKind::VALUE.into());
@@ -2147,7 +2124,7 @@ impl Parser {
                 }
             } else if matches!(
                 self.current(),
-                Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACE)
+                Some(SyntaxKind::COMMA | SyntaxKind::RIGHT_BRACE)
             ) {
                 // No colon, but followed by comma or closing brace
                 // This means the key itself has a null value (shorthand for key: null)
@@ -2183,7 +2160,7 @@ impl Parser {
             if self.tokens.len() == tokens_before {
                 let unexpected = self.current_text().unwrap_or("").to_string();
                 self.add_error(
-                    format!("Unexpected token in flow mapping: {:?}", unexpected),
+                    format!("Unexpected token in flow mapping: {unexpected:?}"),
                     ParseErrorKind::Other,
                 );
                 self.bump();
@@ -2343,7 +2320,7 @@ impl Parser {
             if self.tokens.len() == tokens_before_iter {
                 let unexpected = self.current_text().unwrap_or("").to_string();
                 self.add_error(
-                    format!("Unexpected token in explicit-key mapping: {:?}", unexpected),
+                    format!("Unexpected token in explicit-key mapping: {unexpected:?}"),
                     ParseErrorKind::Other,
                 );
                 self.bump();
@@ -2470,7 +2447,7 @@ impl Parser {
             if self.tokens.len() == tokens_before_iter {
                 let unexpected = self.current_text().unwrap_or("").to_string();
                 self.add_error(
-                    format!("Unexpected token in complex mapping: {:?}", unexpected),
+                    format!("Unexpected token in complex mapping: {unexpected:?}"),
                     ParseErrorKind::Other,
                 );
                 self.bump();
@@ -2532,7 +2509,7 @@ impl Parser {
         // Check if a flow sequence or mapping is used as a key
         if !matches!(
             self.current(),
-            Some(SyntaxKind::LEFT_BRACKET) | Some(SyntaxKind::LEFT_BRACE)
+            Some(SyntaxKind::LEFT_BRACKET | SyntaxKind::LEFT_BRACE)
         ) {
             return false;
         }
@@ -2809,7 +2786,7 @@ impl Parser {
                             // base_indent==0, let caller handle the comment
                             return false;
                         }
-                        Some(SyntaxKind::WHITESPACE) | Some(SyntaxKind::NEWLINE) => {
+                        Some(SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE) => {
                             // More whitespace, continue loop
                         }
                         None => {
@@ -2862,10 +2839,7 @@ impl Parser {
 
         // Absorb any number of TAG / ANCHOR annotations preceding the
         // key scalar (`&anchor a:`, `!!str foo:`, `!!str &a1 "foo":`).
-        while matches!(
-            self.current(),
-            Some(SyntaxKind::ANCHOR) | Some(SyntaxKind::TAG)
-        ) {
+        while matches!(self.current(), Some(SyntaxKind::ANCHOR | SyntaxKind::TAG)) {
             self.bump(); // consume tag or anchor token
             self.skip_whitespace();
         }
@@ -2932,8 +2906,7 @@ impl Parser {
                     self.bump(); // consume newline inside VALUE
 
                     if self.current() == Some(SyntaxKind::INDENT) {
-                        let indent_level =
-                            self.tokens.last().map(|(_, text)| text.len()).unwrap_or(0);
+                        let indent_level = self.tokens.last().map_or(0, |(_, text)| text.len());
                         self.bump(); // consume indent inside VALUE
                                      // Parse the indented content as part of this VALUE
                         self.parse_value_with_base_indent(indent_level);
@@ -3041,7 +3014,7 @@ impl Parser {
 
     fn add_error(&mut self, message: String, kind: ParseErrorKind) {
         // Create positioned error with line/column info
-        let token_len = self.current_text().map(|s| s.len()).unwrap_or(1);
+        let token_len = self.current_text().map_or(1, |s| s.len());
         let positioned_error = self.error_context.create_error(message, token_len, kind);
 
         self.errors.push(positioned_error.message.clone());
@@ -3106,7 +3079,7 @@ impl Parser {
         if let Some(found_str) = found {
             builder = builder.found(found_str);
         } else if let Some(token) = self.current_text() {
-            builder = builder.found(format!("'{}'", token));
+            builder = builder.found(format!("'{token}'"));
         } else {
             builder = builder.found("end of input");
         }

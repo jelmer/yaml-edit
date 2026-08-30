@@ -252,16 +252,14 @@ impl Sequence {
 
         // For a block sequence under a key, the parser stores the entry
         // column as an INDENT in the parent VALUE (right before the SEQUENCE).
-        if let Some(parent) = self.0.parent() {
-            if parent.kind() == SyntaxKind::VALUE {
-                for child in parent.children_with_tokens() {
-                    match &child {
-                        rowan::NodeOrToken::Node(n) if n == &self.0 => break,
-                        rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INDENT => {
-                            return t.text().to_string();
-                        }
-                        _ => {}
+        if let Some(parent) = self.0.parent().filter(|p| p.kind() == SyntaxKind::VALUE) {
+            for child in parent.children_with_tokens() {
+                match &child {
+                    rowan::NodeOrToken::Node(n) if n == &self.0 => break,
+                    rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INDENT => {
+                        return t.text().to_string();
                     }
+                    _ => {}
                 }
             }
         }
@@ -282,8 +280,7 @@ impl Sequence {
             .and_then(|e| e.parent())
             .filter(|m| m.kind() == SyntaxKind::MAPPING)
             .and_then(crate::nodes::Mapping::cast)
-            .map(|m| m.detect_indentation_level() + 2)
-            .unwrap_or(2);
+            .map_or(2, |m| m.detect_indentation_level() + 2);
         let indent_text = " ".repeat(indent_width);
 
         // Detach a snapshot; range-splicing walks the live sibling
@@ -346,15 +343,15 @@ impl Sequence {
         let mut last_entry_index = None;
 
         for (i, child) in children.iter().enumerate().rev() {
-            if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::SEQUENCE_ENTRY {
-                    last_entry_has_newline = node
-                        .last_token()
-                        .map(|t| t.kind() == SyntaxKind::NEWLINE)
-                        .unwrap_or(false);
-                    last_entry_index = Some(i);
-                    break;
-                }
+            if let Some(node) = child
+                .as_node()
+                .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            {
+                last_entry_has_newline = node
+                    .last_token()
+                    .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
+                last_entry_index = Some(i);
+                break;
             }
         }
 
@@ -403,8 +400,7 @@ impl Sequence {
             if let Some(node) = children[last_idx].as_node() {
                 if !node
                     .last_token()
-                    .map(|t| t.kind() == SyntaxKind::NEWLINE)
-                    .unwrap_or(false)
+                    .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
                 {
                     let entry_children_count = node.children_with_tokens().count();
                     let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
@@ -631,73 +627,77 @@ impl Sequence {
         let mut item_count = 0;
 
         for (i, child) in children.iter().enumerate() {
-            if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::SEQUENCE_ENTRY {
-                    if item_count == index {
-                        // Build a new SEQUENCE_ENTRY with the new value using AsYaml
-                        let entry_children: Vec<_> = node.children_with_tokens().collect();
-                        let mut builder = GreenNodeBuilder::new();
-                        builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
+            let Some(node) = child
+                .as_node()
+                .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            else {
+                continue;
+            };
+            if item_count != index {
+                item_count += 1;
+                continue;
+            }
 
-                        let mut value_inserted = false;
-                        let mut trailing_text: Option<String> = None;
+            // Build a new SEQUENCE_ENTRY with the new value using AsYaml
+            let entry_children: Vec<_> = node.children_with_tokens().collect();
+            let mut builder = GreenNodeBuilder::new();
+            builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
 
-                        for entry_child in entry_children {
-                            match &entry_child {
-                                rowan::NodeOrToken::Node(n)
-                                    if matches!(
-                                        n.kind(),
-                                        SyntaxKind::SCALAR
-                                            | SyntaxKind::MAPPING
-                                            | SyntaxKind::SEQUENCE
-                                            | SyntaxKind::ALIAS
-                                            | SyntaxKind::TAGGED_NODE
-                                    ) =>
-                                {
-                                    // Extract trailing NEWLINE(+INDENT) tokens from the old
-                                    // value node's tail. Multi-line values (e.g. nested
-                                    // mappings) end with a NEWLINE and often a following
-                                    // INDENT that must be preserved as the entry's
-                                    // separator from whatever follows.
-                                    trailing_text = trailing_newline_indent(n);
+            let mut value_inserted = false;
+            let mut trailing_text: Option<String> = None;
 
-                                    // Replace the value node with the new value built from AsYaml
-                                    if !value_inserted {
-                                        value.build_content(&mut builder, 0, false);
-                                        value_inserted = true;
-                                    }
-                                }
-                                rowan::NodeOrToken::Node(n) => {
-                                    // Copy other nodes as-is (like VALUE wrappers, etc.)
-                                    crate::yaml::copy_node_to_builder(&mut builder, n);
-                                }
-                                rowan::NodeOrToken::Token(t) => {
-                                    // Copy tokens as-is
-                                    builder.token(t.kind().into(), t.text());
-                                }
-                            }
+            for entry_child in entry_children {
+                match &entry_child {
+                    rowan::NodeOrToken::Node(n)
+                        if matches!(
+                            n.kind(),
+                            SyntaxKind::SCALAR
+                                | SyntaxKind::MAPPING
+                                | SyntaxKind::SEQUENCE
+                                | SyntaxKind::ALIAS
+                                | SyntaxKind::TAGGED_NODE
+                        ) =>
+                    {
+                        // Extract trailing NEWLINE(+INDENT) tokens from the old
+                        // value node's tail. Multi-line values (e.g. nested
+                        // mappings) end with a NEWLINE and often a following
+                        // INDENT that must be preserved as the entry's
+                        // separator from whatever follows.
+                        trailing_text = trailing_newline_indent(n);
+
+                        // Replace the value node with the new value built from AsYaml
+                        if !value_inserted {
+                            value.build_content(&mut builder, 0, false);
+                            value_inserted = true;
                         }
-
-                        // Restore trailing whitespace extracted from the old value
-                        if let Some(trailing) = trailing_text {
-                            if let Some(indent_part) = trailing.strip_prefix('\n') {
-                                builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                                if !indent_part.is_empty() {
-                                    builder.token(SyntaxKind::INDENT.into(), indent_part);
-                                }
-                            }
-                        }
-
-                        builder.finish_node();
-                        let new_entry = SyntaxNode::new_root_mut(builder.finish());
-
-                        // Replace the old SEQUENCE_ENTRY with the new one
-                        self.0.splice_children(i..i + 1, vec![new_entry.into()]);
-                        return true;
                     }
-                    item_count += 1;
+                    rowan::NodeOrToken::Node(n) => {
+                        // Copy other nodes as-is (like VALUE wrappers, etc.)
+                        crate::yaml::copy_node_to_builder(&mut builder, n);
+                    }
+                    rowan::NodeOrToken::Token(t) => {
+                        // Copy tokens as-is
+                        builder.token(t.kind().into(), t.text());
+                    }
                 }
             }
+
+            // Restore trailing whitespace extracted from the old value
+            if let Some(trailing) = trailing_text {
+                if let Some(indent_part) = trailing.strip_prefix('\n') {
+                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                    if !indent_part.is_empty() {
+                        builder.token(SyntaxKind::INDENT.into(), indent_part);
+                    }
+                }
+            }
+
+            builder.finish_node();
+            let new_entry = SyntaxNode::new_root_mut(builder.finish());
+
+            // Replace the old SEQUENCE_ENTRY with the new one
+            self.0.splice_children(i..i + 1, vec![new_entry.into()]);
+            return true;
         }
         false
     }
@@ -717,113 +717,110 @@ impl Sequence {
         // Find the SEQUENCE_ENTRY at the given index
         let mut item_count = 0;
         for (i, child) in children.iter().enumerate() {
-            if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::SEQUENCE_ENTRY {
-                    if item_count == index {
-                        // Check if this is the last SEQUENCE_ENTRY
-                        let is_last = !children.iter().skip(i + 1).any(|c| {
-                            c.as_node()
-                                .is_some_and(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-                        });
+            if !child
+                .as_node()
+                .is_some_and(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            {
+                continue;
+            }
+            if item_count != index {
+                item_count += 1;
+                continue;
+            }
+            // Check if this is the last SEQUENCE_ENTRY
+            let is_last = !children.iter().skip(i + 1).any(|c| {
+                c.as_node()
+                    .is_some_and(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            });
 
-                        // Remove the entry first, then the INDENT that
-                        // separated it from a sibling. Doing them as two
-                        // separate single-child splices sidesteps a
-                        // rowan iteration quirk where a multi-child
-                        // splice can skip elements mid-iteration.
-                        //
-                        // For non-first entries the INDENT sits right
-                        // before this entry (the separator after the
-                        // previous entry's NEWLINE); for the first
-                        // entry any INDENT is a top-level formatting
-                        // one we leave alone.
-                        self.0.splice_children(i..(i + 1), vec![]);
-                        if !self.is_flow_style() && i > 0 {
-                            if let Some(prev) = children.get(i - 1) {
-                                if prev
-                                    .as_token()
-                                    .is_some_and(|t| t.kind() == SyntaxKind::INDENT)
-                                {
-                                    self.0.splice_children((i - 1)..i, vec![]);
-                                }
-                            }
-                        } else if !self.is_flow_style() && i == 0 {
-                            // Removed the first entry of a block sequence.
-                            // The INDENT that used to separate this entry
-                            // from its successor is now a leading INDENT
-                            // inside the SEQUENCE and would stack with the
-                            // parent VALUE's INDENT (`  ` + `  ` -> `    `),
-                            // shifting the new-first entry a level in.
-                            if let Some(next) = children.get(i + 1) {
-                                if next
-                                    .as_token()
-                                    .is_some_and(|t| t.kind() == SyntaxKind::INDENT)
-                                {
-                                    self.0.splice_children(i..(i + 1), vec![]);
-                                }
-                            }
-                        }
-
-                        if !self.is_flow_style()
-                            && is_last
-                            && i > 0
-                            && mapping_entry_is_last_in_mapping(&self.0)
-                        {
-                            // Removed the last entry of a block sequence
-                            // that itself terminates its enclosing mapping.
-                            // Strip trailing whitespace/newline off the new
-                            // last entry so we don't emit a stray blank
-                            // line at the end of the document.
-                            //
-                            // When the enclosing MAPPING_ENTRY has a
-                            // following sibling, the new-last-entry's
-                            // NEWLINE is still needed as the separator
-                            // between mapping entries -- do not touch it.
-                            if let Some(prev_entry_node) =
-                                children[..i].iter().rev().find_map(|c| {
-                                    c.as_node()
-                                        .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-                                })
-                            {
-                                let entry_children: Vec<_> =
-                                    prev_entry_node.children_with_tokens().collect();
-                                let mut remove_count = 0;
-                                for child in entry_children.iter().rev() {
-                                    if let Some(token) = child.as_token() {
-                                        if matches!(
-                                            token.kind(),
-                                            SyntaxKind::NEWLINE
-                                                | SyntaxKind::INDENT
-                                                | SyntaxKind::WHITESPACE
-                                        ) {
-                                            remove_count += 1;
-                                        } else {
-                                            break;
-                                        }
-                                    } else {
-                                        break;
-                                    }
-                                }
-
-                                if remove_count > 0 {
-                                    let total = entry_children.len();
-                                    prev_entry_node
-                                        .splice_children((total - remove_count)..total, vec![]);
-                                }
-                            }
-                        }
-                        // If we just drained the last entry from a block
-                        // sequence under a key, collapse the placeholder
-                        // scaffold to `key: []` so re-parse still finds
-                        // the (now-empty) sequence at that key.
-                        if self.is_empty() {
-                            collapse_empty_child_sequence_in_parent(&self.0);
-                        }
-                        return removed_value;
+            // Remove the entry first, then the INDENT that
+            // separated it from a sibling. Doing them as two
+            // separate single-child splices sidesteps a
+            // rowan iteration quirk where a multi-child
+            // splice can skip elements mid-iteration.
+            //
+            // For non-first entries the INDENT sits right
+            // before this entry (the separator after the
+            // previous entry's NEWLINE); for the first
+            // entry any INDENT is a top-level formatting
+            // one we leave alone.
+            self.0.splice_children(i..(i + 1), vec![]);
+            if !self.is_flow_style() && i > 0 {
+                if let Some(prev) = children.get(i - 1) {
+                    if prev
+                        .as_token()
+                        .is_some_and(|t| t.kind() == SyntaxKind::INDENT)
+                    {
+                        self.0.splice_children((i - 1)..i, vec![]);
                     }
-                    item_count += 1;
+                }
+            } else if !self.is_flow_style() && i == 0 {
+                // Removed the first entry of a block sequence.
+                // The INDENT that used to separate this entry
+                // from its successor is now a leading INDENT
+                // inside the SEQUENCE and would stack with the
+                // parent VALUE's INDENT (`  ` + `  ` -> `    `),
+                // shifting the new-first entry a level in.
+                if let Some(next) = children.get(i + 1) {
+                    if next
+                        .as_token()
+                        .is_some_and(|t| t.kind() == SyntaxKind::INDENT)
+                    {
+                        self.0.splice_children(i..(i + 1), vec![]);
+                    }
                 }
             }
+
+            if !self.is_flow_style()
+                && is_last
+                && i > 0
+                && mapping_entry_is_last_in_mapping(&self.0)
+            {
+                // Removed the last entry of a block sequence
+                // that itself terminates its enclosing mapping.
+                // Strip trailing whitespace/newline off the new
+                // last entry so we don't emit a stray blank
+                // line at the end of the document.
+                //
+                // When the enclosing MAPPING_ENTRY has a
+                // following sibling, the new-last-entry's
+                // NEWLINE is still needed as the separator
+                // between mapping entries -- do not touch it.
+                if let Some(prev_entry_node) = children[..i].iter().rev().find_map(|c| {
+                    c.as_node()
+                        .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+                }) {
+                    let entry_children: Vec<_> = prev_entry_node.children_with_tokens().collect();
+                    let mut remove_count = 0;
+                    for child in entry_children.iter().rev() {
+                        if let Some(token) = child.as_token() {
+                            if matches!(
+                                token.kind(),
+                                SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE
+                            ) {
+                                remove_count += 1;
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if remove_count > 0 {
+                        let total = entry_children.len();
+                        prev_entry_node.splice_children((total - remove_count)..total, vec![]);
+                    }
+                }
+            }
+            // If we just drained the last entry from a block
+            // sequence under a key, collapse the placeholder
+            // scaffold to `key: []` so re-parse still finds
+            // the (now-empty) sequence at that key.
+            if self.is_empty() {
+                collapse_empty_child_sequence_in_parent(&self.0);
+            }
+            return removed_value;
         }
         None
     }
@@ -835,15 +832,6 @@ impl Sequence {
                 .as_token()
                 .is_some_and(|t| t.kind() == SyntaxKind::LEFT_BRACKET)
         })
-    }
-
-    /// Get the raw syntax node for a specific index (for advanced use).
-    ///
-    /// Returns the raw CST node without decoding it to a value.
-    /// For most use cases prefer [`get`](Self::get), which returns a [`YamlNode`](crate::YamlNode).
-    #[allow(dead_code)] // Used in tests
-    pub(crate) fn get_node(&self, index: usize) -> Option<SyntaxNode> {
-        self.items().nth(index)
     }
 
     /// Remove and return the last item in this sequence.
@@ -964,8 +952,7 @@ impl AsYaml for Sequence {
         builder.finish_node();
         self.0
             .last_token()
-            .map(|t| t.kind() == SyntaxKind::NEWLINE)
-            .unwrap_or(false)
+            .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
     }
 
     fn is_inline(&self) -> bool {

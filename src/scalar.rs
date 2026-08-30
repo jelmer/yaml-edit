@@ -16,7 +16,7 @@ fn base64_encode(input: &[u8]) -> String {
 fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     general_purpose::STANDARD
         .decode(input.trim())
-        .map_err(|e| format!("Base64 decode error: {}", e))
+        .map_err(|e| format!("Base64 decode error: {e}"))
 }
 
 /// Style of scalar representation in YAML
@@ -100,6 +100,35 @@ pub struct ScalarValue {
     scalar_type: ScalarType,
 }
 
+/// Parse a `\uNNNN` or `\UNNNNNNNN` unicode escape from `chars` (with
+/// the leading `\u`/`\U` already consumed) and append the resulting
+/// character to `out`, falling back to the literal `\<prefix><digits>`
+/// when the digits are missing, non-hex, or outside the valid unicode
+/// range.
+fn push_unicode_escape(
+    out: &mut String,
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    prefix: char,
+    width: usize,
+) {
+    let hex_digits: String = chars.by_ref().take(width).collect();
+    let decoded = if hex_digits.len() == width {
+        u32::from_str_radix(&hex_digits, 16)
+            .ok()
+            .and_then(char::from_u32)
+    } else {
+        None
+    };
+    match decoded {
+        Some(c) => out.push(c),
+        None => {
+            out.push('\\');
+            out.push(prefix);
+            out.push_str(&hex_digits);
+        }
+    }
+}
+
 impl ScalarValue {
     /// Create a scalar value explicitly treating it as a string (no type auto-detection)
     ///
@@ -172,9 +201,8 @@ impl ScalarValue {
                                 chars.next(); // consume the newline
                                               // In YAML, escaped line breaks are folded to nothing
                                 continue;
-                            } else {
-                                result.push(' ');
                             }
+                            result.push(' ');
                         }
                         '\n' => {
                             // Escaped line break - removes the line break
@@ -212,58 +240,8 @@ impl ScalarValue {
                                 }
                             }
                         }
-                        'u' => {
-                            // \uNNNN - 4-digit hex
-                            let hex_digits: String = chars.by_ref().take(4).collect();
-                            if hex_digits.len() == 4 {
-                                if let Ok(code) = u16::from_str_radix(&hex_digits, 16) {
-                                    if let Some(unicode_char) = char::from_u32(code as u32) {
-                                        result.push(unicode_char);
-                                    } else {
-                                        // Invalid Unicode code point
-                                        result.push('\\');
-                                        result.push('u');
-                                        result.push_str(&hex_digits);
-                                    }
-                                } else {
-                                    // Invalid hex
-                                    result.push('\\');
-                                    result.push('u');
-                                    result.push_str(&hex_digits);
-                                }
-                            } else {
-                                // Incomplete hex escape
-                                result.push('\\');
-                                result.push('u');
-                                result.push_str(&hex_digits);
-                            }
-                        }
-                        'U' => {
-                            // \UNNNNNNNN - 8-digit hex
-                            let hex_digits: String = chars.by_ref().take(8).collect();
-                            if hex_digits.len() == 8 {
-                                if let Ok(code) = u32::from_str_radix(&hex_digits, 16) {
-                                    if let Some(unicode_char) = char::from_u32(code) {
-                                        result.push(unicode_char);
-                                    } else {
-                                        // Invalid Unicode code point
-                                        result.push('\\');
-                                        result.push('U');
-                                        result.push_str(&hex_digits);
-                                    }
-                                } else {
-                                    // Invalid hex
-                                    result.push('\\');
-                                    result.push('U');
-                                    result.push_str(&hex_digits);
-                                }
-                            } else {
-                                // Incomplete hex escape
-                                result.push('\\');
-                                result.push('U');
-                                result.push_str(&hex_digits);
-                            }
-                        }
+                        'u' => push_unicode_escape(&mut result, &mut chars, 'u', 4),
+                        'U' => push_unicode_escape(&mut result, &mut chars, 'U', 8),
                         // Unknown escape sequence - preserve as literal
                         _ => {
                             result.push('\\');
@@ -1024,14 +1002,14 @@ impl ScalarValue {
             ScalarStyle::Folded => self.to_folded(),
         };
 
-        format!("{}{}", tag_prefix, content)
+        format!("{tag_prefix}{content}")
     }
 
     /// Convert to single-quoted string
     fn to_single_quoted(&self) -> String {
         // Escape single quotes by doubling them
         let escaped = self.value.replace('\'', "''");
-        format!("'{}'", escaped)
+        format!("'{escaped}'")
     }
 
     /// Convert to double-quoted string
@@ -1054,11 +1032,11 @@ impl ScalarValue {
                     // Handle Unicode characters and control characters
                     let code_point = c as u32;
                     if code_point <= 0xFF {
-                        result.push_str(&format!("\\x{:02X}", code_point));
+                        result.push_str(&format!("\\x{code_point:02X}"));
                     } else if code_point <= 0xFFFF {
-                        result.push_str(&format!("\\u{:04X}", code_point));
+                        result.push_str(&format!("\\u{code_point:04X}"));
                     } else {
-                        result.push_str(&format!("\\U{:08X}", code_point));
+                        result.push_str(&format!("\\U{code_point:08X}"));
                     }
                 }
                 c => result.push(c),
@@ -1097,12 +1075,12 @@ impl ScalarValue {
                     if line.trim().is_empty() {
                         String::new()
                     } else {
-                        format!("{}{}", indent_str, line)
+                        format!("{indent_str}{line}")
                     }
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            format!("|\n{}", indented)
+            format!("|\n{indented}")
         }
     }
 
@@ -1125,12 +1103,12 @@ impl ScalarValue {
                     if line.trim().is_empty() {
                         String::new()
                     } else {
-                        format!("{}{}", indent_str, line)
+                        format!("{indent_str}{line}")
                     }
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            format!(">\n{}", indented)
+            format!(">\n{indented}")
         }
     }
 

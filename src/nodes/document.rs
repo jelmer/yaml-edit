@@ -197,20 +197,25 @@ impl Document {
         self.as_mapping().and_then(|m| m.get_node(key))
     }
 
-    /// Set a scalar value in the document (assumes document is a mapping)
-    pub fn set(&self, key: impl crate::AsYaml, value: impl crate::AsYaml) {
+    /// Set a key in the document's root mapping.
+    ///
+    /// If the document has no root node, a mapping is created first.
+    ///
+    /// Returns `true` if the key was set. Returns `false` if the root is a
+    /// sequence or another non-mapping node (the document is left unchanged).
+    pub fn set(&self, key: impl crate::AsYaml, value: impl crate::AsYaml) -> bool {
         if let Some(mapping) = self.as_mapping() {
             mapping.set(key, value);
-            // Changes are applied directly via splice_children, no need to replace
-        } else {
-            // If document is not a mapping, create one and add it to the document
+            true
+        } else if self.root_node().is_none() {
             let mapping = Mapping::new();
             mapping.set(key, value);
-
-            // Add the mapping node directly to the document
             let child_count = self.0.children_with_tokens().count();
             self.0
                 .splice_children(child_count..child_count, vec![mapping.0.into()]);
+            true
+        } else {
+            false
         }
     }
 
@@ -219,12 +224,16 @@ impl Document {
     /// If the key exists, updates its value. If the key doesn't exist, inserts it
     /// at the correct position based on the provided field order.
     /// Fields not in the order list are placed at the end.
+    ///
+    /// Returns `true` if the key was set. Returns `false` if the root is a
+    /// sequence or another non-mapping node (the document is left unchanged).
     pub fn set_with_field_order<I, K>(
         &self,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
         field_order: I,
-    ) where
+    ) -> bool
+    where
         I: IntoIterator<Item = K>,
         K: crate::AsYaml,
     {
@@ -232,14 +241,16 @@ impl Document {
         let field_order: Vec<K> = field_order.into_iter().collect();
         if let Some(mapping) = self.as_mapping() {
             mapping.set_with_field_order(key, value, field_order);
-            // Changes are applied directly via splice_children, no need to replace
-        } else {
-            // If document is not a mapping, create one and splice it in.
+            true
+        } else if self.root_node().is_none() {
             let mapping = Mapping::new();
             mapping.set_with_field_order(key, value, field_order);
             let child_count = self.0.children_with_tokens().count();
             self.0
                 .splice_children(child_count..child_count, vec![mapping.0.into()]);
+            true
+        } else {
+            false
         }
     }
 
@@ -1572,5 +1583,19 @@ Repository: https://github.com/example/example.git
         assert!(errors.is_empty());
         // Default document when nothing is parsed
         assert!(doc.as_mapping().is_none());
+    }
+
+    #[test]
+    fn test_set_on_sequence_document_does_not_append_mapping() {
+        let doc = Document::from_str("- a\n- b\n").unwrap();
+        assert!(!doc.set("k", "v"));
+        assert_eq!(doc.to_string(), "- a\n- b\n");
+        assert!(doc.get("k").is_none());
+        assert!(doc.as_sequence().is_some());
+        assert!(doc.as_mapping().is_none());
+
+        let empty = Document::new();
+        assert!(empty.set("k", "v"));
+        assert_eq!(empty.get_string("k"), Some("v".to_string()));
     }
 }

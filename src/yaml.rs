@@ -211,18 +211,18 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
         return;
     }
 
-    let Some(value_node) = collection.parent() else {
+    let Some(value_node) = collection
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::VALUE)
+    else {
         return;
     };
-    if value_node.kind() != SyntaxKind::VALUE {
-        return;
-    }
-    let Some(entry_node) = value_node.parent() else {
+    let Some(entry_node) = value_node
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::MAPPING_ENTRY)
+    else {
         return;
     };
-    if entry_node.kind() != SyntaxKind::MAPPING_ENTRY {
-        return;
-    }
 
     // Bail if the VALUE carries anything beyond decoration.
     let has_other = value_node.children_with_tokens().any(|el| match el {

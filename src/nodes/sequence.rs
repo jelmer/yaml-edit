@@ -252,16 +252,14 @@ impl Sequence {
 
         // For a block sequence under a key, the parser stores the entry
         // column as an INDENT in the parent VALUE (right before the SEQUENCE).
-        if let Some(parent) = self.0.parent() {
-            if parent.kind() == SyntaxKind::VALUE {
-                for child in parent.children_with_tokens() {
-                    match &child {
-                        rowan::NodeOrToken::Node(n) if n == &self.0 => break,
-                        rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INDENT => {
-                            return t.text().to_string();
-                        }
-                        _ => {}
+        if let Some(parent) = self.0.parent().filter(|p| p.kind() == SyntaxKind::VALUE) {
+            for child in parent.children_with_tokens() {
+                match &child {
+                    rowan::NodeOrToken::Node(n) if n == &self.0 => break,
+                    rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INDENT => {
+                        return t.text().to_string();
                     }
+                    _ => {}
                 }
             }
         }

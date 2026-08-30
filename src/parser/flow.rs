@@ -55,7 +55,11 @@ impl Parser {
             self.current(),
             Some(SyntaxKind::COMMA | SyntaxKind::RIGHT_BRACKET)
         ) {
-            // Omitted value - leave VALUE node empty
+            // Omitted value: emit the zero-width implicit-null scalar so
+            // every VALUE holds exactly one scalar/collection node.
+            self.builder.start_node(SyntaxKind::SCALAR.into());
+            self.builder.token(SyntaxKind::NULL.into(), "");
+            self.builder.finish_node();
         } else {
             self.parse_value();
         }
@@ -105,13 +109,22 @@ impl Parser {
             // Start SEQUENCE_ENTRY node to wrap the item
             self.builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
 
-            // Check if this element is an implicit mapping (key: value)
-            // Per YAML spec, [ key: value ] is valid - a sequence containing a mapping
-            if self.next_flow_element_is_implicit_mapping() {
-                // Parse as implicit flow mapping
+            // Missing element (`[,]`, `[a, , c]`) is an implicit-null
+            // scalar. Emit the same zero-width `SCALAR { NULL "" }` shape
+            // block sequences and mappings use, so accessors index the
+            // same set of entries as mutators.
+            if matches!(
+                self.current(),
+                Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACKET)
+            ) {
+                self.builder.start_node(SyntaxKind::SCALAR.into());
+                self.builder.token(SyntaxKind::NULL.into(), "");
+                self.builder.finish_node();
+            } else if self.next_flow_element_is_implicit_mapping() {
+                // Per YAML spec, `[ key: value ]` is valid: a sequence
+                // containing an implicit single-pair mapping.
                 self.parse_implicit_flow_mapping();
             } else {
-                // Parse as regular value
                 self.parse_value();
             }
 
@@ -228,7 +241,19 @@ impl Parser {
                 self.skip_whitespace();
             }
 
-            self.parse_value();
+            // Missing key (`{,}`, `{: v}`, `{:}`) is an implicit-null
+            // scalar. Emit the same zero-width `SCALAR { NULL "" }` shape
+            // used everywhere else so `KEY` always contains one value node.
+            if matches!(
+                self.current(),
+                Some(SyntaxKind::COMMA) | Some(SyntaxKind::COLON) | Some(SyntaxKind::RIGHT_BRACE)
+            ) {
+                self.builder.start_node(SyntaxKind::SCALAR.into());
+                self.builder.token(SyntaxKind::NULL.into(), "");
+                self.builder.finish_node();
+            } else {
+                self.parse_value();
+            }
             self.builder.finish_node();
 
             self.skip_ws_and_newlines(); // Support comments after keys

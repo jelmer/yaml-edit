@@ -110,6 +110,11 @@ impl Parser {
                 self.builder.start_node(SyntaxKind::KEY.into());
                 if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                     self.parse_value();
+                } else {
+                    // Bare `?\n` -- implicit-null key.
+                    self.builder.start_node(SyntaxKind::SCALAR.into());
+                    self.builder.token(SyntaxKind::NULL.into(), "");
+                    self.builder.finish_node();
                 }
                 self.builder.finish_node();
 
@@ -128,7 +133,17 @@ impl Parser {
                         if self.current() == Some(SyntaxKind::INDENT) {
                             self.bump(); // consume indent
                             self.parse_value();
+                        } else {
+                            // Colon-then-dedent: implicit-null value.
+                            self.builder.start_node(SyntaxKind::SCALAR.into());
+                            self.builder.token(SyntaxKind::NULL.into(), "");
+                            self.builder.finish_node();
                         }
+                    } else {
+                        // Colon at EOF: implicit-null value.
+                        self.builder.start_node(SyntaxKind::SCALAR.into());
+                        self.builder.token(SyntaxKind::NULL.into(), "");
+                        self.builder.finish_node();
                     }
                     self.builder.finish_node();
                 } else {
@@ -271,6 +286,11 @@ impl Parser {
             // Parse the first part of the key
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 self.parse_value();
+            } else {
+                // Bare `?\n` -- implicit-null key.
+                self.builder.start_node(SyntaxKind::SCALAR.into());
+                self.builder.token(SyntaxKind::NULL.into(), "");
+                self.builder.finish_node();
             }
 
             // Check if this is a multiline key (newline followed by indent)
@@ -332,7 +352,17 @@ impl Parser {
                     if self.current() == Some(SyntaxKind::INDENT) {
                         self.bump(); // consume indent
                         self.parse_value();
+                    } else {
+                        // Colon-then-dedent: implicit-null value.
+                        self.builder.start_node(SyntaxKind::SCALAR.into());
+                        self.builder.token(SyntaxKind::NULL.into(), "");
+                        self.builder.finish_node();
                     }
+                } else {
+                    // Colon at EOF: implicit-null value.
+                    self.builder.start_node(SyntaxKind::SCALAR.into());
+                    self.builder.token(SyntaxKind::NULL.into(), "");
+                    self.builder.finish_node();
                 }
                 self.builder.finish_node();
             } else {
@@ -414,7 +444,17 @@ impl Parser {
                 if self.current() == Some(SyntaxKind::INDENT) {
                     self.bump(); // consume indent
                     self.parse_value();
+                } else {
+                    // Colon-then-dedent: implicit-null value.
+                    self.builder.start_node(SyntaxKind::SCALAR.into());
+                    self.builder.token(SyntaxKind::NULL.into(), "");
+                    self.builder.finish_node();
                 }
+            } else {
+                // Colon at EOF: implicit-null value.
+                self.builder.start_node(SyntaxKind::SCALAR.into());
+                self.builder.token(SyntaxKind::NULL.into(), "");
+                self.builder.finish_node();
             }
             self.builder.finish_node();
         } else {
@@ -521,6 +561,11 @@ impl Parser {
             self.builder.start_node(SyntaxKind::KEY.into());
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 self.parse_value();
+            } else {
+                // Bare `?\n` -- implicit-null key.
+                self.builder.start_node(SyntaxKind::SCALAR.into());
+                self.builder.token(SyntaxKind::NULL.into(), "");
+                self.builder.finish_node();
             }
             self.builder.finish_node();
 
@@ -538,7 +583,17 @@ impl Parser {
                     if self.current() == Some(SyntaxKind::INDENT) {
                         self.bump();
                         self.parse_value();
+                    } else {
+                        // Colon-then-dedent: implicit-null value.
+                        self.builder.start_node(SyntaxKind::SCALAR.into());
+                        self.builder.token(SyntaxKind::NULL.into(), "");
+                        self.builder.finish_node();
                     }
+                } else {
+                    // Colon at EOF: implicit-null value.
+                    self.builder.start_node(SyntaxKind::SCALAR.into());
+                    self.builder.token(SyntaxKind::NULL.into(), "");
+                    self.builder.finish_node();
                 }
                 self.builder.finish_node();
             } else {

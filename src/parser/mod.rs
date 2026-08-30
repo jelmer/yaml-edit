@@ -322,8 +322,11 @@ impl Parser {
                     self.bump(); // consume indent
                     self.parse_value_with_base_indent(indent_level);
                 } else {
-                    // No indented content means empty/null value - create empty scalar
+                    // No indented content -- implicit-null value. Emit the
+                    // zero-width `SCALAR { NULL "" }` shape used everywhere
+                    // else so every value slot has one scalar/collection.
                     self.builder.start_node(SyntaxKind::SCALAR.into());
+                    self.builder.token(SyntaxKind::NULL.into(), "");
                     self.builder.finish_node();
                 }
             }

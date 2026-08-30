@@ -1243,3 +1243,27 @@ fn test_mapping_set_preserves_newline_context() {
         "Newline should be preserved after modification"
     );
 }
+
+#[test]
+fn test_flow_mapping_implicit_null_key_and_value_shapes() {
+    use crate::debug::{roundtrip_ok, validate_tree};
+    use crate::{AsYaml, Document};
+
+    // The parser emits `SCALAR { NULL "" }` at every "missing"
+    // position so KEYs and VALUEs always hold exactly one child.
+    for src in [
+        "{,}",
+        "{: v}",
+        "{:}",
+        "{k:}",
+        "{k}",
+        "{k, m}",
+        "{a:, :b, :}",
+    ] {
+        let doc = Document::from_str(src).unwrap();
+        validate_tree(doc.as_node().unwrap())
+            .unwrap_or_else(|e| panic!("validate_tree({:?}) failed: {}", src, e));
+        roundtrip_ok(doc.as_node().unwrap())
+            .unwrap_or_else(|e| panic!("roundtrip({:?}) failed: {}", src, e));
+    }
+}

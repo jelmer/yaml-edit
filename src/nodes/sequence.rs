@@ -1075,6 +1075,68 @@ mod tests {
     }
 
     #[test]
+    fn test_flow_sequence_implicit_null_shares_indexes() {
+        use crate::debug::{roundtrip_ok, validate_tree};
+        use crate::{AsYaml, Document};
+
+        // `[a, , c]` is three entries per YAML spec; the middle one is an
+        // implicit null. Accessors must agree with mutators on the index
+        // set, matching block-sequence behavior.
+        let doc = Document::from_str("[a, , c]").unwrap();
+        let seq = doc.as_sequence().unwrap();
+        assert_eq!(seq.len(), 3);
+        assert_eq!(seq.get(0).unwrap().as_scalar().unwrap().as_string(), "a");
+        assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().as_string(), "");
+        assert_eq!(seq.get(2).unwrap().as_scalar().unwrap().as_string(), "c");
+        validate_tree(doc.as_node().unwrap()).unwrap();
+        roundtrip_ok(doc.as_node().unwrap()).unwrap();
+
+        assert!(seq.set(1, "x"));
+        assert_eq!(doc.to_string(), "[a, x, c]");
+
+        let doc = Document::from_str("[a, , c]").unwrap();
+        let seq = doc.as_sequence().unwrap();
+        let removed = seq.remove(1);
+        assert_eq!(
+            removed.and_then(|n| n.as_scalar().map(|s| s.as_string())),
+            Some(String::new())
+        );
+        assert_eq!(seq.len(), 2);
+        assert_eq!(doc.to_string(), "[a, c]");
+    }
+
+    #[test]
+    fn test_flow_sequence_trailing_comma_is_not_extra_entry() {
+        use crate::Document;
+
+        // `[a, b,]` has two entries: the trailing comma is a terminator,
+        // not a separator introducing a null entry.
+        let doc = Document::from_str("[a, b,]").unwrap();
+        let seq = doc.as_sequence().unwrap();
+        assert_eq!(seq.len(), 2);
+        assert_eq!(seq.get(0).unwrap().as_scalar().unwrap().as_string(), "a");
+        assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().as_string(), "b");
+        assert_eq!(doc.to_string(), "[a, b,]");
+    }
+
+    #[test]
+    fn test_flow_sequence_only_nulls() {
+        use crate::debug::{roundtrip_ok, validate_tree};
+        use crate::{AsYaml, Document};
+
+        // `[,]` is one null entry. `[,,]` is two.
+        let doc = Document::from_str("[,]").unwrap();
+        assert_eq!(doc.as_sequence().unwrap().len(), 1);
+        validate_tree(doc.as_node().unwrap()).unwrap();
+        roundtrip_ok(doc.as_node().unwrap()).unwrap();
+
+        let doc = Document::from_str("[,,]").unwrap();
+        assert_eq!(doc.as_sequence().unwrap().len(), 2);
+        validate_tree(doc.as_node().unwrap()).unwrap();
+        roundtrip_ok(doc.as_node().unwrap()).unwrap();
+    }
+
+    #[test]
     fn test_sequence_items_tagged_node() {
         // Tagged scalars inside sequences were previously skipped by items() because
         // TAGGED_NODE was not listed in the kind filter.

@@ -836,15 +836,6 @@ impl Sequence {
         })
     }
 
-    /// Get the raw syntax node for a specific index (for advanced use).
-    ///
-    /// Returns the raw CST node without decoding it to a value.
-    /// For most use cases prefer [`get`](Self::get), which returns a [`YamlNode`](crate::YamlNode).
-    #[allow(dead_code)] // Used in tests
-    pub(crate) fn get_node(&self, index: usize) -> Option<SyntaxNode> {
-        self.items().nth(index)
-    }
-
     /// Remove and return the last item in this sequence.
     ///
     /// Returns `None` if the sequence is empty.

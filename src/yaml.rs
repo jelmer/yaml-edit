@@ -390,11 +390,7 @@ fn extract_content_node(wrapper: &SyntaxNode) -> Option<SyntaxNode> {
 
 /// Smart cast that handles wrapper nodes automatically
 fn smart_cast<T: AstNode<Language = Lang>>(node: SyntaxNode) -> Option<T> {
-    if let Some(content) = extract_content_node(&node) {
-        T::cast(content)
-    } else {
-        None
-    }
+    extract_content_node(&node).and_then(T::cast)
 }
 
 /// Extract a Scalar from any node (handles wrappers automatically)

@@ -171,8 +171,26 @@ fn scalar_semantic_value(scalar: &Scalar) -> Option<(crate::lex::SyntaxKind, Str
 
     // Get the first token to determine the lexical type
     let token = scalar.0.first_token()?;
-    let kind = token.kind();
+    let mut kind = token.kind();
     let text = token.text();
+
+    // A plain scalar can lex into multiple tokens when it starts with
+    // typed-looking content and then continues: `.999 a` becomes
+    // FLOAT(".999") + WHITESPACE + STRING("a"). The first token alone
+    // is not representative of the whole scalar's semantic type - the
+    // full text is `".999 a"`, which is a STRING. Classify the scalar
+    // by its combined text rather than the first token's kind when the
+    // scalar has more than one non-empty child token.
+    let extra_content = scalar
+        .0
+        .children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .filter(|t| !t.text().is_empty())
+        .nth(1)
+        .is_some();
+    if extra_content {
+        kind = SyntaxKind::STRING;
+    }
 
     let normalized = match kind {
         SyntaxKind::INT => {

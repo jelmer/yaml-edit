@@ -440,3 +440,27 @@ fn test_set_key_starting_with_hash_reparses() {
         "reparse drift: key `#aaaaa` missing after round-trip\ntext:\n{text}"
     );
 }
+
+/// Regression from mutation_invariants fuzz: setting a key whose
+/// text starts with a `.` and contains numeric-looking content used
+/// to serialise unquoted (`.999 a: ''`). The reparse of that line
+/// then didn't recover the key, breaking round-trip.
+#[test]
+fn test_set_key_starting_with_dot_and_digits_reparses() {
+    let seed = "a: \"\"\n";
+    let doc = yaml_edit::Document::from_str(seed).expect("parse seed");
+    let mapping = doc.as_mapping().expect("root mapping");
+
+    mapping.set(".999 a", "");
+
+    let text = doc.to_string();
+    let reparsed = yaml_edit::Document::from_str(&text)
+        .unwrap_or_else(|e| panic!("reparse failed: {e}\ntext:\n{text}"));
+    let reparsed_mapping = reparsed
+        .as_mapping()
+        .unwrap_or_else(|| panic!("reparsed root is not a mapping, text:\n{text}"));
+    assert!(
+        reparsed_mapping.contains_key(".999 a"),
+        "reparse drift: key `.999 a` missing after round-trip\ntext:\n{text}"
+    );
+}

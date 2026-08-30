@@ -1,4 +1,4 @@
-use super::{fresh_token, Lang, Scalar, Sequence, SyntaxNode};
+use super::{entry_key, entry_value, fresh_token, Lang, Scalar, Sequence, SyntaxNode};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::yaml::{
@@ -370,7 +370,7 @@ impl MappingEntry {
     ///
     /// To compare the key against a value, prefer [`key_matches`](Self::key_matches).
     pub(crate) fn key(&self) -> Option<SyntaxNode> {
-        self.0.children().find(|n| n.kind() == SyntaxKind::KEY)
+        entry_key(&self.0)
     }
 
     /// Return `true` if the key of this entry matches `key`.
@@ -388,7 +388,7 @@ impl MappingEntry {
     /// (a scalar, mapping, or sequence node). Returns `None` for malformed
     /// entries that have no value node.
     pub(crate) fn value(&self) -> Option<SyntaxNode> {
-        self.0.children().find(|n| n.kind() == SyntaxKind::VALUE)
+        entry_value(&self.0)
     }
 
     /// Get the key of this entry as a [`YamlNode`](crate::as_yaml::YamlNode).
@@ -875,11 +875,7 @@ impl Mapping {
         self.0
             .children()
             .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-            .filter_map(|entry| {
-                let key = entry.children().find(|n| n.kind() == SyntaxKind::KEY)?;
-                let value = entry.children().find(|n| n.kind() == SyntaxKind::VALUE)?;
-                Some((key, value))
-            })
+            .filter_map(|entry| Some((entry_key(&entry)?, entry_value(&entry)?)))
     }
 
     /// Get the value associated with `key` as a [`YamlNode`](crate::as_yaml::YamlNode).
@@ -929,12 +925,10 @@ impl Mapping {
         for (i, child) in children.iter().enumerate() {
             if let Some(node) = child.as_node() {
                 if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                    if let Some(key_node) = node.children().find(|n| n.kind() == SyntaxKind::KEY) {
+                    if let Some(key_node) = entry_key(node) {
                         if key_content_matches(&key_node, &key) {
                             // Found the entry, now find the VALUE node
-                            if let Some(value_node) =
-                                node.children().find(|n| n.kind() == SyntaxKind::VALUE)
-                            {
+                            if let Some(value_node) = entry_value(node) {
                                 // Check if the value is a mapping
                                 if let Some(mapping_node) = value_node
                                     .children()
@@ -1706,8 +1700,8 @@ impl Mapping {
 
     /// Compare sequence entries
     fn compare_sequence_entries(&self, entry1: &SyntaxNode, entry2: &SyntaxNode) -> bool {
-        let value1 = entry1.children().find(|n| n.kind() == SyntaxKind::VALUE);
-        let value2 = entry2.children().find(|n| n.kind() == SyntaxKind::VALUE);
+        let value1 = entry_value(entry1);
+        let value2 = entry_value(entry2);
 
         match (value1, value2) {
             (Some(v1), Some(v2)) => self.compare_nodes_structurally(&v1, &v2),
@@ -1718,10 +1712,10 @@ impl Mapping {
 
     /// Compare mapping entries
     fn compare_mapping_entries(&self, entry1: &SyntaxNode, entry2: &SyntaxNode) -> bool {
-        let key1 = entry1.children().find(|n| n.kind() == SyntaxKind::KEY);
-        let key2 = entry2.children().find(|n| n.kind() == SyntaxKind::KEY);
-        let value1 = entry1.children().find(|n| n.kind() == SyntaxKind::VALUE);
-        let value2 = entry2.children().find(|n| n.kind() == SyntaxKind::VALUE);
+        let key1 = entry_key(entry1);
+        let key2 = entry_key(entry2);
+        let value1 = entry_value(entry1);
+        let value2 = entry_value(entry2);
 
         match ((key1, value1), (key2, value2)) {
             ((Some(k1), Some(v1)), (Some(k2), Some(v2))) => {
@@ -1755,7 +1749,7 @@ impl Mapping {
         for child in children.iter() {
             if let Some(node) = child.as_node() {
                 if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                    if let Some(key_node) = node.children().find(|n| n.kind() == SyntaxKind::KEY) {
+                    if let Some(key_node) = entry_key(node) {
                         if key_content_matches(&key_node, &key) {
                             // Key exists, update its value using unified method
                             self.set_as_yaml(&key, &value);
@@ -1782,9 +1776,7 @@ impl Mapping {
                 for child in children.iter() {
                     if let Some(node) = child.as_node() {
                         if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                            if let Some(key_node) =
-                                node.children().find(|n| n.kind() == SyntaxKind::KEY)
-                            {
+                            if let Some(key_node) = entry_key(node) {
                                 if key_content_matches(&key_node, field) {
                                     insert_after_node = Some(node.clone());
                                     break;
@@ -1804,9 +1796,7 @@ impl Mapping {
                 for child in children.iter() {
                     if let Some(node) = child.as_node() {
                         if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                            if let Some(existing_key_node) =
-                                node.children().find(|n| n.kind() == SyntaxKind::KEY)
-                            {
+                            if let Some(existing_key_node) = entry_key(node) {
                                 // Find this existing key's position in field_order
                                 let existing_key_position = field_order.iter().position(|field| {
                                     key_content_matches(&existing_key_node, field)
@@ -2626,7 +2616,7 @@ impl Mapping {
         for (i, child) in children.iter().enumerate() {
             if let Some(node) = child.as_node() {
                 if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                    if let Some(key_node) = node.children().find(|n| n.kind() == SyntaxKind::KEY) {
+                    if let Some(key_node) = entry_key(node) {
                         if key_content_matches(&key_node, &old_key) {
                             let entry_children: Vec<_> = node.children_with_tokens().collect();
 

@@ -496,9 +496,12 @@ fn test_set_path_new_numeric_key() {
 /// empty path is invalid and both operations no-op silently, so a
 /// document that reaches `set_path("", ...)` must be unchanged and
 /// `get_path("")` afterwards must consistently return `None`.
+///
+/// The `try_` variants surface the same condition as
+/// `PathError::EmptyPath`.
 #[test]
 fn test_set_empty_path_is_a_noop() {
-    use yaml_edit::path::YamlPath;
+    use yaml_edit::path::{PathError, YamlPath};
 
     let seed = "folded: >\n  wrapped\n  paragraph\n";
     let doc = yaml_edit::Document::from_str(seed).expect("parse seed");
@@ -519,4 +522,63 @@ fn test_set_empty_path_is_a_noop() {
         !doc.remove_path(""),
         "remove_path(\"\") should return false"
     );
+
+    // try_ variants distinguish the reason.
+    assert_eq!(
+        doc.try_get_path(""),
+        Err(PathError::EmptyPath),
+        "try_get_path reports the specific reason"
+    );
+    assert_eq!(
+        doc.try_set_path("", "anything"),
+        Err(PathError::EmptyPath),
+        "try_set_path reports the specific reason"
+    );
+    assert!(
+        matches!(doc.try_remove_path(""), Err(PathError::EmptyPath)),
+        "try_remove_path reports the specific reason"
+    );
+}
+
+/// The try_ variants surface the specific failure modes the silent
+/// versions used to swallow. This exercises each `PathError` variant.
+#[test]
+fn test_try_path_reports_specific_errors() {
+    use yaml_edit::path::{PathError, YamlPath};
+
+    // NoRoot: a document whose root is a scalar has no mapping to set
+    // paths under.
+    let doc = yaml_edit::Document::from_str("just_a_scalar\n").expect("parse");
+    assert!(matches!(
+        doc.try_set_path("foo", "bar"),
+        Err(PathError::NoRoot)
+    ));
+
+    // Parse error: unclosed bracket.
+    let doc = yaml_edit::Document::from_str("a: 1\n").expect("parse");
+    assert!(matches!(
+        doc.try_set_path("a[0", "x"),
+        Err(PathError::Parse(_))
+    ));
+
+    // NotFound: intermediate key present but leaf is missing.
+    let doc = yaml_edit::Document::from_str("a:\n  b: 1\n").expect("parse");
+    assert!(matches!(
+        doc.try_get_path("a.missing"),
+        Err(PathError::NotFound { .. })
+    ));
+
+    // TypeMismatch on get: descending through a scalar.
+    let doc = yaml_edit::Document::from_str("a: hello\n").expect("parse");
+    assert!(matches!(
+        doc.try_get_path("a.b"),
+        Err(PathError::TypeMismatch { .. })
+    ));
+
+    // TypeMismatch on set: cannot descend through an existing scalar.
+    let doc = yaml_edit::Document::from_str("a: hello\n").expect("parse");
+    assert!(matches!(
+        doc.try_set_path("a.b", "x"),
+        Err(PathError::TypeMismatch { .. })
+    ));
 }

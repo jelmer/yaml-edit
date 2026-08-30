@@ -127,18 +127,6 @@ fn dotted(path: &[SafeStr]) -> String {
     path.iter().map(as_str).collect::<Vec<_>>().join(".")
 }
 
-/// True when the path parses into a non-empty segment list, i.e.
-/// something set_path / remove_path can actually address. Filters out
-/// empty strings, stray dots (`"..."`), and unclosed brackets. Skipping
-/// these in the fuzz mirrors the library's silent no-op behaviour on
-/// invalid paths so the post-condition check only runs when set_path
-/// was expected to succeed.
-fn is_settable_path(path: &str) -> bool {
-    yaml_edit::path::try_parse_path(path)
-        .map(|s| !s.is_empty())
-        .unwrap_or(false)
-}
-
 fn apply(doc: &Document, op: &Op) {
     let Some(mapping) = doc.as_mapping() else {
         return;
@@ -257,13 +245,13 @@ fn apply(doc: &Document, op: &Op) {
             }
         }
         Op::SetPath(p, v) => {
-            // Skip inputs that parse into an empty segment list (empty
-            // string, "..", stray dots): set_path silently no-ops on
-            // those and the follow-up assertion would falsely fail.
+            // Use try_set_path so we only run the post-condition when
+            // the set actually succeeded. Errors (empty path, type
+            // mismatch, descending through a scalar) are legitimate
+            // outcomes; the assertion should not treat them as bugs.
             if !p.is_empty() {
                 let path = dotted(p);
-                if is_settable_path(&path) {
-                    doc.set_path(&path, as_str(v));
+                if doc.try_set_path(&path, as_str(v)).is_ok() {
                     assert_set_path_stuck(doc, &path, as_str(v));
                 }
             }
@@ -271,9 +259,8 @@ fn apply(doc: &Document, op: &Op) {
         Op::RemovePath(p) => {
             if !p.is_empty() {
                 let path = dotted(p);
-                if is_settable_path(&path) {
-                    let removed = doc.remove_path(&path);
-                    assert_remove_path_stuck(doc, &path, removed);
+                if doc.try_remove_path(&path).is_ok() {
+                    assert_remove_path_stuck(doc, &path, true);
                 }
             }
         }

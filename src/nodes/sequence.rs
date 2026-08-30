@@ -645,6 +645,7 @@ impl Sequence {
 
             let mut value_inserted = false;
             let mut trailing_text: Option<String> = None;
+            let mut after_dash = false;
 
             for entry_child in entry_children {
                 match &entry_child {
@@ -667,17 +668,26 @@ impl Sequence {
 
                         // Replace the value node with the new value built from AsYaml
                         if !value_inserted {
+                            // A bare `-` item is DASH then a zero-width NULL
+                            // scalar. Insert the space that a written value
+                            // needs so set does not serialize as `-x`.
+                            if after_dash {
+                                builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                            }
                             value.build_content(&mut builder, 0, false);
                             value_inserted = true;
                         }
+                        after_dash = false;
                     }
                     rowan::NodeOrToken::Node(n) => {
                         // Copy other nodes as-is (like VALUE wrappers, etc.)
                         crate::yaml::copy_node_to_builder(&mut builder, n);
+                        after_dash = false;
                     }
                     rowan::NodeOrToken::Token(t) => {
                         // Copy tokens as-is
                         builder.token(t.kind().into(), t.text());
+                        after_dash = t.kind() == SyntaxKind::DASH;
                     }
                 }
             }
@@ -1061,7 +1071,7 @@ mod tests {
         let seq = doc.as_sequence().unwrap();
         assert_eq!(seq.len(), 3);
         assert!(seq.set(1, "x"));
-        assert_eq!(doc.to_string(), "- a\n-x\n- c\n");
+        assert_eq!(doc.to_string(), "- a\n- x\n- c\n");
     }
 
     #[test]

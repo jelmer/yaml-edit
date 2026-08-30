@@ -500,13 +500,27 @@ impl CustomTagHandler for JsonHandler {
     fn deserialize(&self, content: &str) -> Result<YamlValue, CustomTagError> {
         // TODO: implement a proper JSON parser here
         let content = content.trim();
-        if content.starts_with('"') && content.ends_with('"') {
+        if content.len() >= 2 && content.starts_with('"') && content.ends_with('"') {
             let inner = &content[1..content.len() - 1];
             Ok(YamlValue::scalar(inner))
         } else if content.starts_with('[') && content.ends_with(']') {
-            unimplemented!("JsonHandler::deserialize does not yet parse JSON arrays")
+            Err(CustomTagError::with_content(
+                "!json",
+                "JSON arrays are not supported",
+                content,
+            ))
         } else if content.starts_with('{') && content.ends_with('}') {
-            unimplemented!("JsonHandler::deserialize does not yet parse JSON objects")
+            Err(CustomTagError::with_content(
+                "!json",
+                "JSON objects are not supported",
+                content,
+            ))
+        } else if content == "\"" || content == "'" {
+            Err(CustomTagError::with_content(
+                "!json",
+                "Unterminated quoted string",
+                content,
+            ))
         } else {
             Ok(YamlValue::scalar(content))
         }
@@ -696,6 +710,29 @@ mod tests {
 
         // Test validation (implicit through deserialization)
         assert!(handler.validate("\"valid\"").is_ok());
+    }
+
+    #[test]
+    fn test_json_handler_deserialize_returns_err_not_panic() {
+        let handler = JsonHandler;
+        let array = handler.deserialize("[1,2]").unwrap_err();
+        assert_eq!(array.tag, "!json");
+        assert_eq!(array.message, "JSON arrays are not supported");
+        let object = handler.deserialize("{\"a\":1}").unwrap_err();
+        assert_eq!(object.tag, "!json");
+        assert_eq!(object.message, "JSON objects are not supported");
+        let quote = handler.deserialize("\"").unwrap_err();
+        assert_eq!(quote.tag, "!json");
+        assert_eq!(quote.message, "Unterminated quoted string");
+        assert_eq!(
+            handler
+                .deserialize("\"hello\"")
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .value(),
+            "hello"
+        );
     }
 
     #[test]

@@ -2843,9 +2843,11 @@ impl Mapping {
         let mut new_elements = Vec::new();
 
         if insert_pos > 0 {
-            // Give the previous entry its own trailing NEWLINE (so
-            // reorder_fields, which rebuilds the child list from
-            // entry nodes alone, doesn't lose the separator).
+            // Give the previous entry its own trailing NEWLINE so
+            // the "each block MAPPING_ENTRY owns its terminator"
+            // invariant holds (see src/nodes/mod.rs); a standalone
+            // NEWLINE between entries would render fine now but be
+            // fragile against later reshuffles.
             if let Some(prev_node) = self.0.children_with_tokens().nth(insert_pos - 1) {
                 if let rowan::NodeOrToken::Node(prev) = &prev_node {
                     if prev.kind() == SyntaxKind::MAPPING_ENTRY && !ends_with_newline(prev) {

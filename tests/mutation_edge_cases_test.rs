@@ -411,3 +411,32 @@ fn test_replace_multiline_flow_value_with_scalar_variants() {
             .unwrap_or_else(|e| panic!("variant {name} invariant violated: {e}"));
     }
 }
+
+/// Regression from mutation_invariants fuzz: setting a value under a key
+/// that starts with `#` used to render the key unquoted, but `#` is a
+/// comment indicator, so the re-parse dropped the entry (or misread it as
+/// a comment) and the mutation didn't stick. The key must be quoted on
+/// output so it round-trips.
+#[test]
+fn test_set_key_starting_with_hash_reparses() {
+    let seed = "literal: |\n  line1\n  line2\n";
+    let doc = yaml_edit::Document::from_str(seed).expect("parse seed");
+    let mapping = doc.as_mapping().expect("root mapping");
+
+    mapping.set("#aaaaa", "");
+
+    // After the mutation, the mapping itself sees the key.
+    assert!(mapping.contains_key("#aaaaa"), "in-memory: key missing");
+
+    // And the serialised form must reparse to the same key/value.
+    let text = doc.to_string();
+    let reparsed = yaml_edit::Document::from_str(&text)
+        .unwrap_or_else(|e| panic!("reparse failed: {e}\ntext:\n{text}"));
+    let reparsed_mapping = reparsed
+        .as_mapping()
+        .unwrap_or_else(|| panic!("reparsed root is not a mapping, text:\n{text}"));
+    assert!(
+        reparsed_mapping.contains_key("#aaaaa"),
+        "reparse drift: key `#aaaaa` missing after round-trip\ntext:\n{text}"
+    );
+}

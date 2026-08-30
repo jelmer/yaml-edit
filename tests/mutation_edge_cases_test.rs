@@ -489,3 +489,34 @@ fn test_set_path_new_numeric_key() {
         "set_path(\"997\", \"\") did not stick: get_path(\"997\") returned {got:?}\ntext:\n{doc}"
     );
 }
+
+/// Regression from mutation_invariants fuzz: `set_path("", ...)` on a
+/// document tripped the fuzz post-condition because `get_path("")`
+/// returned `None` after the set. The library's contract is that an
+/// empty path is invalid and both operations no-op silently, so a
+/// document that reaches `set_path("", ...)` must be unchanged and
+/// `get_path("")` afterwards must consistently return `None`.
+#[test]
+fn test_set_empty_path_is_a_noop() {
+    use yaml_edit::path::YamlPath;
+
+    let seed = "folded: >\n  wrapped\n  paragraph\n";
+    let doc = yaml_edit::Document::from_str(seed).expect("parse seed");
+    let before = doc.to_string();
+
+    doc.set_path("", "anything");
+
+    assert_eq!(
+        doc.to_string(),
+        before,
+        "set_path(\"\", ...) should be a no-op"
+    );
+    assert!(
+        doc.get_path("").is_none(),
+        "get_path(\"\") should always return None"
+    );
+    assert!(
+        !doc.remove_path(""),
+        "remove_path(\"\") should return false"
+    );
+}

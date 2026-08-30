@@ -172,6 +172,14 @@ fn seed_strat() -> impl Strategy<Value = &'static str> {
     ]
 }
 
+/// True when the path parses into a non-empty segment list.
+/// Mirrors the fuzz target so both suites skip no-op paths uniformly.
+fn is_settable_path(path: &str) -> bool {
+    yaml_edit::path::try_parse_path(path)
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+}
+
 fn apply(doc: &Document, op: &Op) {
     let Some(mapping) = doc.as_mapping() else {
         return;
@@ -288,12 +296,18 @@ fn apply(doc: &Document, op: &Op) {
             }
         }
         Op::SetPath(p, v) => {
-            doc.set_path(p, v.as_str());
-            assert_set_path_stuck(doc, p, v.as_str());
+            // set_path silently no-ops on empty / invalid paths, in which
+            // case assert_set_path_stuck would falsely fail.
+            if is_settable_path(p) {
+                doc.set_path(p, v.as_str());
+                assert_set_path_stuck(doc, p, v.as_str());
+            }
         }
         Op::RemovePath(p) => {
-            let removed = doc.remove_path(p);
-            assert_remove_path_stuck(doc, p, removed);
+            if is_settable_path(p) {
+                let removed = doc.remove_path(p);
+                assert_remove_path_stuck(doc, p, removed);
+            }
         }
     }
 }

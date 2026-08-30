@@ -191,6 +191,7 @@ pub mod error_recovery;
 mod lex;
 mod nodes;
 mod parse;
+mod parser;
 pub mod path;
 mod scalar;
 mod schema;

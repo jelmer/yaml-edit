@@ -100,6 +100,35 @@ pub struct ScalarValue {
     scalar_type: ScalarType,
 }
 
+/// Parse a `\uNNNN` or `\UNNNNNNNN` unicode escape from `chars` (with
+/// the leading `\u`/`\U` already consumed) and append the resulting
+/// character to `out`, falling back to the literal `\<prefix><digits>`
+/// when the digits are missing, non-hex, or outside the valid unicode
+/// range.
+fn push_unicode_escape(
+    out: &mut String,
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    prefix: char,
+    width: usize,
+) {
+    let hex_digits: String = chars.by_ref().take(width).collect();
+    let decoded = if hex_digits.len() == width {
+        u32::from_str_radix(&hex_digits, 16)
+            .ok()
+            .and_then(char::from_u32)
+    } else {
+        None
+    };
+    match decoded {
+        Some(c) => out.push(c),
+        None => {
+            out.push('\\');
+            out.push(prefix);
+            out.push_str(&hex_digits);
+        }
+    }
+}
+
 impl ScalarValue {
     /// Create a scalar value explicitly treating it as a string (no type auto-detection)
     ///
@@ -211,58 +240,8 @@ impl ScalarValue {
                                 }
                             }
                         }
-                        'u' => {
-                            // \uNNNN - 4-digit hex
-                            let hex_digits: String = chars.by_ref().take(4).collect();
-                            if hex_digits.len() == 4 {
-                                if let Ok(code) = u16::from_str_radix(&hex_digits, 16) {
-                                    if let Some(unicode_char) = char::from_u32(code as u32) {
-                                        result.push(unicode_char);
-                                    } else {
-                                        // Invalid Unicode code point
-                                        result.push('\\');
-                                        result.push('u');
-                                        result.push_str(&hex_digits);
-                                    }
-                                } else {
-                                    // Invalid hex
-                                    result.push('\\');
-                                    result.push('u');
-                                    result.push_str(&hex_digits);
-                                }
-                            } else {
-                                // Incomplete hex escape
-                                result.push('\\');
-                                result.push('u');
-                                result.push_str(&hex_digits);
-                            }
-                        }
-                        'U' => {
-                            // \UNNNNNNNN - 8-digit hex
-                            let hex_digits: String = chars.by_ref().take(8).collect();
-                            if hex_digits.len() == 8 {
-                                if let Ok(code) = u32::from_str_radix(&hex_digits, 16) {
-                                    if let Some(unicode_char) = char::from_u32(code) {
-                                        result.push(unicode_char);
-                                    } else {
-                                        // Invalid Unicode code point
-                                        result.push('\\');
-                                        result.push('U');
-                                        result.push_str(&hex_digits);
-                                    }
-                                } else {
-                                    // Invalid hex
-                                    result.push('\\');
-                                    result.push('U');
-                                    result.push_str(&hex_digits);
-                                }
-                            } else {
-                                // Incomplete hex escape
-                                result.push('\\');
-                                result.push('U');
-                                result.push_str(&hex_digits);
-                            }
-                        }
+                        'u' => push_unicode_escape(&mut result, &mut chars, 'u', 4),
+                        'U' => push_unicode_escape(&mut result, &mut chars, 'U', 8),
                         // Unknown escape sequence - preserve as literal
                         _ => {
                             result.push('\\');

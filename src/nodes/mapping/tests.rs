@@ -1,7 +1,6 @@
 //! Tests for `Mapping` and `MappingEntry`. Split out of
 //! `nodes/mapping/mod.rs` unchanged.
 
-use super::*;
 use crate::scalar::ScalarValue;
 use crate::yaml::YamlFile;
 use std::str::FromStr;

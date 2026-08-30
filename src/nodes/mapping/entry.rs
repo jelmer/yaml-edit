@@ -14,12 +14,6 @@ use crate::yaml::add_node_children_to;
 use rowan::GreenNodeBuilder;
 
 impl MappingEntry {
-    /// Get the underlying syntax node (for debugging/testing)
-    #[cfg(test)]
-    pub(crate) fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-
     /// Return the raw `KEY` wrapper node of this entry.
     ///
     /// The returned node has kind `KEY` and wraps the actual key content

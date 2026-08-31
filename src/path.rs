@@ -641,6 +641,11 @@ fn set_path_on_mapping<V: crate::AsYaml>(
         if let Some(nested) = mapping.get_sequence(first_key) {
             return set_path_on_sequence(&nested, &segments[1..], value);
         }
+        // Index on an existing mapping is a key (`m.0` / `m[0]`), same
+        // as get_path. Do not replace the mapping with a sequence.
+        if let Some(nested) = mapping.get_mapping(first_key) {
+            return set_path_on_mapping(&nested, &segments[1..], value);
+        }
         // Match the parent's style: nested-under-flow keeps flow, so
         // the intermediate sequence is created via SequenceBuilder
         // (renders as `[]`). Nested-under-block gets a bare empty
@@ -739,6 +744,9 @@ fn set_path_on_sequence<V: crate::AsYaml>(
     if next_wants_sequence {
         if let Some(nested) = sequence.get(index).and_then(|n| n.as_sequence().cloned()) {
             return set_path_on_sequence(&nested, &segments[1..], value);
+        }
+        if let Some(nested) = sequence.get(index).and_then(|n| n.as_mapping().cloned()) {
+            return set_path_on_mapping(&nested, &segments[1..], value);
         }
         // Nested-sequence-under-sequence: use SequenceBuilder to
         // create a flow-empty `[]`. A block SEQUENCE nested inline
@@ -1496,5 +1504,38 @@ config:
             doc.to_string(),
             "items:\n  - a\n  - null\n  - null\n  - z\n"
         );
+    }
+
+    #[test]
+    fn test_set_path_index_does_not_replace_existing_mapping() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+        let doc = Document::from_str("m:\n  a: 1\n  b: 2\n").unwrap();
+        doc.try_set_path("m[0]", "z").expect("set_path");
+        assert_eq!(doc.to_string(), "m:\n  a: 1\n  b: 2\n  '0': z\n");
+
+        let doc = Document::from_str("m:\n  \"0\":\n    x: 1\n").unwrap();
+        assert_eq!(
+            doc.try_get_path("m.0.x")
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .as_string(),
+            "1"
+        );
+        doc.try_set_path("m.0.x", "2").expect("set_path");
+        assert_eq!(
+            doc.try_get_path("m.0.x")
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .as_string(),
+            "2"
+        );
+        assert!(doc.get_mapping("m").is_some());
+
+        let doc = Document::from_str("items:\n  - a: 1\n    b: 2\n").unwrap();
+        doc.try_set_path("items[0][0]", "z").expect("set_path");
+        assert_eq!(doc.to_string(), "items:\n  - a: 1\n    b: 2\n    '0': z\n");
     }
 }

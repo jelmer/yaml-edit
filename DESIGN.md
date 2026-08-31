@@ -111,6 +111,43 @@ MAPPING_ENTRY
 When inserting or replacing entries, check whether the entry already ends with
 a newline (nested collections do, scalars don't) before adding separators.
 
+## Implicit-null values
+
+Every `MAPPING_ENTRY` and `SEQUENCE_ENTRY` in the CST holds a value node,
+even when the source omits it. The parser emits a zero-width
+`SCALAR { NULL "" }` in that position for every "missing value" syntax:
+
+- Block mapping value: `key:\n` or `key:` at EOF
+- Flow mapping value: `{key}`, `{key:}`, `{key,}`, `{a:, b:}`
+- Flow mapping key: `{,}`, `{: v}`, `{:}`
+- Explicit-key mapping: `? key\n`, `? \n: v`, `? key\n:\n`
+- Block sequence entry: `- \n`, `-\n`
+- Flow sequence entry: `[a, , c]`, `[,]`, `[,,]`
+
+Every KEY and VALUE always contains exactly one scalar or collection
+node. Mappings wrap the value in a `VALUE` node; sequences hold the
+scalar directly as a `SEQUENCE_ENTRY` child, matching how each shape
+already treats non-null values. The zero-width `NULL ""` token renders
+as nothing, so round-trips are lossless.
+
+**Parsed nulls vs written nulls.** Programmatically-constructed nulls
+(`YamlValue::Scalar(ScalarValue::null())`) build `SCALAR { NULL "null" }`
+-- textual, three characters. On read, keep the parser's zero-width form
+so unchanged nulls stay implicit; use the textual form only when writing
+a new null.
+
+**Consequences for accessors and mutators:**
+
+- `len` / `get` / `set` / `remove` / `iter` on sequences and mappings all
+  index by entry, not by "entry with a non-null value" -- so indexes agree
+  across accessors and mutators.
+- `Scalar::is_null()` returns `true` for the zero-width form.
+- When replacing a zero-width null with a real value via `set`, insert a
+  `WHITESPACE " "` between the preceding structural token (`DASH` in
+  block sequences) and the new value -- the original had no separator
+  because the value itself was zero-width. See `Sequence::set` for the
+  pattern.
+
 ### Inline vs block values
 
 After a colon in a mapping:

@@ -247,9 +247,11 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 ));
             }
 
-            // Explicit-key entries (`? key\n : value`) can lack a COLON
-            // when the value is implicit-null (`? key\n`). Otherwise a
-            // MAPPING_ENTRY has exactly one COLON.
+            // A MAPPING_ENTRY normally has exactly one COLON. Two forms
+            // may lack it:
+            //   - Explicit-key entries (`? key\n`) with implicit-null value.
+            //   - Flow shorthand entries (`{key}`, `{,}`) where the entire
+            //     entry is implicit key: implicit-value with no COLON.
             let colons: Vec<_> = node
                 .children_with_tokens()
                 .filter(|c| c.as_token().is_some_and(|t| t.kind() == SyntaxKind::COLON))
@@ -258,11 +260,16 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 c.as_token()
                     .is_some_and(|t| t.kind() == SyntaxKind::QUESTION)
             });
-            let expected_colons = if is_explicit_key { 0..=1 } else { 1..=1 };
+            let in_flow = is_in_flow_collection(node);
+            let expected_colons = if is_explicit_key || in_flow {
+                0..=1
+            } else {
+                1..=1
+            };
             if !expected_colons.contains(&colons.len()) {
                 return Err(format!(
                     "MAPPING_ENTRY should have {} COLON(s), found {}",
-                    if is_explicit_key {
+                    if is_explicit_key || in_flow {
                         "0 or 1"
                     } else {
                         "exactly 1"

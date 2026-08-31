@@ -645,6 +645,7 @@ impl Sequence {
 
             let mut value_inserted = false;
             let mut trailing_text: Option<String> = None;
+            let mut after_dash = false;
 
             for entry_child in entry_children {
                 match &entry_child {
@@ -667,17 +668,26 @@ impl Sequence {
 
                         // Replace the value node with the new value built from AsYaml
                         if !value_inserted {
+                            // A bare `-` item is DASH then a zero-width NULL
+                            // scalar. Insert the space that a written value
+                            // needs so set does not serialize as `-x`.
+                            if after_dash {
+                                builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                            }
                             value.build_content(&mut builder, 0, false);
                             value_inserted = true;
                         }
+                        after_dash = false;
                     }
                     rowan::NodeOrToken::Node(n) => {
                         // Copy other nodes as-is (like VALUE wrappers, etc.)
                         crate::yaml::copy_node_to_builder(&mut builder, n);
+                        after_dash = false;
                     }
                     rowan::NodeOrToken::Token(t) => {
                         // Copy tokens as-is
                         builder.token(t.kind().into(), t.text());
+                        after_dash = t.kind() == SyntaxKind::DASH;
                     }
                 }
             }
@@ -1037,6 +1047,98 @@ mod tests {
             doc.to_string(),
             "existing: value\nitems:\n  - apple\n  - banana\n"
         );
+    }
+
+    #[test]
+    fn test_implicit_null_item_shares_indexes_with_set_and_remove() {
+        use crate::Document;
+        let doc = Document::from_str("- a\n- \n- c\n").unwrap();
+        let seq = doc.as_sequence().unwrap();
+        assert_eq!(seq.len(), 3);
+        assert_eq!(seq.get(0).unwrap().as_scalar().unwrap().as_string(), "a");
+        assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().as_string(), "");
+        assert_eq!(seq.get(2).unwrap().as_scalar().unwrap().as_string(), "c");
+
+        assert!(seq.set(1, "x"));
+        assert_eq!(doc.to_string(), "- a\n- x\n- c\n");
+
+        let doc = Document::from_str("- a\n- \n- c\n").unwrap();
+        let seq = doc.as_sequence().unwrap();
+        let removed = seq.remove(1);
+        assert_eq!(
+            removed.and_then(|n| n.as_scalar().map(|s| s.as_string())),
+            Some(String::new())
+        );
+        assert_eq!(seq.len(), 2);
+        assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().as_string(), "c");
+
+        let doc = Document::from_str("- a\n-\n- c\n").unwrap();
+        let seq = doc.as_sequence().unwrap();
+        assert_eq!(seq.len(), 3);
+        assert!(seq.set(1, "x"));
+        assert_eq!(doc.to_string(), "- a\n- x\n- c\n");
+    }
+
+    #[test]
+    fn test_flow_sequence_implicit_null_shares_indexes() {
+        use crate::debug::{roundtrip_ok, validate_tree};
+        use crate::{AsYaml, Document};
+
+        // `[a, , c]` is three entries per YAML spec; the middle one is an
+        // implicit null. Accessors must agree with mutators on the index
+        // set, matching block-sequence behavior.
+        let doc = Document::from_str("[a, , c]").unwrap();
+        let seq = doc.as_sequence().unwrap();
+        assert_eq!(seq.len(), 3);
+        assert_eq!(seq.get(0).unwrap().as_scalar().unwrap().as_string(), "a");
+        assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().as_string(), "");
+        assert_eq!(seq.get(2).unwrap().as_scalar().unwrap().as_string(), "c");
+        validate_tree(doc.as_node().unwrap()).unwrap();
+        roundtrip_ok(doc.as_node().unwrap()).unwrap();
+
+        assert!(seq.set(1, "x"));
+        assert_eq!(doc.to_string(), "[a, x, c]");
+
+        let doc = Document::from_str("[a, , c]").unwrap();
+        let seq = doc.as_sequence().unwrap();
+        let removed = seq.remove(1);
+        assert_eq!(
+            removed.and_then(|n| n.as_scalar().map(|s| s.as_string())),
+            Some(String::new())
+        );
+        assert_eq!(seq.len(), 2);
+        assert_eq!(doc.to_string(), "[a, c]");
+    }
+
+    #[test]
+    fn test_flow_sequence_trailing_comma_is_not_extra_entry() {
+        use crate::Document;
+
+        // `[a, b,]` has two entries: the trailing comma is a terminator,
+        // not a separator introducing a null entry.
+        let doc = Document::from_str("[a, b,]").unwrap();
+        let seq = doc.as_sequence().unwrap();
+        assert_eq!(seq.len(), 2);
+        assert_eq!(seq.get(0).unwrap().as_scalar().unwrap().as_string(), "a");
+        assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().as_string(), "b");
+        assert_eq!(doc.to_string(), "[a, b,]");
+    }
+
+    #[test]
+    fn test_flow_sequence_only_nulls() {
+        use crate::debug::{roundtrip_ok, validate_tree};
+        use crate::{AsYaml, Document};
+
+        // `[,]` is one null entry. `[,,]` is two.
+        let doc = Document::from_str("[,]").unwrap();
+        assert_eq!(doc.as_sequence().unwrap().len(), 1);
+        validate_tree(doc.as_node().unwrap()).unwrap();
+        roundtrip_ok(doc.as_node().unwrap()).unwrap();
+
+        let doc = Document::from_str("[,,]").unwrap();
+        assert_eq!(doc.as_sequence().unwrap().len(), 2);
+        validate_tree(doc.as_node().unwrap()).unwrap();
+        roundtrip_ok(doc.as_node().unwrap()).unwrap();
     }
 
     #[test]

@@ -64,13 +64,65 @@
 //! - The **last** entry of a block collection may lack a terminator
 //!   (unterminated sources like `a: 1\nb: 2` are legitimate YAML and
 //!   must roundtrip).
-//! - An **explicit-key** MAPPING_ENTRY (`? key\n`) with an implicit-null
-//!   value has a zero-width `SCALAR { NULL "" }` as its last leaf; the
-//!   NEWLINE lives inside the KEY subtree.
+//! - An entry ending in an **implicit-null** scalar (see below) has a
+//!   zero-width `SCALAR { NULL "" }` as its last leaf, not a NEWLINE.
+//!   That's a well-formed terminated entry; the NEWLINE lives elsewhere
+//!   in the tree (inside the KEY subtree for `? key\n`, inside the VALUE
+//!   between COLON and SCALAR for `key:\n`).
 //!
 //! When inserting a new sibling entry after an existing one, mutation
 //! helpers must first ensure the predecessor is terminated
 //! (`ensure_trailing_newline` in `mapping.rs` / `sequence.rs`).
+//!
+//! ## Implicit-null values
+//!
+//! Every `MAPPING_ENTRY` and `SEQUENCE_ENTRY` holds a value node, even
+//! when the source omits it. The parser emits a zero-width
+//! `SCALAR { NULL "" }` at every "missing value" position:
+//!
+//! ```text
+//! Source form                     CST shape
+//! ------------------------------- ----------------------------------------
+//! key:\n     (block mapping)      VALUE { NEWLINE, SCALAR { NULL "" } }
+//! key:       (block mapping, EOF) VALUE { SCALAR { NULL "" } }
+//! {key}      (flow mapping)       MAPPING_ENTRY { KEY { SCALAR "key" },
+//!                                                 VALUE { SCALAR { NULL "" } } }
+//! {key:}     (flow mapping)       MAPPING_ENTRY { KEY { SCALAR "key" },
+//!                                                 COLON,
+//!                                                 VALUE { SCALAR { NULL "" } } }
+//! {,}        (flow mapping)       MAPPING_ENTRY { KEY   { SCALAR { NULL "" } },
+//!                                                 VALUE { SCALAR { NULL "" } },
+//!                                                 COMMA }
+//! {: v}      (flow mapping)       KEY { SCALAR { NULL "" } }, COLON, VALUE ...
+//! ? key\n    (explicit key)       MAPPING_ENTRY { QUESTION, KEY ..., NEWLINE,
+//!                                                 VALUE { SCALAR { NULL "" } } }
+//! - \n       (block sequence)     SEQUENCE_ENTRY { DASH, WHITESPACE,
+//!                                                  SCALAR { NULL "" }, NEWLINE }
+//! [a, , c]   (flow sequence)      SEQUENCE_ENTRY { SCALAR { NULL "" }, COMMA, ... }
+//! ```
+//!
+//! The invariant: **every KEY, every VALUE, every SEQUENCE_ENTRY holds
+//! exactly one scalar or collection node.** Mappings wrap the value in a
+//! `VALUE` node; sequences hold the scalar directly as a
+//! `SEQUENCE_ENTRY` child (matching how each shape wraps its non-null
+//! values -- sequences never had a wrapper, mappings always did).
+//!
+//! The zero-width `NULL ""` token renders as nothing, so round-trips are
+//! lossless. This is distinct from a programmatically-written null,
+//! which uses `SCALAR { NULL "null" }` (textual, three characters) so
+//! the value is visible in the output.
+//!
+//! Consequences for mutation helpers:
+//!
+//! - Iterating `SEQUENCE_ENTRY` children with `matches!(kind, SCALAR |
+//!   MAPPING | SEQUENCE | ALIAS | TAGGED_NODE)` finds the value in
+//!   every entry, including implicit-null ones. `len` / `get` /
+//!   `set` / `remove` therefore share the same set of indexes.
+//! - `Scalar::is_null()` returns `true` for the zero-width form.
+//! - `set(i, real_value)` on an implicit-null entry may need to insert
+//!   a separating WHITESPACE that the original didn't have (the value
+//!   was zero-width so no separator was needed). See `Sequence::set`
+//!   for the `after_dash` pattern used in block sequences.
 //!
 //! ## No stacked INDENTs, no double trailing NEWLINEs
 //!

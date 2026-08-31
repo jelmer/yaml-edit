@@ -641,6 +641,11 @@ fn set_path_on_mapping<V: crate::AsYaml>(
         if let Some(nested) = mapping.get_sequence(first_key) {
             return set_path_on_sequence(&nested, &segments[1..], value);
         }
+        if mapping.get_mapping(first_key).is_some() {
+            return Err(PathError::TypeMismatch {
+                at: segment_display(&segments[1]),
+            });
+        }
         // Match the parent's style: nested-under-flow keeps flow, so
         // the intermediate sequence is created via SequenceBuilder
         // (renders as `[]`). Nested-under-block gets a bare empty
@@ -1496,5 +1501,28 @@ config:
             doc.to_string(),
             "items:\n  - a\n  - null\n  - null\n  - z\n"
         );
+    }
+
+    #[test]
+    fn test_set_path_index_does_not_replace_existing_mapping() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+        let doc = Document::from_str("m:\n  a: 1\n  b: 2\n").unwrap();
+        let err = doc.try_set_path("m[0]", "z").unwrap_err();
+        assert!(matches!(err, PathError::TypeMismatch { .. }));
+        assert_eq!(doc.to_string(), "m:\n  a: 1\n  b: 2\n");
+
+        let doc = Document::from_str("m:\n  \"0\":\n    x: 1\n").unwrap();
+        assert_eq!(
+            doc.try_get_path("m.0.x")
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .as_string(),
+            "1"
+        );
+        let err = doc.try_set_path("m.0.x", "2").unwrap_err();
+        assert!(matches!(err, PathError::TypeMismatch { .. }));
+        assert_eq!(doc.to_string(), "m:\n  \"0\":\n    x: 1\n");
     }
 }

@@ -446,7 +446,7 @@ impl Document {
         builder.finish_node(); // VALUE
     }
 
-    /// Insert a key-value pair at a specific index (assumes document is a mapping).
+    /// Insert a key-value pair at a specific index.
     ///
     /// If the document already contains a mapping, delegates to
     /// [`Mapping::insert_at_index`]. If the document has no root node, creates

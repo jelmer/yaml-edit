@@ -24,6 +24,16 @@ impl Mapping {
         new_value: &impl crate::AsYaml,
         where_at: fn(SyntaxNode) -> FlowInsertPos,
     ) -> bool {
+        let Some(target) = self.find_entry_by_key(ref_key) else {
+            return false;
+        };
+        if self
+            .find_entry_by_key(new_key)
+            .is_some_and(|e| e.syntax() == target.syntax())
+        {
+            self.set(new_key, new_value);
+            return true;
+        }
         // Contract: move, not duplicate. Drop any prior entry with the
         // same key first.
         if let Some(existing) = self.find_entry_by_key(new_key) {
@@ -35,9 +45,6 @@ impl Mapping {
                 self.0.splice_children(idx..idx + 1, vec![]);
             }
         }
-        let Some(target) = self.find_entry_by_key(ref_key) else {
-            return false;
-        };
         let entry = MappingEntry::new_at_indent(
             new_key,
             new_value,
@@ -75,6 +82,16 @@ impl Mapping {
         new_key: impl crate::AsYaml,
         new_value: impl crate::AsYaml,
     ) -> bool {
+        let Some(target) = self.find_entry_by_key(&after_key) else {
+            return false;
+        };
+        if self
+            .find_entry_by_key(&new_key)
+            .is_some_and(|e| e.syntax() == target.syntax())
+        {
+            self.set(&new_key, &new_value);
+            return true;
+        }
         if self.is_flow_style() {
             return self.move_flow_around(&after_key, &new_key, &new_value, FlowInsertPos::After);
         }
@@ -349,6 +366,16 @@ impl Mapping {
         new_key: impl crate::AsYaml,
         new_value: impl crate::AsYaml,
     ) -> bool {
+        let Some(target) = self.find_entry_by_key(&before_key) else {
+            return false;
+        };
+        if self
+            .find_entry_by_key(&new_key)
+            .is_some_and(|e| e.syntax() == target.syntax())
+        {
+            self.set(&new_key, &new_value);
+            return true;
+        }
         if self.is_flow_style() {
             return self.move_flow_around(&before_key, &new_key, &new_value, FlowInsertPos::Before);
         }

@@ -56,6 +56,24 @@ fn test_insert_after_existing_key_missing_ref_returns_false() {
     );
 }
 
+#[test]
+fn test_move_after_missing_ref_leaves_mapping_unchanged() {
+    use crate::yaml::Document;
+    let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(!mapping.move_after("missing", "a", "3"));
+    assert_eq!(doc.to_string(), "a: 1\nb: 2\n");
+    assert!(!mapping.move_before("missing", "a", "3"));
+    assert_eq!(doc.to_string(), "a: 1\nb: 2\n");
+    assert!(mapping.move_after("a", "a", "3"));
+    assert_eq!(doc.to_string(), "a: '3'\nb: 2\n");
+
+    let doc = Document::from_str("{a: 1, b: 2}").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(!mapping.move_after("missing", "a", "3"));
+    assert_eq!(doc.to_string(), "{a: 1, b: 2}");
+}
+
 /// Setting into a flow-style mapping (`{...}`) inserts entries inside
 /// the braces with proper `, ` separators, not on new lines after `}`
 /// (which would produce broken YAML).

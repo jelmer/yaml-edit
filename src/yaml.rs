@@ -705,8 +705,9 @@ impl YamlFile {
     ///
     /// Delegates to [`Document::insert_at_index`]. If `key` already exists it
     /// is updated in-place rather than moved. If `index` is out of bounds the
-    /// entry is appended at the end. If the document has no mapping yet, one is
-    /// created automatically. This method always succeeds; it never returns an error.
+    /// entry is appended at the end. If the first document has no root node,
+    /// a mapping is created. A sequence or other non-mapping root is left
+    /// unchanged.
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn insert_at_index(

@@ -446,11 +446,12 @@ impl Document {
         builder.finish_node(); // VALUE
     }
 
-    /// Insert a key-value pair at a specific index (assumes document is a mapping).
+    /// Insert a key-value pair at a specific index.
     ///
     /// If the document already contains a mapping, delegates to
-    /// [`Mapping::insert_at_index`]. If no mapping exists yet, creates one and
-    /// uses [`Mapping::insert_at_index_preserving`].
+    /// [`Mapping::insert_at_index`]. If the document has no root node, creates
+    /// a mapping and uses [`Mapping::insert_at_index_preserving`]. A sequence
+    /// or other non-mapping root is left unchanged.
     pub fn insert_at_index(
         &self,
         index: usize,
@@ -460,6 +461,12 @@ impl Document {
         // Delegate to Mapping::insert_at_index if we have a mapping
         if let Some(mapping) = self.as_mapping() {
             mapping.insert_at_index(index, key, value);
+            return;
+        }
+
+        // Sequence or scalar root: leave the document unchanged (same
+        // as Document::set).
+        if self.root_node().is_some() {
             return;
         }
 
@@ -1120,6 +1127,16 @@ active: true
             YamlFile::from_str(&output3).is_ok(),
             "Set output should be valid YAML"
         );
+    }
+
+    #[test]
+    fn test_insert_at_index_leaves_sequence_root() {
+        let doc = Document::from_str("- a\n- b\n").unwrap();
+        assert!(!doc.set("k", "v"));
+        assert_eq!(doc.to_string(), "- a\n- b\n");
+        doc.insert_at_index(0, "k", "v");
+        assert_eq!(doc.to_string(), "- a\n- b\n");
+        assert!(doc.as_sequence().is_some());
     }
 
     #[test]

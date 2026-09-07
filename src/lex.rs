@@ -255,16 +255,11 @@ impl From<SyntaxKind> for rowan::SyntaxKind {
 /// plain scalar or a real terminator. Internal whitespace is followed by
 /// more plain-scalar content on the same line; a terminator is followed by
 /// end-of-line, end-of-input, a `#` comment marker, a `:` that ends the
-/// scalar (colon + whitespace/EOF), a flow indicator, or any other YAML
-/// special character.
-///
-/// Whitespace before a flow indicator is treated as a terminator even in
-/// block context: while the main loop treats `[](){},` as scalar content
-/// when they appear directly (no leading space), a space introduces a
-/// clear boundary that should be preserved as its own WHITESPACE token.
+/// scalar, or a structural indicator. Quotes and hyphens remain scalar
+/// content here; flow delimiters terminate only in flow context.
 ///
 /// Caller must guarantee the character at `ws_idx` is a space or tab.
-fn plain_scalar_continues_past_whitespace(input: &str, ws_idx: usize, _flow_depth: u32) -> bool {
+fn plain_scalar_continues_past_whitespace(input: &str, ws_idx: usize, flow_depth: u32) -> bool {
     let rest = &input[ws_idx..];
     // Find the first non-whitespace char in the run.
     let (offset, next) = match rest.char_indices().find(|(_, c)| *c != ' ' && *c != '\t') {
@@ -273,15 +268,9 @@ fn plain_scalar_continues_past_whitespace(input: &str, ws_idx: usize, _flow_dept
     };
     match next {
         '\n' | '\r' | '#' => false,
-        ',' | '[' | ']' | '{' | '}' => false,
-        ':' => {
-            let colon_pos = ws_idx + offset;
-            let after_colon = &input[colon_pos + 1..];
-            after_colon
-                .chars()
-                .next()
-                .is_some_and(|nc| !nc.is_whitespace())
-        }
+        ',' | '[' | ']' | '{' | '}' if flow_depth > 0 => false,
+        ':' => !is_colon_a_mapping_indicator(input, ws_idx + offset, flow_depth),
+        '-' | '\'' | '"' | ',' | '[' | ']' | '{' | '}' => true,
         c if is_yaml_special(c) => false,
         _ => true,
     }
@@ -360,7 +349,7 @@ fn read_plain_scalar_body_from<'a>(
 ) -> &'a str {
     let mut end_idx = start_idx;
     while let Some((idx, ch)) = chars.peek().copied() {
-        if ch == '\n' || ch == '\r' || ch.is_whitespace() {
+        if ch.is_whitespace() {
             break;
         }
         if ch == ':' && is_colon_a_mapping_indicator(input, idx, flow_depth) {
@@ -369,7 +358,9 @@ fn read_plain_scalar_body_from<'a>(
         if ch == '#' && is_hash_a_comment_start(input, idx) {
             break;
         }
-        if ch != ':' && ch != '-' && ch != '#' && is_yaml_special(ch) {
+        if is_yaml_special_except(ch, "-:#'\"")
+            && !(flow_depth == 0 && matches!(ch, ',' | '[' | ']' | '{' | '}'))
+        {
             break;
         }
         end_idx = idx + ch.len_utf8();
@@ -430,6 +421,7 @@ pub fn lex_with_validation_config<'a>(
     if let Some((0, '\u{FEFF}')) = chars.peek() {
         chars.next(); // Consume the BOM
         tokens.push((BOM, "\u{FEFF}"));
+        current_line_start = '\u{FEFF}'.len_utf8();
     }
 
     while let Some((start_idx, ch)) = chars.next() {
@@ -438,16 +430,17 @@ pub fn lex_with_validation_config<'a>(
         match ch {
             // Context-aware hyphen handling
             '-' => {
-                if let Some((_, '-')) = chars.peek() {
-                    chars.next(); // consume second -
-                    if let Some((_, '-')) = chars.peek() {
-                        chars.next(); // consume third -
-                        tokens.push((DOC_START, &input[token_start..start_idx + 3]));
-                    } else {
-                        // Just two dashes, treat as sequence marker followed by dash
-                        tokens.push((DASH, &input[token_start..start_idx + 1]));
-                        tokens.push((DASH, &input[start_idx + 1..start_idx + 2]));
-                    }
+                if flow_depth == 0
+                    && start_idx == current_line_start
+                    && input[start_idx..].starts_with("---")
+                    && input[start_idx + 3..]
+                        .chars()
+                        .next()
+                        .map_or(true, |next| next.is_whitespace())
+                {
+                    chars.next();
+                    chars.next();
+                    tokens.push((DOC_START, &input[token_start..start_idx + 3]));
                 } else {
                     // Check if this hyphen should be treated as a sequence marker
                     // It's a sequence marker if:
@@ -971,7 +964,7 @@ pub fn lex_with_validation_config<'a>(
                     // are inside a plain-scalar body they are ordinary content
                     // per YAML 1.2 §7.1 (a `&anchor` must be followed by
                     // whitespace to actually be an anchor).
-                    if is_yaml_special_except(next_ch, "-:#&*!?") {
+                    if is_yaml_special_except(next_ch, "-:#&*!?'\">") {
                         // In block context, flow indicators do NOT break scalars
                         if flow_depth == 0 && matches!(next_ch, '[' | ']' | '{' | '}' | ',') {
                             // do nothing, let it be part of the scalar
@@ -1496,15 +1489,9 @@ double: "quoted""#;
         let input = "line with - and + and : characters";
         let tokens = lex(input);
 
-        // Plain scalars absorb intra-line whitespace until they hit a real
-        // terminator, so `line with` is one STRING and the standalone `-`
-        // between spaces is another (not a sequence marker mid-line).
         assert!(tokens
             .iter()
-            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "line with"));
-        assert!(tokens
-            .iter()
-            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "-"));
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "line with - and"));
 
         // Plus and colon remain separately tokenized.
         assert!(tokens
@@ -1543,11 +1530,10 @@ double: "quoted""#;
                                                   // Multiple STRING tokens: "key", content words, and the hyphen
         assert!(count(SyntaxKind::STRING) >= 1, "expected STRING tokens");
 
-        // With context-aware hyphen parsing, the hyphen in content is now part of a STRING
         assert_eq!(
             tokens
                 .iter()
-                .filter(|(kind, text)| *kind == SyntaxKind::STRING && *text == "-")
+                .filter(|(kind, text)| *kind == SyntaxKind::STRING && *text == "content with - and")
                 .count(),
             1
         );
@@ -1569,15 +1555,12 @@ double: "quoted""#;
         // Test 3: Two dashes (not a document marker)
         let input = "--";
         let tokens = lex(input);
-        assert_eq!(tokens.len(), 2);
-        assert_eq!(tokens[0], (SyntaxKind::DASH, "-"));
-        assert_eq!(tokens[1], (SyntaxKind::DASH, "-"));
+        assert_eq!(tokens, vec![(SyntaxKind::STRING, "--")]);
 
         // Test 4: Four dashes
         let input = "----";
         let tokens = lex(input);
-        assert_eq!(tokens[0], (SyntaxKind::DOC_START, "---"));
-        assert_eq!(tokens[1], (SyntaxKind::STRING, "-"));
+        assert_eq!(tokens, vec![(SyntaxKind::STRING, "----")]);
     }
 
     #[test]
@@ -1602,18 +1585,8 @@ double: "quoted""#;
         // Test command-line arguments
         let input = "args: --verbose --log-level=debug";
         let tokens = lex(input);
-        // Double dashes are tokenized as two DASH tokens
-        assert_eq!(
-            tokens
-                .windows(3)
-                .filter(|w| {
-                    w[0] == (SyntaxKind::DASH, "-")
-                        && w[1] == (SyntaxKind::DASH, "-")
-                        && w[2] == (SyntaxKind::STRING, "verbose")
-                })
-                .count(),
-            1
-        );
+        assert_eq!(tokens[3], (SyntaxKind::STRING, "--verbose"));
+        assert_eq!(tokens[5], (SyntaxKind::STRING, "--log-level=debug"));
 
         // Test negative numbers
         let input = "temperature: -40";

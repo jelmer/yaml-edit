@@ -661,11 +661,6 @@ impl Parser {
         // it's clearly a structured value, otherwise parse as scalar.
         match self.current() {
             Some(SyntaxKind::DASH) if !self.in_flow_context => self.parse_sequence(),
-            Some(SyntaxKind::ANCHOR) => {
-                self.bump(); // consume and emit anchor token to CST
-                self.skip_whitespace();
-                self.parse_value_with_base_indent(0);
-            }
             Some(SyntaxKind::REFERENCE) => self.parse_alias(),
             Some(SyntaxKind::TAG) => self.parse_tagged_value(),
             Some(SyntaxKind::QUESTION) => {
@@ -790,6 +785,14 @@ impl Parser {
 
             // Parse value - wrap in VALUE node
             self.builder.start_node(SyntaxKind::VALUE.into());
+            // Anchors annotate the value; they do not make a following block value inline.
+            while self.current() == Some(SyntaxKind::ANCHOR) {
+                self.bump();
+                self.skip_whitespace();
+            }
+            if self.current() == Some(SyntaxKind::COMMENT) {
+                self.bump();
+            }
             let mut has_value = false;
             if self.current().is_some()
                 && self.current() != Some(SyntaxKind::NEWLINE)
@@ -807,24 +810,6 @@ impl Parser {
                 if self.current() == Some(SyntaxKind::COMMENT) {
                     self.bump(); // emit inline comment inside VALUE
                 }
-            } else if self.current() == Some(SyntaxKind::COMMENT) {
-                // Comment after colon with no inline value
-                // The comment belongs to the VALUE, and any indented content after it
-                // also belongs to this VALUE (e.g., "key:  # comment\n  nested: value")
-                self.bump(); // consume comment inside VALUE
-
-                if self.current() == Some(SyntaxKind::NEWLINE) {
-                    self.bump(); // consume newline inside VALUE
-
-                    if self.current() == Some(SyntaxKind::INDENT) {
-                        let indent_level = self.tokens.last().map_or(0, |(_, text)| text.len());
-                        self.bump(); // consume indent inside VALUE
-                                     // Parse the indented content as part of this VALUE
-                        self.parse_value_with_base_indent(indent_level);
-                        has_value = true;
-                    }
-                }
-                // If no indented content follows the comment, has_value stays false → implicit null
             } else if self.current() == Some(SyntaxKind::NEWLINE) {
                 self.skip_ws_and_newlines();
                 if self.current_line_indent > base_indent {

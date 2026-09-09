@@ -270,8 +270,13 @@ impl Parser {
                 }
             }
             Some(SyntaxKind::MERGE_KEY) => {
-                // Merge key is always a mapping
-                self.parse_mapping_with_base_indent(base_indent);
+                if self.in_flow_context {
+                    self.builder.start_node(SyntaxKind::SCALAR.into());
+                    self.bump();
+                    self.builder.finish_node();
+                } else {
+                    self.parse_mapping_with_base_indent(base_indent);
+                }
             }
             Some(SyntaxKind::QUESTION) => {
                 // Explicit key indicator - parse complex mapping

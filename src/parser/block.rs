@@ -790,6 +790,24 @@ impl Parser {
                 self.bump();
                 self.skip_whitespace();
             }
+            // A tag whose next content is an indentless `-` annotates that
+            // sequence (`key: !!seq\n- item`). Leave every other tag in
+            // place so parse_mapping_value can wrap a TAGGED_NODE
+            // (`!!int 42`, `!!set` plus an indented mapping).
+            if self.current() == Some(SyntaxKind::TAG) {
+                let upcoming: Vec<_> = self.upcoming_tokens().collect();
+                let newline_at = upcoming.iter().position(|k| *k == SyntaxKind::NEWLINE);
+                let rest_of_line_empty = upcoming
+                    .iter()
+                    .take(newline_at.unwrap_or(upcoming.len()))
+                    .all(|k| matches!(k, SyntaxKind::WHITESPACE | SyntaxKind::COMMENT));
+                let indentless_dash =
+                    newline_at.and_then(|i| upcoming.get(i + 1).copied()) == Some(SyntaxKind::DASH);
+                if rest_of_line_empty && indentless_dash {
+                    self.bump();
+                    self.skip_whitespace();
+                }
+            }
             if self.current() == Some(SyntaxKind::COMMENT) {
                 self.bump();
             }

@@ -51,6 +51,58 @@ fn anchored_indentless_sequence_preserves_sibling_mapping_and_edits() {
 }
 
 #[test]
+fn tagged_indentless_sequence_preserves_sibling_mapping_and_edits() {
+    for tag in ["!!seq", "!keep"] {
+        let yaml = format!(
+            "tags: {tag}\n- engineering\nmetadata:\n  version: 0.1.0 # keep version comment\n  status: draft\n"
+        );
+        let file = YamlFile::from_str(&yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let doc = file.document().unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        assert_eq!(
+            mapping.keys().count(),
+            2,
+            "{}",
+            debug::tree_to_string(file.syntax())
+        );
+        let tags = mapping.get("tags").unwrap();
+        let tags = tags.as_sequence().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(
+            tags.get(0).unwrap().as_scalar().unwrap().as_string(),
+            "engineering"
+        );
+        let metadata = mapping.get_mapping("metadata").unwrap();
+        metadata.set("version", "0.1.1");
+        common::assert_file_cst_ok(&file);
+        assert_eq!(
+            file.to_string(),
+            yaml.replace("version: 0.1.0", "version: 0.1.1")
+        );
+    }
+}
+
+#[test]
+fn tagged_inline_scalar_still_parses() {
+    let yaml = "count: !!int 42\nname: keep\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.keys().count(), 2);
+    assert_eq!(
+        mapping
+            .get("count")
+            .unwrap()
+            .as_tagged()
+            .unwrap()
+            .tag()
+            .as_deref(),
+        Some("!!int")
+    );
+}
+
+#[test]
 fn flow_merge_alias_preserves_following_entry_and_metadata_edits() {
     for separator in [", ", " , "] {
         let yaml = format!(

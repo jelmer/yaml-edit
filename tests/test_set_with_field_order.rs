@@ -2,6 +2,32 @@ use std::str::FromStr;
 use yaml_edit::YamlFile;
 
 #[test]
+fn test_set_with_field_order_nested_mapping_keeps_indent() {
+    let original = "outer:\n  name: a\n  desc: c\n";
+    let yaml = YamlFile::from_str(original).unwrap();
+    let mapping = yaml.document().unwrap().as_mapping().unwrap();
+    let outer = mapping.get_mapping("outer").unwrap();
+    outer.set_with_field_order("version", "1", ["name", "version", "desc"]);
+    assert_eq!(
+        yaml.to_string(),
+        "outer:\n  name: a\n  version: '1'\n  desc: c\n"
+    );
+}
+
+#[test]
+fn test_set_with_field_order_nested_insert_before_first_keeps_indent() {
+    let original = "outer:\n  name: a\n  desc: c\n";
+    let yaml = YamlFile::from_str(original).unwrap();
+    let mapping = yaml.document().unwrap().as_mapping().unwrap();
+    let outer = mapping.get_mapping("outer").unwrap();
+    outer.set_with_field_order("alpha", "1", ["alpha", "name", "desc"]);
+    assert_eq!(
+        yaml.to_string(),
+        "outer:\n  alpha: '1'\n  name: a\n  desc: c\n"
+    );
+}
+
+#[test]
 fn test_set_with_field_order_update_existing_key() {
     let original = r#"name: my-app
 version: 1.0

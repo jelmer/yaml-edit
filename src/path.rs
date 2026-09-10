@@ -668,6 +668,14 @@ fn set_path_on_mapping<V: crate::AsYaml>(
     if let Some(nested) = mapping.get_mapping(first_key) {
         return set_path_on_mapping(&nested, &segments[1..], value);
     }
+    if mapping
+        .get(first_key)
+        .is_some_and(|n| n.as_scalar().is_none())
+    {
+        return Err(PathError::TypeMismatch {
+            at: segment_display(&segments[0]),
+        });
+    }
 
     // Match the parent's style so we don't mix block content into a flow
     // container. `Mapping::new()` is a bare empty MAPPING (renders block);
@@ -768,6 +776,11 @@ fn set_path_on_sequence<V: crate::AsYaml>(
 
     if let Some(nested) = sequence.get(index).and_then(|n| n.as_mapping().cloned()) {
         return set_path_on_mapping(&nested, &segments[1..], value);
+    }
+    if sequence.get(index).is_some_and(|n| n.as_scalar().is_none()) {
+        return Err(PathError::TypeMismatch {
+            at: segment_display(&segments[0]),
+        });
     }
     let flow_empty = crate::builder::MappingBuilder::new()
         .build_document()
@@ -1537,5 +1550,30 @@ config:
         let doc = Document::from_str("items:\n  - a: 1\n    b: 2\n").unwrap();
         doc.try_set_path("items[0][0]", "z").expect("set_path");
         assert_eq!(doc.to_string(), "items:\n  - a: 1\n    b: 2\n    '0': z\n");
+    }
+
+    #[test]
+    fn test_set_path_key_does_not_replace_existing_sequence() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+        let original = "items:\n- a\n- b\n";
+        let doc = Document::from_str(original).unwrap();
+        assert!(matches!(
+            doc.try_get_path("items.foo"),
+            Err(PathError::TypeMismatch { .. })
+        ));
+        assert!(matches!(
+            doc.try_set_path("items.foo", "x"),
+            Err(PathError::TypeMismatch { .. })
+        ));
+        assert_eq!(doc.to_string(), original);
+
+        let original = "other: &o\n  a: 1\nitems: *o\n";
+        let doc = Document::from_str(original).unwrap();
+        assert!(matches!(
+            doc.try_set_path("items.foo", "x"),
+            Err(PathError::TypeMismatch { .. })
+        ));
+        assert_eq!(doc.to_string(), original);
     }
 }

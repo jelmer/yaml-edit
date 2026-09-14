@@ -579,32 +579,13 @@ pub fn lex_with_validation_config<'a>(
             ',' => tokens.push((COMMA, &input[token_start..start_idx + 1])),
             '|' => tokens.push((PIPE, &input[token_start..start_idx + 1])),
             '>' => tokens.push((GREATER, &input[token_start..start_idx + 1])),
-            '<' => {
-                // `<<` is a merge key only when the key is exactly `<<`, i.e.
-                // the next character ends the token. `<<foo` and a bare `<`
-                // are plain scalars.
-                let is_merge_key = matches!(chars.peek(), Some((_, '<')))
-                    && match input[start_idx + 2..].chars().next() {
-                        None => true,
-                        Some(ch) => ch.is_whitespace() || matches!(ch, ':' | ',' | ']' | '}' | '#'),
-                    };
-                if is_merge_key {
-                    chars.next(); // consume second <
-                    tokens.push((MERGE_KEY, &input[token_start..start_idx + 2]));
-                } else {
-                    // The second `<`, if any, is not special and is picked up
-                    // by the loop below along with the rest of the scalar.
-                    let mut end_idx = start_idx + 1;
-                    while let Some((idx, ch)) = chars.peek() {
-                        if ch.is_whitespace() || is_yaml_special(*ch) {
-                            break;
-                        }
-                        end_idx = *idx + ch.len_utf8();
-                        chars.next();
-                    }
-                    let text = &input[token_start..end_idx];
-                    tokens.push((classify_scalar(text), text));
-                }
+            // `<<` is a merge key only when the key is exactly `<<`, i.e. the
+            // next character ends the token. Anything else starting with `<`
+            // (`<<foo`, a bare `<`) is a plain scalar and falls through to the
+            // catch-all arm below, which knows the real plain-scalar rules.
+            '<' if is_merge_key_at(input, start_idx) => {
+                chars.next(); // consume second <
+                tokens.push((MERGE_KEY, &input[token_start..start_idx + 2]));
             }
             '&' => {
                 // Check if this is an anchor definition
@@ -1046,6 +1027,22 @@ fn classify_scalar(text: &str) -> SyntaxKind {
 
 /// Common set of YAML special characters
 const YAML_SPECIAL_CHARS: &str = ":+-?[]{},'|>&*!%\"#";
+
+/// Check whether the `<` at `idx` starts a merge key (`<<`).
+///
+/// `<<` is a merge key only when the whole key is `<<`, per the YAML 1.1 merge
+/// type. A `<<` followed by more scalar content (`<<foo`) is a plain scalar,
+/// which is what PyYAML and other implementations accept.
+fn is_merge_key_at(input: &str, idx: usize) -> bool {
+    let rest = &input[idx..];
+    if !rest.starts_with("<<") {
+        return false;
+    }
+    match rest[2..].chars().next() {
+        None => true,
+        Some(ch) => ch.is_whitespace() || matches!(ch, ':' | ',' | ']' | '}' | '#'),
+    }
+}
 
 /// Check if a character has special meaning in YAML
 fn is_yaml_special(ch: char) -> bool {
@@ -1493,6 +1490,47 @@ double: "quoted""#;
                 .as_string(),
             "1"
         );
+    }
+
+    #[test]
+    fn test_angle_prefixed_scalar_uses_plain_scalar_rules() {
+        // A key starting with `<` follows the same plain-scalar rules as any
+        // other key: `-`, `!`, `&` and a non-indicator `:` are ordinary
+        // content, not token breaks.
+        use crate::YamlFile;
+        use std::str::FromStr;
+
+        for key in [
+            "<foo-bar",
+            "<<foo-bar",
+            "<foo!x",
+            "<<foo!x",
+            "<foo&x",
+            "<<foo&x",
+            "<foo:x",
+            "<<foo:x",
+        ] {
+            let src = format!("{}: 1\n", key);
+            let tokens = lex(&src);
+            assert_eq!(
+                tokens
+                    .iter()
+                    .filter(|(kind, _)| *kind != SyntaxKind::WHITESPACE)
+                    .map(|(_, text)| *text)
+                    .collect::<Vec<_>>(),
+                vec![key, ":", "1", "\n"],
+                "unexpected tokens for {:?}",
+                src
+            );
+
+            let file = YamlFile::from_str(&src).unwrap();
+            assert_eq!(file.to_string(), src);
+            let mapping = file.document().unwrap().as_mapping().unwrap();
+            assert_eq!(
+                mapping.get(key).unwrap().as_scalar().unwrap().as_string(),
+                "1"
+            );
+        }
     }
 
     #[test]

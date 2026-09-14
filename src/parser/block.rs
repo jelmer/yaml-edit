@@ -268,7 +268,7 @@ impl Parser {
         self.builder.finish_node();
         self.error_context.pop_context();
     }
-    pub(super) fn parse_explicit_key_mapping(&mut self) {
+    pub(super) fn parse_explicit_key_mapping(&mut self, base_indent: usize) {
         // Parse mapping with explicit key indicator '?'
         self.builder.start_node(SyntaxKind::MAPPING.into());
 
@@ -351,7 +351,11 @@ impl Parser {
                     self.bump(); // consume newline
                     if self.current() == Some(SyntaxKind::INDENT) {
                         self.bump(); // consume indent
-                        self.parse_value();
+                                     // bump() tracked the indent we just consumed; that
+                                     // column bounds the nested value, so content at or
+                                     // left of it belongs to an enclosing collection.
+                        let value_indent = self.current_line_indent;
+                        self.parse_value_with_base_indent(value_indent);
                     } else {
                         // Colon-then-dedent: implicit-null value.
                         self.builder.start_node(SyntaxKind::SCALAR.into());
@@ -379,6 +383,12 @@ impl Parser {
 
             self.skip_ws_and_newlines();
 
+            // A following line at a shallower column closes this mapping --
+            // it belongs to an enclosing one, not here.
+            if self.is_at_dedented_position(base_indent) {
+                break;
+            }
+
             // Check if there are more entries
             if self.current() != Some(SyntaxKind::QUESTION) && !self.is_mapping_key() {
                 break;
@@ -386,7 +396,10 @@ impl Parser {
         }
 
         // Continue parsing regular mapping entries if any
-        while self.current().is_some() && self.is_mapping_key() {
+        while self.current().is_some()
+            && !self.is_at_dedented_position(base_indent)
+            && self.is_mapping_key()
+        {
             let tokens_before_iter = self.tokens.len();
             // is_mapping_key() returns true for QUESTION, but
             // parse_mapping_key_value_pair does not consume a `?` key - that
@@ -395,7 +408,7 @@ impl Parser {
                 self.parse_explicit_key_entries();
                 break;
             }
-            self.parse_mapping_key_value_pair(0);
+            self.parse_mapping_key_value_pair(base_indent);
             self.skip_ws_and_newlines();
             // Progress guard against any future case where the body consumes
             // nothing (e.g. recovery via synthetic-token insertion).
@@ -655,7 +668,7 @@ impl Parser {
         false
     }
 
-    fn parse_mapping_value(&mut self) {
+    fn parse_mapping_value(&mut self, base_indent: usize) {
         // When parsing the value part of a mapping, be more conservative about
         // interpreting content as nested mappings. Only parse as mapping if
         // it's clearly a structured value, otherwise parse as scalar.
@@ -665,7 +678,7 @@ impl Parser {
             Some(SyntaxKind::TAG) => self.parse_tagged_value(),
             Some(SyntaxKind::QUESTION) => {
                 // Explicit key indicator - parse complex mapping
-                self.parse_explicit_key_mapping();
+                self.parse_explicit_key_mapping(base_indent);
             }
             Some(SyntaxKind::PIPE) => self.parse_literal_block_scalar(),
             Some(SyntaxKind::GREATER) => self.parse_folded_block_scalar(),
@@ -799,7 +812,7 @@ impl Parser {
                 && self.current() != Some(SyntaxKind::COMMENT)
             {
                 // Inline value on the same line as the colon
-                self.parse_mapping_value();
+                self.parse_mapping_value(base_indent);
                 has_value = true;
 
                 // Capture any trailing whitespace and comment on the same line (before NEWLINE)
@@ -862,5 +875,119 @@ impl Parser {
 
         // Finish MAPPING_ENTRY node
         self.builder.finish_node();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::yaml::YamlFile;
+    use std::str::FromStr;
+
+    /// Top-level keys of `src`, in document order.
+    fn top_level_keys(src: &str) -> Vec<String> {
+        YamlFile::from_str(src)
+            .expect("should parse")
+            .document()
+            .expect("should have a document")
+            .as_mapping()
+            .expect("root should be a mapping")
+            .keys()
+            .map(|k| k.to_string())
+            .collect()
+    }
+
+    // Regression: a nested explicit-key block (`? k` / `: v`) used to swallow
+    // whatever followed it. parse_explicit_key_mapping was the only
+    // block-mapping path taking no base_indent, so after its entries it kept
+    // consuming whatever is_mapping_key() accepted -- neither knowing about
+    // columns -- and a key at the outer level was absorbed into the nested
+    // mapping. The text still round-tripped byte-for-byte, so only the
+    // structure was wrong.
+
+    #[test]
+    fn test_key_after_nested_explicit_key_block() {
+        assert_eq!(top_level_keys("m:\n  ? a\n  : 1\nuf: v\n"), ["m", "uf"]);
+    }
+
+    #[test]
+    fn test_key_after_multi_entry_nested_explicit_key_block() {
+        assert_eq!(
+            top_level_keys("m:\n  ? a\n  : 1\n  ? b\n  : 2\nuf: v\n"),
+            ["m", "uf"]
+        );
+    }
+
+    #[test]
+    fn test_nested_explicit_key_block_followed_by_another_nested_mapping() {
+        assert_eq!(
+            top_level_keys("m:\n  ? a\n  : 1\nn:\n  ? b\n  : 2\n"),
+            ["m", "n"]
+        );
+    }
+
+    /// An explicit key whose value is itself a block: the value must be
+    /// bounded by the column that opened it, not parsed at indent 0.
+    #[test]
+    fn test_key_after_explicit_key_with_block_value() {
+        assert_eq!(
+            top_level_keys("m:\n  ? a\n  : \n    n: 1\nz: 9\n"),
+            ["m", "z"]
+        );
+    }
+
+    #[test]
+    fn test_key_after_deeply_indented_explicit_key_block() {
+        assert_eq!(
+            top_level_keys("m:\n      ? a\n      : 1\nz: 9\n"),
+            ["m", "z"]
+        );
+    }
+
+    #[test]
+    fn test_explicit_key_block_mixed_with_plain_entries_stops_at_dedent() {
+        assert_eq!(
+            top_level_keys("m:\n  ? a\n  : 1\n  plain: 2\nouter: 3\n"),
+            ["m", "outer"]
+        );
+    }
+
+    #[test]
+    fn test_explicit_key_block_nested_two_levels_deep() {
+        assert_eq!(
+            top_level_keys("a:\n  b:\n    ? c\n    : 1\n  d: 2\ne: 3\n"),
+            ["a", "e"]
+        );
+    }
+
+    /// A `!!set`-tagged explicit-key block is the same shape and must also
+    /// release the key that follows it.
+    #[test]
+    fn test_key_after_tagged_explicit_key_set() {
+        assert_eq!(
+            top_level_keys("keys: !!set\n  ? a\n  ? b\nz: 9\n"),
+            ["keys", "z"]
+        );
+    }
+
+    /// The nested mapping must hold only its own content -- a key count alone
+    /// would miss a value that absorbed the dedented sibling.
+    #[test]
+    fn test_nested_explicit_key_value_excludes_dedented_sibling() {
+        let parsed = YamlFile::from_str("m:\n  ? a\n  : 1\nuf: v\n").expect("should parse");
+        let doc = parsed.document().expect("should have a document");
+        let mapping = doc.as_mapping().expect("root should be a mapping");
+
+        let m = mapping.get("m").expect("m should be present");
+        assert_eq!(m.to_string().trim_end(), "? a\n  : 1");
+
+        let uf = mapping.get("uf").expect("uf should be present");
+        assert_eq!(uf.to_string().trim(), "v");
+    }
+
+    /// Top-level explicit keys were never affected; this guards against a
+    /// dedent check that is too eager.
+    #[test]
+    fn test_top_level_explicit_keys_are_unaffected() {
+        assert_eq!(top_level_keys("? a\n: 1\nplain: v\n"), ["a", "plain"]);
     }
 }

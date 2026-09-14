@@ -283,3 +283,88 @@ fn test_insert_maintains_pairs_count() {
     let pairs_final = mapping_final.iter().count();
     assert_eq!(pairs_final, 4, "Should have 4 pairs after insertion");
 }
+
+/// Inserting into a *nested* mapping must indent the new entry to its
+/// siblings' column at every position, and must not strip the indent from
+/// whichever entry it displaces.
+#[test]
+fn test_insert_at_index_nested_mapping_indent_at_each_position() {
+    for (index, expected) in [
+        (0, "m:\n  zz: '9'\n  a: 1\n  b: 2\n"),
+        (1, "m:\n  a: 1\n  zz: '9'\n  b: 2\n"),
+        (2, "m:\n  a: 1\n  b: 2\n  zz: '9'\n"),
+    ] {
+        let yaml = YamlFile::from_str("m:\n  a: 1\n  b: 2\n").unwrap();
+        let nested = yaml
+            .document()
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get_mapping("m")
+            .unwrap();
+        nested.insert_at_index(index, "zz", "9");
+        assert_file_cst_ok(&yaml);
+        assert_eq!(yaml.to_string(), expected, "index {index}");
+    }
+}
+
+/// The same, at an indent width other than two, so the inserted indent is
+/// measured from the document rather than assumed.
+#[test]
+fn test_insert_at_index_nested_mapping_four_space_indent() {
+    for (index, expected) in [
+        (0, "m:\n    zz: '9'\n    a: 1\n    b: 2\n"),
+        (1, "m:\n    a: 1\n    zz: '9'\n    b: 2\n"),
+        (2, "m:\n    a: 1\n    b: 2\n    zz: '9'\n"),
+    ] {
+        let yaml = YamlFile::from_str("m:\n    a: 1\n    b: 2\n").unwrap();
+        let nested = yaml
+            .document()
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get_mapping("m")
+            .unwrap();
+        nested.insert_at_index(index, "zz", "9");
+        assert_file_cst_ok(&yaml);
+        assert_eq!(yaml.to_string(), expected, "index {index}");
+    }
+}
+
+/// A single-entry nested mapping: inserting before the only entry means
+/// insert_pos is 0 yet an entry is still displaced.
+#[test]
+fn test_insert_at_index_nested_single_entry() {
+    for (index, expected) in [
+        (0, "m:\n  zz: '9'\n  a: 1\n"),
+        (1, "m:\n  a: 1\n  zz: '9'\n"),
+    ] {
+        let yaml = YamlFile::from_str("m:\n  a: 1\n").unwrap();
+        let nested = yaml
+            .document()
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get_mapping("m")
+            .unwrap();
+        nested.insert_at_index(index, "zz", "9");
+        assert_file_cst_ok(&yaml);
+        assert_eq!(yaml.to_string(), expected, "index {index}");
+    }
+}
+
+/// Root-level mappings have no indent to apply at any position.
+#[test]
+fn test_insert_at_index_root_mapping_has_no_indent() {
+    for (index, expected) in [
+        (0, "zz: '9'\na: 1\nb: 2\n"),
+        (1, "a: 1\nzz: '9'\nb: 2\n"),
+        (2, "a: 1\nb: 2\nzz: '9'\n"),
+    ] {
+        let yaml = YamlFile::from_str("a: 1\nb: 2\n").unwrap();
+        let mapping = yaml.document().unwrap().as_mapping().unwrap();
+        mapping.insert_at_index(index, "zz", "9");
+        assert_file_cst_ok(&yaml);
+        assert_eq!(yaml.to_string(), expected, "index {index}");
+    }
+}

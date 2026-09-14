@@ -24,3 +24,6 @@ cc 7217722cfb80ddce636240c06fb33748110842fe4491fa504f8f855e7feac595 # shrinks to
 cc f1ae10076509ab758c0e89de36df5828e5407b3e0a308550b9ce43ea8fde9d1c # shrinks to seed = "a: 1\nb: 2\nc: 3\n", ops = [Rename("a", "b"), Rename("b", "a")]
 cc 9fffc4fb07204cb8821080394f8c6e3b6c6eb92b6724748c417977a4a51e9cd4 # shrinks to seed = "a: 1\n", ops = [SetPath("s[0][0]", "")]
 cc 2ed88fc0ebd9d814a3c54990bc998c0517845d933520d7d698fc801ea2e5fda1 # shrinks to seed = "a: 1\n", ops = [SetInt("d", 0), SetPath("d.a", "")]
+cc 990ea0a4c6d5dc023cf29ef84f91e0fd2fdb1b05a6b23008e19e22f62b104add # shrinks to seed = "m:\n    a: 1\n    b: 2\n", ops = [RemoveNthOccurrence("m", 0)]
+cc d08d59fb6e6ed85be9c704391345c1c3517fb7cd0b013b2b31ea9b3dca40605f # shrinks to seed = "? a\n: 1\n", ops = [SetPath("aa.a", ""), SetString("b", "")]
+cc b7cd094a7b08a9ecb7dca4db311772ec0db73ad77cae29ab91fe321337f868fb # shrinks to seed = "? a\n: 1\n? b\n: 2\n", ops = [ReorderFields(["b"])]

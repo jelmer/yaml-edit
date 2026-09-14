@@ -169,6 +169,22 @@ fn seed_strat() -> impl Strategy<Value = &'static str> {
         Just("s:\n  - a\n  - b\n  - c\n"),
         Just("m: {}\n"),
         Just("m: {a: 1}\n"),
+        // Explicit-key mappings (`? k` / `: v`). These are parsed without
+        // a trailing NEWLINE inside the entry -- it sits beside it as a
+        // sibling -- so insertion paths that assume entries own their
+        // terminator get it wrong here.
+        //
+        // Mutating these is covered by the CST invariant and roundtrip
+        // checks. The semantic re-parse checks skip them for now; see
+        // `doc_has_explicit_keys`.
+        Just("? a\n: 1\n"),
+        Just("? a\n: 1\n? b\n: 2\n"),
+        // Nested mappings at indent widths other than 2.
+        Just("m:\n    a: 1\n    b: 2\n"),
+        Just("m:\n   a: 1\n   b: 2\n"),
+        // A comment indented past its sibling keys must not set the
+        // column for newly inserted entries.
+        Just("m:\n  a: 1\n      # deep\n  b: 2\n"),
     ]
 }
 
@@ -176,15 +192,25 @@ fn apply(doc: &Document, op: &Op) {
     let Some(mapping) = doc.as_mapping() else {
         return;
     };
+    // The `*_stuck` helpers verify a mutation by re-parsing the emitted
+    // text. On explicit-key documents that re-read is unreliable through no
+    // fault of the mutation (see `doc_has_explicit_keys`), so the mutations
+    // still run and the CST/roundtrip checks still apply -- only the
+    // semantic re-read is skipped.
+    let semantic_reread_ok = !doc_has_explicit_keys(doc);
     match op {
         Op::SetString(k, v) => {
             mapping.set(k.as_str(), v.as_str());
-            assert_mapping_set_stuck(&mapping, k.as_str(), v.as_str(), doc);
+            if semantic_reread_ok {
+                assert_mapping_set_stuck(&mapping, k.as_str(), v.as_str(), doc);
+            }
         }
         Op::SetInt(k, v) => {
             mapping.set(k.as_str(), *v as i64);
             let expected = (*v as i64).to_string();
-            assert_mapping_set_stuck(&mapping, k.as_str(), &expected, doc);
+            if semantic_reread_ok {
+                assert_mapping_set_stuck(&mapping, k.as_str(), &expected, doc);
+            }
         }
         Op::Remove(k) => {
             let existed = mapping.contains_key(k.as_str());
@@ -210,19 +236,21 @@ fn apply(doc: &Document, op: &Op) {
         }
         Op::InsertAfter(a, k, v) => {
             let inserted = mapping.insert_after(a.as_str(), k.as_str(), v.as_str());
-            if inserted {
+            if inserted && semantic_reread_ok {
                 assert_mapping_insert_stuck(&mapping, k.as_str(), v.as_str(), doc, "InsertAfter");
             }
         }
         Op::InsertBefore(a, k, v) => {
             let inserted = mapping.insert_before(a.as_str(), k.as_str(), v.as_str());
-            if inserted {
+            if inserted && semantic_reread_ok {
                 assert_mapping_insert_stuck(&mapping, k.as_str(), v.as_str(), doc, "InsertBefore");
             }
         }
         Op::InsertAtIndex(i, k, v) => {
             mapping.insert_at_index(*i, k.as_str(), v.as_str());
-            assert_mapping_insert_stuck(&mapping, k.as_str(), v.as_str(), doc, "InsertAtIndex");
+            if semantic_reread_ok {
+                assert_mapping_insert_stuck(&mapping, k.as_str(), v.as_str(), doc, "InsertAtIndex");
+            }
         }
         Op::MoveAfter(a, k, v) => {
             let _ = mapping.move_after(a.as_str(), k.as_str(), v.as_str());
@@ -292,7 +320,7 @@ fn apply(doc: &Document, op: &Op) {
             // the set actually succeeded. Errors (type mismatches,
             // empty path) are legitimate outcomes and shouldn't fail
             // the post-condition check.
-            if doc.try_set_path(p, v.as_str()).is_ok() {
+            if doc.try_set_path(p, v.as_str()).is_ok() && semantic_reread_ok {
                 assert_set_path_stuck(doc, p, v.as_str());
             }
         }
@@ -354,6 +382,72 @@ fn check_set_stuck(doc: &Document, key: &str, expected: &str) -> Result<(), Test
     Ok(())
 }
 
+/// Does this document contain an explicit-key entry (`? k` / `: v`)?
+///
+/// On this branch the parser still drops a key that follows a *nested*
+/// explicit-key block, so re-reading a correctly written document can
+/// under-report its mapping. That makes the semantic re-parse checks unable
+/// to tell "the writer emitted bad YAML" from "the reader mis-parsed good
+/// YAML", so they skip these shapes; the CST invariant and roundtrip checks
+/// still run, and PyYAML confirms the emitted text is valid.
+///
+/// The parser fix lives on the `explicit-key-parse` branch. Once that lands,
+/// drop this function and its call sites (verified: with both changes
+/// applied, the full semantic checks pass at 30k cases, including
+/// `m:\n  ? a\n  : 1\n` seeds).
+fn doc_has_explicit_keys(doc: &Document) -> bool {
+    doc.to_string().lines().any(|l| {
+        let t = l.trim_start();
+        t == "?" || t.starts_with("? ")
+    })
+}
+
+/// The emitted text must re-parse to the same top-level key sequence.
+///
+/// `roundtrip_ok` only proves the CST still prints byte-for-byte; it says
+/// nothing about whether those bytes still *mean* the same thing. An entry
+/// emitted at the wrong column (escaping its parent mapping, say) prints
+/// back fine but re-parses with a different structure. Comparing the
+/// top-level keys before and after catches exactly that.
+fn check_reparse_structure(doc: &Document, context: &str) -> Result<(), TestCaseError> {
+    if doc_has_explicit_keys(doc) {
+        return Ok(());
+    }
+    let text = doc.to_string();
+    let Some(before) = doc.as_mapping() else {
+        return Ok(());
+    };
+    let before_keys: Vec<String> = before.keys().map(|k| k.to_string()).collect();
+
+    let reparsed = match Document::from_str(&text) {
+        Ok(d) => d,
+        Err(e) => {
+            return Err(TestCaseError::fail(format!(
+                "emitted text no longer parses after {context}: {e}\ntext: {text:?}"
+            )))
+        }
+    };
+    // A document emptied of every key legitimately renders as nothing,
+    // which parses back as an empty document rather than a mapping.
+    let after_keys: Vec<String> = match reparsed.as_mapping() {
+        Some(after) => after.keys().map(|k| k.to_string()).collect(),
+        None if before_keys.is_empty() => return Ok(()),
+        None => {
+            return Err(TestCaseError::fail(format!(
+                "emitted text no longer parses as a mapping after {context}\n  \
+                 expected keys: {before_keys:?}\ntext: {text:?}"
+            )))
+        }
+    };
+
+    if before_keys != after_keys {
+        return Err(TestCaseError::fail(format!(
+            "re-parsing changed the top-level keys after {context}:\n               before: {before_keys:?}\n  after:  {after_keys:?}\ntext: {text:?}"
+        )));
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 256,
@@ -373,6 +467,7 @@ proptest! {
         for (i, op) in ops.iter().enumerate() {
             apply(&doc, op);
             check(&doc, &format!("op[{i}] = {op:?}"))?;
+            check_reparse_structure(&doc, &format!("op[{i}] = {op:?}"))?;
             // Semantic check: a set-like op that succeeded should be
             // observable via get(). Skip ops whose semantics depend on
             // preconditions we haven't tracked (nested-mapping/seq ops

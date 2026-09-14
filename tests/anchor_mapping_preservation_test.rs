@@ -51,6 +51,84 @@ fn anchored_indentless_sequence_preserves_sibling_mapping_and_edits() {
 }
 
 #[test]
+fn tagged_block_node_survives_blank_and_comment_lines() {
+    // Blank and comment-only lines between a tag and the indented node it
+    // annotates belong to neither, so they must not detach the two. The tag
+    // used to end up holding an implicit null, with the sequence and every
+    // later sibling entry landing in an ERROR node.
+    for separator in ["\n", "# c\n", "\n# c\n\n"] {
+        let yaml = format!("k: !!seq\n{separator}  - a\nb: 1\n");
+        let file = YamlFile::from_str(&yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            mapping.keys().map(|k| k.to_string()).collect::<Vec<_>>(),
+            vec!["k", "b"],
+            "{}",
+            debug::tree_to_string(file.syntax())
+        );
+        assert_eq!(
+            mapping.get("k").unwrap().as_tagged().unwrap().tag(),
+            Some("!!seq".to_string())
+        );
+    }
+}
+
+#[test]
+fn tagged_mapping_survives_a_blank_line() {
+    // Same shape with a mapping. This one parsed without an ERROR node but
+    // leaked `a: 1` out to the top level, reporting three keys where PyYAML
+    // reports two.
+    let yaml = "k: !!map\n\n  a: 1\nb: 2\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.keys().map(|k| k.to_string()).collect::<Vec<_>>(),
+        vec!["k", "b"],
+        "{}",
+        debug::tree_to_string(file.syntax())
+    );
+    assert_eq!(
+        mapping.get("k").unwrap().as_tagged().unwrap().tag(),
+        Some("!!map".to_string())
+    );
+}
+
+#[test]
+fn tag_does_not_adopt_a_following_sibling_entry() {
+    // `b: 1` is a sibling of `k`, not the value the tag annotates: it is not
+    // indented past the key, so skipping the blank line must not reach it.
+    let yaml = "k: !!str\n\nb: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.keys().map(|k| k.to_string()).collect::<Vec<_>>(),
+        vec!["k", "b"],
+        "{}",
+        debug::tree_to_string(file.syntax())
+    );
+}
+
+#[test]
+fn tag_alone_at_end_of_input_is_an_implicit_null() {
+    // Nothing follows the blank or comment line, so there is no node to
+    // attach; the scan must stop at end of input rather than run off it.
+    for yaml in ["k: !!seq\n", "k: !!seq\n\n", "k: !!seq\n# c\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            mapping.keys().map(|k| k.to_string()).collect::<Vec<_>>(),
+            vec!["k"],
+            "{}",
+            debug::tree_to_string(file.syntax())
+        );
+    }
+}
+
+#[test]
 fn flow_merge_alias_preserves_following_entry_and_metadata_edits() {
     for separator in [", ", " , "] {
         let yaml = format!(

@@ -676,7 +676,7 @@ impl Parser {
         match self.current() {
             Some(SyntaxKind::DASH) if !self.in_flow_context => self.parse_sequence(),
             Some(SyntaxKind::REFERENCE) => self.parse_alias(),
-            Some(SyntaxKind::TAG) => self.parse_tagged_value(),
+            Some(SyntaxKind::TAG) => self.parse_tagged_value(base_indent),
             Some(SyntaxKind::QUESTION) => {
                 // Explicit key indicator - parse complex mapping
                 self.parse_explicit_key_mapping(base_indent);

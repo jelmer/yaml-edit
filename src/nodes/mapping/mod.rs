@@ -839,8 +839,16 @@ impl Mapping {
                         .position(|c| c.as_node() == Some(&after_node))
                         .expect("after_node was found in children earlier");
                     let insert_at = index_after_entry_line(&self.0, idx);
-                    self.0
-                        .splice_children(insert_at..insert_at, vec![new_entry.into()]);
+                    let mut new_elements = Vec::new();
+                    let indent_level = self.detect_indentation_level();
+                    if indent_level > 0 {
+                        new_elements.push(
+                            super::fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level))
+                                .into(),
+                        );
+                    }
+                    new_elements.push(new_entry.into());
+                    self.0.splice_children(insert_at..insert_at, new_elements);
                 }
             } else if let Some(before_node) = insert_before_node {
                 if flow_context {
@@ -856,7 +864,19 @@ impl Mapping {
                     }) {
                         ensure_trailing_newline(prev_entry);
                     }
-                    self.0.splice_children(idx..idx, vec![new_entry.into()]);
+                    // The indent preceding before_node (the parent VALUE's for
+                    // the first child, a sibling INDENT token otherwise) now
+                    // serves the new entry, so the displaced before_node needs
+                    // its own sibling INDENT.
+                    let mut new_elements = vec![new_entry.into()];
+                    let indent_level = self.detect_indentation_level();
+                    if indent_level > 0 {
+                        new_elements.push(
+                            super::fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level))
+                                .into(),
+                        );
+                    }
+                    self.0.splice_children(idx..idx, new_elements);
                 }
             } else {
                 // No existing ordered keys, just append using CST

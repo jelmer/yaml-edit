@@ -2,6 +2,32 @@ use std::str::FromStr;
 use yaml_edit::YamlFile;
 
 #[test]
+fn test_set_with_field_order_nested_mapping_keeps_indent() {
+    let original = "outer:\n  name: a\n  desc: c\n";
+    let yaml = YamlFile::from_str(original).unwrap();
+    let mapping = yaml.document().unwrap().as_mapping().unwrap();
+    let outer = mapping.get_mapping("outer").unwrap();
+    outer.set_with_field_order("version", "1", ["name", "version", "desc"]);
+    assert_eq!(
+        yaml.to_string(),
+        "outer:\n  name: a\n  version: '1'\n  desc: c\n"
+    );
+}
+
+#[test]
+fn test_set_with_field_order_nested_insert_before_first_keeps_indent() {
+    let original = "outer:\n  name: a\n  desc: c\n";
+    let yaml = YamlFile::from_str(original).unwrap();
+    let mapping = yaml.document().unwrap().as_mapping().unwrap();
+    let outer = mapping.get_mapping("outer").unwrap();
+    outer.set_with_field_order("alpha", "1", ["alpha", "name", "desc"]);
+    assert_eq!(
+        yaml.to_string(),
+        "outer:\n  alpha: '1'\n  name: a\n  desc: c\n"
+    );
+}
+
+#[test]
 fn test_set_with_field_order_update_existing_key() {
     let original = r#"name: my-app
 version: 1.0
@@ -817,5 +843,58 @@ field2: value2
 field3: value3
 field4: value4
 field5: value5"#
+    );
+}
+
+#[test]
+fn test_set_with_field_order_nested_insert_before_mid_list_keeps_indent() {
+    let original = "outer:\n  b: 1\n  d: 2\n  f: 3\n";
+    let yaml = YamlFile::from_str(original).unwrap();
+    let mapping = yaml.document().unwrap().as_mapping().unwrap();
+    let outer = mapping.get_mapping("outer").unwrap();
+    outer.set_with_field_order("e", "1", ["zz", "e", "f"]);
+    assert_eq!(
+        yaml.to_string(),
+        "outer:\n  b: 1\n  d: 2\n  e: '1'\n  f: 3\n"
+    );
+}
+
+#[test]
+fn test_set_with_field_order_nested_insert_before_after_comment_keeps_indent() {
+    let original = "outer:\n  b: 1\n  # mid\n  d: 2\n";
+    let yaml = YamlFile::from_str(original).unwrap();
+    let mapping = yaml.document().unwrap().as_mapping().unwrap();
+    let outer = mapping.get_mapping("outer").unwrap();
+    outer.set_with_field_order("c", "1", ["zz", "c", "d"]);
+    assert_eq!(
+        yaml.to_string(),
+        "outer:\n  b: 1\n  # mid\n  c: '1'\n  d: 2\n"
+    );
+}
+
+#[test]
+fn test_set_with_field_order_ignores_comment_indent() {
+    let original = "outer:\n  b: 1\n      # deep\n  d: 2\n";
+    let yaml = YamlFile::from_str(original).unwrap();
+    let mapping = yaml.document().unwrap().as_mapping().unwrap();
+    let outer = mapping.get_mapping("outer").unwrap();
+    assert_eq!(outer.detect_indentation_level(), 2);
+    outer.set_with_field_order("c", "1", ["b", "c", "d"]);
+    assert_eq!(
+        yaml.to_string(),
+        "outer:\n  b: 1\n  c: '1'\n      # deep\n  d: 2\n"
+    );
+}
+
+#[test]
+fn test_set_with_field_order_explicit_keys_keeps_indent() {
+    let original = "outer:\n  ? b\n  : 1\n  ? d\n  : 2\n";
+    let yaml = YamlFile::from_str(original).unwrap();
+    let mapping = yaml.document().unwrap().as_mapping().unwrap();
+    let outer = mapping.get_mapping("outer").unwrap();
+    outer.set_with_field_order("c", "1", ["b", "c", "d"]);
+    assert_eq!(
+        yaml.to_string(),
+        "outer:\n  ? b\n  : 1\n  ? c\n  : '1'\n  ? d\n  : 2\n"
     );
 }

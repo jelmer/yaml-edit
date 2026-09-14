@@ -275,7 +275,7 @@ impl Parser {
             }
             Some(SyntaxKind::QUESTION) => {
                 // Explicit key indicator - parse complex mapping
-                self.parse_explicit_key_mapping();
+                self.parse_explicit_key_mapping(base_indent);
             }
             Some(SyntaxKind::PIPE) => self.parse_literal_block_scalar(),
             Some(SyntaxKind::GREATER) => self.parse_folded_block_scalar(),

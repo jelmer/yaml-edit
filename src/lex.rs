@@ -580,31 +580,20 @@ pub fn lex_with_validation_config<'a>(
             '|' => tokens.push((PIPE, &input[token_start..start_idx + 1])),
             '>' => tokens.push((GREATER, &input[token_start..start_idx + 1])),
             '<' => {
-                // `<<` is a merge key only when it is the whole token
-                // (`<<:`, `<<,`, or `<<` at a delimiter). `<<foo` is a
-                // plain scalar key.
-                if let Some((_, '<')) = chars.peek() {
-                    let merge_complete = match input[start_idx + 2..].chars().next() {
+                // `<<` is a merge key only when the key is exactly `<<`, i.e.
+                // the next character ends the token. `<<foo` and a bare `<`
+                // are plain scalars.
+                let is_merge_key = matches!(chars.peek(), Some((_, '<')))
+                    && match input[start_idx + 2..].chars().next() {
                         None => true,
                         Some(ch) => ch.is_whitespace() || matches!(ch, ':' | ',' | ']' | '}' | '#'),
                     };
-                    if merge_complete {
-                        chars.next(); // consume second <
-                        tokens.push((MERGE_KEY, &input[token_start..start_idx + 2]));
-                    } else {
-                        let mut end_idx = start_idx + 1;
-                        while let Some((idx, ch)) = chars.peek() {
-                            if ch.is_whitespace() || is_yaml_special(*ch) {
-                                break;
-                            }
-                            end_idx = *idx + ch.len_utf8();
-                            chars.next();
-                        }
-                        let text = &input[token_start..end_idx];
-                        tokens.push((classify_scalar(text), text));
-                    }
+                if is_merge_key {
+                    chars.next(); // consume second <
+                    tokens.push((MERGE_KEY, &input[token_start..start_idx + 2]));
                 } else {
-                    // Single '<' is not a special YAML character, treat as scalar
+                    // The second `<`, if any, is not special and is picked up
+                    // by the loop below along with the rest of the scalar.
                     let mut end_idx = start_idx + 1;
                     while let Some((idx, ch)) = chars.peek() {
                         if ch.is_whitespace() || is_yaml_special(*ch) {
@@ -614,8 +603,7 @@ pub fn lex_with_validation_config<'a>(
                         chars.next();
                     }
                     let text = &input[token_start..end_idx];
-                    let token_kind = classify_scalar(text);
-                    tokens.push((token_kind, text));
+                    tokens.push((classify_scalar(text), text));
                 }
             }
             '&' => {

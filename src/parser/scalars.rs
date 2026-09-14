@@ -307,10 +307,74 @@ impl Parser {
                     self.bump();
                 }
 
-                // Parse whatever value follows the tag (scalar, flow mapping, flow sequence, etc.)
-                self.parse_value();
+                if self.tag_is_detached_from_its_block_node() {
+                    // The tag is alone on its line and the block node it
+                    // annotates starts after some blank or comment-only lines.
+                    // parse_value's NEWLINE arm only nests when an INDENT
+                    // follows the line break directly, so step over those
+                    // lines here to keep the node inside this TAGGED_NODE.
+                    self.skip_ws_and_newlines();
+                    self.parse_value_with_base_indent(self.current_line_indent);
+                } else {
+                    // Parse whatever value follows the tag (scalar, flow mapping, flow sequence, etc.)
+                    self.parse_value();
+                }
 
                 self.builder.finish_node();
+            }
+        }
+    }
+
+    /// True when a lone tag is separated from the indented block node it
+    /// annotates by blank or comment-only lines.
+    ///
+    /// Such lines belong to neither node, so they must not detach the two.
+    /// The node has to be indented: a block collection at column 0 is only a
+    /// tagged value under the indentless-sequence rule, which needs the
+    /// enclosing key's column to judge and is handled elsewhere.
+    fn tag_is_detached_from_its_block_node(&self) -> bool {
+        // `tokens` is in reverse order, so walk it backwards from the current
+        // token to read the rest of this line and the lines after it.
+        let mut rest = self.tokens.iter().rev().map(|(kind, text)| (*kind, text));
+
+        // Only a comment may still sit between the tag and the line break.
+        let Some(mut token) = rest.next() else {
+            return false;
+        };
+        if token.0 == SyntaxKind::COMMENT {
+            let Some(next) = rest.next() else {
+                return false;
+            };
+            token = next;
+        }
+        if token.0 != SyntaxKind::NEWLINE {
+            return false;
+        }
+
+        // Walk whole lines until one carries content. Without an intervening
+        // line parse_value already nests correctly, so there is nothing to do.
+        let mut skipped_a_line = false;
+        loop {
+            let Some(mut token) = rest.next() else {
+                return false;
+            };
+            let indented = token.0 == SyntaxKind::INDENT;
+            if indented {
+                let Some(next) = rest.next() else {
+                    return false;
+                };
+                token = next;
+            }
+            match token.0 {
+                // A blank line: an INDENT may precede the break, nothing else.
+                SyntaxKind::NEWLINE => skipped_a_line = true,
+                // A comment line. The COMMENT token stops before the line
+                // break, so step over that too.
+                SyntaxKind::COMMENT => match rest.next() {
+                    Some((SyntaxKind::NEWLINE, _)) => skipped_a_line = true,
+                    _ => return false,
+                },
+                _ => return skipped_a_line && indented,
             }
         }
     }

@@ -266,7 +266,7 @@ impl Parser {
                 if !self.in_flow_context && !self.in_value_context && self.is_mapping_key() {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
-                    self.parse_tagged_value();
+                    self.parse_tagged_value(base_indent);
                 }
             }
             Some(SyntaxKind::MERGE_KEY) => {

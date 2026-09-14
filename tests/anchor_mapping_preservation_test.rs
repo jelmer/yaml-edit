@@ -129,6 +129,121 @@ fn tag_alone_at_end_of_input_is_an_implicit_null() {
 }
 
 #[test]
+fn tagged_indentless_sequence_preserves_sibling_mapping_and_edits() {
+    for tag in ["!!seq", "!keep"] {
+        for indent in ["", "  "] {
+            for comment in ["", " # shared tags"] {
+                let yaml = format!(
+                    "tags: {tag}{comment}\n{indent}- engineering\nmetadata:\n  version: 0.1.0 # keep version comment\n  status: draft\n"
+                );
+                let file = YamlFile::from_str(&yaml).unwrap();
+                assert_eq!(file.to_string(), yaml);
+                let doc = file.document().unwrap();
+                let mapping = doc.as_mapping().unwrap();
+                assert_eq!(
+                    mapping.keys().count(),
+                    2,
+                    "{}",
+                    debug::tree_to_string(file.syntax())
+                );
+                // The tag stays reachable through TaggedNode regardless of
+                // whether the sequence it annotates is indented.
+                let tags = mapping.get("tags").unwrap();
+                assert_eq!(
+                    tags.as_tagged().unwrap().tag().as_deref(),
+                    Some(tag),
+                    "{}",
+                    debug::tree_to_string(file.syntax())
+                );
+                let metadata = mapping.get_mapping("metadata").unwrap();
+                metadata.set("version", "0.1.1");
+                common::assert_file_cst_ok(&file);
+                assert_eq!(
+                    file.to_string(),
+                    yaml.replace("version: 0.1.0", "version: 0.1.1")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn tagged_indentless_sequence_value_copies_with_its_tag() {
+    let yaml = "tags: !!seq\n- engineering\nb: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let tags = mapping.get("tags").unwrap();
+    mapping.set("b", tags);
+    common::assert_file_cst_ok(&file);
+    assert_eq!(
+        mapping
+            .get("b")
+            .unwrap()
+            .as_tagged()
+            .unwrap()
+            .tag()
+            .as_deref(),
+        Some("!!seq")
+    );
+}
+
+#[test]
+fn tagged_indentless_sequence_nested_in_a_mapping() {
+    // The `-` sits at the same column as its key, which is itself indented.
+    let yaml = "outer:\n  tags: !!seq\n  - engineering\n  b: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let outer = file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("outer")
+        .unwrap();
+    assert_eq!(
+        outer.keys().map(|k| k.to_string()).collect::<Vec<_>>(),
+        vec!["tags", "b"],
+        "{}",
+        debug::tree_to_string(file.syntax())
+    );
+    assert_eq!(
+        outer.get("tags").unwrap().as_tagged().unwrap().tag(),
+        Some("!!seq".to_string())
+    );
+}
+
+#[test]
+fn tagged_sequence_dedented_past_its_key_is_not_absorbed() {
+    // `- a` at column 0 cannot belong to `tags`, which is indented by two.
+    // PyYAML rejects this outright; the CST must not quietly adopt it into
+    // the tagged node.
+    let yaml = "outer:\n  tags: !!seq\n- a\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = debug::tree_to_string(file.syntax());
+    assert!(tree.contains("ERROR"), "{tree}");
+}
+
+#[test]
+fn tagged_inline_scalar_still_parses() {
+    let yaml = "count: !!int 42\nname: keep\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.keys().count(), 2);
+    assert_eq!(
+        mapping
+            .get("count")
+            .unwrap()
+            .as_tagged()
+            .unwrap()
+            .tag()
+            .as_deref(),
+        Some("!!int")
+    );
+}
+
+#[test]
 fn flow_merge_alias_preserves_following_entry_and_metadata_edits() {
     for separator in [", ", " , "] {
         let yaml = format!(

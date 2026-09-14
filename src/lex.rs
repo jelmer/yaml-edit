@@ -580,12 +580,20 @@ pub fn lex_with_validation_config<'a>(
             '|' => tokens.push((PIPE, &input[token_start..start_idx + 1])),
             '>' => tokens.push((GREATER, &input[token_start..start_idx + 1])),
             '<' => {
-                // Check if this is a merge key '<<'
-                if let Some((_, '<')) = chars.peek() {
+                // `<<` is a merge key only when the key is exactly `<<`, i.e.
+                // the next character ends the token. `<<foo` and a bare `<`
+                // are plain scalars.
+                let is_merge_key = matches!(chars.peek(), Some((_, '<')))
+                    && match input[start_idx + 2..].chars().next() {
+                        None => true,
+                        Some(ch) => ch.is_whitespace() || matches!(ch, ':' | ',' | ']' | '}' | '#'),
+                    };
+                if is_merge_key {
                     chars.next(); // consume second <
                     tokens.push((MERGE_KEY, &input[token_start..start_idx + 2]));
                 } else {
-                    // Single '<' is not a special YAML character, treat as scalar
+                    // The second `<`, if any, is not special and is picked up
+                    // by the loop below along with the rest of the scalar.
                     let mut end_idx = start_idx + 1;
                     while let Some((idx, ch)) = chars.peek() {
                         if ch.is_whitespace() || is_yaml_special(*ch) {
@@ -595,8 +603,7 @@ pub fn lex_with_validation_config<'a>(
                         chars.next();
                     }
                     let text = &input[token_start..end_idx];
-                    let token_kind = classify_scalar(text);
-                    tokens.push((token_kind, text));
+                    tokens.push((classify_scalar(text), text));
                 }
             }
             '&' => {
@@ -1429,6 +1436,63 @@ double: "quoted""#;
             .filter(|(kind, _)| *kind == SyntaxKind::MERGE_KEY)
             .collect();
         assert_eq!(merge_keys2.len(), 0, "Single < should not be a merge key");
+    }
+
+    #[test]
+    fn test_angle_prefix_is_plain_scalar_not_merge_key() {
+        let tokens = lex("<<foo: 1");
+        let merge_keys: Vec<_> = tokens
+            .iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::MERGE_KEY)
+            .collect();
+        assert_eq!(
+            merge_keys.len(),
+            0,
+            "<<foo should be a plain key, got {:?}",
+            tokens
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|(kind, text)| *kind != SyntaxKind::MERGE_KEY && *text == "<<foo"),
+            "expected <<foo scalar, got {:?}",
+            tokens
+        );
+
+        let tokens = lex("{<<foo: 1, more: x}");
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|(kind, _)| *kind == SyntaxKind::MERGE_KEY)
+                .count(),
+            0,
+            "flow <<foo should not be MERGE_KEY: {:?}",
+            tokens
+        );
+
+        let tokens = lex("<<: *defaults");
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|(kind, text)| *kind == SyntaxKind::MERGE_KEY && *text == "<<")
+                .count(),
+            1
+        );
+
+        use crate::YamlFile;
+        use std::str::FromStr;
+        let file = YamlFile::from_str("<<foo: 1\nbar: 2\n").unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(mapping.keys().count(), 2);
+        assert_eq!(
+            mapping
+                .get("<<foo")
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .as_string(),
+            "1"
+        );
     }
 
     #[test]

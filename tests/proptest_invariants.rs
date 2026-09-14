@@ -169,6 +169,21 @@ fn seed_strat() -> impl Strategy<Value = &'static str> {
         Just("s:\n  - a\n  - b\n  - c\n"),
         Just("m: {}\n"),
         Just("m: {a: 1}\n"),
+        // Explicit-key mappings (`? k` / `: v`). These are parsed without
+        // a trailing NEWLINE inside the entry -- it sits beside it as a
+        // sibling -- so insertion paths that assume entries own their
+        // terminator get it wrong here.
+        //
+        Just("? a\n: 1\n"),
+        Just("? a\n: 1\n? b\n: 2\n"),
+        Just("m:\n  ? a\n  : 1\n"),
+        Just("m:\n  ? a\n  : 1\n  ? b\n  : 2\n"),
+        // Nested mappings at indent widths other than 2.
+        Just("m:\n    a: 1\n    b: 2\n"),
+        Just("m:\n   a: 1\n   b: 2\n"),
+        // A comment indented past its sibling keys must not set the
+        // column for newly inserted entries.
+        Just("m:\n  a: 1\n      # deep\n  b: 2\n"),
     ]
 }
 
@@ -354,6 +369,49 @@ fn check_set_stuck(doc: &Document, key: &str, expected: &str) -> Result<(), Test
     Ok(())
 }
 
+/// The emitted text must re-parse to the same top-level key sequence.
+///
+/// `roundtrip_ok` only proves the CST still prints byte-for-byte; it says
+/// nothing about whether those bytes still *mean* the same thing. An entry
+/// emitted at the wrong column (escaping its parent mapping, say) prints
+/// back fine but re-parses with a different structure. Comparing the
+/// top-level keys before and after catches exactly that.
+fn check_reparse_structure(doc: &Document, context: &str) -> Result<(), TestCaseError> {
+    let text = doc.to_string();
+    let Some(before) = doc.as_mapping() else {
+        return Ok(());
+    };
+    let before_keys: Vec<String> = before.keys().map(|k| k.to_string()).collect();
+
+    let reparsed = match Document::from_str(&text) {
+        Ok(d) => d,
+        Err(e) => {
+            return Err(TestCaseError::fail(format!(
+                "emitted text no longer parses after {context}: {e}\ntext: {text:?}"
+            )))
+        }
+    };
+    // A document emptied of every key legitimately renders as nothing,
+    // which parses back as an empty document rather than a mapping.
+    let after_keys: Vec<String> = match reparsed.as_mapping() {
+        Some(after) => after.keys().map(|k| k.to_string()).collect(),
+        None if before_keys.is_empty() => return Ok(()),
+        None => {
+            return Err(TestCaseError::fail(format!(
+                "emitted text no longer parses as a mapping after {context}\n  \
+                 expected keys: {before_keys:?}\ntext: {text:?}"
+            )))
+        }
+    };
+
+    if before_keys != after_keys {
+        return Err(TestCaseError::fail(format!(
+            "re-parsing changed the top-level keys after {context}:\n               before: {before_keys:?}\n  after:  {after_keys:?}\ntext: {text:?}"
+        )));
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 256,
@@ -373,6 +431,7 @@ proptest! {
         for (i, op) in ops.iter().enumerate() {
             apply(&doc, op);
             check(&doc, &format!("op[{i}] = {op:?}"))?;
+            check_reparse_structure(&doc, &format!("op[{i}] = {op:?}"))?;
             // Semantic check: a set-like op that succeeded should be
             // observable via get(). Skip ops whose semantics depend on
             // preconditions we haven't tracked (nested-mapping/seq ops

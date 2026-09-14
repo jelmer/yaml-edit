@@ -88,5 +88,72 @@ fn test_explicit_key_mutations() {
 
     // Verify exact output - new key should use explicit format to match existing style
     let output2 = doc2.to_string();
-    assert_eq!(output2, "? existing\n: value\n\n? newkey\n: newvalue\n");
+    assert_eq!(output2, "? existing\n: value\n? newkey\n: newvalue\n");
+}
+
+#[test]
+fn test_explicit_key_set_nested_keeps_indent() {
+    use std::str::FromStr;
+    use yaml_edit::YamlFile;
+
+    let doc = YamlFile::from_str("outer:\n  ? a\n  : 1\n").unwrap();
+    let outer = doc
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("outer")
+        .unwrap();
+    outer.set("b", "9");
+    assert_eq!(doc.to_string(), "outer:\n  ? a\n  : 1\n  ? b\n  : '9'\n");
+}
+
+#[test]
+fn test_explicit_key_insert_at_index_middle_keeps_indent() {
+    use std::str::FromStr;
+    use yaml_edit::YamlFile;
+
+    let doc = YamlFile::from_str("outer:\n  ? a\n  : 1\n  ? c\n  : 2\n").unwrap();
+    let outer = doc
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("outer")
+        .unwrap();
+    outer.insert_at_index(1, "b", "9");
+    assert_eq!(
+        doc.to_string(),
+        "outer:\n  ? a\n  : 1\n  ? b\n  : '9'\n  ? c\n  : 2\n"
+    );
+}
+
+#[test]
+fn test_explicit_key_insert_at_index_first_keeps_indent() {
+    use std::str::FromStr;
+    use yaml_edit::YamlFile;
+
+    let doc = YamlFile::from_str("outer:\n  ? b\n  : 1\n  ? c\n  : 2\n").unwrap();
+    let outer = doc
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("outer")
+        .unwrap();
+    outer.insert_at_index(0, "a", "9");
+    assert_eq!(
+        doc.to_string(),
+        "outer:\n  ? a\n  : '9'\n  ? b\n  : 1\n  ? c\n  : 2\n"
+    );
+}
+
+#[test]
+fn test_explicit_key_reorder_fields_keeps_line_breaks() {
+    use std::str::FromStr;
+    use yaml_edit::Document;
+
+    let doc = Document::from_str("? a\n: 1\n? b\n: 2\n").unwrap();
+    doc.as_mapping().unwrap().reorder_fields(["b"]);
+    assert_eq!(doc.to_string(), "? b\n: 2\n? a\n: 1\n");
 }

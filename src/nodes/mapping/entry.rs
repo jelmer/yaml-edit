@@ -104,12 +104,16 @@ impl MappingEntry {
         builder.start_node(SyntaxKind::KEY.into());
         let key_has_newline = key.build_content(&mut builder, 0, false);
         debug_assert!(!key_has_newline, "Keys should not end with newlines");
-        builder.finish_node();
-
         if use_explicit_key {
-            // Add newline after key for explicit format
+            // The `:` goes on its own line at the entry's own column. The
+            // parser keeps that newline and indent inside the KEY node, so
+            // match it here.
             builder.token(SyntaxKind::NEWLINE.into(), "\n");
+            if key_indent > 0 {
+                builder.token(SyntaxKind::INDENT.into(), &" ".repeat(key_indent));
+            }
         }
+        builder.finish_node();
 
         builder.token(SyntaxKind::COLON.into(), ":");
 

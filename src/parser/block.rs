@@ -351,9 +351,10 @@ impl Parser {
                     self.bump(); // consume newline
                     if self.current() == Some(SyntaxKind::INDENT) {
                         self.bump(); // consume indent
-                                     // bump() tracked the indent we just consumed; that
-                                     // column bounds the nested value, so content at or
-                                     // left of it belongs to an enclosing collection.
+
+                        // bump() tracked the indent we just consumed; that
+                        // column bounds the nested value, so content at or
+                        // left of it belongs to an enclosing collection.
                         let value_indent = self.current_line_indent;
                         self.parse_value_with_base_indent(value_indent);
                     } else {

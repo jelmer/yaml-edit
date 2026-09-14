@@ -5,7 +5,7 @@ mod movements;
 
 use helpers::{
     append_comma_space_to_entry, ensure_top_level_empty_renders_as_flow, ensure_trailing_newline,
-    trailing_newline_reachable, FlowInsertPos,
+    entry_line_terminated, index_after_entry_line, trailing_newline_reachable, FlowInsertPos,
 };
 
 use super::{entry_key, entry_value, Lang, Sequence, SyntaxNode};
@@ -308,10 +308,26 @@ impl Mapping {
             .collect();
 
         let leading = all[..*entry_indices.first().unwrap_or(&all.len())].to_vec();
-        let trailing = entry_indices
+        let mut trailing = entry_indices
             .last()
             .map(|&i| all[i + 1..].to_vec())
             .unwrap_or_default();
+
+        // An explicit-key entry (`? k` / `: v`) doesn't own its line break;
+        // the NEWLINE sits beside it. For the last entry that token lands in
+        // `trailing`, which stays put -- so reordering it to a non-final
+        // position would run it into the entry that follows. Hand it back so
+        // it travels with the entry.
+        let last_needs_terminator = entry_indices.last().is_some_and(|&i| {
+            all[i]
+                .as_node()
+                .is_some_and(|n| !trailing_newline_reachable(n))
+        });
+        let last_entry_terminator = (last_needs_terminator
+            && trailing
+                .first()
+                .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE))
+        .then(|| trailing.remove(0));
 
         // Each entry pairs with the tokens between it and the next
         // entry (empty for the last entry -- that spillover becomes
@@ -325,7 +341,8 @@ impl Mapping {
             })
             .collect();
         if let Some(&last) = entry_indices.last() {
-            groups.push((all[last].as_node().cloned().unwrap(), Vec::new()));
+            let postscript = last_entry_terminator.into_iter().collect();
+            groups.push((all[last].as_node().cloned().unwrap(), postscript));
         }
 
         let mut ordered: Vec<_> = order_keys
@@ -662,7 +679,7 @@ impl Mapping {
         // under a tagged mapping) but a real NEWLINE sits just before
         // it in the token stream. Walk the token tail instead.
         let has_trailing_newline = if let Some(entry) = &last_mapping_entry {
-            trailing_newline_reachable(entry)
+            entry_line_terminated(entry)
         } else {
             trailing_newline_reachable(&self.0)
         };
@@ -821,8 +838,9 @@ impl Mapping {
                         .iter()
                         .position(|c| c.as_node() == Some(&after_node))
                         .expect("after_node was found in children earlier");
+                    let insert_at = index_after_entry_line(&self.0, idx);
                     self.0
-                        .splice_children(idx + 1..idx + 1, vec![new_entry.into()]);
+                        .splice_children(insert_at..insert_at, vec![new_entry.into()]);
                 }
             } else if let Some(before_node) = insert_before_node {
                 if flow_context {
@@ -854,12 +872,21 @@ impl Mapping {
     ///
     /// Returns `0` for root-level mappings where entries have no leading indentation.
     pub fn detect_indentation_level(&self) -> usize {
-        // Look for an INDENT token that precedes a KEY inside this mapping.
-        // For a multi-entry mapping the parser stores that column here.
-        for child in self.0.children_with_tokens() {
+        // Look for an INDENT token that precedes an entry inside this mapping.
+        // For a multi-entry mapping the parser stores that column here. An
+        // INDENT introducing a COMMENT says nothing about where keys sit, so
+        // skip those: comments may be indented arbitrarily.
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        for (i, child) in children.iter().enumerate() {
             if let Some(token) = child.as_token() {
                 if token.kind() == SyntaxKind::INDENT {
-                    return token.text().len();
+                    let introduces_comment = children[i + 1..]
+                        .iter()
+                        .find(|c| !matches!(c.kind(), SyntaxKind::WHITESPACE))
+                        .is_some_and(|c| c.kind() == SyntaxKind::COMMENT);
+                    if !introduces_comment {
+                        return token.text().len();
+                    }
                 }
             }
         }
@@ -1373,36 +1400,52 @@ impl Mapping {
             // invariant holds (see src/nodes/mod.rs); a standalone
             // NEWLINE between entries would render fine now but be
             // fragile against later reshuffles.
-            if let Some(prev_node) = self.0.children_with_tokens().nth(insert_pos - 1) {
-                if let rowan::NodeOrToken::Node(prev) = &prev_node {
-                    if prev.kind() == SyntaxKind::MAPPING_ENTRY && !ends_with_newline(prev) {
+            // An INDENT directly before the insertion point belongs to the
+            // entry being displaced, not to the line above; look past it for
+            // whatever actually terminates the previous line.
+            let preceding: Vec<_> = self
+                .0
+                .children_with_tokens()
+                .take(insert_pos)
+                .filter(|c| c.kind() != SyntaxKind::INDENT)
+                .collect();
+            if let Some(prev_node) = preceding.last() {
+                if let rowan::NodeOrToken::Node(prev) = prev_node {
+                    if prev.kind() == SyntaxKind::MAPPING_ENTRY && !entry_line_terminated(prev) {
                         let nl = super::fresh_token(SyntaxKind::NEWLINE, "\n");
                         let end = prev.children_with_tokens().count();
                         prev.splice_children(end..end, vec![nl.into()]);
                     }
-                } else if let rowan::NodeOrToken::Token(t) = &prev_node {
+                } else if let rowan::NodeOrToken::Token(t) = prev_node {
                     if t.kind() != SyntaxKind::NEWLINE {
                         add_newline_token(&mut new_elements);
                     }
-                }
-            }
-
-            // Add indentation
-            let indent_level = self.detect_indentation_level();
-            if indent_level > 0 {
-                let mut indent_builder = GreenNodeBuilder::new();
-                indent_builder.start_node(SyntaxKind::ROOT.into());
-                indent_builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent_level));
-                indent_builder.finish_node();
-                let indent_node = SyntaxNode::new_root_mut(indent_builder.finish());
-                if let Some(token) = indent_node.first_token() {
-                    new_elements.push(token.into());
                 }
             }
         }
 
         // Add the new entry
         new_elements.push(new_entry.0.into());
+
+        // Inserting before an existing entry hands the new entry the indent
+        // that already precedes it, so the displaced entry needs a fresh one.
+        // Appending at the end has no such donor: the indent goes in front.
+        let displaces_entry = insert_pos < self.0.children_with_tokens().count();
+        let indent_level = self.detect_indentation_level();
+        if indent_level > 0 {
+            let mut indent_builder = GreenNodeBuilder::new();
+            indent_builder.start_node(SyntaxKind::ROOT.into());
+            indent_builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent_level));
+            indent_builder.finish_node();
+            let indent_node = SyntaxNode::new_root_mut(indent_builder.finish());
+            if let Some(token) = indent_node.first_token() {
+                if displaces_entry {
+                    new_elements.push(token.into());
+                } else {
+                    new_elements.insert(0, token.into());
+                }
+            }
+        }
 
         // Insert at the calculated position
         self.0.splice_children(insert_pos..insert_pos, new_elements);

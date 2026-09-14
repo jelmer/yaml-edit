@@ -86,22 +86,61 @@ pub(super) fn ensure_top_level_empty_renders_as_flow(mapping: &SyntaxNode) {
         .filter(|p| p.kind() == SyntaxKind::VALUE)
         .and_then(|v| v.parent())
         .is_some_and(|e| e.kind() == SyntaxKind::MAPPING_ENTRY);
-    if has_map_entry_parent || mapping.children_with_tokens().next().is_some() {
+    if has_map_entry_parent {
         return;
+    }
+    // Entries normally take their trailing NEWLINE with them when removed.
+    // An explicit-key entry's line break is a sibling, so it outlives the
+    // entry and would otherwise leave the mapping rendering as bare
+    // whitespace instead of `{}`.
+    let leftovers: Vec<_> = mapping.children_with_tokens().collect();
+    if !leftovers
+        .iter()
+        .all(|c| matches!(c.kind(), SyntaxKind::NEWLINE | SyntaxKind::INDENT))
+    {
+        return;
+    }
+    if !leftovers.is_empty() {
+        mapping.splice_children(0..leftovers.len(), vec![]);
     }
     let lbrace = fresh_token(SyntaxKind::LEFT_BRACE, "{");
     let rbrace = fresh_token(SyntaxKind::RIGHT_BRACE, "}");
     mapping.splice_children(0..0, vec![lbrace.into(), rbrace.into()]);
 }
 
-/// Append a trailing NEWLINE token to `entry` if it doesn't already end with
-/// one. Used when a block-style entry is about to have a new sibling appended
-/// after it (its trailing newline separates the two entries visually).
+/// Index just past `entry`'s line terminator among its siblings.
+///
+/// Entries normally own their trailing NEWLINE, so the slot after the entry
+/// is the start of the next line. Explicit-key entries (`? k` / `: v`) are
+/// parsed without one: theirs sits beside them as a sibling, and inserting
+/// at the entry's own index would split it from its line break.
+pub(super) fn index_after_entry_line(parent: &SyntaxNode, idx: usize) -> usize {
+    let follows_newline = parent
+        .children_with_tokens()
+        .nth(idx + 1)
+        .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE);
+    if follows_newline {
+        idx + 2
+    } else {
+        idx + 1
+    }
+}
+
+/// Does `entry`'s line already end in a NEWLINE, counting the sibling one
+/// that explicit-key entries carry instead of owning it themselves?
+pub(super) fn entry_line_terminated(entry: &SyntaxNode) -> bool {
+    trailing_newline_reachable(entry)
+        || entry
+            .next_sibling_or_token()
+            .is_some_and(|s| s.kind() == SyntaxKind::NEWLINE)
+}
+
+/// Append a trailing NEWLINE token to `entry` if its line doesn't already end
+/// with one. Used when a block-style entry is about to have a new sibling
+/// appended after it (its trailing newline separates the two entries
+/// visually).
 pub(super) fn ensure_trailing_newline(entry: &SyntaxNode) {
-    let has_nl = entry
-        .last_token()
-        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
-    if has_nl {
+    if entry_line_terminated(entry) {
         return;
     }
     let end = entry.children_with_tokens().count();

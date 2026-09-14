@@ -864,27 +864,17 @@ impl Mapping {
                     }) {
                         ensure_trailing_newline(prev_entry);
                     }
-                    let mut new_elements = Vec::new();
+                    // The indent preceding before_node (the parent VALUE's for
+                    // the first child, a sibling INDENT token otherwise) now
+                    // serves the new entry, so the displaced before_node needs
+                    // its own sibling INDENT.
+                    let mut new_elements = vec![new_entry.into()];
                     let indent_level = self.detect_indentation_level();
-                    if idx == 0 {
-                        // The parent VALUE already owns indent for the first
-                        // child. Give the displaced former first entry its
-                        // own sibling INDENT.
-                        new_elements.push(new_entry.into());
-                        if indent_level > 0 {
-                            new_elements.push(
-                                super::fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level))
-                                    .into(),
-                            );
-                        }
-                    } else {
-                        if indent_level > 0 {
-                            new_elements.push(
-                                super::fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level))
-                                    .into(),
-                            );
-                        }
-                        new_elements.push(new_entry.into());
+                    if indent_level > 0 {
+                        new_elements.push(
+                            super::fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level))
+                                .into(),
+                        );
                     }
                     self.0.splice_children(idx..idx, new_elements);
                 }

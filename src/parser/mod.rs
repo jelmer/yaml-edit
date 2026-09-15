@@ -184,18 +184,35 @@ impl Parser {
         // Consume any remaining tokens as ERROR nodes
         // A lenient parser should consume all input, not leave it unparsed
         while self.current().is_some() && self.current() != Some(SyntaxKind::EOF) {
-            self.builder.start_node(SyntaxKind::ERROR.into());
-
-            // Consume tokens until we hit EOF or a document/directive marker
-            while self.current().is_some()
+            // A `...` ends the document it closes and belongs to the tree,
+            // not to an ERROR node; a `---` or `%YAML` starts the next one.
+            // This loop drives multi-document parsing as well as the sweep,
+            // so it is entered with nothing to sweep -- make the ERROR node
+            // only when there are stray tokens to hold.
+            let has_stray = self.current().is_some()
                 && self.current() != Some(SyntaxKind::EOF)
                 && self.current() != Some(SyntaxKind::DOC_START)
                 && self.current() != Some(SyntaxKind::DIRECTIVE)
-            {
-                self.bump();
+                && self.current() != Some(SyntaxKind::DOC_END);
+            if has_stray {
+                self.builder.start_node(SyntaxKind::ERROR.into());
+                while self.current().is_some()
+                    && self.current() != Some(SyntaxKind::EOF)
+                    && self.current() != Some(SyntaxKind::DOC_START)
+                    && self.current() != Some(SyntaxKind::DIRECTIVE)
+                    && self.current() != Some(SyntaxKind::DOC_END)
+                {
+                    self.bump();
+                }
+                self.builder.finish_node();
             }
 
-            self.builder.finish_node();
+            // A `...` closes the document before it; emit it and continue.
+            if self.current() == Some(SyntaxKind::DOC_END) {
+                self.bump();
+                self.skip_ws_and_newlines();
+                continue;
+            }
 
             // If we hit a document/directive marker, try to parse it
             if self.current() == Some(SyntaxKind::DOC_START)

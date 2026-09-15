@@ -1306,3 +1306,26 @@ fn test_block_scalar_body_and_header_forms() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// A `...` document-end marker belongs to the tree, not to an ERROR node.
+///
+/// The trailing sweep stopped only at `---` and a directive, so an explicit
+/// end marker after a `---` document was swept away as a stray token. The
+/// sweep also runs the multi-document loop, so it was creating an empty
+/// ERROR node for every document boundary even with nothing to sweep.
+#[test]
+fn test_document_end_marker_is_not_swept_into_an_error_node() {
+    for (yaml, docs) in [
+        ("--- a\n...\n", 1),
+        ("--- a\n...\n--- b\n", 2),
+        ("--- a\n...\n--- b\n...\n", 2),
+        ("a: 1\n...\n", 1),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(file.documents().count(), docs, "{yaml:?}");
+    }
+}

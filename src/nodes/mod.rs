@@ -72,7 +72,7 @@
 //!
 //! When inserting a new sibling entry after an existing one, mutation
 //! helpers must first ensure the predecessor is terminated
-//! (`ensure_trailing_newline` in `mapping.rs` / `sequence.rs`).
+//! (`ensure_trailing_newline` in this module).
 //!
 //! ## Implicit-null values
 //!
@@ -210,6 +210,76 @@ pub(crate) fn has_child_token(parent: &SyntaxNode, pred: impl Fn(SyntaxKind) -> 
         .any(|el| el.as_token().is_some_and(|t| pred(t.kind())))
 }
 
+/// Append `children` at the end of `parent`'s child list.
+pub(crate) fn append_children(
+    parent: &SyntaxNode,
+    children: Vec<rowan::NodeOrToken<SyntaxNode, SyntaxToken>>,
+) {
+    let end = parent.children_with_tokens().count();
+    parent.splice_children(end..end, children);
+}
+
+/// Does this subtree end with a NEWLINE leaf, or with any run of
+/// zero-width tokens (like an implicit-null NULL "") whose last
+/// non-empty predecessor is a NEWLINE?
+///
+/// `last_token()` alone can't answer this: it returns the deepest tail
+/// leaf, which may be a zero-width NULL sitting after a NEWLINE inside
+/// the same KEY subtree (`? b\n` under a tagged mapping). Walk `node`'s
+/// own token stream backwards, skipping empty tokens, and check what's
+/// there. The walk is strictly bounded to `node`'s subtree; callers
+/// don't need to worry about escaping into siblings.
+pub(crate) fn trailing_newline_reachable(node: &SyntaxNode) -> bool {
+    // rowan's descendants_with_tokens isn't DoubleEndedIterator, so
+    // materialise the (usually short) tail slice; the walk is still
+    // bounded to `node`'s subtree, avoiding prev_token()'s tree-wide
+    // reach.
+    let mut last_non_empty = None;
+    for el in node.descendants_with_tokens() {
+        if let Some(t) = el.into_token() {
+            if !t.text().is_empty() {
+                last_non_empty = Some(t);
+            }
+        }
+    }
+    last_non_empty.is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
+}
+
+/// Does `entry`'s line already end in a NEWLINE, counting the sibling one
+/// that explicit-key entries carry instead of owning it themselves?
+pub(crate) fn entry_line_terminated(entry: &SyntaxNode) -> bool {
+    trailing_newline_reachable(entry)
+        || entry
+            .next_sibling_or_token()
+            .is_some_and(|s| s.kind() == SyntaxKind::NEWLINE)
+}
+
+/// Append a trailing NEWLINE token to `entry` if its line doesn't already end
+/// with one. Used when a block-style entry is about to have a new sibling
+/// appended after it (its trailing newline separates the two entries
+/// visually).
+///
+/// The new sibling must be going in immediately after `entry`: an explicit-key
+/// entry is treated as terminated by a NEWLINE that follows it as a sibling,
+/// which only separates the two if nothing is spliced in between. Callers
+/// inserting at an independently computed position want
+/// [`ensure_own_trailing_newline`] instead.
+pub(crate) fn ensure_trailing_newline(entry: &SyntaxNode) {
+    if entry_line_terminated(entry) {
+        return;
+    }
+    append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+}
+
+/// Append a trailing NEWLINE token to `entry` unless the entry itself already
+/// ends in one, ignoring any NEWLINE that merely follows it as a sibling.
+pub(crate) fn ensure_own_trailing_newline(entry: &SyntaxNode) {
+    if trailing_newline_reachable(entry) {
+        return;
+    }
+    append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+}
+
 /// The `KEY` child of a `MAPPING_ENTRY`.
 pub(crate) fn entry_key(entry: &SyntaxNode) -> Option<SyntaxNode> {
     child_of_kind(entry, SyntaxKind::KEY)
@@ -268,6 +338,45 @@ macro_rules! ast_node {
 }
 
 pub(crate) use ast_node;
+/// Emit the `byte_range` / `start_position` / `end_position` trio for a
+/// wrapper whose `self.0` exposes `text_range()`. `$what` names the node
+/// in the generated docs ("sequence", "comment", ...).
+macro_rules! ast_node_spans {
+    ($what:expr) => {
+        #[doc = concat!("Get the byte offset range of this ", $what, " in the source text.")]
+        #[doc = ""]
+        #[doc = "Returns the start and end byte offsets as a `TextPosition`."]
+        pub fn byte_range(&self) -> crate::TextPosition {
+            self.0.text_range().into()
+        }
+
+        #[doc = concat!("Get the line and column where this ", $what, " starts.")]
+        #[doc = ""]
+        #[doc = "Requires the original source text to calculate line/column from byte"]
+        #[doc = "offsets. Line and column numbers are 1-indexed."]
+        #[doc = ""]
+        #[doc = "# Arguments"]
+        #[doc = ""]
+        #[doc = "* `source_text` - The original YAML source text"]
+        pub fn start_position(&self, source_text: &str) -> crate::LineColumn {
+            crate::byte_offset_to_line_column(source_text, self.byte_range().start as usize)
+        }
+
+        #[doc = concat!("Get the line and column where this ", $what, " ends.")]
+        #[doc = ""]
+        #[doc = "Requires the original source text to calculate line/column from byte"]
+        #[doc = "offsets. Line and column numbers are 1-indexed."]
+        #[doc = ""]
+        #[doc = "# Arguments"]
+        #[doc = ""]
+        #[doc = "* `source_text` - The original YAML source text"]
+        pub fn end_position(&self, source_text: &str) -> crate::LineColumn {
+            crate::byte_offset_to_line_column(source_text, self.byte_range().end as usize)
+        }
+    };
+}
+
+pub(crate) use ast_node_spans;
 
 // Node modules
 pub mod alias_node;

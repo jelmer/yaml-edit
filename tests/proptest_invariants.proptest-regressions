@@ -30,3 +30,4 @@ cc b7cd094a7b08a9ecb7dca4db311772ec0db73ad77cae29ab91fe321337f868fb # shrinks to
 cc c31030eb28c7baeeee15304bd73214c297b548f46b32abd8145dc27bb90f68e3 # shrinks to seed = "? a
 : 1
 ", ops = [SetInt("u", 0), Rename("u", "a")]
+cc 47a845ff6271ba022062a907b1505296e794f1b9e4134ac7a06b2f6bc51305b6 # shrinks to seed = "? a\n: 1\n? b\n: 2\n", ops = [MoveAfter("a", "a0", "")]

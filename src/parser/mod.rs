@@ -342,9 +342,7 @@ impl Parser {
                     // No indented content -- implicit-null value. Emit the
                     // zero-width `SCALAR { NULL "" }` shape used everywhere
                     // else so every value slot has one scalar/collection.
-                    self.builder.start_node(SyntaxKind::SCALAR.into());
-                    self.builder.token(SyntaxKind::NULL.into(), "");
-                    self.builder.finish_node();
+                    self.emit_implicit_null();
                 }
             }
             _ => self.parse_scalar(),
@@ -474,6 +472,59 @@ impl Parser {
             SyntaxKind::INDENT,
             SyntaxKind::COMMENT,
         ]);
+    }
+
+    /// Parse the VALUE node that follows a COLON in a block mapping entry.
+    ///
+    /// Three shapes end up here: content on the same line, content on the
+    /// next line indented under the key, and nothing at all (the key was
+    /// followed by a dedent or by EOF), which yields an implicit null.
+    ///
+    /// `track_indent` selects how a nested value is bounded. When set, the
+    /// column of the INDENT just consumed becomes the value's base indent,
+    /// so content at or left of it belongs to an enclosing collection.
+    pub(super) fn parse_value_after_colon(&mut self, track_indent: bool) {
+        self.builder.start_node(SyntaxKind::VALUE.into());
+        if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
+            self.parse_value();
+        } else if self.current() == Some(SyntaxKind::NEWLINE) {
+            self.bump(); // consume newline
+            if self.current() == Some(SyntaxKind::INDENT) {
+                self.bump(); // consume indent
+                if track_indent {
+                    let value_indent = self.current_line_indent;
+                    self.parse_value_with_base_indent(value_indent);
+                } else {
+                    self.parse_value();
+                }
+            } else {
+                // Colon-then-dedent: implicit-null value.
+                self.emit_implicit_null();
+            }
+        } else {
+            // Colon at EOF: implicit-null value.
+            self.emit_implicit_null();
+        }
+        self.builder.finish_node();
+    }
+
+    /// Emit the zero-width `SCALAR { NULL "" }` that fills every value slot
+    /// the source left empty (`key:`, `{a}`, `- `, ...). See the
+    /// implicit-null section of the CST invariants in `nodes/mod.rs`: every
+    /// KEY, VALUE and SEQUENCE_ENTRY holds exactly one scalar or collection,
+    /// and this token renders as nothing so round-trips stay lossless.
+    pub(super) fn emit_implicit_null(&mut self) {
+        self.builder.start_node(SyntaxKind::SCALAR.into());
+        self.builder.token(SyntaxKind::NULL.into(), "");
+        self.builder.finish_node();
+    }
+
+    /// [`emit_implicit_null`](Self::emit_implicit_null) wrapped in a VALUE
+    /// node, for the mapping shapes that wrap their values.
+    pub(super) fn emit_implicit_null_value(&mut self) {
+        self.builder.start_node(SyntaxKind::VALUE.into());
+        self.emit_implicit_null();
+        self.builder.finish_node();
     }
 
     pub(super) fn bump(&mut self) {

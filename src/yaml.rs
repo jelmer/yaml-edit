@@ -264,11 +264,7 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
     // The next sibling entry needs a NEWLINE separator inside this
     // entry (see the "entry termination" invariant in
     // src/nodes/mod.rs).
-    if !ends_with_newline(&entry_node) {
-        let nl = crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n");
-        let end = entry_node.children_with_tokens().count();
-        entry_node.splice_children(end..end, vec![nl.into()]);
-    }
+    crate::nodes::ensure_trailing_newline(&entry_node);
 }
 
 /// A virtual AST node for YAML sets (!!set tagged scalars)
@@ -590,11 +586,7 @@ impl YamlFile {
 
     /// Add a new document to the end of this YAML file
     pub fn push_document(&self, document: Document) {
-        let children_count = self.0.children_with_tokens().count();
-
-        // Just insert the document node using splice_children with interior mutability
-        self.0
-            .splice_children(children_count..children_count, vec![document.0.into()]);
+        crate::nodes::append_children(&self.0, vec![document.0.into()]);
     }
 
     /// Set a key-value pair in the first document's mapping.

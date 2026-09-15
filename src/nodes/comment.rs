@@ -34,10 +34,7 @@ impl Comment {
         without_hash.strip_prefix(' ').unwrap_or(without_hash)
     }
 
-    /// Get the byte offset range of this comment in the source text.
-    pub fn byte_range(&self) -> crate::TextPosition {
-        self.0.text_range().into()
-    }
+    crate::nodes::ast_node_spans!("comment");
 
     /// Get the text range of this comment as a rowan [`TextRange`](rowan::TextRange).
     ///
@@ -98,30 +95,6 @@ impl Comment {
     /// ```
     pub fn set_content(&self, content: &str) {
         self.set_text(&format!("# {content}"));
-    }
-
-    /// Get the line and column where this comment starts.
-    ///
-    /// Line and column numbers are 1-indexed.
-    ///
-    /// # Arguments
-    ///
-    /// * `source_text` - The original YAML source text
-    pub fn start_position(&self, source_text: &str) -> crate::LineColumn {
-        let range = self.byte_range();
-        crate::byte_offset_to_line_column(source_text, range.start as usize)
-    }
-
-    /// Get the line and column where this comment ends.
-    ///
-    /// Line and column numbers are 1-indexed.
-    ///
-    /// # Arguments
-    ///
-    /// * `source_text` - The original YAML source text
-    pub fn end_position(&self, source_text: &str) -> crate::LineColumn {
-        let range = self.byte_range();
-        crate::byte_offset_to_line_column(source_text, range.end as usize)
     }
 
     /// Access the underlying syntax token.

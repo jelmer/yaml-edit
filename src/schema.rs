@@ -261,13 +261,10 @@ impl CustomSchema {
         if !self.allows_type(scalar_type) {
             if self.allow_coercion {
                 // Try coercion to allowed types
-                let mut coerced = false;
-                for &allowed_type in &self.allowed_types {
-                    if scalar_value.coerce_to_type(allowed_type).is_some() {
-                        coerced = true;
-                        break;
-                    }
-                }
+                let coerced = self
+                    .allowed_types
+                    .iter()
+                    .any(|&t| scalar_value.coerce_to_type(t).is_some());
                 if !coerced {
                     return Err(ValidationError::coercion_failed(
                         path,
@@ -620,14 +617,9 @@ impl SchemaValidator {
             if !self.schema.allows_scalar_type(scalar_type) {
                 // Try to coerce to an allowed type
                 let allowed_types = self.schema.allowed_scalar_types();
-                let mut coerced = false;
-
-                for allowed_type in allowed_types {
-                    if scalar_value.coerce_to_type(allowed_type).is_some() {
-                        coerced = true;
-                        break;
-                    }
-                }
+                let coerced = allowed_types
+                    .into_iter()
+                    .any(|t| scalar_value.coerce_to_type(t).is_some());
 
                 if !coerced {
                     errors.push(ValidationError::coercion_failed(
@@ -670,14 +662,9 @@ impl SchemaValidator {
 
             if !self.schema.allows_scalar_type(scalar_type) {
                 let allowed_types = self.schema.allowed_scalar_types();
-                let mut coerced = false;
-
-                for allowed_type in allowed_types {
-                    if scalar_value.coerce_to_type(allowed_type).is_some() {
-                        coerced = true;
-                        break;
-                    }
-                }
+                let coerced = allowed_types
+                    .into_iter()
+                    .any(|t| scalar_value.coerce_to_type(t).is_some());
 
                 if !coerced {
                     errors.push(ValidationError::coercion_failed(

@@ -57,9 +57,7 @@ impl Parser {
         ) {
             // Omitted value: emit the zero-width implicit-null scalar so
             // every VALUE holds exactly one scalar/collection node.
-            self.builder.start_node(SyntaxKind::SCALAR.into());
-            self.builder.token(SyntaxKind::NULL.into(), "");
-            self.builder.finish_node();
+            self.emit_implicit_null();
         } else {
             self.parse_value();
         }
@@ -117,9 +115,7 @@ impl Parser {
                 self.current(),
                 Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACKET)
             ) {
-                self.builder.start_node(SyntaxKind::SCALAR.into());
-                self.builder.token(SyntaxKind::NULL.into(), "");
-                self.builder.finish_node();
+                self.emit_implicit_null();
             } else if self.next_flow_element_is_implicit_mapping() {
                 // Per YAML spec, `[ key: value ]` is valid: a sequence
                 // containing an implicit single-pair mapping.
@@ -248,9 +244,7 @@ impl Parser {
                 self.current(),
                 Some(SyntaxKind::COMMA) | Some(SyntaxKind::COLON) | Some(SyntaxKind::RIGHT_BRACE)
             ) {
-                self.builder.start_node(SyntaxKind::SCALAR.into());
-                self.builder.token(SyntaxKind::NULL.into(), "");
-                self.builder.finish_node();
+                self.emit_implicit_null();
             } else {
                 self.parse_value();
             }
@@ -269,11 +263,7 @@ impl Parser {
                     Some(SyntaxKind::COMMA | SyntaxKind::RIGHT_BRACE)
                 ) {
                     // Omitted value - create VALUE node with implicit null scalar
-                    self.builder.start_node(SyntaxKind::VALUE.into());
-                    self.builder.start_node(SyntaxKind::SCALAR.into());
-                    self.builder.token(SyntaxKind::NULL.into(), "");
-                    self.builder.finish_node(); // SCALAR
-                    self.builder.finish_node(); // VALUE
+                    self.emit_implicit_null_value();
                 } else {
                     // Parse value - wrap in VALUE node
                     self.builder.start_node(SyntaxKind::VALUE.into());
@@ -287,11 +277,7 @@ impl Parser {
                 // No colon, but followed by comma or closing brace
                 // This means the key itself has a null value (shorthand for key: null)
                 // Create VALUE node with implicit null scalar
-                self.builder.start_node(SyntaxKind::VALUE.into());
-                self.builder.start_node(SyntaxKind::SCALAR.into());
-                self.builder.token(SyntaxKind::NULL.into(), "");
-                self.builder.finish_node(); // SCALAR
-                self.builder.finish_node(); // VALUE
+                self.emit_implicit_null_value();
             } else {
                 let error_msg = self.create_detailed_error(
                     "Missing colon in flow mapping",

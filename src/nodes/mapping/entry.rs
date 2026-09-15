@@ -231,8 +231,7 @@ impl MappingEntry {
 
     /// Append `tokens` at the end of `self.0`.
     fn append(&self, tokens: Vec<rowan::SyntaxToken<Lang>>) {
-        let end = self.0.children_with_tokens().count();
-        self.insert_at(end, tokens);
+        super::super::append_children(&self.0, tokens.into_iter().map(Into::into).collect());
     }
 
     /// Detach the last child of `self.0` if it's a NEWLINE token.

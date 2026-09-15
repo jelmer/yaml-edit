@@ -362,6 +362,10 @@ impl CustomTagParser {
     /// TODO: unimplemented - this should walk the document and run every
     /// tagged node through the registry. It currently accepts any document
     /// without looking at it.
+    #[deprecated(
+        since = "0.4.0",
+        note = "unimplemented; it reports Ok(()) without inspecting the document"
+    )]
     pub fn parse_with_custom_tags(&self, _document: &Document) -> Result<(), CustomTagError> {
         Ok(())
     }

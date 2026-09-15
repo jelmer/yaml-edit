@@ -27,10 +27,15 @@
 //! ```
 //!
 //! Default traversal implementations automatically visit child nodes. Override
-//! `visit_mapping` or `visit_sequence` for custom traversal logic.
+//! `visit_mapping`, `visit_sequence` or `visit_tagged_node` for custom
+//! traversal logic.
+//!
+//! A tagged node (`!!str x`, `!custom {a: 1}`) is handed to
+//! `visit_tagged_node`, which by default descends into the tagged content, so
+//! a visitor that only implements `visit_scalar` still sees the scalar
+//! inside `!!str x`.
 
-use crate::yaml::{Document, Mapping, Scalar, Sequence, YamlFile};
-use rowan::ast::AstNode;
+use crate::yaml::{Document, Mapping, Scalar, Sequence, TaggedNode, YamlFile};
 
 /// Trait for implementing the visitor pattern on YAML nodes.
 pub trait YamlVisitor {
@@ -74,18 +79,41 @@ pub trait YamlVisitor {
         self.walk_sequence(sequence);
     }
 
+    /// Visit a node carrying an explicit tag (`!!str x`, `!custom {a: 1}`).
+    ///
+    /// The default implementation descends into the tagged content, so a
+    /// visitor that only cares about scalars still sees `!!str x`. Override
+    /// this method to inspect the tag itself.
+    fn visit_tagged_node(&mut self, tagged: &TaggedNode) {
+        self.walk_tagged_node(tagged);
+    }
+
+    /// Traverse the content a tag is attached to (helper for default
+    /// traversal).
+    fn walk_tagged_node(&mut self, tagged: &TaggedNode) {
+        if let Some(mapping) = tagged.as_mapping() {
+            self.visit_mapping(&mapping);
+        } else if let Some(sequence) = tagged.as_sequence() {
+            self.visit_sequence(&sequence);
+        } else if let Some(scalar) = tagged.value() {
+            self.visit_scalar(&scalar);
+        }
+    }
+
     /// Traverse all key-value pairs in a mapping (helper for default traversal).
     ///
     /// This method is called by the default `visit_mapping` implementation.
     /// You can call it explicitly if you override `visit_mapping` and want to
     /// preserve the default traversal behavior.
     fn walk_mapping(&mut self, mapping: &Mapping) {
-        use crate::yaml::{extract_mapping, extract_scalar, extract_sequence};
+        use crate::yaml::{extract_mapping, extract_scalar, extract_sequence, extract_tagged_node};
 
         for (key_node, value_node) in mapping.pairs() {
             // Visit key
             if let Some(scalar) = extract_scalar(&key_node) {
                 self.visit_scalar(&scalar);
+            } else if let Some(tagged) = extract_tagged_node(&key_node) {
+                self.visit_tagged_node(&tagged);
             } else if let Some(sequence) = extract_sequence(&key_node) {
                 self.visit_sequence(&sequence);
             } else if let Some(mapping) = extract_mapping(&key_node) {
@@ -95,6 +123,8 @@ pub trait YamlVisitor {
             // Visit value
             if let Some(scalar) = extract_scalar(&value_node) {
                 self.visit_scalar(&scalar);
+            } else if let Some(tagged) = extract_tagged_node(&value_node) {
+                self.visit_tagged_node(&tagged);
             } else if let Some(nested_mapping) = extract_mapping(&value_node) {
                 self.visit_mapping(&nested_mapping);
             } else if let Some(nested_sequence) = extract_sequence(&value_node) {
@@ -109,12 +139,16 @@ pub trait YamlVisitor {
     /// You can call it explicitly if you override `visit_sequence` and want to
     /// preserve the default traversal behavior.
     fn walk_sequence(&mut self, sequence: &Sequence) {
+        use crate::yaml::{extract_mapping, extract_scalar, extract_sequence, extract_tagged_node};
+
         for item in sequence.items() {
-            if let Some(scalar) = Scalar::cast(item.clone()) {
+            if let Some(scalar) = extract_scalar(&item) {
                 self.visit_scalar(&scalar);
-            } else if let Some(nested_mapping) = Mapping::cast(item.clone()) {
+            } else if let Some(tagged) = extract_tagged_node(&item) {
+                self.visit_tagged_node(&tagged);
+            } else if let Some(nested_mapping) = extract_mapping(&item) {
                 self.visit_mapping(&nested_mapping);
-            } else if let Some(nested_sequence) = Sequence::cast(item.clone()) {
+            } else if let Some(nested_sequence) = extract_sequence(&item) {
                 self.visit_sequence(&nested_sequence);
             }
         }
@@ -293,6 +327,54 @@ where
 mod tests {
     use super::*;
     use crate::YamlFile;
+
+    struct ScalarNames {
+        seen: Vec<String>,
+    }
+
+    impl YamlVisitor for ScalarNames {
+        fn visit_scalar(&mut self, scalar: &Scalar) {
+            self.seen.push(scalar.as_string());
+        }
+    }
+
+    fn visited_scalars(src: &str) -> Vec<String> {
+        use std::str::FromStr;
+        let doc = Document::from_str(src).unwrap();
+        let mut v = ScalarNames { seen: vec![] };
+        doc.accept(&mut v);
+        v.seen
+    }
+
+    #[test]
+    fn test_walks_into_tagged_nodes() {
+        // A tag used to stop traversal dead: walk_sequence cast the item
+        // straight to Scalar/Mapping/Sequence, and the mapping walk unwrapped
+        // only KEY/VALUE, so everything under a TAGGED_NODE went unvisited.
+        assert_eq!(visited_scalars("- !!str a\n- b\n"), ["a", "b"]);
+        assert_eq!(visited_scalars("k: !!str v\n"), ["k", "v"]);
+        assert_eq!(visited_scalars("!!str k: v\n"), ["k", "v"]);
+        assert_eq!(visited_scalars("k: !!map\n  a: 1\n"), ["k", "a", "1"]);
+        assert_eq!(visited_scalars("- !!seq\n  - a\n"), ["a"]);
+    }
+
+    #[test]
+    fn test_visit_tagged_node_can_be_overridden() {
+        struct Tags {
+            tags: Vec<String>,
+        }
+        impl YamlVisitor for Tags {
+            fn visit_tagged_node(&mut self, tagged: &TaggedNode) {
+                self.tags.push(tagged.tag().unwrap_or_default());
+                // Deliberately do not descend.
+            }
+        }
+        use std::str::FromStr;
+        let doc = Document::from_str("- !!str a\n- !custom b\n").unwrap();
+        let mut v = Tags { tags: vec![] };
+        doc.accept(&mut v);
+        assert_eq!(v.tags, ["!!str", "!custom"]);
+    }
 
     #[test]
     fn test_scalar_collector() {

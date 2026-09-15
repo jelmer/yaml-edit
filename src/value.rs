@@ -355,18 +355,7 @@ impl YamlValue {
     /// Note: This respects YAML's type system - `42` (unquoted) is an integer,
     /// but `"42"` (quoted) is a string and will return None.
     pub fn to_i64(&self) -> Option<i64> {
-        match self {
-            YamlValue::Scalar(s) => {
-                use crate::scalar::ScalarType;
-                // Only parse as integer if the scalar type is Integer
-                if s.scalar_type() == ScalarType::Integer {
-                    ScalarValue::parse_integer(s.value())
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
+        self.as_scalar().and_then(ScalarValue::to_i64)
     }
 
     /// Try to convert this value to an f64
@@ -377,18 +366,7 @@ impl YamlValue {
     /// Note: This respects YAML's type system - `3.14` (unquoted) is a float,
     /// but `"3.14"` (quoted) is a string and will return None.
     pub fn to_f64(&self) -> Option<f64> {
-        match self {
-            YamlValue::Scalar(s) => {
-                use crate::scalar::ScalarType;
-                // Only parse as float if the scalar type is Float
-                if s.scalar_type() == ScalarType::Float {
-                    s.value().trim().parse::<f64>().ok()
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
+        self.as_scalar().and_then(ScalarValue::to_f64)
     }
 
     /// Try to convert this value to a bool
@@ -400,22 +378,7 @@ impl YamlValue {
     /// Note: This respects YAML's type system - `no` (unquoted) is boolean,
     /// but `"no"` (quoted) is a string and will return None.
     pub fn to_bool(&self) -> Option<bool> {
-        match self {
-            YamlValue::Scalar(s) => {
-                use crate::scalar::ScalarType;
-                // Only parse as boolean if the scalar type is Boolean
-                if s.scalar_type() == ScalarType::Boolean {
-                    match s.value().to_lowercase().as_str() {
-                        "true" | "yes" | "on" => Some(true),
-                        "false" | "no" | "off" => Some(false),
-                        _ => None,
-                    }
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
+        self.as_scalar().and_then(ScalarValue::to_bool)
     }
 
     /// Convert to YAML string representation
@@ -644,18 +607,45 @@ mod tests {
         );
         assert_eq!(scalar_token_kind(&YamlValue::from(42)), SyntaxKind::INT);
         assert_eq!(scalar_token_kind(&YamlValue::from(1.5)), SyntaxKind::FLOAT);
+        // Strings that happen to spell a bool or null keep their String type
+        // and are quoted, so they tokenize as STRING - rendering them bare
+        // would change their type on the next parse.
         assert_eq!(
             scalar_token_kind(&YamlValue::Scalar(ScalarValue::string("true"))),
-            SyntaxKind::BOOL
+            SyntaxKind::STRING
         );
         assert_eq!(
             scalar_token_kind(&YamlValue::Scalar(ScalarValue::string("false"))),
-            SyntaxKind::BOOL
+            SyntaxKind::STRING
         );
         assert_eq!(
             scalar_token_kind(&YamlValue::Scalar(ScalarValue::string("null"))),
+            SyntaxKind::STRING
+        );
+        // Parsed values keep their detected type.
+        assert_eq!(
+            scalar_token_kind(&YamlValue::Scalar(ScalarValue::parse("true"))),
+            SyntaxKind::BOOL
+        );
+        assert_eq!(
+            scalar_token_kind(&YamlValue::Scalar(ScalarValue::parse("null"))),
             SyntaxKind::NULL
         );
+    }
+
+    #[test]
+    fn test_scalar_build_content_quotes_like_scalar_value() {
+        // YamlValue::Scalar delegates to ScalarValue so that strings needing
+        // quotes get them. Emitting the raw value would re-parse as a
+        // different type, or (for "a: b") as a different structure.
+        for raw in ["null", "true", "42", "a: b", "", "#c", "- x"] {
+            let sv = ScalarValue::string(raw);
+            assert_eq!(
+                render_as_yaml(&YamlValue::Scalar(sv.clone())),
+                render_as_yaml(&sv),
+                "YamlValue::Scalar({raw:?}) must render like the ScalarValue"
+            );
+        }
     }
 
     #[test]
@@ -666,10 +656,10 @@ mod tests {
             ("a".to_string(), YamlValue::from("1")),
             ("b".to_string(), YamlValue::from("2")),
         ]);
-        assert_eq!(render_as_yaml(&omap), "!!omap\n  - a: 1\n  - b: 2\n");
+        assert_eq!(render_as_yaml(&omap), "!!omap\n  - a: '1'\n  - b: '2'\n");
 
         let pairs = YamlValue::from_pairs(vec![("a".to_string(), YamlValue::from("1"))]);
-        assert_eq!(render_as_yaml(&pairs), "!!pairs\n  - a: 1\n");
+        assert_eq!(render_as_yaml(&pairs), "!!pairs\n  - a: '1'\n");
 
         let set = YamlValue::from_set(BTreeSet::from(["a".to_string(), "b".to_string()]));
         assert_eq!(render_as_yaml(&set), "!!set\n  a: null\n  b: null\n");
@@ -683,7 +673,7 @@ mod tests {
         inner.insert("y".to_string(), YamlValue::from("2"));
         let mut outer = BTreeMap::new();
         outer.insert("o".to_string(), YamlValue::Mapping(inner));
-        assert_eq!(render_as_yaml(&outer), "o:\n  x: 1\n  y: 2\n");
+        assert_eq!(render_as_yaml(&outer), "o:\n  x: '1'\n  y: '2'\n");
 
         // Pairs with two entries: the indent passed into the nested sequence
         // shows on the second item's "  - " separator (Pairs branch indent + 2).
@@ -691,7 +681,7 @@ mod tests {
             ("a".to_string(), YamlValue::from("1")),
             ("b".to_string(), YamlValue::from("2")),
         ]);
-        assert_eq!(render_as_yaml(&pairs2), "!!pairs\n  - a: 1\n  - b: 2\n");
+        assert_eq!(render_as_yaml(&pairs2), "!!pairs\n  - a: '1'\n  - b: '2'\n");
 
         // A sequence nested inside a sequence (&[]::build_content indent + 2).
         let seq = vec![YamlValue::Sequence(vec![YamlValue::from("a")])];
@@ -704,7 +694,7 @@ mod tests {
         item.insert("x".to_string(), YamlValue::from("1"));
         item.insert("y".to_string(), YamlValue::from("2"));
         let seq_of_map = vec![YamlValue::Mapping(item)];
-        assert_eq!(render_as_yaml(&seq_of_map), "- x: 1\n  y: 2\n");
+        assert_eq!(render_as_yaml(&seq_of_map), "- x: '1'\n  y: '2'\n");
     }
 
     #[test]
@@ -1330,23 +1320,7 @@ impl AsYaml for YamlValue {
     ) -> bool {
         use crate::lex::SyntaxKind;
         match self {
-            YamlValue::Scalar(s) => {
-                builder.start_node(SyntaxKind::SCALAR.into());
-                let token_kind = if s.value().parse::<i64>().is_ok() {
-                    SyntaxKind::INT
-                } else if s.value().parse::<f64>().is_ok() {
-                    SyntaxKind::FLOAT
-                } else if s.value() == "true" || s.value() == "false" {
-                    SyntaxKind::BOOL
-                } else if s.value() == "null" {
-                    SyntaxKind::NULL
-                } else {
-                    SyntaxKind::STRING
-                };
-                builder.token(token_kind.into(), s.value());
-                builder.finish_node();
-                false
-            }
+            YamlValue::Scalar(s) => s.build_content(builder, indent, flow_context),
             YamlValue::Mapping(map) => map.build_content(builder, indent, flow_context),
             YamlValue::Sequence(seq) => seq.as_slice().build_content(builder, indent, flow_context),
             YamlValue::Set(set) => {

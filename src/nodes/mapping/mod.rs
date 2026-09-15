@@ -4,11 +4,14 @@ mod helpers;
 mod movements;
 
 use helpers::{
-    append_comma_space_to_entry, ensure_top_level_empty_renders_as_flow, ensure_trailing_newline,
-    entry_line_terminated, index_after_entry_line, trailing_newline_reachable, FlowInsertPos,
+    append_comma_space_to_entry, ensure_top_level_empty_renders_as_flow, index_after_entry_line,
+    FlowInsertPos,
 };
 
-use super::{entry_key, entry_value, fresh_token, has_child_token, Lang, Sequence, SyntaxNode};
+use super::{
+    ensure_trailing_newline, entry_key, entry_line_terminated, entry_value, fresh_token,
+    has_child_token, trailing_newline_reachable, Lang, Sequence, SyntaxNode,
+};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::yaml::{
@@ -617,9 +620,7 @@ impl Mapping {
         // insert_at_index for why standalone separators are fragile).
         if count > 0 && !has_trailing_newline {
             if let Some(prev_entry) = &last_mapping_entry {
-                let nl = super::fresh_token(SyntaxKind::NEWLINE, "\n");
-                let end = prev_entry.children_with_tokens().count();
-                prev_entry.splice_children(end..end, vec![nl.into()]);
+                ensure_trailing_newline(prev_entry);
             }
         }
 
@@ -1388,10 +1389,8 @@ impl Mapping {
                 .collect();
             if let Some(prev_node) = preceding.last() {
                 if let rowan::NodeOrToken::Node(prev) = prev_node {
-                    if prev.kind() == SyntaxKind::MAPPING_ENTRY && !entry_line_terminated(prev) {
-                        let nl = super::fresh_token(SyntaxKind::NEWLINE, "\n");
-                        let end = prev.children_with_tokens().count();
-                        prev.splice_children(end..end, vec![nl.into()]);
+                    if prev.kind() == SyntaxKind::MAPPING_ENTRY {
+                        ensure_trailing_newline(prev);
                     }
                 } else if let rowan::NodeOrToken::Token(t) = prev_node {
                     if t.kind() != SyntaxKind::NEWLINE {
@@ -1422,38 +1421,7 @@ impl Mapping {
         self.0.splice_children(insert_pos..insert_pos, new_elements);
     }
 
-    /// Get the byte offset range of this mapping in the source text.
-    ///
-    /// Returns the start and end byte offsets as a `TextPosition`.
-    pub fn byte_range(&self) -> crate::TextPosition {
-        self.0.text_range().into()
-    }
-
-    /// Get the line and column where this mapping starts.
-    ///
-    /// Requires the original source text to calculate line/column from byte offsets.
-    /// Line and column numbers are 1-indexed.
-    ///
-    /// # Arguments
-    ///
-    /// * `source_text` - The original YAML source text
-    pub fn start_position(&self, source_text: &str) -> crate::LineColumn {
-        let range = self.byte_range();
-        crate::byte_offset_to_line_column(source_text, range.start as usize)
-    }
-
-    /// Get the line and column where this mapping ends.
-    ///
-    /// Requires the original source text to calculate line/column from byte offsets.
-    /// Line and column numbers are 1-indexed.
-    ///
-    /// # Arguments
-    ///
-    /// * `source_text` - The original YAML source text
-    pub fn end_position(&self, source_text: &str) -> crate::LineColumn {
-        let range = self.byte_range();
-        crate::byte_offset_to_line_column(source_text, range.end as usize)
-    }
+    crate::nodes::ast_node_spans!("mapping");
 }
 
 impl Default for Mapping {

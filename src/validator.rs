@@ -167,6 +167,19 @@ fn has_content(node: &SyntaxNode) -> bool {
 }
 
 /// Convert a rowan TextRange to a TextPosition.
+/// Is this flow entry an omitted one, i.e. does its value consist solely of
+/// the zero-width implicit-null scalar the parser emits for an empty slot?
+///
+/// See the implicit-null section of the CST invariants in `nodes/mod.rs`.
+fn entry_is_empty(entry: &SyntaxNode) -> bool {
+    entry.text_range().is_empty()
+        || entry
+            .text()
+            .to_string()
+            .trim_matches(|c: char| c.is_whitespace() || c == ',')
+            .is_empty()
+}
+
 fn range_to_text_position(range: rowan::TextRange) -> crate::TextPosition {
     crate::TextPosition::new(u32::from(range.start()), u32::from(range.end()))
 }
@@ -303,6 +316,7 @@ impl Validator {
             }
             SyntaxKind::MAPPING => {
                 self.check_flow_collection_commas(node, violations);
+                self.check_flow_continuation_indent(node, violations);
                 self.check_block_mapping_entries_on_same_line(node, violations);
                 self.check_mapping_entry_indentation(node, violations);
                 if self.config.check_duplicate_keys {
@@ -311,6 +325,7 @@ impl Validator {
             }
             SyntaxKind::SEQUENCE => {
                 self.check_flow_collection_commas(node, violations);
+                self.check_flow_continuation_indent(node, violations);
                 self.check_sequence_entry_in_flow(node, violations);
             }
             SyntaxKind::VALUE => {
@@ -861,26 +876,26 @@ impl Validator {
             crate::SyntaxKind::SEQUENCE_ENTRY
         };
 
-        let mut entry_count = 0;
-        let mut comma_count = 0;
-        let mut prev_was_comma = false;
+        // A flow separator is stored inside the entry it follows (see the
+        // flow-separator invariant in nodes/mod.rs), and an omitted entry
+        // shows up as one whose value is the zero-width implicit null. So
+        // `[a, , b]` and `[a, b, ,]` are entries with an empty value rather
+        // than adjacent COMMA tokens.
+        let entries: Vec<_> = node.children().filter(|n| n.kind() == entry_kind).collect();
+        let entry_count = entries.len();
+        let comma_count = entries
+            .iter()
+            .filter(|e| crate::nodes::has_child_token(e, |k| k == crate::SyntaxKind::COMMA))
+            .count();
 
-        for child in node.children() {
-            match child.kind() {
-                k if k == entry_kind => entry_count += 1,
-                crate::SyntaxKind::COMMA => {
-                    comma_count += 1;
-                    if prev_was_comma {
-                        violations.push(Violation::error_at(
-                            Rule::Other,
-                            node.text_range(),
-                            "Double comma in flow collection",
-                        ));
-                    }
-                    prev_was_comma = true;
-                }
-                crate::SyntaxKind::WHITESPACE | crate::SyntaxKind::NEWLINE => {}
-                _ => prev_was_comma = false,
+        for entry in &entries {
+            if entry_is_empty(entry) {
+                violations.push(Violation::error_at(
+                    Rule::Other,
+                    node.text_range(),
+                    "Empty entry in flow collection",
+                ));
+                break;
             }
         }
 
@@ -1038,6 +1053,62 @@ impl Validator {
     /// Flow sequences (using []) should not have SEQUENCE_ENTRY children.
     /// SEQUENCE_ENTRY is only for block sequences (using -). In flow sequences,
     /// values appear directly without the - marker.
+    /// Check that a multi-line flow collection indents its continuation lines.
+    ///
+    /// A flow collection may span lines, but each continuation has to be
+    /// indented more than the block context it sits in; at column zero the
+    /// content would be read as a new block node instead (yaml-test-suite
+    /// 9C9N).
+    fn check_flow_continuation_indent(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        let first = node.first_token();
+        let is_flow = first.as_ref().is_some_and(|t| {
+            matches!(
+                t.kind(),
+                crate::SyntaxKind::LEFT_BRACE | crate::SyntaxKind::LEFT_BRACKET
+            )
+        });
+        if !is_flow {
+            return;
+        }
+        // Only the outermost flow collection needs checking; a nested one
+        // shares its lines.
+        if node.ancestors().skip(1).any(|a| {
+            matches!(
+                a.kind(),
+                crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
+            ) && a.first_token().is_some_and(|t| {
+                matches!(
+                    t.kind(),
+                    crate::SyntaxKind::LEFT_BRACE | crate::SyntaxKind::LEFT_BRACKET
+                )
+            })
+        }) {
+            return;
+        }
+
+        let mut after_newline = false;
+        for el in node.descendants_with_tokens() {
+            let rowan::NodeOrToken::Token(t) = el else {
+                continue;
+            };
+            match t.kind() {
+                crate::SyntaxKind::NEWLINE => after_newline = true,
+                crate::SyntaxKind::INDENT | crate::SyntaxKind::WHITESPACE if after_newline => {
+                    after_newline = false;
+                }
+                _ if after_newline => {
+                    violations.push(Violation::error_at(
+                        Rule::InvalidIndentation,
+                        node.text_range(),
+                        "Flow collection continuation line must be indented",
+                    ));
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn check_sequence_entry_in_flow(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // Check if this is a flow sequence
         let first_token = node.first_token();
@@ -1047,9 +1118,18 @@ impl Validator {
             return;
         }
 
-        // Check for SEQUENCE_ENTRY children
+        // Flow entries are SEQUENCE_ENTRY nodes too, so their mere presence
+        // says nothing. Block syntax leaking in shows up as an entry whose
+        // value is a bare `-`, which the lexer hands back as scalar text
+        // rather than a DASH token.
         for child in node.children() {
-            if child.kind() == crate::SyntaxKind::SEQUENCE_ENTRY {
+            if child.kind() == crate::SyntaxKind::SEQUENCE_ENTRY
+                && child
+                    .text()
+                    .to_string()
+                    .trim_matches(|c: char| c.is_whitespace() || c == ',')
+                    == "-"
+            {
                 violations.push(Violation::error_at(
                     Rule::Other,
                     node.text_range(),
@@ -1348,6 +1428,31 @@ impl Validator {
                     "Implicit key cannot span multiple lines",
                 ));
                 return; // Only report once per entry
+            }
+        }
+
+        // The key can also be separated from its own COLON by a line break
+        // (`[ "key"\n  :value ]`): the NEWLINE is then a sibling of KEY
+        // rather than part of it.
+        let mut seen_key = false;
+        for el in entry_node.children_with_tokens() {
+            match el {
+                rowan::NodeOrToken::Node(n) if n.kind() == crate::SyntaxKind::KEY => {
+                    seen_key = true;
+                }
+                rowan::NodeOrToken::Token(t) if seen_key => match t.kind() {
+                    crate::SyntaxKind::NEWLINE => {
+                        violations.push(Violation::error_at(
+                            Rule::Other,
+                            entry_node.text_range(),
+                            "Implicit key cannot span multiple lines",
+                        ));
+                        return;
+                    }
+                    crate::SyntaxKind::COLON => return,
+                    _ => {}
+                },
+                _ => {}
             }
         }
     }
@@ -1663,6 +1768,44 @@ mod tests {
 
         // Simple valid YAML should have no violations
         assert_eq!(violations.len(), 0);
+    }
+
+    #[test]
+    fn test_validator_accepts_well_formed_flow_collections() {
+        // The separators in a flow collection live inside the entry they
+        // follow, so counting only the collection's direct children found no
+        // commas at all and every well-formed flow collection was reported as
+        // missing them. Flow entries are also SEQUENCE_ENTRY nodes, which used
+        // to read as block syntax leaking into the flow.
+        for src in [
+            "a: {x: 1, y: 2}\n",
+            "a: [1, 2]\n",
+            "[1, 2, 3]\n",
+            "{a: 1, b: 2, c: 3}\n",
+            "a: !!seq [1, 2]\n",
+            "a: &anc [1, 2]\n",
+        ] {
+            let doc = Document::from_str(src).unwrap();
+            assert_eq!(Validator::new().validate(&doc), vec![], "{src:?}");
+        }
+    }
+
+    #[test]
+    fn test_validator_flags_malformed_flow_collections() {
+        // Omitted entries and a stray block dash stay errors, and so do the
+        // layout mistakes that the comma check used to catch only by
+        // accident (yaml-test-suite 9C9N, ZXT5, 9MAG, CTN5, G5U8, YJV2).
+        for src in [
+            "[ , a, b ]\n",
+            "[ a, b, , ]\n",
+            "[-]\n",
+            "- [-, -]\n",
+            "flow: [a,\nb,\nc]\n",
+            "[ \"key\"\n  :value ]\n",
+        ] {
+            let doc = Document::from_str(src).unwrap();
+            assert_ne!(Validator::new().validate(&doc), vec![], "{src:?}");
+        }
     }
 
     #[test]

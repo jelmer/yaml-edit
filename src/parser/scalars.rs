@@ -486,9 +486,7 @@ impl Parser {
                     if min_mapping_indent.is_some_and(|min| inner_base <= min) {
                         // The entries are siblings of our own key, so this tag
                         // annotates an implicit null and they stay outside.
-                        self.builder.start_node(SyntaxKind::SCALAR.into());
-                        self.builder.token(SyntaxKind::NULL.into(), "");
-                        self.builder.finish_node();
+                        self.emit_implicit_null();
                     } else {
                         self.parse_mapping_with_base_indent(inner_base);
                     }

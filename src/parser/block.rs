@@ -114,9 +114,7 @@ impl Parser {
                     self.parse_value();
                 } else {
                     // Bare `?\n` -- implicit-null key.
-                    self.builder.start_node(SyntaxKind::SCALAR.into());
-                    self.builder.token(SyntaxKind::NULL.into(), "");
-                    self.builder.finish_node();
+                    self.emit_implicit_null();
                 }
                 self.builder.finish_node();
 
@@ -137,24 +135,16 @@ impl Parser {
                             self.parse_value();
                         } else {
                             // Colon-then-dedent: implicit-null value.
-                            self.builder.start_node(SyntaxKind::SCALAR.into());
-                            self.builder.token(SyntaxKind::NULL.into(), "");
-                            self.builder.finish_node();
+                            self.emit_implicit_null();
                         }
                     } else {
                         // Colon at EOF: implicit-null value.
-                        self.builder.start_node(SyntaxKind::SCALAR.into());
-                        self.builder.token(SyntaxKind::NULL.into(), "");
-                        self.builder.finish_node();
+                        self.emit_implicit_null();
                     }
                     self.builder.finish_node();
                 } else {
                     // No value, just a key - create explicit null value
-                    self.builder.start_node(SyntaxKind::VALUE.into());
-                    self.builder.start_node(SyntaxKind::SCALAR.into());
-                    self.builder.token(SyntaxKind::NULL.into(), "");
-                    self.builder.finish_node();
-                    self.builder.finish_node();
+                    self.emit_implicit_null_value();
                 }
 
                 // Finish the MAPPING_ENTRY node
@@ -251,14 +241,10 @@ impl Parser {
                     self.bump(); // consume indent
                     self.parse_value_with_base_indent(indent_level);
                 } else {
-                    self.builder.start_node(SyntaxKind::SCALAR.into());
-                    self.builder.token(SyntaxKind::NULL.into(), "");
-                    self.builder.finish_node();
+                    self.emit_implicit_null();
                 }
             } else {
-                self.builder.start_node(SyntaxKind::SCALAR.into());
-                self.builder.token(SyntaxKind::NULL.into(), "");
-                self.builder.finish_node();
+                self.emit_implicit_null();
             }
 
             // Block-style SEQUENCE_ENTRY owns its NEWLINE terminator (DESIGN.md)
@@ -293,9 +279,7 @@ impl Parser {
                 self.parse_value();
             } else {
                 // Bare `?\n` -- implicit-null key.
-                self.builder.start_node(SyntaxKind::SCALAR.into());
-                self.builder.token(SyntaxKind::NULL.into(), "");
-                self.builder.finish_node();
+                self.emit_implicit_null();
             }
 
             // Check if this is a multiline key (newline followed by indent)
@@ -364,24 +348,16 @@ impl Parser {
                         self.parse_value_with_base_indent(value_indent);
                     } else {
                         // Colon-then-dedent: implicit-null value.
-                        self.builder.start_node(SyntaxKind::SCALAR.into());
-                        self.builder.token(SyntaxKind::NULL.into(), "");
-                        self.builder.finish_node();
+                        self.emit_implicit_null();
                     }
                 } else {
                     // Colon at EOF: implicit-null value.
-                    self.builder.start_node(SyntaxKind::SCALAR.into());
-                    self.builder.token(SyntaxKind::NULL.into(), "");
-                    self.builder.finish_node();
+                    self.emit_implicit_null();
                 }
                 self.builder.finish_node();
             } else {
                 // No value, just a key - create explicit null value
-                self.builder.start_node(SyntaxKind::VALUE.into());
-                self.builder.start_node(SyntaxKind::SCALAR.into());
-                self.builder.token(SyntaxKind::NULL.into(), "");
-                self.builder.finish_node();
-                self.builder.finish_node();
+                self.emit_implicit_null_value();
             }
 
             // Finish the MAPPING_ENTRY node
@@ -465,15 +441,11 @@ impl Parser {
                     self.parse_value();
                 } else {
                     // Colon-then-dedent: implicit-null value.
-                    self.builder.start_node(SyntaxKind::SCALAR.into());
-                    self.builder.token(SyntaxKind::NULL.into(), "");
-                    self.builder.finish_node();
+                    self.emit_implicit_null();
                 }
             } else {
                 // Colon at EOF: implicit-null value.
-                self.builder.start_node(SyntaxKind::SCALAR.into());
-                self.builder.token(SyntaxKind::NULL.into(), "");
-                self.builder.finish_node();
+                self.emit_implicit_null();
             }
             self.builder.finish_node();
         } else {
@@ -582,9 +554,7 @@ impl Parser {
                 self.parse_value();
             } else {
                 // Bare `?\n` -- implicit-null key.
-                self.builder.start_node(SyntaxKind::SCALAR.into());
-                self.builder.token(SyntaxKind::NULL.into(), "");
-                self.builder.finish_node();
+                self.emit_implicit_null();
             }
             self.builder.finish_node();
 
@@ -604,24 +574,16 @@ impl Parser {
                         self.parse_value();
                     } else {
                         // Colon-then-dedent: implicit-null value.
-                        self.builder.start_node(SyntaxKind::SCALAR.into());
-                        self.builder.token(SyntaxKind::NULL.into(), "");
-                        self.builder.finish_node();
+                        self.emit_implicit_null();
                     }
                 } else {
                     // Colon at EOF: implicit-null value.
-                    self.builder.start_node(SyntaxKind::SCALAR.into());
-                    self.builder.token(SyntaxKind::NULL.into(), "");
-                    self.builder.finish_node();
+                    self.emit_implicit_null();
                 }
                 self.builder.finish_node();
             } else {
                 // No value, just a key - create explicit null value
-                self.builder.start_node(SyntaxKind::VALUE.into());
-                self.builder.start_node(SyntaxKind::SCALAR.into());
-                self.builder.token(SyntaxKind::NULL.into(), "");
-                self.builder.finish_node();
-                self.builder.finish_node();
+                self.emit_implicit_null_value();
             }
 
             // Finish the MAPPING_ENTRY node
@@ -851,9 +813,7 @@ impl Parser {
 
             // If no value present, create an implicit null scalar
             if !has_value {
-                self.builder.start_node(SyntaxKind::SCALAR.into());
-                self.builder.token(SyntaxKind::NULL.into(), "");
-                self.builder.finish_node();
+                self.emit_implicit_null();
             }
 
             self.builder.finish_node(); // VALUE

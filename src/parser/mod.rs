@@ -342,9 +342,7 @@ impl Parser {
                     // No indented content -- implicit-null value. Emit the
                     // zero-width `SCALAR { NULL "" }` shape used everywhere
                     // else so every value slot has one scalar/collection.
-                    self.builder.start_node(SyntaxKind::SCALAR.into());
-                    self.builder.token(SyntaxKind::NULL.into(), "");
-                    self.builder.finish_node();
+                    self.emit_implicit_null();
                 }
             }
             _ => self.parse_scalar(),
@@ -474,6 +472,25 @@ impl Parser {
             SyntaxKind::INDENT,
             SyntaxKind::COMMENT,
         ]);
+    }
+
+    /// Emit the zero-width `SCALAR { NULL "" }` that fills every value slot
+    /// the source left empty (`key:`, `{a}`, `- `, ...). See the
+    /// implicit-null section of the CST invariants in `nodes/mod.rs`: every
+    /// KEY, VALUE and SEQUENCE_ENTRY holds exactly one scalar or collection,
+    /// and this token renders as nothing so round-trips stay lossless.
+    pub(super) fn emit_implicit_null(&mut self) {
+        self.builder.start_node(SyntaxKind::SCALAR.into());
+        self.builder.token(SyntaxKind::NULL.into(), "");
+        self.builder.finish_node();
+    }
+
+    /// [`emit_implicit_null`](Self::emit_implicit_null) wrapped in a VALUE
+    /// node, for the mapping shapes that wrap their values.
+    pub(super) fn emit_implicit_null_value(&mut self) {
+        self.builder.start_node(SyntaxKind::VALUE.into());
+        self.emit_implicit_null();
+        self.builder.finish_node();
     }
 
     pub(super) fn bump(&mut self) {

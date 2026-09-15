@@ -670,6 +670,31 @@ impl Parser {
         // Since tokens are reversed, indices before current_idx are "ahead" in the stream
         let mut peek_idx = current_idx.saturating_sub(1);
 
+        // A blank line does not end a plain scalar; it folds to a line break
+        // and the scalar continues on the next line with content. Step over
+        // any run of blank lines (an INDENT holds a line's leading
+        // whitespace, so a line is blank when a NEWLINE follows it directly).
+        loop {
+            let mut after_blank = peek_idx;
+            if self
+                .tokens
+                .get(after_blank)
+                .is_some_and(|(kind, _)| *kind == SyntaxKind::INDENT)
+            {
+                after_blank = after_blank.saturating_sub(1);
+            }
+            if after_blank > 0
+                && self
+                    .tokens
+                    .get(after_blank)
+                    .is_some_and(|(kind, _)| *kind == SyntaxKind::NEWLINE)
+            {
+                peek_idx = after_blank.saturating_sub(1);
+                continue;
+            }
+            break;
+        }
+
         // Skip INDENT token if present and extract indentation level
         let next_line_indent = self
             .tokens

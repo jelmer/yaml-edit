@@ -83,19 +83,32 @@ impl Scalar {
         } else {
             // Plain scalar - fold lines if multi-line
             if text.contains('\n') {
-                // Multi-line plain scalar: fold newlines to spaces
-                // Using manual iteration avoids intermediate Vec allocation
+                // Multi-line plain scalar: a single line break folds to a
+                // space, and each additional one is kept, so a blank line
+                // between two lines becomes a newline (YAML 1.2 line folding).
                 let mut result = String::new();
-                let mut first = true;
+                let mut pending_breaks = 0usize;
                 for line in text.lines() {
                     let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        if !first {
-                            result.push(' ');
+                    if trimmed.is_empty() {
+                        // Only counts once content has started; leading blank
+                        // lines are stripped along with the indentation.
+                        if !result.is_empty() {
+                            pending_breaks += 1;
                         }
-                        result.push_str(trimmed);
-                        first = false;
+                        continue;
                     }
+                    if !result.is_empty() {
+                        if pending_breaks == 0 {
+                            result.push(' ');
+                        } else {
+                            for _ in 0..pending_breaks {
+                                result.push('\n');
+                            }
+                        }
+                    }
+                    pending_breaks = 0;
+                    result.push_str(trimmed);
                 }
                 result
             } else {

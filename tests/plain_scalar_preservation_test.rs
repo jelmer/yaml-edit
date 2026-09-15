@@ -248,3 +248,29 @@ fn directive_at_line_start_still_parses() {
         "1"
     );
 }
+
+#[test]
+fn a_blank_line_continues_a_plain_scalar() {
+    // A single line break folds to a space; a blank line keeps one newline.
+    for (yaml, key, value) in [
+        ("a: one\n  two\nb: y\n", "a", "one two"),
+        ("a: one\n\n  two\nb: y\n", "a", "one\ntwo"),
+        ("a: one\n\n\n  two\nb: y\n", "a", "one\n\ntwo"),
+        ("a: one\n  two\n\n  three\nb: y\n", "a", "one two\nthree"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string(), "b".to_string()], "{yaml:?}");
+        assert_eq!(
+            mapping.get(key).unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}

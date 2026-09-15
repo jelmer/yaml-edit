@@ -376,3 +376,32 @@ fn tag_anchor_indentless_sequence_is_aliasable() {
     assert_eq!(mapping.keys().count(), 2);
     assert_eq!(mapping.get("next").unwrap().as_alias().unwrap().name(), "a");
 }
+
+#[test]
+fn tagged_body_after_a_gap_stays_attached() {
+    // A body line with no colon on it -- an explicit key, a block scalar
+    // header, a flow collection, a plain scalar -- used to detach from its
+    // tag once a blank line intervened, stranding it and every following
+    // entry in an ERROR node.
+    for body in [
+        "  ? ek\n",
+        "  |\n    text\n",
+        "  >\n    text\n",
+        "  [a, b]\n",
+        "  {k: v}\n",
+        "  plain text\n",
+        "  k: v\n",
+    ] {
+        let yaml = format!("tags: !!seq\n\n{body}sibling: kept\n");
+        let file = YamlFile::from_str(&yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml}\n{tree}");
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec!["tags", "sibling"], "{yaml}\n{tree}");
+    }
+}

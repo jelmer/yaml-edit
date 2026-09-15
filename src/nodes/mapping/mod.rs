@@ -78,6 +78,21 @@ impl Mapping {
     /// Get the value associated with `key` as a [`YamlNode`](crate::as_yaml::YamlNode).
     ///
     /// Returns `None` if the key does not exist.
+    ///
+    /// Matching is semantic but type-strict, so a key's type has to match as
+    /// well as its text: `1` does not find the string key `"1"`, and the
+    /// null key of `: v` is found with
+    /// [`ScalarValue::null`](crate::ScalarValue::null) rather than `""`,
+    /// which finds the distinct empty-string key of `"": v`.
+    ///
+    /// ```rust
+    /// # use std::str::FromStr;
+    /// # use yaml_edit::{Document, ScalarValue};
+    /// let doc = Document::from_str(": a\n\"\": b\n").unwrap();
+    /// let mapping = doc.as_mapping().unwrap();
+    /// assert!(mapping.get(ScalarValue::null()).is_some());
+    /// assert!(mapping.get("").is_some());
+    /// ```
     pub fn get(&self, key: impl crate::AsYaml) -> Option<crate::as_yaml::YamlNode> {
         self.get_node(key)
             .and_then(crate::as_yaml::YamlNode::from_syntax)

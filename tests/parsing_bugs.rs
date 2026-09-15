@@ -1067,3 +1067,38 @@ fn test_comment_still_ends_a_block_when_content_dedents() {
     let tree = yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
     assert!(!tree.contains("ERROR"), "{tree}");
 }
+
+/// A null key and an empty-string key are different keys, and each is found
+/// by its own spelling. `: v` is keyed by null, `"": v` by the empty string.
+#[test]
+fn test_null_key_and_empty_string_key_are_distinct() {
+    use yaml_edit::ScalarValue;
+
+    let doc = yaml_edit::Document::from_str(": a\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(
+        mapping
+            .get(ScalarValue::null())
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "a"
+    );
+    assert!(mapping.get("").is_none());
+
+    let doc = yaml_edit::Document::from_str("\"\": b\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("").unwrap().as_scalar().unwrap().as_string(),
+        "b"
+    );
+    assert!(mapping.get(ScalarValue::null()).is_none());
+
+    // The other null spellings resolve the same way.
+    for src in ["null: a\n", "~: a\n"] {
+        let doc = yaml_edit::Document::from_str(src).unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        assert!(mapping.get(ScalarValue::null()).is_some(), "{src:?}");
+    }
+}

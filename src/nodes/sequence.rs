@@ -352,10 +352,10 @@ impl Sequence {
         //
         // Both this scan and `splice_children` cost O(len) if done naively,
         // which makes building a sequence O(len^2). The green child list is
-        // indexable in constant time, so read the tail directly; and since
-        // `splice_children` has to fix up every *live* SyntaxNode handle,
-        // take the measurements and fix the previous entry before creating
-        // the handles the splice needs.
+        // a DoubleEndedIterator, so walking back from the end reads only the
+        // few trailing elements; and since `splice_children` has to fix up
+        // every *live* SyntaxNode handle, take the measurements and fix the
+        // previous entry before creating the handles the splice needs.
         let green = self.0.green();
         let mut tail = green.children();
         let child_count = tail.len();

@@ -11,6 +11,21 @@ use crate::nodes::{entry_key, entry_value, Scalar, SyntaxNode};
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
 
+/// Are two iterators equal element-wise under `eq`, including length?
+fn all_eq<T>(
+    mut a: impl Iterator<Item = T>,
+    mut b: impl Iterator<Item = T>,
+    eq: impl Fn(&T, &T) -> bool,
+) -> bool {
+    loop {
+        match (a.next(), b.next()) {
+            (Some(x), Some(y)) if eq(&x, &y) => continue,
+            (None, None) => return true,
+            _ => return false,
+        }
+    }
+}
+
 impl Mapping {
     /// Compare two key nodes structurally
     pub(crate) fn compare_key_nodes(&self, actual: &SyntaxNode, expected: &SyntaxNode) -> bool {
@@ -82,82 +97,44 @@ impl Mapping {
             }
             SyntaxKind::STRING => {
                 // For string tokens, compare the actual content
-                let mut iter1 = node1
-                    .children_with_tokens()
-                    .filter_map(|c| c.into_token())
-                    .filter(|t| t.kind() == SyntaxKind::STRING);
-                let mut iter2 = node2
-                    .children_with_tokens()
-                    .filter_map(|c| c.into_token())
-                    .filter(|t| t.kind() == SyntaxKind::STRING);
-                loop {
-                    match (iter1.next(), iter2.next()) {
-                        (Some(a), Some(b)) if a.text() == b.text() => continue,
-                        (None, None) => return true,
-                        _ => return false,
-                    }
-                }
+                let strings = |node: &SyntaxNode| {
+                    node.children_with_tokens()
+                        .filter_map(|c| c.into_token())
+                        .filter(|t| t.kind() == SyntaxKind::STRING)
+                };
+                all_eq(strings(node1), strings(node2), |a, b| a.text() == b.text())
             }
             SyntaxKind::SEQUENCE => {
-                // Compare sequence entries
-                let mut entries1 = node1
-                    .children()
-                    .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY);
-                let mut entries2 = node2
-                    .children()
-                    .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY);
-                loop {
-                    match (entries1.next(), entries2.next()) {
-                        (Some(e1), Some(e2)) => {
-                            if !self.compare_sequence_entries(&e1, &e2) {
-                                return false;
-                            }
-                        }
-                        (None, None) => return true,
-                        _ => return false,
-                    }
-                }
+                let entries = |node: &SyntaxNode| {
+                    node.children()
+                        .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+                };
+                all_eq(entries(node1), entries(node2), |a, b| {
+                    self.compare_sequence_entries(a, b)
+                })
             }
             SyntaxKind::MAPPING => {
-                // Compare mapping entries (order matters for keys)
-                let mut entries1 = node1
-                    .children()
-                    .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY);
-                let mut entries2 = node2
-                    .children()
-                    .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY);
-                loop {
-                    match (entries1.next(), entries2.next()) {
-                        (Some(e1), Some(e2)) => {
-                            if !self.compare_mapping_entries(&e1, &e2) {
-                                return false;
-                            }
-                        }
-                        (None, None) => return true,
-                        _ => return false,
-                    }
-                }
+                // Order matters for keys.
+                let entries = |node: &SyntaxNode| {
+                    node.children()
+                        .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+                };
+                all_eq(entries(node1), entries(node2), |a, b| {
+                    self.compare_mapping_entries(a, b)
+                })
             }
             _ => {
                 // For other node types, compare token content
-                let filter_tokens = |node: &SyntaxNode| {
+                let tokens = |node: &SyntaxNode| {
                     node.children_with_tokens()
                         .filter_map(|c| c.into_token())
                         .filter(|t| {
                             t.kind() != SyntaxKind::WHITESPACE && t.kind() != SyntaxKind::INDENT
                         })
                 };
-                let mut iter1 = filter_tokens(node1);
-                let mut iter2 = filter_tokens(node2);
-                loop {
-                    match (iter1.next(), iter2.next()) {
-                        (Some(a), Some(b)) if a.kind() == b.kind() && a.text() == b.text() => {
-                            continue
-                        }
-                        (None, None) => return true,
-                        _ => return false,
-                    }
-                }
+                all_eq(tokens(node1), tokens(node2), |a, b| {
+                    a.kind() == b.kind() && a.text() == b.text()
+                })
             }
         }
     }

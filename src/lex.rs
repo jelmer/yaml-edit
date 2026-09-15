@@ -730,7 +730,12 @@ pub fn lex_with_validation_config<'a>(
                     tokens.push((classify_scalar(text), text));
                 }
             }
-            '?' => tokens.push((QUESTION, &input[token_start..start_idx + 1])),
+            // An explicit-key indicator, like the node properties below, only
+            // at the start of a node: `a ?b` is the scalar `a ?b`, not a key
+            // indicator inside it.
+            '?' if node_property_can_start(&tokens) => {
+                tokens.push((QUESTION, &input[token_start..start_idx + 1]))
+            }
             '[' => {
                 flow_depth += 1;
                 tokens.push((LEFT_BRACKET, &input[token_start..start_idx + 1]));

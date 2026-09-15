@@ -546,3 +546,52 @@ fn test_block_scalar_chomping_dash_is_not_scalar_content() {
     assert_eq!(file.to_string(), yaml);
     assert!(!yaml_edit::debug::tree_to_string(file.syntax()).contains("ERROR"));
 }
+
+/// `?` is an explicit-key indicator only at the start of a node. Once a
+/// plain scalar has begun it is ordinary content, so `a ?,b` is one scalar.
+/// Lexing it as QUESTION left the following `,b` with nowhere to go and
+/// stranded it in an ERROR node with no parse error.
+#[test]
+fn test_question_mark_mid_scalar_is_plain_content() {
+    for yaml in ["a ?,b\n", "a ?b\n", ")  .exp  ?,expect(\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        assert!(
+            !yaml_edit::debug::tree_to_string(file.syntax()).contains("ERROR"),
+            "stranded tokens for {yaml:?}"
+        );
+    }
+
+    let file = YamlFile::from_str("x ?y: v\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .iter()
+        .map(|(k, _)| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["x ?y".to_string()]);
+}
+
+/// A `?` that really does start a node still opens an explicit key.
+#[test]
+fn test_question_mark_at_node_start_still_opens_explicit_key() {
+    for yaml in [
+        "? key\n: value\n",
+        "keys: !!set\n  ? a\n  ? b\n",
+        "map:\n  ? complex\n  : v\n",
+        "a: {? k: v}\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        assert!(
+            !yaml_edit::debug::tree_to_string(file.syntax()).contains("ERROR"),
+            "stranded tokens for {yaml:?}"
+        );
+    }
+
+    let file = YamlFile::from_str("? key\n: value\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("key").unwrap().as_scalar().unwrap().as_string(),
+        "value"
+    );
+}

@@ -230,8 +230,27 @@ impl Parser {
             && self.current() != Some(SyntaxKind::DOC_END)
             && self.current() != Some(SyntaxKind::DOC_START)
         {
+            // A plain scalar that *is* the document has no enclosing
+            // collection, so its continuation lines need clear no column:
+            // `" a\nb\n"` is the single scalar `a b` even though the second
+            // line is less indented than the first, as both saphyr and
+            // PyYAML read it.
+            //
+            // Only when the root really is such a scalar. Relaxing the floor
+            // for every root value would also fold a stray line after a
+            // finished collection (`- a\n- b\ninvalid\n`, YAML test suite
+            // TD5N), which is an error rather than a continuation.
+            let root_is_plain_scalar = self
+                .current()
+                .is_some_and(crate::parser::scalars::is_plain_scalar_kind)
+                && !self.is_mapping_key();
+            let outer_floor = self.scalar_continuation_floor;
             self.equal_indent_continues_scalar = true;
+            if root_is_plain_scalar {
+                self.scalar_continuation_floor = Some(0);
+            }
             self.parse_value();
+            self.scalar_continuation_floor = outer_floor;
             self.equal_indent_continues_scalar = false;
         }
 

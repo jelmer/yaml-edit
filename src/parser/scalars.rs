@@ -753,6 +753,17 @@ impl Parser {
         // node, and a continuation line is inside one already. `- a\n !\n`
         // is the scalar `a !`, as both saphyr and PyYAML read it.
         //
+        // PIPE and GREATER count for the same reason. They open a block
+        // scalar only at the start of a node, which in block context means
+        // straight after a `-` or `:`; a line that merely continues a scalar
+        // is inside a node already. `" a\n|\n"` is the scalar `a |`, as both
+        // saphyr and PyYAML read it.
+        //
+        // A QUESTION does not: it opens the next explicit key of the mapping
+        // we may sit in, so `? a\n: 1\n? b\n: 2\n` has two entries rather
+        // than one folded value. Only a root scalar, which has no mapping to
+        // open an entry of, reads it as content.
+        //
         // A DASH counts only when the line is indented past the scalar's own,
         // where it cannot be the next entry of the sequence we sit in:
         // `a:\n- x\n  - y\n` is the single item `x - y`, as both saphyr and
@@ -768,10 +779,19 @@ impl Parser {
                     | SyntaxKind::NULL
                     | SyntaxKind::UNTERMINATED_STRING
                     | SyntaxKind::TAG
-            ) || (*kind == SyntaxKind::DASH
-                && self
-                    .sequence_entry_column
-                    .is_some_and(|column| next_line_indent > column))
+                    | SyntaxKind::PIPE
+                    | SyntaxKind::GREATER
+            ) || (*kind == SyntaxKind::QUESTION
+                && self.scalar_continuation_floor == Some(0)
+                && self.sequence_entry_column.is_none())
+                || (*kind == SyntaxKind::DASH
+                    && match self.sequence_entry_column {
+                        // Inside a sequence: only past our own dash, where it
+                        // cannot be the next entry.
+                        Some(column) => next_line_indent > column,
+                        // No sequence to open an entry of, so it is content.
+                        None => true,
+                    })
         });
 
         // A continuation has to be indented past the scalar's own line, so it

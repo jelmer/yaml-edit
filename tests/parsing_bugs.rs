@@ -867,3 +867,81 @@ fn test_explicit_key_sequence_keeps_its_entries() {
         "Chicago Cubs"
     );
 }
+
+/// A plain scalar that is the whole document folds its continuation lines
+/// whatever their indentation, since there is no enclosing collection a
+/// shallower line could belong to instead.
+///
+/// `" a\nb\n"` is the single scalar `a b`, as both saphyr and PyYAML read
+/// it. The continuation check required each line to clear the scalar's own
+/// column, so the second line was swept into an ERROR node while from_str
+/// still reported success.
+#[test]
+fn test_root_scalar_folds_a_less_indented_continuation() {
+    for (yaml, value) in [
+        (" a\nb\n", "a b"),
+        ("  a\n b\n", "a b"),
+        ("a\nb\n", "a b"),
+        (" a\n b\n", "a b"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}
+
+/// `|`, `>`, `-` and `?` open a block scalar, sequence entry or explicit key
+/// only at the start of a node. On a line that merely continues a root
+/// scalar they are ordinary content.
+#[test]
+fn test_root_scalar_folds_indicator_only_continuations() {
+    for (yaml, value) in [
+        (" a\n|\n", "a |"),
+        (" a\n>\n", "a >"),
+        (" a\n-\n", "a -"),
+        (" a\n?\n", "a ?"),
+        ("\n yym|e\n|\n\n", "yym|e |"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}
+
+/// The relaxed root floor must not fold a stray line after a finished
+/// collection, nor a later explicit key into the value before it. Both are
+/// covered by the YAML test suite (TD5N, ZVH3), which expects errors.
+#[test]
+fn test_root_fold_does_not_swallow_following_nodes() {
+    // A second explicit key stays its own entry.
+    let yaml = "? a\n: 1\n? b\n: 2\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["a".to_string(), "b".to_string()]);
+
+    // A block scalar after a sequence entry is still a block scalar.
+    let yaml = "- a\n- |\n  b\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let seq = file.document().unwrap().as_sequence().unwrap();
+    assert_eq!(seq.len(), 2);
+}

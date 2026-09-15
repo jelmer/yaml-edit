@@ -7,7 +7,7 @@
 use super::helpers::FlowInsertPos;
 use super::{key_content_matches, Mapping, MappingEntry};
 use crate::lex::SyntaxKind;
-use crate::nodes::{fresh_token, SyntaxNode};
+use crate::nodes::{ensure_trailing_newline, fresh_token, SyntaxNode};
 use crate::yaml::Document;
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
@@ -282,19 +282,9 @@ impl Mapping {
                         .as_node()
                         .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
                 }) {
-                    // Check if it ends with NEWLINE
-                    let has_newline = prev_entry
-                        .last_token()
-                        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
-
-                    // If not, add one to the previous entry (not to the mapping)
-                    if !has_newline {
-                        let entry_children_count = prev_entry.children_with_tokens().count();
-                        prev_entry.splice_children(
-                            entry_children_count..entry_children_count,
-                            vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
-                        );
-                    }
+                    // Terminate the previous entry so the moved one starts
+                    // on its own line.
+                    ensure_trailing_newline(prev_entry);
                 }
             }
 

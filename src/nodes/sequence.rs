@@ -1,4 +1,6 @@
-use super::{fresh_token, has_child_token, Lang, SyntaxNode};
+use super::{
+    append_children, ensure_trailing_newline, fresh_token, has_child_token, Lang, SyntaxNode,
+};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::yaml::ValueNode;
@@ -396,17 +398,7 @@ impl Sequence {
         // Ensure the previous last entry has a trailing newline (it won't be last anymore)
         if let Some(last_idx) = last_entry_index {
             if let Some(node) = children[last_idx].as_node() {
-                if !node
-                    .last_token()
-                    .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
-                {
-                    let entry_children_count = node.children_with_tokens().count();
-                    let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
-                    node.splice_children(
-                        entry_children_count..entry_children_count,
-                        vec![nl.into()],
-                    );
-                }
+                ensure_trailing_newline(node);
             }
         }
 
@@ -481,8 +473,7 @@ impl Sequence {
                     .last_token()
                     .is_some_and(|t| t.kind() == SyntaxKind::COMMA);
                 if !ends_with_comma {
-                    let end = last_entry.children_with_tokens().count();
-                    last_entry.splice_children(end..end, vec![comma.into(), sep_ws.into()]);
+                    append_children(last_entry, vec![comma.into(), sep_ws.into()]);
                 }
             }
             self.0
@@ -493,8 +484,7 @@ impl Sequence {
         // Insert before the entry at `index`; the new entry carries
         // its own `, ` tail to keep the displaced entry separated.
         let target_pos = entry_positions[index];
-        let end = new_entry.children_with_tokens().count();
-        new_entry.splice_children(end..end, vec![comma.into(), sep_ws.into()]);
+        append_children(&new_entry, vec![comma.into(), sep_ws.into()]);
         self.0
             .splice_children(target_pos..target_pos, vec![new_entry.into()]);
     }
@@ -578,14 +568,7 @@ impl Sequence {
                 c.as_node()
                     .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             }) {
-                let has_nl = prev_entry
-                    .last_token()
-                    .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
-                if !has_nl {
-                    let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
-                    let end = prev_entry.children_with_tokens().count();
-                    prev_entry.splice_children(end..end, vec![nl.into()]);
-                }
+                ensure_trailing_newline(prev_entry);
             }
         }
 

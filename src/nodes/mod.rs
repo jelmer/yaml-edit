@@ -72,7 +72,7 @@
 //!
 //! When inserting a new sibling entry after an existing one, mutation
 //! helpers must first ensure the predecessor is terminated
-//! (`ensure_trailing_newline` in `mapping.rs` / `sequence.rs`).
+//! (`ensure_trailing_newline` in this module).
 //!
 //! ## Implicit-null values
 //!
@@ -208,6 +208,61 @@ pub(crate) fn has_child_token(parent: &SyntaxNode, pred: impl Fn(SyntaxKind) -> 
     parent
         .children_with_tokens()
         .any(|el| el.as_token().is_some_and(|t| pred(t.kind())))
+}
+
+/// Append `children` at the end of `parent`'s child list.
+pub(crate) fn append_children(
+    parent: &SyntaxNode,
+    children: Vec<rowan::NodeOrToken<SyntaxNode, SyntaxToken>>,
+) {
+    let end = parent.children_with_tokens().count();
+    parent.splice_children(end..end, children);
+}
+
+/// Does this subtree end with a NEWLINE leaf, or with any run of
+/// zero-width tokens (like an implicit-null NULL "") whose last
+/// non-empty predecessor is a NEWLINE?
+///
+/// `last_token()` alone can't answer this: it returns the deepest tail
+/// leaf, which may be a zero-width NULL sitting after a NEWLINE inside
+/// the same KEY subtree (`? b\n` under a tagged mapping). Walk `node`'s
+/// own token stream backwards, skipping empty tokens, and check what's
+/// there. The walk is strictly bounded to `node`'s subtree; callers
+/// don't need to worry about escaping into siblings.
+pub(crate) fn trailing_newline_reachable(node: &SyntaxNode) -> bool {
+    // rowan's descendants_with_tokens isn't DoubleEndedIterator, so
+    // materialise the (usually short) tail slice; the walk is still
+    // bounded to `node`'s subtree, avoiding prev_token()'s tree-wide
+    // reach.
+    let mut last_non_empty = None;
+    for el in node.descendants_with_tokens() {
+        if let Some(t) = el.into_token() {
+            if !t.text().is_empty() {
+                last_non_empty = Some(t);
+            }
+        }
+    }
+    last_non_empty.is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
+}
+
+/// Does `entry`'s line already end in a NEWLINE, counting the sibling one
+/// that explicit-key entries carry instead of owning it themselves?
+pub(crate) fn entry_line_terminated(entry: &SyntaxNode) -> bool {
+    trailing_newline_reachable(entry)
+        || entry
+            .next_sibling_or_token()
+            .is_some_and(|s| s.kind() == SyntaxKind::NEWLINE)
+}
+
+/// Append a trailing NEWLINE token to `entry` if its line doesn't already end
+/// with one. Used when a block-style entry is about to have a new sibling
+/// appended after it (its trailing newline separates the two entries
+/// visually).
+pub(crate) fn ensure_trailing_newline(entry: &SyntaxNode) {
+    if entry_line_terminated(entry) {
+        return;
+    }
+    append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
 }
 
 /// The `KEY` child of a `MAPPING_ENTRY`.

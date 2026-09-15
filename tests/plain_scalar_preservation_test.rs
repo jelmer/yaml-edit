@@ -811,3 +811,75 @@ fn test_tag_at_a_node_start_still_applies() {
         Some("!!str")
     );
 }
+
+/// `?` opens an explicit key only when a space or line break follows it.
+/// Glued to what comes next it is ordinary plain-scalar content, which the
+/// YAML test suite states directly: 652Z expects `=VAL :?foo`, and 2EBW
+/// and FBC9 both list `?foo` as a safe plain scalar.
+///
+/// Without that test `a: ?!!r{2}x` opened an explicit key and then read
+/// `!!r` as a tag, so the `{2}` closed a flow collection that was never
+/// opened and the rest of the line was stranded in an ERROR node with no
+/// parse error.
+#[test]
+fn test_question_mark_without_a_space_is_scalar_content() {
+    for yaml in [
+        "a: ?!!r{2}x\n",
+        "a: ?x\n",
+        "?key: v\n",
+        "es_ttpattern: ?!!r\\d{2}-\\d{2}'\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    // The regex keeps every character, as PyYAML reads it.
+    let yaml = "es_ttpattern: ?!!r\\d{2}-\\d{2}'\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping
+            .get("es_ttpattern")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "?!!r\\d{2}-\\d{2}'"
+    );
+
+    // A `?` glued to a key keeps it in the key.
+    let file = YamlFile::from_str("?key: v\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["?key".to_string()]);
+}
+
+/// A `?` followed by a space still opens an explicit key, in block and flow.
+#[test]
+fn test_question_mark_with_a_space_still_opens_an_explicit_key() {
+    for yaml in [
+        "? key\n: value\n",
+        "keys: !!set\n  ? a\n  ? b\n",
+        "map:\n  ? complex\n  : v\n",
+        "a: {? k: v}\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    let file = YamlFile::from_str("? key\n: value\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("key").unwrap().as_scalar().unwrap().as_string(),
+        "value"
+    );
+}

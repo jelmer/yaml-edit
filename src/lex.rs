@@ -753,7 +753,15 @@ pub fn lex_with_validation_config<'a>(
             // An explicit-key indicator, like the node properties below, only
             // at the start of a node: `a ?b` is the scalar `a ?b`, not a key
             // indicator inside it.
-            '?' if node_property_can_start(&tokens) => {
+            //
+            // Per YAML 1.2 `c-complex-mapping-key` the `?` must also be
+            // followed by a space or a line break to be an indicator. Without
+            // that test `a: ?!!r{2}x` opened an explicit key and then read
+            // `!!r` as a tag, which stranded the rest of the line; PyYAML
+            // reads the value as the plain scalar `?!!r{2}x`.
+            '?' if node_property_can_start(&tokens)
+                && chars.peek().map_or(true, |(_, next)| next.is_whitespace()) =>
+            {
                 tokens.push((QUESTION, &input[token_start..start_idx + 1]))
             }
             '[' => {

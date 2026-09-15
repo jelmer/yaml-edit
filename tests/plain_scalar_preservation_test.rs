@@ -692,3 +692,35 @@ fn test_plus_key_still_ends_at_a_mapping_colon() {
         .collect();
     assert_eq!(keys, vec!["a".to_string(), "+c".to_string()]);
 }
+
+/// A bare `+` before a mapping colon is the key, exactly as a bare `-` is.
+/// The `+` arm emitted a PLUS token there, so the mapping exposed no key at
+/// all and `: v` was stranded in an ERROR node with no parse error.
+#[test]
+fn test_bare_plus_is_a_mapping_key() {
+    let yaml = "+: v\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    common::assert_file_cst_ok(&file);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(!tree.contains("ERROR"), "{tree}");
+
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["+".to_string()]);
+    assert_eq!(
+        mapping.get("+").unwrap().as_scalar().unwrap().as_string(),
+        "v"
+    );
+
+    // The `-` spelling this now matches.
+    let file = YamlFile::from_str("-: v\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("-").unwrap().as_scalar().unwrap().as_string(),
+        "v"
+    );
+}

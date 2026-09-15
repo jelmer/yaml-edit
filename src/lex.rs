@@ -693,6 +693,16 @@ pub fn lex_with_validation_config<'a>(
                         flow_depth,
                         true,
                     );
+                } else if !is_chomping_indicator
+                    && chars.peek().is_some_and(|(idx, c)| {
+                        *c == ':' && is_colon_a_mapping_indicator(input, *idx, flow_depth)
+                    })
+                {
+                    // `+: v` is a mapping keyed by the plain scalar `+`, as
+                    // `-: v` already was. A bare PLUS left the key invisible
+                    // and stranded the rest of the entry.
+                    let text = &input[token_start..start_idx + 1];
+                    tokens.push((classify_scalar(text), text));
                 } else {
                     tokens.push((PLUS, &input[token_start..start_idx + 1]));
                 }

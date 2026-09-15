@@ -347,47 +347,54 @@ impl Sequence {
         // Build the INDENT token (separate from the SEQUENCE_ENTRY)
         let indent_token = fresh_token(SyntaxKind::INDENT, &indentation);
 
-        // Collect children and analyze the sequence structure
-        let children: Vec<_> = self.0.children_with_tokens().collect();
+        // Locate the last SEQUENCE_ENTRY and the insert position by walking
+        // back from the end of the child list.
+        //
+        // Both this scan and `splice_children` cost O(len) if done naively,
+        // which makes building a sequence O(len^2). The green child list is
+        // indexable in constant time, so read the tail directly; and since
+        // `splice_children` has to fix up every *live* SyntaxNode handle,
+        // take the measurements and fix the previous entry before creating
+        // the handles the splice needs.
+        let green = self.0.green();
+        let mut tail = green.children();
+        let child_count = tail.len();
 
-        // Find the last SEQUENCE_ENTRY and check if it has a trailing newline
-        let mut last_entry_has_newline = true; // Default to true for empty sequences
+        // Walk back over the trailing tokens the parser leaves after the
+        // last entry. A NEWLINE there is a blank line belonging to the
+        // enclosing mapping, so the new entry goes before it; an INDENT is a
+        // separator, so the new entry goes after it.
         let mut last_entry_index = None;
-
-        for (i, child) in children.iter().enumerate().rev() {
-            if let Some(node) = child
-                .as_node()
-                .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-            {
-                last_entry_has_newline = node
-                    .last_token()
-                    .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
-                last_entry_index = Some(i);
-                break;
-            }
-        }
-
-        // Find the insert position: after the last SEQUENCE_ENTRY and any immediately following
-        // INDENT tokens, but BEFORE any trailing standalone NEWLINE tokens (which represent
-        // blank lines that should stay between mapping entries, not inside the sequence)
-        let mut insert_pos = children.len();
-        if let Some(last_idx) = last_entry_index {
-            // Start from after the last SEQUENCE_ENTRY
-            insert_pos = last_idx + 1;
-
-            // Skip any INDENT tokens immediately after
-            while insert_pos < children.len() {
-                if let Some(token) = children[insert_pos].as_token() {
-                    if token.kind() == SyntaxKind::INDENT {
-                        insert_pos += 1;
-                    } else {
-                        break;
+        let mut last_entry_has_newline = true; // Default for an empty sequence
+        let mut insert_pos = child_count;
+        let mut idx = child_count;
+        while idx > 0 {
+            idx -= 1;
+            match tail.next_back() {
+                Some(rowan::NodeOrToken::Node(n))
+                    if n.kind() == SyntaxKind::SEQUENCE_ENTRY.into() =>
+                {
+                    last_entry_has_newline = n
+                        .children()
+                        .next_back()
+                        .and_then(|c| c.into_token())
+                        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE.into());
+                    last_entry_index = Some(idx);
+                    if insert_pos == child_count {
+                        insert_pos = idx + 1;
                     }
-                } else {
                     break;
                 }
+                Some(rowan::NodeOrToken::Token(tok)) if tok.kind() == SyntaxKind::INDENT.into() => {
+                    insert_pos = idx + 1;
+                }
+                Some(rowan::NodeOrToken::Token(tok))
+                    if tok.kind() == SyntaxKind::NEWLINE.into() =>
+                {
+                    insert_pos = idx;
+                }
+                _ => break,
             }
-            // Now insert_pos is right before any trailing standalone NEWLINE tokens
         }
 
         // Build the SEQUENCE_ENTRY node using AsYaml trait
@@ -407,10 +414,17 @@ impl Sequence {
         builder.finish_node(); // SEQUENCE_ENTRY
         let new_entry = SyntaxNode::new_root_mut(builder.finish());
 
-        // Ensure the previous last entry has a trailing newline (it won't be last anymore)
-        if let Some(last_idx) = last_entry_index {
-            if let Some(node) = children[last_idx].as_node() {
-                ensure_trailing_newline(node);
+        // Ensure the previous last entry has a trailing newline (it won't be
+        // last anymore). `last_child` reaches it without walking the list.
+        if last_entry_index.is_some() && !last_entry_has_newline {
+            if let Some(node) = self
+                .0
+                .last_child()
+                .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            {
+                let entry_children_count = node.green().children().len();
+                let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
+                node.splice_children(entry_children_count..entry_children_count, vec![nl.into()]);
             }
         }
 

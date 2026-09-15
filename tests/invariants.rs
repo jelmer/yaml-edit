@@ -73,6 +73,51 @@ fn sequence_push_existing() {
     check(&doc);
 }
 
+/// Building a sequence a push at a time stays usable at scale.
+///
+/// `push` used to hold every child of the SEQUENCE alive in a Vec across
+/// `splice_children`, which has to fix up each live SyntaxNode handle. That
+/// made one push cost O(len) twice over and building a sequence O(len^2):
+/// 800 pushes took over a second. The bound here is loose enough not to be
+/// flaky, but a return of the old behaviour blows straight through it.
+#[test]
+fn sequence_push_scales() {
+    let doc = Document::from_str("items:\n  - a\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
+
+    let start = std::time::Instant::now();
+    for i in 0..1500 {
+        seq.push(format!("v{i}"));
+    }
+    let elapsed = start.elapsed();
+
+    assert_eq!(seq.len(), 1501);
+    check(&doc);
+
+    // Re-parsing the result must give the same sequence back.
+    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+    let reparsed_seq = reparsed
+        .as_mapping()
+        .unwrap()
+        .get_sequence("items")
+        .unwrap();
+    assert_eq!(reparsed_seq.len(), 1501);
+    assert_eq!(
+        reparsed_seq
+            .get(1500)
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "v1499"
+    );
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(15),
+        "1500 pushes took {elapsed:?}, which suggests push is quadratic again"
+    );
+}
+
 #[test]
 fn set_empty_mapping_then_populate() {
     let doc = Document::from_str("existing: v\n").unwrap();

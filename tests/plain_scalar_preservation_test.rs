@@ -659,3 +659,36 @@ fn test_plus_keeps_sign_and_chomping_roles() {
     assert_eq!(file.to_string(), yaml);
     common::assert_file_cst_ok(&file);
 }
+
+/// A `:` that is not followed by whitespace is scalar content, so it can
+/// begin a plain-scalar body after a `+`. The `+` arm let only a
+/// non-special character start one, so `a {b+:c}` emitted a bare PLUS and
+/// the trailing `}` was stranded in an ERROR node with no parse error.
+#[test]
+fn test_plus_before_non_indicator_colon_stays_scalar_content() {
+    for yaml in [
+        "a {b+:c}\n",
+        "a +:b}\n",
+        "call query-trends {kind+:\"TrendsQuery\"}\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// A `:` that really is a mapping indicator still ends the key.
+#[test]
+fn test_plus_key_still_ends_at_a_mapping_colon() {
+    let yaml = "a: b\n+c: d\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["a".to_string(), "+c".to_string()]);
+}

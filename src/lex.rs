@@ -671,12 +671,17 @@ pub fn lex_with_validation_config<'a>(
                     .find(|b| !b.is_ascii_digit())
                     .is_some_and(|b| b == b'|' || b == b'>');
                 // Outside a flow collection the flow indicators are ordinary
-                // scalar content, so they begin a body too: `a+[b]` is one
-                // scalar, as `a-[b]` already was.
-                let next_starts_scalar = chars.peek().is_some_and(|(_, c)| {
+                // scalar content, and a `:` not followed by whitespace is
+                // never a mapping indicator, so both begin a body: `a+[b]`
+                // and `a {b+:c}` are each one scalar, as the `-` spellings
+                // already were. These are the same exceptions the body
+                // reader itself makes.
+                let next_starts_scalar = chars.peek().is_some_and(|(idx, c)| {
                     !c.is_whitespace()
                         && (!is_yaml_special(*c)
-                            || (flow_depth == 0 && matches!(c, '[' | ']' | '{' | '}' | ',')))
+                            || (flow_depth == 0 && matches!(c, '[' | ']' | '{' | '}' | ','))
+                            || (*c == ':'
+                                && !is_colon_a_mapping_indicator(input, *idx, flow_depth)))
                 });
                 if !is_chomping_indicator && next_starts_scalar {
                     push_plain_scalar_from(

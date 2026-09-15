@@ -1062,58 +1062,34 @@ impl ScalarValue {
 
     /// Convert to literal block scalar with specific indentation
     pub fn to_literal_with_indent(&self, indent: usize) -> String {
-        let indent_str = " ".repeat(indent);
-
-        // Detect the existing indentation of the content
-        let existing_indent = self.detect_content_indentation();
-
-        // If content already has consistent indentation, preserve it
-        if existing_indent.is_some() {
-            format!("|\n{}", self.value)
-        } else {
-            // Add consistent indentation
-            let indented = self
-                .value
-                .lines()
-                .map(|line| {
-                    if line.trim().is_empty() {
-                        String::new()
-                    } else {
-                        format!("{indent_str}{line}")
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!("|\n{indented}")
-        }
+        self.to_block_with_indent('|', indent)
     }
 
     /// Convert to folded block scalar with specific indentation
     pub fn to_folded_with_indent(&self, indent: usize) -> String {
-        let indent_str = " ".repeat(indent);
+        self.to_block_with_indent('>', indent)
+    }
 
-        // Detect the existing indentation of the content
-        let existing_indent = self.detect_content_indentation();
-
-        // If content already has consistent indentation, preserve it
-        if existing_indent.is_some() {
-            format!(">\n{}", self.value)
-        } else {
-            // Add consistent indentation
-            let indented = self
-                .value
-                .lines()
-                .map(|line| {
-                    if line.trim().is_empty() {
-                        String::new()
-                    } else {
-                        format!("{indent_str}{line}")
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!(">\n{indented}")
+    /// Render as a block scalar introduced by `marker` (`|` literal, `>` folded).
+    fn to_block_with_indent(&self, marker: char, indent: usize) -> String {
+        // Content that already carries consistent indentation is preserved.
+        if self.detect_content_indentation().is_some() {
+            return format!("{marker}\n{}", self.value);
         }
+        let indent_str = " ".repeat(indent);
+        let indented = self
+            .value
+            .lines()
+            .map(|line| {
+                if line.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("{indent_str}{line}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("{marker}\n{indented}")
     }
 
     /// Detect the minimum indentation level of non-empty lines in the content

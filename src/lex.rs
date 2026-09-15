@@ -576,7 +576,11 @@ pub fn lex_with_validation_config<'a>(
                 flow_depth = flow_depth.saturating_sub(1);
                 tokens.push((RIGHT_BRACE, &input[token_start..start_idx + 1]));
             }
-            ',' => tokens.push((COMMA, &input[token_start..start_idx + 1])),
+            // A `,` separates entries only inside a flow collection. In block
+            // context it is ordinary plain-scalar content (`a: x\n  ,y`), so
+            // fall through to the catch-all arm, which already keeps flow
+            // indicators inside a block scalar.
+            ',' if flow_depth > 0 => tokens.push((COMMA, &input[token_start..start_idx + 1])),
             '|' => tokens.push((PIPE, &input[token_start..start_idx + 1])),
             '>' => tokens.push((GREATER, &input[token_start..start_idx + 1])),
             // `<<` is a merge key only when the key is exactly `<<`, i.e. the
@@ -746,6 +750,29 @@ pub fn lex_with_validation_config<'a>(
             '!' if node_property_can_start(&tokens) => {
                 // Handle tag indicators - both ! and !!
                 let mut end_idx = start_idx + 1;
+
+                // A verbatim tag `!<uri>` runs to its closing `>` and may hold
+                // any URI character, commas included, so take it whole.
+                if let Some((_, '<')) = chars.peek() {
+                    chars.next(); // consume '<'
+                    end_idx = start_idx + 2;
+                    // An unterminated `!<x` stops at the line break, which
+                    // the main loop then handles; the text still round-trips
+                    // and the parser reports the malformed tag.
+                    while let Some((idx, ch)) = chars.peek() {
+                        if *ch == '\n' {
+                            break;
+                        }
+                        end_idx = *idx + ch.len_utf8();
+                        let closing = *ch == '>';
+                        chars.next();
+                        if closing {
+                            break;
+                        }
+                    }
+                    tokens.push((TAG, &input[token_start..end_idx]));
+                    continue;
+                }
 
                 // Check for double exclamation (global tag)
                 if let Some((_, '!')) = chars.peek() {

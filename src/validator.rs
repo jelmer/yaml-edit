@@ -1280,7 +1280,12 @@ impl Validator {
                         // Check if the first token in this scalar is a comma
                         for child in n.children_with_tokens() {
                             if let rowan::NodeOrToken::Token(t) = child {
-                                if t.kind() == crate::SyntaxKind::COMMA {
+                                // In block context a `,` is scalar content, so
+                                // the comma that makes this invalid shows up as
+                                // the first character of the scalar rather than
+                                // as its own COMMA token.
+                                if t.kind() == crate::SyntaxKind::COMMA || t.text().starts_with(',')
+                                {
                                     // The scalar starts with a comma - invalid after a tag
                                     violations.push(Violation::error(
                                         Rule::InvalidTag,

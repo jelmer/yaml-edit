@@ -127,6 +127,23 @@ fn emit_key(
 /// entry needs its indent written out here, and
 /// [`copy_node_content_reindent`](crate::as_yaml::copy_node_content_reindent)
 /// shifts every later line by the same amount.
+///
+/// # Why copying is allowed here
+///
+/// "Prefer targeted splices over whole-node rebuilds" in
+/// [`crate::nodes`] forbids reconstructing a collection, because doing so
+/// discards anchors, tags, comments and quoting the rebuild didn't know
+/// about. That reasoning needs an existing tree to damage, and there
+/// isn't one on this path: `node` comes from
+/// [`finish_into_inner_node`], which closes out a
+/// [`GreenNodeBuilder`] that the caller filled token by token. It has
+/// never been parsed from source, holds nothing a user chose, and the
+/// `insert_*` methods take their donor by value, so no one else can
+/// observe it.
+///
+/// `node` must therefore be builder-owned. Never hand this a node
+/// reached from a parsed [`YamlFile`] - re-indenting such a node would
+/// rewrite formatting the user wrote. Splice it instead.
 fn copy_nested_at(
     builder: &mut GreenNodeBuilder<'static>,
     node: &rowan::SyntaxNode<crate::yaml::Lang>,
@@ -139,6 +156,10 @@ fn copy_nested_at(
 
 /// Close out a detached builder's SEQUENCE/MAPPING, DOCUMENT and ROOT nodes
 /// and hand back the collection node itself, ready to copy into a parent.
+///
+/// The result is a throwaway tree built from `builder`'s own tokens, not
+/// part of any document, which is what lets [`copy_nested_at`] re-indent
+/// it wholesale.
 fn finish_into_inner_node(
     mut builder: GreenNodeBuilder<'static>,
 ) -> Option<rowan::SyntaxNode<crate::yaml::Lang>> {

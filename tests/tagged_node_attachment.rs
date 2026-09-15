@@ -195,14 +195,10 @@ proptest! {
 /// ```
 ///
 /// parse_tagged_value_inner opens the body with the first body line's own
-/// column as the base indent, so a shallower continuation reads as a
-/// dedent. A plain scalar's continuation only has to clear the enclosing
-/// block's indent (0 here), not its own first line.
-///
-/// Ignored until the tagged path stops raising the base indent; the
-/// assertion below is the behaviour to restore.
+/// column as the base indent, so a shallower continuation read as a dedent.
+/// A plain scalar's continuation only has to clear the enclosing block's
+/// indent (0 here), not its own first line.
 #[test]
-#[ignore = "tagged plain scalar raises the continuation's base indent"]
 fn tagged_scalar_keeps_a_less_indented_continuation() {
     for yaml in ["!\n  a\n b\n", "!!str\n  a\n b\n"] {
         let file = YamlFile::from_str(yaml).unwrap();
@@ -211,7 +207,22 @@ fn tagged_scalar_keeps_a_less_indented_continuation() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 
-    // The untagged spelling this should match.
+    // Both lines belong to one SCALAR, as they do untagged: the tagged node
+    // holds a single scalar child spanning them, not one per line.
+    let file = YamlFile::from_str("!!str\n  a\n b\n").unwrap();
+    let tagged = file
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == yaml_edit::SyntaxKind::TAGGED_NODE)
+        .expect("TAGGED_NODE");
+    let scalars: Vec<_> = tagged
+        .children()
+        .filter(|n| n.kind() == yaml_edit::SyntaxKind::SCALAR)
+        .collect();
+    assert_eq!(scalars.len(), 1);
+    assert_eq!(scalars[0].text().to_string(), "a\n b");
+
+    // The untagged spelling this matches.
     let file = YamlFile::from_str("x\n  a\n b\n").unwrap();
     let tree = debug::tree_to_string(file.syntax());
     assert!(!tree.contains("ERROR"), "{tree}");

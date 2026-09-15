@@ -63,6 +63,16 @@ pub(super) struct Parser {
     /// where a continuation only has to clear the sequence's own column
     /// (`- x\n y`).
     pub(super) equal_indent_continues_scalar: bool,
+    /// Column a plain scalar's continuation must clear, when that is not the
+    /// scalar's own line.
+    ///
+    /// A lone tag annotates a block node that starts on a later, more
+    /// indented line, and the body is parsed with that line's column as its
+    /// base. The scalar itself is still a node of the enclosing collection
+    /// though, so its continuation only has to clear *that* column: `!\n  a\n b\n`
+    /// is the tagged scalar `a b`, exactly as the untagged `x\n  a\n b\n`
+    /// is `x a b`.
+    pub(super) scalar_continuation_floor: Option<usize>,
     /// Current depth of nested flow collections ([...] / {...}).
     pub(super) flow_depth: usize,
     /// Depth of `parse_value_with_base_indent` recursion (block and flow).
@@ -92,6 +102,7 @@ impl Parser {
             error_context: ErrorRecoveryContext::new(text.to_string()),
             in_value_context: false,
             equal_indent_continues_scalar: false,
+            scalar_continuation_floor: None,
             current_line_indent: 0,
             flow_depth: 0,
             nesting_depth: 0,

@@ -326,7 +326,14 @@ impl Parser {
                         if self.current() == Some(SyntaxKind::DASH) {
                             self.parse_sequence_with_base_indent(indent);
                         } else {
+                            // The body is parsed at its own column, but a
+                            // plain scalar there still belongs to the
+                            // collection the tag sits in, so its continuation
+                            // only has to clear the tag's column.
+                            let outer_floor = self.scalar_continuation_floor;
+                            self.scalar_continuation_floor = Some(base_indent);
                             self.parse_value_with_base_indent(indent);
+                            self.scalar_continuation_floor = outer_floor;
                         }
                     }
                     // Scalar, flow collection, or nothing that belongs to this
@@ -733,10 +740,17 @@ impl Parser {
         // cannot be mistaken for the next entry of an enclosing mapping.
         // Where there is no such mapping to confuse it with, an equally
         // indented line continues the scalar (`ab\ncd`, `- x\n y`).
+        //
+        // A lone tag parses its body with the body line's own column as the
+        // base, but the scalar belongs to the enclosing collection, so its
+        // continuation only has to clear that collection's column.
+        let floor = self
+            .scalar_continuation_floor
+            .map_or(scalar_indent, |floor| floor.min(scalar_indent));
         let deep_enough = if self.equal_indent_continues_scalar {
-            next_line_indent >= scalar_indent
+            next_line_indent >= floor
         } else {
-            next_line_indent > scalar_indent
+            next_line_indent > floor
         };
         if !has_content || !deep_enough {
             return false;

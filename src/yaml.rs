@@ -1515,18 +1515,17 @@ version: "1.0"
 
     #[test]
     fn test_block_scalar_edge_cases() {
-        // Edge case: block scalar where the next line becomes its content
-        // When a block scalar has no indented content, the next line at the same level
-        // is treated as content, not as a new key
+        // A block scalar with no indented content is empty, and the next line
+        // at the key's own column is a sibling entry rather than its content.
+        // Both saphyr and PyYAML read it that way.
         let yaml1 = r#"empty_literal: |
 empty_folded: >
 "#;
         let parsed1 = YamlFile::from_str(yaml1).expect("Should parse this edge case");
 
-        // Verify API access - the "empty_folded: >" line is the CONTENT of empty_literal!
         let doc1 = parsed1.document().expect("Should have document");
         let mapping1 = doc1.as_mapping().expect("Should be a mapping");
-        assert_eq!(mapping1.len(), 1, "Should have only one key");
+        assert_eq!(mapping1.len(), 2, "Both keys are entries of their own");
         assert_eq!(
             mapping1
                 .get("empty_literal")
@@ -1534,8 +1533,9 @@ empty_folded: >
                 .as_scalar()
                 .unwrap()
                 .as_string(),
-            "empty_folded: >\n"
+            ""
         );
+        assert!(mapping1.get("empty_folded").is_some());
 
         assert_eq!(parsed1.to_string(), yaml1);
 
@@ -2304,18 +2304,20 @@ quoted_yaml: >
 
     #[test]
     fn test_block_scalar_error_recovery() {
-        // Test block scalar followed by another key at same indentation level
+        // `bad_block: |` has no indented body, so it is an empty scalar and
+        // `incomplete_key` is not its content. That bare line makes the rest
+        // invalid YAML -- both saphyr and PyYAML reject this input -- and the
+        // lenient parser sweeps it into an ERROR node, keeping the text.
         let yaml = r#"good_key: value
 bad_block: |
 incomplete_key
 another_good: works
 "#;
-        let parsed = YamlFile::from_str(yaml).expect("Should parse");
+        let parsed = YamlFile::from_str(yaml).expect("Should parse leniently");
 
+        // Whatever it could parse is still reachable, and the text survives.
         let doc = parsed.document().expect("Should have document");
         let mapping = doc.as_mapping().expect("Should be a mapping");
-
-        // Check that all keys are accessible
         assert_eq!(
             mapping
                 .get("good_key")
@@ -2325,8 +2327,6 @@ another_good: works
                 .as_string(),
             "value"
         );
-
-        // bad_block contains the indented line "incomplete_key"
         assert_eq!(
             mapping
                 .get("bad_block")
@@ -2334,22 +2334,10 @@ another_good: works
                 .as_scalar()
                 .unwrap()
                 .as_string(),
-            "incomplete_key\n"
+            ""
         );
 
-        // another_good is a separate key (not part of bad_block)
-        assert_eq!(
-            mapping
-                .get("another_good")
-                .unwrap()
-                .as_scalar()
-                .unwrap()
-                .as_string(),
-            "works"
-        );
-
-        let output = parsed.to_string();
-        assert_eq!(output, yaml);
+        assert_eq!(parsed.to_string(), yaml);
     }
 
     #[test]

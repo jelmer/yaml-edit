@@ -554,36 +554,48 @@ impl Parser {
             match kind {
                 SyntaxKind::NEWLINE | SyntaxKind::COMMENT => break,
                 SyntaxKind::INT => {
-                    // Indentation indicator (1-9)
-                    if let Some(text) = self.current_text() {
-                        if text.len() == 1
-                            && text
-                                .chars()
-                                .next()
-                                .expect("text is non-empty: len == 1 checked above")
-                                .is_ascii_digit()
-                        {
-                            self.bump(); // Consume the digit
-                        } else {
-                            // Not a single digit, stop
-                            break;
-                        }
+                    // Indentation indicator. The spec allows a single digit
+                    // 1-9, but the lexer hands us the whole run, so `|10`
+                    // arrives as "10". Take it as part of the header rather
+                    // than leaving it for the body, which would strand it.
+                    let Some(text) = self.current_text() else {
+                        break;
+                    };
+                    // A chomping indicator before the digit lexes into the
+                    // same token (`|-2` is INT("-2")), so allow one sign.
+                    let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
+                    if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                        self.bump();
                     } else {
                         break;
                     }
                 }
                 SyntaxKind::STRING => {
-                    // Could be chomping indicator or other text
-                    if let Some(text) = self.current_text() {
-                        if text == "+" || text == "-" {
-                            self.bump(); // Consume chomping indicator
-                        } else {
-                            // Some other text, stop parsing header
-                            break;
+                    // Could be a chomping indicator, or an indentation digit
+                    // and chomping indicator lexed together (`|3-`, `|-3`).
+                    let Some(text) = self.current_text() else {
+                        break;
+                    };
+                    let is_header = match text.len() {
+                        1 => text == "+" || text == "-",
+                        2 => {
+                            let (a, b) = text.split_at(1);
+                            let digit = |s: &str| s.chars().all(|c| c.is_ascii_digit() && c != '0');
+                            let chomp = |s: &str| s == "+" || s == "-";
+                            (digit(a) && chomp(b)) || (chomp(a) && digit(b))
                         }
-                    } else {
+                        _ => false,
+                    };
+                    if !is_header {
+                        // Some other text, stop parsing header
                         break;
                     }
+                    self.bump();
+                }
+                // A `+` straight after the header's `|` or `>` lexes as PLUS
+                // rather than STRING, but it is the same chomping indicator.
+                SyntaxKind::PLUS => {
+                    self.bump();
                 }
                 SyntaxKind::WHITESPACE => {
                     // Whitespace before comment or newline
@@ -613,8 +625,13 @@ impl Parser {
     /// enclosing it, so its body may start at column 0. Nested under a key
     /// the body has to be indented, or `a: |\nb: 1\n` would swallow `b`.
     fn parse_block_scalar_content(&mut self, at_root: bool) {
-        // Consume all indented content that follows
-        let mut last_was_newline = false;
+        // Consume all indented content that follows.
+        //
+        // The header consumed its own line break, so the loop starts at the
+        // beginning of the next line. Say so: otherwise the dedent check is
+        // suppressed for exactly that line and an empty block scalar eats the
+        // entry after it (`empty: |\nnext: 1\n` lost `next`).
+        let mut last_was_newline = true;
         let mut base_indent: Option<usize> = None;
         let mut first_content_indent: Option<usize> = None;
 
@@ -687,12 +704,17 @@ impl Parser {
             // After a newline, check if the next token is unindented
             let current = self.current();
 
-            // COLON or QUESTION at the start of a line means the end of the
-            // block scalar -- but only where the body is indented, since a
+            // COLON, QUESTION or DASH at the start of a line means the end of
+            // the block scalar -- but only where the body is indented, since a
             // line at column 0 then cannot belong to it. Inside a body that
-            // starts at column 0 they are literal text like anything else.
+            // starts at column 0 they are literal text like anything else, and
+            // an *indented* `- x` is body content in either case (it carries an
+            // INDENT token, so it is not at a line start here).
             if !body_at_column_zero
-                && matches!(current, Some(SyntaxKind::COLON | SyntaxKind::QUESTION))
+                && matches!(
+                    current,
+                    Some(SyntaxKind::COLON | SyntaxKind::QUESTION | SyntaxKind::DASH)
+                )
             {
                 return true;
             }

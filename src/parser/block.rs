@@ -227,6 +227,11 @@ impl Parser {
             let outer_entry_column = self.sequence_entry_column;
             self.sequence_entry_column = Some(dash_column);
 
+            // An entry's value is never the document's own node, so a block
+            // scalar here still needs an indented body: `- |\n- x\n` is two
+            // entries, not one scalar holding `- x`.
+            self.node_is_document_root = false;
+
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 // Use item's line indent so nested mappings parse at the right level
                 self.parse_value_with_base_indent(item_indent);

@@ -1224,3 +1224,85 @@ fn test_nested_block_scalar_keeps_its_siblings() {
     let seq = file.document().unwrap().as_sequence().unwrap();
     assert_eq!(seq.len(), 2);
 }
+
+/// A block scalar with no indented body is empty, and the next line at the
+/// key's own column is a sibling entry rather than its content.
+///
+/// `empty: |\nnext: 1\n` has two keys, as both saphyr and PyYAML read it.
+/// The header consumes its own line break, so the content loop started at a
+/// line start while believing it was mid-line: the dedent check was
+/// suppressed for exactly that line and the entry after the scalar was
+/// swallowed, with no ERROR node to show for it.
+#[test]
+fn test_empty_block_scalar_does_not_eat_the_next_entry() {
+    for yaml in ["empty: |\nnext: 1\n", "empty: >\nnext: 1\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(
+            keys,
+            vec!["empty".to_string(), "next".to_string()],
+            "{yaml:?}"
+        );
+        assert_eq!(
+            mapping
+                .get("empty")
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .as_string(),
+            ""
+        );
+    }
+
+    // Several in a row, and the sequence spelling.
+    let file = YamlFile::from_str("a: |\nb: |\nc: 1\n").unwrap();
+    let keys: Vec<String> = file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["a".to_string(), "b".to_string(), "c".to_string()]
+    );
+
+    let file = YamlFile::from_str("- |\n- x\n").unwrap();
+    assert_eq!(file.document().unwrap().as_sequence().unwrap().len(), 2);
+}
+
+/// An indented `- x` is still block scalar content, and a header's
+/// indentation and chomping indicators survive however they lex.
+#[test]
+fn test_block_scalar_body_and_header_forms() {
+    // An indented dash belongs to the body.
+    let yaml = "k: |\n  - x\n  - y\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("k").unwrap().as_scalar().unwrap().as_string(),
+        "- x\n- y\n"
+    );
+
+    // `|2+`, `|+2`, `|-2` and `|10` all lex differently; each is a header.
+    for yaml in [
+        "k: |2+\n  x\n",
+        "k: |+2\n  x\n",
+        "k: |-2\n  x\n",
+        "k: |10\n          Deep\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

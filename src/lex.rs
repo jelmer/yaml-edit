@@ -749,18 +749,7 @@ pub fn lex_with_validation_config<'a>(
 
                 // Read the tag name after the ! or !!
                 while let Some((idx, ch)) = chars.peek() {
-                    // A `:` is valid in a tag suffix (`!!ss:eq`, `!e:f`); it
-                    // ends the tag only where it would end a plain scalar,
-                    // i.e. when it is a mapping indicator (`!!str: value`).
-                    if *ch == ':' {
-                        if is_colon_a_mapping_indicator(input, *idx, flow_depth) {
-                            break;
-                        }
-                        end_idx = *idx + ch.len_utf8();
-                        chars.next();
-                        continue;
-                    }
-                    if ch.is_whitespace() || is_yaml_special(*ch) {
+                    if !is_tag_char(*ch) {
                         break;
                     }
                     end_idx = *idx + ch.len_utf8();
@@ -1061,6 +1050,20 @@ fn is_merge_key_at(input: &str, idx: usize) -> bool {
 }
 
 /// Check if a character has special meaning in YAML
+/// Whether `ch` may appear in a tag shorthand's suffix.
+///
+/// YAML 1.2 `ns-tag-char` is any URI character except the flow indicators
+/// `,`, `[`, `]`, `{`, `}` and the `!` that would start another tag. That
+/// admits plenty the lexer treats as special elsewhere -- `:` in `!!ss:eq`,
+/// `-` in `!!ss---` -- so a tag cannot be scanned with the general
+/// [`YAML_SPECIAL_CHARS`] set.
+fn is_tag_char(ch: char) -> bool {
+    if ch.is_whitespace() {
+        return false;
+    }
+    !matches!(ch, ',' | '[' | ']' | '{' | '}' | '!' | '#')
+}
+
 fn is_yaml_special(ch: char) -> bool {
     YAML_SPECIAL_CHARS.contains(ch)
 }

@@ -173,44 +173,57 @@ fn real_quotes_flow_delimiters_and_document_markers_stay_structural() {
 }
 
 #[test]
-fn colon_in_a_tag_suffix_stays_in_the_tag() {
-    // `!!ss:eq` is one tag; the `:` only ends it where it would end a plain
-    // scalar, i.e. followed by whitespace (`!!str: value`).
-    let yaml = "tags: !!ss:eq\n- a\nnext: x\n";
-    let file = YamlFile::from_str(yaml).unwrap();
-    assert_eq!(file.to_string(), yaml);
-    common::assert_file_cst_ok(&file);
-    let mapping = file.document().unwrap().as_mapping().unwrap();
-    let keys: Vec<String> = mapping
-        .keys()
-        .map(|k| k.as_scalar().unwrap().as_string())
-        .collect();
-    assert_eq!(keys, vec!["tags", "next"]);
-    assert_eq!(
-        mapping
-            .get("tags")
-            .unwrap()
-            .as_tagged()
-            .unwrap()
-            .tag()
-            .as_deref(),
-        Some("!!ss:eq")
-    );
+fn a_tag_suffix_keeps_its_uri_characters() {
+    // `ns-tag-char` is any URI character bar the flow indicators, so `:` and
+    // `-` belong to the tag rather than ending it.
+    for (yaml, tag) in [
+        ("tags: !!ss:eq\n- a\nnext: x\n", "!!ss:eq"),
+        ("tags: !!ss---\n- a\nnext: x\n", "!!ss---"),
+        ("tags: !e:f\n- a\nnext: x\n", "!e:f"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec!["tags", "next"], "{yaml:?}");
+        assert_eq!(
+            mapping
+                .get("tags")
+                .unwrap()
+                .as_tagged()
+                .unwrap()
+                .tag()
+                .as_deref(),
+            Some(tag),
+            "{yaml:?}"
+        );
+    }
 }
 
 #[test]
-fn a_tag_before_a_colon_still_ends_at_the_colon() {
-    // `!!str:` is where the colon *is* an indicator (whitespace follows), so
-    // the tag ends there rather than swallowing it. yaml-edit keeps the tag
-    // as a mapping key; PyYAML reads the trailing colon into the tag instead,
-    // so only the tag boundary is asserted here.
+fn a_flow_indicator_still_ends_a_tag() {
+    let yaml = "a: [!t, x]\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(tree.contains("TAG: \"!t\""), "{tree}");
+}
+
+#[test]
+fn a_colon_at_the_end_of_a_tag_belongs_to_the_tag() {
+    // `:` is an ns-tag-char in YAML 1.2, so `!!str:` is the whole tag and
+    // the value is what follows it. PyYAML reads it the same way.
     let yaml = "!!str: x\n";
     let file = YamlFile::from_str(yaml).unwrap();
     assert_eq!(file.to_string(), yaml);
     common::assert_file_cst_ok(&file);
     let tree = yaml_edit::debug::tree_to_string(file.syntax());
     assert!(!tree.contains("ERROR"), "{tree}");
-    assert!(tree.contains("TAG: \"!!str\""), "{tree}");
+    assert!(tree.contains("TAG: \"!!str:\""), "{tree}");
 }
 
 #[test]

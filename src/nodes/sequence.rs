@@ -329,6 +329,23 @@ impl Sequence {
     /// Add an item to the end of the sequence.
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
+    ///
+    /// # Performance
+    ///
+    /// Runs in time linear in the sequence's current length, so building a
+    /// sequence one push at a time is quadratic overall. The cost is rowan
+    /// rebuilding the green node for every edit, which an immutable tree has
+    /// to do; this method already avoids the avoidable part by reading only
+    /// the tail of the child list and holding no child handles across the
+    /// edit. As a rough guide, 1000 pushes take about 70ms and 8000 about
+    /// 4.5s (release build).
+    ///
+    /// For a large sequence, build it with
+    /// [`SequenceBuilder`](crate::SequenceBuilder) or parse the YAML text in
+    /// one go, rather than pushing in a loop: the builder is linear, and
+    /// assembles those 8000 entries in under 2ms.
+    /// [`insert`](Self::insert) and [`remove`](Self::remove) are likewise
+    /// linear per call, and rather more costly than `push`.
     pub fn push(&self, value: impl crate::AsYaml) {
         // A placeholder from `Sequence::new_pending_block` turns into a real
         // block sequence now that it has an item. A `[]` from the source is

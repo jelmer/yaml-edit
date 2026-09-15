@@ -154,7 +154,7 @@ fn raw_scalar_str<T: AsYaml + ?Sized>(v: &T) -> Option<String> {
 /// - Different integer formats (123, 0x7B, 0o173) normalize to same i64
 /// - Different null representations (null, ~, Null) all become "null"
 /// - Different boolean cases (true, True, TRUE) normalize to lowercase
-fn scalar_semantic_value(scalar: &Scalar) -> Option<(crate::lex::SyntaxKind, String)> {
+pub(crate) fn scalar_semantic_value(scalar: &Scalar) -> Option<(crate::lex::SyntaxKind, String)> {
     use crate::lex::SyntaxKind;
     use crate::scalar::ScalarValue;
 

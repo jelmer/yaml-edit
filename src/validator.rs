@@ -168,6 +168,26 @@ fn has_content(node: &SyntaxNode) -> bool {
 }
 
 /// Convert a rowan TextRange to a TextPosition.
+/// The zero-based column `token` starts at.
+///
+/// Walks back through preceding tokens to the last NEWLINE rather than
+/// serializing the document: this runs once per DASH, and rebuilding the whole
+/// text each time made validation quadratic in the file size.
+fn token_column(token: &crate::nodes::SyntaxToken) -> usize {
+    let mut col = 0;
+    let mut cur = token.prev_token();
+    while let Some(t) = cur {
+        let text = t.text();
+        if let Some(i) = text.rfind('\n') {
+            col += text[i + 1..].chars().count();
+            return col;
+        }
+        col += text.chars().count();
+        cur = t.prev_token();
+    }
+    col
+}
+
 /// Is this flow entry an omitted one, i.e. does its value consist solely of
 /// the zero-width implicit-null scalar the parser emits for an empty slot?
 ///
@@ -1551,13 +1571,6 @@ impl Validator {
         }
     }
 
-    /// Helper to calculate column position from text offset
-    fn get_column(&self, text: &str, offset: usize) -> usize {
-        let offset = offset.min(text.len());
-        let line_start = text[..offset].rfind('\n').map_or(0, |i| i + 1);
-        text[line_start..offset].chars().count()
-    }
-
     /// Check sequence items have consistent indentation (ZVH3)
     fn check_sequence_indentation(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         use crate::SyntaxKind;
@@ -1567,9 +1580,6 @@ impl Validator {
             return;
         }
 
-        // Get the root text for offset calculations
-        let root = find_root(node);
-        let full_text = root.text().to_string();
         let mut dash_columns: Vec<usize> = Vec::new();
 
         // Recursively collect all DASH tokens in this sequence and nested sequences
@@ -1597,9 +1607,7 @@ impl Validator {
         collect_dashes(node, &mut dashes);
 
         for token in dashes {
-            let offset: usize = token.text_range().start().into();
-            let col = self.get_column(&full_text, offset);
-            dash_columns.push(col);
+            dash_columns.push(token_column(&token));
         }
 
         // Check if all dashes are at the same column (consistent indentation)
@@ -1673,8 +1681,10 @@ impl Validator {
     /// - `null`, `~`, and empty key are all duplicates (all null)
     /// - Works with complex keys (sequences, mappings) as well
     fn check_duplicate_keys(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        use crate::nodes::{Mapping, Scalar, Sequence};
         use crate::yaml_eq;
         use crate::SyntaxKind;
+        use std::collections::HashMap;
 
         // Collect all KEY nodes with their text representation and parent entry range
         let keys: Vec<(SyntaxNode, String, rowan::TextRange)> = node
@@ -1694,56 +1704,77 @@ impl Validator {
             })
             .collect();
 
-        // Check for semantic duplicates using yaml_eq
-        // O(n²) is acceptable for typical YAML mapping sizes (usually < 100 keys)
+        // Compare semantically, but bucket scalar keys by their normalized
+        // value first so the common all-scalar mapping costs one hash per key
+        // instead of a pairwise sweep. Collection keys are rare and have no
+        // cheap normal form, so they keep the pairwise comparison.
+        let format_key = |s: &str| {
+            if s.is_empty() {
+                "\"\"".to_string()
+            } else {
+                format!("{s:?}")
+            }
+        };
+        let mut report = |first_text: &str, dup_text: &str, at: rowan::TextRange| {
+            violations.push(Violation::error_at(
+                Rule::DuplicateKeys,
+                at,
+                format!(
+                    "Duplicate key: {} (semantically equal to {})",
+                    format_key(dup_text),
+                    format_key(first_text)
+                ),
+            ));
+        };
+
+        // (normalized scalar key) -> index of the first key that produced it
+        let mut seen_scalars: HashMap<(SyntaxKind, String), usize> = HashMap::new();
+        let mut collection_keys: Vec<usize> = Vec::new();
+
         for i in 0..keys.len() {
-            for j in (i + 1)..keys.len() {
-                // Get the actual value nodes within each KEY and try to cast to AsYaml types
-                let key1_child = keys[i].0.children().next();
-                let key2_child = keys[j].0.children().next();
+            let Some(inner) = keys[i].0.children().next() else {
+                continue;
+            };
+            let normalized = Scalar::cast(inner.clone())
+                .filter(|_| inner.kind() == SyntaxKind::SCALAR)
+                .and_then(|s| crate::as_yaml::scalar_semantic_value(&s));
 
-                if let (Some(v1), Some(v2)) = (key1_child, key2_child) {
-                    // Try each possible node type that implements AsYaml
-                    use crate::nodes::{Mapping, Scalar, Sequence};
-
-                    let are_equal = match (v1.kind(), v2.kind()) {
-                        (SyntaxKind::SCALAR, SyntaxKind::SCALAR) => Scalar::cast(v1)
-                            .zip(Scalar::cast(v2))
-                            .is_some_and(|(s1, s2)| yaml_eq(&s1, &s2)),
-                        (SyntaxKind::SEQUENCE, SyntaxKind::SEQUENCE) => Sequence::cast(v1)
-                            .zip(Sequence::cast(v2))
-                            .is_some_and(|(s1, s2)| yaml_eq(&s1, &s2)),
-                        (SyntaxKind::MAPPING, SyntaxKind::MAPPING) => Mapping::cast(v1)
-                            .zip(Mapping::cast(v2))
-                            .is_some_and(|(m1, m2)| yaml_eq(&m1, &m2)),
-                        _ => false, // Different types can't be equal
-                    };
-
-                    if are_equal {
-                        let first_text = &keys[i].1;
-                        let dup_text = &keys[j].1;
-
-                        // Format the key text for display (quote empty strings)
-                        let format_key = |s: &str| {
-                            if s.is_empty() {
-                                "\"\"".to_string()
-                            } else {
-                                format!("{s:?}")
-                            }
-                        };
-
-                        violations.push(Violation::error_at(
-                            Rule::DuplicateKeys,
-                            keys[j].2,
-                            format!(
-                                "Duplicate key: {} (semantically equal to {})",
-                                format_key(dup_text),
-                                format_key(first_text)
-                            ),
-                        ));
-                        // Only report each duplicate once
-                        break;
+            match normalized {
+                Some(norm) => match seen_scalars.entry(norm) {
+                    std::collections::hash_map::Entry::Occupied(first) => {
+                        let first_idx = *first.get();
+                        report(&keys[first_idx].1, &keys[i].1, keys[i].2);
                     }
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert(i);
+                    }
+                },
+                None => {
+                    // A collection key, or a scalar with no normal form.
+                    for &j in &collection_keys {
+                        let (Some(v1), Some(v2)) =
+                            (keys[j].0.children().next(), keys[i].0.children().next())
+                        else {
+                            continue;
+                        };
+                        let are_equal = match (v1.kind(), v2.kind()) {
+                            (SyntaxKind::SCALAR, SyntaxKind::SCALAR) => Scalar::cast(v1)
+                                .zip(Scalar::cast(v2))
+                                .is_some_and(|(s1, s2)| yaml_eq(&s1, &s2)),
+                            (SyntaxKind::SEQUENCE, SyntaxKind::SEQUENCE) => Sequence::cast(v1)
+                                .zip(Sequence::cast(v2))
+                                .is_some_and(|(s1, s2)| yaml_eq(&s1, &s2)),
+                            (SyntaxKind::MAPPING, SyntaxKind::MAPPING) => Mapping::cast(v1)
+                                .zip(Mapping::cast(v2))
+                                .is_some_and(|(m1, m2)| yaml_eq(&m1, &m2)),
+                            _ => false,
+                        };
+                        if are_equal {
+                            report(&keys[j].1, &keys[i].1, keys[i].2);
+                            break;
+                        }
+                    }
+                    collection_keys.push(i);
                 }
             }
         }
@@ -1769,6 +1800,59 @@ mod tests {
 
         // Simple valid YAML should have no violations
         assert_eq!(violations.len(), 0);
+    }
+
+    #[test]
+    fn test_duplicate_key_detection_is_semantic() {
+        // Keys that differ textually but mean the same thing are duplicates;
+        // bucketing them by normalized value must not lose these.
+        for (src, expected) in [
+            ("a: 1\n\"a\": 2\n", 1),
+            ("1: a\n0x1: b\n", 1),
+            ("n: 1\nnull: 2\n~: 3\n", 1),
+            ("[1,2]: a\n[1, 2]: b\n", 1),
+            ("a: 1\nb: 2\n", 0),
+        ] {
+            let doc = Document::from_str(src).unwrap();
+            let dups = Validator::new()
+                .validate(&doc)
+                .into_iter()
+                .filter(|v| v.message.contains("Duplicate key"))
+                .count();
+            assert_eq!(dups, expected, "{src:?}");
+        }
+    }
+
+    #[test]
+    fn test_duplicate_key_detection_scales_linearly() {
+        // This check used to compare every key against every other one, which
+        // made validating a large generated mapping quadratic. Guard the
+        // shape rather than a wall-clock number: 4x the keys should cost far
+        // less than the 16x a pairwise sweep would.
+        let build = |n: usize| {
+            let mut s = String::new();
+            for i in 0..n {
+                s.push_str(&format!("key{i}: value{i}\n"));
+            }
+            Document::from_str(&s).unwrap()
+        };
+        let time = |doc: &Document| {
+            let start = std::time::Instant::now();
+            let _ = Validator::new().validate(doc);
+            start.elapsed()
+        };
+
+        let small = build(500);
+        let large = build(2000);
+        // Warm up so the first parse does not skew the comparison.
+        let _ = time(&small);
+        let small_t = time(&small);
+        let large_t = time(&large);
+
+        assert!(
+            large_t < small_t * 12,
+            "validation looks superlinear: 500 keys took {small_t:?}, 2000 took {large_t:?}"
+        );
     }
 
     #[test]

@@ -777,8 +777,16 @@ pub fn lex_with_validation_config<'a>(
             // fall through to the catch-all arm, which already keeps flow
             // indicators inside a block scalar.
             ',' if flow_depth > 0 => tokens.push((COMMA, &input[token_start..start_idx + 1])),
-            '|' => tokens.push((PIPE, &input[token_start..start_idx + 1])),
-            '>' => tokens.push((GREATER, &input[token_start..start_idx + 1])),
+            // A block-scalar header, like the node properties below, only at
+            // the start of a node: `a|b` is the scalar `a|b`, not a header
+            // inside it. `>` reaches this arm only at a node start already,
+            // because the catch-all treats it as scalar content.
+            '|' if node_property_can_start(&tokens) => {
+                tokens.push((PIPE, &input[token_start..start_idx + 1]))
+            }
+            '>' if node_property_can_start(&tokens) => {
+                tokens.push((GREATER, &input[token_start..start_idx + 1]))
+            }
             // `<<` is a merge key only when the key is exactly `<<`, i.e. the
             // next character ends the token. Anything else starting with `<`
             // (`<<foo`, a bare `<`) is a plain scalar and falls through to the
@@ -1094,7 +1102,21 @@ pub fn lex_with_validation_config<'a>(
                     // `%` is an indicator only at the start of a line, where
                     // the main loop takes it as a directive; inside a scalar it
                     // is ordinary content (`a: b%c`).
-                    if is_yaml_special_except(next_ch, "-:#&*!?'\">%") {
+                    // `|` and `>` open a block scalar only at a node start, so
+                    // mid-scalar they are content too (`a|b`, `a>b`). A `+` is
+                    // an indicator only as the chomping suffix of such a
+                    // header, where `|2+` must keep it as its own token;
+                    // anywhere else it is content (`a+b`).
+                    let plus_is_chomping = next_ch == '+'
+                        && input[current_line_start..idx]
+                            .bytes()
+                            .rev()
+                            .find(|b| !b.is_ascii_digit())
+                            .is_some_and(|b| b == b'|' || b == b'>');
+                    if plus_is_chomping {
+                        break;
+                    }
+                    if is_yaml_special_except(next_ch, "-:#&*!?'\"|>%+") {
                         // In block context, flow indicators do NOT break scalars
                         if flow_depth == 0 && matches!(next_ch, '[' | ']' | '{' | '}' | ',') {
                             // do nothing, let it be part of the scalar
@@ -1822,7 +1844,9 @@ double: "quoted""#;
         assert_eq!(count(SyntaxKind::PIPE), 1); // "|"
         assert_eq!(count(SyntaxKind::INT), 1); // "2"
         assert_eq!(count(SyntaxKind::PLUS), 1); // "+"
-        assert_eq!(count(SyntaxKind::GREATER), 1); // ">"
+                                                // The `>` here sits inside the block scalar's content, not at a
+                                                // node start, so it is scalar text rather than a folded header.
+        assert_eq!(count(SyntaxKind::GREATER), 0);
         assert_eq!(count(SyntaxKind::NEWLINE), 2); // after "|2+" line and after first content line
         assert_eq!(count(SyntaxKind::INDENT), 2); // "  " before each content line
                                                   // Multiple STRING tokens: "key", content words, and the hyphen

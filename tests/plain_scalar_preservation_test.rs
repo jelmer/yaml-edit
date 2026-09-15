@@ -724,3 +724,50 @@ fn test_bare_plus_is_a_mapping_key() {
         "v"
     );
 }
+
+/// `|` and `>` open a block scalar only at the start of a node. Inside a
+/// plain scalar they are ordinary content, so `a|b: v` is keyed `a|b`, as
+/// both saphyr and PyYAML read it. Lexing the `|` as a header split the key
+/// and stranded the following entry in an ERROR node with no parse error.
+#[test]
+fn test_block_scalar_indicator_mid_scalar_is_plain_content() {
+    for (yaml, key) in [
+        ("a|b: v\nc: d\n", "a|b"),
+        ("a>b: v\nc: d\n", "a>b"),
+        ("a+b: v\nc: d\n", "a+b"),
+        ("a|: v\nc: d\n", "a|"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string(), "c".to_string()], "{yaml:?}");
+    }
+}
+
+/// A `|` or `>` that does start a node still opens a block scalar, and the
+/// header keeps its explicit indent and chomping indicators.
+#[test]
+fn test_block_scalar_headers_still_lex() {
+    for yaml in [
+        "k: |\n  body\n",
+        "k: >\n  folded\n",
+        "k: |-\n  x\n",
+        "k: |+\n  x\n",
+        "k: |2\n   x\n",
+        "s:\n  - |\n    b\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

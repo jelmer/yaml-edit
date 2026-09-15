@@ -986,3 +986,59 @@ fn test_single_sign_keeps_its_meaning() {
     assert_eq!(file.to_string(), yaml);
     common::assert_file_cst_ok(&file);
 }
+
+/// A scalar that starts with `:` keeps flow indicators as content outside a
+/// flow collection, like any other plain scalar. `- :m{` is the single item
+/// `:m{`, as both saphyr and PyYAML read it.
+///
+/// The `:` arm broke at every YAML-special character, so the `{` ended the
+/// scalar and was stranded in an ERROR node with no parse error, while the
+/// identically shaped `- x{` lexed as one token.
+#[test]
+fn test_colon_prefixed_scalar_keeps_flow_indicators() {
+    for (yaml, value) in [
+        ("- :m{\n", ":m{"),
+        ("- :m}x\n", ":m}x"),
+        ("- :m,n\n", ":m,n"),
+        ("- :m[1]\n", ":m[1]"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let seq = file.document().unwrap().as_sequence().unwrap();
+        assert_eq!(seq.len(), 1, "{yaml:?}");
+        assert_eq!(
+            seq.get(0).unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+
+    // The same in a value position.
+    let file = YamlFile::from_str("a: :m{\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        ":m{"
+    );
+}
+
+/// Inside a flow collection those indicators still delimit, so a
+/// colon-prefixed scalar ends at a comma or bracket.
+#[test]
+fn test_colon_prefixed_scalar_still_ends_in_flow_context() {
+    let yaml = "a: [::v, ::w]\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    common::assert_file_cst_ok(&file);
+
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let seq = mapping.get("a").unwrap();
+    let seq = seq.as_sequence().unwrap();
+    assert_eq!(seq.len(), 2);
+    assert_eq!(seq.get(0).unwrap().as_scalar().unwrap().as_string(), "::v");
+    assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().as_string(), "::w");
+}

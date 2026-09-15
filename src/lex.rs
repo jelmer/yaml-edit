@@ -749,7 +749,13 @@ pub fn lex_with_validation_config<'a>(
                         if next_ch == ':' && is_colon_a_mapping_indicator(input, idx, flow_depth) {
                             break;
                         }
-                        if next_ch != ':' && is_yaml_special_except(next_ch, ":") {
+                        // Outside a flow collection the flow indicators are
+                        // ordinary scalar content, as the catch-all arm
+                        // already has it: `- :m{` is the single scalar `:m{`.
+                        if next_ch != ':'
+                            && is_yaml_special_except(next_ch, ":")
+                            && !(flow_depth == 0 && matches!(next_ch, '[' | ']' | '{' | '}' | ','))
+                        {
                             break;
                         }
                         end_idx = idx + next_ch.len_utf8();

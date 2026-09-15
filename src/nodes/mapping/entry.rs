@@ -104,16 +104,22 @@ impl MappingEntry {
         builder.start_node(SyntaxKind::KEY.into());
         let key_has_newline = key.build_content(&mut builder, 0, false);
         debug_assert!(!key_has_newline, "Keys should not end with newlines");
-        if use_explicit_key {
-            // The `:` goes on its own line at the entry's own column. The
-            // parser keeps that newline and indent inside the KEY node, so
-            // match it here.
+        // The `:` goes on its own line at the entry's own column. Where that
+        // column is indented, the parser consumes the line break and the
+        // indent together as a multi-line key continuation and keeps both
+        // inside KEY; at column 0 there is no indent to consume, so the
+        // break stays a sibling of KEY. Match whichever shape applies, or
+        // rename_key -- which replaces the whole KEY node -- drops the break
+        // and collapses the entry onto one line.
+        if use_explicit_key && key_indent > 0 {
             builder.token(SyntaxKind::NEWLINE.into(), "\n");
-            if key_indent > 0 {
-                builder.token(SyntaxKind::INDENT.into(), &" ".repeat(key_indent));
-            }
+            builder.token(SyntaxKind::INDENT.into(), &" ".repeat(key_indent));
         }
         builder.finish_node();
+
+        if use_explicit_key && key_indent == 0 {
+            builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        }
 
         builder.token(SyntaxKind::COLON.into(), ":");
 

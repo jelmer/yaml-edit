@@ -124,14 +124,24 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    // saphyr 0.0.12 hangs forever on a reserved directive -- a `%` at the
-    // start of the input followed by a name other than YAML or TAG, with
-    // nothing after it (`%FOO`). Reported upstream; skip so the oracle
-    // cannot wedge the run. yaml-edit parses these in microseconds.
-    if input.starts_with('%')
-        && !input.starts_with("%YAML")
-        && !input.starts_with("%TAG")
-    {
+    // saphyr 0.0.12 hangs forever on a reserved directive: a `%` starting
+    // any line, followed by a name other than YAML or TAG (`%FOO`, `%!!`).
+    // It need not be the first line -- `%TAG ! tag:e\n%!! v` wedges it too.
+    // Reported upstream; skip so the oracle cannot hang the run. yaml-edit
+    // parses these in microseconds.
+    // The name has to be delimited to count as YAML or TAG: `%TAG!!x` is a
+    // reserved directive named `TAG!!x`, and hangs saphyr just as `%FOO`
+    // does.
+    if input.lines().any(|line| {
+        let Some(rest) = line.strip_prefix('%') else {
+            return false;
+        };
+        let name = rest
+            .split(|c: char| c.is_whitespace())
+            .next()
+            .unwrap_or(rest);
+        name != "YAML" && name != "TAG"
+    }) {
         return;
     }
 

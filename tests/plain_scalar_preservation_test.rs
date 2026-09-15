@@ -883,3 +883,49 @@ fn test_question_mark_with_a_space_still_opens_an_explicit_key() {
         "value"
     );
 }
+
+/// A quote no longer opens a quoted scalar once a plain one has begun, so
+/// `+'a': 1` is keyed `+'a'`, as PyYAML reads it. The `+` arm did not count
+/// a quote as starting a scalar body, so it emitted a bare PLUS and the
+/// quoted run became a scalar of its own, stranding the `: 1` after it.
+#[test]
+fn test_plus_before_a_quote_stays_scalar_content() {
+    for (yaml, key) in [
+        ("+'a': 1\n", "+'a'"),
+        ("+\"a\": 1\n", "+\"a\""),
+        ("+'a' : 1\n", "+'a'"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string()], "{yaml:?}");
+    }
+}
+
+/// A quote that really does start a node still opens a quoted scalar.
+#[test]
+fn test_quote_at_a_node_start_still_quotes() {
+    let file = YamlFile::from_str("'quoted': v\na: 'q'\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping
+            .get("quoted")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "v"
+    );
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "q"
+    );
+}

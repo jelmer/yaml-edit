@@ -587,7 +587,9 @@ pub fn lex_with_validation_config<'a>(
                 chars.next(); // consume second <
                 tokens.push((MERGE_KEY, &input[token_start..start_idx + 2]));
             }
-            '&' => {
+            // Like tags, only at the start of a node: `a: x &anc` is the
+            // scalar `x &anc`, not an anchored value.
+            '&' if node_property_can_start(&tokens) => {
                 // Check if this is an anchor definition
                 let name = read_scalar_from(&mut chars, input, start_idx + 1, "");
                 if !name.is_empty() {
@@ -596,7 +598,7 @@ pub fn lex_with_validation_config<'a>(
                     tokens.push((AMPERSAND, &input[token_start..start_idx + 1]));
                 }
             }
-            '*' => {
+            '*' if node_property_can_start(&tokens) => {
                 // Check if this is an alias reference
                 let name = read_scalar_from(&mut chars, input, start_idx + 1, "");
                 if !name.is_empty() {
@@ -737,7 +739,11 @@ pub fn lex_with_validation_config<'a>(
             }
 
             // Tags
-            '!' => {
+            //
+            // Only at the start of a node: mid-scalar a `!` is ordinary
+            // content (`a: x !!b` is the scalar `x !!b`), which the
+            // catch-all arm below reads with plain-scalar rules.
+            '!' if node_property_can_start(&tokens) => {
                 // Handle tag indicators - both ! and !!
                 let mut end_idx = start_idx + 1;
 
@@ -1057,6 +1063,41 @@ fn is_merge_key_at(input: &str, idx: usize) -> bool {
 /// admits plenty the lexer treats as special elsewhere -- `:` in `!!ss:eq`,
 /// `-` in `!!ss---` -- so a tag cannot be scanned with the general
 /// [`YAML_SPECIAL_CHARS`] set.
+/// Whether a node property (`!tag`, `&anchor`, `*alias`) may start here.
+///
+/// Per YAML 1.2 §7.1 these apply to the start of a node. Once a plain
+/// scalar has begun on the line, a `!` or `&` is ordinary content, so
+/// `a: x !!b` is the scalar `x !!b` rather than a tagged node. A preceding
+/// space is not enough to start a new node: what matters is whether the
+/// last token was scalar content.
+fn node_property_can_start(tokens: &[(SyntaxKind, &str)]) -> bool {
+    for (kind, _) in tokens.iter().rev() {
+        match kind {
+            // Skip the layout between the property and what precedes it.
+            SyntaxKind::WHITESPACE | SyntaxKind::INDENT => continue,
+            // A node starts after these.
+            SyntaxKind::NEWLINE
+            | SyntaxKind::COLON
+            | SyntaxKind::DASH
+            | SyntaxKind::QUESTION
+            | SyntaxKind::COMMA
+            | SyntaxKind::LEFT_BRACKET
+            | SyntaxKind::LEFT_BRACE
+            | SyntaxKind::DOC_START
+            | SyntaxKind::TAG
+            | SyntaxKind::ANCHOR
+            // A bare `&` or `*` is punctuation rather than content, so a
+            // property may still follow it.
+            | SyntaxKind::AMPERSAND
+            | SyntaxKind::ASTERISK => return true,
+            // Anything else is content the property would sit inside.
+            _ => return false,
+        }
+    }
+    // Nothing before it: the very start of the input is a node start.
+    true
+}
+
 fn is_tag_char(ch: char) -> bool {
     if ch.is_whitespace() {
         return false;
@@ -1400,7 +1441,12 @@ double: "quoted""#;
         // only apply when a scalar starts with them (followed by an
         // identifier). Mid-scalar they are ordinary content and must
         // not create phantom ANCHOR / REFERENCE / TAG tokens.
-        for input in ["k: 3.1&1", "k: a&b", "k: a*b", "k: a!b", "k: a?b"] {
+        // Including space-separated: a preceding space does not start a new
+        // node, so `k: a !b` is still one plain scalar.
+        for input in [
+            "k: 3.1&1", "k: a&b", "k: a*b", "k: a!b", "k: a?b", "k: a !b", "k: a !!b", "k: a &b",
+            "k: a *b", "- a !b",
+        ] {
             let tokens = lex(input);
             let bad: Vec<_> = tokens
                 .iter()

@@ -192,6 +192,7 @@ impl YamlAccept for Sequence {
 }
 
 /// A visitor that collects all scalar values from a YAML document
+#[derive(Debug, Clone)]
 pub struct ScalarCollector {
     /// The collected scalar values
     pub scalars: Vec<String>,
@@ -220,6 +221,7 @@ impl YamlVisitor for ScalarCollector {
 }
 
 /// A visitor that counts different types of nodes
+#[derive(Debug, Clone)]
 pub struct NodeCounter {
     /// Number of document nodes encountered
     pub document_count: usize,

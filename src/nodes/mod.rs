@@ -165,7 +165,12 @@ impl rowan::Language for Lang {
     type Kind = SyntaxKind;
 
     fn kind_from_raw(raw: rowan::SyntaxKind) -> Self::Kind {
-        debug_assert!(
+        // SAFETY: SyntaxKind is #[repr(u16)] with contiguous discriminants
+        // from ROOT = 0 through EOF, so every value in that range is a valid
+        // variant. The bound is checked in every build, not just debug: a
+        // stray value here would otherwise be undefined behaviour rather
+        // than a panic.
+        assert!(
             raw.0 <= SyntaxKind::EOF as u16,
             "raw SyntaxKind value {} is out of range (max {})",
             raw.0,

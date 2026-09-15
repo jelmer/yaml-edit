@@ -255,6 +255,22 @@ pub struct CustomTagRegistry {
     handlers: Arc<RwLock<HashMap<String, Arc<dyn CustomTagHandler>>>>,
 }
 
+impl std::fmt::Debug for CustomTagRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Handlers are trait objects with no Debug bound; list the tags they
+        // are registered under instead.
+        let mut dbg = f.debug_struct("CustomTagRegistry");
+        match self.handlers.read() {
+            Ok(handlers) => {
+                let mut tags: Vec<&str> = handlers.keys().map(String::as_str).collect();
+                tags.sort_unstable();
+                dbg.field("tags", &tags).finish()
+            }
+            Err(_) => dbg.finish_non_exhaustive(),
+        }
+    }
+}
+
 impl CustomTagRegistry {
     /// Create a new empty tag registry
     pub fn new() -> Self {

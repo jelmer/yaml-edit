@@ -124,6 +124,17 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
+    // saphyr 0.0.12 hangs forever on a reserved directive -- a `%` at the
+    // start of the input followed by a name other than YAML or TAG, with
+    // nothing after it (`%FOO`). Reported upstream; skip so the oracle
+    // cannot wedge the run. yaml-edit parses these in microseconds.
+    if input.starts_with('%')
+        && !input.starts_with("%YAML")
+        && !input.starts_with("%TAG")
+    {
+        return;
+    }
+
     // Only inputs a conformant parser accepts can hold yaml-edit to this
     // standard. saphyr rejecting the input means an ERROR node is fair.
     if Yaml::load_from_str(input).is_err() {

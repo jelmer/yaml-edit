@@ -151,6 +151,21 @@ fn find_root(node: &SyntaxNode) -> SyntaxNode {
         .unwrap_or_else(|| node.clone())
 }
 
+/// Does this subtree hold real YAML content, as opposed to only whitespace,
+/// newlines and document markers?
+fn has_content(node: &SyntaxNode) -> bool {
+    node.descendants().any(|n| {
+        matches!(
+            n.kind(),
+            crate::SyntaxKind::MAPPING
+                | crate::SyntaxKind::SEQUENCE
+                | crate::SyntaxKind::SCALAR
+                | crate::SyntaxKind::STRING
+                | crate::SyntaxKind::TAGGED_NODE
+        )
+    })
+}
+
 /// Convert a rowan TextRange to a TextPosition.
 fn range_to_text_position(range: rowan::TextRange) -> crate::TextPosition {
     crate::TextPosition::new(u32::from(range.start()), u32::from(range.end()))
@@ -355,16 +370,7 @@ impl Validator {
 
         // Check if the document has any actual content
         // A document with only whitespace, newlines, or document markers is considered empty
-        let has_content = doc_node.descendants().any(|n| {
-            matches!(
-                n.kind(),
-                crate::SyntaxKind::MAPPING
-                    | crate::SyntaxKind::SEQUENCE
-                    | crate::SyntaxKind::SCALAR
-                    | crate::SyntaxKind::STRING
-                    | crate::SyntaxKind::TAGGED_NODE
-            )
-        });
+        let has_content = has_content(doc_node);
 
         if !has_content {
             violations.push(Violation::error(
@@ -392,23 +398,9 @@ impl Validator {
         }
 
         // Check if there's a DOCUMENT child with actual content
-        let has_document_with_content = check_node.children().any(|child| {
-            if child.kind() == SyntaxKind::DOCUMENT {
-                // Check if this document has content
-                child.descendants().any(|n| {
-                    matches!(
-                        n.kind(),
-                        SyntaxKind::MAPPING
-                            | SyntaxKind::SEQUENCE
-                            | SyntaxKind::SCALAR
-                            | SyntaxKind::STRING
-                            | SyntaxKind::TAGGED_NODE
-                    )
-                })
-            } else {
-                false
-            }
-        });
+        let has_document_with_content = check_node
+            .children()
+            .any(|child| child.kind() == SyntaxKind::DOCUMENT && has_content(&child));
 
         if !has_document_with_content {
             violations.push(Violation::error(
@@ -433,32 +425,10 @@ impl Validator {
         for child in check_node.children() {
             match child.kind() {
                 SyntaxKind::DOCUMENT => {
-                    // Check if this document has content
-                    let has_content = child.descendants().any(|n| {
-                        matches!(
-                            n.kind(),
-                            SyntaxKind::MAPPING
-                                | SyntaxKind::SEQUENCE
-                                | SyntaxKind::SCALAR
-                                | SyntaxKind::STRING
-                                | SyntaxKind::TAGGED_NODE
-                        )
-                    });
-
-                    // Check if this document has a DOC_END marker
-                    let has_doc_end = child
-                        .children_with_tokens()
-                        .any(|t| t.kind() == SyntaxKind::DOC_END);
-
-                    if has_content {
+                    // Whether this document carries a DOC_END is rechecked from
+                    // the DIRECTIVE arm below, by walking back to this sibling.
+                    if has_content(&child) {
                         seen_document_with_content = true;
-
-                        // If this document doesn't end with ..., mark that we need one
-                        // before any subsequent directives
-                        if !has_doc_end {
-                            // This document has no end marker - any following directive is invalid
-                            // (we'll check this when we encounter the directive)
-                        }
                     }
                 }
                 SyntaxKind::DIRECTIVE if seen_document_with_content => {

@@ -1379,3 +1379,24 @@ fn test_blank_line_does_not_set_the_block_scalar_base() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// A `...` may be followed by a fresh document with no `---` of its own.
+///
+/// `a\n...\nb: 1\n` is two documents, as saphyr reads it. The content after
+/// the marker was swept into an ERROR node instead, so the second document
+/// was lost while from_str still reported success (suite cases 7Z25, M7A3).
+#[test]
+fn test_document_after_an_end_marker_is_parsed() {
+    for (yaml, docs) in [
+        ("a\n...\nb: 1\n", 2),
+        ("--- a\n...\nkey: value\n", 2),
+        ("--- a\n...\n--- b\n", 2),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(file.documents().count(), docs, "{yaml:?}");
+    }
+}

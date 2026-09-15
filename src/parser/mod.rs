@@ -207,10 +207,21 @@ impl Parser {
                 self.builder.finish_node();
             }
 
-            // A `...` closes the document before it; emit it and continue.
+            // A `...` closes the document before it. What follows may be a
+            // fresh document with no `---` of its own (`a\n...\nb: 1\n` is
+            // two documents), so parse one rather than sweeping it away.
             if self.current() == Some(SyntaxKind::DOC_END) {
                 self.bump();
                 self.skip_ws_and_newlines();
+                if self.current().is_some()
+                    && self.current() != Some(SyntaxKind::EOF)
+                    && self.current() != Some(SyntaxKind::DOC_START)
+                    && self.current() != Some(SyntaxKind::DIRECTIVE)
+                    && self.current() != Some(SyntaxKind::DOC_END)
+                {
+                    self.parse_document();
+                    self.skip_ws_and_newlines();
+                }
                 continue;
             }
 

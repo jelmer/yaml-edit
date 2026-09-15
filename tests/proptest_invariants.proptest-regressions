@@ -31,3 +31,5 @@ cc c31030eb28c7baeeee15304bd73214c297b548f46b32abd8145dc27bb90f68e3 # shrinks to
 : 1
 ", ops = [SetInt("u", 0), Rename("u", "a")]
 cc 47a845ff6271ba022062a907b1505296e794f1b9e4134ac7a06b2f6bc51305b6 # shrinks to seed = "? a\n: 1\n? b\n: 2\n", ops = [MoveAfter("a", "a0", "")]
+cc 0395b75370de10a19c8002debdfd685102a7d7093499f1bbc9465c5e1c203044 # shrinks to seed = "a: &a\n  inner: &i\n    deep: 1\nm:\n  <<: *a\n  other: *i\n", ops = [SetInt("a", 0)]
+cc a41e342d252605977976fe9eba54365ef71423a921f27770f8cfeb5f1cccc4a8 # shrinks to seed = "a: &a\n  x: 1\nm:\n  <<: *a\n  z: 3\n", ops = [SetPath("a[0]", "")]

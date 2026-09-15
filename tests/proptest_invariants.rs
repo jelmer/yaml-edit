@@ -187,6 +187,125 @@ fn seed_strat() -> impl Strategy<Value = &'static str> {
     ]
 }
 
+/// A mapping key normalized for comparison.
+///
+/// The two paths disagree on whether a quoted key keeps its quotes
+/// (`get_resolved` builds its map with them, `MergedMapping` decodes them),
+/// which is a formatting difference, not a resolution one. Strip the quotes
+/// so this property stays about which keys are reachable.
+fn normalized_key(text: &str) -> String {
+    let t = text.trim();
+    for q in ['\'', '"'] {
+        if t.len() >= 2 && t.starts_with(q) && t.ends_with(q) {
+            return t[1..t.len() - 1].to_string();
+        }
+    }
+    t.to_string()
+}
+
+/// Assert `MergedMapping` and `get_resolved` agree for every top-level key
+/// whose value is a mapping.
+///
+/// Compares the full merged key set both ways, so a key that only one path
+/// finds -- or invents -- fails regardless of which direction it went.
+///
+/// Keys are compared by their decoded scalar text: `'0'` and `0` name the
+/// same key, and the two paths need not agree on how it was quoted.
+fn check_resolution_agrees(doc: &Document, context: &str) -> Result<(), TestCaseError> {
+    use yaml_edit::{DocumentResolvedExt, MappingMergedExt};
+
+    let Some(root) = doc.as_mapping() else {
+        return Ok(());
+    };
+    let registry = doc.build_anchor_registry();
+
+    for key in root.keys() {
+        let key_text = key.to_string();
+        let Some(value) = root.get(key_text.as_str()) else {
+            continue;
+        };
+        let Some(mapping) = value.as_mapping() else {
+            continue;
+        };
+
+        let mut view_keys: Vec<String> = mapping
+            .merged(&registry)
+            .keys()
+            .map(|k| normalized_key(&k.to_string()))
+            .collect();
+        view_keys.sort();
+        view_keys.dedup();
+
+        // get_resolved works from the document root by key.
+        let Some(resolved) = doc.get_resolved(key_text.as_str()) else {
+            // MergedMapping always yields a view; if it found keys while
+            // get_resolved found no value at all, they disagree.
+            if view_keys.is_empty() {
+                continue;
+            }
+            return Err(TestCaseError::fail(format!(
+                "after {context}: get_resolved({key_text:?}) returned None but \
+                 MergedMapping sees {view_keys:?}\ntext: {:?}",
+                doc.to_string()
+            )));
+        };
+        let Some(resolved_map) = resolved.as_mapping() else {
+            continue;
+        };
+        let mut resolved_keys: Vec<String> = resolved_map
+            .keys()
+            .map(|k| normalized_key(k))
+            .filter(|k| k != "<<")
+            .collect();
+        resolved_keys.sort();
+        resolved_keys.dedup();
+
+        if view_keys != resolved_keys {
+            return Err(TestCaseError::fail(format!(
+                "after {context}: the two resolution paths disagree on {key_text:?}\n  \
+                 MergedMapping: {view_keys:?}\n  get_resolved:  {resolved_keys:?}\ntext: {:?}",
+                doc.to_string()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Seeds built around anchors, aliases and merge keys.
+///
+/// These drive [`anchor_resolution_paths_agree`]: every shape here has at
+/// least one anchor, alias or `<<` so the resolution code actually runs.
+/// `<<: *a` and `<<: [*a, *b]` reach the merge code as an ALIAS node and a
+/// sequence of them, which is the distinction a Scalar-only match missed.
+fn anchor_seed_strat() -> impl Strategy<Value = &'static str> {
+    prop_oneof![
+        // Single-alias merge.
+        Just("a: &a\n  x: 1\nm:\n  <<: *a\n  z: 3\n"),
+        Just("a: &a\n  x: 1\nm:\n  <<: *a\n"),
+        // Sequence-of-aliases merge, including override order.
+        Just("a: &a\n  x: 1\nb: &b\n  y: 2\nm:\n  <<: [*a, *b]\n  z: 3\n"),
+        Just("a: &a\n  x: 1\nb: &b\n  x: 2\nm:\n  <<: [*a, *b]\n"),
+        Just("a: &a\n  x: 1\nb: &b\n  x: 2\nm:\n  <<: [*b, *a]\n"),
+        // A direct key must win over a merged one.
+        Just("a: &a\n  x: 1\nm:\n  <<: *a\n  x: override\n"),
+        // Flow-style merge sources.
+        Just("a: &a {x: 1}\nm:\n  <<: *a\n  z: 3\n"),
+        Just("a: &a {x: 1}\nb: &b {y: 2}\nm: {<<: [*a, *b], z: 3}\n"),
+        // Plain aliases with no merge key.
+        Just("first: &ref value\nsecond: *ref\n"),
+        Just("a: &a\n  x: 1\nm: *a\n"),
+        // Nested anchors.
+        Just("a: &a\n  inner: &i\n    deep: 1\nm:\n  <<: *a\n  other: *i\n"),
+        // A dangling alias must not panic or invent keys.
+        Just("m:\n  <<: *missing\n  z: 3\n"),
+        Just("m:\n  <<: [*missing, *alsomissing]\n  z: 3\n"),
+        // Merge chains: the source itself merges from another anchor.
+        Just("a: &a\n  x: 1\nb: &b\n  <<: *a\n  y: 2\nm:\n  <<: *b\n  z: 3\n"),
+        // An empty merge source.
+        Just("a: &a {}\nm:\n  <<: *a\n  z: 3\n"),
+    ]
+}
+
 fn apply(doc: &Document, op: &Op) {
     let Some(mapping) = doc.as_mapping() else {
         return;
@@ -420,6 +539,31 @@ proptest! {
         max_shrink_iters: 1024,
         ..ProptestConfig::default()
     })]
+
+    /// The two ways to read through anchors must give the same answer.
+    ///
+    /// `MergedMapping` walks the CST on demand; `get_resolved` builds a
+    /// BTreeMap up front. They are separate implementations of the same
+    /// semantics, so any document where they disagree is a bug in one of
+    /// them -- that is how `<<: [*a, *b]` was found silently dropping every
+    /// inherited key.
+    #[test]
+    fn anchor_resolution_paths_agree(
+        seed in anchor_seed_strat(),
+        ops in prop::collection::vec(op_strat(), 0..4),
+    ) {
+        let doc = Document::from_str(seed).unwrap();
+        check(&doc, "parse")?;
+        check_resolution_agrees(&doc, "parse")?;
+
+        // Mutating the document must not make the two paths diverge either.
+        for (i, op) in ops.iter().enumerate() {
+            apply(&doc, op);
+            let context = format!("op[{i}] = {op:?}");
+            check(&doc, &context)?;
+            check_resolution_agrees(&doc, &context)?;
+        }
+    }
 
     #[test]
     fn seeded_document_mutations_preserve_invariants(

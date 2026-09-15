@@ -324,13 +324,25 @@ fn apply_merge_keys(
         if key_str == "<<" {
             continue;
         }
-        // Convert YamlNode back to YamlValue for storage
-        if let Some(yaml_value) = YamlValue::cast(value.syntax().clone()) {
+        if let Some(yaml_value) = resolved_value(value, registry) {
             merged_pairs.insert(key_str, yaml_value);
         }
     }
 
     merged_pairs
+}
+
+/// Turn a mapping value into a [`YamlValue`] for the resolved map.
+///
+/// An alias is followed to the node it names. One that resolves to nothing
+/// (the anchor was edited away, say) is kept as its literal `*name` text
+/// rather than dropped, so the key still appears in the result.
+fn resolved_value(value: crate::as_yaml::YamlNode, registry: &AnchorRegistry) -> Option<YamlValue> {
+    let resolved = resolve_alias_node(value, registry);
+    if let crate::as_yaml::YamlNode::Alias(alias) = &resolved {
+        return Some(YamlValue::Scalar(crate::ScalarValue::string(alias.value())));
+    }
+    YamlValue::cast(resolved.syntax().clone())
 }
 
 /// The anchor a merge-key operand refers to.
@@ -362,8 +374,7 @@ fn merge_from_alias(
             let Some(k_str) = node_as_string(&src_key) else {
                 continue;
             };
-            // Convert YamlNode back to YamlValue for storage; insert or override
-            if let Some(yaml_value) = YamlValue::cast(src_value.syntax().clone()) {
+            if let Some(yaml_value) = resolved_value(src_value, registry) {
                 merged_pairs.insert(k_str, yaml_value);
             }
         }

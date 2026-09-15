@@ -1081,7 +1081,33 @@ impl Mapping {
             .last_token()
             .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
 
+        // In a block mapping every entry but the first is preceded by an
+        // INDENT token that puts it at the right column; the first
+        // entry's indent sits outside, on the parent VALUE. That token
+        // belongs to the entry, so it goes with it -- otherwise it
+        // orphans onto the following entry, over-indenting it, or is
+        // left dangling as trailing whitespace when the entry was last.
+        let indent_before = i.checked_sub(1).and_then(|p| {
+            children[p]
+                .as_token()
+                .filter(|t| t.kind() == SyntaxKind::INDENT)
+                .cloned()
+        });
+
         self.0.splice_children(i..(i + 1), vec![]);
+        // Removing the first entry promotes the next one, but the parent
+        // VALUE already supplies its indent, so the INDENT now leading
+        // this mapping would double it. Drop whichever applies.
+        let orphaned_indent = indent_before.or_else(|| {
+            self.0
+                .children_with_tokens()
+                .next()
+                .and_then(|c| c.into_token())
+                .filter(|t| t.kind() == SyntaxKind::INDENT)
+        });
+        if let Some(indent) = orphaned_indent {
+            indent.detach();
+        }
 
         // Nested mapping drained by remove: collapse to `key: {}` so
         // `set_path("a.b.c", v) + remove_path(...)` doesn't leave a

@@ -1118,3 +1118,23 @@ fn test_anchor_on_a_continuation_line_is_scalar_content() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// A bare `&` or `*` on a continuation line is scalar content too. With no
+/// name after it the lexer emits AMPERSAND or ASTERISK rather than an
+/// anchor or alias, so counting only ANCHOR left `a\n&\n` stranding the
+/// `&` in an ERROR node with no parse error.
+#[test]
+fn test_bare_property_punctuation_continues_a_scalar() {
+    // A blank line between the two folds to a line break, not a space.
+    for (yaml, value) in [("a\n&\n", "a &"), ("a\n*\n", "a *"), (" a\n\n &\n", "a\n&")] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}

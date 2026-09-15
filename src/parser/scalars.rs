@@ -880,6 +880,10 @@ impl Parser {
                     | SyntaxKind::UNTERMINATED_STRING
                     | SyntaxKind::TAG
                     | SyntaxKind::ANCHOR
+                    // A bare `&` or `*` with no name is punctuation the
+                    // lexer could not make a property of, so it is content.
+                    | SyntaxKind::AMPERSAND
+                    | SyntaxKind::ASTERISK
                     | SyntaxKind::PIPE
                     | SyntaxKind::GREATER
             ) || (*kind == SyntaxKind::QUESTION

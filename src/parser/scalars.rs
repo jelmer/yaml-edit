@@ -290,11 +290,25 @@ impl Parser {
     }
 
     pub(super) fn parse_tagged_value(&mut self, base_indent: usize) {
+        self.parse_tagged_value_inner(base_indent, false)
+    }
+
+    /// As `parse_tagged_value`, for a tag in the value position of a block
+    /// mapping entry.
+    ///
+    /// A block mapping cannot be an indentless value, so a `!!set` whose
+    /// entries sit at the key's own column annotates an implicit null and
+    /// those entries stay siblings of the key.
+    pub(super) fn parse_tagged_value_as_mapping_value(&mut self, base_indent: usize) {
+        self.parse_tagged_value_inner(base_indent, true)
+    }
+
+    fn parse_tagged_value_inner(&mut self, base_indent: usize, as_mapping_value: bool) {
         // Peek at the tag to determine what kind of collection to parse
         let tag_text = self.peek_tag_text();
 
         match tag_text {
-            Some("!!set") => self.parse_tagged_set(),
+            Some("!!set") => self.parse_tagged_set(base_indent, as_mapping_value),
             Some("!!omap") => self.parse_tagged_omap(),
             Some("!!pairs") => self.parse_tagged_pairs(),
             _ => {
@@ -410,19 +424,24 @@ impl Parser {
             .map(|(_, text)| text.as_str())
     }
 
-    fn parse_tagged_set(&mut self) {
-        self.parse_tagged_collection(true); // true = parse as mapping
+    fn parse_tagged_set(&mut self, base_indent: usize, as_mapping_value: bool) {
+        // A block mapping only nests under its key, so an entry at
+        // base_indent belongs to the enclosing mapping, not to this set.
+        let indentless_value = as_mapping_value.then_some(base_indent);
+        self.parse_tagged_collection(true, indentless_value); // true = parse as mapping
     }
 
     fn parse_tagged_omap(&mut self) {
-        self.parse_tagged_collection(false); // false = parse as sequence
+        self.parse_tagged_collection(false, None); // false = parse as sequence
     }
 
     fn parse_tagged_pairs(&mut self) {
-        self.parse_tagged_collection(false); // false = parse as sequence
+        self.parse_tagged_collection(false, None); // false = parse as sequence
     }
 
-    fn parse_tagged_collection(&mut self, is_mapping: bool) {
+    /// `min_mapping_indent` is the column a block mapping has to beat to be
+    /// this tag's value, set only when the tag is itself a mapping value.
+    fn parse_tagged_collection(&mut self, is_mapping: bool, min_mapping_indent: Option<usize>) {
         self.builder.start_node(SyntaxKind::TAGGED_NODE.into());
 
         // Consume the tag
@@ -448,7 +467,15 @@ impl Parser {
                 // this tagged collection instead of being absorbed.
                 let inner_base = self.current_line_indent;
                 if is_mapping {
-                    self.parse_mapping_with_base_indent(inner_base);
+                    if min_mapping_indent.is_some_and(|min| inner_base <= min) {
+                        // The entries are siblings of our own key, so this tag
+                        // annotates an implicit null and they stay outside.
+                        self.builder.start_node(SyntaxKind::SCALAR.into());
+                        self.builder.token(SyntaxKind::NULL.into(), "");
+                        self.builder.finish_node();
+                    } else {
+                        self.parse_mapping_with_base_indent(inner_base);
+                    }
                 } else {
                     self.parse_sequence_with_base_indent(inner_base);
                 }

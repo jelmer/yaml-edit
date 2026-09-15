@@ -365,11 +365,8 @@ impl Document {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        if let Some(mapping) = self.as_mapping() {
-            mapping.insert_after(after_key, key, value)
-        } else {
-            false
-        }
+        self.as_mapping()
+            .is_some_and(|mapping| mapping.insert_after(after_key, key, value))
     }
 
     /// Move a key-value pair to immediately after `after_key` in this document's mapping.
@@ -386,11 +383,8 @@ impl Document {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        if let Some(mapping) = self.as_mapping() {
-            mapping.move_after(after_key, key, value)
-        } else {
-            false
-        }
+        self.as_mapping()
+            .is_some_and(|mapping| mapping.move_after(after_key, key, value))
     }
 
     /// Insert a key-value pair immediately before `before_key` in this document's mapping.
@@ -407,11 +401,8 @@ impl Document {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        if let Some(mapping) = self.as_mapping() {
-            mapping.insert_before(before_key, key, value)
-        } else {
-            false
-        }
+        self.as_mapping()
+            .is_some_and(|mapping| mapping.insert_before(before_key, key, value))
     }
 
     /// Move a key-value pair to immediately before `before_key` in this document's mapping.
@@ -428,11 +419,8 @@ impl Document {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        if let Some(mapping) = self.as_mapping() {
-            mapping.move_before(before_key, key, value)
-        } else {
-            false
-        }
+        self.as_mapping()
+            .is_some_and(|mapping| mapping.move_before(before_key, key, value))
     }
 
     /// Helper to build a VALUE wrapper node around any AsYaml value

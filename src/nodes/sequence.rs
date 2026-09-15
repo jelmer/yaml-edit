@@ -1,4 +1,4 @@
-use super::{fresh_token, Lang, SyntaxNode};
+use super::{fresh_token, has_child_token, Lang, SyntaxNode};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::yaml::ValueNode;
@@ -25,9 +25,7 @@ fn must_render_flow(node: &SyntaxNode) -> bool {
             _ => None,
         };
         if let Some(open) = opener {
-            if p.children_with_tokens()
-                .any(|c| c.as_token().is_some_and(|t| t.kind() == open))
-            {
+            if has_child_token(&p, |k| k == open) {
                 return true;
             }
         }

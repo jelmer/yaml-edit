@@ -22,6 +22,7 @@
 //! }
 //! ```
 
+use crate::nodes::has_child_token;
 use crate::yaml::{Document, SyntaxNode};
 use rowan::ast::AstNode;
 use std::fmt;
@@ -608,15 +609,8 @@ impl Validator {
     /// on the same line as the block scalar indicator.
     fn check_block_scalar_indicator(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // Check if this scalar has a GREATER (folded) or PIPE (literal) indicator
-        let has_block_indicator = node.children_with_tokens().any(|child| {
-            if let rowan::NodeOrToken::Token(token) = child {
-                matches!(
-                    token.kind(),
-                    crate::SyntaxKind::GREATER | crate::SyntaxKind::PIPE
-                )
-            } else {
-                false
-            }
+        let has_block_indicator = has_child_token(node, |k| {
+            matches!(k, crate::SyntaxKind::GREATER | crate::SyntaxKind::PIPE)
         });
 
         if !has_block_indicator {
@@ -677,13 +671,8 @@ impl Validator {
         node: &SyntaxNode,
         violations: &mut Vec<Violation>,
     ) {
-        let has_block_indicator = node.children_with_tokens().any(|el| {
-            el.as_token().is_some_and(|t| {
-                matches!(
-                    t.kind(),
-                    crate::SyntaxKind::GREATER | crate::SyntaxKind::PIPE
-                )
-            })
+        let has_block_indicator = has_child_token(node, |k| {
+            matches!(k, crate::SyntaxKind::GREATER | crate::SyntaxKind::PIPE)
         });
         if !has_block_indicator {
             return;
@@ -803,13 +792,7 @@ impl Validator {
     /// within a plain scalar, which is invalid.
     fn check_colon_in_plain_scalar(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // Check if this scalar contains COLON tokens
-        let has_colon = node.children_with_tokens().any(|child| {
-            if let rowan::NodeOrToken::Token(token) = child {
-                token.kind() == crate::SyntaxKind::COLON
-            } else {
-                false
-            }
-        });
+        let has_colon = has_child_token(node, |k| k == crate::SyntaxKind::COLON);
 
         if !has_colon {
             return;
@@ -1442,10 +1425,7 @@ impl Validator {
         // Explicit-key entries (`? key\n : value`) are allowed to span
         // multiple lines by construction; the QUESTION indicator makes
         // them explicit rather than implicit.
-        let is_explicit = entry_node.children_with_tokens().any(|el| {
-            el.as_token()
-                .is_some_and(|t| t.kind() == crate::SyntaxKind::QUESTION)
-        });
+        let is_explicit = has_child_token(entry_node, |k| k == crate::SyntaxKind::QUESTION);
         if is_explicit {
             return;
         }

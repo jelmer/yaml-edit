@@ -199,6 +199,17 @@ pub(crate) fn child_of_kind(parent: &SyntaxNode, kind: SyntaxKind) -> Option<Syn
     parent.children().find(|n| n.kind() == kind)
 }
 
+/// Does `parent` have a direct child token whose kind satisfies `pred`?
+///
+/// Flow/block style and several syntactic properties are decided by the
+/// presence of a marker token (`{`, `[`, `|`, `:`) directly under a node,
+/// never a nested one, so the search deliberately stays one level deep.
+pub(crate) fn has_child_token(parent: &SyntaxNode, pred: impl Fn(SyntaxKind) -> bool) -> bool {
+    parent
+        .children_with_tokens()
+        .any(|el| el.as_token().is_some_and(|t| pred(t.kind())))
+}
+
 /// The `KEY` child of a `MAPPING_ENTRY`.
 pub(crate) fn entry_key(entry: &SyntaxNode) -> Option<SyntaxNode> {
     child_of_kind(entry, SyntaxKind::KEY)

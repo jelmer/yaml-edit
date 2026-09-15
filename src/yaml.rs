@@ -22,7 +22,7 @@ pub(crate) struct ParsedYaml {
 }
 
 // Import Lang, SyntaxNode, and ast_node! macro from nodes module
-use crate::nodes::ast_node;
+use crate::nodes::{ast_node, has_child_token};
 pub use crate::nodes::{Lang, SyntaxNode};
 
 // Re-export extracted AST nodes from nodes module
@@ -69,10 +69,8 @@ pub trait ValueNode: rowan::ast::AstNode<Language = Lang> {
 impl ValueNode for Mapping {
     fn is_inline(&self) -> bool {
         // Flow-style mappings contain brace tokens.
-        self.0.children_with_tokens().any(|c| {
-            c.as_token().is_some_and(|t| {
-                matches!(t.kind(), SyntaxKind::LEFT_BRACE | SyntaxKind::RIGHT_BRACE)
-            })
+        has_child_token(&self.0, |k| {
+            matches!(k, SyntaxKind::LEFT_BRACE | SyntaxKind::RIGHT_BRACE)
         })
     }
 }
@@ -80,13 +78,8 @@ impl ValueNode for Mapping {
 impl ValueNode for Sequence {
     fn is_inline(&self) -> bool {
         // Flow-style sequences contain bracket tokens.
-        self.0.children_with_tokens().any(|c| {
-            c.as_token().is_some_and(|t| {
-                matches!(
-                    t.kind(),
-                    SyntaxKind::LEFT_BRACKET | SyntaxKind::RIGHT_BRACKET
-                )
-            })
+        has_child_token(&self.0, |k| {
+            matches!(k, SyntaxKind::LEFT_BRACKET | SyntaxKind::RIGHT_BRACKET)
         })
     }
 }

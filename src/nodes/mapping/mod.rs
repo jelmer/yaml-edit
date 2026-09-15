@@ -8,7 +8,7 @@ use helpers::{
     entry_line_terminated, index_after_entry_line, trailing_newline_reachable, FlowInsertPos,
 };
 
-use super::{entry_key, entry_value, Lang, Sequence, SyntaxNode};
+use super::{entry_key, entry_value, has_child_token, Lang, Sequence, SyntaxNode};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::yaml::{
@@ -389,11 +389,7 @@ impl Mapping {
     /// `false` if it uses block style (e.g., `key: value`).
     pub fn is_flow_style(&self) -> bool {
         // Flow-style mappings start with LEFT_BRACE token
-        self.0.children_with_tokens().any(|child| {
-            child
-                .as_token()
-                .is_some_and(|token| token.kind() == SyntaxKind::LEFT_BRACE)
-        })
+        has_child_token(&self.0, |k| k == SyntaxKind::LEFT_BRACE)
     }
 
     /// Find the [`MappingEntry`] whose key matches `key`, or `None` if not found.
@@ -550,10 +546,7 @@ impl Mapping {
         for child in self.0.children() {
             if child.kind() == SyntaxKind::MAPPING_ENTRY {
                 // Check if this entry has a QUESTION token as a child
-                if child.children_with_tokens().any(|t| {
-                    t.as_token()
-                        .is_some_and(|tok| tok.kind() == SyntaxKind::QUESTION)
-                }) {
+                if has_child_token(&child, |k| k == SyntaxKind::QUESTION) {
                     return true;
                 }
             }

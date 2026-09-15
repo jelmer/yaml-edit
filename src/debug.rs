@@ -12,6 +12,7 @@
 
 use crate::as_yaml::YamlNode;
 use crate::lex::SyntaxKind;
+use crate::nodes::has_child_token;
 use crate::yaml::{Document, Mapping, Scalar, Sequence, SyntaxNode};
 use std::fmt;
 
@@ -256,10 +257,7 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 .children_with_tokens()
                 .filter(|c| c.as_token().is_some_and(|t| t.kind() == SyntaxKind::COLON))
                 .collect();
-            let is_explicit_key = node.children_with_tokens().any(|c| {
-                c.as_token()
-                    .is_some_and(|t| t.kind() == SyntaxKind::QUESTION)
-            });
+            let is_explicit_key = has_child_token(node, |k| k == SyntaxKind::QUESTION);
             let in_flow = is_in_flow_collection(node);
             let expected_colons = if is_explicit_key || in_flow {
                 0..=1

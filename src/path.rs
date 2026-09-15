@@ -1341,7 +1341,7 @@ config:
         let result = yaml.try_remove_path("server.port").is_ok();
         assert!(result);
 
-        assert_eq!(yaml.to_string(), "server:\n  host: localhost\n  ");
+        assert_eq!(yaml.to_string(), "server:\n  host: localhost\n");
     }
 
     #[test]
@@ -1376,8 +1376,35 @@ config:
 
         assert_eq!(
             yaml.to_string(),
-            "app:\n  database:\n    primary:\n      host: db.example.com\n      "
+            "app:\n  database:\n    primary:\n      host: db.example.com\n"
         );
+    }
+
+    #[test]
+    fn test_remove_path_keeps_sibling_indentation() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        // Each entry after the first owns the INDENT token before it.
+        // Removing an entry without that token left it behind, either
+        // over-indenting the next entry or dangling as trailing
+        // whitespace when the removed entry was last.
+        let doc = Document::from_str("config:\n  a: 1\n  b: 2\n  c: 3\n").unwrap();
+        doc.try_remove_path("config.b").unwrap();
+        assert_eq!(doc.to_string(), "config:\n  a: 1\n  c: 3\n");
+
+        let doc = Document::from_str("config:\n  a: 1\n  b: 2\n  c: 3\n").unwrap();
+        doc.try_remove_path("config.a").unwrap();
+        assert_eq!(doc.to_string(), "config:\n  b: 2\n  c: 3\n");
+
+        let doc = Document::from_str("config:\n  a: 1\n  b: 2\n  c: 3\n").unwrap();
+        doc.try_remove_path("config.c").unwrap();
+        assert_eq!(doc.to_string(), "config:\n  a: 1\n  b: 2\n");
+
+        // Deeper nesting used to compound the over-indentation.
+        let doc = Document::from_str("x:\n  y:\n    a: 1\n    b: 2\n").unwrap();
+        doc.try_remove_path("x.y.a").unwrap();
+        assert_eq!(doc.to_string(), "x:\n  y:\n    b: 2\n");
     }
 
     #[test]
@@ -1717,9 +1744,7 @@ config:
         let doc = Document::from_str("config: !custom\n  a: 1\n  b: 2\n").unwrap();
         let removed = doc.try_remove_path("config.b").unwrap();
         assert_eq!(removed.as_scalar().unwrap().as_string(), "2");
-        // The trailing indent is Mapping::remove's existing block-mapping
-        // behaviour, tag or no tag.
-        assert_eq!(doc.to_string(), "config: !custom\n  a: 1\n  ");
+        assert_eq!(doc.to_string(), "config: !custom\n  a: 1\n");
 
         // Draining the last entry collapses to the flow-empty form, as it
         // does for an untagged mapping, but keeps the tag.

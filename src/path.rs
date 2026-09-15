@@ -656,6 +656,20 @@ fn resolve_for_read(
     })
 }
 
+/// Look up `key` in `mapping`, falling back to the keys it inherits
+/// through `<<:` merge keys.
+///
+/// A direct entry always wins: YAML 1.1 says a mapping's own key
+/// shadows one merged in from an anchor.
+fn lookup_merged(mapping: &Mapping, key: &str) -> Option<crate::as_yaml::YamlNode> {
+    if let Some(found) = mapping.get(key) {
+        return Some(found);
+    }
+    use crate::anchor_resolution::MappingMergedExt;
+    let registry = registry_for(&crate::as_yaml::YamlNode::Mapping(mapping.clone()));
+    mapping.merged(&registry).get(key)
+}
+
 fn descend_one(
     current: crate::as_yaml::YamlNode,
     segment: &PathSegment,
@@ -667,7 +681,7 @@ fn descend_one(
             let mapping = node_as_mapping(&current).ok_or_else(|| PathError::TypeMismatch {
                 at: segment_display(segment),
             })?;
-            mapping.get(key).ok_or_else(|| PathError::NotFound {
+            lookup_merged(&mapping, key).ok_or_else(|| PathError::NotFound {
                 at: segment_display(segment),
             })
         }
@@ -678,10 +692,9 @@ fn descend_one(
                 })
             } else if let Some(map) = node_as_mapping(&current) {
                 // Fallback: numeric segment used as a mapping key.
-                map.get(index.to_string().as_str())
-                    .ok_or_else(|| PathError::NotFound {
-                        at: segment_display(segment),
-                    })
+                lookup_merged(&map, &index.to_string()).ok_or_else(|| PathError::NotFound {
+                    at: segment_display(segment),
+                })
             } else {
                 Err(PathError::TypeMismatch {
                     at: segment_display(segment),
@@ -1179,6 +1192,46 @@ fn set_path_on_sequence<V: crate::AsYaml>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn merge_doc() -> crate::yaml::YamlFile {
+        use std::str::FromStr;
+        crate::yaml::YamlFile::from_str(
+            "base: &b\n  a: 1\n  shared: x\nderived:\n  <<: *b\n  own: 2\n  a: 99\n",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn get_path_resolves_merged_keys() {
+        let file = merge_doc();
+        let doc = file.document().unwrap();
+
+        // Inherited through `<<: *b`.
+        assert_eq!(doc.try_get_path("derived.shared").unwrap().to_string(), "x");
+        // A local entry still wins over the merged one.
+        assert_eq!(doc.try_get_path("derived.a").unwrap().to_string(), "99");
+        // Plain local key, and the anchor's own mapping, are unaffected.
+        assert_eq!(doc.try_get_path("derived.own").unwrap().to_string(), "2");
+        assert_eq!(doc.try_get_path("base.a").unwrap().to_string(), "1");
+    }
+
+    #[test]
+    fn get_path_still_reports_genuinely_absent_keys() {
+        let file = merge_doc();
+        let doc = file.document().unwrap();
+        assert!(doc.try_get_path("derived.nope").is_err());
+    }
+
+    #[test]
+    fn remove_path_stays_literal_for_merged_keys() {
+        // An inherited key lives in the anchor, not in the mapping being
+        // walked, so it must not look removable from `derived`.
+        let file = merge_doc();
+        let before = file.to_string();
+        let doc = file.document().unwrap();
+        assert!(doc.try_remove_path("derived.shared").is_err());
+        assert_eq!(file.to_string(), before);
+    }
 
     #[test]
     fn test_parse_path_basic() {

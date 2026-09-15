@@ -61,6 +61,7 @@ fn indented_only_body_strat() -> impl Strategy<Value = String> {
         Just("  {k: v}\n".to_string()),
         Just("  |\n    text\n".to_string()),
         Just("  >\n    text\n".to_string()),
+        Just("  plain text\n".to_string()),
     ]
 }
 

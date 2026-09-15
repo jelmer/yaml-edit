@@ -414,27 +414,11 @@ impl Parser {
                 | SyntaxKind::GREATER
                 | SyntaxKind::LEFT_BRACKET
                 | SyntaxKind::LEFT_BRACE => return (indent > base_indent).then_some(indent),
-                _ => {
-                    let opens_mapping = Self::line_opens_mapping(&mut rest);
-                    return (indent > base_indent && opens_mapping).then_some(indent);
-                }
+                // Anything else opens a plain scalar, which is a valid
+                // tagged body whether or not a colon makes it a mapping.
+                _ => return (indent > base_indent).then_some(indent),
             }
         }
-    }
-
-    /// Whether the line whose first token was just consumed is a mapping
-    /// entry, i.e. a key followed by a colon.
-    fn line_opens_mapping<'t>(rest: &mut impl Iterator<Item = (SyntaxKind, &'t String)>) -> bool {
-        // The caller consumed the first token of the line; it has to have been
-        // part of a key for a colon to follow.
-        for (kind, _) in rest {
-            match kind {
-                SyntaxKind::COLON => return true,
-                SyntaxKind::NEWLINE => return false,
-                _ => continue,
-            }
-        }
-        false
     }
 
     fn peek_tag_text(&self) -> Option<&str> {

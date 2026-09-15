@@ -34,6 +34,18 @@ impl TaggedNode {
         None
     }
 
+    /// Get the collection this tag is attached to, if the tagged node wraps
+    /// a mapping (e.g. `!custom` on a block mapping).
+    pub fn as_mapping(&self) -> Option<Mapping> {
+        self.0.children().find_map(Mapping::cast)
+    }
+
+    /// Get the collection this tag is attached to, if the tagged node wraps
+    /// a sequence (e.g. `!!seq` on a flow sequence).
+    pub fn as_sequence(&self) -> Option<Sequence> {
+        self.0.children().find_map(Sequence::cast)
+    }
+
     /// Get the string value of this tagged scalar (just the value part),
     /// with quotes stripped and escape sequences processed.
     pub fn as_string(&self) -> Option<String> {

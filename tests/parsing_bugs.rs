@@ -945,3 +945,60 @@ fn test_root_fold_does_not_swallow_following_nodes() {
     let seq = file.document().unwrap().as_sequence().unwrap();
     assert_eq!(seq.len(), 2);
 }
+
+/// A line that starts at the colon is a mapping entry with an empty key.
+///
+/// `: v` maps null to `v`, which is what the YAML test suite expects:
+/// 2JQS (`: a\n: b\n`) lists `=VAL :` for each key. parse_value had no arm
+/// for a leading COLON, so it fell through to parse_scalar, which consumes
+/// nothing; the colon and everything after it was swept into an ERROR node
+/// while from_str still reported success.
+#[test]
+fn test_null_keyed_mapping_entry_parses() {
+    for yaml in [
+        ": v\n",
+        ": a\n: b\n",
+        "- : v\n",
+        "-  : v\n",
+        "- : v\n- : w\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    // The suite's 2JQS shape: two entries, each with an empty key.
+    let file = YamlFile::from_str(": a\n: b\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.iter().count(), 2);
+    let values: Vec<String> = mapping
+        .iter()
+        .map(|(_, v)| v.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(values, vec!["a".to_string(), "b".to_string()]);
+
+    // In a sequence entry, the mapping hangs off the dash.
+    let file = YamlFile::from_str("- : v\n- : w\n").unwrap();
+    let seq = file.document().unwrap().as_sequence().unwrap();
+    assert_eq!(seq.len(), 2);
+
+    // An empty key and a named one can share an entry's mapping.
+    let file = YamlFile::from_str("- : v\n  k: w\n").unwrap();
+    let seq = file.document().unwrap().as_sequence().unwrap();
+    assert_eq!(seq.len(), 1);
+    let inner = seq.get(0).unwrap();
+    assert_eq!(inner.as_mapping().unwrap().iter().count(), 2);
+}
+
+/// The empty key is spelled as the zero-width null scalar used for an
+/// implicit null value, so every key slot still holds one scalar.
+#[test]
+fn test_null_key_is_an_empty_scalar() {
+    let file = YamlFile::from_str(": v\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let (key, value) = mapping.iter().next().unwrap();
+    assert_eq!(key.as_scalar().unwrap().as_string(), "");
+    assert_eq!(value.as_scalar().unwrap().as_string(), "v");
+}

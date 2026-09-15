@@ -421,6 +421,14 @@ impl Parser {
                     self.emit_implicit_null();
                 }
             }
+            // A line that starts at the colon is a mapping entry whose key
+            // is empty: `: v` maps null to `v`, as the YAML test suite has
+            // it (2JQS expects `=VAL :` for the key). parse_scalar consumes
+            // nothing here, so without this the colon and everything after
+            // it was stranded in an ERROR node with no parse error.
+            Some(SyntaxKind::COLON) if !self.in_flow_context => {
+                self.parse_mapping_with_base_indent(base_indent)
+            }
             _ => self.parse_scalar(),
         }
         self.nesting_depth -= 1;

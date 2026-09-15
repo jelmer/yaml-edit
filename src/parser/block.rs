@@ -627,6 +627,15 @@ impl Parser {
             return false;
         }
 
+        // A line that starts at the colon is an entry with an empty key:
+        // `: v` is a mapping from null to `v`, which is what the YAML test
+        // suite expects (2JQS gives `=VAL :` for the key). The scan below
+        // looks for a colon *after* a key, so a null key needs saying here
+        // or the mapping loop stops before the entry.
+        if self.current() == Some(SyntaxKind::COLON) {
+            return true;
+        }
+
         // Look ahead to see if there's a colon after the current token.
         // Plain scalars can contain spaces, so a key may span multiple scalar
         // tokens separated by whitespace before the terminating colon
@@ -690,6 +699,12 @@ impl Parser {
                 self.bump(); // WHITESPACE inside the plain scalar
                 self.bump(); // next scalar segment
             }
+            self.builder.finish_node(); // SCALAR
+        } else if self.current() == Some(SyntaxKind::COLON) {
+            // No key before the colon: an explicit null, spelled the same
+            // zero-width way as an implicit null value.
+            self.builder.start_node(SyntaxKind::SCALAR.into());
+            self.builder.token(SyntaxKind::NULL.into(), "");
             self.builder.finish_node(); // SCALAR
         }
         self.builder.finish_node(); // KEY

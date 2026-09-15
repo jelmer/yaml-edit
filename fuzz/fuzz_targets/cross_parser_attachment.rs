@@ -102,17 +102,6 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    // A bare `:` opening a block mapping is a spec grey area: saphyr reads
-    // it as a null-keyed entry, PyYAML rejects it outright. Neither answer
-    // is authoritative, so skip rather than police a disagreement between
-    // reference parsers.
-    if input
-        .lines()
-        .any(|line| line.trim_start().starts_with(':'))
-    {
-        return;
-    }
-
     // A `:` straight after an anchor or alias name is another grey area:
     // saphyr reads `k: &a: v` as `k: v` and drops the anchor, PyYAML
     // rejects it as "mapping values are not allowed here". With the

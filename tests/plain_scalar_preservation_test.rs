@@ -1042,3 +1042,50 @@ fn test_colon_prefixed_scalar_still_ends_in_flow_context() {
     assert_eq!(seq.get(0).unwrap().as_scalar().unwrap().as_string(), "::v");
     assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().as_string(), "::w");
 }
+
+/// An anchor or alias name runs to whitespace or a flow indicator, as
+/// `ns-anchor-name` has it: `-`, `*` and `:` are ordinary name characters.
+/// saphyr reads `&xT*U---` as the single anchor `xT*U---`.
+///
+/// The name was read with the general scalar reader, which stops at every
+/// YAML-special character, so the rest of the name was stranded in an ERROR
+/// node with no parse error.
+#[test]
+fn test_anchor_name_runs_to_whitespace_or_flow_indicator() {
+    for (yaml, name) in [
+        ("&xT*U---", "&xT*U---"),
+        ("&a---\n", "&a---"),
+        ("&a:b\n", "&a:b"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert!(
+            tree.contains(&format!("ANCHOR: {name:?}")),
+            "{yaml:?}\n{tree}"
+        );
+    }
+
+    // A flow indicator still ends the name.
+    let file = YamlFile::from_str("[&a x, *a]\n").unwrap();
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(tree.contains("ANCHOR: \"&a\""), "{tree}");
+    assert!(tree.contains("REFERENCE: \"*a\""), "{tree}");
+}
+
+/// Anchors and aliases still resolve normally, including merge keys.
+#[test]
+fn test_anchor_name_change_keeps_resolution() {
+    for yaml in [
+        "a: &anc 1\nb: *anc\n",
+        "defaults: &d\n  t: 30\nprod:\n  <<: *d\n  h: p\n",
+        "- &x 1\n- *x\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

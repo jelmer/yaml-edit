@@ -276,19 +276,24 @@ fn plain_scalar_continues_past_whitespace(input: &str, ws_idx: usize, flow_depth
     }
 }
 
-/// Helper to read a scalar value starting from current position
-fn read_scalar_from<'a>(
+/// Read an anchor or alias name (`ns-anchor-name`).
+///
+/// Per YAML 1.2 an anchor name is a run of non-space characters excluding
+/// the flow indicators, so `-`, `*`, `:` and the rest are ordinary name
+/// characters: saphyr reads `&xT*U---` as the single anchor `xT*U---`.
+/// Reading these with the general scalar reader stopped at the first
+/// YAML-special character and stranded the remainder.
+fn read_anchor_name_from<'a>(
     chars: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
     input: &'a str,
     start_idx: usize,
-    exclude_chars: &str,
 ) -> &'a str {
     let mut end_idx = start_idx;
-    while let Some((idx, ch)) = chars.peek() {
-        if ch.is_whitespace() || is_yaml_special_except(*ch, exclude_chars) {
+    while let Some((idx, ch)) = chars.peek().copied() {
+        if ch.is_whitespace() || matches!(ch, ',' | '[' | ']' | '{' | '}') {
             break;
         }
-        end_idx = *idx + ch.len_utf8();
+        end_idx = idx + ch.len_utf8();
         chars.next();
     }
     &input[start_idx..end_idx]
@@ -334,9 +339,9 @@ fn is_hash_a_comment_start(input: &str, hash_idx: usize) -> bool {
             .is_some_and(|c| c.is_whitespace())
 }
 
-/// Like `read_scalar_from` but treats `:` as scalar content when it's
-/// not followed by whitespace (matching YAML plain-scalar semantics),
-/// and `-` as scalar content unconditionally.
+/// Read a plain-scalar body, treating `:` as scalar content when it's not
+/// followed by whitespace (matching YAML plain-scalar semantics), and `-`
+/// as scalar content unconditionally.
 ///
 /// Used from the `.` and `-` scalar-prefix branches, where the char
 /// that dispatched us was itself a scalar prefix rather than a
@@ -822,7 +827,7 @@ pub fn lex_with_validation_config<'a>(
             // scalar `x &anc`, not an anchored value.
             '&' if node_property_can_start(&tokens) => {
                 // Check if this is an anchor definition
-                let name = read_scalar_from(&mut chars, input, start_idx + 1, "");
+                let name = read_anchor_name_from(&mut chars, input, start_idx + 1);
                 if !name.is_empty() {
                     tokens.push((ANCHOR, &input[token_start..start_idx + 1 + name.len()]));
                 } else {
@@ -831,7 +836,7 @@ pub fn lex_with_validation_config<'a>(
             }
             '*' if node_property_can_start(&tokens) => {
                 // Check if this is an alias reference
-                let name = read_scalar_from(&mut chars, input, start_idx + 1, "");
+                let name = read_anchor_name_from(&mut chars, input, start_idx + 1);
                 if !name.is_empty() {
                     tokens.push((REFERENCE, &input[token_start..start_idx + 1 + name.len()]));
                 } else {
@@ -1292,11 +1297,11 @@ fn is_yaml_special_except(ch: char, exclude: &str) -> bool {
 
 /// Check whether `name` is a well-formed anchor/alias name for this lexer.
 ///
-/// The lexer terminates an anchor (`&name`) or alias (`*name`) token at the
-/// first whitespace or YAML-special character (see [`read_scalar_from`]), so
-/// names containing those would be silently truncated on round-trip. A name
-/// is valid if it is non-empty and contains no whitespace or characters from
-/// [`YAML_SPECIAL_CHARS`].
+/// The lexer reads an anchor (`&name`) or alias (`*name`) to the first
+/// whitespace or flow indicator (see [`read_anchor_name_from`]), so a name
+/// holding one of those would be silently truncated on round-trip. This
+/// check is deliberately stricter than the lexer: it also rejects the
+/// [`YAML_SPECIAL_CHARS`], which are legal in a name but easy to misread.
 pub(crate) fn is_valid_anchor_name(name: &str) -> bool {
     !name.is_empty()
         && !name

@@ -74,6 +74,52 @@ pub struct SequenceBuilder {
     last_item_ended_with_newline: bool,
 }
 
+/// Emit the `\n`, indent and `- ` that introduce a block sequence item.
+/// `trailing_newline` additionally starts a nested collection on its own line.
+fn emit_dash(
+    builder: &mut GreenNodeBuilder<'static>,
+    newline_first: bool,
+    indent: usize,
+    trailing_newline: bool,
+) {
+    if newline_first {
+        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+    }
+    if indent > 0 {
+        builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
+    }
+    builder.token(SyntaxKind::DASH.into(), "-");
+    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+    if trailing_newline {
+        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+    }
+}
+
+/// Emit the `\n`, indent and `key: ` that introduce a block mapping entry.
+/// `trailing_newline` additionally starts a nested collection on its own line.
+fn emit_key(
+    builder: &mut GreenNodeBuilder<'static>,
+    newline_first: bool,
+    indent: usize,
+    key: &str,
+    trailing_newline: bool,
+) {
+    if newline_first {
+        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+    }
+    if indent > 0 {
+        builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
+    }
+    builder.start_node(SyntaxKind::SCALAR.into());
+    builder.token(SyntaxKind::VALUE.into(), key);
+    builder.finish_node();
+    builder.token(SyntaxKind::COLON.into(), ":");
+    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+    if trailing_newline {
+        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+    }
+}
+
 impl SequenceBuilder {
     /// Create a new empty sequence builder.
     pub fn new() -> Self {
@@ -100,15 +146,8 @@ impl SequenceBuilder {
 
     fn emit_item_preamble(&mut self) {
         // Only add newline if previous item didn't already end with one
-        if self.count > 0 && !self.last_item_ended_with_newline {
-            self.builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        if self.indent > 0 {
-            self.builder
-                .token(SyntaxKind::WHITESPACE.into(), &" ".repeat(self.indent));
-        }
-        self.builder.token(SyntaxKind::DASH.into(), "-");
-        self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
+        let newline_first = self.count > 0 && !self.last_item_ended_with_newline;
+        emit_dash(&mut self.builder, newline_first, self.indent, false);
     }
 
     /// Add a value to the sequence. Accepts any type implementing [`AsYaml`]:
@@ -149,15 +188,7 @@ impl SequenceBuilder {
             ..
         } = self;
 
-        if count > 0 {
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        if indent > 0 {
-            builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-        }
-        builder.token(SyntaxKind::DASH.into(), "-");
-        builder.token(SyntaxKind::WHITESPACE.into(), " ");
-        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        emit_dash(&mut builder, count > 0, indent, true);
 
         builder.start_node(SyntaxKind::SEQUENCE.into());
         let nested = SequenceBuilder::at_indent(builder, indent + 2);
@@ -185,15 +216,7 @@ impl SequenceBuilder {
             ..
         } = self;
 
-        if count > 0 {
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        if indent > 0 {
-            builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-        }
-        builder.token(SyntaxKind::DASH.into(), "-");
-        builder.token(SyntaxKind::WHITESPACE.into(), " ");
-        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        emit_dash(&mut builder, count > 0, indent, true);
 
         builder.start_node(SyntaxKind::MAPPING.into());
         let nested = MappingBuilder::at_indent(builder, indent + 2);
@@ -233,15 +256,7 @@ impl SequenceBuilder {
                     ..
                 } = self;
 
-                if count > 0 {
-                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                }
-                if indent > 0 {
-                    builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-                }
-                builder.token(SyntaxKind::DASH.into(), "-");
-                builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                emit_dash(&mut builder, count > 0, indent, true);
 
                 crate::as_yaml::copy_node_content(&mut builder, &seq_node);
 
@@ -280,15 +295,7 @@ impl SequenceBuilder {
                     ..
                 } = self;
 
-                if count > 0 {
-                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                }
-                if indent > 0 {
-                    builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-                }
-                builder.token(SyntaxKind::DASH.into(), "-");
-                builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                emit_dash(&mut builder, count > 0, indent, true);
 
                 crate::as_yaml::copy_node_content(&mut builder, &map_node);
 
@@ -365,18 +372,7 @@ impl MappingBuilder {
     }
 
     fn emit_key_preamble(&mut self, key: &str) {
-        if self.count > 0 {
-            self.builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        if self.indent > 0 {
-            self.builder
-                .token(SyntaxKind::WHITESPACE.into(), &" ".repeat(self.indent));
-        }
-        self.builder.start_node(SyntaxKind::SCALAR.into());
-        self.builder.token(SyntaxKind::VALUE.into(), key);
-        self.builder.finish_node();
-        self.builder.token(SyntaxKind::COLON.into(), ":");
-        self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
+        emit_key(&mut self.builder, self.count > 0, self.indent, key, false);
     }
 
     /// Add a key-value pair. The value can be any type implementing [`AsYaml`]:
@@ -404,18 +400,7 @@ impl MappingBuilder {
             count,
         } = self;
 
-        if count > 0 {
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        if indent > 0 {
-            builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-        }
-        builder.start_node(SyntaxKind::SCALAR.into());
-        builder.token(SyntaxKind::VALUE.into(), &key.into());
-        builder.finish_node();
-        builder.token(SyntaxKind::COLON.into(), ":");
-        builder.token(SyntaxKind::WHITESPACE.into(), " ");
-        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        emit_key(&mut builder, count > 0, indent, &key.into(), true);
 
         builder.start_node(SyntaxKind::SEQUENCE.into());
         let nested = SequenceBuilder::at_indent(builder, indent + 2);
@@ -441,18 +426,7 @@ impl MappingBuilder {
             count,
         } = self;
 
-        if count > 0 {
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        if indent > 0 {
-            builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-        }
-        builder.start_node(SyntaxKind::SCALAR.into());
-        builder.token(SyntaxKind::VALUE.into(), &key.into());
-        builder.finish_node();
-        builder.token(SyntaxKind::COLON.into(), ":");
-        builder.token(SyntaxKind::WHITESPACE.into(), " ");
-        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        emit_key(&mut builder, count > 0, indent, &key.into(), true);
 
         builder.start_node(SyntaxKind::MAPPING.into());
         let nested = MappingBuilder::at_indent(builder, indent + 2);
@@ -490,18 +464,7 @@ impl MappingBuilder {
                     count,
                 } = self;
 
-                if count > 0 {
-                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                }
-                if indent > 0 {
-                    builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-                }
-                builder.start_node(SyntaxKind::SCALAR.into());
-                builder.token(SyntaxKind::VALUE.into(), &key.into());
-                builder.finish_node();
-                builder.token(SyntaxKind::COLON.into(), ":");
-                builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                emit_key(&mut builder, count > 0, indent, &key.into(), true);
 
                 crate::as_yaml::copy_node_content(&mut builder, &seq_node);
 
@@ -538,18 +501,7 @@ impl MappingBuilder {
                     count,
                 } = self;
 
-                if count > 0 {
-                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                }
-                if indent > 0 {
-                    builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-                }
-                builder.start_node(SyntaxKind::SCALAR.into());
-                builder.token(SyntaxKind::VALUE.into(), &key.into());
-                builder.finish_node();
-                builder.token(SyntaxKind::COLON.into(), ":");
-                builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                emit_key(&mut builder, count > 0, indent, &key.into(), true);
 
                 crate::as_yaml::copy_node_content_with_indent(&mut builder, &map_node, indent + 2);
 

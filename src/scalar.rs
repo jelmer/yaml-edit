@@ -1147,44 +1147,29 @@ impl From<&str> for ScalarValue {
     }
 }
 
-impl From<i32> for ScalarValue {
-    fn from(value: i32) -> Self {
-        Self {
-            value: value.to_string(),
-            style: ScalarStyle::Plain,
-            scalar_type: ScalarType::Integer,
-        }
-    }
+/// `From<$t>` for the numeric primitives, all of which render through
+/// `to_string()` and differ only in the YAML type they carry.
+macro_rules! impl_from_number {
+    ($($t:ty => $ty:expr),* $(,)?) => {
+        $(
+            impl From<$t> for ScalarValue {
+                fn from(value: $t) -> Self {
+                    Self {
+                        value: value.to_string(),
+                        style: ScalarStyle::Plain,
+                        scalar_type: $ty,
+                    }
+                }
+            }
+        )*
+    };
 }
 
-impl From<i64> for ScalarValue {
-    fn from(value: i64) -> Self {
-        Self {
-            value: value.to_string(),
-            style: ScalarStyle::Plain,
-            scalar_type: ScalarType::Integer,
-        }
-    }
-}
-
-impl From<f32> for ScalarValue {
-    fn from(value: f32) -> Self {
-        Self {
-            value: value.to_string(),
-            style: ScalarStyle::Plain,
-            scalar_type: ScalarType::Float,
-        }
-    }
-}
-
-impl From<f64> for ScalarValue {
-    fn from(value: f64) -> Self {
-        Self {
-            value: value.to_string(),
-            style: ScalarStyle::Plain,
-            scalar_type: ScalarType::Float,
-        }
-    }
+impl_from_number! {
+    i32 => ScalarType::Integer,
+    i64 => ScalarType::Integer,
+    f32 => ScalarType::Float,
+    f64 => ScalarType::Float,
 }
 
 impl From<bool> for ScalarValue {

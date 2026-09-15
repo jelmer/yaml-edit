@@ -355,18 +355,7 @@ impl YamlValue {
     /// Note: This respects YAML's type system - `42` (unquoted) is an integer,
     /// but `"42"` (quoted) is a string and will return None.
     pub fn to_i64(&self) -> Option<i64> {
-        match self {
-            YamlValue::Scalar(s) => {
-                use crate::scalar::ScalarType;
-                // Only parse as integer if the scalar type is Integer
-                if s.scalar_type() == ScalarType::Integer {
-                    ScalarValue::parse_integer(s.value())
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
+        self.as_scalar().and_then(ScalarValue::to_i64)
     }
 
     /// Try to convert this value to an f64
@@ -377,18 +366,7 @@ impl YamlValue {
     /// Note: This respects YAML's type system - `3.14` (unquoted) is a float,
     /// but `"3.14"` (quoted) is a string and will return None.
     pub fn to_f64(&self) -> Option<f64> {
-        match self {
-            YamlValue::Scalar(s) => {
-                use crate::scalar::ScalarType;
-                // Only parse as float if the scalar type is Float
-                if s.scalar_type() == ScalarType::Float {
-                    s.value().trim().parse::<f64>().ok()
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
+        self.as_scalar().and_then(ScalarValue::to_f64)
     }
 
     /// Try to convert this value to a bool
@@ -400,22 +378,7 @@ impl YamlValue {
     /// Note: This respects YAML's type system - `no` (unquoted) is boolean,
     /// but `"no"` (quoted) is a string and will return None.
     pub fn to_bool(&self) -> Option<bool> {
-        match self {
-            YamlValue::Scalar(s) => {
-                use crate::scalar::ScalarType;
-                // Only parse as boolean if the scalar type is Boolean
-                if s.scalar_type() == ScalarType::Boolean {
-                    match s.value().to_lowercase().as_str() {
-                        "true" | "yes" | "on" => Some(true),
-                        "false" | "no" | "off" => Some(false),
-                        _ => None,
-                    }
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
+        self.as_scalar().and_then(ScalarValue::to_bool)
     }
 
     /// Convert to YAML string representation

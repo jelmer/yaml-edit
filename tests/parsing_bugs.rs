@@ -1168,3 +1168,59 @@ fn test_key_column_fold_stops_at_the_next_entry() {
         .unwrap();
     assert_eq!(inner.iter().count(), 2);
 }
+
+/// A block scalar that is the whole document may hold body lines at column
+/// 0, and takes its base indent from the first of them.
+///
+/// `|-\nx\ny\n` is the scalar `x\ny`, as saphyr reads it. The base was only
+/// recorded from an INDENT token, so a body starting at column 0 left it
+/// unset: the first such line was taken as content and every later one read
+/// as a dedent, stranding it in an ERROR node with no parse error. Where a
+/// later line *was* indented it set the base instead, so
+/// `|-\n?  >\n ems+\nco+ors:\n` measured itself against the wrong column.
+#[test]
+fn test_root_block_scalar_takes_its_base_from_the_first_line() {
+    for (yaml, value) in [
+        ("|-\nx\ny\n", "x\ny"),
+        ("|-\n x\n y\n", "x\ny"),
+        ("|-\n  x\n  y\n", "x\ny"),
+        (
+            "|-\n?  >\n ems+\nco+ors:\n  - &.\n",
+            "?  >\n ems+\nco+ors:\n  - &.",
+        ),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}
+
+/// A block scalar nested under a key has an enclosing collection, so its
+/// body still has to be indented and a dedented sibling entry survives.
+#[test]
+fn test_nested_block_scalar_keeps_its_siblings() {
+    for yaml in ["a: |\n  x\nb: 1\n", "a: |-\n  x\n  y\nb: 1\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec!["a".to_string(), "b".to_string()], "{yaml:?}");
+    }
+
+    // A block scalar in a sequence entry likewise.
+    let yaml = "- |-\n  x\n- y\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let seq = file.document().unwrap().as_sequence().unwrap();
+    assert_eq!(seq.len(), 2);
+}

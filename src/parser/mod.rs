@@ -90,6 +90,13 @@ pub(super) struct Parser {
     /// scalar's own line cannot tell those apart, since an explicit key
     /// (`? - a\n  - b\n`) puts its entries deeper than the scalar too.
     pub(super) sequence_entry_column: Option<usize>,
+    /// Whether the node being parsed is the document's own, with no
+    /// enclosing collection.
+    ///
+    /// A block scalar there may hold body lines at column 0 (`|\nx\ny\n` is
+    /// the scalar `x\ny`). Nested under a key it may not: `a: |\nb: 1\n` has
+    /// an empty scalar and keeps `b` as a sibling.
+    pub(super) node_is_document_root: bool,
     /// Current depth of nested flow collections ([...] / {...}).
     pub(super) flow_depth: usize,
     /// Depth of `parse_value_with_base_indent` recursion (block and flow).
@@ -122,6 +129,7 @@ impl Parser {
             scalar_continuation_floor: None,
             annotation_in_value_position: false,
             sequence_entry_column: None,
+            node_is_document_root: false,
             current_line_indent: 0,
             flow_depth: 0,
             nesting_depth: 0,
@@ -245,11 +253,14 @@ impl Parser {
                 .is_some_and(crate::parser::scalars::is_plain_scalar_kind)
                 && !self.is_mapping_key();
             let outer_floor = self.scalar_continuation_floor;
+            let outer_root = self.node_is_document_root;
             self.equal_indent_continues_scalar = true;
+            self.node_is_document_root = true;
             if root_is_plain_scalar {
                 self.scalar_continuation_floor = Some(0);
             }
             self.parse_value();
+            self.node_is_document_root = outer_root;
             self.scalar_continuation_floor = outer_floor;
             self.equal_indent_continues_scalar = false;
         }

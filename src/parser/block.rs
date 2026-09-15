@@ -592,6 +592,12 @@ impl Parser {
     }
 
     fn parse_mapping_value(&mut self, base_indent: usize) {
+        // A mapping value is never the document's own node, whatever the
+        // caller was parsing: `a: |\nb: 1\n` has an empty block scalar and
+        // keeps `b` as a sibling, where `|\nb: 1\n` at the root would take
+        // the line as body.
+        self.node_is_document_root = false;
+
         // When parsing the value part of a mapping, be more conservative about
         // interpreting content as nested mappings. Only parse as mapping if
         // it's clearly a structured value, otherwise parse as scalar.

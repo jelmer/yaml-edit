@@ -526,18 +526,22 @@ impl Parser {
     }
 
     pub(super) fn parse_literal_block_scalar(&mut self) {
+        // Take the flag: only the document's own node is at the root, and
+        // anything this scalar's body contains is not.
+        let at_root = std::mem::take(&mut self.node_is_document_root);
         self.builder.start_node(SyntaxKind::SCALAR.into());
         self.bump(); // consume PIPE
         self.parse_block_scalar_header();
-        self.parse_block_scalar_content();
+        self.parse_block_scalar_content(at_root);
         self.builder.finish_node();
     }
 
     pub(super) fn parse_folded_block_scalar(&mut self) {
+        let at_root = std::mem::take(&mut self.node_is_document_root);
         self.builder.start_node(SyntaxKind::SCALAR.into());
         self.bump(); // consume GREATER
         self.parse_block_scalar_header();
-        self.parse_block_scalar_content();
+        self.parse_block_scalar_content(at_root);
         self.builder.finish_node();
     }
 
@@ -603,16 +607,42 @@ impl Parser {
         }
     }
 
-    fn parse_block_scalar_content(&mut self) {
+    /// Parse a block scalar's body.
+    ///
+    /// `at_root` says the scalar is the document's own node, with nothing
+    /// enclosing it, so its body may start at column 0. Nested under a key
+    /// the body has to be indented, or `a: |\nb: 1\n` would swallow `b`.
+    fn parse_block_scalar_content(&mut self, at_root: bool) {
         // Consume all indented content that follows
         let mut last_was_newline = false;
         let mut base_indent: Option<usize> = None;
         let mut first_content_indent: Option<usize> = None;
 
         while let Some(kind) = self.current() {
-            // Detect first content indentation to use as base
-            if kind == SyntaxKind::INDENT && first_content_indent.is_none() {
-                first_content_indent = self.current_text().map(|t| t.len());
+            // Detect the first body line's indentation to use as base.
+            //
+            // The header's NEWLINE is already consumed, so the loop starts on
+            // that first line and `last_was_newline` is false for it. A line
+            // at column 0 carries no INDENT token, so record 0 rather than
+            // leaving the base unset until some later, indented line sets it:
+            // `|-\nx\ny\n` used to keep `x` and strand `y`, and
+            // `|-\n?  >\n ems+\n...` took its base from the second line.
+            if first_content_indent.is_none() {
+                match kind {
+                    SyntaxKind::INDENT => {
+                        first_content_indent = self.current_text().map(|t| t.len());
+                    }
+                    // A blank line carries no content, so it sets no base.
+                    SyntaxKind::NEWLINE => {
+                        self.bump();
+                        last_was_newline = true;
+                        continue;
+                    }
+                    // A body line at column 0 only belongs to this scalar
+                    // when nothing encloses it.
+                    _ if at_root => first_content_indent = Some(0),
+                    _ => {}
+                }
             }
 
             // Set base_indent after seeing first INDENT token
@@ -648,14 +678,22 @@ impl Parser {
         after_newline: bool,
         base_indent: Option<usize>,
     ) -> bool {
+        // A body that starts at column 0 (only possible at the document root)
+        // reads an unindented line as more body, not as a dedent.
+        let body_at_column_zero = base_indent == Some(0);
         // Check if we've reached content at the beginning of a line (unindented)
         // Only check for structural tokens if we're at the start of a line
         if after_newline {
             // After a newline, check if the next token is unindented
             let current = self.current();
 
-            // COLON or QUESTION at start of line means end of block scalar
-            if matches!(current, Some(SyntaxKind::COLON | SyntaxKind::QUESTION)) {
+            // COLON or QUESTION at the start of a line means the end of the
+            // block scalar -- but only where the body is indented, since a
+            // line at column 0 then cannot belong to it. Inside a body that
+            // starts at column 0 they are literal text like anything else.
+            if !body_at_column_zero
+                && matches!(current, Some(SyntaxKind::COLON | SyntaxKind::QUESTION))
+            {
                 return true;
             }
 
@@ -671,8 +709,14 @@ impl Parser {
                 }
             }
 
-            // If we don't see INDENT, we've reached unindented content
-            if current != Some(SyntaxKind::INDENT)
+            // If we don't see INDENT, we've reached unindented content --
+            // unless this scalar's body starts at column 0 itself, where an
+            // unindented line is just another body line. Otherwise the first
+            // such line is taken as content and every later one at the same
+            // column reads as a dedent, which is how `|-\nx\ny\n` kept `x`
+            // and stranded `y`.
+            if !body_at_column_zero
+                && current != Some(SyntaxKind::INDENT)
                 && current != Some(SyntaxKind::WHITESPACE)
                 && current != Some(SyntaxKind::NEWLINE)
                 && current != Some(SyntaxKind::COMMENT)

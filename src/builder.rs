@@ -120,6 +120,23 @@ fn emit_key(
     }
 }
 
+/// Copy a detached collection's content in at `indent + 2`.
+///
+/// The caller has just emitted the newline that ends the `- ` or `key: `
+/// introducer, so the copy starts at the beginning of a line: the first
+/// entry needs its indent written out here, and
+/// [`copy_node_content_reindent`](crate::as_yaml::copy_node_content_reindent)
+/// shifts every later line by the same amount.
+fn copy_nested_at(
+    builder: &mut GreenNodeBuilder<'static>,
+    node: &rowan::SyntaxNode<crate::yaml::Lang>,
+    indent: usize,
+) {
+    let nested = indent + 2;
+    builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(nested));
+    crate::as_yaml::copy_node_content_reindent(builder, node, nested as isize);
+}
+
 /// Close out a detached builder's SEQUENCE/MAPPING, DOCUMENT and ROOT nodes
 /// and hand back the collection node itself, ready to copy into a parent.
 fn finish_into_inner_node(
@@ -263,7 +280,7 @@ impl SequenceBuilder {
         } = self;
 
         emit_dash(&mut builder, count > 0, indent, true);
-        crate::as_yaml::copy_node_content(&mut builder, &seq_node);
+        copy_nested_at(&mut builder, &seq_node, indent);
 
         SequenceBuilder {
             builder,
@@ -290,7 +307,7 @@ impl SequenceBuilder {
         } = self;
 
         emit_dash(&mut builder, count > 0, indent, true);
-        crate::as_yaml::copy_node_content(&mut builder, &map_node);
+        copy_nested_at(&mut builder, &map_node, indent);
 
         SequenceBuilder {
             builder,
@@ -447,7 +464,7 @@ impl MappingBuilder {
         } = self;
 
         emit_key(&mut builder, count > 0, indent, &key.into(), true);
-        crate::as_yaml::copy_node_content(&mut builder, &seq_node);
+        copy_nested_at(&mut builder, &seq_node, indent);
 
         MappingBuilder {
             builder,
@@ -472,7 +489,7 @@ impl MappingBuilder {
         } = self;
 
         emit_key(&mut builder, count > 0, indent, &key.into(), true);
-        crate::as_yaml::copy_node_content_with_indent(&mut builder, &map_node, indent + 2);
+        copy_nested_at(&mut builder, &map_node, indent);
 
         MappingBuilder {
             builder,
@@ -758,7 +775,6 @@ mod tests {
 
     #[test]
     fn test_insert_pre_built_sequence() {
-        // Use closure-based API instead of insert_sequence for proper indentation
         let doc = YamlBuilder::mapping()
             .pair("name", "my-app")
             .sequence("dependencies", |s| s.item("serde").item("tokio"))
@@ -773,7 +789,6 @@ mod tests {
 
     #[test]
     fn test_insert_pre_built_mapping() {
-        // Use closure-based API instead of insert_mapping for proper indentation
         let doc = YamlBuilder::mapping()
             .pair("name", "my-app")
             .mapping("database", |m| {
@@ -790,7 +805,6 @@ mod tests {
 
     #[test]
     fn test_insert_in_sequence() {
-        // Use closure-based API for nested collections
         let doc = YamlBuilder::sequence()
             .item("first")
             .sequence(|s| s.item("a").item("b"))
@@ -802,8 +816,98 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_sequence_indents_like_closure() {
+        let inserted = YamlBuilder::mapping()
+            .pair("name", "my-app")
+            .insert_sequence(
+                "dependencies",
+                SequenceBuilder::new().item("serde").item("tokio"),
+            )
+            .build_document()
+            .to_string();
+        let closure = YamlBuilder::mapping()
+            .pair("name", "my-app")
+            .sequence("dependencies", |s| s.item("serde").item("tokio"))
+            .build_document()
+            .to_string();
+
+        assert_eq!(
+            inserted.trim(),
+            "name: my-app\ndependencies: \n  - serde\n  - tokio"
+        );
+        assert_eq!(inserted, closure);
+    }
+
+    #[test]
+    fn test_insert_mapping_indents_like_closure() {
+        let inserted = YamlBuilder::mapping()
+            .pair("name", "my-app")
+            .insert_mapping(
+                "database",
+                MappingBuilder::new()
+                    .pair("host", "localhost")
+                    .pair("port", 5432),
+            )
+            .build_document()
+            .to_string();
+        let closure = YamlBuilder::mapping()
+            .pair("name", "my-app")
+            .mapping("database", |m| {
+                m.pair("host", "localhost").pair("port", 5432)
+            })
+            .build_document()
+            .to_string();
+
+        assert_eq!(
+            inserted.trim(),
+            "name: my-app\ndatabase: \n  host: localhost\n  port: 5432"
+        );
+        assert_eq!(inserted, closure);
+    }
+
+    #[test]
+    fn test_insert_into_sequence_indents_like_closure() {
+        let inserted = YamlBuilder::sequence()
+            .item("first")
+            .insert_sequence(SequenceBuilder::new().item("a").item("b"))
+            .insert_mapping(MappingBuilder::new().pair("key", "value"))
+            .build_document()
+            .to_string();
+        let closure = YamlBuilder::sequence()
+            .item("first")
+            .sequence(|s| s.item("a").item("b"))
+            .mapping(|m| m.pair("key", "value"))
+            .build_document()
+            .to_string();
+
+        assert_eq!(
+            inserted.trim(),
+            "- first\n- \n  - a\n  - b\n- \n  key: value"
+        );
+        assert_eq!(inserted, closure);
+    }
+
+    #[test]
+    fn test_insert_mapping_with_nested_collection() {
+        // The donor's own nested content is already indented relative to the
+        // donor; re-indenting must shift it as a block, not flatten it.
+        let doc = YamlBuilder::mapping()
+            .insert_mapping(
+                "outer",
+                MappingBuilder::new()
+                    .pair("x", "1")
+                    .mapping("deep", |m| m.pair("p", "9")),
+            )
+            .build_document();
+
+        assert_eq!(
+            doc.to_string().trim(),
+            "outer: \n  x: '1'\n  deep: \n    p: '9'"
+        );
+    }
+
+    #[test]
     fn test_complex_pre_built_structure() {
-        // Use closure-based API for complex nested structures
         let doc = YamlBuilder::mapping()
             .pair("version", "1.0")
             .pair("name", "my-application")

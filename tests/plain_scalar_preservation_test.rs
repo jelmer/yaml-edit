@@ -929,3 +929,60 @@ fn test_quote_at_a_node_start_still_quotes() {
         "q"
     );
 }
+
+/// A `+` or `-` is an indicator only where a node starts, so once a plain
+/// scalar has begun a second sign is content: `++: v` is keyed `++`, as
+/// both saphyr and PyYAML read it.
+///
+/// The `+` arm did not count a sign as starting a scalar body, so `++`
+/// lexed as a bare PLUS followed by a separate `+`, and the colon after it
+/// was stranded in an ERROR node with no parse error.
+#[test]
+fn test_repeated_sign_is_one_plain_scalar() {
+    for (yaml, key) in [("++: v\n", "++"), ("+-: v\n", "+-"), ("--: v\n", "--")] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string()], "{yaml:?}");
+    }
+
+    // The same in a value position.
+    let file = YamlFile::from_str("a: ++\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "++"
+    );
+}
+
+/// A single sign still prefixes a number, and a block-scalar chomping `+`
+/// keeps its own token.
+#[test]
+fn test_single_sign_keeps_its_meaning() {
+    for (yaml, value) in [
+        ("v: +5\n", "+5"),
+        ("v: -5\n", "-5"),
+        ("v: +.INF\n", "+.INF"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            mapping.get("v").unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+
+    let yaml = "k: |+2\n  x\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    common::assert_file_cst_ok(&file);
+}

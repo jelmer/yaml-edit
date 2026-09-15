@@ -471,7 +471,10 @@ fn read_plain_scalar_body_from<'a>(
         if ch == '#' && is_hash_a_comment_start(input, idx) {
             break;
         }
-        if is_yaml_special_except(ch, "-:#'\"")
+        // `-` and `+` are indicators only where a node starts (a sequence
+        // entry, or a block-scalar chomping suffix); inside a body they are
+        // content, so `++` is the single scalar `++`.
+        if is_yaml_special_except(ch, "-+:#'\"")
             && !(flow_depth == 0 && matches!(ch, ',' | '[' | ']' | '{' | '}'))
         {
             break;
@@ -681,6 +684,10 @@ pub fn lex_with_validation_config<'a>(
                     !c.is_whitespace()
                         && (!is_yaml_special(*c)
                             || matches!(c, '\'' | '"')
+                            // A sign is content once a scalar has begun, so
+                            // `++` is the plain scalar `++` rather than a
+                            // PLUS with a stray `+` after it.
+                            || matches!(c, '+' | '-')
                             || (flow_depth == 0 && matches!(c, '[' | ']' | '{' | '}' | ','))
                             || (*c == ':'
                                 && !is_colon_a_mapping_indicator(input, *idx, flow_depth)))

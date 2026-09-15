@@ -487,3 +487,62 @@ fn a_verbatim_tag_keeps_its_uri() {
     assert!(!tree.contains("ERROR"), "{tree}");
     assert!(tree.contains("TAG: \"!<tag:yaml.org,2002:str>\""), "{tree}");
 }
+
+/// A `-` not followed by a space is scalar content, not a sequence
+/// indicator, so `-{ [a]: v }` is a mapping whose key is the plain scalar
+/// `-{ [a]` -- as both saphyr and PyYAML read it.
+///
+/// The `-` arm's body reader stopped at the first space, so the `[` after
+/// it lexed as a flow collection instead of scalar content. The rest of the
+/// line then had nowhere to go and was stranded in an ERROR node with no
+/// parse error reported.
+#[test]
+fn test_dash_prefixed_key_keeps_flow_indicator_as_content() {
+    for yaml in [
+        "-{ [a]: v }\n",
+        ".{ [a]: v }\n",
+        "-{ [al b]: value1  value2 }\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        assert!(
+            !yaml_edit::debug::tree_to_string(file.syntax()).contains("ERROR"),
+            "stranded tokens for {yaml:?}"
+        );
+    }
+
+    let file = YamlFile::from_str("-{ [a]: v }\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .iter()
+        .map(|(k, _)| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["-{ [a]".to_string()]);
+}
+
+/// A plain scalar starting with `-` or `.` spans internal spaces like any
+/// other, rather than ending at the first one.
+#[test]
+fn test_dash_prefixed_scalar_spans_internal_spaces() {
+    let file = YamlFile::from_str("args: --verbose --log-level=debug\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping
+            .get("args")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "--verbose --log-level=debug"
+    );
+}
+
+/// A `-` closing a block-scalar header is a chomping indicator and stands
+/// alone, so it must not absorb the space after it.
+#[test]
+fn test_block_scalar_chomping_dash_is_not_scalar_content() {
+    let yaml = "key: >-\n  folded body\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    assert!(!yaml_edit::debug::tree_to_string(file.syntax()).contains("ERROR"));
+}

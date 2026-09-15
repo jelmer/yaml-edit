@@ -425,20 +425,43 @@ fn push_plain_scalar_from<'a>(
     token_start: usize,
     body_start: usize,
     flow_depth: u32,
+    absorb_spaces: bool,
 ) {
-    let body = read_plain_scalar_body_from(chars, input, body_start, flow_depth);
+    let body = read_plain_scalar_body_from(chars, input, body_start, flow_depth, absorb_spaces);
     let text = &input[token_start..body_start + body.len()];
     tokens.push((classify_scalar(text), text));
 }
 
+/// `absorb_spaces` folds an internal whitespace run into the scalar when
+/// more scalar content follows, as a plain scalar spanning several words
+/// requires. A block scalar's chomping indicator (`|-`, `>-`) is a token
+/// in its own right, so that caller passes false.
 fn read_plain_scalar_body_from<'a>(
     chars: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
     input: &'a str,
     start_idx: usize,
     flow_depth: u32,
+    absorb_spaces: bool,
 ) -> &'a str {
     let mut end_idx = start_idx;
     while let Some((idx, ch)) = chars.peek().copied() {
+        // Intra-line whitespace belongs to the scalar when more scalar
+        // content follows on the same line, exactly as in the catch-all
+        // arm. Without this a space ended the body, so `-{ [a]: v }`
+        // lexed `[` as a flow collection rather than scalar content.
+        if absorb_spaces && (ch == ' ' || ch == '\t') {
+            if !plain_scalar_continues_past_whitespace(input, idx, flow_depth) {
+                break;
+            }
+            while let Some((wi, wc)) = chars.peek().copied() {
+                if wc != ' ' && wc != '\t' {
+                    break;
+                }
+                end_idx = wi + wc.len_utf8();
+                chars.next();
+            }
+            continue;
+        }
         if ch.is_whitespace() {
             break;
         }
@@ -609,6 +632,16 @@ pub fn lex_with_validation_config<'a>(
                         // This hyphen is part of a scalar value. Use the
                         // plain-scalar body reader so embedded `:` (not
                         // followed by whitespace) stays inside the scalar.
+                        //
+                        // A `-` closing a block-scalar header (`|-`, `>2-`)
+                        // is a chomping indicator and stands alone, so it
+                        // must not swallow the space that follows it. Same
+                        // test as the `+` arm below.
+                        let is_chomping_indicator = input[current_line_start..start_idx]
+                            .bytes()
+                            .rev()
+                            .find(|b| !b.is_ascii_digit())
+                            .is_some_and(|b| b == b'|' || b == b'>');
                         push_plain_scalar_from(
                             &mut tokens,
                             &mut chars,
@@ -616,6 +649,7 @@ pub fn lex_with_validation_config<'a>(
                             token_start,
                             start_idx + 1,
                             flow_depth,
+                            !is_chomping_indicator,
                         );
                     }
                 }
@@ -647,6 +681,7 @@ pub fn lex_with_validation_config<'a>(
                         token_start,
                         start_idx + 1,
                         flow_depth,
+                        true,
                     );
                 } else {
                     tokens.push((PLUS, &input[token_start..start_idx + 1]));
@@ -774,6 +809,7 @@ pub fn lex_with_validation_config<'a>(
                             token_start,
                             start_idx + 2,
                             flow_depth,
+                            true,
                         );
                     }
                 } else {
@@ -785,6 +821,7 @@ pub fn lex_with_validation_config<'a>(
                         token_start,
                         start_idx + 1,
                         flow_depth,
+                        true,
                     );
                 }
             }
@@ -1818,11 +1855,15 @@ double: "quoted""#;
             (SyntaxKind::STRING, "123e4567-e89b-12d3-a456-426614174000")
         );
 
-        // Test command-line arguments
+        // Test command-line arguments. The two words are one plain
+        // scalar, so they lex as a single token rather than being
+        // rejoined by the parser.
         let input = "args: --verbose --log-level=debug";
         let tokens = lex(input);
-        assert_eq!(tokens[3], (SyntaxKind::STRING, "--verbose"));
-        assert_eq!(tokens[5], (SyntaxKind::STRING, "--log-level=debug"));
+        assert_eq!(
+            tokens[3],
+            (SyntaxKind::STRING, "--verbose --log-level=debug")
+        );
 
         // Test negative numbers
         let input = "temperature: -40";

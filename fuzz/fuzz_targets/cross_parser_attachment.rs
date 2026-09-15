@@ -113,13 +113,13 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    // A `:` inside a tag shorthand is lexed as the end of the tag, leaving
-    // the rest as a stray scalar that detaches the real value. That is a
-    // known lexer bug (`is_yaml_special` stops the tag name at ':'), not
-    // the attachment bug this target hunts; skip until it is fixed.
+    // A `:` straight after an anchor or alias name is another grey area:
+    // saphyr reads `k: &a: v` as `k: v` and drops the anchor, PyYAML
+    // rejects it as "mapping values are not allowed here". With the
+    // reference parsers split there is no answer to hold yaml-edit to.
     if input.lines().any(|line| {
         line.split_whitespace()
-            .any(|word| word.starts_with('!') && word.contains(':'))
+            .any(|word| word.starts_with(['&', '*']) && word.contains(':'))
     }) {
         return;
     }

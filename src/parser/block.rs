@@ -264,6 +264,13 @@ impl Parser {
         // Parse mapping with explicit key indicator '?'
         self.builder.start_node(SyntaxKind::MAPPING.into());
 
+        // `?` and `:` lines delimit this mapping's own entries, so a scalar
+        // inside one must not keep folding at an enclosing key's column: an
+        // inherited floor would let `? a\n: 1\n? c\n` read `? c` as part of
+        // the value `1`.
+        let outer_floor = self.scalar_continuation_floor;
+        self.scalar_continuation_floor = None;
+
         while self.current() == Some(SyntaxKind::QUESTION) {
             // Start a MAPPING_ENTRY to wrap this key-value pair
             self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
@@ -383,6 +390,7 @@ impl Parser {
             }
         }
 
+        self.scalar_continuation_floor = outer_floor;
         self.builder.finish_node();
     }
 
@@ -758,7 +766,16 @@ impl Parser {
                 if self.current_line_indent > base_indent {
                     // Nested value is more indented than the enclosing mapping's
                     // base indent - belongs to this key.
+                    //
+                    // The value parses at its own column, but a plain scalar
+                    // there is still a node of this mapping, so a
+                    // continuation line only has to clear the *key's* column:
+                    // `a:\n  x y\n z\n` is the single scalar `x y z`, as
+                    // both saphyr and PyYAML read it.
+                    let outer_floor = self.scalar_continuation_floor;
+                    self.scalar_continuation_floor = Some(base_indent);
                     self.parse_value_with_base_indent(self.current_line_indent);
+                    self.scalar_continuation_floor = outer_floor;
                     has_value = true;
                 } else if self.current_line_indent == base_indent
                     && self.current() == Some(SyntaxKind::DASH)

@@ -1102,3 +1102,69 @@ fn test_null_key_and_empty_string_key_are_distinct() {
         assert!(mapping.get(ScalarValue::null()).is_some(), "{src:?}");
     }
 }
+
+/// A nested value's plain scalar folds continuation lines that clear the
+/// *key's* column, not the value's own.
+///
+/// `a:\n  x y\n z\n` is the single scalar `x y z`, as both saphyr and
+/// PyYAML read it. The value was parsed with its own line as the base, so a
+/// continuation at or left of that column was stranded in an ERROR node --
+/// and where a sibling key followed, it was lost with the continuation.
+#[test]
+fn test_nested_value_folds_from_the_key_column() {
+    for (yaml, value) in [
+        ("a:\n  x y\n z\n", "x y z"),
+        ("a:\n  x y\n  z\n", "x y z"),
+        ("a:\n  x y\n   z\n", "x y z"),
+        ("a:\n x y\n z\n", "x y z"),
+        // The `[` here is ordinary scalar content in block context.
+        ("a:\n  x[ y\n z]\n", "x[ y z]"),
+        ("a:\n  -[ x\n y]\n", "-[ x y]"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}
+
+/// Folding from the key's column must not swallow a sibling entry, nor the
+/// next entry of an explicit-key mapping.
+#[test]
+fn test_key_column_fold_stops_at_the_next_entry() {
+    // A dedented sibling key survives the fold.
+    let yaml = "a:\n  x\n z\nb: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "x z"
+    );
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["a".to_string(), "b".to_string()]);
+
+    // `? c` opens the next entry rather than continuing the value `1`.
+    let yaml = "outer:\n  ? a\n  : 1\n  ? c\n  : 2\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let inner = file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("outer")
+        .unwrap();
+    assert_eq!(inner.iter().count(), 2);
+}

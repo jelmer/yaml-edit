@@ -157,3 +157,60 @@ fn test_explicit_key_reorder_fields_keeps_line_breaks() {
     doc.as_mapping().unwrap().reorder_fields(["b"]);
     assert_eq!(doc.to_string(), "? b\n: 2\n? a\n: 1\n");
 }
+
+/// An explicit key puts its `:` on the next line. Adding an entry and then
+/// renaming it used to collapse that onto one line (`? z: '0'`), which
+/// reparses as a single node and silently loses a key.
+#[test]
+fn set_then_rename_keeps_an_explicit_key_on_its_own_line() {
+    use std::str::FromStr;
+    use yaml_edit::{Document, YamlFile};
+
+    for (source, nested) in [("? a\n: 1\n", false), ("m:\n  ? a\n  : 1\n", true)] {
+        let doc = Document::from_str(source).unwrap();
+        let root = doc.as_mapping().unwrap();
+        let mapping = if nested {
+            root.get_mapping("m").unwrap()
+        } else {
+            root
+        };
+
+        mapping.set("u", "0");
+        assert!(mapping.rename_key("u", "z"), "{source:?}");
+
+        let text = doc.to_string();
+        let reparsed = YamlFile::from_str(&text).unwrap_or_else(|e| {
+            panic!("{source:?} produced unparsable text {text:?}: {e}");
+        });
+        assert_file_cst_ok(&reparsed);
+
+        let root = reparsed.document().unwrap().as_mapping().unwrap();
+        let mapping = if nested {
+            root.get_mapping("m").unwrap()
+        } else {
+            root
+        };
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec!["a", "z"], "{source:?} produced {text:?}");
+        assert_eq!(
+            mapping.get("z").unwrap().as_scalar().unwrap().as_string(),
+            "0",
+            "{source:?} produced {text:?}"
+        );
+    }
+}
+
+/// A plain (non-explicit) mapping must keep renaming on one line.
+#[test]
+fn renaming_a_plain_key_stays_inline() {
+    use std::str::FromStr;
+    use yaml_edit::Document;
+
+    let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(mapping.rename_key("a", "z"));
+    assert_eq!(doc.to_string(), "z: 1\nb: 2\n");
+}

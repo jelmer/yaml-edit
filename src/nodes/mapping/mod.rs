@@ -1249,6 +1249,20 @@ impl Mapping {
                         // Replace the KEY node using AsYaml::build_content
                         builder.start_node(SyntaxKind::KEY.into());
                         new_key.build_content(&mut builder, 0, false);
+                        // An explicit key (`? k\n  : v`) puts the `:` on its
+                        // own line, and the parser keeps that line break and
+                        // indent inside KEY. They describe the entry's layout
+                        // rather than the key, so carry them over or the entry
+                        // collapses onto one line and reparses as one node.
+                        for trailing in n
+                            .children_with_tokens()
+                            .skip_while(|c| {
+                                !matches!(c.as_token().map(|t| t.kind()), Some(SyntaxKind::NEWLINE))
+                            })
+                            .filter_map(|c| c.into_token())
+                        {
+                            builder.token(trailing.kind().into(), trailing.text());
+                        }
                         builder.finish_node(); // KEY
                     }
                     rowan::NodeOrToken::Node(n) => {

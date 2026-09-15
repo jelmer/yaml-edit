@@ -1421,38 +1421,7 @@ impl Mapping {
         self.0.splice_children(insert_pos..insert_pos, new_elements);
     }
 
-    /// Get the byte offset range of this mapping in the source text.
-    ///
-    /// Returns the start and end byte offsets as a `TextPosition`.
-    pub fn byte_range(&self) -> crate::TextPosition {
-        self.0.text_range().into()
-    }
-
-    /// Get the line and column where this mapping starts.
-    ///
-    /// Requires the original source text to calculate line/column from byte offsets.
-    /// Line and column numbers are 1-indexed.
-    ///
-    /// # Arguments
-    ///
-    /// * `source_text` - The original YAML source text
-    pub fn start_position(&self, source_text: &str) -> crate::LineColumn {
-        let range = self.byte_range();
-        crate::byte_offset_to_line_column(source_text, range.start as usize)
-    }
-
-    /// Get the line and column where this mapping ends.
-    ///
-    /// Requires the original source text to calculate line/column from byte offsets.
-    /// Line and column numbers are 1-indexed.
-    ///
-    /// # Arguments
-    ///
-    /// * `source_text` - The original YAML source text
-    pub fn end_position(&self, source_text: &str) -> crate::LineColumn {
-        let range = self.byte_range();
-        crate::byte_offset_to_line_column(source_text, range.end as usize)
-    }
+    crate::nodes::ast_node_spans!("mapping");
 }
 
 impl Default for Mapping {

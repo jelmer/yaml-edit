@@ -323,6 +323,45 @@ macro_rules! ast_node {
 }
 
 pub(crate) use ast_node;
+/// Emit the `byte_range` / `start_position` / `end_position` trio for a
+/// wrapper whose `self.0` exposes `text_range()`. `$what` names the node
+/// in the generated docs ("sequence", "comment", ...).
+macro_rules! ast_node_spans {
+    ($what:expr) => {
+        #[doc = concat!("Get the byte offset range of this ", $what, " in the source text.")]
+        #[doc = ""]
+        #[doc = "Returns the start and end byte offsets as a `TextPosition`."]
+        pub fn byte_range(&self) -> crate::TextPosition {
+            self.0.text_range().into()
+        }
+
+        #[doc = concat!("Get the line and column where this ", $what, " starts.")]
+        #[doc = ""]
+        #[doc = "Requires the original source text to calculate line/column from byte"]
+        #[doc = "offsets. Line and column numbers are 1-indexed."]
+        #[doc = ""]
+        #[doc = "# Arguments"]
+        #[doc = ""]
+        #[doc = "* `source_text` - The original YAML source text"]
+        pub fn start_position(&self, source_text: &str) -> crate::LineColumn {
+            crate::byte_offset_to_line_column(source_text, self.byte_range().start as usize)
+        }
+
+        #[doc = concat!("Get the line and column where this ", $what, " ends.")]
+        #[doc = ""]
+        #[doc = "Requires the original source text to calculate line/column from byte"]
+        #[doc = "offsets. Line and column numbers are 1-indexed."]
+        #[doc = ""]
+        #[doc = "# Arguments"]
+        #[doc = ""]
+        #[doc = "* `source_text` - The original YAML source text"]
+        pub fn end_position(&self, source_text: &str) -> crate::LineColumn {
+            crate::byte_offset_to_line_column(source_text, self.byte_range().end as usize)
+        }
+    };
+}
+
+pub(crate) use ast_node_spans;
 
 // Node modules
 pub mod alias_node;

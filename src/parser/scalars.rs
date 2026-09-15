@@ -752,6 +752,12 @@ impl Parser {
         // precedes it, but a node property only applies at the start of a
         // node, and a continuation line is inside one already. `- a\n !\n`
         // is the scalar `a !`, as both saphyr and PyYAML read it.
+        //
+        // A DASH counts only when the line is indented past the scalar's own,
+        // where it cannot be the next entry of the sequence we sit in:
+        // `a:\n- x\n  - y\n` is the single item `x - y`, as both saphyr and
+        // PyYAML read it. At or left of the scalar's column it opens an entry
+        // and ends the scalar, as before.
         let has_content = self.tokens.get(peek_idx).is_some_and(|(kind, _)| {
             matches!(
                 kind,
@@ -762,7 +768,10 @@ impl Parser {
                     | SyntaxKind::NULL
                     | SyntaxKind::UNTERMINATED_STRING
                     | SyntaxKind::TAG
-            )
+            ) || (*kind == SyntaxKind::DASH
+                && self
+                    .sequence_entry_column
+                    .is_some_and(|column| next_line_indent > column))
         });
 
         // A continuation has to be indented past the scalar's own line, so it

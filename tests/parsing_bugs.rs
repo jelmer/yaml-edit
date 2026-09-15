@@ -785,3 +785,85 @@ items:
         .expect("items should be a sequence");
     assert_eq!(items.len(), 1, "Should have 1 item in sequence");
 }
+
+/// A `-` indented past the entry above it is plain-scalar content, not the
+/// next entry of the sequence.
+///
+/// `a:\n- x\n  - y\n` is the single item `x - y`, as both saphyr and PyYAML
+/// read it. The sequence loop took any dash at or past the sequence's base
+/// indent as a new entry, so the folded lines became separate entries and a
+/// following continuation line (`  z`) had nowhere to go: it was swept into
+/// an ERROR node while from_str still reported success.
+#[test]
+fn test_indented_dash_continues_the_entry_scalar() {
+    for (yaml, items) in [
+        ("a:\n- x\n  - y\n  z\n", vec!["x - y z"]),
+        ("a:\n- x\n  - y\n", vec!["x - y"]),
+        ("a:\n- x\n  y\n", vec!["x y"]),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let seq = mapping.get_sequence("a").unwrap();
+        let got: Vec<String> = (0..seq.len())
+            .map(|i| seq.get(i).unwrap().as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(got, items, "{yaml:?}");
+    }
+
+    // At the root, with no key above it.
+    let file = YamlFile::from_str("- a\n - b\n").unwrap();
+    let seq = file.document().unwrap().as_sequence().unwrap();
+    assert_eq!(seq.len(), 1);
+    assert_eq!(
+        seq.get(0).unwrap().as_scalar().unwrap().as_string(),
+        "a - b"
+    );
+}
+
+/// A `-` at the sequence's own column still opens the next entry.
+#[test]
+fn test_dash_at_the_entry_column_still_opens_an_entry() {
+    for (yaml, key) in [
+        ("a:\n- x\n- y\n", Some("a")),
+        ("a:\n  - x\n  - y\n", Some("a")),
+        ("- x\n- y\n", None),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let document = file.document().unwrap();
+        let seq = match key {
+            Some(k) => document.as_mapping().unwrap().get_sequence(k).unwrap(),
+            None => document.as_sequence().unwrap(),
+        };
+        assert_eq!(seq.len(), 2, "{yaml:?}");
+    }
+}
+
+/// An explicit key's sequence entries sit past the `? `, but they are still
+/// its own entries rather than one folded scalar. The dash column has to be
+/// the real column for that: the leading-whitespace count reads 0 for the
+/// `-` in `? - a`, which made every later entry look indented past it.
+#[test]
+fn test_explicit_key_sequence_keeps_its_entries() {
+    let yaml = "? - Detroit Tigers\n  - Chicago Cubs\n:\n  - 2001-07-23\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let (key, _) = mapping.iter().next().unwrap();
+    let key_seq = key.as_sequence().expect("sequence key");
+    assert_eq!(key_seq.len(), 2);
+    assert_eq!(
+        key_seq.get(0).unwrap().as_scalar().unwrap().as_string(),
+        "Detroit Tigers"
+    );
+    assert_eq!(
+        key_seq.get(1).unwrap().as_scalar().unwrap().as_string(),
+        "Chicago Cubs"
+    );
+}

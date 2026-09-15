@@ -1904,13 +1904,23 @@ mod tests {
             "{even_v:?}"
         );
 
-        let mixed = Document::from_str("- a\n - b\n").unwrap();
-        let mixed_v = Validator::new().validate(&mixed);
+        // `- a\n - b\n` is not two misaligned entries: a `-` indented past
+        // the entry above it is plain-scalar content, so this is the single
+        // item `a - b`, as both saphyr and PyYAML read it. The parser folds
+        // it, leaving one DASH token and nothing for this rule to flag.
+        let folded = Document::from_str("- a\n - b\n").unwrap();
+        let folded_seq = folded.as_sequence().expect("sequence");
+        assert_eq!(folded_seq.len(), 1);
+        assert_eq!(
+            folded_seq.get(0).unwrap().as_scalar().unwrap().as_string(),
+            "a - b"
+        );
+        let folded_v = Validator::new().validate(&folded);
         assert!(
-            mixed_v
+            !folded_v
                 .iter()
                 .any(|v| v.message.contains("Inconsistent sequence item indentation")),
-            "{mixed_v:?}"
+            "{folded_v:?}"
         );
     }
 

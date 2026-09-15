@@ -82,6 +82,14 @@ pub(super) struct Parser {
     /// same question as a document-level anchor and answers it differently,
     /// adopting the sibling the tag arm just refused.
     pub(super) annotation_in_value_position: bool,
+    /// Column of the `-` of the block sequence entry being parsed, if any.
+    ///
+    /// A `-` on a later line opens the next entry when it sits at this
+    /// column, and is plain-scalar content when it is indented past it:
+    /// `a:\n- x\n  - y\n` is the single item `x - y`. Comparing against the
+    /// scalar's own line cannot tell those apart, since an explicit key
+    /// (`? - a\n  - b\n`) puts its entries deeper than the scalar too.
+    pub(super) sequence_entry_column: Option<usize>,
     /// Current depth of nested flow collections ([...] / {...}).
     pub(super) flow_depth: usize,
     /// Depth of `parse_value_with_base_indent` recursion (block and flow).
@@ -113,6 +121,7 @@ impl Parser {
             equal_indent_continues_scalar: false,
             scalar_continuation_floor: None,
             annotation_in_value_position: false,
+            sequence_entry_column: None,
             current_line_indent: 0,
             flow_depth: 0,
             nesting_depth: 0,

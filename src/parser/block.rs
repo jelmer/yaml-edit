@@ -199,11 +199,23 @@ impl Parser {
             // Start SEQUENCE_ENTRY node to wrap the entire item
             self.builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
 
+            // The dash's true column, read before bump() consumes it, and
+            // zero-based to match the indents it is compared against.
+            // current_line_indent counts leading whitespace only, so it reads
+            // 0 for the `-` of an explicit key (`? - a`), whose entries then
+            // look indented past their own sequence.
+            let dash_column = self.error_context.current_location().1.saturating_sub(1);
             self.bump(); // consume dash
             self.skip_whitespace();
 
             // Record the dash's line indentation for the item value parsing
             let item_indent = self.current_line_indent;
+
+            // A `-` on a later line continues this entry's scalar when it is
+            // indented past our own dash, and opens the next entry when it is
+            // not. The dash column is the only thing that tells those apart.
+            let outer_entry_column = self.sequence_entry_column;
+            self.sequence_entry_column = Some(dash_column);
 
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 // Use item's line indent so nested mappings parse at the right level
@@ -223,6 +235,8 @@ impl Parser {
             } else {
                 self.emit_implicit_null();
             }
+
+            self.sequence_entry_column = outer_entry_column;
 
             // Block-style SEQUENCE_ENTRY owns its NEWLINE terminator (DESIGN.md)
             if self.current() == Some(SyntaxKind::NEWLINE) {

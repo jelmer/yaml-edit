@@ -731,7 +731,16 @@ impl Parser {
             )
         });
 
-        if !has_content || next_line_indent <= scalar_indent {
+        // A continuation has to be indented past the scalar's own line, so it
+        // cannot be mistaken for the next entry of an enclosing mapping.
+        // Where there is no such mapping to confuse it with, an equally
+        // indented line continues the scalar (`ab\ncd`, `- x\n y`).
+        let deep_enough = if self.equal_indent_continues_scalar {
+            next_line_indent >= scalar_indent
+        } else {
+            next_line_indent > scalar_indent
+        };
+        if !has_content || !deep_enough {
             return false;
         }
 

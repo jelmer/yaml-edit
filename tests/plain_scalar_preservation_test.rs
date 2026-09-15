@@ -274,3 +274,84 @@ fn a_blank_line_continues_a_plain_scalar() {
         );
     }
 }
+
+#[test]
+fn a_document_level_plain_scalar_folds_unindented_lines() {
+    // The document's own node has no enclosing collection to be confused
+    // with, so a continuation need not be indented past the first line.
+    for (yaml, value) in [
+        ("ab\ncd\n", "ab cd"),
+        ("ab\ncd\nef\n", "ab cd ef"),
+        ("ab\n  cd\n", "ab cd"),
+        ("ab\n\ncd\n", "ab\ncd"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn an_unindented_continuation_does_not_apply_inside_a_mapping() {
+    // Indented past the key, this is a continuation; at the key's own
+    // column it would be the next entry, so the rule stays strict there.
+    let yaml = "a: one\n  two\nb: z\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["a", "b"]);
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "one two"
+    );
+}
+
+#[test]
+fn a_sequence_entry_folds_a_continuation_at_its_own_column() {
+    // A sequence entry's continuation only has to clear the sequence's
+    // column, not the entry's content column, so `- x\n y` is one scalar.
+    for yaml in [
+        "a:\n- x\n y\nb: z\n",
+        "a:\n- x\n  y\nb: z\n",
+        "a:\n  - x\n   y\nb: z\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec!["a", "b"], "{yaml:?}");
+        let seq = mapping.get("a").unwrap();
+        let seq = seq.as_sequence().unwrap();
+        assert_eq!(seq.len(), 1, "{yaml:?}");
+        assert_eq!(
+            seq.get(0).unwrap().as_scalar().unwrap().as_string(),
+            "x y",
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn a_dash_line_still_starts_a_new_sequence_entry() {
+    let yaml = "a:\n- x\n- y\nb: z\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let seq = mapping.get("a").unwrap();
+    let seq = seq.as_sequence().unwrap();
+    assert_eq!(seq.len(), 2);
+}

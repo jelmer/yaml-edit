@@ -54,6 +54,15 @@ pub(super) struct Parser {
     pub(super) in_value_context: bool,
     /// Track the current line's indentation level for plain scalar continuation
     pub(super) current_line_indent: usize,
+    /// Whether an equally indented line continues a plain scalar here.
+    ///
+    /// A continuation normally has to be indented past the scalar's own line,
+    /// so it cannot be read as the next entry of the enclosing mapping. That
+    /// does not apply to the document's own node, which has no enclosing
+    /// collection (`ab\ncd` is one scalar), nor inside a sequence entry,
+    /// where a continuation only has to clear the sequence's own column
+    /// (`- x\n y`).
+    pub(super) equal_indent_continues_scalar: bool,
     /// Current depth of nested flow collections ([...] / {...}).
     pub(super) flow_depth: usize,
     /// Depth of `parse_value_with_base_indent` recursion (block and flow).
@@ -82,6 +91,7 @@ impl Parser {
             in_flow_context: false,
             error_context: ErrorRecoveryContext::new(text.to_string()),
             in_value_context: false,
+            equal_indent_continues_scalar: false,
             current_line_indent: 0,
             flow_depth: 0,
             nesting_depth: 0,
@@ -190,7 +200,9 @@ impl Parser {
             && self.current() != Some(SyntaxKind::DOC_END)
             && self.current() != Some(SyntaxKind::DOC_START)
         {
+            self.equal_indent_continues_scalar = true;
             self.parse_value();
+            self.equal_indent_continues_scalar = false;
         }
 
         // Handle document end marker

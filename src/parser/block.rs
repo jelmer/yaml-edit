@@ -12,6 +12,8 @@ use crate::ParseErrorKind;
 
 impl Parser {
     pub(super) fn parse_mapping_with_base_indent(&mut self, base_indent: usize) {
+        // Entries inside a mapping are bounded by their key's column.
+        self.equal_indent_continues_scalar = false;
         self.builder.start_node(SyntaxKind::MAPPING.into());
         self.error_context.push_context(ParseContext::Mapping);
 
@@ -184,6 +186,9 @@ impl Parser {
     }
 
     pub(super) fn parse_sequence_with_base_indent(&mut self, base_indent: usize) {
+        // A sequence entry's continuation only has to clear the sequence's
+        // own column, which parse_value_with_base_indent already enforces.
+        self.equal_indent_continues_scalar = true;
         self.builder.start_node(SyntaxKind::SEQUENCE.into());
         self.error_context.push_context(ParseContext::Sequence);
 

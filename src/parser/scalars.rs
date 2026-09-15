@@ -456,6 +456,18 @@ impl Parser {
             self.bump();
         }
 
+        // An anchor between the tag and the line break annotates the same
+        // node; keep it in the TAGGED_NODE. Without this the ANCHOR falls
+        // through to the catch-all arm below, which parses the collection as
+        // if it started on the tag's own line and swallows the next sibling
+        // entry.
+        if self.current() == Some(SyntaxKind::ANCHOR) {
+            self.bump();
+            while matches!(self.current(), Some(SyntaxKind::WHITESPACE)) {
+                self.bump();
+            }
+        }
+
         // Parse the following structure based on type
         match self.current() {
             Some(SyntaxKind::LEFT_BRACE) if is_mapping => self.parse_flow_mapping(),

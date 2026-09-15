@@ -405,3 +405,49 @@ fn tagged_body_after_a_gap_stays_attached() {
         assert_eq!(keys, vec!["tags", "sibling"], "{yaml}\n{tree}");
     }
 }
+
+#[test]
+fn tagged_collections_accept_a_trailing_anchor() {
+    // `!!set`, `!!omap` and `!!pairs` take their own parse path, which also
+    // expected a line break straight after the tag.
+    let file = YamlFile::from_str("k: !!set &a\n  ? x\n  ? y\nz: 1\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.keys().map(|k| k.to_string()).collect::<Vec<_>>(),
+        vec!["k", "z"],
+        "{}",
+        debug::tree_to_string(file.syntax())
+    );
+    // The anchor must not stop the value being recognised as a set.
+    assert_eq!(
+        mapping
+            .get("k")
+            .unwrap()
+            .as_tagged()
+            .unwrap()
+            .as_set()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let file = YamlFile::from_str("k: !!omap &a\n  - x: 1\nz: 1\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.keys().map(|k| k.to_string()).collect::<Vec<_>>(),
+        vec!["k", "z"],
+        "{}",
+        debug::tree_to_string(file.syntax())
+    );
+    assert_eq!(
+        mapping
+            .get("k")
+            .unwrap()
+            .as_tagged()
+            .unwrap()
+            .as_ordered_mapping()
+            .unwrap()
+            .len(),
+        1
+    );
+}

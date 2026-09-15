@@ -281,3 +281,53 @@ fn flow_merge_alias_preserves_following_entry_and_metadata_edits() {
         );
     }
 }
+
+#[test]
+fn indentless_tagged_set_does_not_absorb_following_entries() {
+    // An indentless block mapping cannot be a mapping value, so the explicit
+    // keys and the sibling entry all dedent out to the enclosing mapping and
+    // the tag is left annotating an implicit null. PyYAML composes the same
+    // four top-level keys.
+    let yaml = "s: !!set\n? a\n? b\nmetadata:\n  version: 0.1.0 # keep version comment\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["s", "a", "b", "metadata"],
+        "{}",
+        debug::tree_to_string(file.syntax())
+    );
+    assert_eq!(
+        mapping
+            .get("s")
+            .unwrap()
+            .as_tagged()
+            .unwrap()
+            .tag()
+            .as_deref(),
+        Some("!!set")
+    );
+    let metadata = mapping.get_mapping("metadata").unwrap();
+    metadata.set("version", "0.1.1");
+    common::assert_file_cst_ok(&file);
+    assert_eq!(
+        file.to_string(),
+        yaml.replace("version: 0.1.0", "version: 0.1.1")
+    );
+}
+
+#[test]
+fn indented_tagged_set_keeps_entries_nested() {
+    let yaml = "s: !!set\n  ? a\n  ? b\nmetadata:\n  version: 0.1.0\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.keys().count(), 2);
+    let set = mapping.get("s").unwrap();
+    assert_eq!(set.as_tagged().unwrap().tag().as_deref(), Some("!!set"));
+}

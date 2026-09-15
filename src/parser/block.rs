@@ -20,7 +20,17 @@ impl Parser {
     /// collection, indented or not, because there is no enclosing scope.
     fn absorb_entry_comments(&mut self, base_indent: usize) -> bool {
         while self.current() == Some(SyntaxKind::COMMENT) {
-            if base_indent > 0 && self.is_at_dedented_position(base_indent) {
+            // A comment on its own line says nothing about the block by its
+            // own column: what ends the block is the next line with content,
+            // so `a:\n  - x\n# c\n  - y\n` keeps both entries. Stop only
+            // when that line really is dedented. A comment with no content
+            // after it, and a trailing comment on an entry's own line, keep
+            // the old reading, which leaves them inside this block.
+            let dedented = match self.indent_after_comment_lines() {
+                Some(indent) => indent < base_indent,
+                None => self.is_at_dedented_position(base_indent),
+            };
+            if base_indent > 0 && dedented {
                 return true;
             }
             self.bump();

@@ -509,10 +509,22 @@ impl Parser {
                             self.bump(); // consume indent if at appropriate level
                         }
                         Some(SyntaxKind::COMMENT) => {
-                            // COMMENT at column 0 (no INDENT after NEWLINE)
+                            // COMMENT at column 0 (no INDENT after NEWLINE).
+                            //
+                            // The comment's own column says nothing about the
+                            // block: what ends it is the next line with
+                            // content. `a:\n  - x\n# c\n  - y\n` keeps both
+                            // entries, as both saphyr and PyYAML read it.
                             if base_indent > 0 {
-                                // This is dedented - don't consume it
-                                return true;
+                                return match self.indent_after_comment_lines() {
+                                    // Content still inside the block: the
+                                    // comment belongs to it, not to whatever
+                                    // encloses us.
+                                    Some(indent) => indent < base_indent,
+                                    // Nothing follows, so the comment is a
+                                    // trailer of the enclosing scope.
+                                    None => true,
+                                };
                             }
                             // base_indent==0, let caller handle the comment
                             return false;
@@ -664,6 +676,51 @@ impl Parser {
     ///
     /// A blank line's indentation is not significant in YAML, so such an
     /// INDENT must not be read as a dedent out of the enclosing block.
+    /// Indentation of the next line that carries content, looking past any
+    /// run of comment-only and blank lines, or `None` if there is none.
+    ///
+    /// A comment's own column says nothing about the block it sits in: YAML
+    /// lets `a:\n  - x\n# c\n  - y\n` keep both entries, because what ends
+    /// the sequence is the next content line, not the comment. The caller is
+    /// positioned on the COMMENT token.
+    pub(super) fn indent_after_comment_lines(&self) -> Option<usize> {
+        // `tokens` is in reverse order, so walk it backwards from the current
+        // token to read the lines that follow.
+        let mut rest = self.tokens.iter().rev().map(|(kind, text)| (*kind, text));
+        // The COMMENT we are standing on, and its line break.
+        if !matches!(rest.next(), Some((SyntaxKind::COMMENT, _))) {
+            return None;
+        }
+        // Step over the comment's own line break, then read whole lines
+        // until one carries content. A line is blank when a NEWLINE follows
+        // its leading whitespace directly, and a comment line ends at the
+        // COMMENT token, so both leave the loop looking at a line break.
+        if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+            return None;
+        }
+        loop {
+            let mut indent = 0;
+            let mut token = rest.next()?;
+            if token.0 == SyntaxKind::INDENT {
+                indent = token.1.len();
+                token = rest.next()?;
+            }
+            match token.0 {
+                // A blank line's indentation is not significant either; its
+                // NEWLINE is the one we just read.
+                SyntaxKind::NEWLINE => continue,
+                // Another comment line: step over its line break too.
+                SyntaxKind::COMMENT => {
+                    if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+                        return None;
+                    }
+                    continue;
+                }
+                _ => return Some(indent),
+            }
+        }
+    }
+
     pub(super) fn indent_is_blank_line(&self) -> bool {
         matches!(
             self.upcoming_tokens().next(),

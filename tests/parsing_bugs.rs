@@ -1002,3 +1002,68 @@ fn test_null_key_is_an_empty_scalar() {
     assert_eq!(key.as_scalar().unwrap().as_string(), "");
     assert_eq!(value.as_scalar().unwrap().as_string(), "v");
 }
+
+/// A comment on its own line does not end the block it sits in, whatever
+/// its own column. What ends the block is the next line with content.
+///
+/// `a:\n  - x\n# c\n  - y\n` keeps both entries, as both saphyr and PyYAML
+/// read it. The comment loops compared the comment's own indentation, so a
+/// column-0 comment ended the collection: the sequence case stranded the
+/// later entries in an ERROR node, and the mapping case dropped them with
+/// no ERROR node at all.
+#[test]
+fn test_comment_indentation_does_not_end_a_block() {
+    // Sequence: both entries survive.
+    for yaml in [
+        "a:\n  - x\n# c\n  - y\n",
+        "a:\n  - x\n  # c\n  - y\n",
+        "a:\n  - x\n# c\n# d\n  - y\n",
+        "a:\n  - x\n# c\n\n  - y\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(mapping.get_sequence("a").unwrap().len(), 2, "{yaml:?}");
+    }
+
+    // Nested mapping: both entries survive.
+    let yaml = "a:\n  k: 1\n# c\n  j: 2\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let inner = file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("a")
+        .unwrap();
+    assert_eq!(inner.iter().count(), 2);
+}
+
+/// A comment really does end the block when the next content line is
+/// dedented, or when nothing follows it at all.
+#[test]
+fn test_comment_still_ends_a_block_when_content_dedents() {
+    let yaml = "a:\n  - x\n# c\nb: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.get_sequence("a").unwrap().len(), 1);
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["a".to_string(), "b".to_string()]);
+
+    // A trailing comment stays where it was, so clearing the mapping does
+    // not strand it outside the document.
+    let yaml = "items:  # a list\n  - one\n  - two  # inline\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+    assert!(!tree.contains("ERROR"), "{tree}");
+}

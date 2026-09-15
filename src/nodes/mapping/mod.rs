@@ -8,11 +8,10 @@ use helpers::{
     entry_line_terminated, index_after_entry_line, trailing_newline_reachable, FlowInsertPos,
 };
 
-use super::{entry_key, entry_value, has_child_token, Lang, Sequence, SyntaxNode};
+use super::{entry_key, entry_value, fresh_token, has_child_token, Lang, Sequence, SyntaxNode};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::yaml::{
-    add_newline_token,
     collapse_empty_child_collection_in_parent as collapse_empty_child_mapping_in_parent,
     dump_cst_to_string, ends_with_newline, ValueNode,
 };
@@ -692,16 +691,7 @@ impl Mapping {
 
         let indent_level = self.detect_indentation_level();
         if indent_level > 0 && count > 0 {
-            let mut builder = rowan::GreenNodeBuilder::new();
-            builder.start_node(SyntaxKind::ROOT.into());
-            builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent_level));
-            builder.finish_node();
-            let node = SyntaxNode::new_root_mut(builder.finish());
-            for child in node.children_with_tokens() {
-                if let rowan::NodeOrToken::Token(token) = child {
-                    new_elements.push(token.into());
-                }
-            }
+            new_elements.push(fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level)).into());
         }
 
         new_elements.push(new_entry.clone().into());
@@ -1010,7 +1000,7 @@ impl Mapping {
             };
 
             if !has_newline_before {
-                add_newline_token(&mut new_elements);
+                new_elements.push(fresh_token(SyntaxKind::NEWLINE, "\n").into());
             }
         }
 
@@ -1457,7 +1447,7 @@ impl Mapping {
                     }
                 } else if let rowan::NodeOrToken::Token(t) = prev_node {
                     if t.kind() != SyntaxKind::NEWLINE {
-                        add_newline_token(&mut new_elements);
+                        new_elements.push(fresh_token(SyntaxKind::NEWLINE, "\n").into());
                     }
                 }
             }
@@ -1472,17 +1462,11 @@ impl Mapping {
         let displaces_entry = insert_pos < self.0.children_with_tokens().count();
         let indent_level = self.detect_indentation_level();
         if indent_level > 0 {
-            let mut indent_builder = GreenNodeBuilder::new();
-            indent_builder.start_node(SyntaxKind::ROOT.into());
-            indent_builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent_level));
-            indent_builder.finish_node();
-            let indent_node = SyntaxNode::new_root_mut(indent_builder.finish());
-            if let Some(token) = indent_node.first_token() {
-                if displaces_entry {
-                    new_elements.push(token.into());
-                } else {
-                    new_elements.insert(0, token.into());
-                }
+            let token = fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level));
+            if displaces_entry {
+                new_elements.push(token.into());
+            } else {
+                new_elements.insert(0, token.into());
             }
         }
 

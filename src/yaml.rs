@@ -271,20 +271,6 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
     }
 }
 
-/// Create a newline token and add it to the elements vector
-pub(crate) fn add_newline_token(
-    elements: &mut Vec<rowan::NodeOrToken<rowan::SyntaxNode<Lang>, rowan::SyntaxToken<Lang>>>,
-) {
-    let mut nl_builder = rowan::GreenNodeBuilder::new();
-    nl_builder.start_node(SyntaxKind::ROOT.into());
-    nl_builder.token(SyntaxKind::NEWLINE.into(), "\n");
-    nl_builder.finish_node();
-    let nl_node = SyntaxNode::new_root_mut(nl_builder.finish());
-    if let Some(token) = nl_node.first_token() {
-        elements.push(token.into());
-    }
-}
-
 /// A virtual AST node for YAML sets (!!set tagged scalars)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Set(SyntaxNode);

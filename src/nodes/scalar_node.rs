@@ -1,10 +1,9 @@
-use super::{Lang, SyntaxNode};
+use super::{fresh_token, Lang, SyntaxNode};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::scalar::ScalarValue;
 use crate::yaml::ValueNode;
 use rowan::ast::AstNode;
-use rowan::GreenNodeBuilder;
 use std::fmt;
 
 ast_node!(Scalar, SCALAR, "A YAML scalar value");
@@ -277,17 +276,10 @@ impl Scalar {
     /// higher-level API instead.
     pub fn set_value(&self, value: &str) {
         let children_count = self.0.children_with_tokens().count();
-        // Create a temporary node to wrap the token and extract a SyntaxToken
-        let mut builder = GreenNodeBuilder::new();
-        builder.start_node(SyntaxKind::ROOT.into());
-        builder.token(SyntaxKind::STRING.into(), value);
-        builder.finish_node();
-        let temp_node = SyntaxNode::new_root_mut(builder.finish());
-        let new_token = temp_node
-            .first_token()
-            .expect("builder always emits a STRING token");
-        self.0
-            .splice_children(0..children_count, vec![new_token.into()]);
+        self.0.splice_children(
+            0..children_count,
+            vec![fresh_token(SyntaxKind::STRING, value).into()],
+        );
     }
 
     /// Get the byte offset range of this scalar in the source text.

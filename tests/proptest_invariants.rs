@@ -187,20 +187,15 @@ fn seed_strat() -> impl Strategy<Value = &'static str> {
     ]
 }
 
-/// A mapping key normalized for comparison.
+/// A mapping key's decoded text.
 ///
-/// The two paths disagree on whether a quoted key keeps its quotes
-/// (`get_resolved` builds its map with them, `MergedMapping` decodes them),
-/// which is a formatting difference, not a resolution one. Strip the quotes
-/// so this property stays about which keys are reachable.
-fn normalized_key(text: &str) -> String {
-    let t = text.trim();
-    for q in ['\'', '"'] {
-        if t.len() >= 2 && t.starts_with(q) && t.ends_with(q) {
-            return t[1..t.len() - 1].to_string();
-        }
-    }
-    t.to_string()
+/// `MergedMapping` yields CST nodes, whose `to_string()` is the raw source
+/// text including any quotes; `get_resolved` stores decoded strings. Decode
+/// the node side so both are compared as the keys they actually name.
+fn decoded_key(key: &yaml_edit::YamlNode) -> String {
+    key.as_scalar()
+        .map(|s| s.as_string())
+        .unwrap_or_else(|| key.to_string())
 }
 
 /// Assert `MergedMapping` and `get_resolved` agree for every top-level key
@@ -231,7 +226,7 @@ fn check_resolution_agrees(doc: &Document, context: &str) -> Result<(), TestCase
         let mut view_keys: Vec<String> = mapping
             .merged(&registry)
             .keys()
-            .map(|k| normalized_key(&k.to_string()))
+            .map(|k| decoded_key(&k))
             .collect();
         view_keys.sort();
         view_keys.dedup();
@@ -254,8 +249,8 @@ fn check_resolution_agrees(doc: &Document, context: &str) -> Result<(), TestCase
         };
         let mut resolved_keys: Vec<String> = resolved_map
             .keys()
-            .map(|k| normalized_key(k))
-            .filter(|k| k != "<<")
+            .filter(|k| k.as_str() != "<<")
+            .cloned()
             .collect();
         resolved_keys.sort();
         resolved_keys.dedup();

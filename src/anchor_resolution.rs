@@ -744,6 +744,33 @@ mod tests {
     }
 
     #[test]
+    fn get_resolved_keys_are_decoded() {
+        // Mapping::pairs() yields the KEY wrapper, so casting it straight to
+        // Scalar failed and the key fell back to raw text. A quoted key kept
+        // its quotes and became unreachable by its own name -- but only
+        // without a merge key, since apply_merge_keys decodes separately.
+        for (yaml, expected) in [
+            ("a:\n  '0': z\n  x: 1\n", vec!["0", "x"]),
+            ("a:\n  \"k\": z\n", vec!["k"]),
+            ("a:\n  plain: z\n", vec!["plain"]),
+            // With a merge key, which takes the other code path.
+            ("s: &s\n  q: r\na:\n  <<: *s\n  '0': z\n", vec!["0", "q"]),
+        ] {
+            let doc = Document::from_str(yaml).unwrap();
+            let resolved = doc.get_resolved("a").expect("a resolves");
+            let mapping = resolved.as_mapping().expect("a is a mapping");
+            let keys: Vec<&str> = mapping.keys().map(String::as_str).collect();
+            assert_eq!(keys, expected, "{yaml:?}");
+            for key in expected {
+                assert!(
+                    mapping.contains_key(key),
+                    "{yaml:?}: {key:?} not reachable by name"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn get_resolved_expands_merge_keys() {
         // `*a` reaches apply_merge_keys as an ALIAS node, not a scalar, so
         // the merge used to fall through and drop every inherited key. Check

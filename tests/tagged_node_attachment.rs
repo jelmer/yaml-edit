@@ -183,3 +183,36 @@ proptest! {
         prop_assert_eq!(file.to_string(), yaml);
     }
 }
+
+/// A tagged plain scalar whose continuation line is *less* indented than
+/// its first line strands the continuation in an ERROR node, while the
+/// untagged spelling folds it in:
+///
+/// ```text
+/// x          !
+///   a          a
+///  b          b        <- stranded only in the tagged form
+/// ```
+///
+/// parse_tagged_value_inner opens the body with the first body line's own
+/// column as the base indent, so a shallower continuation reads as a
+/// dedent. A plain scalar's continuation only has to clear the enclosing
+/// block's indent (0 here), not its own first line.
+///
+/// Ignored until the tagged path stops raising the base indent; the
+/// assertion below is the behaviour to restore.
+#[test]
+#[ignore = "tagged plain scalar raises the continuation's base indent"]
+fn tagged_scalar_keeps_a_less_indented_continuation() {
+    for yaml in ["!\n  a\n b\n", "!!str\n  a\n b\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    // The untagged spelling this should match.
+    let file = YamlFile::from_str("x\n  a\n b\n").unwrap();
+    let tree = debug::tree_to_string(file.syntax());
+    assert!(!tree.contains("ERROR"), "{tree}");
+}

@@ -295,29 +295,21 @@ fn apply_merge_keys(
 
         // Handle both single alias and sequence of aliases
         match &value {
-            // Single alias: <<: *alias
-            YamlNode::Scalar(_) => {
-                let Some(alias_text) = node_as_string(&value) else {
+            // Single alias: `<<: *alias`
+            YamlNode::Alias(_) | YamlNode::Scalar(_) => {
+                let Some(alias_name) = alias_target(&value) else {
                     continue;
                 };
-                let Some(alias_name) = alias_text.strip_prefix('*') else {
-                    continue;
-                };
-
-                merge_from_alias(&mut merged_pairs, alias_name, registry);
+                merge_from_alias(&mut merged_pairs, &alias_name, registry);
             }
-            // Multiple aliases: <<: [*alias1, *alias2]
+            // Multiple aliases: `<<: [*alias1, *alias2]`
             YamlNode::Sequence(seq) => {
                 // Process aliases in order - later aliases override earlier ones
                 for alias_node in seq.values() {
-                    let Some(alias_text) = node_as_string(&alias_node) else {
+                    let Some(alias_name) = alias_target(&alias_node) else {
                         continue;
                     };
-                    let Some(alias_name) = alias_text.strip_prefix('*') else {
-                        continue;
-                    };
-
-                    merge_from_alias(&mut merged_pairs, alias_name, registry);
+                    merge_from_alias(&mut merged_pairs, &alias_name, registry);
                 }
             }
             _ => continue,
@@ -339,6 +331,17 @@ fn apply_merge_keys(
     }
 
     merged_pairs
+}
+
+/// The anchor a merge-key operand refers to.
+///
+/// `*name` parses as an ALIAS node, but a merge value can also reach here as
+/// a plain scalar whose text starts with `*`, so accept both.
+fn alias_target(node: &crate::as_yaml::YamlNode) -> Option<String> {
+    match node {
+        crate::as_yaml::YamlNode::Alias(alias) => Some(alias.name()),
+        _ => node_as_string(node)?.strip_prefix('*').map(str::to_string),
+    }
 }
 
 /// Helper function to merge keys from a single alias
@@ -727,6 +730,49 @@ mod tests {
 
     fn doc(text: &str) -> Document {
         Document::from_str(text).expect("parse")
+    }
+
+    #[test]
+    fn get_resolved_expands_merge_keys() {
+        // `*a` reaches apply_merge_keys as an ALIAS node, not a scalar, so
+        // the merge used to fall through and drop every inherited key. Check
+        // get_resolved against the MergedMapping view, which is the same
+        // question asked of the newer code path.
+        for (yaml, present, absent) in [
+            (
+                "a: &a\n  x: 1\nb: &b\n  y: 2\nm:\n  <<: [*a, *b]\n  z: 3\n",
+                vec!["x", "y", "z"],
+                vec!["w"],
+            ),
+            (
+                "a: &a\n  x: 1\nm:\n  <<: *a\n  z: 3\n",
+                vec!["x", "z"],
+                vec!["y"],
+            ),
+        ] {
+            let doc = Document::from_str(yaml).unwrap();
+            let registry = doc.build_anchor_registry();
+            let root = doc.as_mapping().unwrap();
+            let m_node = root.get("m").unwrap();
+            let m = m_node.as_mapping().unwrap();
+            let merged = m.merged(&registry);
+            let resolved = doc.get_resolved("m").expect("m resolves");
+
+            for key in present {
+                assert!(merged.get(key).is_some(), "MergedMapping lost {key:?}");
+                assert!(
+                    resolved.as_mapping().and_then(|mm| mm.get(key)).is_some(),
+                    "get_resolved lost {key:?} in {yaml:?}"
+                );
+            }
+            for key in absent {
+                assert!(merged.get(key).is_none(), "MergedMapping invented {key:?}");
+                assert!(
+                    resolved.as_mapping().and_then(|mm| mm.get(key)).is_none(),
+                    "get_resolved invented {key:?} in {yaml:?}"
+                );
+            }
+        }
     }
 
     #[test]

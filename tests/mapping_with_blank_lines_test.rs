@@ -284,3 +284,61 @@ fn test_issue_26_comment_null_key_no_blank_line() {
     // Verify lossless round-trip
     assert_eq!(doc.to_string(), yaml);
 }
+
+/// A blank line carrying trailing whitespace shallower than the block it sits
+/// in must not end that block. The dedent check compared the line's INDENT
+/// against the base indent without noticing the line was blank, so `- y` and
+/// everything after it was swept into an ERROR node while `from_str` still
+/// reported success.
+#[test]
+fn test_underindented_blank_line_inside_sequence() {
+    let yaml = "a:\n  - x\n \n  - y\n";
+
+    let doc = YamlFile::parse(yaml).to_result().unwrap();
+    let mapping = doc.document().unwrap().as_mapping().unwrap();
+    let a = mapping.get("a").unwrap();
+    let seq = a.as_sequence().unwrap();
+
+    assert_eq!(seq.len(), 2);
+    assert_eq!(seq.get(0).unwrap().as_scalar().unwrap().as_string(), "x");
+    assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().as_string(), "y");
+    assert_eq!(doc.to_string(), yaml);
+}
+
+#[test]
+fn test_underindented_blank_line_inside_mapping() {
+    let yaml = "a:\n  b: x\n \n  c: y\n";
+
+    let doc = YamlFile::parse(yaml).to_result().unwrap();
+    let mapping = doc.document().unwrap().as_mapping().unwrap();
+    let inner = mapping.get_mapping("a").unwrap();
+
+    assert_eq!(inner.len(), 2);
+    assert_eq!(
+        inner.get("b").unwrap().as_scalar().unwrap().as_string(),
+        "x"
+    );
+    assert_eq!(
+        inner.get("c").unwrap().as_scalar().unwrap().as_string(),
+        "y"
+    );
+    assert_eq!(doc.to_string(), yaml);
+}
+
+/// Every blank-line indent shallower than the block must behave the same, so
+/// sweep the range rather than pinning the one width the fuzzer happened to
+/// find.
+#[test]
+fn test_blank_line_indent_never_ends_a_block() {
+    for width in 0..6 {
+        let yaml = format!("a:\n    - x\n{}\n    - y\n", " ".repeat(width));
+
+        let doc = YamlFile::parse(&yaml).to_result().unwrap();
+        let mapping = doc.document().unwrap().as_mapping().unwrap();
+        let a = mapping.get("a").unwrap();
+        let seq = a.as_sequence().unwrap();
+
+        assert_eq!(seq.len(), 2, "blank line indented by {width}");
+        assert_eq!(doc.to_string(), yaml, "blank line indented by {width}");
+    }
+}

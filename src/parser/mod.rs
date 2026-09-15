@@ -409,12 +409,15 @@ impl Parser {
                     // Check next token for indentation
                     match self.current() {
                         Some(SyntaxKind::INDENT) => {
+                            // A blank line's indentation says nothing about the
+                            // block we are in, so never read it as a dedent.
+                            let blank_line = self.indent_is_blank_line();
                             if let Some((_, text)) = self.tokens.last() {
-                                if text.len() < base_indent {
+                                if !blank_line && text.len() < base_indent {
                                     // Dedent detected - don't consume the indent token
                                     return true;
                                 }
-                                if base_indent == 0 && !text.is_empty() {
+                                if !blank_line && base_indent == 0 && !text.is_empty() {
                                     // At root level, any indentation means content doesn't belong at root
                                     return true;
                                 }
@@ -449,8 +452,9 @@ impl Parser {
                 }
                 Some(SyntaxKind::INDENT) => {
                     // Standalone indent token (NEWLINE was consumed by prior entry)
+                    let blank_line = self.indent_is_blank_line();
                     if let Some((_, text)) = self.tokens.last() {
-                        if text.len() < base_indent {
+                        if !blank_line && text.len() < base_indent {
                             return true; // dedent detected
                         }
                     }
@@ -569,6 +573,18 @@ impl Parser {
         (0..len.saturating_sub(1))
             .rev()
             .map(move |i| self.tokens[i].0)
+    }
+
+    /// Whether the INDENT at the current position is only the leading
+    /// whitespace of an otherwise blank line.
+    ///
+    /// A blank line's indentation is not significant in YAML, so such an
+    /// INDENT must not be read as a dedent out of the enclosing block.
+    pub(super) fn indent_is_blank_line(&self) -> bool {
+        matches!(
+            self.upcoming_tokens().next(),
+            Some(SyntaxKind::NEWLINE) | None
+        )
     }
 
     pub(super) fn add_error(&mut self, message: String, kind: ParseErrorKind) {

@@ -258,8 +258,23 @@ pub(crate) fn entry_line_terminated(entry: &SyntaxNode) -> bool {
 /// with one. Used when a block-style entry is about to have a new sibling
 /// appended after it (its trailing newline separates the two entries
 /// visually).
+///
+/// The new sibling must be going in immediately after `entry`: an explicit-key
+/// entry is treated as terminated by a NEWLINE that follows it as a sibling,
+/// which only separates the two if nothing is spliced in between. Callers
+/// inserting at an independently computed position want
+/// [`ensure_own_trailing_newline`] instead.
 pub(crate) fn ensure_trailing_newline(entry: &SyntaxNode) {
     if entry_line_terminated(entry) {
+        return;
+    }
+    append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+}
+
+/// Append a trailing NEWLINE token to `entry` unless the entry itself already
+/// ends in one, ignoring any NEWLINE that merely follows it as a sibling.
+pub(crate) fn ensure_own_trailing_newline(entry: &SyntaxNode) {
+    if trailing_newline_reachable(entry) {
         return;
     }
     append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);

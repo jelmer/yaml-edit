@@ -7,7 +7,7 @@
 use super::helpers::FlowInsertPos;
 use super::{key_content_matches, Mapping, MappingEntry};
 use crate::lex::SyntaxKind;
-use crate::nodes::{ensure_trailing_newline, fresh_token, SyntaxNode};
+use crate::nodes::{ensure_own_trailing_newline, fresh_token, SyntaxNode};
 use crate::yaml::Document;
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
@@ -283,8 +283,10 @@ impl Mapping {
                         .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
                 }) {
                     // Terminate the previous entry so the moved one starts
-                    // on its own line.
-                    ensure_trailing_newline(prev_entry);
+                    // on its own line. The entry needs its own NEWLINE: the
+                    // insert position was computed separately, so a sibling
+                    // NEWLINE may well sit past it.
+                    ensure_own_trailing_newline(prev_entry);
                 }
             }
 

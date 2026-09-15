@@ -329,6 +329,11 @@ impl Parser {
                         // directly, so step over any blank and comment-only
                         // lines and parse the node here, inside this
                         // TAGGED_NODE.
+                        // An anchor between the tag and the line break
+                        // annotates the same node; keep it in the TAGGED_NODE.
+                        if self.current() == Some(SyntaxKind::ANCHOR) {
+                            self.bump();
+                        }
                         self.skip_ws_and_newlines();
                         if self.current() == Some(SyntaxKind::DASH) {
                             self.parse_sequence_with_base_indent(indent);
@@ -364,8 +369,15 @@ impl Parser {
         // token to read the rest of this line and the lines after it.
         let mut rest = self.tokens.iter().rev().map(|(kind, text)| (*kind, text));
 
-        // Only a comment may still sit between the tag and the line break.
+        // Only an anchor or a comment may still sit between the tag and the
+        // line break; `!!seq &a` annotates the block node just as `!!seq` does.
         let mut token = rest.next()?;
+        if token.0 == SyntaxKind::ANCHOR {
+            token = rest.next()?;
+            while token.0 == SyntaxKind::WHITESPACE {
+                token = rest.next()?;
+            }
+        }
         if token.0 == SyntaxKind::COMMENT {
             token = rest.next()?;
         }

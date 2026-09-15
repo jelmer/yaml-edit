@@ -21,272 +21,260 @@ impl Parser {
     pub(super) fn parse_scalar(&mut self) {
         self.builder.start_node(SyntaxKind::SCALAR.into());
 
-        // Handle quotes
         if matches!(
             self.current(),
             Some(SyntaxKind::QUOTE | SyntaxKind::SINGLE_QUOTE)
         ) {
-            let quote_type = self
-                .current()
-                .expect("current token is Some: checked by matches! guard above");
-            self.bump(); // opening quote
-
-            // Consume all tokens until the closing quote
-            while self.current().is_some() && self.current() != Some(quote_type) {
-                self.bump();
-            }
-
-            if self.current() == Some(quote_type) {
-                self.bump(); // closing quote
-            } else {
-                let expected_quote = if quote_type == SyntaxKind::QUOTE {
-                    "\""
-                } else {
-                    "'"
-                };
-                let error_msg = self.create_detailed_error(
-                    "Unterminated quoted string",
-                    &format!("closing quote {expected_quote}"),
-                    self.current_text(),
-                );
-                self.add_error_and_recover(
-                    error_msg,
-                    quote_type,
+            self.parse_quoted_scalar();
+        } else if matches!(
+            self.current(),
+            Some(
+                SyntaxKind::STRING
+                    | SyntaxKind::UNTERMINATED_STRING
+                    | SyntaxKind::INT
+                    | SyntaxKind::FLOAT
+                    | SyntaxKind::BOOL
+                    | SyntaxKind::NULL
+            )
+        ) {
+            if self.current() == Some(SyntaxKind::UNTERMINATED_STRING) {
+                self.add_error(
+                    "Unterminated quoted string".to_string(),
                     ParseErrorKind::UnterminatedString,
                 );
             }
-        } else {
-            // Handle typed scalar tokens from lexer
-            if matches!(
-                self.current(),
-                Some(
-                    SyntaxKind::STRING
-                        | SyntaxKind::UNTERMINATED_STRING
-                        | SyntaxKind::INT
-                        | SyntaxKind::FLOAT
-                        | SyntaxKind::BOOL
-                        | SyntaxKind::NULL
-                )
-            ) {
-                // Check for unterminated string and add error
-                if self.current() == Some(SyntaxKind::UNTERMINATED_STRING) {
-                    self.add_error(
-                        "Unterminated quoted string".to_string(),
-                        ParseErrorKind::UnterminatedString,
-                    );
-                }
-                if !self.in_flow_context {
-                    // For plain scalars in block context, handle multi-line plain scalars
-                    // per YAML spec: continuation lines must be more indented than the scalar's starting line
-                    //
-                    // Use current_line_indent which tracks the actual line indentation.
-                    // CRITICAL: For inline scalars in sequence items (where indent==0 because the
-                    // INDENT token was already consumed), we MUST NOT try continuation because we
-                    // can't distinguish between continuation and the next mapping key.
-                    let scalar_indent = self.current_line_indent;
-
-                    while let Some(kind) = self.current() {
-                        if kind == SyntaxKind::COMMENT {
-                            // Stop at comments
-                            break;
-                        }
-
-                        if kind == SyntaxKind::NEWLINE {
-                            // Check if next line continues the scalar (more indented)
-                            if self.is_plain_scalar_continuation(scalar_indent) {
-                                // Fold the newline - consume it and following whitespace
-                                self.bump(); // consume NEWLINE
-
-                                // Skip INDENT and WHITESPACE on next line
-                                while matches!(
-                                    self.current(),
-                                    Some(SyntaxKind::INDENT | SyntaxKind::WHITESPACE)
-                                ) {
-                                    self.bump();
-                                }
-
-                                // Continue consuming scalar content on next line
-                                continue;
-                            }
-                            // Next line is not a continuation - stop here
-                            break;
-                        }
-
-                        // In block context, stop at flow collection delimiters
-                        if matches!(
-                            kind,
-                            SyntaxKind::LEFT_BRACKET
-                                | SyntaxKind::LEFT_BRACE
-                                | SyntaxKind::RIGHT_BRACKET
-                                | SyntaxKind::RIGHT_BRACE
-                                | SyntaxKind::COMMA
-                        ) {
-                            break;
-                        }
-
-                        // Check ahead to see if next token is a comment
-                        if kind == SyntaxKind::WHITESPACE {
-                            // Look ahead to see if a comment follows
-                            if self.tokens.len() >= 2 {
-                                let next_kind = self.tokens[self.tokens.len() - 2].0;
-                                if next_kind == SyntaxKind::COMMENT {
-                                    // Don't consume this whitespace, it precedes a comment
-                                    break;
-                                }
-                            }
-                        }
-
-                        self.bump();
-                    }
-                } else {
-                    // In flow context, consume tokens until we hit a delimiter
-                    // This handles multi-word keys like "omitted value"
-                    // Plain scalars in flow context can span multiple lines (YAML 1.2 spec)
-
-                    // Check if this is a quoted string (STRING token starting with quote)
-                    // Quoted strings are complete in a single token and should not consume
-                    // trailing newlines/whitespace
-                    let is_quoted_string = matches!(self.current(), Some(SyntaxKind::STRING))
-                        && self
-                            .current_text()
-                            .is_some_and(|text| text.starts_with('"') || text.starts_with('\''));
-
-                    self.bump(); // Consume the initial typed token
-
-                    // For quoted strings, we're done - the token contains the complete value.
-                    // For plain scalars, keep consuming for multi-word/multi-line scalars.
-                    if !is_quoted_string {
-                        while let Some(kind) = self.current() {
-                            // Check for flow delimiters and comments (but not NEWLINE - plain scalars can span lines)
-                            if matches!(
-                                kind,
-                                SyntaxKind::COMMA
-                                    | SyntaxKind::RIGHT_BRACE
-                                    | SyntaxKind::RIGHT_BRACKET
-                                    | SyntaxKind::COMMENT
-                            ) {
-                                break;
-                            }
-
-                            // NEWLINE in flow context: consume it and continue reading the scalar
-                            // The scalar continues on the next line
-                            if kind == SyntaxKind::NEWLINE {
-                                self.bump(); // consume the newline
-                                             // Skip any indentation/whitespace that follows
-                                while matches!(
-                                    self.current(),
-                                    Some(SyntaxKind::WHITESPACE | SyntaxKind::INDENT)
-                                ) {
-                                    self.bump();
-                                }
-                                // Continue with the main loop to consume more scalar content
-                                continue;
-                            }
-
-                            // Stop at trailing whitespace before delimiters
-                            // For "[ a , b ]", stop at whitespace before comma
-                            // For "{omitted value:,}", consume whitespace between words
-                            if kind == SyntaxKind::WHITESPACE {
-                                // Peek at what comes after the whitespace
-                                // tokens are popped from end, so earlier indices are further ahead
-                                if self.tokens.len() >= 2 {
-                                    // Look at the token after this whitespace
-                                    let after_whitespace = self.tokens[self.tokens.len() - 2].0;
-                                    if matches!(
-                                        after_whitespace,
-                                        SyntaxKind::COMMA
-                                            | SyntaxKind::RIGHT_BRACE
-                                            | SyntaxKind::RIGHT_BRACKET
-                                            | SyntaxKind::NEWLINE
-                                            | SyntaxKind::COMMENT
-                                    ) {
-                                        // Whitespace followed by delimiter or comment - stop here (don't consume whitespace)
-                                        break;
-                                    }
-                                    // Otherwise whitespace is between words - continue to consume it
-                                }
-                            }
-
-                            // Handle colons: stop if colon is followed by delimiter
-                            if kind == SyntaxKind::COLON && self.tokens.len() >= 2 {
-                                let next_kind = self.tokens[self.tokens.len() - 2].0;
-                                if matches!(
-                                    next_kind,
-                                    SyntaxKind::COMMA
-                                        | SyntaxKind::RIGHT_BRACE
-                                        | SyntaxKind::RIGHT_BRACKET
-                                        | SyntaxKind::WHITESPACE
-                                        | SyntaxKind::NEWLINE
-                                ) {
-                                    // Colon followed by delimiter - this is key-value separator
-                                    break;
-                                }
-                            }
-
-                            self.bump();
-                        }
-                    }
-                }
+            if self.in_flow_context {
+                self.parse_flow_plain_scalar();
             } else {
-                // Fallback: consume tokens until we hit structure
-                while let Some(kind) = self.current() {
-                    if matches!(
-                        kind,
-                        SyntaxKind::NEWLINE
-                            | SyntaxKind::DASH
-                            | SyntaxKind::COMMENT
-                            | SyntaxKind::DOC_START
-                            | SyntaxKind::DOC_END
-                    ) {
-                        break;
-                    }
-
-                    // In flow context, colons are allowed in scalars (for IPv6, URLs, etc.)
-                    // In block context, stop at colons as they indicate mapping structure
-                    if kind == SyntaxKind::COLON {
-                        if self.in_flow_context {
-                            // In flow context, check if this colon is followed by a delimiter
-                            // If so, it's a key-value separator, not part of the scalar
-                            if self.tokens.len() >= 2 {
-                                let next_kind = self.tokens[self.tokens.len() - 2].0;
-                                if matches!(
-                                    next_kind,
-                                    SyntaxKind::COMMA
-                                        | SyntaxKind::RIGHT_BRACE
-                                        | SyntaxKind::RIGHT_BRACKET
-                                        | SyntaxKind::WHITESPACE
-                                        | SyntaxKind::NEWLINE
-                                ) {
-                                    // Colon followed by delimiter - stop here
-                                    break;
-                                }
-                            }
-                            // Otherwise, allow colons in scalars (URLs, etc.) - continue consuming
-                        } else {
-                            // In block context, stop at colons (mapping structure)
-                            break;
-                        }
-                    }
-
-                    // In flow context, stop at flow collection delimiters
-                    if self.in_flow_context
-                        && matches!(
-                            kind,
-                            SyntaxKind::LEFT_BRACKET
-                                | SyntaxKind::RIGHT_BRACKET
-                                | SyntaxKind::LEFT_BRACE
-                                | SyntaxKind::RIGHT_BRACE
-                                | SyntaxKind::COMMA
-                        )
-                    {
-                        break;
-                    }
-                    self.bump();
-                }
+                self.parse_block_plain_scalar();
             }
+        } else {
+            self.parse_untyped_scalar();
         }
 
         self.builder.finish_node();
+    }
+
+    /// Consume a `"..."` / `'...'` scalar whose quotes the lexer left as
+    /// separate QUOTE tokens, reporting an unterminated one.
+    fn parse_quoted_scalar(&mut self) {
+        let quote_type = self
+            .current()
+            .expect("current token is Some: checked by the caller's matches! guard");
+        self.bump(); // opening quote
+
+        // Consume all tokens until the closing quote
+        while self.current().is_some() && self.current() != Some(quote_type) {
+            self.bump();
+        }
+
+        if self.current() == Some(quote_type) {
+            self.bump(); // closing quote
+        } else {
+            let expected_quote = if quote_type == SyntaxKind::QUOTE {
+                "\""
+            } else {
+                "'"
+            };
+            let error_msg = self.create_detailed_error(
+                "Unterminated quoted string",
+                &format!("closing quote {expected_quote}"),
+                self.current_text(),
+            );
+            self.add_error_and_recover(error_msg, quote_type, ParseErrorKind::UnterminatedString);
+        }
+    }
+
+    /// Consume a plain scalar in block context.
+    ///
+    /// Per the YAML spec a plain scalar may continue on following lines as
+    /// long as they are more indented than the line it started on; the
+    /// newline is folded into the scalar. Comments and flow delimiters end
+    /// it.
+    fn parse_block_plain_scalar(&mut self) {
+        // current_line_indent tracks the actual line indentation. For inline
+        // scalars in sequence items (indent == 0 because the INDENT token was
+        // already consumed) continuation must not be attempted: it cannot be
+        // told apart from the next mapping key.
+        let scalar_indent = self.current_line_indent;
+
+        while let Some(kind) = self.current() {
+            if kind == SyntaxKind::COMMENT {
+                break;
+            }
+
+            if kind == SyntaxKind::NEWLINE {
+                if self.is_plain_scalar_continuation(scalar_indent) {
+                    self.bump(); // consume NEWLINE
+                    while matches!(
+                        self.current(),
+                        Some(SyntaxKind::INDENT | SyntaxKind::WHITESPACE)
+                    ) {
+                        self.bump();
+                    }
+                    continue;
+                }
+                // Next line is not a continuation - stop here
+                break;
+            }
+
+            // In block context, stop at flow collection delimiters
+            if matches!(
+                kind,
+                SyntaxKind::LEFT_BRACKET
+                    | SyntaxKind::LEFT_BRACE
+                    | SyntaxKind::RIGHT_BRACKET
+                    | SyntaxKind::RIGHT_BRACE
+                    | SyntaxKind::COMMA
+            ) {
+                break;
+            }
+
+            // Leave whitespace that precedes a comment to the comment itself
+            if kind == SyntaxKind::WHITESPACE
+                && self.peek_after_current() == Some(SyntaxKind::COMMENT)
+            {
+                break;
+            }
+
+            self.bump();
+        }
+    }
+
+    /// Consume a plain scalar inside a flow collection.
+    ///
+    /// A quoted STRING arrives as one complete token and stops there.
+    /// Otherwise keep reading multi-word and multi-line content until a flow
+    /// delimiter, a comment, or a colon acting as a key separator.
+    fn parse_flow_plain_scalar(&mut self) {
+        let is_quoted_string = matches!(self.current(), Some(SyntaxKind::STRING))
+            && self
+                .current_text()
+                .is_some_and(|text| text.starts_with('"') || text.starts_with('\''));
+
+        self.bump(); // Consume the initial typed token
+
+        if is_quoted_string {
+            return;
+        }
+
+        while let Some(kind) = self.current() {
+            // NEWLINE is not a terminator here: plain scalars span lines.
+            if matches!(
+                kind,
+                SyntaxKind::COMMA
+                    | SyntaxKind::RIGHT_BRACE
+                    | SyntaxKind::RIGHT_BRACKET
+                    | SyntaxKind::COMMENT
+            ) {
+                break;
+            }
+
+            if kind == SyntaxKind::NEWLINE {
+                self.bump();
+                while matches!(
+                    self.current(),
+                    Some(SyntaxKind::WHITESPACE | SyntaxKind::INDENT)
+                ) {
+                    self.bump();
+                }
+                continue;
+            }
+
+            // Whitespace before a delimiter ends the scalar (`[ a , b ]`);
+            // whitespace between words is part of it (`{omitted value:,}`).
+            if kind == SyntaxKind::WHITESPACE
+                && matches!(
+                    self.peek_after_current(),
+                    Some(
+                        SyntaxKind::COMMA
+                            | SyntaxKind::RIGHT_BRACE
+                            | SyntaxKind::RIGHT_BRACKET
+                            | SyntaxKind::NEWLINE
+                            | SyntaxKind::COMMENT
+                    )
+                )
+            {
+                break;
+            }
+
+            if kind == SyntaxKind::COLON && self.colon_is_flow_key_separator() {
+                break;
+            }
+
+            self.bump();
+        }
+    }
+
+    /// Consume a scalar the lexer gave no specific type, up to whatever
+    /// structure ends it.
+    fn parse_untyped_scalar(&mut self) {
+        while let Some(kind) = self.current() {
+            if matches!(
+                kind,
+                SyntaxKind::NEWLINE
+                    | SyntaxKind::DASH
+                    | SyntaxKind::COMMENT
+                    | SyntaxKind::DOC_START
+                    | SyntaxKind::DOC_END
+            ) {
+                break;
+            }
+
+            // A colon ends the scalar in block context, where it means mapping
+            // structure. In flow context it is ordinary content (IPv6, URLs)
+            // unless a delimiter follows, which makes it a key separator.
+            if kind == SyntaxKind::COLON {
+                if !self.in_flow_context {
+                    break;
+                }
+                if self.colon_is_flow_key_separator() {
+                    break;
+                }
+            }
+
+            // In flow context, stop at flow collection delimiters
+            if self.in_flow_context
+                && matches!(
+                    kind,
+                    SyntaxKind::LEFT_BRACKET
+                        | SyntaxKind::RIGHT_BRACKET
+                        | SyntaxKind::LEFT_BRACE
+                        | SyntaxKind::RIGHT_BRACE
+                        | SyntaxKind::COMMA
+                )
+            {
+                break;
+            }
+            self.bump();
+        }
+    }
+
+    /// The kind of the token after the current one, if any.
+    ///
+    /// `self.tokens` is a stack popped from the end, so the next-but-one
+    /// token sits two from the top.
+    fn peek_after_current(&self) -> Option<SyntaxKind> {
+        if self.tokens.len() >= 2 {
+            Some(self.tokens[self.tokens.len() - 2].0)
+        } else {
+            None
+        }
+    }
+
+    /// Is the COLON at the cursor separating a flow mapping key from its
+    /// value, rather than sitting inside a scalar?
+    fn colon_is_flow_key_separator(&self) -> bool {
+        matches!(
+            self.peek_after_current(),
+            Some(
+                SyntaxKind::COMMA
+                    | SyntaxKind::RIGHT_BRACE
+                    | SyntaxKind::RIGHT_BRACKET
+                    | SyntaxKind::WHITESPACE
+                    | SyntaxKind::NEWLINE
+            )
+        )
     }
 
     pub(super) fn parse_tagged_value(&mut self, base_indent: usize) {

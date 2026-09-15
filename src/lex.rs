@@ -341,6 +341,96 @@ fn is_hash_a_comment_start(input: &str, hash_idx: usize) -> bool {
 /// Used from the `.` and `-` scalar-prefix branches, where the char
 /// that dispatched us was itself a scalar prefix rather than a
 /// structural indicator.
+/// Scan a double-quoted string body, consuming through the closing quote.
+///
+/// Returns the end offset and whether a closing quote was found; a backslash
+/// escapes the next character, so `"a\""` runs to the second `"`.
+fn scan_double_quoted(
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
+    start_idx: usize,
+) -> (usize, bool) {
+    let mut end_idx = start_idx + 1;
+    let mut escaped = false;
+
+    while let Some((idx, ch)) = chars.peek() {
+        let (current_idx, current_ch) = (*idx, *ch);
+        end_idx = current_idx + current_ch.len_utf8();
+        chars.next();
+
+        if escaped {
+            escaped = false;
+        } else if current_ch == '\\' {
+            escaped = true;
+        } else if current_ch == '"' {
+            return (end_idx, true);
+        }
+    }
+    (end_idx, false)
+}
+
+/// Scan a single-quoted string body, consuming through the closing quote.
+///
+/// Returns the end offset and whether a closing quote was found. A doubled
+/// `''` is an escaped quote and does not end the string.
+fn scan_single_quoted(
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
+    start_idx: usize,
+) -> (usize, bool) {
+    let mut end_idx = start_idx + 1;
+
+    while let Some((idx, ch)) = chars.peek() {
+        let (current_idx, current_ch) = (*idx, *ch);
+        end_idx = current_idx + current_ch.len_utf8();
+        chars.next();
+
+        if current_ch == '\'' {
+            if let Some((next_idx, '\'')) = chars.peek() {
+                // Doubled quote: an escaped `'`, not the end.
+                end_idx = *next_idx + 1;
+                chars.next();
+            } else {
+                return (end_idx, true);
+            }
+        }
+    }
+    (end_idx, false)
+}
+
+/// Push a quoted-string token, marking it UNTERMINATED_STRING when the
+/// closing quote was never reached.
+fn push_quoted_string<'a>(
+    tokens: &mut Vec<(SyntaxKind, &'a str)>,
+    input: &'a str,
+    token_start: usize,
+    end_idx: usize,
+    found_closing: bool,
+) {
+    let kind = if found_closing {
+        SyntaxKind::STRING
+    } else {
+        SyntaxKind::UNTERMINATED_STRING
+    };
+    tokens.push((kind, &input[token_start..end_idx]));
+}
+
+/// Read a plain scalar that starts at `token_start`, whose body begins at
+/// `body_start`, classify it, and push it as one token.
+///
+/// The leading character has already been consumed by the caller's match arm
+/// (`-`, `+`, `.`, ...) and stays part of the scalar text.
+fn push_plain_scalar_from<'a>(
+    tokens: &mut Vec<(SyntaxKind, &'a str)>,
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
+    input: &'a str,
+    token_start: usize,
+    body_start: usize,
+    flow_depth: u32,
+) {
+    let body = read_plain_scalar_body_from(chars, input, body_start, flow_depth);
+    let text = &input[token_start..body_start + body.len()];
+    tokens.push((classify_scalar(text), text));
+}
+
 fn read_plain_scalar_body_from<'a>(
     chars: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
     input: &'a str,
@@ -395,6 +485,50 @@ impl Default for ValidationConfig {
 /// Tokenize YAML input with whitespace and formatting validation
 pub fn lex_with_validation(input: &str) -> (Vec<(SyntaxKind, &str)>, Vec<WhitespaceError>) {
     lex_with_validation_config(input, &ValidationConfig::default())
+}
+
+/// Record a "line too long" error if the line ending at `end` exceeds the
+/// configured maximum.
+fn check_line_length(
+    errors: &mut Vec<WhitespaceError>,
+    config: &ValidationConfig,
+    line_start: usize,
+    end: usize,
+) {
+    let Some(max_len) = config.max_line_length else {
+        return;
+    };
+    let line_length = end - line_start;
+    if line_length > max_len {
+        errors.push(WhitespaceError {
+            message: format!("Line too long ({line_length} > {max_len} characters)"),
+            range: line_start..end,
+            category: WhitespaceErrorCategory::LineTooLong,
+        });
+    }
+}
+
+/// Record the line ending style on first sight, and flag any later one that
+/// disagrees with it.
+fn note_line_ending<'a>(
+    errors: &mut Vec<WhitespaceError>,
+    config: &ValidationConfig,
+    detected: &mut Option<&'a str>,
+    line_ending: &'a str,
+    range: std::ops::Range<usize>,
+) {
+    if !config.enforce_consistent_line_endings {
+        return;
+    }
+    match *detected {
+        Some(seen) if seen != line_ending => errors.push(WhitespaceError {
+            message: "Inconsistent line endings detected".to_string(),
+            range,
+            category: WhitespaceErrorCategory::MixedLineEndings,
+        }),
+        Some(_) => {}
+        None => *detected = Some(line_ending),
+    }
 }
 
 /// Tokenize YAML input with custom validation configuration
@@ -475,15 +609,14 @@ pub fn lex_with_validation_config<'a>(
                         // This hyphen is part of a scalar value. Use the
                         // plain-scalar body reader so embedded `:` (not
                         // followed by whitespace) stays inside the scalar.
-                        let text = read_plain_scalar_body_from(
+                        push_plain_scalar_from(
+                            &mut tokens,
                             &mut chars,
                             input,
+                            token_start,
                             start_idx + 1,
                             flow_depth,
                         );
-                        let full_text = &input[token_start..token_start + 1 + text.len()];
-                        let token_kind = classify_scalar(full_text);
-                        tokens.push((token_kind, full_text));
                     }
                 }
             }
@@ -507,11 +640,14 @@ pub fn lex_with_validation_config<'a>(
                     .peek()
                     .is_some_and(|(_, c)| !c.is_whitespace() && !is_yaml_special(*c));
                 if !is_chomping_indicator && next_starts_scalar {
-                    let text =
-                        read_plain_scalar_body_from(&mut chars, input, start_idx + 1, flow_depth);
-                    let full_text = &input[token_start..token_start + 1 + text.len()];
-                    let token_kind = classify_scalar(full_text);
-                    tokens.push((token_kind, full_text));
+                    push_plain_scalar_from(
+                        &mut tokens,
+                        &mut chars,
+                        input,
+                        token_start,
+                        start_idx + 1,
+                        flow_depth,
+                    );
                 } else {
                     tokens.push((PLUS, &input[token_start..start_idx + 1]));
                 }
@@ -612,78 +748,12 @@ pub fn lex_with_validation_config<'a>(
                 }
             }
             '"' => {
-                // Read entire double-quoted string
-                let mut end_idx = start_idx + 1;
-                let mut escaped = false;
-                let mut found_closing = false;
-
-                while let Some((idx, ch)) = chars.peek() {
-                    let current_idx = *idx;
-                    let current_ch = *ch;
-
-                    if escaped {
-                        escaped = false;
-                        end_idx = current_idx + current_ch.len_utf8();
-                        chars.next();
-                        continue;
-                    }
-
-                    if current_ch == '\\' {
-                        escaped = true;
-                        end_idx = current_idx + current_ch.len_utf8();
-                        chars.next();
-                    } else if current_ch == '"' {
-                        end_idx = current_idx + current_ch.len_utf8();
-                        chars.next();
-                        found_closing = true;
-                        break;
-                    } else {
-                        end_idx = current_idx + current_ch.len_utf8();
-                        chars.next();
-                    }
-                }
-
-                if found_closing {
-                    tokens.push((STRING, &input[token_start..end_idx]));
-                } else {
-                    // Unterminated string - add UNTERMINATED_STRING token
-                    tokens.push((UNTERMINATED_STRING, &input[token_start..end_idx]));
-                }
+                let (end_idx, found_closing) = scan_double_quoted(&mut chars, start_idx);
+                push_quoted_string(&mut tokens, input, token_start, end_idx, found_closing);
             }
             '\'' => {
-                // Read entire single-quoted string
-                let mut end_idx = start_idx + 1;
-                let mut found_closing = false;
-
-                while let Some((idx, ch)) = chars.peek() {
-                    let current_idx = *idx;
-                    let current_ch = *ch;
-
-                    if current_ch == '\'' {
-                        // Check for escaped quote ('')
-                        end_idx = current_idx + current_ch.len_utf8();
-                        chars.next();
-                        if let Some((next_idx, '\'')) = chars.peek() {
-                            // Double quote - consume both and continue
-                            end_idx = *next_idx + 1;
-                            chars.next();
-                        } else {
-                            // Single quote - end of string
-                            found_closing = true;
-                            break;
-                        }
-                    } else {
-                        end_idx = current_idx + current_ch.len_utf8();
-                        chars.next();
-                    }
-                }
-
-                if found_closing {
-                    tokens.push((STRING, &input[token_start..end_idx]));
-                } else {
-                    // Unterminated string - add UNTERMINATED_STRING token
-                    tokens.push((UNTERMINATED_STRING, &input[token_start..end_idx]));
-                }
+                let (end_idx, found_closing) = scan_single_quoted(&mut chars, start_idx);
+                push_quoted_string(&mut tokens, input, token_start, end_idx, found_closing);
             }
 
             // Document end
@@ -697,23 +767,25 @@ pub fn lex_with_validation_config<'a>(
                     } else {
                         // Two dots -- continue as plain scalar body (allows
                         // embedded `-` and `:` per YAML plain-scalar rules).
-                        let rest = read_plain_scalar_body_from(
+                        push_plain_scalar_from(
+                            &mut tokens,
                             &mut chars,
                             input,
+                            token_start,
                             start_idx + 2,
                             flow_depth,
                         );
-                        let text = &input[token_start..start_idx + 2 + rest.len()];
-                        let token_kind = classify_scalar(text);
-                        tokens.push((token_kind, text));
                     }
                 } else {
                     // Single dot -- part of plain scalar body.
-                    let rest =
-                        read_plain_scalar_body_from(&mut chars, input, start_idx + 1, flow_depth);
-                    let text = &input[token_start..start_idx + 1 + rest.len()];
-                    let token_kind = classify_scalar(text);
-                    tokens.push((token_kind, text));
+                    push_plain_scalar_from(
+                        &mut tokens,
+                        &mut chars,
+                        input,
+                        token_start,
+                        start_idx + 1,
+                        flow_depth,
+                    );
                 }
             }
 
@@ -827,53 +899,30 @@ pub fn lex_with_validation_config<'a>(
 
             // Newlines
             '\n' => {
-                // Check line length before processing newline
-                if let Some(max_len) = config.max_line_length {
-                    let line_length = start_idx - current_line_start;
-                    if line_length > max_len {
-                        whitespace_errors.push(WhitespaceError {
-                            message: format!(
-                                "Line too long ({line_length} > {max_len} characters)"
-                            ),
-                            range: current_line_start..start_idx,
-                            category: WhitespaceErrorCategory::LineTooLong,
-                        });
-                    }
-                }
-
-                // Validate line ending consistency
-                let line_ending = "\n";
-                if config.enforce_consistent_line_endings {
-                    if let Some(detected) = detected_line_ending {
-                        if detected != line_ending {
-                            whitespace_errors.push(WhitespaceError {
-                                message: "Inconsistent line endings detected".to_string(),
-                                range: token_start..start_idx + 1,
-                                category: WhitespaceErrorCategory::MixedLineEndings,
-                            });
-                        }
-                    } else {
-                        detected_line_ending = Some(line_ending);
-                    }
-                }
+                check_line_length(
+                    &mut whitespace_errors,
+                    config,
+                    current_line_start,
+                    start_idx,
+                );
+                note_line_ending(
+                    &mut whitespace_errors,
+                    config,
+                    &mut detected_line_ending,
+                    "\n",
+                    token_start..start_idx + 1,
+                );
 
                 tokens.push((NEWLINE, &input[token_start..start_idx + 1]));
                 current_line_start = start_idx + 1;
             }
             '\r' => {
-                // Check line length before processing newline
-                if let Some(max_len) = config.max_line_length {
-                    let line_length = start_idx - current_line_start;
-                    if line_length > max_len {
-                        whitespace_errors.push(WhitespaceError {
-                            message: format!(
-                                "Line too long ({line_length} > {max_len} characters)"
-                            ),
-                            range: current_line_start..start_idx,
-                            category: WhitespaceErrorCategory::LineTooLong,
-                        });
-                    }
-                }
+                check_line_length(
+                    &mut whitespace_errors,
+                    config,
+                    current_line_start,
+                    start_idx,
+                );
 
                 let (line_ending, end_pos) = if let Some((_, '\n')) = chars.peek() {
                     chars.next();
@@ -882,20 +931,13 @@ pub fn lex_with_validation_config<'a>(
                     ("\r", start_idx + 1)
                 };
 
-                // Validate line ending consistency
-                if config.enforce_consistent_line_endings {
-                    if let Some(detected) = detected_line_ending {
-                        if detected != line_ending {
-                            whitespace_errors.push(WhitespaceError {
-                                message: "Inconsistent line endings detected".to_string(),
-                                range: token_start..end_pos,
-                                category: WhitespaceErrorCategory::MixedLineEndings,
-                            });
-                        }
-                    } else {
-                        detected_line_ending = Some(line_ending);
-                    }
-                }
+                note_line_ending(
+                    &mut whitespace_errors,
+                    config,
+                    &mut detected_line_ending,
+                    line_ending,
+                    token_start..end_pos,
+                );
 
                 tokens.push((NEWLINE, &input[token_start..end_pos]));
                 current_line_start = end_pos;

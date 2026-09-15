@@ -11,6 +11,29 @@ use crate::lex::SyntaxKind;
 use crate::ParseErrorKind;
 
 impl Parser {
+    /// Consume comment lines sitting between entries of a block collection.
+    ///
+    /// Returns true when the comments ran into a dedent, meaning the
+    /// collection has ended and the caller should stop.
+    ///
+    /// At root level (`base_indent == 0`) every comment belongs to this
+    /// collection, indented or not, because there is no enclosing scope.
+    fn absorb_entry_comments(&mut self, base_indent: usize) -> bool {
+        while self.current() == Some(SyntaxKind::COMMENT) {
+            if base_indent > 0 && self.is_at_dedented_position(base_indent) {
+                return true;
+            }
+            self.bump();
+            if self.current() == Some(SyntaxKind::NEWLINE) {
+                self.bump();
+            }
+            if self.skip_whitespace_only_with_dedent_check(base_indent) {
+                return true;
+            }
+        }
+        false
+    }
+
     pub(super) fn parse_mapping_with_base_indent(&mut self, base_indent: usize) {
         // Entries inside a mapping are bounded by their key's column.
         self.equal_indent_continues_scalar = false;
@@ -25,23 +48,8 @@ impl Parser {
             }
 
             // Emit comments as children of MAPPING
-            loop {
-                if self.current() == Some(SyntaxKind::COMMENT) {
-                    // At root level (base_indent=0) all comments belong here since
-                    // there's no parent scope, even if indented.
-                    if base_indent > 0 && self.is_at_dedented_position(base_indent) {
-                        break;
-                    }
-                    self.bump();
-                    if self.current() == Some(SyntaxKind::NEWLINE) {
-                        self.bump();
-                    }
-                    if self.skip_whitespace_only_with_dedent_check(base_indent) {
-                        break;
-                    }
-                } else {
-                    break;
-                }
+            if self.absorb_entry_comments(base_indent) {
+                break;
             }
 
             // Check dedent via tracked line indentation (covers the case where
@@ -173,23 +181,8 @@ impl Parser {
             }
 
             // Emit comments as children of SEQUENCE
-            loop {
-                if self.current() == Some(SyntaxKind::COMMENT) {
-                    // At root level (base_indent=0) all comments belong here since
-                    // there's no parent scope, even if indented.
-                    if base_indent > 0 && self.is_at_dedented_position(base_indent) {
-                        break;
-                    }
-                    self.bump();
-                    if self.current() == Some(SyntaxKind::NEWLINE) {
-                        self.bump();
-                    }
-                    if self.skip_whitespace_only_with_dedent_check(base_indent) {
-                        break;
-                    }
-                } else {
-                    break;
-                }
+            if self.absorb_entry_comments(base_indent) {
+                break;
             }
 
             // Check dedent via tracked line indentation (covers the case where

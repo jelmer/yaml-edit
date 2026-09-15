@@ -1329,3 +1329,36 @@ fn test_document_end_marker_is_not_swept_into_an_error_node() {
         assert_eq!(file.documents().count(), docs, "{yaml:?}");
     }
 }
+
+/// A whitespace-only line inside a block scalar belongs to the body,
+/// however short it is: its indentation is not significant.
+///
+/// `k: |\n  a\n \n  b\n` keeps `b`. The dedent check compared the blank
+/// line's INDENT against the body's base, so the scalar ended there and the
+/// rest was stranded in an ERROR node with no parse error. This accounted
+/// for five of the YAML test suite's valid documents (93WF, K527, MJS9,
+/// H2RW, R4YG).
+#[test]
+fn test_blank_line_stays_inside_a_block_scalar() {
+    for yaml in [
+        "k: |\n  a\n \n  b\n",
+        "k: |\n  a\n\n  b\n",
+        "k: >-\n  trimmed\n  \n \n\n  as\n  space\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    // A dedented line with real content still ends the body.
+    let yaml = "k: |\n  a\nj: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["k".to_string(), "j".to_string()]);
+}

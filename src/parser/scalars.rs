@@ -719,9 +719,14 @@ impl Parser {
                 return true;
             }
 
-            // If we have base_indent, check if current line has less indentation
+            // If we have base_indent, check if current line has less indentation.
+            //
+            // A blank line's indentation is not significant: a line holding
+            // only spaces belongs to the body however short it is, so
+            // `k: |\n  a\n \n  b\n` keeps `b`. Without this the whole
+            // remainder was stranded in an ERROR node with no parse error.
             if let Some(base) = base_indent {
-                if current == Some(SyntaxKind::INDENT) {
+                if current == Some(SyntaxKind::INDENT) && !self.indent_is_blank_line() {
                     if let Some(text) = self.current_text() {
                         if text.len() < base {
                             // Current line has less indentation than base - end of block scalar

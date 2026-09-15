@@ -33,6 +33,29 @@
 //! yaml.try_remove_path("server.port").unwrap();
 //! ```
 //!
+//! # Aliases
+//!
+//! When a path segment lands on an alias (`*name`), reads resolve it to
+//! the anchored value by default, matching
+//! [`get_resolved`](crate::anchor_resolution::DocumentResolvedExt::get_resolved)
+//! and [`merged`](crate::anchor_resolution::MappingMergedExt::merged):
+//!
+//! ```
+//! use yaml_edit::{Document, path::YamlPath};
+//! use std::str::FromStr;
+//!
+//! let doc = Document::from_str("shared: &shared\n  timeout: 30\nservice: *shared\n").unwrap();
+//! assert_eq!(doc.try_get_path("service.timeout").unwrap().to_string(), "30");
+//! ```
+//!
+//! Writes are different: writing through an alias changes the anchored
+//! node, and so changes every other alias pointing at it. That is
+//! refused by default. Pass an [`AliasPolicy`] to
+//! [`try_set_path_with`](YamlPath::try_set_path_with) to choose
+//! deliberately between updating the shared anchor
+//! ([`Follow`](AliasPolicy::Follow)) and replacing the alias with an
+//! independent copy ([`Expand`](AliasPolicy::Expand)).
+//!
 //! All operations preserve formatting, comments, and whitespace.
 
 use crate::builder::MappingBuilder;
@@ -71,7 +94,24 @@ pub trait YamlPath {
     ///   value of the wrong container type.
     /// - [`PathError::NotFound`] when a segment addresses a key/index that
     ///   does not exist.
-    fn try_get_path(&self, path: &str) -> Result<crate::as_yaml::YamlNode, PathError>;
+    fn try_get_path(&self, path: &str) -> Result<crate::as_yaml::YamlNode, PathError> {
+        self.try_get_path_with(path, AliasPolicy::Follow)
+    }
+
+    /// Like [`try_get_path`](Self::try_get_path), but with an explicit
+    /// [`AliasPolicy`] for segments that land on an alias.
+    ///
+    /// # Errors
+    ///
+    /// As [`try_get_path`](Self::try_get_path), plus
+    /// [`PathError::AliasRefused`] under [`AliasPolicy::Refuse`] and
+    /// [`PathError::UndefinedAlias`] when an alias names an anchor that
+    /// is not defined in the document.
+    fn try_get_path_with(
+        &self,
+        path: &str,
+        policy: AliasPolicy,
+    ) -> Result<crate::as_yaml::YamlNode, PathError>;
 
     /// Set a value at a nested path, creating intermediate mappings /
     /// sequences as needed. Returns a specific [`PathError`] on failure
@@ -85,7 +125,29 @@ pub trait YamlPath {
     ///   write into (Document with no root, or with a scalar/sequence root).
     /// - [`PathError::TypeMismatch`] when an intermediate segment lands on
     ///   a scalar that cannot be turned into a container.
-    fn try_set_path(&self, path: &str, value: impl crate::AsYaml) -> Result<(), PathError>;
+    fn try_set_path(&self, path: &str, value: impl crate::AsYaml) -> Result<(), PathError> {
+        self.try_set_path_with(path, value, AliasPolicy::Refuse)
+    }
+
+    /// Like [`try_set_path`](Self::try_set_path), but with an explicit
+    /// [`AliasPolicy`] for intermediate segments that land on an alias.
+    ///
+    /// Writing through an alias changes the anchored node, and therefore
+    /// every other alias that references it; that is why the default is
+    /// [`AliasPolicy::Refuse`] and this opt-in exists.
+    ///
+    /// # Errors
+    ///
+    /// As [`try_set_path`](Self::try_set_path), plus
+    /// [`PathError::AliasRefused`] under [`AliasPolicy::Refuse`] and
+    /// [`PathError::UndefinedAlias`] when an alias names an anchor that
+    /// is not defined in the document.
+    fn try_set_path_with(
+        &self,
+        path: &str,
+        value: impl crate::AsYaml,
+        policy: AliasPolicy,
+    ) -> Result<(), PathError>;
 
     /// Remove a value at a nested path. Returns the removed
     /// [`YamlNode`](crate::as_yaml::YamlNode) on success, or a specific
@@ -94,7 +156,27 @@ pub trait YamlPath {
     /// # Errors
     ///
     /// Same shape as [`try_get_path`](Self::try_get_path).
-    fn try_remove_path(&self, path: &str) -> Result<crate::as_yaml::YamlNode, PathError>;
+    fn try_remove_path(&self, path: &str) -> Result<crate::as_yaml::YamlNode, PathError> {
+        self.try_remove_path_with(path, AliasPolicy::Refuse)
+    }
+
+    /// Like [`try_remove_path`](Self::try_remove_path), but with an
+    /// explicit [`AliasPolicy`] for intermediate segments that land on
+    /// an alias.
+    ///
+    /// Removal is a mutation, so it defaults to
+    /// [`AliasPolicy::Refuse`] for the same reason as
+    /// [`try_set_path`](Self::try_set_path).
+    ///
+    /// # Errors
+    ///
+    /// As [`try_remove_path`](Self::try_remove_path), plus
+    /// [`PathError::AliasRefused`] and [`PathError::UndefinedAlias`].
+    fn try_remove_path_with(
+        &self,
+        path: &str,
+        policy: AliasPolicy,
+    ) -> Result<crate::as_yaml::YamlNode, PathError>;
 
     /// Get a value at a nested path.
     ///
@@ -246,6 +328,55 @@ pub enum PathError {
         /// The segment that could not be resolved.
         at: String,
     },
+    /// A segment landed on an alias (`*name`) and the active
+    /// [`AliasPolicy`] refused to go through it. `at` is the segment,
+    /// `alias` the anchor name it referenced.
+    AliasRefused {
+        /// The segment whose value is an alias.
+        at: String,
+        /// The anchor name the alias references, without the `*`.
+        alias: String,
+    },
+    /// A segment landed on an alias whose anchor is not defined anywhere
+    /// in the document, so it could not be resolved.
+    UndefinedAlias {
+        /// The segment whose value is a dangling alias.
+        at: String,
+        /// The anchor name the alias references, without the `*`.
+        alias: String,
+    },
+}
+
+/// What path traversal should do when a segment lands on an alias
+/// (`*name`) that it needs to descend through.
+///
+/// Reads and writes want different answers. Reading through an alias is
+/// just a lookup, so [`try_get_path`](YamlPath::try_get_path) resolves by
+/// default. Writing through one mutates the shared anchor and therefore
+/// every other alias pointing at it, so
+/// [`try_set_path`](YamlPath::try_set_path) refuses by default and the
+/// caller has to pick a policy deliberately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AliasPolicy {
+    /// Refuse to descend, reporting [`PathError::AliasRefused`].
+    ///
+    /// The default for writes.
+    #[default]
+    Refuse,
+    /// Follow the alias to its anchored node.
+    ///
+    /// For reads this is plain resolution. For writes it mutates the
+    /// anchored node in place, so the change is visible through the
+    /// anchor and through every other alias that references it.
+    Follow,
+    /// Replace the alias with an independent copy of the anchored node,
+    /// then operate on that copy.
+    ///
+    /// Only meaningful for writes; reads treat it like
+    /// [`Follow`](Self::Follow), since a read has nothing to write back.
+    /// The copy does not carry the original `&anchor`, so other aliases
+    /// keep pointing at the untouched original.
+    Expand,
 }
 
 impl std::fmt::Display for PathError {
@@ -258,6 +389,14 @@ impl std::fmt::Display for PathError {
                 write!(f, "path segment {at:?} is not a container")
             }
             PathError::NotFound { at } => write!(f, "path segment {at:?} not found"),
+            PathError::AliasRefused { at, alias } => write!(
+                f,
+                "path segment {at:?} is an alias to {alias:?}; refusing to descend through it"
+            ),
+            PathError::UndefinedAlias { at, alias } => write!(
+                f,
+                "path segment {at:?} is an alias to undefined anchor {alias:?}"
+            ),
         }
     }
 }
@@ -460,17 +599,69 @@ fn is_replaceable_scalar(node: &crate::as_yaml::YamlNode) -> bool {
 fn navigate_path(
     mut current: crate::as_yaml::YamlNode,
     segments: &[PathSegment],
+    policy: AliasPolicy,
 ) -> Result<crate::as_yaml::YamlNode, PathError> {
     for segment in segments {
-        current = descend_one(current, segment)?;
+        current = descend_one(current, segment, policy)?;
     }
     Ok(current)
+}
+
+/// Build an anchor registry covering the whole tree `node` belongs to,
+/// so aliases anywhere in the document resolve even when traversal
+/// started from a nested `Mapping`.
+fn registry_for(node: &crate::as_yaml::YamlNode) -> crate::anchor_resolution::AnchorRegistry {
+    let root = node
+        .syntax()
+        .ancestors()
+        .last()
+        .unwrap_or_else(|| node.syntax().clone());
+    crate::anchor_resolution::AnchorRegistry::from_tree(&root)
+}
+
+/// Resolve `current` if it is an alias, according to `policy`.
+///
+/// `segment` is only used to label errors: it is the segment that
+/// produced `current`, i.e. the one the caller is about to descend
+/// through.
+fn resolve_for_read(
+    current: crate::as_yaml::YamlNode,
+    segment: &PathSegment,
+    policy: AliasPolicy,
+) -> Result<crate::as_yaml::YamlNode, PathError> {
+    let crate::as_yaml::YamlNode::Alias(alias) = &current else {
+        return Ok(current);
+    };
+    let name = alias.name();
+
+    if policy == AliasPolicy::Refuse {
+        return Err(PathError::AliasRefused {
+            at: segment_display(segment),
+            alias: name,
+        });
+    }
+
+    let registry = registry_for(&current);
+    let target = registry
+        .resolve(&name)
+        .cloned()
+        .ok_or_else(|| PathError::UndefinedAlias {
+            at: segment_display(segment),
+            alias: name.clone(),
+        })?;
+
+    crate::as_yaml::YamlNode::from_syntax_peeled(target).ok_or(PathError::UndefinedAlias {
+        at: segment_display(segment),
+        alias: name,
+    })
 }
 
 fn descend_one(
     current: crate::as_yaml::YamlNode,
     segment: &PathSegment,
+    policy: AliasPolicy,
 ) -> Result<crate::as_yaml::YamlNode, PathError> {
+    let current = resolve_for_read(current, segment, policy)?;
     match segment {
         PathSegment::Key(key) => {
             let mapping = node_as_mapping(&current).ok_or_else(|| PathError::TypeMismatch {
@@ -512,7 +703,11 @@ fn segment_key(segment: &PathSegment) -> String {
 
 // Implementation for Document
 impl YamlPath for crate::yaml::Document {
-    fn try_get_path(&self, path: &str) -> Result<crate::as_yaml::YamlNode, PathError> {
+    fn try_get_path_with(
+        &self,
+        path: &str,
+        policy: AliasPolicy,
+    ) -> Result<crate::as_yaml::YamlNode, PathError> {
         let segments = path_segments_required(path)?;
 
         // Start from the document's root content
@@ -526,20 +721,29 @@ impl YamlPath for crate::yaml::Document {
             return Err(PathError::NoRoot);
         };
 
-        navigate_path(root, &segments)
+        navigate_path(root, &segments, policy)
     }
 
-    fn try_set_path(&self, path: &str, value: impl crate::AsYaml) -> Result<(), PathError> {
+    fn try_set_path_with(
+        &self,
+        path: &str,
+        value: impl crate::AsYaml,
+        policy: AliasPolicy,
+    ) -> Result<(), PathError> {
         let segments = path_segments_required(path)?;
 
         // Only a root mapping can hold new-key insertions; a scalar or
         // sequence root has no place to graft `foo.bar` under.
         let mapping = self.as_mapping().ok_or(PathError::NoRoot)?;
 
-        set_path_on_mapping(&mapping, &segments, value)
+        set_path_on_mapping(&mapping, &segments, value, policy)
     }
 
-    fn try_remove_path(&self, path: &str) -> Result<crate::as_yaml::YamlNode, PathError> {
+    fn try_remove_path_with(
+        &self,
+        path: &str,
+        policy: AliasPolicy,
+    ) -> Result<crate::as_yaml::YamlNode, PathError> {
         let segments = path_segments_required(path)?;
 
         let root = if let Some(m) = self.as_mapping() {
@@ -550,7 +754,7 @@ impl YamlPath for crate::yaml::Document {
             return Err(PathError::NoRoot);
         };
 
-        remove_path_impl(root, &segments)
+        remove_path_impl(root, &segments, policy)
     }
 }
 
@@ -564,8 +768,14 @@ impl YamlPath for crate::yaml::Document {
 fn remove_path_impl(
     root: crate::as_yaml::YamlNode,
     segments: &[PathSegment],
+    policy: AliasPolicy,
 ) -> Result<crate::as_yaml::YamlNode, PathError> {
     debug_assert!(!segments.is_empty(), "caller must reject empty paths");
+
+    // The node we were handed may itself be an alias (e.g. `a: *shared`
+    // then removing `a.timeout`). Resolving here means the final
+    // container lookup below sees the anchored mapping.
+    let root = resolve_for_read(root, &segments[0], policy)?;
 
     if segments.len() == 1 {
         let seg = &segments[0];
@@ -599,25 +809,116 @@ fn remove_path_impl(
     }
 
     // Descend one level and recurse.
-    let nested = descend_one(root, &segments[0])?;
-    remove_path_impl(nested, &segments[1..])
+    let nested = descend_one(root, &segments[0], policy)?;
+    remove_path_impl(nested, &segments[1..], policy)
 }
 
 // Implementation for Mapping
 impl YamlPath for Mapping {
-    fn try_get_path(&self, path: &str) -> Result<crate::as_yaml::YamlNode, PathError> {
+    fn try_get_path_with(
+        &self,
+        path: &str,
+        policy: AliasPolicy,
+    ) -> Result<crate::as_yaml::YamlNode, PathError> {
         let segments = path_segments_required(path)?;
-        navigate_path(crate::as_yaml::YamlNode::Mapping(self.clone()), &segments)
+        navigate_path(
+            crate::as_yaml::YamlNode::Mapping(self.clone()),
+            &segments,
+            policy,
+        )
     }
 
-    fn try_set_path(&self, path: &str, value: impl crate::AsYaml) -> Result<(), PathError> {
+    fn try_set_path_with(
+        &self,
+        path: &str,
+        value: impl crate::AsYaml,
+        policy: AliasPolicy,
+    ) -> Result<(), PathError> {
         let segments = path_segments_required(path)?;
-        set_path_on_mapping(self, &segments, value)
+        set_path_on_mapping(self, &segments, value, policy)
     }
 
-    fn try_remove_path(&self, path: &str) -> Result<crate::as_yaml::YamlNode, PathError> {
+    fn try_remove_path_with(
+        &self,
+        path: &str,
+        policy: AliasPolicy,
+    ) -> Result<crate::as_yaml::YamlNode, PathError> {
         let segments = path_segments_required(path)?;
-        remove_path_impl(crate::as_yaml::YamlNode::Mapping(self.clone()), &segments)
+        remove_path_impl(
+            crate::as_yaml::YamlNode::Mapping(self.clone()),
+            &segments,
+            policy,
+        )
+    }
+}
+
+/// Resolve an alias encountered as an intermediate segment of a write.
+///
+/// Under [`AliasPolicy::Refuse`] this is an error. Under
+/// [`AliasPolicy::Follow`] it returns the anchored node itself, so
+/// writes land on the shared value. Under [`AliasPolicy::Expand`] it
+/// returns a detached copy of the anchored node, which the caller
+/// substitutes for the alias; the copy is rebuilt as its own tree root
+/// so it does not carry the original `&anchor` along.
+fn resolve_alias_for_write(
+    alias: &crate::yaml::Alias,
+    segment: &PathSegment,
+    policy: AliasPolicy,
+) -> Result<crate::as_yaml::YamlNode, PathError> {
+    use rowan::ast::AstNode;
+
+    let name = alias.name();
+    if policy == AliasPolicy::Refuse {
+        return Err(PathError::AliasRefused {
+            at: segment_display(segment),
+            alias: name,
+        });
+    }
+
+    let undefined = || PathError::UndefinedAlias {
+        at: segment_display(segment),
+        alias: name.clone(),
+    };
+
+    let root = alias
+        .syntax()
+        .ancestors()
+        .last()
+        .unwrap_or_else(|| alias.syntax().clone());
+    let target = crate::anchor_resolution::AnchorRegistry::from_tree(&root)
+        .resolve(&name)
+        .cloned()
+        .ok_or_else(undefined)?;
+
+    let target = if policy == AliasPolicy::Expand {
+        // Detaching drops the `&anchor` that sits beside the original in
+        // its parent VALUE, so the copy is a plain value.
+        crate::yaml::SyntaxNode::new_root_mut(target.green().into_owned())
+    } else {
+        target
+    };
+
+    crate::as_yaml::YamlNode::from_syntax_peeled(target).ok_or_else(undefined)
+}
+
+/// Continue a write into `node`, dispatching on whether it is a mapping
+/// or a sequence. `via` is the segment that produced `node`, used only
+/// to label a type mismatch.
+fn set_path_on_node<V: crate::AsYaml>(
+    node: crate::as_yaml::YamlNode,
+    segments: &[PathSegment],
+    value: V,
+    policy: AliasPolicy,
+    via: &PathSegment,
+) -> Result<(), PathError> {
+    if let Some(m) = node.as_mapping() {
+        set_path_on_mapping(m, segments, value, policy)
+    } else if let Some(seq) = node.as_sequence() {
+        set_path_on_sequence(seq, segments, value, policy)
+    } else {
+        Err(PathError::TypeMismatch {
+            at: segment_display(via),
+        })
     }
 }
 
@@ -634,6 +935,7 @@ fn set_path_on_mapping<V: crate::AsYaml>(
     mapping: &Mapping,
     segments: &[PathSegment],
     value: V,
+    policy: AliasPolicy,
 ) -> Result<(), PathError> {
     debug_assert!(!segments.is_empty(), "caller must reject empty paths");
 
@@ -643,9 +945,31 @@ fn set_path_on_mapping<V: crate::AsYaml>(
     let first_key = first_key_owned.as_str();
 
     if segments.len() == 1 {
-        // Base case: set directly
+        // Base case: set directly. Replacing an alias outright is not
+        // writing *through* it -- no other alias is affected -- so it
+        // needs no policy check.
         mapping.set(first_key, value);
         return Ok(());
+    }
+
+    // An intermediate alias: either refuse, follow it into the anchored
+    // node, or replace it here with an anchor-free copy and continue in
+    // that copy.
+    if let Some(crate::as_yaml::YamlNode::Alias(alias)) = mapping.get(first_key) {
+        let resolved = resolve_alias_for_write(&alias, &segments[0], policy)?;
+        let target = if policy == AliasPolicy::Expand {
+            mapping.set(first_key, resolved);
+            // Re-read through the mapping so we descend into the copy
+            // that now lives in the tree, not the detached one.
+            mapping
+                .get(first_key)
+                .ok_or_else(|| PathError::TypeMismatch {
+                    at: segment_display(&segments[0]),
+                })?
+        } else {
+            resolved
+        };
+        return set_path_on_node(target, &segments[1..], value, policy, &segments[0]);
     }
 
     // What container does the next segment expect at `first_key`?
@@ -671,12 +995,12 @@ fn set_path_on_mapping<V: crate::AsYaml>(
 
     if next_wants_sequence {
         if let Some(nested) = existing.as_ref().and_then(node_as_sequence) {
-            return set_path_on_sequence(&nested, &segments[1..], value);
+            return set_path_on_sequence(&nested, &segments[1..], value, policy);
         }
         // Index on an existing mapping is a key (`m.0` / `m[0]`), same
         // as get_path. Do not replace the mapping with a sequence.
         if let Some(nested) = existing.as_ref().and_then(node_as_mapping) {
-            return set_path_on_mapping(&nested, &segments[1..], value);
+            return set_path_on_mapping(&nested, &segments[1..], value, policy);
         }
         if existing.as_ref().is_some_and(|n| !is_replaceable_scalar(n)) {
             return Err(PathError::TypeMismatch {
@@ -699,11 +1023,11 @@ fn set_path_on_mapping<V: crate::AsYaml>(
         let nested = mapping
             .get_sequence(first_key)
             .expect("we just inserted this key as a sequence");
-        return set_path_on_sequence(&nested, &segments[1..], value);
+        return set_path_on_sequence(&nested, &segments[1..], value, policy);
     }
 
     if let Some(nested) = existing.as_ref().and_then(node_as_mapping) {
-        return set_path_on_mapping(&nested, &segments[1..], value);
+        return set_path_on_mapping(&nested, &segments[1..], value, policy);
     }
     if existing.as_ref().is_some_and(|n| !is_replaceable_scalar(n)) {
         return Err(PathError::TypeMismatch {
@@ -727,7 +1051,7 @@ fn set_path_on_mapping<V: crate::AsYaml>(
     let nested = mapping
         .get_mapping(first_key)
         .expect("we just inserted this key as a mapping");
-    set_path_on_mapping(&nested, &segments[1..], value)
+    set_path_on_mapping(&nested, &segments[1..], value, policy)
 }
 
 /// Set a value at a path on a sequence, growing it and creating intermediate
@@ -740,6 +1064,7 @@ fn set_path_on_sequence<V: crate::AsYaml>(
     sequence: &crate::yaml::Sequence,
     segments: &[PathSegment],
     value: V,
+    policy: AliasPolicy,
 ) -> Result<(), PathError> {
     debug_assert!(!segments.is_empty(), "caller must reject empty paths");
 
@@ -761,8 +1086,25 @@ fn set_path_on_sequence<V: crate::AsYaml>(
     }
 
     if segments.len() == 1 {
+        // Replacing an alias entry outright affects no other alias, so
+        // no policy check here (mirrors the mapping base case).
         sequence.set(index, value);
         return Ok(());
+    }
+
+    // Same alias handling as the mapping case: refuse, follow into the
+    // anchored node, or swap in an anchor-free copy and descend there.
+    if let Some(crate::as_yaml::YamlNode::Alias(alias)) = sequence.get(index) {
+        let resolved = resolve_alias_for_write(&alias, &segments[0], policy)?;
+        let target = if policy == AliasPolicy::Expand {
+            sequence.set(index, resolved);
+            sequence.get(index).ok_or_else(|| PathError::TypeMismatch {
+                at: segment_display(&segments[0]),
+            })?
+        } else {
+            resolved
+        };
+        return set_path_on_node(target, &segments[1..], value, policy, &segments[0]);
     }
 
     // Descending through an existing scalar is fine when that scalar is
@@ -786,10 +1128,10 @@ fn set_path_on_sequence<V: crate::AsYaml>(
 
     if next_wants_sequence {
         if let Some(nested) = existing.as_ref().and_then(node_as_sequence) {
-            return set_path_on_sequence(&nested, &segments[1..], value);
+            return set_path_on_sequence(&nested, &segments[1..], value, policy);
         }
         if let Some(nested) = existing.as_ref().and_then(node_as_mapping) {
-            return set_path_on_mapping(&nested, &segments[1..], value);
+            return set_path_on_mapping(&nested, &segments[1..], value, policy);
         }
         if existing.as_ref().is_some_and(|n| !is_replaceable_scalar(n)) {
             return Err(PathError::TypeMismatch {
@@ -811,11 +1153,11 @@ fn set_path_on_sequence<V: crate::AsYaml>(
             .get(index)
             .and_then(|n| n.as_sequence().cloned())
             .expect("we just inserted a sequence at this index");
-        return set_path_on_sequence(&nested, &segments[1..], value);
+        return set_path_on_sequence(&nested, &segments[1..], value, policy);
     }
 
     if let Some(nested) = existing.as_ref().and_then(node_as_mapping) {
-        return set_path_on_mapping(&nested, &segments[1..], value);
+        return set_path_on_mapping(&nested, &segments[1..], value, policy);
     }
     if existing.as_ref().is_some_and(|n| !is_replaceable_scalar(n)) {
         return Err(PathError::TypeMismatch {
@@ -831,7 +1173,7 @@ fn set_path_on_sequence<V: crate::AsYaml>(
         .get(index)
         .and_then(|n| n.as_mapping().cloned())
         .expect("we just inserted a mapping at this index");
-    set_path_on_mapping(&nested, &segments[1..], value)
+    set_path_on_mapping(&nested, &segments[1..], value, policy)
 }
 
 #[cfg(test)]
@@ -1635,12 +1977,17 @@ config:
         ));
         assert_eq!(doc.to_string(), original);
 
+        // An alias is refused rather than silently overwritten; the
+        // dedicated error says why (see the alias policy tests below).
         let original = "other: &o\n  a: 1\nitems: *o\n";
         let doc = Document::from_str(original).unwrap();
-        assert!(matches!(
+        assert_eq!(
             doc.try_set_path("items.foo", "x"),
-            Err(PathError::TypeMismatch { .. })
-        ));
+            Err(PathError::AliasRefused {
+                at: "items".to_string(),
+                alias: "o".to_string()
+            })
+        );
         assert_eq!(doc.to_string(), original);
     }
 
@@ -1651,14 +1998,17 @@ config:
 
         let original = "other: &o\n- a\n- b\nitems: *o\n";
         let doc = Document::from_str(original).unwrap();
-        assert!(matches!(
-            doc.try_get_path("items[0]"),
-            Err(PathError::TypeMismatch { .. })
-        ));
-        assert!(matches!(
+        assert_eq!(
+            doc.try_get_path("items[0]").unwrap().to_string(),
+            "a".to_string()
+        );
+        assert_eq!(
             doc.try_set_path("items[0]", "x"),
-            Err(PathError::TypeMismatch { .. })
-        ));
+            Err(PathError::AliasRefused {
+                at: "items".to_string(),
+                alias: "o".to_string()
+            })
+        );
         assert_eq!(doc.to_string(), original);
 
         // A tagged sequence is a sequence wearing a tag: descend into it
@@ -1669,10 +2019,13 @@ config:
 
         let original = "other: &o\n  a: 1\ntop:\n  - *o\n";
         let doc = Document::from_str(original).unwrap();
-        assert!(matches!(
+        assert_eq!(
             doc.try_set_path("top[0][0]", "x"),
-            Err(PathError::TypeMismatch { .. })
-        ));
+            Err(PathError::AliasRefused {
+                at: "[0]".to_string(),
+                alias: "o".to_string()
+            })
+        );
         assert_eq!(doc.to_string(), original);
 
         // A tagged mapping behaves like the mapping it wraps, so the
@@ -1768,5 +2121,223 @@ config:
             Err(PathError::TypeMismatch { .. })
         ));
         assert_eq!(doc.to_string(), original);
+    }
+
+    const ALIASED: &str = "shared: &shared\n  timeout: 30\nservice: *shared\n";
+
+    #[test]
+    fn test_get_path_resolves_alias_by_default() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str(ALIASED).unwrap();
+        assert_eq!(
+            doc.try_get_path("service.timeout").unwrap().to_string(),
+            "30".to_string()
+        );
+        assert_eq!(doc.to_string(), ALIASED.to_string());
+    }
+
+    #[test]
+    fn test_get_path_refuse_policy_reports_alias() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str(ALIASED).unwrap();
+        assert_eq!(
+            doc.try_get_path_with("service.timeout", AliasPolicy::Refuse),
+            Err(PathError::AliasRefused {
+                at: "timeout".to_string(),
+                alias: "shared".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn test_get_path_undefined_alias() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str(
+            "service: *missing
+",
+        )
+        .unwrap();
+        assert_eq!(
+            doc.try_get_path("service.timeout"),
+            Err(PathError::UndefinedAlias {
+                at: "timeout".to_string(),
+                alias: "missing".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn test_set_path_refuses_alias_by_default() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str(ALIASED).unwrap();
+        assert_eq!(
+            doc.try_set_path("service.timeout", 60),
+            Err(PathError::AliasRefused {
+                at: "service".to_string(),
+                alias: "shared".to_string()
+            })
+        );
+        assert_eq!(doc.to_string(), ALIASED.to_string());
+    }
+
+    #[test]
+    fn test_set_path_follow_writes_through_to_anchor() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str(ALIASED).unwrap();
+        doc.try_set_path_with("service.timeout", 60, AliasPolicy::Follow)
+            .unwrap();
+        // The anchored value changed, so every alias to it sees 60.
+        assert_eq!(
+            doc.to_string(),
+            "shared: &shared\n  timeout: 60\nservice: *shared\n".to_string()
+        );
+    }
+
+    #[test]
+    fn test_set_path_expand_copies_without_anchor() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str(ALIASED).unwrap();
+        doc.try_set_path_with("service.timeout", 60, AliasPolicy::Expand)
+            .unwrap();
+        // The alias is replaced by an independent copy; the anchor keeps
+        // its original value and carries no duplicate `&shared`.
+        assert_eq!(
+            doc.to_string(),
+            "shared: &shared\n  timeout: 30\nservice:\n  timeout: 60\n".to_string()
+        );
+    }
+
+    #[test]
+    fn test_set_path_expand_leaves_other_aliases_alone() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let src = "shared: &shared\n  timeout: 30\na: *shared\nb: *shared\n";
+        let doc = Document::from_str(src).unwrap();
+        doc.try_set_path_with("a.timeout", 60, AliasPolicy::Expand)
+            .unwrap();
+        assert_eq!(
+            doc.to_string(),
+            "shared: &shared\n  timeout: 30\na:\n  timeout: 60\nb: *shared\n".to_string()
+        );
+    }
+
+    #[test]
+    fn test_set_path_replacing_alias_outright_needs_no_policy() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        // A single-segment path overwrites the alias entry itself rather
+        // than writing through it, so the default policy allows it.
+        let doc = Document::from_str(ALIASED).unwrap();
+        doc.try_set_path("service", 1).unwrap();
+        assert_eq!(
+            doc.to_string(),
+            "shared: &shared\n  timeout: 30\nservice: 1\n".to_string()
+        );
+    }
+
+    #[test]
+    fn test_set_path_undefined_alias_is_reported() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let src = "service: *missing\n";
+        let doc = Document::from_str(src).unwrap();
+        assert_eq!(
+            doc.try_set_path_with("service.timeout", 1, AliasPolicy::Follow),
+            Err(PathError::UndefinedAlias {
+                at: "service".to_string(),
+                alias: "missing".to_string()
+            })
+        );
+        assert_eq!(doc.to_string(), src.to_string());
+    }
+
+    #[test]
+    fn test_remove_path_refuses_alias_by_default() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str(ALIASED).unwrap();
+        assert_eq!(
+            doc.try_remove_path("service.timeout"),
+            Err(PathError::AliasRefused {
+                at: "timeout".to_string(),
+                alias: "shared".to_string()
+            })
+        );
+        assert_eq!(doc.to_string(), ALIASED.to_string());
+    }
+
+    #[test]
+    fn test_remove_path_follow_removes_from_anchor() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let src = "shared: &shared\n  timeout: 30\n  retries: 3\nservice: *shared\n";
+        let doc = Document::from_str(src).unwrap();
+        let removed = doc
+            .try_remove_path_with("service.timeout", AliasPolicy::Follow)
+            .unwrap();
+        assert_eq!(removed.to_string(), "30".to_string());
+        // The key is gone from the anchored mapping, so the alias sees
+        // the removal too.
+        assert_eq!(
+            doc.to_string(),
+            "shared: &shared\n  retries: 3\nservice: *shared\n".to_string()
+        );
+    }
+
+    #[test]
+    fn test_alias_to_sequence_resolves_for_read() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("other: &o\n- a\n- b\nitems: *o\n").unwrap();
+        assert_eq!(
+            doc.try_get_path("items[1]").unwrap().to_string(),
+            "b".to_string()
+        );
+    }
+
+    #[test]
+    fn test_get_path_on_mapping_resolves_document_anchors() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        // Traversal started from a nested Mapping, but the anchor is
+        // defined at the document root: the registry is built from the
+        // whole tree, so it still resolves.
+        let doc =
+            Document::from_str("shared: &shared\n  timeout: 30\nouter:\n  svc: *shared\n").unwrap();
+        let outer = doc.as_mapping().unwrap().get_mapping("outer").unwrap();
+        assert_eq!(
+            outer.try_get_path("svc.timeout").unwrap().to_string(),
+            "30".to_string()
+        );
+    }
+
+    #[test]
+    fn test_recursive_alias_terminates() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        // Each segment resolves exactly one alias hop, so a self
+        // referential anchor consumes path segments instead of looping.
+        let doc = Document::from_str("a: &x\n  b: *x\n").unwrap();
+        assert!(doc.try_get_path("a.b.b.b").is_ok());
     }
 }

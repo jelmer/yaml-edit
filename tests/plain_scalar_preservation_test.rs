@@ -595,3 +595,67 @@ fn test_question_mark_at_node_start_still_opens_explicit_key() {
         "value"
     );
 }
+
+/// Outside a flow collection the flow indicators are ordinary plain-scalar
+/// content, so a `+` followed by one continues the scalar. The `+` arm only
+/// let a non-special character begin a body, so `a+[b]` emitted a bare PLUS
+/// and let `[` open a flow sequence, stranding the rest with no parse error.
+///
+/// A regex is the realistic shape: `[\.a-zA-Z]{2,}$` after a `+` quantifier.
+#[test]
+fn test_plus_before_flow_indicator_stays_scalar_content() {
+    for yaml in ["a+[b]\n", "a+{b}\n", "a: x+[1]\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    let pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+[\.a-zA-Z]{2,}$";
+    let yaml = format!("pattern: {pattern}\nnext: keep\n");
+    let file = YamlFile::from_str(&yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping
+            .get("pattern")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        pattern
+    );
+    assert_eq!(
+        mapping
+            .get("next")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "keep"
+    );
+}
+
+/// A `+` sign prefix and a block-scalar chomping `+` keep their meanings.
+#[test]
+fn test_plus_keeps_sign_and_chomping_roles() {
+    for (yaml, value) in [("v: +5\n", "+5"), ("f: +.INF\n", "+.INF")] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            mapping
+                .get(yaml.split(':').next().unwrap())
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .as_string(),
+            value
+        );
+    }
+
+    let yaml = "b: |+\n  x\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    common::assert_file_cst_ok(&file);
+}

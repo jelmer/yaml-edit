@@ -331,3 +331,48 @@ fn indented_tagged_set_keeps_entries_nested() {
     let set = mapping.get("s").unwrap();
     assert_eq!(set.as_tagged().unwrap().tag().as_deref(), Some("!!set"));
 }
+
+#[test]
+fn tag_followed_by_anchor_keeps_its_indentless_sequence() {
+    // `!!seq &a` annotates the sequence just as `!!seq` alone does; the
+    // anchor between the tag and the line break must not detach it.
+    for value in ["!!seq &a", "&a !!seq"] {
+        let yaml = format!("tags: {value}\n- engineering\nmetadata:\n  version: 0.1.0\n");
+        let file = YamlFile::from_str(&yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            mapping.keys().count(),
+            2,
+            "{}",
+            debug::tree_to_string(file.syntax())
+        );
+        assert_eq!(
+            mapping
+                .get("tags")
+                .unwrap()
+                .as_tagged()
+                .unwrap()
+                .tag()
+                .as_deref(),
+            Some("!!seq")
+        );
+        let metadata = mapping.get_mapping("metadata").unwrap();
+        metadata.set("version", "0.1.1");
+        common::assert_file_cst_ok(&file);
+        assert_eq!(
+            file.to_string(),
+            yaml.replace("version: 0.1.0", "version: 0.1.1")
+        );
+    }
+}
+
+#[test]
+fn tag_anchor_indentless_sequence_is_aliasable() {
+    let yaml = "tags: !!seq &a\n- engineering\nnext: *a\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.keys().count(), 2);
+    assert_eq!(mapping.get("next").unwrap().as_alias().unwrap().name(), "a");
+}

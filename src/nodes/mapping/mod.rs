@@ -1166,7 +1166,7 @@ impl Mapping {
                     rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::KEY => {
                         // Replace the KEY node using AsYaml::build_content
                         builder.start_node(SyntaxKind::KEY.into());
-                        new_key.build_content(&mut builder, 0, false);
+                        super::build_key_content(&mut builder, &new_key);
                         // An explicit key (`? k\n  : v`) puts the `:` on its
                         // own line, and the parser keeps that line break and
                         // indent inside KEY. They describe the entry's layout
@@ -1211,7 +1211,7 @@ impl Mapping {
 
         // Add KEY node
         builder.start_node(SyntaxKind::KEY.into());
-        key.build_content(&mut builder, 0, false);
+        super::build_key_content(&mut builder, &key);
         builder.finish_node(); // KEY
 
         // Add colon

@@ -50,11 +50,14 @@ impl YamlValue {
                 if let Some(mapping) = Mapping::cast(node) {
                     let mut map = std::collections::BTreeMap::new();
                     for (key_node, value_node) in mapping.pairs() {
-                        // Extract key as string (simplification for BTreeMap key)
-                        let key_str = if let Some(key_scalar) = Scalar::cast(key_node.clone()) {
-                            key_scalar.as_string()
-                        } else {
-                            key_node.text().to_string()
+                        // pairs() yields the KEY wrapper, so cast through
+                        // extract_scalar to reach the scalar inside it.
+                        // Casting the wrapper directly fails and falls back to
+                        // raw text, which keeps the quotes on `'0'` and makes
+                        // the entry unreachable by its actual key.
+                        let key_str = match crate::yaml::extract_scalar(&key_node) {
+                            Some(key_scalar) => key_scalar.as_string(),
+                            None => key_node.text().to_string(),
                         };
 
                         // Convert value node to YamlValue

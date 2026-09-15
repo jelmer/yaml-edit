@@ -295,29 +295,21 @@ fn apply_merge_keys(
 
         // Handle both single alias and sequence of aliases
         match &value {
-            // Single alias: <<: *alias
-            YamlNode::Scalar(_) => {
-                let Some(alias_text) = node_as_string(&value) else {
+            // Single alias: `<<: *alias`
+            YamlNode::Alias(_) | YamlNode::Scalar(_) => {
+                let Some(alias_name) = alias_target(&value) else {
                     continue;
                 };
-                let Some(alias_name) = alias_text.strip_prefix('*') else {
-                    continue;
-                };
-
-                merge_from_alias(&mut merged_pairs, alias_name, registry);
+                merge_from_alias(&mut merged_pairs, &alias_name, registry);
             }
-            // Multiple aliases: <<: [*alias1, *alias2]
+            // Multiple aliases: `<<: [*alias1, *alias2]`
             YamlNode::Sequence(seq) => {
                 // Process aliases in order - later aliases override earlier ones
                 for alias_node in seq.values() {
-                    let Some(alias_text) = node_as_string(&alias_node) else {
+                    let Some(alias_name) = alias_target(&alias_node) else {
                         continue;
                     };
-                    let Some(alias_name) = alias_text.strip_prefix('*') else {
-                        continue;
-                    };
-
-                    merge_from_alias(&mut merged_pairs, alias_name, registry);
+                    merge_from_alias(&mut merged_pairs, &alias_name, registry);
                 }
             }
             _ => continue,
@@ -332,13 +324,36 @@ fn apply_merge_keys(
         if key_str == "<<" {
             continue;
         }
-        // Convert YamlNode back to YamlValue for storage
-        if let Some(yaml_value) = YamlValue::cast(value.syntax().clone()) {
+        if let Some(yaml_value) = resolved_value(value, registry) {
             merged_pairs.insert(key_str, yaml_value);
         }
     }
 
     merged_pairs
+}
+
+/// Turn a mapping value into a [`YamlValue`] for the resolved map.
+///
+/// An alias is followed to the node it names. One that resolves to nothing
+/// (the anchor was edited away, say) is kept as its literal `*name` text
+/// rather than dropped, so the key still appears in the result.
+fn resolved_value(value: crate::as_yaml::YamlNode, registry: &AnchorRegistry) -> Option<YamlValue> {
+    let resolved = resolve_alias_node(value, registry);
+    if let crate::as_yaml::YamlNode::Alias(alias) = &resolved {
+        return Some(YamlValue::Scalar(crate::ScalarValue::string(alias.value())));
+    }
+    YamlValue::cast(resolved.syntax().clone())
+}
+
+/// The anchor a merge-key operand refers to.
+///
+/// `*name` parses as an ALIAS node, but a merge value can also reach here as
+/// a plain scalar whose text starts with `*`, so accept both.
+fn alias_target(node: &crate::as_yaml::YamlNode) -> Option<String> {
+    match node {
+        crate::as_yaml::YamlNode::Alias(alias) => Some(alias.name()),
+        _ => node_as_string(node)?.strip_prefix('*').map(str::to_string),
+    }
 }
 
 /// Helper function to merge keys from a single alias
@@ -359,8 +374,7 @@ fn merge_from_alias(
             let Some(k_str) = node_as_string(&src_key) else {
                 continue;
             };
-            // Convert YamlNode back to YamlValue for storage; insert or override
-            if let Some(yaml_value) = YamlValue::cast(src_value.syntax().clone()) {
+            if let Some(yaml_value) = resolved_value(src_value, registry) {
                 merged_pairs.insert(k_str, yaml_value);
             }
         }
@@ -727,6 +741,76 @@ mod tests {
 
     fn doc(text: &str) -> Document {
         Document::from_str(text).expect("parse")
+    }
+
+    #[test]
+    fn get_resolved_keys_are_decoded() {
+        // Mapping::pairs() yields the KEY wrapper, so casting it straight to
+        // Scalar failed and the key fell back to raw text. A quoted key kept
+        // its quotes and became unreachable by its own name -- but only
+        // without a merge key, since apply_merge_keys decodes separately.
+        for (yaml, expected) in [
+            ("a:\n  '0': z\n  x: 1\n", vec!["0", "x"]),
+            ("a:\n  \"k\": z\n", vec!["k"]),
+            ("a:\n  plain: z\n", vec!["plain"]),
+            // With a merge key, which takes the other code path.
+            ("s: &s\n  q: r\na:\n  <<: *s\n  '0': z\n", vec!["0", "q"]),
+        ] {
+            let doc = Document::from_str(yaml).unwrap();
+            let resolved = doc.get_resolved("a").expect("a resolves");
+            let mapping = resolved.as_mapping().expect("a is a mapping");
+            let keys: Vec<&str> = mapping.keys().map(String::as_str).collect();
+            assert_eq!(keys, expected, "{yaml:?}");
+            for key in expected {
+                assert!(
+                    mapping.contains_key(key),
+                    "{yaml:?}: {key:?} not reachable by name"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn get_resolved_expands_merge_keys() {
+        // `*a` reaches apply_merge_keys as an ALIAS node, not a scalar, so
+        // the merge used to fall through and drop every inherited key. Check
+        // get_resolved against the MergedMapping view, which is the same
+        // question asked of the newer code path.
+        for (yaml, present, absent) in [
+            (
+                "a: &a\n  x: 1\nb: &b\n  y: 2\nm:\n  <<: [*a, *b]\n  z: 3\n",
+                vec!["x", "y", "z"],
+                vec!["w"],
+            ),
+            (
+                "a: &a\n  x: 1\nm:\n  <<: *a\n  z: 3\n",
+                vec!["x", "z"],
+                vec!["y"],
+            ),
+        ] {
+            let doc = Document::from_str(yaml).unwrap();
+            let registry = doc.build_anchor_registry();
+            let root = doc.as_mapping().unwrap();
+            let m_node = root.get("m").unwrap();
+            let m = m_node.as_mapping().unwrap();
+            let merged = m.merged(&registry);
+            let resolved = doc.get_resolved("m").expect("m resolves");
+
+            for key in present {
+                assert!(merged.get(key).is_some(), "MergedMapping lost {key:?}");
+                assert!(
+                    resolved.as_mapping().and_then(|mm| mm.get(key)).is_some(),
+                    "get_resolved lost {key:?} in {yaml:?}"
+                );
+            }
+            for key in absent {
+                assert!(merged.get(key).is_none(), "MergedMapping invented {key:?}");
+                assert!(
+                    resolved.as_mapping().and_then(|mm| mm.get(key)).is_none(),
+                    "get_resolved invented {key:?} in {yaml:?}"
+                );
+            }
+        }
     }
 
     #[test]

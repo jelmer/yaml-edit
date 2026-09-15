@@ -293,6 +293,15 @@ impl std::fmt::Display for PathParseError {
 
 impl std::error::Error for PathParseError {}
 
+/// The most null placeholders [`try_set_path`](YamlPath::try_set_path) will
+/// insert to reach an out-of-range sequence index.
+///
+/// Writing to `s[5]` on an empty sequence is a reasonable way to build one;
+/// writing to `s[900000]` is almost always a mistake or hostile input, and
+/// filling the gap would cost time and memory that grows faster than the
+/// index (each insert re-splices the sequence's children).
+pub const MAX_INDEX_GROWTH: usize = 256;
+
 /// Error returned by [`try_get_path`](YamlPath::try_get_path) /
 /// [`try_set_path`](YamlPath::try_set_path) /
 /// [`try_remove_path`](YamlPath::try_remove_path).
@@ -336,6 +345,20 @@ pub enum PathError {
         at: String,
         /// The anchor name the alias references, without the `*`.
         alias: String,
+    },
+    /// Setting the requested index would have grown a sequence by more
+    /// than [`MAX_INDEX_GROWTH`] null placeholders.
+    ///
+    /// `try_set_path("s[900000]", v)` on a short sequence would otherwise
+    /// pad it with that many entries, so a path from untrusted input could
+    /// spend unbounded time and memory.
+    IndexTooFar {
+        /// The segment whose index was out of reach.
+        at: String,
+        /// The current length of the sequence.
+        len: usize,
+        /// The index that was asked for.
+        index: usize,
     },
     /// A segment landed on an alias whose anchor is not defined anywhere
     /// in the document, so it could not be resolved.
@@ -392,6 +415,11 @@ impl std::fmt::Display for PathError {
             PathError::AliasRefused { at, alias } => write!(
                 f,
                 "path segment {at:?} is an alias to {alias:?}; refusing to descend through it"
+            ),
+            PathError::IndexTooFar { at, len, index } => write!(
+                f,
+                "path segment {at:?} would grow a sequence of {len} by {} null entries to reach index {index}",
+                index + 1 - len
             ),
             PathError::UndefinedAlias { at, alias } => write!(
                 f,
@@ -1093,7 +1121,17 @@ fn set_path_on_sequence<V: crate::AsYaml>(
         }
     };
 
-    // Grow the sequence with null placeholders until `index` is in range.
+    // Grow the sequence with null placeholders until `index` is in range,
+    // within reason: an index far past the end would otherwise let a single
+    // path allocate unboundedly.
+    let len = sequence.len();
+    if index >= len && index - len >= MAX_INDEX_GROWTH {
+        return Err(PathError::IndexTooFar {
+            at: segment_display(&segments[0]),
+            len,
+            index,
+        });
+    }
     while sequence.len() <= index {
         sequence.push(crate::scalar::ScalarValue::null());
     }
@@ -1192,6 +1230,38 @@ fn set_path_on_sequence<V: crate::AsYaml>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_path_bounds_sequence_growth() {
+        use crate::Document;
+        use std::str::FromStr;
+
+        // Filling the gap to an out-of-range index used to be unbounded, so
+        // a single path could build an enormous document: the fuzz-found
+        // "999.hh.hh.999.9aa" spent ~2s producing 13KB from a 6-byte seed.
+        let doc = Document::from_str("m: {}\n").unwrap();
+        let err = doc
+            .try_set_path("999.hh.hh.999.9aa", "")
+            .expect_err("a far index must be refused");
+        assert!(
+            matches!(err, PathError::IndexTooFar { .. }),
+            "unexpected error: {err}"
+        );
+        // Nothing was written on the way to refusing.
+        assert!(doc.to_string().len() < 64, "{:?}", doc.to_string());
+
+        // Growth within the limit still works: writing s[5] on an empty
+        // sequence is a normal way to build one.
+        let doc = Document::from_str("m: {}\n").unwrap();
+        doc.try_set_path("s[5]", "v").expect("small index is fine");
+        assert_eq!(doc.try_get_path("s[5]").unwrap().to_string(), "v");
+
+        let doc = Document::from_str("m: {}\n").unwrap();
+        assert!(matches!(
+            doc.try_set_path(&format!("s[{MAX_INDEX_GROWTH}]"), "v"),
+            Err(PathError::IndexTooFar { .. })
+        ));
+    }
 
     fn merge_doc() -> crate::yaml::YamlFile {
         use std::str::FromStr;

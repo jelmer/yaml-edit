@@ -365,11 +365,8 @@ impl Document {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        if let Some(mapping) = self.as_mapping() {
-            mapping.insert_after(after_key, key, value)
-        } else {
-            false
-        }
+        self.as_mapping()
+            .is_some_and(|mapping| mapping.insert_after(after_key, key, value))
     }
 
     /// Move a key-value pair to immediately after `after_key` in this document's mapping.
@@ -386,11 +383,8 @@ impl Document {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        if let Some(mapping) = self.as_mapping() {
-            mapping.move_after(after_key, key, value)
-        } else {
-            false
-        }
+        self.as_mapping()
+            .is_some_and(|mapping| mapping.move_after(after_key, key, value))
     }
 
     /// Insert a key-value pair immediately before `before_key` in this document's mapping.
@@ -407,11 +401,8 @@ impl Document {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        if let Some(mapping) = self.as_mapping() {
-            mapping.insert_before(before_key, key, value)
-        } else {
-            false
-        }
+        self.as_mapping()
+            .is_some_and(|mapping| mapping.insert_before(before_key, key, value))
     }
 
     /// Move a key-value pair to immediately before `before_key` in this document's mapping.
@@ -428,11 +419,8 @@ impl Document {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        if let Some(mapping) = self.as_mapping() {
-            mapping.move_before(before_key, key, value)
-        } else {
-            false
-        }
+        self.as_mapping()
+            .is_some_and(|mapping| mapping.move_before(before_key, key, value))
     }
 
     /// Helper to build a VALUE wrapper node around any AsYaml value
@@ -729,6 +717,32 @@ impl std::str::FromStr for Document {
                         reason: "Input contains YAML directives outside the document. Use YamlFile::from_str() to preserve them.".to_string(),
                     });
                 }
+                // Tokens the parser could not attach to the document are
+                // swept into a stream-level ERROR node without a reported
+                // error. Returning `first` would drop them from the output,
+                // so say so instead of losing the text.
+                rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::ERROR => {
+                    return Err(crate::error::YamlError::Parse {
+                        message: format!(
+                            "could not be parsed as part of the document: {:?}",
+                            n.text().to_string()
+                        ),
+                        line: Some(
+                            crate::byte_offset_to_line_column(
+                                s,
+                                usize::from(n.text_range().start()),
+                            )
+                            .line,
+                        ),
+                        column: Some(
+                            crate::byte_offset_to_line_column(
+                                s,
+                                usize::from(n.text_range().start()),
+                            )
+                            .column,
+                        ),
+                    });
+                }
                 _ => {}
             }
         }
@@ -769,6 +783,28 @@ mod tests {
     use crate::builder::{MappingBuilder, SequenceBuilder};
     use crate::yaml::YamlFile;
     use std::str::FromStr;
+
+    #[test]
+    fn from_str_rejects_stranded_content() {
+        // The parser sweeps tokens it cannot attach into a stream-level
+        // ERROR node without reporting an error. from_str returned only the
+        // first DOCUMENT, so that text vanished from the output: `&b\nx: 1\n`
+        // came back as `&b\n`, losing an entire mapping.
+        for src in ["&b\nJ", "&b\nx: 1\n", "&b\n- a\n"] {
+            let err = Document::from_str(src).expect_err("stranded content must not be dropped");
+            let message = err.to_string();
+            assert!(
+                message.contains("could not be parsed as part of the document"),
+                "{src:?}: unexpected error {message}"
+            );
+        }
+
+        // Documents with nothing stranded still parse and round-trip.
+        for src in ["a: 1\n", "a\nJ", "- a\n- b\n", "key: value"] {
+            let doc = Document::from_str(src).expect("valid document");
+            assert_eq!(doc.to_string(), src, "{src:?}");
+        }
+    }
 
     #[test]
     fn test_document_stream_features() {

@@ -617,11 +617,8 @@ impl YamlFile {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        if let Some(doc) = self.document() {
-            doc.insert_after(after_key, key, value)
-        } else {
-            false
-        }
+        self.document()
+            .is_some_and(|doc| doc.insert_after(after_key, key, value))
     }
 
     /// Insert a key-value pair immediately before `before_key` in the first document.
@@ -638,11 +635,8 @@ impl YamlFile {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        if let Some(doc) = self.document() {
-            doc.insert_before(before_key, key, value)
-        } else {
-            false
-        }
+        self.document()
+            .is_some_and(|doc| doc.insert_before(before_key, key, value))
     }
 
     /// Move a key-value pair to immediately after `after_key` in the first document.
@@ -661,11 +655,8 @@ impl YamlFile {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        if let Some(doc) = self.document() {
-            doc.move_after(after_key, key, value)
-        } else {
-            false
-        }
+        self.document()
+            .is_some_and(|doc| doc.move_after(after_key, key, value))
     }
 
     /// Move a key-value pair to immediately before `before_key` in the first document.
@@ -684,11 +675,8 @@ impl YamlFile {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        if let Some(doc) = self.document() {
-            doc.move_before(before_key, key, value)
-        } else {
-            false
-        }
+        self.document()
+            .is_some_and(|doc| doc.move_before(before_key, key, value))
     }
 
     /// Insert a key-value pair at a specific index (0-based) in the first document.

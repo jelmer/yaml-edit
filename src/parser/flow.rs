@@ -66,31 +66,54 @@ impl Parser {
         self.builder.finish_node(); // MAPPING_ENTRY
         self.builder.finish_node(); // MAPPING
     }
+    /// Bail out of a flow collection nested past [`MAX_FLOW_DEPTH`].
+    ///
+    /// Reports the error, consumes up to `closer` to recover, and closes the
+    /// node. Returns true when the caller should return without recursing.
+    fn flow_depth_exceeded(&mut self, closer: SyntaxKind) -> bool {
+        if self.flow_depth < MAX_FLOW_DEPTH {
+            return false;
+        }
+        self.add_error(
+            format!("Flow collection nested too deeply (limit {MAX_FLOW_DEPTH})"),
+            ParseErrorKind::Other,
+        );
+        while let Some(kind) = self.current() {
+            if matches!(kind, SyntaxKind::DOC_START | SyntaxKind::DOC_END) || kind == closer {
+                break;
+            }
+            self.bump();
+        }
+        if self.current() == Some(closer) {
+            self.bump();
+        }
+        self.builder.finish_node();
+        self.error_context.pop_context();
+        true
+    }
+
+    /// Guarantee the flow loop makes progress.
+    ///
+    /// If nothing was consumed since `tokens_before` the loop would spin
+    /// forever (a stray `}` inside `[...]`, say), so report the token and
+    /// skip it. `what` names the collection for the message.
+    fn flow_progress_guard(&mut self, tokens_before: usize, what: &str) {
+        if self.tokens.len() != tokens_before {
+            return;
+        }
+        let unexpected = self.current_text().unwrap_or("").to_string();
+        self.add_error(
+            format!("Unexpected token in flow {what}: {unexpected:?}"),
+            ParseErrorKind::Other,
+        );
+        self.bump();
+    }
+
     pub(super) fn parse_flow_sequence(&mut self) {
         self.builder.start_node(SyntaxKind::SEQUENCE.into());
         self.error_context.push_context(ParseContext::FlowSequence);
 
-        if self.flow_depth >= MAX_FLOW_DEPTH {
-            self.add_error(
-                format!("Flow collection nested too deeply (limit {MAX_FLOW_DEPTH})"),
-                ParseErrorKind::Other,
-            );
-            // Consume everything up to a closing delimiter to recover, then
-            // bail out without recursing further.
-            while let Some(kind) = self.current() {
-                if matches!(
-                    kind,
-                    SyntaxKind::RIGHT_BRACKET | SyntaxKind::DOC_START | SyntaxKind::DOC_END
-                ) {
-                    break;
-                }
-                self.bump();
-            }
-            if self.current() == Some(SyntaxKind::RIGHT_BRACKET) {
-                self.bump();
-            }
-            self.builder.finish_node();
-            self.error_context.pop_context();
+        if self.flow_depth_exceeded(SyntaxKind::RIGHT_BRACKET) {
             return;
         }
         self.flow_depth += 1;
@@ -149,14 +172,7 @@ impl Parser {
             // Guarantee progress: if no token was consumed this iteration we
             // would loop forever (e.g. on stray `}` inside `[...]`). Report
             // the unexpected token and skip it.
-            if self.tokens.len() == tokens_before {
-                let unexpected = self.current_text().unwrap_or("").to_string();
-                self.add_error(
-                    format!("Unexpected token in flow sequence: {unexpected:?}"),
-                    ParseErrorKind::Other,
-                );
-                self.bump();
-            }
+            self.flow_progress_guard(tokens_before, "sequence");
         }
 
         self.in_flow_context = prev_flow;
@@ -184,25 +200,7 @@ impl Parser {
         self.builder.start_node(SyntaxKind::MAPPING.into());
         self.error_context.push_context(ParseContext::FlowMapping);
 
-        if self.flow_depth >= MAX_FLOW_DEPTH {
-            self.add_error(
-                format!("Flow collection nested too deeply (limit {MAX_FLOW_DEPTH})"),
-                ParseErrorKind::Other,
-            );
-            while let Some(kind) = self.current() {
-                if matches!(
-                    kind,
-                    SyntaxKind::RIGHT_BRACE | SyntaxKind::DOC_START | SyntaxKind::DOC_END
-                ) {
-                    break;
-                }
-                self.bump();
-            }
-            if self.current() == Some(SyntaxKind::RIGHT_BRACE) {
-                self.bump();
-            }
-            self.builder.finish_node();
-            self.error_context.pop_context();
+        if self.flow_depth_exceeded(SyntaxKind::RIGHT_BRACE) {
             return;
         }
         self.flow_depth += 1;
@@ -301,14 +299,7 @@ impl Parser {
             // Guarantee progress: if no token was consumed this iteration we
             // would loop forever (e.g. on stray `]` inside `{...}`). Report
             // the unexpected token and skip it.
-            if self.tokens.len() == tokens_before {
-                let unexpected = self.current_text().unwrap_or("").to_string();
-                self.add_error(
-                    format!("Unexpected token in flow mapping: {unexpected:?}"),
-                    ParseErrorKind::Other,
-                );
-                self.bump();
-            }
+            self.flow_progress_guard(tokens_before, "mapping");
         }
 
         self.in_flow_context = prev_flow;

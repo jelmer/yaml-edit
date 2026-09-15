@@ -102,7 +102,8 @@ impl MappingEntry {
 
         // Build KEY
         builder.start_node(SyntaxKind::KEY.into());
-        let key_has_newline = key.build_content(&mut builder, 0, false);
+        crate::nodes::build_key_content(&mut builder, &key);
+        let key_has_newline = false;
         debug_assert!(!key_has_newline, "Keys should not end with newlines");
         // The `:` goes on its own line at the entry's own column. Where that
         // column is indented, the parser consumes the line break and the

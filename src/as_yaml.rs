@@ -224,8 +224,11 @@ fn scalar_eq_rhs<B: AsYaml + ?Sized>(lhs: &Scalar, rhs: &B) -> bool {
         if rhs.kind() != YamlKind::Scalar {
             return false;
         }
+        // Build in flow context: a multi-line string renders there as one
+        // double-quoted scalar rather than a literal block, whose trailing
+        // newline would otherwise make `"a\nb"` compare unequal to itself.
         let mut builder = rowan::GreenNodeBuilder::new();
-        rhs.build_content(&mut builder, 0, false);
+        rhs.build_content(&mut builder, 0, true);
         let green = builder.finish();
         let node = rowan::SyntaxNode::<crate::yaml::Lang>::new_root(green);
         let Some(scalar) = Scalar::cast(node) else {

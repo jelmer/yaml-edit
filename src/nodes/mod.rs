@@ -314,6 +314,42 @@ pub(crate) fn nth_entry_index(
         .nth(index)
 }
 
+/// Emit `key`'s content for use inside a `KEY` node.
+///
+/// Identical to `key.build_content` except that a key which would render as
+/// a block scalar (`|` / `>`) is emitted as one double-quoted scalar
+/// instead. A block scalar is a valid *value* but cannot be a key: it does
+/// not read back as the same key, and the entry's `:` lands inside the
+/// block.
+pub(crate) fn build_key_content(builder: &mut rowan::GreenNodeBuilder, key: &impl crate::AsYaml) {
+    if key.as_node().is_none() {
+        // A raw value (&str, String, ...). Render it once on its own: the
+        // block form is emitted as a single STRING token whose text starts
+        // with the indicator, so check the text rather than the token kinds.
+        let mut probe = rowan::GreenNodeBuilder::new();
+        probe.start_node(SyntaxKind::ROOT.into());
+        key.build_content(&mut probe, 0, false);
+        probe.finish_node();
+        let rendered = SyntaxNode::new_root(probe.finish()).text().to_string();
+
+        if rendered.starts_with('|') || rendered.starts_with('>') {
+            // Re-render in flow context, where the same value is written as
+            // a double-quoted scalar that fits on one line.
+            let mut flow = rowan::GreenNodeBuilder::new();
+            flow.start_node(SyntaxKind::ROOT.into());
+            key.build_content(&mut flow, 0, true);
+            flow.finish_node();
+            let quoted = SyntaxNode::new_root(flow.finish()).text().to_string();
+
+            builder.start_node(SyntaxKind::SCALAR.into());
+            builder.token(SyntaxKind::STRING.into(), &quoted);
+            builder.finish_node();
+            return;
+        }
+    }
+    key.build_content(builder, 0, false);
+}
+
 /// The `KEY` child of a `MAPPING_ENTRY`.
 pub(crate) fn entry_key(entry: &SyntaxNode) -> Option<SyntaxNode> {
     child_of_kind(entry, SyntaxKind::KEY)

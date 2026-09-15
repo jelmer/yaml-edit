@@ -868,7 +868,12 @@ impl ScalarValue {
 
     /// Detect the appropriate style for a value
     fn detect_style(value: &str) -> ScalarStyle {
-        // Check if value needs quoting
+        // Multi-line strings use literal style. This comes first: a literal
+        // block renders the newlines faithfully, so such a value does not
+        // also need quoting.
+        if value.contains('\n') {
+            return ScalarStyle::Literal;
+        }
         if Self::needs_quoting(value) {
             // Prefer single quotes if no single quotes in value
             if !value.contains('\'') {
@@ -876,9 +881,6 @@ impl ScalarValue {
             } else {
                 ScalarStyle::DoubleQuoted
             }
-        } else if value.contains('\n') {
-            // Multi-line strings use literal style
-            ScalarStyle::Literal
         } else {
             ScalarStyle::Plain
         }
@@ -945,21 +947,36 @@ impl ScalarValue {
             return true;
         }
 
-        // Check for special characters that require quoting
-        // : and # need context-aware checking (only ambiguous before whitespace or at end)
+        // Check for special characters that require quoting. `:` and `#` are
+        // only ambiguous in context, and the context differs between them:
+        // a `:` ends a key when followed by whitespace or end of input, while
+        // a `#` starts a comment when *preceded* by whitespace (YAML 1.2
+        // 6.6). So `a#b` is a fine plain scalar but `a #b` is not.
+        let mut prev: Option<char> = None;
         let mut chars = value.chars().peekable();
         while let Some(ch) = chars.next() {
             match ch {
                 '&' | '*' | '!' | '|' | '\'' | '"' | '%' => return true,
-                ':' | '#' if chars.peek().map_or(true, |next| next.is_whitespace()) => {
+                ':' if chars.peek().map_or(true, |next| next.is_whitespace()) => {
+                    return true;
+                }
+                '#' if prev.map_or(true, char::is_whitespace) => {
                     return true;
                 }
                 _ => {}
             }
+            prev = Some(ch);
         }
 
         // Leading/trailing whitespace needs quotes
         if value != value.trim() {
+            return true;
+        }
+
+        // A lone carriage return is a YAML line break, so a plain scalar
+        // containing one would be read back as two lines. (A `\n` is handled
+        // earlier, by rendering the value as a literal block.)
+        if value.contains('\r') {
             return true;
         }
 
@@ -1303,6 +1320,33 @@ mod tests {
 
         let scalar = ScalarValue::double_quoted("line1\nline2\ttab");
         assert_eq!(scalar.to_yaml_string(), "\"line1\\nline2\\ttab\"");
+    }
+
+    #[test]
+    fn round_trips_keys_needing_quotes() {
+        use crate::Document;
+        use std::str::FromStr;
+
+        // Each of these was written unquoted and could not be read back:
+        // " #" starts a comment (the old rule checked the character *after*
+        // the `#`, but YAML keys on what precedes it), and a line break
+        // turned the key into a block scalar.
+        for key in [
+            "a. #a", "a #c", "a#b", "a\nb", "a\rb", "x: y", "a:b", "plain", "a b", "#lead", "a:",
+            "", "true", "123", "- x", "? x",
+        ] {
+            let doc = Document::from_str("z: 1\n").unwrap();
+            doc.as_mapping().unwrap().set(key, "v");
+            let text = doc.to_string();
+
+            let reparsed = Document::from_str(&text)
+                .unwrap_or_else(|e| panic!("{key:?} produced unparseable {text:?}: {e}"));
+            let value = reparsed
+                .as_mapping()
+                .and_then(|m| m.get(key))
+                .unwrap_or_else(|| panic!("{key:?} did not survive as {text:?}"));
+            assert_eq!(value.to_string(), "v", "{key:?} in {text:?}");
+        }
     }
 
     #[test]

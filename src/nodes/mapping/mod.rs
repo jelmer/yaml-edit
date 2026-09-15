@@ -8,11 +8,10 @@ use helpers::{
     entry_line_terminated, index_after_entry_line, trailing_newline_reachable, FlowInsertPos,
 };
 
-use super::{entry_key, entry_value, Lang, Sequence, SyntaxNode};
+use super::{entry_key, entry_value, fresh_token, has_child_token, Lang, Sequence, SyntaxNode};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::yaml::{
-    add_newline_token,
     collapse_empty_child_collection_in_parent as collapse_empty_child_mapping_in_parent,
     dump_cst_to_string, ends_with_newline, ValueNode,
 };
@@ -115,91 +114,25 @@ impl Mapping {
     where
         F: FnOnce(&Mapping),
     {
-        // Find the MAPPING_ENTRY for this key
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        for (i, child) in children.iter().enumerate() {
-            if let Some(node) = child.as_node() {
-                if node.kind() == SyntaxKind::MAPPING_ENTRY {
-                    if let Some(key_node) = entry_key(node) {
-                        if key_content_matches(&key_node, &key) {
-                            // Found the entry, now find the VALUE node
-                            if let Some(value_node) = entry_value(node) {
-                                // Check if the value is a mapping
-                                if let Some(mapping_node) = value_node
-                                    .children()
-                                    .find(|n| n.kind() == SyntaxKind::MAPPING)
-                                {
-                                    // Create a Mapping and apply the function
-                                    let mapping = Mapping(mapping_node);
-                                    f(&mapping);
-
-                                    // Replace the old MAPPING_ENTRY with updated one
-                                    let entry_children: Vec<_> =
-                                        node.children_with_tokens().collect();
-                                    let mut builder = GreenNodeBuilder::new();
-                                    builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
-
-                                    for entry_child in entry_children {
-                                        match entry_child {
-                                            rowan::NodeOrToken::Node(n)
-                                                if n.kind() == SyntaxKind::VALUE =>
-                                            {
-                                                // Replace the VALUE node
-                                                builder.start_node(SyntaxKind::VALUE.into());
-
-                                                // First copy all non-MAPPING children from the original VALUE node (preserving structure)
-                                                for value_child in n.children_with_tokens() {
-                                                    match value_child {
-                                                        rowan::NodeOrToken::Node(child_node)
-                                                            if child_node.kind()
-                                                                == SyntaxKind::MAPPING =>
-                                                        {
-                                                            // Replace the MAPPING node with our updated mapping
-                                                            crate::yaml::copy_node_to_builder(
-                                                                &mut builder,
-                                                                &mapping.0,
-                                                            );
-                                                        }
-                                                        rowan::NodeOrToken::Node(child_node) => {
-                                                            // Copy other nodes as-is (preserving formatting)
-                                                            crate::yaml::copy_node_to_builder(
-                                                                &mut builder,
-                                                                &child_node,
-                                                            );
-                                                        }
-                                                        rowan::NodeOrToken::Token(token) => {
-                                                            // Copy tokens as-is (preserving newlines, indents, etc)
-                                                            builder.token(
-                                                                token.kind().into(),
-                                                                token.text(),
-                                                            );
-                                                        }
-                                                    }
-                                                }
-
-                                                builder.finish_node(); // VALUE
-                                            }
-                                            rowan::NodeOrToken::Node(n) => {
-                                                crate::yaml::copy_node_to_builder(&mut builder, &n);
-                                            }
-                                            rowan::NodeOrToken::Token(t) => {
-                                                builder.token(t.kind().into(), t.text());
-                                            }
-                                        }
-                                    }
-
-                                    builder.finish_node(); // MAPPING_ENTRY
-                                    let new_entry = SyntaxNode::new_root_mut(builder.finish());
-                                    self.0.splice_children(i..i + 1, vec![new_entry.into()]);
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-                }
+        // The closure mutates through rowan's interior mutability, so the
+        // node found here is the one in the tree - nothing to splice back.
+        let nested = self.0.children().find_map(|node| {
+            if node.kind() != SyntaxKind::MAPPING_ENTRY {
+                return None;
             }
-        }
-        false
+            let key_node = entry_key(&node)?;
+            if !key_content_matches(&key_node, &key) {
+                return None;
+            }
+            entry_value(&node)?
+                .children()
+                .find(|n| n.kind() == SyntaxKind::MAPPING)
+        });
+        let Some(mapping_node) = nested else {
+            return false;
+        };
+        f(&Mapping(mapping_node));
+        true
     }
 
     /// Get the value for `key` as a nested [`Sequence`].
@@ -389,11 +322,7 @@ impl Mapping {
     /// `false` if it uses block style (e.g., `key: value`).
     pub fn is_flow_style(&self) -> bool {
         // Flow-style mappings start with LEFT_BRACE token
-        self.0.children_with_tokens().any(|child| {
-            child
-                .as_token()
-                .is_some_and(|token| token.kind() == SyntaxKind::LEFT_BRACE)
-        })
+        has_child_token(&self.0, |k| k == SyntaxKind::LEFT_BRACE)
     }
 
     /// Find the [`MappingEntry`] whose key matches `key`, or `None` if not found.
@@ -550,10 +479,7 @@ impl Mapping {
         for child in self.0.children() {
             if child.kind() == SyntaxKind::MAPPING_ENTRY {
                 // Check if this entry has a QUESTION token as a child
-                if child.children_with_tokens().any(|t| {
-                    t.as_token()
-                        .is_some_and(|tok| tok.kind() == SyntaxKind::QUESTION)
-                }) {
+                if has_child_token(&child, |k| k == SyntaxKind::QUESTION) {
                     return true;
                 }
             }
@@ -699,16 +625,7 @@ impl Mapping {
 
         let indent_level = self.detect_indentation_level();
         if indent_level > 0 && count > 0 {
-            let mut builder = rowan::GreenNodeBuilder::new();
-            builder.start_node(SyntaxKind::ROOT.into());
-            builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent_level));
-            builder.finish_node();
-            let node = SyntaxNode::new_root_mut(builder.finish());
-            for child in node.children_with_tokens() {
-                if let rowan::NodeOrToken::Token(token) = child {
-                    new_elements.push(token.into());
-                }
-            }
+            new_elements.push(fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level)).into());
         }
 
         new_elements.push(new_entry.clone().into());
@@ -1017,7 +934,7 @@ impl Mapping {
             };
 
             if !has_newline_before {
-                add_newline_token(&mut new_elements);
+                new_elements.push(fresh_token(SyntaxKind::NEWLINE, "\n").into());
             }
         }
 
@@ -1464,7 +1381,7 @@ impl Mapping {
                     }
                 } else if let rowan::NodeOrToken::Token(t) = prev_node {
                     if t.kind() != SyntaxKind::NEWLINE {
-                        add_newline_token(&mut new_elements);
+                        new_elements.push(fresh_token(SyntaxKind::NEWLINE, "\n").into());
                     }
                 }
             }
@@ -1479,17 +1396,11 @@ impl Mapping {
         let displaces_entry = insert_pos < self.0.children_with_tokens().count();
         let indent_level = self.detect_indentation_level();
         if indent_level > 0 {
-            let mut indent_builder = GreenNodeBuilder::new();
-            indent_builder.start_node(SyntaxKind::ROOT.into());
-            indent_builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent_level));
-            indent_builder.finish_node();
-            let indent_node = SyntaxNode::new_root_mut(indent_builder.finish());
-            if let Some(token) = indent_node.first_token() {
-                if displaces_entry {
-                    new_elements.push(token.into());
-                } else {
-                    new_elements.insert(0, token.into());
-                }
+            let token = fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level));
+            if displaces_entry {
+                new_elements.push(token.into());
+            } else {
+                new_elements.insert(0, token.into());
             }
         }
 

@@ -7,7 +7,7 @@
 use super::helpers::FlowInsertPos;
 use super::{key_content_matches, Mapping, MappingEntry};
 use crate::lex::SyntaxKind;
-use crate::nodes::SyntaxNode;
+use crate::nodes::{fresh_token, SyntaxNode};
 use crate::yaml::Document;
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
@@ -290,17 +290,10 @@ impl Mapping {
                     // If not, add one to the previous entry (not to the mapping)
                     if !has_newline {
                         let entry_children_count = prev_entry.children_with_tokens().count();
-                        let mut nl_builder = GreenNodeBuilder::new();
-                        nl_builder.start_node(SyntaxKind::ROOT.into());
-                        nl_builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                        nl_builder.finish_node();
-                        let nl_node = SyntaxNode::new_root_mut(nl_builder.finish());
-                        if let Some(token) = nl_node.first_token() {
-                            prev_entry.splice_children(
-                                entry_children_count..entry_children_count,
-                                vec![token.into()],
-                            );
-                        }
+                        prev_entry.splice_children(
+                            entry_children_count..entry_children_count,
+                            vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
+                        );
                     }
                 }
             }
@@ -316,14 +309,8 @@ impl Mapping {
             if needs_indent {
                 let indent_level = self.detect_indentation_level();
                 if indent_level > 0 {
-                    let mut indent_builder = GreenNodeBuilder::new();
-                    indent_builder.start_node(SyntaxKind::ROOT.into());
-                    indent_builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent_level));
-                    indent_builder.finish_node();
-                    let indent_node = SyntaxNode::new_root_mut(indent_builder.finish());
-                    if let Some(token) = indent_node.first_token() {
-                        new_elements.push(token.into());
-                    }
+                    new_elements
+                        .push(fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level)).into());
                 }
             }
 

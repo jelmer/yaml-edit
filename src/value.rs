@@ -485,59 +485,35 @@ impl YamlValue {
                     result
                 }
             }
-            YamlValue::OrderedMapping(pairs) => {
-                // Ordered mappings are represented as sequences of single-key mappings
-                if pairs.is_empty() {
-                    "!!omap []".to_string()
-                } else {
-                    let mut result = String::from("!!omap");
-                    result.push('\n');
-                    let indent_str = " ".repeat(indent);
-                    for (key, value) in pairs {
-                        result.push_str(&indent_str);
-                        result.push_str("  - ");
-                        result.push_str(key);
-                        result.push_str(": ");
-                        match value {
-                            YamlValue::Scalar(s) => result.push_str(&s.to_yaml_string()),
-                            _ => {
-                                result.push('\n');
-                                result.push_str(&value.to_yaml_string(indent + 4));
-                            }
-                        }
-                        result.push('\n');
-                    }
-                    result.truncate(result.trim_end().len());
-                    result
-                }
-            }
-            YamlValue::Pairs(pairs) => {
-                // Pairs are represented as sequences of key-value pairs
-                if pairs.is_empty() {
-                    "!!pairs []".to_string()
-                } else {
-                    let mut result = String::from("!!pairs");
-                    result.push('\n');
-                    let indent_str = " ".repeat(indent);
-                    for (key, value) in pairs {
-                        result.push_str(&indent_str);
-                        result.push_str("  - ");
-                        result.push_str(key);
-                        result.push_str(": ");
-                        match value {
-                            YamlValue::Scalar(s) => result.push_str(&s.to_yaml_string()),
-                            _ => {
-                                result.push('\n');
-                                result.push_str(&value.to_yaml_string(indent + 4));
-                            }
-                        }
-                        result.push('\n');
-                    }
-                    result.truncate(result.trim_end().len());
-                    result
-                }
-            }
+            YamlValue::OrderedMapping(pairs) => Self::render_tagged_pairs("!!omap", pairs, indent),
+            YamlValue::Pairs(pairs) => Self::render_tagged_pairs("!!pairs", pairs, indent),
         }
+    }
+
+    /// Render `!!omap` / `!!pairs`: a tagged sequence of single-key mappings.
+    fn render_tagged_pairs(tag: &str, pairs: &[(String, YamlValue)], indent: usize) -> String {
+        if pairs.is_empty() {
+            return format!("{tag} []");
+        }
+        let mut result = String::from(tag);
+        result.push('\n');
+        let indent_str = " ".repeat(indent);
+        for (key, value) in pairs {
+            result.push_str(&indent_str);
+            result.push_str("  - ");
+            result.push_str(key);
+            result.push_str(": ");
+            match value {
+                YamlValue::Scalar(s) => result.push_str(&s.to_yaml_string()),
+                _ => {
+                    result.push('\n');
+                    result.push_str(&value.to_yaml_string(indent + 4));
+                }
+            }
+            result.push('\n');
+        }
+        result.truncate(result.trim_end().len());
+        result
     }
 }
 
@@ -1301,6 +1277,35 @@ mod tests {
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::yaml::SyntaxNode;
 
+/// Build a `!!omap` / `!!pairs` TAGGED_NODE wrapping a sequence of
+/// single-entry mappings. Returns whether the content ended with a newline.
+fn build_tagged_pair_seq(
+    builder: &mut rowan::GreenNodeBuilder,
+    tag: &str,
+    pairs: &[(String, YamlValue)],
+    indent: usize,
+) -> bool {
+    use crate::lex::SyntaxKind;
+
+    builder.start_node(SyntaxKind::TAGGED_NODE.into());
+    builder.token(SyntaxKind::TAG.into(), tag);
+    builder.token(SyntaxKind::NEWLINE.into(), "\n");
+    builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent + 2));
+
+    let seq: Vec<YamlValue> = pairs
+        .iter()
+        .map(|(k, v)| {
+            let mut map = BTreeMap::new();
+            map.insert(k.clone(), v.clone());
+            YamlValue::Mapping(map)
+        })
+        .collect();
+    let ends_with_newline = seq.as_slice().build_content(builder, indent + 2, false);
+
+    builder.finish_node(); // TAGGED_NODE
+    ends_with_newline
+}
+
 impl AsYaml for YamlValue {
     fn as_node(&self) -> Option<&SyntaxNode> {
         None
@@ -1375,50 +1380,10 @@ impl AsYaml for YamlValue {
                                        // Return whether the inner content ended with newline
                 ends_with_newline
             }
-            YamlValue::OrderedMapping(omap) => {
-                // Wrap in TAGGED_NODE node
-                builder.start_node(SyntaxKind::TAGGED_NODE.into());
-                builder.token(SyntaxKind::TAG.into(), "!!omap");
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent + 2));
-
-                // Build as a sequence of single-entry mappings to preserve order
-                let seq: Vec<YamlValue> = omap
-                    .iter()
-                    .map(|(k, v)| {
-                        let mut map = BTreeMap::new();
-                        map.insert(k.clone(), v.clone());
-                        YamlValue::Mapping(map)
-                    })
-                    .collect();
-                let ends_with_newline = seq.as_slice().build_content(builder, indent + 2, false);
-
-                builder.finish_node(); // TAGGED_NODE
-                                       // Return whether the inner content ended with newline
-                ends_with_newline
+            YamlValue::OrderedMapping(pairs) => {
+                build_tagged_pair_seq(builder, "!!omap", pairs, indent)
             }
-            YamlValue::Pairs(pairs) => {
-                // Wrap in TAGGED_NODE node
-                builder.start_node(SyntaxKind::TAGGED_NODE.into());
-                builder.token(SyntaxKind::TAG.into(), "!!pairs");
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent + 2));
-
-                // Build as a sequence of single-entry mappings
-                let seq: Vec<YamlValue> = pairs
-                    .iter()
-                    .map(|(k, v)| {
-                        let mut map = BTreeMap::new();
-                        map.insert(k.clone(), v.clone());
-                        YamlValue::Mapping(map)
-                    })
-                    .collect();
-                let ends_with_newline = seq.as_slice().build_content(builder, indent + 2, false);
-
-                builder.finish_node(); // TAGGED_NODE
-                                       // Return whether the inner content ended with newline
-                ends_with_newline
-            }
+            YamlValue::Pairs(pairs) => build_tagged_pair_seq(builder, "!!pairs", pairs, indent),
         }
     }
 

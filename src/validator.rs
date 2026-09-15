@@ -22,6 +22,7 @@
 //! }
 //! ```
 
+use crate::nodes::has_child_token;
 use crate::yaml::{Document, SyntaxNode};
 use rowan::ast::AstNode;
 use std::fmt;
@@ -150,9 +151,45 @@ fn find_root(node: &SyntaxNode) -> SyntaxNode {
         .unwrap_or_else(|| node.clone())
 }
 
+/// Does this subtree hold real YAML content, as opposed to only whitespace,
+/// newlines and document markers?
+fn has_content(node: &SyntaxNode) -> bool {
+    node.descendants().any(|n| {
+        matches!(
+            n.kind(),
+            crate::SyntaxKind::MAPPING
+                | crate::SyntaxKind::SEQUENCE
+                | crate::SyntaxKind::SCALAR
+                | crate::SyntaxKind::STRING
+                | crate::SyntaxKind::TAGGED_NODE
+        )
+    })
+}
+
 /// Convert a rowan TextRange to a TextPosition.
 fn range_to_text_position(range: rowan::TextRange) -> crate::TextPosition {
     crate::TextPosition::new(u32::from(range.start()), u32::from(range.end()))
+}
+
+impl Violation {
+    /// An error-severity violation with no associated source range.
+    fn error(rule: Rule, message: impl Into<String>) -> Self {
+        Violation {
+            message: message.into(),
+            location: None,
+            text_range: None,
+            severity: Severity::Error,
+            rule,
+        }
+    }
+
+    /// An error-severity violation covering `range` in the source.
+    fn error_at(rule: Rule, range: rowan::TextRange, message: impl Into<String>) -> Self {
+        Violation {
+            text_range: Some(range_to_text_position(range)),
+            ..Violation::error(rule, message)
+        }
+    }
 }
 
 impl Validator {
@@ -233,13 +270,11 @@ impl Validator {
                 } else {
                     content
                 };
-                violations.push(Violation {
-                    message: format!("Invalid content in document: {preview:?}"),
-                    location: None,
-                    text_range: Some(range_to_text_position(node.text_range())),
-                    severity: Severity::Error,
-                    rule: Rule::Other,
-                });
+                violations.push(Violation::error_at(
+                    Rule::Other,
+                    node.text_range(),
+                    format!("Invalid content in document: {preview:?}"),
+                ));
             }
             SyntaxKind::MAPPING_ENTRY => {
                 // Check for multiline implicit keys
@@ -335,25 +370,13 @@ impl Validator {
 
         // Check if the document has any actual content
         // A document with only whitespace, newlines, or document markers is considered empty
-        let has_content = doc_node.descendants().any(|n| {
-            matches!(
-                n.kind(),
-                crate::SyntaxKind::MAPPING
-                    | crate::SyntaxKind::SEQUENCE
-                    | crate::SyntaxKind::SCALAR
-                    | crate::SyntaxKind::STRING
-                    | crate::SyntaxKind::TAGGED_NODE
-            )
-        });
+        let has_content = has_content(doc_node);
 
         if !has_content {
-            violations.push(Violation {
-                message: "Directive requires a document with content".to_string(),
-                location: None,
-                text_range: None,
-                severity: Severity::Error,
-                rule: Rule::Other,
-            });
+            violations.push(Violation::error(
+                Rule::Other,
+                "Directive requires a document with content",
+            ));
         }
     }
 
@@ -375,32 +398,15 @@ impl Validator {
         }
 
         // Check if there's a DOCUMENT child with actual content
-        let has_document_with_content = check_node.children().any(|child| {
-            if child.kind() == SyntaxKind::DOCUMENT {
-                // Check if this document has content
-                child.descendants().any(|n| {
-                    matches!(
-                        n.kind(),
-                        SyntaxKind::MAPPING
-                            | SyntaxKind::SEQUENCE
-                            | SyntaxKind::SCALAR
-                            | SyntaxKind::STRING
-                            | SyntaxKind::TAGGED_NODE
-                    )
-                })
-            } else {
-                false
-            }
-        });
+        let has_document_with_content = check_node
+            .children()
+            .any(|child| child.kind() == SyntaxKind::DOCUMENT && has_content(&child));
 
         if !has_document_with_content {
-            violations.push(Violation {
-                message: "Directive without document content".to_string(),
-                location: None,
-                text_range: None,
-                severity: Severity::Error,
-                rule: Rule::Other,
-            });
+            violations.push(Violation::error(
+                Rule::Other,
+                "Directive without document content",
+            ));
         }
     }
 
@@ -419,32 +425,10 @@ impl Validator {
         for child in check_node.children() {
             match child.kind() {
                 SyntaxKind::DOCUMENT => {
-                    // Check if this document has content
-                    let has_content = child.descendants().any(|n| {
-                        matches!(
-                            n.kind(),
-                            SyntaxKind::MAPPING
-                                | SyntaxKind::SEQUENCE
-                                | SyntaxKind::SCALAR
-                                | SyntaxKind::STRING
-                                | SyntaxKind::TAGGED_NODE
-                        )
-                    });
-
-                    // Check if this document has a DOC_END marker
-                    let has_doc_end = child
-                        .children_with_tokens()
-                        .any(|t| t.kind() == SyntaxKind::DOC_END);
-
-                    if has_content {
+                    // Whether this document carries a DOC_END is rechecked from
+                    // the DIRECTIVE arm below, by walking back to this sibling.
+                    if has_content(&child) {
                         seen_document_with_content = true;
-
-                        // If this document doesn't end with ..., mark that we need one
-                        // before any subsequent directives
-                        if !has_doc_end {
-                            // This document has no end marker - any following directive is invalid
-                            // (we'll check this when we encounter the directive)
-                        }
                     }
                 }
                 SyntaxKind::DIRECTIVE if seen_document_with_content => {
@@ -469,14 +453,10 @@ impl Validator {
                     }
 
                     if !found_doc_with_end {
-                        violations.push(Violation {
-                            message: "Directive after document requires document end marker (...)"
-                                .to_string(),
-                            location: None,
-                            text_range: None,
-                            severity: Severity::Error,
-                            rule: Rule::Other,
-                        });
+                        violations.push(Violation::error(
+                            Rule::Other,
+                            "Directive after document requires document end marker (...)",
+                        ));
                     }
                 }
                 _ => {}
@@ -495,13 +475,7 @@ impl Validator {
             .children_with_tokens()
             .any(|c| c.kind() == SyntaxKind::DIRECTIVE);
         if has_directive {
-            violations.push(Violation {
-                message: "Directive in document content (missing document end marker `...` before directive)".to_string(),
-                location: None,
-                    text_range: Some(range_to_text_position(node.text_range())),
-                severity: Severity::Error,
-                rule: Rule::Other,
-            });
+            violations.push(Violation::error_at(Rule::Other, node.text_range(), "Directive in document content (missing document end marker `...` before directive)".to_string()));
         }
     }
 
@@ -531,13 +505,10 @@ impl Validator {
         // Check for duplicates
         for (directive_type, count) in directive_counts {
             if count > 1 {
-                violations.push(Violation {
-                    message: format!("Duplicate {directive_type} directive"),
-                    location: None,
-                    text_range: None,
-                    severity: Severity::Error,
-                    rule: Rule::Other,
-                });
+                violations.push(Violation::error(
+                    Rule::Other,
+                    format!("Duplicate {directive_type} directive"),
+                ));
             }
         }
     }
@@ -555,13 +526,11 @@ impl Validator {
             .count();
 
         if anchor_count > 1 {
-            violations.push(Violation {
-                message: "Multiple anchors on the same node".to_string(),
-                location: None,
-                text_range: Some(range_to_text_position(node.text_range())),
-                severity: Severity::Error,
-                rule: Rule::InvalidAnchor,
-            });
+            violations.push(Violation::error_at(
+                Rule::InvalidAnchor,
+                node.text_range(),
+                "Multiple anchors on the same node",
+            ));
         }
     }
 
@@ -587,13 +556,11 @@ impl Validator {
                     ];
 
                     if !valid_escapes.contains(&next) {
-                        violations.push(Violation {
-                            message: format!("Invalid escape sequence: \\{next}"),
-                            location: None,
-                            text_range: Some(range_to_text_position(node.text_range())),
-                            severity: Severity::Error,
-                            rule: Rule::InvalidEscape,
-                        });
+                        violations.push(Violation::error_at(
+                            Rule::InvalidEscape,
+                            node.text_range(),
+                            format!("Invalid escape sequence: \\{next}"),
+                        ));
                         return; // Found one, no need to continue
                     }
                 }
@@ -608,15 +575,8 @@ impl Validator {
     /// on the same line as the block scalar indicator.
     fn check_block_scalar_indicator(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // Check if this scalar has a GREATER (folded) or PIPE (literal) indicator
-        let has_block_indicator = node.children_with_tokens().any(|child| {
-            if let rowan::NodeOrToken::Token(token) = child {
-                matches!(
-                    token.kind(),
-                    crate::SyntaxKind::GREATER | crate::SyntaxKind::PIPE
-                )
-            } else {
-                false
-            }
+        let has_block_indicator = has_child_token(node, |k| {
+            matches!(k, crate::SyntaxKind::GREATER | crate::SyntaxKind::PIPE)
         });
 
         if !has_block_indicator {
@@ -646,15 +606,10 @@ impl Validator {
                         }
                         crate::SyntaxKind::STRING => {
                             // Found content on same line as indicator
-                            violations.push(Violation {
-                                message:
-                                    "Block scalar content cannot appear on same line as indicator"
-                                        .to_string(),
-                                location: None,
-                                text_range: None,
-                                severity: Severity::Error,
-                                rule: Rule::Other,
-                            });
+                            violations.push(Violation::error(
+                                Rule::Other,
+                                "Block scalar content cannot appear on same line as indicator",
+                            ));
                             return;
                         }
                         // WHITESPACE, COMMENT, and chomping/indentation indicators are OK
@@ -677,13 +632,8 @@ impl Validator {
         node: &SyntaxNode,
         violations: &mut Vec<Violation>,
     ) {
-        let has_block_indicator = node.children_with_tokens().any(|el| {
-            el.as_token().is_some_and(|t| {
-                matches!(
-                    t.kind(),
-                    crate::SyntaxKind::GREATER | crate::SyntaxKind::PIPE
-                )
-            })
+        let has_block_indicator = has_child_token(node, |k| {
+            matches!(k, crate::SyntaxKind::GREATER | crate::SyntaxKind::PIPE)
         });
         if !has_block_indicator {
             return;
@@ -722,16 +672,7 @@ impl Validator {
                     // the observed max_blank_indent.
                     if let Some(ind) = pending_indent.take() {
                         if ind.text().len() < max_blank_indent {
-                            violations.push(Violation {
-                                message: format!(
-                                    "Block scalar content under-indented ({} spaces) relative to preceding blank line ({} spaces)",
-                                    ind.text().len(), max_blank_indent
-                                ),
-                                location: None,
-                                text_range: Some(range_to_text_position(ind.text_range())),
-                                severity: Severity::Error,
-                                rule: Rule::Other,
-                            });
+                            violations.push(Violation::error_at(Rule::Other, ind.text_range(), format!( "Block scalar content under-indented ({} spaces) relative to preceding blank line ({} spaces)", ind.text().len(), max_blank_indent )));
                             return;
                         }
                     }
@@ -774,13 +715,10 @@ impl Validator {
                             }
                         } else if found_quote_end && !found_newline {
                             // Found content after quoted string ended, before newline
-                            violations.push(Violation {
-                                message: "Trailing content after quoted string".to_string(),
-                                location: None,
-                                text_range: None,
-                                severity: Severity::Error,
-                                rule: Rule::Other,
-                            });
+                            violations.push(Violation::error(
+                                Rule::Other,
+                                "Trailing content after quoted string",
+                            ));
                             return;
                         }
                     }
@@ -803,13 +741,7 @@ impl Validator {
     /// within a plain scalar, which is invalid.
     fn check_colon_in_plain_scalar(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // Check if this scalar contains COLON tokens
-        let has_colon = node.children_with_tokens().any(|child| {
-            if let rowan::NodeOrToken::Token(token) = child {
-                token.kind() == crate::SyntaxKind::COLON
-            } else {
-                false
-            }
-        });
+        let has_colon = has_child_token(node, |k| k == crate::SyntaxKind::COLON);
 
         if !has_colon {
             return;
@@ -832,13 +764,10 @@ impl Validator {
             .is_some_and(|p| p.kind() == crate::SyntaxKind::VALUE);
 
         if parent_is_value {
-            violations.push(Violation {
-                message: "Plain scalar value cannot contain mapping syntax (colon)".to_string(),
-                location: None,
-                text_range: None,
-                severity: Severity::Error,
-                rule: Rule::Other,
-            });
+            violations.push(Violation::error(
+                Rule::Other,
+                "Plain scalar value cannot contain mapping syntax (colon)",
+            ));
         }
     }
 
@@ -865,13 +794,11 @@ impl Validator {
             || text.contains("\n...\"")
             || text.contains("\n...'")
         {
-            violations.push(Violation {
-                message: "Document marker on its own line inside quoted string".to_string(),
-                location: None,
-                text_range: Some(range_to_text_position(node.text_range())),
-                severity: Severity::Error,
-                rule: Rule::InvalidDocumentMarker,
-            });
+            violations.push(Violation::error_at(
+                Rule::InvalidDocumentMarker,
+                node.text_range(),
+                "Document marker on its own line inside quoted string",
+            ));
         }
     }
 
@@ -883,13 +810,11 @@ impl Validator {
             if let rowan::NodeOrToken::Token(token) = token {
                 // Check the token text directly - this is a cheap slice operation
                 if token.text().contains('\t') {
-                    violations.push(Violation {
-                        message: "Tabs are not allowed for indentation in YAML".to_string(),
-                        location: None,
-                        text_range: Some(range_to_text_position(token.text_range())),
-                        severity: Severity::Error,
-                        rule: Rule::InvalidTabUsage,
-                    });
+                    violations.push(Violation::error_at(
+                        Rule::InvalidTabUsage,
+                        token.text_range(),
+                        "Tabs are not allowed for indentation in YAML",
+                    ));
                     return; // Found one, no need to keep checking
                 }
             }
@@ -905,13 +830,11 @@ impl Validator {
                 parent.kind(),
                 crate::SyntaxKind::STRING | crate::SyntaxKind::SCALAR
             ) {
-                violations.push(Violation {
-                    message: "Document marker inside string is invalid".to_string(),
-                    location: None,
-                    text_range: Some(range_to_text_position(node.text_range())),
-                    severity: Severity::Error,
-                    rule: Rule::InvalidDocumentMarker,
-                });
+                violations.push(Violation::error_at(
+                    Rule::InvalidDocumentMarker,
+                    node.text_range(),
+                    "Document marker inside string is invalid",
+                ));
             }
         }
     }
@@ -948,13 +871,11 @@ impl Validator {
                 crate::SyntaxKind::COMMA => {
                     comma_count += 1;
                     if prev_was_comma {
-                        violations.push(Violation {
-                            message: "Double comma in flow collection".to_string(),
-                            location: None,
-                            text_range: Some(range_to_text_position(node.text_range())),
-                            severity: Severity::Error,
-                            rule: Rule::Other,
-                        });
+                        violations.push(Violation::error_at(
+                            Rule::Other,
+                            node.text_range(),
+                            "Double comma in flow collection",
+                        ));
                     }
                     prev_was_comma = true;
                 }
@@ -965,15 +886,7 @@ impl Validator {
 
         // Flow collections need n-1 commas for n entries (except when trailing comma)
         if entry_count > 1 && comma_count < entry_count - 1 {
-            violations.push(Violation {
-                message: format!(
-                    "Flow collection missing commas: {entry_count} entries but only {comma_count} commas"
-                ),
-                location: None,
-                text_range: None,
-                severity: Severity::Error,
-                rule: Rule::MissingSyntax,
-            });
+            violations.push(Violation::error(Rule::MissingSyntax, format!( "Flow collection missing commas: {entry_count} entries but only {comma_count} commas" )));
         }
     }
 
@@ -1038,13 +951,10 @@ impl Validator {
                     };
 
                     if !has_newline_between {
-                        violations.push(Violation {
-                            message: "Block mapping entries must be on separate lines".to_string(),
-                            location: None,
-                            text_range: None,
-                            severity: Severity::Error,
-                            rule: Rule::Other,
-                        });
+                        violations.push(Violation::error(
+                            Rule::Other,
+                            "Block mapping entries must be on separate lines",
+                        ));
                         return; // One violation is enough
                     }
                 }
@@ -1112,16 +1022,7 @@ impl Validator {
             match child {
                 rowan::NodeOrToken::Token(t) if t.kind() == crate::SyntaxKind::INDENT => {
                     if seen_entry && t.text() != expected_indent {
-                        violations.push(Violation {
-                            message: format!(
-                                "Sibling block mapping entries have inconsistent indentation (expected {:?}, found {:?})",
-                                expected_indent, t.text()
-                            ),
-                            location: None,
-                            text_range: Some(range_to_text_position(t.text_range())),
-                            severity: Severity::Error,
-                            rule: Rule::Other,
-                        });
+                        violations.push(Violation::error_at(Rule::Other, t.text_range(), format!( "Sibling block mapping entries have inconsistent indentation (expected {:?}, found {:?})", expected_indent, t.text() )));
                     }
                 }
                 rowan::NodeOrToken::Node(n) if n.kind() == crate::SyntaxKind::MAPPING_ENTRY => {
@@ -1149,13 +1050,11 @@ impl Validator {
         // Check for SEQUENCE_ENTRY children
         for child in node.children() {
             if child.kind() == crate::SyntaxKind::SEQUENCE_ENTRY {
-                violations.push(Violation {
-                    message: "Flow sequence cannot use block sequence syntax (-)".to_string(),
-                    location: None,
-                    text_range: Some(range_to_text_position(node.text_range())),
-                    severity: Severity::Error,
-                    rule: Rule::Other,
-                });
+                violations.push(Violation::error_at(
+                    Rule::Other,
+                    node.text_range(),
+                    "Flow sequence cannot use block sequence syntax (-)",
+                ));
                 return; // One violation is enough
             }
         }
@@ -1170,14 +1069,11 @@ impl Validator {
         for child in node.children_with_tokens() {
             if let rowan::NodeOrToken::Token(token) = child {
                 if token.kind() == crate::SyntaxKind::ANCHOR {
-                    violations.push(Violation {
-                        message: "Anchor must be attached to a node, not at document level"
-                            .to_string(),
-                        location: None,
-                        text_range: Some(range_to_text_position(token.text_range())),
-                        severity: Severity::Error,
-                        rule: Rule::Other,
-                    });
+                    violations.push(Violation::error_at(
+                        Rule::Other,
+                        token.text_range(),
+                        "Anchor must be attached to a node, not at document level",
+                    ));
                 }
             }
         }
@@ -1216,13 +1112,10 @@ impl Validator {
         }
 
         if has_anchor && has_alias {
-            violations.push(Violation {
-                message: "Node cannot have both an anchor and be an alias".to_string(),
-                location: None,
-                text_range: None,
-                severity: Severity::Error,
-                rule: Rule::Other,
-            });
+            violations.push(Violation::error(
+                Rule::Other,
+                "Node cannot have both an anchor and be an alias",
+            ));
         }
     }
 
@@ -1243,24 +1136,20 @@ impl Validator {
                     if prev_token.kind() != crate::SyntaxKind::WHITESPACE
                         && prev_token.kind() != crate::SyntaxKind::NEWLINE
                     {
-                        violations.push(Violation {
-                            message: "Comment without whitespace separation".to_string(),
-                            location: None,
-                            text_range: Some(range_to_text_position(token.text_range())),
-                            severity: Severity::Error,
-                            rule: Rule::Other,
-                        });
+                        violations.push(Violation::error_at(
+                            Rule::Other,
+                            token.text_range(),
+                            "Comment without whitespace separation",
+                        ));
                     }
                 }
                 rowan::NodeOrToken::Node(_prev_node) => {
                     // If preceded by a node (not whitespace token), that's also invalid
-                    violations.push(Violation {
-                        message: "Comment without whitespace separation".to_string(),
-                        location: None,
-                        text_range: Some(range_to_text_position(token.text_range())),
-                        severity: Severity::Error,
-                        rule: Rule::Other,
-                    });
+                    violations.push(Violation::error_at(
+                        Rule::Other,
+                        token.text_range(),
+                        "Comment without whitespace separation",
+                    ));
                 }
             }
         }
@@ -1315,13 +1204,10 @@ impl Validator {
         }
 
         if found_content && !found_newline {
-            violations.push(Violation {
-                message: "Content on same line as document start marker".to_string(),
-                location: None,
-                text_range: None,
-                severity: Severity::Error,
-                rule: Rule::InvalidDocumentMarker,
-            });
+            violations.push(Violation::error(
+                Rule::InvalidDocumentMarker,
+                "Content on same line as document start marker",
+            ));
         }
     }
 
@@ -1340,13 +1226,11 @@ impl Validator {
         let invalid_chars = ['{', '}', '[', ']', ','];
         for ch in invalid_chars {
             if tag_text.contains(ch) {
-                violations.push(Violation {
-                    message: format!("Invalid character '{ch}' in tag"),
-                    location: None,
-                    text_range: Some(range_to_text_position(token.text_range())),
-                    severity: Severity::Error,
-                    rule: Rule::InvalidTag,
-                });
+                violations.push(Violation::error_at(
+                    Rule::InvalidTag,
+                    token.text_range(),
+                    format!("Invalid character '{ch}' in tag"),
+                ));
                 return; // Only report once per tag
             }
         }
@@ -1377,13 +1261,11 @@ impl Validator {
                         }
                         crate::SyntaxKind::COMMA => {
                             // Found a comma directly after the tag - this is invalid
-                            violations.push(Violation {
-                                message: "Invalid comma after tag".to_string(),
-                                location: None,
-                                text_range: Some(range_to_text_position(token.text_range())),
-                                severity: Severity::Error,
-                                rule: Rule::InvalidTag,
-                            });
+                            violations.push(Violation::error_at(
+                                Rule::InvalidTag,
+                                token.text_range(),
+                                "Invalid comma after tag",
+                            ));
                             return;
                         }
                         _ => {
@@ -1400,13 +1282,10 @@ impl Validator {
                             if let rowan::NodeOrToken::Token(t) = child {
                                 if t.kind() == crate::SyntaxKind::COMMA {
                                     // The scalar starts with a comma - invalid after a tag
-                                    violations.push(Violation {
-                                        message: "Invalid comma after tag".to_string(),
-                                        location: None,
-                                        text_range: None,
-                                        severity: Severity::Error,
-                                        rule: Rule::InvalidTag,
-                                    });
+                                    violations.push(Violation::error(
+                                        Rule::InvalidTag,
+                                        "Invalid comma after tag",
+                                    ));
                                     return;
                                 } else if t.kind() != crate::SyntaxKind::WHITESPACE
                                     && t.kind() != crate::SyntaxKind::NEWLINE
@@ -1442,10 +1321,7 @@ impl Validator {
         // Explicit-key entries (`? key\n : value`) are allowed to span
         // multiple lines by construction; the QUESTION indicator makes
         // them explicit rather than implicit.
-        let is_explicit = entry_node.children_with_tokens().any(|el| {
-            el.as_token()
-                .is_some_and(|t| t.kind() == crate::SyntaxKind::QUESTION)
-        });
+        let is_explicit = has_child_token(entry_node, |k| k == crate::SyntaxKind::QUESTION);
         if is_explicit {
             return;
         }
@@ -1461,13 +1337,11 @@ impl Validator {
                 _ => false,
             });
             if spans_lines {
-                violations.push(Violation {
-                    message: "Implicit key cannot span multiple lines".to_string(),
-                    location: None,
-                    text_range: Some(range_to_text_position(child.text_range())),
-                    severity: Severity::Error,
-                    rule: Rule::Other,
-                });
+                violations.push(Violation::error_at(
+                    Rule::Other,
+                    child.text_range(),
+                    "Implicit key cannot span multiple lines",
+                ));
                 return; // Only report once per entry
             }
         }
@@ -1559,13 +1433,10 @@ impl Validator {
 
         // If there's no newline between the colon and the sequence, it's invalid
         if !has_newline {
-            violations.push(Violation {
-                message: "Block sequence cannot start on same line as mapping key".to_string(),
-                location: None,
-                text_range: None,
-                severity: Severity::Error,
-                rule: Rule::Other,
-            });
+            violations.push(Violation::error(
+                Rule::Other,
+                "Block sequence cannot start on same line as mapping key",
+            ));
         }
     }
 
@@ -1624,13 +1495,10 @@ impl Validator {
         if let Some(&first_col) = dash_columns.first() {
             for &col in &dash_columns[1..] {
                 if col != first_col {
-                    violations.push(Violation {
-                        message: "Inconsistent sequence item indentation".to_string(),
-                        location: None,
-                        text_range: None,
-                        severity: Severity::Error,
-                        rule: Rule::InvalidIndentation,
-                    });
+                    violations.push(Violation::error(
+                        Rule::InvalidIndentation,
+                        "Inconsistent sequence item indentation",
+                    ));
                     return; // Only report once
                 }
             }
@@ -1675,13 +1543,10 @@ impl Validator {
                 // Continuation lines starting at column 0 are invalid
                 // (they should be indented at least to align with content)
                 if leading_spaces == 0 && !line.trim().is_empty() {
-                    violations.push(Violation {
-                        message: "Wrong indented multiline quoted scalar".to_string(),
-                        location: None,
-                        text_range: None,
-                        severity: Severity::Error,
-                        rule: Rule::InvalidIndentation,
-                    });
+                    violations.push(Violation::error(
+                        Rule::InvalidIndentation,
+                        "Wrong indented multiline quoted scalar",
+                    ));
                     return;
                 }
             }
@@ -1756,17 +1621,15 @@ impl Validator {
                             }
                         };
 
-                        violations.push(Violation {
-                            message: format!(
+                        violations.push(Violation::error_at(
+                            Rule::DuplicateKeys,
+                            keys[j].2,
+                            format!(
                                 "Duplicate key: {} (semantically equal to {})",
                                 format_key(dup_text),
                                 format_key(first_text)
                             ),
-                            location: None,
-                            text_range: Some(range_to_text_position(keys[j].2)),
-                            severity: Severity::Error,
-                            rule: Rule::DuplicateKeys,
-                        });
+                        ));
                         // Only report each duplicate once
                         break;
                     }

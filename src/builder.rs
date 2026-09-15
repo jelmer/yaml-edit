@@ -74,6 +74,66 @@ pub struct SequenceBuilder {
     last_item_ended_with_newline: bool,
 }
 
+/// Emit the `\n`, indent and `- ` that introduce a block sequence item.
+/// `trailing_newline` additionally starts a nested collection on its own line.
+fn emit_dash(
+    builder: &mut GreenNodeBuilder<'static>,
+    newline_first: bool,
+    indent: usize,
+    trailing_newline: bool,
+) {
+    if newline_first {
+        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+    }
+    if indent > 0 {
+        builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
+    }
+    builder.token(SyntaxKind::DASH.into(), "-");
+    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+    if trailing_newline {
+        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+    }
+}
+
+/// Emit the `\n`, indent and `key: ` that introduce a block mapping entry.
+/// `trailing_newline` additionally starts a nested collection on its own line.
+fn emit_key(
+    builder: &mut GreenNodeBuilder<'static>,
+    newline_first: bool,
+    indent: usize,
+    key: &str,
+    trailing_newline: bool,
+) {
+    if newline_first {
+        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+    }
+    if indent > 0 {
+        builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
+    }
+    builder.start_node(SyntaxKind::SCALAR.into());
+    builder.token(SyntaxKind::VALUE.into(), key);
+    builder.finish_node();
+    builder.token(SyntaxKind::COLON.into(), ":");
+    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+    if trailing_newline {
+        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+    }
+}
+
+/// Close out a detached builder's SEQUENCE/MAPPING, DOCUMENT and ROOT nodes
+/// and hand back the collection node itself, ready to copy into a parent.
+fn finish_into_inner_node(
+    mut builder: GreenNodeBuilder<'static>,
+) -> Option<rowan::SyntaxNode<crate::yaml::Lang>> {
+    use rowan::ast::AstNode;
+    builder.finish_node(); // SEQUENCE or MAPPING
+    builder.finish_node(); // DOCUMENT
+    builder.finish_node(); // ROOT
+    let root = rowan::SyntaxNode::<crate::yaml::Lang>::new_root(builder.finish());
+    let doc = Document::cast(root.first_child()?)?;
+    doc.syntax().children().next()
+}
+
 impl SequenceBuilder {
     /// Create a new empty sequence builder.
     pub fn new() -> Self {
@@ -100,15 +160,8 @@ impl SequenceBuilder {
 
     fn emit_item_preamble(&mut self) {
         // Only add newline if previous item didn't already end with one
-        if self.count > 0 && !self.last_item_ended_with_newline {
-            self.builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        if self.indent > 0 {
-            self.builder
-                .token(SyntaxKind::WHITESPACE.into(), &" ".repeat(self.indent));
-        }
-        self.builder.token(SyntaxKind::DASH.into(), "-");
-        self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
+        let newline_first = self.count > 0 && !self.last_item_ended_with_newline;
+        emit_dash(&mut self.builder, newline_first, self.indent, false);
     }
 
     /// Add a value to the sequence. Accepts any type implementing [`AsYaml`]:
@@ -149,15 +202,7 @@ impl SequenceBuilder {
             ..
         } = self;
 
-        if count > 0 {
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        if indent > 0 {
-            builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-        }
-        builder.token(SyntaxKind::DASH.into(), "-");
-        builder.token(SyntaxKind::WHITESPACE.into(), " ");
-        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        emit_dash(&mut builder, count > 0, indent, true);
 
         builder.start_node(SyntaxKind::SEQUENCE.into());
         let nested = SequenceBuilder::at_indent(builder, indent + 2);
@@ -185,15 +230,7 @@ impl SequenceBuilder {
             ..
         } = self;
 
-        if count > 0 {
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        if indent > 0 {
-            builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-        }
-        builder.token(SyntaxKind::DASH.into(), "-");
-        builder.token(SyntaxKind::WHITESPACE.into(), " ");
-        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        emit_dash(&mut builder, count > 0, indent, true);
 
         builder.start_node(SyntaxKind::MAPPING.into());
         let nested = MappingBuilder::at_indent(builder, indent + 2);
@@ -211,96 +248,56 @@ impl SequenceBuilder {
 
     /// Insert a pre-built SequenceBuilder into this sequence.
     pub fn insert_sequence(self, other: SequenceBuilder) -> Self {
-        // Extract the inner SEQUENCE node from the other builder
         let SequenceBuilder {
-            builder: mut other_builder,
+            builder: other_builder,
             ..
         } = other;
-        other_builder.finish_node(); // SEQUENCE
-        other_builder.finish_node(); // DOCUMENT
-        other_builder.finish_node(); // ROOT
-        let green = other_builder.finish();
-        let root = rowan::SyntaxNode::<crate::yaml::Lang>::new_root(green);
+        let Some(seq_node) = finish_into_inner_node(other_builder) else {
+            return self;
+        };
+        let SequenceBuilder {
+            mut builder,
+            indent,
+            count,
+            ..
+        } = self;
 
-        // Find the SEQUENCE node
-        use rowan::ast::AstNode;
-        if let Some(doc) = crate::yaml::Document::cast(root.first_child().unwrap()) {
-            if let Some(seq_node) = doc.syntax().children().next() {
-                let SequenceBuilder {
-                    mut builder,
-                    indent,
-                    count,
-                    ..
-                } = self;
+        emit_dash(&mut builder, count > 0, indent, true);
+        crate::as_yaml::copy_node_content(&mut builder, &seq_node);
 
-                if count > 0 {
-                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                }
-                if indent > 0 {
-                    builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-                }
-                builder.token(SyntaxKind::DASH.into(), "-");
-                builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
-
-                crate::as_yaml::copy_node_content(&mut builder, &seq_node);
-
-                return SequenceBuilder {
-                    builder,
-                    indent,
-                    count: count + 1,
-                    last_item_ended_with_newline: true,
-                };
-            }
+        SequenceBuilder {
+            builder,
+            indent,
+            count: count + 1,
+            last_item_ended_with_newline: true,
         }
-        self
     }
 
     /// Insert a pre-built MappingBuilder into this sequence.
     pub fn insert_mapping(self, other: MappingBuilder) -> Self {
-        // Extract the inner MAPPING node from the other builder
         let MappingBuilder {
-            builder: mut other_builder,
+            builder: other_builder,
             ..
         } = other;
-        other_builder.finish_node(); // MAPPING
-        other_builder.finish_node(); // DOCUMENT
-        other_builder.finish_node(); // ROOT
-        let green = other_builder.finish();
-        let root = rowan::SyntaxNode::<crate::yaml::Lang>::new_root(green);
+        let Some(map_node) = finish_into_inner_node(other_builder) else {
+            return self;
+        };
+        let SequenceBuilder {
+            mut builder,
+            indent,
+            count,
+            ..
+        } = self;
 
-        // Find the MAPPING node
-        use rowan::ast::AstNode;
-        if let Some(doc) = crate::yaml::Document::cast(root.first_child().unwrap()) {
-            if let Some(map_node) = doc.syntax().children().next() {
-                let SequenceBuilder {
-                    mut builder,
-                    indent,
-                    count,
-                    ..
-                } = self;
+        emit_dash(&mut builder, count > 0, indent, true);
+        crate::as_yaml::copy_node_content(&mut builder, &map_node);
 
-                if count > 0 {
-                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                }
-                if indent > 0 {
-                    builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-                }
-                builder.token(SyntaxKind::DASH.into(), "-");
-                builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
-
-                crate::as_yaml::copy_node_content(&mut builder, &map_node);
-
-                return SequenceBuilder {
-                    builder,
-                    indent,
-                    count: count + 1,
-                    last_item_ended_with_newline: true,
-                };
-            }
+        SequenceBuilder {
+            builder,
+            indent,
+            count: count + 1,
+            last_item_ended_with_newline: true,
         }
-        self
     }
 
     /// Build the sequence into a YamlBuilder.
@@ -365,18 +362,7 @@ impl MappingBuilder {
     }
 
     fn emit_key_preamble(&mut self, key: &str) {
-        if self.count > 0 {
-            self.builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        if self.indent > 0 {
-            self.builder
-                .token(SyntaxKind::WHITESPACE.into(), &" ".repeat(self.indent));
-        }
-        self.builder.start_node(SyntaxKind::SCALAR.into());
-        self.builder.token(SyntaxKind::VALUE.into(), key);
-        self.builder.finish_node();
-        self.builder.token(SyntaxKind::COLON.into(), ":");
-        self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
+        emit_key(&mut self.builder, self.count > 0, self.indent, key, false);
     }
 
     /// Add a key-value pair. The value can be any type implementing [`AsYaml`]:
@@ -404,18 +390,7 @@ impl MappingBuilder {
             count,
         } = self;
 
-        if count > 0 {
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        if indent > 0 {
-            builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-        }
-        builder.start_node(SyntaxKind::SCALAR.into());
-        builder.token(SyntaxKind::VALUE.into(), &key.into());
-        builder.finish_node();
-        builder.token(SyntaxKind::COLON.into(), ":");
-        builder.token(SyntaxKind::WHITESPACE.into(), " ");
-        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        emit_key(&mut builder, count > 0, indent, &key.into(), true);
 
         builder.start_node(SyntaxKind::SEQUENCE.into());
         let nested = SequenceBuilder::at_indent(builder, indent + 2);
@@ -441,18 +416,7 @@ impl MappingBuilder {
             count,
         } = self;
 
-        if count > 0 {
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        if indent > 0 {
-            builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-        }
-        builder.start_node(SyntaxKind::SCALAR.into());
-        builder.token(SyntaxKind::VALUE.into(), &key.into());
-        builder.finish_node();
-        builder.token(SyntaxKind::COLON.into(), ":");
-        builder.token(SyntaxKind::WHITESPACE.into(), " ");
-        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        emit_key(&mut builder, count > 0, indent, &key.into(), true);
 
         builder.start_node(SyntaxKind::MAPPING.into());
         let nested = MappingBuilder::at_indent(builder, indent + 2);
@@ -469,98 +433,52 @@ impl MappingBuilder {
 
     /// Insert a key-value pair with a pre-built SequenceBuilder.
     pub fn insert_sequence(self, key: impl Into<String>, other: SequenceBuilder) -> Self {
-        // Extract the inner SEQUENCE node from the other builder
         let SequenceBuilder {
-            builder: mut other_builder,
+            builder: other_builder,
             ..
         } = other;
-        other_builder.finish_node(); // SEQUENCE
-        other_builder.finish_node(); // DOCUMENT
-        other_builder.finish_node(); // ROOT
-        let green = other_builder.finish();
-        let root = rowan::SyntaxNode::<crate::yaml::Lang>::new_root(green);
+        let Some(seq_node) = finish_into_inner_node(other_builder) else {
+            return self;
+        };
+        let MappingBuilder {
+            mut builder,
+            indent,
+            count,
+        } = self;
 
-        // Find the SEQUENCE node
-        use rowan::ast::AstNode;
-        if let Some(doc) = crate::yaml::Document::cast(root.first_child().unwrap()) {
-            if let Some(seq_node) = doc.syntax().children().next() {
-                let MappingBuilder {
-                    mut builder,
-                    indent,
-                    count,
-                } = self;
+        emit_key(&mut builder, count > 0, indent, &key.into(), true);
+        crate::as_yaml::copy_node_content(&mut builder, &seq_node);
 
-                if count > 0 {
-                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                }
-                if indent > 0 {
-                    builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-                }
-                builder.start_node(SyntaxKind::SCALAR.into());
-                builder.token(SyntaxKind::VALUE.into(), &key.into());
-                builder.finish_node();
-                builder.token(SyntaxKind::COLON.into(), ":");
-                builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
-
-                crate::as_yaml::copy_node_content(&mut builder, &seq_node);
-
-                return MappingBuilder {
-                    builder,
-                    indent,
-                    count: count + 1,
-                };
-            }
+        MappingBuilder {
+            builder,
+            indent,
+            count: count + 1,
         }
-        self
     }
 
     /// Insert a key-value pair with a pre-built MappingBuilder.
     pub fn insert_mapping(self, key: impl Into<String>, other: MappingBuilder) -> Self {
-        // Extract the inner MAPPING node from the other builder
         let MappingBuilder {
-            builder: mut other_builder,
+            builder: other_builder,
             ..
         } = other;
-        other_builder.finish_node(); // MAPPING
-        other_builder.finish_node(); // DOCUMENT
-        other_builder.finish_node(); // ROOT
-        let green = other_builder.finish();
-        let root = rowan::SyntaxNode::<crate::yaml::Lang>::new_root(green);
+        let Some(map_node) = finish_into_inner_node(other_builder) else {
+            return self;
+        };
+        let MappingBuilder {
+            mut builder,
+            indent,
+            count,
+        } = self;
 
-        // Find the MAPPING node
-        use rowan::ast::AstNode;
-        if let Some(doc) = crate::yaml::Document::cast(root.first_child().unwrap()) {
-            if let Some(map_node) = doc.syntax().children().next() {
-                let MappingBuilder {
-                    mut builder,
-                    indent,
-                    count,
-                } = self;
+        emit_key(&mut builder, count > 0, indent, &key.into(), true);
+        crate::as_yaml::copy_node_content_with_indent(&mut builder, &map_node, indent + 2);
 
-                if count > 0 {
-                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                }
-                if indent > 0 {
-                    builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-                }
-                builder.start_node(SyntaxKind::SCALAR.into());
-                builder.token(SyntaxKind::VALUE.into(), &key.into());
-                builder.finish_node();
-                builder.token(SyntaxKind::COLON.into(), ":");
-                builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
-
-                crate::as_yaml::copy_node_content_with_indent(&mut builder, &map_node, indent + 2);
-
-                return MappingBuilder {
-                    builder,
-                    indent,
-                    count: count + 1,
-                };
-            }
+        MappingBuilder {
+            builder,
+            indent,
+            count: count + 1,
         }
-        self
     }
 
     /// Build the mapping into a YamlBuilder.

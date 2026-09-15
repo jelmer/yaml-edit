@@ -299,56 +299,42 @@ impl CustomTagRegistry {
         handlers.keys().cloned().collect()
     }
 
+    /// Run `f` against the handler registered for `tag`.
+    fn with_handler<T>(
+        &self,
+        tag: &str,
+        f: impl FnOnce(&dyn CustomTagHandler) -> Result<T, CustomTagError>,
+    ) -> Result<T, CustomTagError> {
+        let handlers = self.handlers.read().unwrap();
+        let handler = handlers
+            .get(tag)
+            .ok_or_else(|| CustomTagError::new(tag, "Tag not registered"))?;
+        f(handler.as_ref())
+    }
+
     /// Serialize a value using a custom tag
     pub fn serialize(&self, tag: &str, value: &YamlValue) -> Result<String, CustomTagError> {
-        let handlers = self.handlers.read().unwrap();
-        if let Some(handler) = handlers.get(tag) {
-            handler.serialize(value)
-        } else {
-            Err(CustomTagError::new(tag, "Tag not registered"))
-        }
+        self.with_handler(tag, |h| h.serialize(value))
     }
 
     /// Deserialize a value using a custom tag
     pub fn deserialize(&self, tag: &str, content: &str) -> Result<YamlValue, CustomTagError> {
-        let handlers = self.handlers.read().unwrap();
-        if let Some(handler) = handlers.get(tag) {
-            handler.deserialize(content)
-        } else {
-            Err(CustomTagError::new(tag, "Tag not registered"))
-        }
+        self.with_handler(tag, |h| h.deserialize(content))
     }
 
     /// Validate content for a custom tag
     pub fn validate(&self, tag: &str, content: &str) -> Result<(), CustomTagError> {
-        let handlers = self.handlers.read().unwrap();
-        if let Some(handler) = handlers.get(tag) {
-            handler.validate(content)
-        } else {
-            Err(CustomTagError::new(tag, "Tag not registered"))
-        }
+        self.with_handler(tag, |h| h.validate(content))
     }
 
     /// Check if a tag name is valid (follows YAML tag naming conventions)
     fn is_valid_tag_name(tag: &str) -> bool {
         // YAML tags must start with ! and contain valid characters
-        if !tag.starts_with('!') {
-            return false;
-        }
-
-        if tag.len() < 2 {
-            return false;
-        }
-
-        // Check for valid characters after !
-        for ch in tag[1..].chars() {
-            match ch {
-                'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | ':' | '/' => {}
-                _ => return false,
-            }
-        }
-
-        true
+        tag.len() >= 2
+            && tag.starts_with('!')
+            && tag[1..]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '/'))
     }
 }
 
@@ -372,9 +358,11 @@ impl CustomTagParser {
     }
 
     /// Parse a document and process custom tags
+    ///
+    /// TODO: unimplemented - this should walk the document and run every
+    /// tagged node through the registry. It currently accepts any document
+    /// without looking at it.
     pub fn parse_with_custom_tags(&self, _document: &Document) -> Result<(), CustomTagError> {
-        // This would traverse the document and process any custom tags
-        // For now, just return success
         Ok(())
     }
 

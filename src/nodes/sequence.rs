@@ -1,4 +1,4 @@
-use super::{fresh_token, Lang, SyntaxNode};
+use super::{fresh_token, has_child_token, Lang, SyntaxNode};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::yaml::ValueNode;
@@ -25,9 +25,7 @@ fn must_render_flow(node: &SyntaxNode) -> bool {
             _ => None,
         };
         if let Some(open) = opener {
-            if p.children_with_tokens()
-                .any(|c| c.as_token().is_some_and(|t| t.kind() == open))
-            {
+            if has_child_token(&p, |k| k == open) {
                 return true;
             }
         }
@@ -837,11 +835,7 @@ impl Sequence {
 
     /// Check if this sequence is in flow style [item1, item2]
     pub fn is_flow_style(&self) -> bool {
-        self.0.children_with_tokens().any(|child| {
-            child
-                .as_token()
-                .is_some_and(|t| t.kind() == SyntaxKind::LEFT_BRACKET)
-        })
+        has_child_token(&self.0, |k| k == SyntaxKind::LEFT_BRACKET)
     }
 
     /// Remove and return the last item in this sequence.

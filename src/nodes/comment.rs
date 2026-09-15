@@ -1,8 +1,7 @@
 //! Comment trivia.
 
-use super::{SyntaxNode, SyntaxToken};
+use super::{fresh_token, SyntaxNode, SyntaxToken};
 use crate::lex::SyntaxKind;
-use rowan::GreenNodeBuilder;
 
 /// A single comment token in a YAML document.
 ///
@@ -77,14 +76,7 @@ impl Comment {
             .parent()
             .expect("a comment token always has a parent node");
         let index = self.0.index();
-        let mut builder = GreenNodeBuilder::new();
-        builder.start_node(SyntaxKind::ROOT.into());
-        builder.token(SyntaxKind::COMMENT.into(), text);
-        builder.finish_node();
-        let temp = SyntaxNode::new_root_mut(builder.finish());
-        let new_token = temp
-            .first_token()
-            .expect("builder always emits a COMMENT token");
+        let new_token = fresh_token(SyntaxKind::COMMENT, text);
         parent.splice_children(index..index + 1, vec![new_token.into()]);
     }
 

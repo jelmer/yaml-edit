@@ -6,7 +6,7 @@
 
 use super::Mapping;
 use crate::lex::SyntaxKind;
-use crate::nodes::{fresh_token, Scalar, Sequence, SyntaxNode};
+use crate::nodes::{fresh_token, has_child_token, Scalar, Sequence, SyntaxNode};
 use crate::yaml::ValueNode;
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
@@ -64,10 +64,7 @@ pub(super) fn value_is_block(value: &SyntaxNode) -> bool {
         .children()
         .find(|c| c.kind() == SyntaxKind::TAGGED_NODE)
         .unwrap_or_else(|| value.clone());
-    carrier.children_with_tokens().any(|el| {
-        el.as_token()
-            .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
-    })
+    has_child_token(&carrier, |k| k == SyntaxKind::NEWLINE)
 }
 
 /// Inject a `{}` into a truly-orphan empty MAPPING (no entries, no

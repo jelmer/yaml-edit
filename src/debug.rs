@@ -12,6 +12,7 @@
 
 use crate::as_yaml::YamlNode;
 use crate::lex::SyntaxKind;
+use crate::nodes::has_child_token;
 use crate::yaml::{Document, Mapping, Scalar, Sequence, SyntaxNode};
 use std::fmt;
 
@@ -58,19 +59,9 @@ pub fn print_tree(node: &SyntaxNode) {
 
 /// Prints the CST structure with a custom starting indentation.
 pub fn print_tree_indent(node: &SyntaxNode, indent: usize) {
-    for child in node.children_with_tokens() {
-        let prefix = "  ".repeat(indent);
-        match child {
-            rowan::NodeOrToken::Node(n) => {
-                println!("{}{:?}", prefix, n.kind());
-                print_tree_indent(&n, indent + 1);
-            }
-            rowan::NodeOrToken::Token(t) => {
-                let text = t.text().replace('\n', "\\n").replace('\r', "\\r");
-                println!("{}{:?}: {:?}", prefix, t.kind(), text);
-            }
-        }
-    }
+    let mut out = String::new();
+    tree_to_string_indent(node, indent, &mut out);
+    print!("{out}");
 }
 
 /// Returns a string representation of the CST structure.
@@ -256,10 +247,7 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 .children_with_tokens()
                 .filter(|c| c.as_token().is_some_and(|t| t.kind() == SyntaxKind::COLON))
                 .collect();
-            let is_explicit_key = node.children_with_tokens().any(|c| {
-                c.as_token()
-                    .is_some_and(|t| t.kind() == SyntaxKind::QUESTION)
-            });
+            let is_explicit_key = has_child_token(node, |k| k == SyntaxKind::QUESTION);
             let in_flow = is_in_flow_collection(node);
             let expected_colons = if is_explicit_key || in_flow {
                 0..=1
@@ -469,27 +457,12 @@ fn is_in_flow_collection(node: &SyntaxNode) -> bool {
     let mut current = node.parent();
     while let Some(parent) = current {
         match parent.kind() {
+            // Flow collections carry their opening bracket as a direct child.
             SyntaxKind::MAPPING => {
-                // Flow mapping has LEFT_BRACE and RIGHT_BRACE tokens
-                for child in parent.children_with_tokens() {
-                    if let Some(token) = child.as_token() {
-                        if token.kind() == SyntaxKind::LEFT_BRACE {
-                            return true;
-                        }
-                    }
-                }
-                return false;
+                return has_child_token(&parent, |k| k == SyntaxKind::LEFT_BRACE)
             }
             SyntaxKind::SEQUENCE => {
-                // Flow sequence has LEFT_BRACKET and RIGHT_BRACKET tokens
-                for child in parent.children_with_tokens() {
-                    if let Some(token) = child.as_token() {
-                        if token.kind() == SyntaxKind::LEFT_BRACKET {
-                            return true;
-                        }
-                    }
-                }
-                return false;
+                return has_child_token(&parent, |k| k == SyntaxKind::LEFT_BRACKET)
             }
             _ => current = parent.parent(),
         }

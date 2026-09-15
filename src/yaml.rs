@@ -22,7 +22,7 @@ pub(crate) struct ParsedYaml {
 }
 
 // Import Lang, SyntaxNode, and ast_node! macro from nodes module
-use crate::nodes::ast_node;
+use crate::nodes::{ast_node, has_child_token};
 pub use crate::nodes::{Lang, SyntaxNode};
 
 // Re-export extracted AST nodes from nodes module
@@ -69,10 +69,8 @@ pub trait ValueNode: rowan::ast::AstNode<Language = Lang> {
 impl ValueNode for Mapping {
     fn is_inline(&self) -> bool {
         // Flow-style mappings contain brace tokens.
-        self.0.children_with_tokens().any(|c| {
-            c.as_token().is_some_and(|t| {
-                matches!(t.kind(), SyntaxKind::LEFT_BRACE | SyntaxKind::RIGHT_BRACE)
-            })
+        has_child_token(&self.0, |k| {
+            matches!(k, SyntaxKind::LEFT_BRACE | SyntaxKind::RIGHT_BRACE)
         })
     }
 }
@@ -80,13 +78,8 @@ impl ValueNode for Mapping {
 impl ValueNode for Sequence {
     fn is_inline(&self) -> bool {
         // Flow-style sequences contain bracket tokens.
-        self.0.children_with_tokens().any(|c| {
-            c.as_token().is_some_and(|t| {
-                matches!(
-                    t.kind(),
-                    SyntaxKind::LEFT_BRACKET | SyntaxKind::RIGHT_BRACKET
-                )
-            })
+        has_child_token(&self.0, |k| {
+            matches!(k, SyntaxKind::LEFT_BRACKET | SyntaxKind::RIGHT_BRACKET)
         })
     }
 }
@@ -199,9 +192,7 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
     };
 
     // Flow collections already render correctly when empty.
-    let is_flow = collection
-        .children_with_tokens()
-        .any(|c| c.as_token().is_some_and(|t| t.kind() == open_kind));
+    let is_flow = has_child_token(collection, |k| k == open_kind);
     if is_flow {
         return;
     }
@@ -277,20 +268,6 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
         let nl = crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n");
         let end = entry_node.children_with_tokens().count();
         entry_node.splice_children(end..end, vec![nl.into()]);
-    }
-}
-
-/// Create a newline token and add it to the elements vector
-pub(crate) fn add_newline_token(
-    elements: &mut Vec<rowan::NodeOrToken<rowan::SyntaxNode<Lang>, rowan::SyntaxToken<Lang>>>,
-) {
-    let mut nl_builder = rowan::GreenNodeBuilder::new();
-    nl_builder.start_node(SyntaxKind::ROOT.into());
-    nl_builder.token(SyntaxKind::NEWLINE.into(), "\n");
-    nl_builder.finish_node();
-    let nl_node = SyntaxNode::new_root_mut(nl_builder.finish());
-    if let Some(token) = nl_node.first_token() {
-        elements.push(token.into());
     }
 }
 

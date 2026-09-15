@@ -436,3 +436,54 @@ fn a_node_property_at_a_node_start_still_applies() {
     let file = YamlFile::from_str("a: [!!str x]\n").unwrap();
     assert!(!yaml_edit::debug::tree_to_string(file.syntax()).contains("ERROR"));
 }
+
+#[test]
+fn a_comma_in_block_context_is_scalar_content() {
+    // `,` separates entries only inside a flow collection. In block context
+    // it is ordinary plain-scalar text, including at the start of a
+    // continuation line, which used to strand the rest of the document.
+    for (yaml, value) in [
+        ("a: x,y\nb: z\n", "x,y"),
+        ("a: x\n  ,y\nb: z\n", "x ,y"),
+        ("a: ,y\nb: z\n", ",y"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec!["a", "b"], "{yaml:?}");
+        assert_eq!(
+            mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn a_comma_still_separates_flow_entries() {
+    let file = YamlFile::from_str("a: [1, 2]\nb: {p: 1, q: 2}\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let seq = mapping.get("a").unwrap();
+    assert_eq!(seq.as_sequence().unwrap().len(), 2);
+    assert_eq!(mapping.get_mapping("b").unwrap().keys().count(), 2);
+}
+
+#[test]
+fn a_verbatim_tag_keeps_its_uri() {
+    // `!<uri>` runs to its closing `>` and may hold any URI character,
+    // commas included.
+    let yaml = "!<tag:yaml.org,2002:str> foo\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    common::assert_file_cst_ok(&file);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(!tree.contains("ERROR"), "{tree}");
+    assert!(tree.contains("TAG: \"!<tag:yaml.org,2002:str>\""), "{tree}");
+}

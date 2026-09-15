@@ -99,40 +99,13 @@ where
     A: AsYaml + ?Sized,
     B: AsYaml + ?Sized,
 {
-    // If the left side has a backing node, dispatch on its concrete kind.
+    // If either side has a backing node, dispatch on its concrete kind. The
+    // node side goes first so the comparison stays symmetric.
     if let Some(node) = a.as_node() {
-        use crate::lex::SyntaxKind;
-        return match node.kind() {
-            SyntaxKind::SCALAR => Scalar::cast(node.clone()).is_some_and(|s| scalar_eq_rhs(&s, b)),
-            SyntaxKind::MAPPING => {
-                Mapping::cast(node.clone()).is_some_and(|m| mapping_eq_rhs(&m, b))
-            }
-            SyntaxKind::SEQUENCE => {
-                Sequence::cast(node.clone()).is_some_and(|s| sequence_eq_rhs(&s, b))
-            }
-            SyntaxKind::TAGGED_NODE => {
-                TaggedNode::cast(node.clone()).is_some_and(|t| tagged_eq_rhs(&t, b))
-            }
-            _ => false,
-        };
+        return node_eq_rhs(node, b);
     }
-
-    // Left side is raw - try the right side's node instead (symmetric).
     if let Some(node) = b.as_node() {
-        use crate::lex::SyntaxKind;
-        return match node.kind() {
-            SyntaxKind::SCALAR => Scalar::cast(node.clone()).is_some_and(|s| scalar_eq_rhs(&s, a)),
-            SyntaxKind::MAPPING => {
-                Mapping::cast(node.clone()).is_some_and(|m| mapping_eq_rhs(&m, a))
-            }
-            SyntaxKind::SEQUENCE => {
-                Sequence::cast(node.clone()).is_some_and(|s| sequence_eq_rhs(&s, a))
-            }
-            SyntaxKind::TAGGED_NODE => {
-                TaggedNode::cast(node.clone()).is_some_and(|t| tagged_eq_rhs(&t, a))
-            }
-            _ => false,
-        };
+        return node_eq_rhs(node, a);
     }
 
     // Both sides are raw - compare by kind, then decoded scalar string.
@@ -141,6 +114,22 @@ where
     }
     match (raw_scalar_str(a), raw_scalar_str(b)) {
         (Some(sa), Some(sb)) => sa == sb,
+        _ => false,
+    }
+}
+
+/// Compare a CST node against any `AsYaml` right-hand side.
+fn node_eq_rhs<B: AsYaml + ?Sized>(node: &SyntaxNode, rhs: &B) -> bool {
+    use crate::lex::SyntaxKind;
+    match node.kind() {
+        SyntaxKind::SCALAR => Scalar::cast(node.clone()).is_some_and(|s| scalar_eq_rhs(&s, rhs)),
+        SyntaxKind::MAPPING => Mapping::cast(node.clone()).is_some_and(|m| mapping_eq_rhs(&m, rhs)),
+        SyntaxKind::SEQUENCE => {
+            Sequence::cast(node.clone()).is_some_and(|s| sequence_eq_rhs(&s, rhs))
+        }
+        SyntaxKind::TAGGED_NODE => {
+            TaggedNode::cast(node.clone()).is_some_and(|t| tagged_eq_rhs(&t, rhs))
+        }
         _ => false,
     }
 }

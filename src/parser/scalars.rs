@@ -531,8 +531,8 @@ impl Parser {
         let at_root = std::mem::take(&mut self.node_is_document_root);
         self.builder.start_node(SyntaxKind::SCALAR.into());
         self.bump(); // consume PIPE
-        self.parse_block_scalar_header();
-        self.parse_block_scalar_content(at_root);
+        let explicit_indent = self.parse_block_scalar_header();
+        self.parse_block_scalar_content(at_root, explicit_indent);
         self.builder.finish_node();
     }
 
@@ -540,12 +540,15 @@ impl Parser {
         let at_root = std::mem::take(&mut self.node_is_document_root);
         self.builder.start_node(SyntaxKind::SCALAR.into());
         self.bump(); // consume GREATER
-        self.parse_block_scalar_header();
-        self.parse_block_scalar_content(at_root);
+        let explicit_indent = self.parse_block_scalar_header();
+        self.parse_block_scalar_content(at_root, explicit_indent);
         self.builder.finish_node();
     }
 
-    fn parse_block_scalar_header(&mut self) {
+    /// Parse a block scalar's header, returning its explicit indentation
+    /// indicator if it carries one (`|2`, `>2-`).
+    fn parse_block_scalar_header(&mut self) -> Option<usize> {
+        let mut explicit_indent = None;
         // Parse optional indentation indicator (1-9) and chomping indicator (+, -)
         // Format: |<indent><chomp> or |<chomp><indent>
         // Examples: |2, |-, |+, |2-, |-2, |2+, |+2
@@ -565,6 +568,14 @@ impl Parser {
                     // same token (`|-2` is INT("-2")), so allow one sign.
                     let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
                     if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                        // The spec allows a single digit 1-9; a longer run is
+                        // out of range, so keep only the first.
+                        explicit_indent = digits
+                            .chars()
+                            .next()
+                            .and_then(|c| c.to_digit(10))
+                            .filter(|d| *d > 0)
+                            .map(|d| d as usize);
                         self.bump();
                     } else {
                         break;
@@ -590,6 +601,11 @@ impl Parser {
                         // Some other text, stop parsing header
                         break;
                     }
+                    explicit_indent = text
+                        .chars()
+                        .find_map(|c| c.to_digit(10))
+                        .filter(|d| *d > 0)
+                        .map(|d| d as usize);
                     self.bump();
                 }
                 // A `+` straight after the header's `|` or `>` lexes as PLUS
@@ -617,6 +633,8 @@ impl Parser {
         if self.current() == Some(SyntaxKind::NEWLINE) {
             self.bump();
         }
+
+        explicit_indent
     }
 
     /// Parse a block scalar's body.
@@ -624,7 +642,7 @@ impl Parser {
     /// `at_root` says the scalar is the document's own node, with nothing
     /// enclosing it, so its body may start at column 0. Nested under a key
     /// the body has to be indented, or `a: |\nb: 1\n` would swallow `b`.
-    fn parse_block_scalar_content(&mut self, at_root: bool) {
+    fn parse_block_scalar_content(&mut self, at_root: bool, explicit_indent: Option<usize>) {
         // Consume all indented content that follows.
         //
         // The header consumed its own line break, so the loop starts at the
@@ -632,8 +650,12 @@ impl Parser {
         // suppressed for exactly that line and an empty block scalar eats the
         // entry after it (`empty: |\nnext: 1\n` lost `next`).
         let mut last_was_newline = true;
-        let mut base_indent: Option<usize> = None;
-        let mut first_content_indent: Option<usize> = None;
+        // An explicit indentation indicator (`>2`) states the body's column
+        // outright, so the first line does not get to set it: in
+        // `a: >2\n   more\n  regular\n` the `regular` line is body at the
+        // declared column, not a dedent out of the deeper first line.
+        let mut base_indent: Option<usize> = explicit_indent;
+        let mut first_content_indent: Option<usize> = explicit_indent;
 
         while let Some(kind) = self.current() {
             // Detect the first body line's indentation to use as base.

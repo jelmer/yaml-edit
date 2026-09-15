@@ -1400,3 +1400,34 @@ fn test_document_after_an_end_marker_is_parsed() {
         assert_eq!(file.documents().count(), docs, "{yaml:?}");
     }
 }
+
+/// An explicit indentation indicator states the body's column outright, so
+/// the first body line does not get to set it.
+///
+/// In `a: >2\n   more\n  regular\n` the `regular` line is body at the
+/// declared column 2, not a dedent out of the deeper first line. Detecting
+/// the base from that first line stranded it in an ERROR node with no parse
+/// error (suite case F6MC).
+#[test]
+fn test_explicit_indentation_indicator_sets_the_base() {
+    for yaml in [
+        "a: >2\n   more\n  regular\n",
+        "b: >2\n\n\n   more\n  regular\n",
+        "a: >2\n   more\n  regular\nb: 1\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    // A sibling key after such a scalar still survives.
+    let file = YamlFile::from_str("a: >2\n   more\n  regular\nb: 1\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["a".to_string(), "b".to_string()]);
+}

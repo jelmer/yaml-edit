@@ -406,27 +406,19 @@ impl Parser {
                     }
                 }
                 SyntaxKind::DASH => return (indent >= base_indent).then_some(indent),
-                _ => {
-                    let opens_mapping = Self::line_opens_mapping(&mut rest);
-                    return (indent > base_indent && opens_mapping).then_some(indent);
-                }
+                // An explicit key opens a mapping without a colon on the line.
+                SyntaxKind::QUESTION => return (indent > base_indent).then_some(indent),
+                // A block scalar header likewise carries no colon, and a
+                // flow collection is a complete node on its own.
+                SyntaxKind::PIPE
+                | SyntaxKind::GREATER
+                | SyntaxKind::LEFT_BRACKET
+                | SyntaxKind::LEFT_BRACE => return (indent > base_indent).then_some(indent),
+                // Anything else opens a plain scalar, which is a valid
+                // tagged body whether or not a colon makes it a mapping.
+                _ => return (indent > base_indent).then_some(indent),
             }
         }
-    }
-
-    /// Whether the line whose first token was just consumed is a mapping
-    /// entry, i.e. a key followed by a colon.
-    fn line_opens_mapping<'t>(rest: &mut impl Iterator<Item = (SyntaxKind, &'t String)>) -> bool {
-        // The caller consumed the first token of the line; it has to have been
-        // part of a key for a colon to follow.
-        for (kind, _) in rest {
-            match kind {
-                SyntaxKind::COLON => return true,
-                SyntaxKind::NEWLINE => return false,
-                _ => continue,
-            }
-        }
-        false
     }
 
     fn peek_tag_text(&self) -> Option<&str> {
@@ -678,6 +670,31 @@ impl Parser {
         // Since tokens are reversed, indices before current_idx are "ahead" in the stream
         let mut peek_idx = current_idx.saturating_sub(1);
 
+        // A blank line does not end a plain scalar; it folds to a line break
+        // and the scalar continues on the next line with content. Step over
+        // any run of blank lines (an INDENT holds a line's leading
+        // whitespace, so a line is blank when a NEWLINE follows it directly).
+        loop {
+            let mut after_blank = peek_idx;
+            if self
+                .tokens
+                .get(after_blank)
+                .is_some_and(|(kind, _)| *kind == SyntaxKind::INDENT)
+            {
+                after_blank = after_blank.saturating_sub(1);
+            }
+            if after_blank > 0
+                && self
+                    .tokens
+                    .get(after_blank)
+                    .is_some_and(|(kind, _)| *kind == SyntaxKind::NEWLINE)
+            {
+                peek_idx = after_blank.saturating_sub(1);
+                continue;
+            }
+            break;
+        }
+
         // Skip INDENT token if present and extract indentation level
         let next_line_indent = self
             .tokens
@@ -714,7 +731,16 @@ impl Parser {
             )
         });
 
-        if !has_content || next_line_indent <= scalar_indent {
+        // A continuation has to be indented past the scalar's own line, so it
+        // cannot be mistaken for the next entry of an enclosing mapping.
+        // Where there is no such mapping to confuse it with, an equally
+        // indented line continues the scalar (`ab\ncd`, `- x\n y`).
+        let deep_enough = if self.equal_indent_continues_scalar {
+            next_line_indent >= scalar_indent
+        } else {
+            next_line_indent > scalar_indent
+        };
+        if !has_content || !deep_enough {
             return false;
         }
 

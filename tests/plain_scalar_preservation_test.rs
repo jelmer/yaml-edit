@@ -1,5 +1,6 @@
 mod common;
 
+use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::{Mapping, YamlFile};
 
@@ -169,4 +170,269 @@ fn real_quotes_flow_delimiters_and_document_markers_stay_structural() {
         "---not-a-marker"
     );
     assert_metadata_edits(&file, &mapping, yaml);
+}
+
+#[test]
+fn a_tag_suffix_keeps_its_uri_characters() {
+    // `ns-tag-char` is any URI character bar the flow indicators, so `:` and
+    // `-` belong to the tag rather than ending it.
+    for (yaml, tag) in [
+        ("tags: !!ss:eq\n- a\nnext: x\n", "!!ss:eq"),
+        ("tags: !!ss---\n- a\nnext: x\n", "!!ss---"),
+        ("tags: !e:f\n- a\nnext: x\n", "!e:f"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec!["tags", "next"], "{yaml:?}");
+        assert_eq!(
+            mapping
+                .get("tags")
+                .unwrap()
+                .as_tagged()
+                .unwrap()
+                .tag()
+                .as_deref(),
+            Some(tag),
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn a_flow_indicator_still_ends_a_tag() {
+    let yaml = "a: [!t, x]\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(tree.contains("TAG: \"!t\""), "{tree}");
+}
+
+#[test]
+fn a_colon_at_the_end_of_a_tag_belongs_to_the_tag() {
+    // `:` is an ns-tag-char in YAML 1.2, so `!!str:` is the whole tag and
+    // the value is what follows it. PyYAML reads it the same way.
+    let yaml = "!!str: x\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    common::assert_file_cst_ok(&file);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(!tree.contains("ERROR"), "{tree}");
+    assert!(tree.contains("TAG: \"!!str:\""), "{tree}");
+}
+
+#[test]
+fn percent_inside_a_plain_scalar_is_not_a_directive() {
+    // A directive is only a `%` that opens a line; elsewhere it is content.
+    for (yaml, key, value) in [
+        ("a: b%c\nnext: x\n", "a", "b%c"),
+        ("a: 50%\nnext: x\n", "a", "50%"),
+        ("k%j: v\nnext: x\n", "k%j", "v"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string(), "next".to_string()]);
+        assert_eq!(
+            mapping.get(key).unwrap().as_scalar().unwrap().as_string(),
+            value
+        );
+    }
+}
+
+#[test]
+fn directive_at_line_start_still_parses() {
+    let yaml = "%YAML 1.2\n---\na: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "1"
+    );
+}
+
+#[test]
+fn a_blank_line_continues_a_plain_scalar() {
+    // A single line break folds to a space; a blank line keeps one newline.
+    for (yaml, key, value) in [
+        ("a: one\n  two\nb: y\n", "a", "one two"),
+        ("a: one\n\n  two\nb: y\n", "a", "one\ntwo"),
+        ("a: one\n\n\n  two\nb: y\n", "a", "one\n\ntwo"),
+        ("a: one\n  two\n\n  three\nb: y\n", "a", "one two\nthree"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string(), "b".to_string()], "{yaml:?}");
+        assert_eq!(
+            mapping.get(key).unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn a_document_level_plain_scalar_folds_unindented_lines() {
+    // The document's own node has no enclosing collection to be confused
+    // with, so a continuation need not be indented past the first line.
+    for (yaml, value) in [
+        ("ab\ncd\n", "ab cd"),
+        ("ab\ncd\nef\n", "ab cd ef"),
+        ("ab\n  cd\n", "ab cd"),
+        ("ab\n\ncd\n", "ab\ncd"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn an_unindented_continuation_does_not_apply_inside_a_mapping() {
+    // Indented past the key, this is a continuation; at the key's own
+    // column it would be the next entry, so the rule stays strict there.
+    let yaml = "a: one\n  two\nb: z\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["a", "b"]);
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "one two"
+    );
+}
+
+#[test]
+fn a_sequence_entry_folds_a_continuation_at_its_own_column() {
+    // A sequence entry's continuation only has to clear the sequence's
+    // column, not the entry's content column, so `- x\n y` is one scalar.
+    for yaml in [
+        "a:\n- x\n y\nb: z\n",
+        "a:\n- x\n  y\nb: z\n",
+        "a:\n  - x\n   y\nb: z\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec!["a", "b"], "{yaml:?}");
+        let seq = mapping.get("a").unwrap();
+        let seq = seq.as_sequence().unwrap();
+        assert_eq!(seq.len(), 1, "{yaml:?}");
+        assert_eq!(
+            seq.get(0).unwrap().as_scalar().unwrap().as_string(),
+            "x y",
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn a_dash_line_still_starts_a_new_sequence_entry() {
+    let yaml = "a:\n- x\n- y\nb: z\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let seq = mapping.get("a").unwrap();
+    let seq = seq.as_sequence().unwrap();
+    assert_eq!(seq.len(), 2);
+}
+
+#[test]
+fn a_node_property_mid_scalar_is_plain_content() {
+    // Per YAML 1.2 section 7.1 a tag, anchor or alias applies to the start
+    // of a node. Once a plain scalar has begun, `!`, `&` and `*` are
+    // ordinary characters, whether or not a space precedes them.
+    for (yaml, value) in [
+        ("a: x !!b\nnext: k\n", "x !!b"),
+        ("a: x !t\nnext: k\n", "x !t"),
+        ("a: x &anc\nnext: k\n", "x &anc"),
+        ("a: x *ref\nnext: k\n", "x *ref"),
+        ("a: x !t y\nnext: k\n", "x !t y"),
+        // The shape a differential fuzz run reduced to: a tag-looking run
+        // mid-scalar whose trailing `]` used to be left with nowhere to go.
+        ("a: a:] !!b%as:]\nnext: k\n", "a:] !!b%as:]"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec!["a", "next"], "{yaml:?}");
+        assert_eq!(
+            mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn a_node_property_at_a_node_start_still_applies() {
+    // The mid-scalar rule must not disturb properties in the positions
+    // where they are real: after a colon, a dash, a document start, or
+    // inside a flow collection.
+    let yaml = "a: !!str x\nb: &anc y\nc: *anc\nd:\n- !!str z\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    common::assert_file_cst_ok(&file);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(!tree.contains("ERROR"), "{tree}");
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping
+            .get("a")
+            .unwrap()
+            .as_tagged()
+            .unwrap()
+            .tag()
+            .as_deref(),
+        Some("!!str")
+    );
+    assert_eq!(mapping.get("c").unwrap().as_alias().unwrap().name(), "anc");
+    let seq = mapping.get("d").unwrap();
+    let seq = seq.as_sequence().unwrap();
+    assert_eq!(seq.len(), 1);
+
+    // A document's own node, and a flow collection entry.
+    let file = YamlFile::from_str("!!str v\n").unwrap();
+    assert!(!yaml_edit::debug::tree_to_string(file.syntax()).contains("ERROR"));
+    let file = YamlFile::from_str("a: [!!str x]\n").unwrap();
+    assert!(!yaml_edit::debug::tree_to_string(file.syntax()).contains("ERROR"));
 }

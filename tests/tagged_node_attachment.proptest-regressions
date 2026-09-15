@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc df1148eb2bd06245603d505e5d27365d83a4a3c8f256d7483358a45bc23c04be # shrinks to yaml = "tags: !!seq &a\n\n\n  ? ek\nsibling: kept\n"
+cc 62dd595f8368999669314e542c2d648e73285bd5e5777dd4381c54d572199553 # shrinks to yaml = "tags: !!seq\n\n\n  ? ek\nsibling: kept\n"

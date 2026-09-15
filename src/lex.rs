@@ -771,9 +771,11 @@ pub fn lex_with_validation_config<'a>(
             }
 
             '%' => {
-                // In flow collections, % is part of plain scalars, not a directive
-                if flow_depth > 0 {
-                    // Treat as part of a plain scalar in flow context
+                // A directive is only a `%` that opens a line. Anywhere else,
+                // and anywhere inside a flow collection, it is ordinary plain
+                // scalar content (`a: b%c`).
+                if flow_depth > 0 || start_idx != current_line_start {
+                    // Treat as part of a plain scalar
                     let mut end_idx = start_idx + 1;
                     while let Some((idx, next_ch)) = chars.peek() {
                         if next_ch.is_whitespace() {
@@ -788,7 +790,7 @@ pub fn lex_with_validation_config<'a>(
                     let text = &input[token_start..end_idx];
                     tokens.push((classify_scalar(text), text));
                 } else {
-                    // In block context, % starts a directive
+                    // At the start of a line in block context, % starts a directive
                     let mut end_idx = start_idx + 1;
                     while let Some((idx, ch)) = chars.peek() {
                         if *ch == '\n' || *ch == '\r' {
@@ -963,7 +965,10 @@ pub fn lex_with_validation_config<'a>(
                     // are inside a plain-scalar body they are ordinary content
                     // per YAML 1.2 §7.1 (a `&anchor` must be followed by
                     // whitespace to actually be an anchor).
-                    if is_yaml_special_except(next_ch, "-:#&*!?'\">") {
+                    // `%` is an indicator only at the start of a line, where
+                    // the main loop takes it as a directive; inside a scalar it
+                    // is ordinary content (`a: b%c`).
+                    if is_yaml_special_except(next_ch, "-:#&*!?'\">%") {
                         // In block context, flow indicators do NOT break scalars
                         if flow_depth == 0 && matches!(next_ch, '[' | ']' | '{' | '}' | ',') {
                             // do nothing, let it be part of the scalar

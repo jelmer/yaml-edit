@@ -212,3 +212,39 @@ fn a_tag_before_a_colon_still_ends_at_the_colon() {
     assert!(!tree.contains("ERROR"), "{tree}");
     assert!(tree.contains("TAG: \"!!str\""), "{tree}");
 }
+
+#[test]
+fn percent_inside_a_plain_scalar_is_not_a_directive() {
+    // A directive is only a `%` that opens a line; elsewhere it is content.
+    for (yaml, key, value) in [
+        ("a: b%c\nnext: x\n", "a", "b%c"),
+        ("a: 50%\nnext: x\n", "a", "50%"),
+        ("k%j: v\nnext: x\n", "k%j", "v"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string(), "next".to_string()]);
+        assert_eq!(
+            mapping.get(key).unwrap().as_scalar().unwrap().as_string(),
+            value
+        );
+    }
+}
+
+#[test]
+fn directive_at_line_start_still_parses() {
+    let yaml = "%YAML 1.2\n---\na: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "1"
+    );
+}

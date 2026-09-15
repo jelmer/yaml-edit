@@ -749,6 +749,17 @@ pub fn lex_with_validation_config<'a>(
 
                 // Read the tag name after the ! or !!
                 while let Some((idx, ch)) = chars.peek() {
+                    // A `:` is valid in a tag suffix (`!!ss:eq`, `!e:f`); it
+                    // ends the tag only where it would end a plain scalar,
+                    // i.e. when it is a mapping indicator (`!!str: value`).
+                    if *ch == ':' {
+                        if is_colon_a_mapping_indicator(input, *idx, flow_depth) {
+                            break;
+                        }
+                        end_idx = *idx + ch.len_utf8();
+                        chars.next();
+                        continue;
+                    }
                     if ch.is_whitespace() || is_yaml_special(*ch) {
                         break;
                     }

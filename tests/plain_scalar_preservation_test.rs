@@ -1,5 +1,6 @@
 mod common;
 
+use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::{Mapping, YamlFile};
 
@@ -169,4 +170,45 @@ fn real_quotes_flow_delimiters_and_document_markers_stay_structural() {
         "---not-a-marker"
     );
     assert_metadata_edits(&file, &mapping, yaml);
+}
+
+#[test]
+fn colon_in_a_tag_suffix_stays_in_the_tag() {
+    // `!!ss:eq` is one tag; the `:` only ends it where it would end a plain
+    // scalar, i.e. followed by whitespace (`!!str: value`).
+    let yaml = "tags: !!ss:eq\n- a\nnext: x\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    common::assert_file_cst_ok(&file);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["tags", "next"]);
+    assert_eq!(
+        mapping
+            .get("tags")
+            .unwrap()
+            .as_tagged()
+            .unwrap()
+            .tag()
+            .as_deref(),
+        Some("!!ss:eq")
+    );
+}
+
+#[test]
+fn a_tag_before_a_colon_still_ends_at_the_colon() {
+    // `!!str:` is where the colon *is* an indicator (whitespace follows), so
+    // the tag ends there rather than swallowing it. yaml-edit keeps the tag
+    // as a mapping key; PyYAML reads the trailing colon into the tag instead,
+    // so only the tag boundary is asserted here.
+    let yaml = "!!str: x\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    common::assert_file_cst_ok(&file);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(!tree.contains("ERROR"), "{tree}");
+    assert!(tree.contains("TAG: \"!!str\""), "{tree}");
 }

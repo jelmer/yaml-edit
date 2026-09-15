@@ -347,3 +347,31 @@ fn value_position_anchor_leaves_a_dedented_sibling_alone() {
         .collect();
     assert_eq!(keys, vec!["tags".to_string(), "sib".to_string()]);
 }
+
+/// A lone anchor may annotate an indentless sequence, whose entries sit at
+/// the key's column rather than the anchor's.
+///
+/// `seq:\n &anchor\n- a\n- b\n` is a sequence of two, as saphyr reads it.
+/// The value was parsed with the anchor's own line as the base, so entries
+/// at the key's column looked dedented and were stranded in an ERROR node
+/// with no parse error (suite case SKE5).
+#[test]
+fn lone_anchor_adopts_an_indentless_sequence() {
+    let yaml = "seq:\n &anchor\n- a\n- b\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = debug::tree_to_string(file.syntax());
+    assert!(!tree.contains("ERROR"), "{tree}");
+
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let seq = mapping.get_sequence("seq").expect("sequence value");
+    assert_eq!(seq.len(), 2);
+
+    // An indented body still works, and a sibling key still survives.
+    for yaml in ["seq:\n &a\n  - a\n", "k:\n &a\n  v\nj: 1\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

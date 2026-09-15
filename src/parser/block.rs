@@ -785,7 +785,17 @@ impl Parser {
                     // both saphyr and PyYAML read it.
                     let outer_floor = self.scalar_continuation_floor;
                     self.scalar_continuation_floor = Some(base_indent);
-                    self.parse_value_with_base_indent(self.current_line_indent);
+                    // A lone anchor may annotate an indentless sequence, whose
+                    // entries sit at the *key's* column rather than the
+                    // anchor's (`seq:\n &a\n- x\n`). Hand it the key's base
+                    // so it can adopt them; anything else measures from its
+                    // own line as before.
+                    let value_indent = if self.current() == Some(SyntaxKind::ANCHOR) {
+                        base_indent
+                    } else {
+                        self.current_line_indent
+                    };
+                    self.parse_value_with_base_indent(value_indent);
                     self.scalar_continuation_floor = outer_floor;
                     has_value = true;
                 } else if self.current_line_indent == base_indent

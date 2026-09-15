@@ -825,10 +825,11 @@ impl Parser {
 
         // Check if we have content token using safe get()
         //
-        // A TAG counts: the lexer reads `!`/`!x` as a tag because a newline
-        // precedes it, but a node property only applies at the start of a
-        // node, and a continuation line is inside one already. `- a\n !\n`
-        // is the scalar `a !`, as both saphyr and PyYAML read it.
+        // A TAG or ANCHOR counts: the lexer reads `!x` and `&a` as node
+        // properties because a newline precedes them, but a property only
+        // applies at the start of a node, and a continuation line is inside
+        // one already. `- a\n !\n` is the scalar `a !`, and `k:#foo\n &a !t s`
+        // the scalar `k:#foo &a !t s`, as both saphyr and PyYAML read them.
         //
         // PIPE and GREATER count for the same reason. They open a block
         // scalar only at the start of a node, which in block context means
@@ -856,6 +857,7 @@ impl Parser {
                     | SyntaxKind::NULL
                     | SyntaxKind::UNTERMINATED_STRING
                     | SyntaxKind::TAG
+                    | SyntaxKind::ANCHOR
                     | SyntaxKind::PIPE
                     | SyntaxKind::GREATER
             ) || (*kind == SyntaxKind::QUESTION

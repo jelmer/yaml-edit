@@ -1089,3 +1089,32 @@ fn test_anchor_name_change_keeps_resolution() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// An anchor on a continuation line is scalar content, not a node property.
+///
+/// `k:#foo\n &a !t s\n` is the single scalar `k:#foo &a !t s` (no space
+/// before the `#`, so it is not a comment), as both saphyr and PyYAML read
+/// it. The continuation check did not count an ANCHOR as content, so the
+/// scalar ended and the rest was stranded in an ERROR node with no parse
+/// error (suite case 3MYT).
+#[test]
+fn test_anchor_on_a_continuation_line_is_scalar_content() {
+    let yaml = "k:#foo\n &a !t s\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(!tree.contains("ERROR"), "{tree}");
+    assert_eq!(
+        file.document().unwrap().as_scalar().unwrap().as_string(),
+        "k:#foo &a !t s"
+    );
+
+    // An anchor that really starts a node still annotates it.
+    for yaml in ["a: &anc 1\nb: *anc\n", "- &x 1\n- *x\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

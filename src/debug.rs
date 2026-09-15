@@ -59,19 +59,9 @@ pub fn print_tree(node: &SyntaxNode) {
 
 /// Prints the CST structure with a custom starting indentation.
 pub fn print_tree_indent(node: &SyntaxNode, indent: usize) {
-    for child in node.children_with_tokens() {
-        let prefix = "  ".repeat(indent);
-        match child {
-            rowan::NodeOrToken::Node(n) => {
-                println!("{}{:?}", prefix, n.kind());
-                print_tree_indent(&n, indent + 1);
-            }
-            rowan::NodeOrToken::Token(t) => {
-                let text = t.text().replace('\n', "\\n").replace('\r', "\\r");
-                println!("{}{:?}: {:?}", prefix, t.kind(), text);
-            }
-        }
-    }
+    let mut out = String::new();
+    tree_to_string_indent(node, indent, &mut out);
+    print!("{out}");
 }
 
 /// Returns a string representation of the CST structure.
@@ -467,27 +457,12 @@ fn is_in_flow_collection(node: &SyntaxNode) -> bool {
     let mut current = node.parent();
     while let Some(parent) = current {
         match parent.kind() {
+            // Flow collections carry their opening bracket as a direct child.
             SyntaxKind::MAPPING => {
-                // Flow mapping has LEFT_BRACE and RIGHT_BRACE tokens
-                for child in parent.children_with_tokens() {
-                    if let Some(token) = child.as_token() {
-                        if token.kind() == SyntaxKind::LEFT_BRACE {
-                            return true;
-                        }
-                    }
-                }
-                return false;
+                return has_child_token(&parent, |k| k == SyntaxKind::LEFT_BRACE)
             }
             SyntaxKind::SEQUENCE => {
-                // Flow sequence has LEFT_BRACKET and RIGHT_BRACKET tokens
-                for child in parent.children_with_tokens() {
-                    if let Some(token) = child.as_token() {
-                        if token.kind() == SyntaxKind::LEFT_BRACKET {
-                            return true;
-                        }
-                    }
-                }
-                return false;
+                return has_child_token(&parent, |k| k == SyntaxKind::LEFT_BRACKET)
             }
             _ => current = parent.parent(),
         }

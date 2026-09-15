@@ -1113,6 +1113,8 @@ fn set_path_on_sequence<V: crate::AsYaml>(
     // within reason: an index far past the end would otherwise let a single
     // path allocate unboundedly.
     let len = sequence.len();
+    // A single sequence edit is linear in its length, so pad in one splice
+    // rather than one push per placeholder.
     if index >= len && index - len >= MAX_INDEX_GROWTH {
         return Err(PathError::IndexTooFar {
             at: segment_display(&segments[0]),
@@ -1120,8 +1122,8 @@ fn set_path_on_sequence<V: crate::AsYaml>(
             index,
         });
     }
-    while sequence.len() <= index {
-        sequence.push(crate::scalar::ScalarValue::null());
+    if let Some(growth) = (index + 1).checked_sub(len) {
+        sequence.extend_with(crate::scalar::ScalarValue::null(), growth);
     }
 
     if segments.len() == 1 {

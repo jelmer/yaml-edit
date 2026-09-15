@@ -309,7 +309,7 @@ impl Parser {
                     self.bump();
                 }
 
-                match self.tagged_block_node_indent(base_indent) {
+                match self.tagged_block_node_indent(base_indent, as_mapping_value) {
                     Some(indent) => {
                         // The tag is alone on its line and annotates a block
                         // node starting on a later line. parse_value's NEWLINE
@@ -356,10 +356,24 @@ impl Parser {
     ///
     /// A sequence may start at `base_indent` rather than further right, since
     /// one nested in a mapping need not be indented past its key. A mapping
-    /// has to nest under the key, or it is a sibling entry rather than our
-    /// value. Anything left of `base_indent` belongs to an enclosing
-    /// collection, so it is not ours to adopt.
-    fn tagged_block_node_indent(&self, base_indent: usize) -> Option<usize> {
+    /// in the value position (`as_mapping_value`) has to nest under the key,
+    /// or it is a sibling entry rather than our value; with no enclosing key
+    /// there is nothing to nest under, so `!!map\na: 1\n` is a tagged mapping
+    /// at the same column. Anything left of `base_indent` belongs to an
+    /// enclosing collection, so it is not ours to adopt.
+    fn tagged_block_node_indent(
+        &self,
+        base_indent: usize,
+        as_mapping_value: bool,
+    ) -> Option<usize> {
+        // Only a body in the value position must clear the key's column.
+        let deep_enough = |indent: usize| {
+            if as_mapping_value {
+                indent > base_indent
+            } else {
+                indent >= base_indent
+            }
+        };
         // `tokens` is in reverse order, so walk it backwards from the current
         // token to read the rest of this line and the lines after it.
         let mut rest = self.tokens.iter().rev().map(|(kind, text)| (*kind, text));
@@ -402,16 +416,16 @@ impl Parser {
                 }
                 SyntaxKind::DASH => return (indent >= base_indent).then_some(indent),
                 // An explicit key opens a mapping without a colon on the line.
-                SyntaxKind::QUESTION => return (indent > base_indent).then_some(indent),
+                SyntaxKind::QUESTION => return deep_enough(indent).then_some(indent),
                 // A block scalar header likewise carries no colon, and a
                 // flow collection is a complete node on its own.
                 SyntaxKind::PIPE
                 | SyntaxKind::GREATER
                 | SyntaxKind::LEFT_BRACKET
-                | SyntaxKind::LEFT_BRACE => return (indent > base_indent).then_some(indent),
+                | SyntaxKind::LEFT_BRACE => return deep_enough(indent).then_some(indent),
                 // Anything else opens a plain scalar, which is a valid
                 // tagged body whether or not a colon makes it a mapping.
-                _ => return (indent > base_indent).then_some(indent),
+                _ => return deep_enough(indent).then_some(indent),
             }
         }
     }

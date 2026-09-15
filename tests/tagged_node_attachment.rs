@@ -227,3 +227,56 @@ fn tagged_scalar_keeps_a_less_indented_continuation() {
     let tree = debug::tree_to_string(file.syntax());
     assert!(!tree.contains("ERROR"), "{tree}");
 }
+
+/// A tag alone on a line annotates a block mapping at its own column when
+/// there is no enclosing key to nest under.
+///
+/// tagged_block_node_indent required the body to be indented *past* the
+/// tag, which is right for a tag in the value position (`k: !!map` must not
+/// adopt a sibling key) but wrong at document level: `!!map\na: 1\n` is a
+/// tagged mapping, as saphyr reads it. The mapping and every entry in it
+/// landed in an ERROR node with no parse error.
+#[test]
+fn document_level_tag_adopts_a_mapping_at_its_own_column() {
+    for yaml in ["!\na: 1\n", "!!map\na: 1\nb: 2\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    // The mapping hangs off the tag, with both entries intact.
+    let file = YamlFile::from_str("!!map\na: 1\nb: 2\n").unwrap();
+    let tagged = file
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == yaml_edit::SyntaxKind::TAGGED_NODE)
+        .expect("TAGGED_NODE");
+    let mapping = tagged
+        .children()
+        .find(|n| n.kind() == yaml_edit::SyntaxKind::MAPPING)
+        .expect("MAPPING inside the TAGGED_NODE");
+    assert_eq!(
+        mapping
+            .children()
+            .filter(|n| n.kind() == yaml_edit::SyntaxKind::MAPPING_ENTRY)
+            .count(),
+        2
+    );
+}
+
+/// A tag in the value position still must not adopt a sibling key: the body
+/// of `k: !!map` has to nest under `k`.
+#[test]
+fn value_position_tag_leaves_a_dedented_key_alone() {
+    let yaml = "k: !!map\na: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["k".to_string(), "a".to_string()]);
+}

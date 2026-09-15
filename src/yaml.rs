@@ -206,10 +206,20 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
         return;
     }
 
-    let Some(value_node) = collection
+    // A tag sits between the VALUE and the collection; the rewrite
+    // happens inside the TAGGED_NODE so the tag survives.
+    let Some(host) = collection
         .parent()
-        .filter(|p| p.kind() == SyntaxKind::VALUE)
+        .filter(|p| matches!(p.kind(), SyntaxKind::VALUE | SyntaxKind::TAGGED_NODE))
     else {
+        return;
+    };
+    let value_node = if host.kind() == SyntaxKind::TAGGED_NODE {
+        host.parent()
+    } else {
+        Some(host.clone())
+    };
+    let Some(value_node) = value_node.filter(|v| v.kind() == SyntaxKind::VALUE) else {
         return;
     };
     let Some(entry_node) = value_node
@@ -219,25 +229,30 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
         return;
     };
 
-    // Bail if the VALUE carries anything beyond decoration.
-    let has_other = value_node.children_with_tokens().any(|el| match el {
+    // Bail if the host carries anything beyond decoration (and, for a
+    // tagged node, the tag itself).
+    let has_other = host.children_with_tokens().any(|el| match el {
         rowan::NodeOrToken::Node(n) => &n != collection,
         rowan::NodeOrToken::Token(t) => !matches!(
             t.kind(),
-            SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE
+            SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE | SyntaxKind::TAG
         ),
     });
     if has_other {
         return;
     }
 
-    // Targeted edit: keep the VALUE node, drop the block-empty
+    // Targeted edit: keep the host node, drop the block-empty
     // collection plus its NEWLINE/INDENT/WHITESPACE decoration in
     // place, and splice a WHITESPACE + fresh flow-empty collection
-    // in its place. Leaves the VALUE wrapper (and anything the
-    // has_other check let through) intact.
-    let value_children: Vec<_> = value_node.children_with_tokens().collect();
-    for c in &value_children {
+    // in its place. Leaves the wrapper (and anything the has_other
+    // check let through) intact; a leading TAG token is re-attached
+    // so `key: !tag` keeps its tag.
+    let tag_token = host
+        .children_with_tokens()
+        .find_map(|el| el.into_token().filter(|t| t.kind() == SyntaxKind::TAG));
+    let host_children: Vec<_> = host.children_with_tokens().collect();
+    for c in &host_children {
         c.detach();
     }
     let ws = crate::nodes::fresh_token(SyntaxKind::WHITESPACE, " ");
@@ -247,7 +262,13 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
     inner_builder.token(close_kind.into(), close_txt);
     inner_builder.finish_node();
     let new_collection = SyntaxNode::new_root_mut(inner_builder.finish());
-    value_node.splice_children(0..0, vec![ws.into(), new_collection.into()]);
+    let mut replacement: Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>> = Vec::new();
+    if let Some(tag) = tag_token {
+        replacement.push(crate::nodes::fresh_token(SyntaxKind::TAG, tag.text()).into());
+    }
+    replacement.push(ws.into());
+    replacement.push(new_collection.into());
+    host.splice_children(0..0, replacement);
 
     // The next sibling entry needs a NEWLINE separator inside this
     // entry (see the "entry termination" invariant in

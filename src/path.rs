@@ -59,6 +59,9 @@ pub trait YamlPath {
     /// Get a value at a nested path, returning a specific [`PathError`]
     /// on failure instead of `None`.
     ///
+    /// A tagged collection (`key: !custom` over a block mapping, say) is
+    /// descended into as the collection it wraps; the tag stays put.
+    ///
     /// # Errors
     ///
     /// - [`PathError::Parse`] for a malformed path.
@@ -418,6 +421,35 @@ fn segment_display(segment: &PathSegment) -> String {
     }
 }
 
+/// Resolve a node to the mapping it addresses, looking through a tag.
+///
+/// A tagged collection is a mapping or sequence wearing a tag, so a path
+/// segment descends into the inner collection and leaves the tag in place.
+fn node_as_mapping(node: &crate::as_yaml::YamlNode) -> Option<Mapping> {
+    match node {
+        crate::as_yaml::YamlNode::Mapping(m) => Some(m.clone()),
+        crate::as_yaml::YamlNode::TaggedNode(t) => t.as_mapping(),
+        _ => None,
+    }
+}
+
+/// Resolve a node to the sequence it addresses, looking through a tag.
+/// See [`node_as_mapping`].
+fn node_as_sequence(node: &crate::as_yaml::YamlNode) -> Option<crate::yaml::Sequence> {
+    match node {
+        crate::as_yaml::YamlNode::Sequence(s) => Some(s.clone()),
+        crate::as_yaml::YamlNode::TaggedNode(t) => t.as_sequence(),
+        _ => None,
+    }
+}
+
+/// Whether an existing value may be replaced by a container the setter
+/// creates. Only a bare scalar may: a tagged scalar, an alias, or a
+/// collection of the wrong shape is user data we refuse to overwrite.
+fn is_replaceable_scalar(node: &crate::as_yaml::YamlNode) -> bool {
+    matches!(node, crate::as_yaml::YamlNode::Scalar(_))
+}
+
 /// Navigate through a YAML structure following path segments.
 ///
 /// Handles both mapping keys and sequence indices. A numeric segment
@@ -441,21 +473,19 @@ fn descend_one(
 ) -> Result<crate::as_yaml::YamlNode, PathError> {
     match segment {
         PathSegment::Key(key) => {
-            let mapping = current
-                .as_mapping()
-                .ok_or_else(|| PathError::TypeMismatch {
-                    at: segment_display(segment),
-                })?;
+            let mapping = node_as_mapping(&current).ok_or_else(|| PathError::TypeMismatch {
+                at: segment_display(segment),
+            })?;
             mapping.get(key).ok_or_else(|| PathError::NotFound {
                 at: segment_display(segment),
             })
         }
         PathSegment::Index(index) => {
-            if let Some(seq) = current.as_sequence() {
+            if let Some(seq) = node_as_sequence(&current) {
                 seq.get(*index).ok_or_else(|| PathError::NotFound {
                     at: segment_display(segment),
                 })
-            } else if let Some(map) = current.as_mapping() {
+            } else if let Some(map) = node_as_mapping(&current) {
                 // Fallback: numeric segment used as a mapping key.
                 map.get(index.to_string().as_str())
                     .ok_or_else(|| PathError::NotFound {
@@ -545,7 +575,7 @@ fn remove_path_impl(
                 // Numeric segment on a mapping falls back to the
                 // stringified key. On a sequence, index removal is
                 // unsupported.
-                if root.as_mapping().is_none() {
+                if node_as_mapping(&root).is_none() {
                     return Err(PathError::TypeMismatch {
                         at: segment_display(seg),
                     });
@@ -553,7 +583,7 @@ fn remove_path_impl(
                 index.to_string()
             }
         };
-        let mapping = root.as_mapping().ok_or_else(|| PathError::TypeMismatch {
+        let mapping = node_as_mapping(&root).ok_or_else(|| PathError::TypeMismatch {
             at: segment_display(seg),
         })?;
         // Grab the value before removal so we can return it. If the
@@ -637,19 +667,18 @@ fn set_path_on_mapping<V: crate::AsYaml>(
         }
     }
 
+    let existing = mapping.get(first_key);
+
     if next_wants_sequence {
-        if let Some(nested) = mapping.get_sequence(first_key) {
+        if let Some(nested) = existing.as_ref().and_then(node_as_sequence) {
             return set_path_on_sequence(&nested, &segments[1..], value);
         }
         // Index on an existing mapping is a key (`m.0` / `m[0]`), same
         // as get_path. Do not replace the mapping with a sequence.
-        if let Some(nested) = mapping.get_mapping(first_key) {
+        if let Some(nested) = existing.as_ref().and_then(node_as_mapping) {
             return set_path_on_mapping(&nested, &segments[1..], value);
         }
-        if mapping
-            .get(first_key)
-            .is_some_and(|n| n.as_scalar().is_none())
-        {
+        if existing.as_ref().is_some_and(|n| !is_replaceable_scalar(n)) {
             return Err(PathError::TypeMismatch {
                 at: segment_display(&segments[0]),
             });
@@ -673,13 +702,10 @@ fn set_path_on_mapping<V: crate::AsYaml>(
         return set_path_on_sequence(&nested, &segments[1..], value);
     }
 
-    if let Some(nested) = mapping.get_mapping(first_key) {
+    if let Some(nested) = existing.as_ref().and_then(node_as_mapping) {
         return set_path_on_mapping(&nested, &segments[1..], value);
     }
-    if mapping
-        .get(first_key)
-        .is_some_and(|n| n.as_scalar().is_none())
-    {
+    if existing.as_ref().is_some_and(|n| !is_replaceable_scalar(n)) {
         return Err(PathError::TypeMismatch {
             at: segment_display(&segments[0]),
         });
@@ -756,15 +782,16 @@ fn set_path_on_sequence<V: crate::AsYaml>(
     }
 
     let next_wants_sequence = matches!(segments[1], PathSegment::Index(_));
+    let existing = sequence.get(index);
 
     if next_wants_sequence {
-        if let Some(nested) = sequence.get(index).and_then(|n| n.as_sequence().cloned()) {
+        if let Some(nested) = existing.as_ref().and_then(node_as_sequence) {
             return set_path_on_sequence(&nested, &segments[1..], value);
         }
-        if let Some(nested) = sequence.get(index).and_then(|n| n.as_mapping().cloned()) {
+        if let Some(nested) = existing.as_ref().and_then(node_as_mapping) {
             return set_path_on_mapping(&nested, &segments[1..], value);
         }
-        if sequence.get(index).is_some_and(|n| n.as_scalar().is_none()) {
+        if existing.as_ref().is_some_and(|n| !is_replaceable_scalar(n)) {
             return Err(PathError::TypeMismatch {
                 at: segment_display(&segments[0]),
             });
@@ -787,10 +814,10 @@ fn set_path_on_sequence<V: crate::AsYaml>(
         return set_path_on_sequence(&nested, &segments[1..], value);
     }
 
-    if let Some(nested) = sequence.get(index).and_then(|n| n.as_mapping().cloned()) {
+    if let Some(nested) = existing.as_ref().and_then(node_as_mapping) {
         return set_path_on_mapping(&nested, &segments[1..], value);
     }
-    if sequence.get(index).is_some_and(|n| n.as_scalar().is_none()) {
+    if existing.as_ref().is_some_and(|n| !is_replaceable_scalar(n)) {
         return Err(PathError::TypeMismatch {
             at: segment_display(&segments[0]),
         });
@@ -1591,7 +1618,7 @@ config:
     }
 
     #[test]
-    fn test_set_path_index_does_not_replace_alias_or_tagged() {
+    fn test_set_path_index_does_not_replace_alias() {
         use crate::yaml::Document;
         use std::str::FromStr;
 
@@ -1607,13 +1634,11 @@ config:
         ));
         assert_eq!(doc.to_string(), original);
 
-        let original = "items: !!seq [1, 2]\n";
-        let doc = Document::from_str(original).unwrap();
-        assert!(matches!(
-            doc.try_set_path("items[1]", "x"),
-            Err(PathError::TypeMismatch { .. })
-        ));
-        assert_eq!(doc.to_string(), original);
+        // A tagged sequence is a sequence wearing a tag: descend into it
+        // and leave the tag alone (#88).
+        let doc = Document::from_str("items: !!seq [1, 2]\n").unwrap();
+        doc.try_set_path("items[1]", "x").unwrap();
+        assert_eq!(doc.to_string(), "items: !!seq [1, x]\n");
 
         let original = "other: &o\n  a: 1\ntop:\n  - *o\n";
         let doc = Document::from_str(original).unwrap();
@@ -1623,10 +1648,98 @@ config:
         ));
         assert_eq!(doc.to_string(), original);
 
-        let original = "top:\n  - !custom\n    a: 1\n";
+        // A tagged mapping behaves like the mapping it wraps, so the
+        // numeric-on-mapping fallback applies and `[0]` addresses key "0".
+        let doc = Document::from_str("top:\n  - !custom\n    a: 1\n").unwrap();
+        doc.try_set_path("top[0][0]", "x").unwrap();
+        assert_eq!(doc.to_string(), "top:\n  - !custom\n    a: 1\n    '0': x\n");
+    }
+
+    #[test]
+    fn test_path_descends_into_tagged_mapping() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("config: !custom\n  a: 1\n  b: 2\n").unwrap();
+        assert_eq!(
+            doc.try_get_path("config.a")
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .as_string(),
+            "1"
+        );
+
+        doc.try_set_path("config.a", 5).unwrap();
+        doc.try_set_path("config.c", 7).unwrap();
+        assert_eq!(doc.to_string(), "config: !custom\n  a: 5\n  b: 2\n  c: 7\n");
+    }
+
+    #[test]
+    fn test_path_descends_into_tagged_sequence() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("items: !!seq [1, 2]\n").unwrap();
+        assert_eq!(
+            doc.try_get_path("items[0]")
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .as_string(),
+            "1"
+        );
+
+        doc.try_set_path("items[0]", 9).unwrap();
+        doc.try_set_path("items[2]", 7).unwrap();
+        assert_eq!(doc.to_string(), "items: !!seq [9, 2, 7]\n");
+    }
+
+    #[test]
+    fn test_path_descends_through_nested_tags() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("a: !outer\n  b: !inner\n    c: 1\n").unwrap();
+        doc.try_set_path("a.b.c", 2).unwrap();
+        assert_eq!(doc.to_string(), "a: !outer\n  b: !inner\n    c: 2\n");
+
+        let doc = Document::from_str("l: !t\n  - x: 1\n").unwrap();
+        doc.try_set_path("l[0].x", 9).unwrap();
+        assert_eq!(doc.to_string(), "l: !t\n  - x: 9\n");
+    }
+
+    #[test]
+    fn test_remove_path_in_tagged_mapping_keeps_tag() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("config: !custom\n  a: 1\n  b: 2\n").unwrap();
+        let removed = doc.try_remove_path("config.b").unwrap();
+        assert_eq!(removed.as_scalar().unwrap().as_string(), "2");
+        // The trailing indent is Mapping::remove's existing block-mapping
+        // behaviour, tag or no tag.
+        assert_eq!(doc.to_string(), "config: !custom\n  a: 1\n  ");
+
+        // Draining the last entry collapses to the flow-empty form, as it
+        // does for an untagged mapping, but keeps the tag.
+        doc.try_remove_path("config.a").unwrap();
+        assert_eq!(doc.to_string(), "config: !custom {}\n");
+    }
+
+    #[test]
+    fn test_path_does_not_descend_into_tagged_scalar() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let original = "config: !custom hello\n";
         let doc = Document::from_str(original).unwrap();
         assert!(matches!(
-            doc.try_set_path("top[0][0]", "x"),
+            doc.try_get_path("config.a"),
+            Err(PathError::TypeMismatch { .. })
+        ));
+        assert!(matches!(
+            doc.try_set_path("config.a", 1),
             Err(PathError::TypeMismatch { .. })
         ));
         assert_eq!(doc.to_string(), original);

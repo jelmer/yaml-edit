@@ -337,8 +337,17 @@ impl Parser {
                         }
                     }
                     // Scalar, flow collection, or nothing that belongs to this
-                    // tag: the ordinary value path already handles it.
-                    None => self.parse_value(),
+                    // tag: the ordinary value path already handles it. Keep
+                    // our own base indent, and tell a trailing anchor
+                    // (`k: !!str &a`) which position we are in, so it asks
+                    // the same attachment question we just answered and
+                    // leaves a dedented sibling entry alone.
+                    None => {
+                        let outer = self.annotation_in_value_position;
+                        self.annotation_in_value_position = as_mapping_value;
+                        self.parse_value_with_base_indent(base_indent);
+                        self.annotation_in_value_position = outer;
+                    }
                 }
 
                 self.builder.finish_node();
@@ -361,7 +370,7 @@ impl Parser {
     /// there is nothing to nest under, so `!!map\na: 1\n` is a tagged mapping
     /// at the same column. Anything left of `base_indent` belongs to an
     /// enclosing collection, so it is not ours to adopt.
-    fn tagged_block_node_indent(
+    pub(super) fn tagged_block_node_indent(
         &self,
         base_indent: usize,
         as_mapping_value: bool,

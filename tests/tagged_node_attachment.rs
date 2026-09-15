@@ -280,3 +280,70 @@ fn value_position_tag_leaves_a_dedented_key_alone() {
         .collect();
     assert_eq!(keys, vec!["k".to_string(), "a".to_string()]);
 }
+
+/// An anchor alone on its line annotates the block node that starts on the
+/// next line, exactly as a lone tag does.
+///
+/// The anchor arm consumed the anchor and then called `skip_whitespace`,
+/// which does not cross a line break, so the body was never parsed and
+/// landed in an ERROR node with no parse error.
+#[test]
+fn lone_anchor_adopts_the_node_on_the_next_line() {
+    for yaml in ["&a\nx\n", "&a\na: 1\n", "&a\n- x\n- y\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    // The scalar hangs off the anchor rather than being stranded.
+    let file = YamlFile::from_str("&a\nx\n").unwrap();
+    let doc = file.document().unwrap();
+    assert_eq!(doc.as_scalar().unwrap().as_string(), "x");
+
+    // A mapping body keeps its entries.
+    let file = YamlFile::from_str("&a\na: 1\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "1"
+    );
+}
+
+/// An anchor in a mapping's value position must still leave a dedented
+/// sibling entry alone, including when a tag precedes it.
+///
+/// `k: !!str &a` runs the tag arm, which declines to adopt the sibling, and
+/// then falls through to the anchor arm; without the position flag that arm
+/// answered the same question differently and swallowed the sibling.
+#[test]
+fn value_position_anchor_leaves_a_dedented_sibling_alone() {
+    for yaml in [
+        "tags: &a\nk: v\nsibling: kept\n",
+        "tags: !!str &a\nk: v\nsibling: kept\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(
+            keys,
+            vec!["tags".to_string(), "k".to_string(), "sibling".to_string()],
+            "{yaml:?}"
+        );
+    }
+
+    // An indented body is still the anchored value, not a sibling.
+    let yaml = "tags: &a\n  k: v\nsib: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["tags".to_string(), "sib".to_string()]);
+}

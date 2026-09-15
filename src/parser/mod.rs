@@ -73,6 +73,15 @@ pub(super) struct Parser {
     /// is the tagged scalar `a b`, exactly as the untagged `x\n  a\n b\n`
     /// is `x a b`.
     pub(super) scalar_continuation_floor: Option<usize>,
+    /// Whether the node being parsed sits in a block mapping's value
+    /// position, where a block body has to clear the key's column.
+    ///
+    /// A tag hands this to the anchor that may follow it: `k: !!str &a` runs
+    /// the tag arm, which declines to adopt a dedented sibling, and then
+    /// falls through to the anchor arm. Without the flag that arm asks the
+    /// same question as a document-level anchor and answers it differently,
+    /// adopting the sibling the tag arm just refused.
+    pub(super) annotation_in_value_position: bool,
     /// Current depth of nested flow collections ([...] / {...}).
     pub(super) flow_depth: usize,
     /// Depth of `parse_value_with_base_indent` recursion (block and flow).
@@ -103,6 +112,7 @@ impl Parser {
             in_value_context: false,
             equal_indent_continues_scalar: false,
             scalar_continuation_floor: None,
+            annotation_in_value_position: false,
             current_line_indent: 0,
             flow_depth: 0,
             nesting_depth: 0,
@@ -273,9 +283,36 @@ impl Parser {
                 self.parse_sequence_with_base_indent(base_indent)
             }
             Some(SyntaxKind::ANCHOR) => {
+                // An anchor alone on its line annotates a block node starting
+                // on a later line, just as a lone tag does. Ask before
+                // consuming the ANCHOR: tagged_block_node_indent reads from
+                // the current token and steps over a leading anchor itself.
+                //
+                // Only reached outside a mapping value; parse_mapping_value
+                // keeps a value-position anchor on the implicit-null path, so
+                // a dedented sibling entry stays a sibling.
+                let body_indent =
+                    self.tagged_block_node_indent(base_indent, self.annotation_in_value_position);
                 self.bump(); // consume and emit anchor token to CST
                 self.skip_whitespace();
-                self.parse_value_with_base_indent(base_indent);
+                match body_indent {
+                    Some(indent) => {
+                        self.skip_ws_and_newlines();
+                        if self.current() == Some(SyntaxKind::DASH) {
+                            self.parse_sequence_with_base_indent(indent);
+                        } else {
+                            // As in the tagged case, a plain scalar body is
+                            // still a node of the collection the anchor sits
+                            // in, so its continuation only has to clear the
+                            // anchor's own column.
+                            let outer_floor = self.scalar_continuation_floor;
+                            self.scalar_continuation_floor = Some(base_indent);
+                            self.parse_value_with_base_indent(indent);
+                            self.scalar_continuation_floor = outer_floor;
+                        }
+                    }
+                    None => self.parse_value_with_base_indent(base_indent),
+                }
             }
             Some(SyntaxKind::REFERENCE) => self.parse_alias(),
             Some(SyntaxKind::TAG) => {

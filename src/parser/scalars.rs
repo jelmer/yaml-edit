@@ -724,6 +724,11 @@ impl Parser {
         }
 
         // Check if we have content token using safe get()
+        //
+        // A TAG counts: the lexer reads `!`/`!x` as a tag because a newline
+        // precedes it, but a node property only applies at the start of a
+        // node, and a continuation line is inside one already. `- a\n !\n`
+        // is the scalar `a !`, as both saphyr and PyYAML read it.
         let has_content = self.tokens.get(peek_idx).is_some_and(|(kind, _)| {
             matches!(
                 kind,
@@ -733,6 +738,7 @@ impl Parser {
                     | SyntaxKind::BOOL
                     | SyntaxKind::NULL
                     | SyntaxKind::UNTERMINATED_STRING
+                    | SyntaxKind::TAG
             )
         });
 

@@ -771,3 +771,43 @@ fn test_block_scalar_headers_still_lex() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// A `!` on a continuation line is scalar content, not a tag. The lexer
+/// reads it as a TAG because a newline precedes it, but a node property
+/// applies only at the start of a node and a continuation line is already
+/// inside one. The continuation check did not count a TAG as content, so
+/// the scalar ended and the tag was stranded in an ERROR node with no
+/// parse error.
+#[test]
+fn test_tag_on_a_continuation_line_is_scalar_content() {
+    for yaml in ["- a\n !\n", "- a\n !x\n", "x\n !\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    // Both lines fold into one scalar, as PyYAML and saphyr read them.
+    let file = YamlFile::from_str("- a\n !\n").unwrap();
+    let seq = file.document().unwrap().as_sequence().unwrap();
+    assert_eq!(seq.len(), 1);
+    assert_eq!(seq.get(0).unwrap().as_scalar().unwrap().as_string(), "a !");
+}
+
+/// A tag that really does start a node is still a tag.
+#[test]
+fn test_tag_at_a_node_start_still_applies() {
+    let file = YamlFile::from_str("a: !!str v\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping
+            .get("a")
+            .unwrap()
+            .as_tagged()
+            .unwrap()
+            .tag()
+            .as_deref(),
+        Some("!!str")
+    );
+}

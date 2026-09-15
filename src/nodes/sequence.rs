@@ -835,11 +835,7 @@ impl Sequence {
 
     /// Check if this sequence is in flow style [item1, item2]
     pub fn is_flow_style(&self) -> bool {
-        self.0.children_with_tokens().any(|child| {
-            child
-                .as_token()
-                .is_some_and(|t| t.kind() == SyntaxKind::LEFT_BRACKET)
-        })
+        has_child_token(&self.0, |k| k == SyntaxKind::LEFT_BRACKET)
     }
 
     /// Remove and return the last item in this sequence.

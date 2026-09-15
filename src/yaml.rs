@@ -192,9 +192,7 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
     };
 
     // Flow collections already render correctly when empty.
-    let is_flow = collection
-        .children_with_tokens()
-        .any(|c| c.as_token().is_some_and(|t| t.kind() == open_kind));
+    let is_flow = has_child_token(collection, |k| k == open_kind);
     if is_flow {
         return;
     }

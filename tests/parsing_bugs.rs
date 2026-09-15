@@ -1362,3 +1362,20 @@ fn test_blank_line_stays_inside_a_block_scalar() {
         .collect();
     assert_eq!(keys, vec!["k".to_string(), "j".to_string()]);
 }
+
+/// A whitespace-only line must not set a block scalar's base indent: it may
+/// be indented further than the body that follows it.
+///
+/// `- >\n \t\n detected\n` keeps `detected`, whose line is shallower than
+/// the tab-only line above it. Taking the base from that line stranded the
+/// body in an ERROR node with no parse error (suite case R4YG).
+#[test]
+fn test_blank_line_does_not_set_the_block_scalar_base() {
+    for yaml in ["- >\n \t\n detected\n", "- >\n   \n a\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

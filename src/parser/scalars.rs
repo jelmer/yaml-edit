@@ -646,6 +646,12 @@ impl Parser {
             // `|-\n?  >\n ems+\n...` took its base from the second line.
             if first_content_indent.is_none() {
                 match kind {
+                    // A whitespace-only line carries no content either, and
+                    // it may be indented further than the body that follows
+                    // (`- >\n \t\n detected\n`), so it must not set the base.
+                    SyntaxKind::INDENT if self.indent_is_blank_line() => {
+                        self.bump();
+                    }
                     SyntaxKind::INDENT => {
                         first_content_indent = self.current_text().map(|t| t.len());
                     }

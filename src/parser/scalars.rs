@@ -406,6 +406,14 @@ impl Parser {
                     }
                 }
                 SyntaxKind::DASH => return (indent >= base_indent).then_some(indent),
+                // An explicit key opens a mapping without a colon on the line.
+                SyntaxKind::QUESTION => return (indent > base_indent).then_some(indent),
+                // A block scalar header likewise carries no colon, and a
+                // flow collection is a complete node on its own.
+                SyntaxKind::PIPE
+                | SyntaxKind::GREATER
+                | SyntaxKind::LEFT_BRACKET
+                | SyntaxKind::LEFT_BRACE => return (indent > base_indent).then_some(indent),
                 _ => {
                     let opens_mapping = Self::line_opens_mapping(&mut rest);
                     return (indent > base_indent && opens_mapping).then_some(indent);

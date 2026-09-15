@@ -290,6 +290,11 @@ impl Parser {
             // Parse the first part of the key
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 self.parse_value();
+            } else if self.indentless_sequence_follows() {
+                // `?\n- a\n` -- the key is an indentless sequence, whose
+                // entries sit at the `?`'s own column rather than past it.
+                self.bump(); // consume the newline
+                self.parse_sequence_with_base_indent(base_indent);
             } else {
                 // Bare `?\n` -- implicit-null key.
                 self.emit_implicit_null();
@@ -345,7 +350,18 @@ impl Parser {
                 self.bump(); // consume ':'
                 self.skip_whitespace();
 
-                self.parse_value_after_colon(true);
+                // `:\n- c\n` -- an indentless sequence value, whose entries
+                // sit at the `:`'s own column rather than past it. The shared
+                // value-after-colon shape measures from the indent it finds,
+                // so this one case is handled before delegating to it.
+                if self.indentless_sequence_follows() {
+                    self.builder.start_node(SyntaxKind::VALUE.into());
+                    self.bump(); // consume the newline
+                    self.parse_sequence_with_base_indent(base_indent);
+                    self.builder.finish_node();
+                } else {
+                    self.parse_value_after_colon(true);
+                }
             } else {
                 // No value, just a key - create explicit null value
                 self.emit_implicit_null_value();
@@ -638,6 +654,17 @@ impl Parser {
                 self.parse_scalar();
             }
         }
+    }
+
+    /// Whether the next line opens an indentless block sequence, whose
+    /// entries sit at the current construct's own column.
+    ///
+    /// The caller is on the NEWLINE that ends the `?` or `:` line. A `-`
+    /// straight after that line break carries no INDENT token, which is what
+    /// makes the sequence indentless.
+    fn indentless_sequence_follows(&self) -> bool {
+        self.current() == Some(SyntaxKind::NEWLINE)
+            && self.upcoming_tokens().next() == Some(SyntaxKind::DASH)
     }
 
     pub(super) fn is_mapping_key(&self) -> bool {

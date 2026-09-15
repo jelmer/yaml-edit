@@ -1431,3 +1431,50 @@ fn test_explicit_indentation_indicator_sets_the_base() {
         .collect();
     assert_eq!(keys, vec!["a".to_string(), "b".to_string()]);
 }
+
+/// An explicit key or value may be an indentless sequence, whose entries
+/// sit at the `?` or `:` column rather than past it.
+///
+/// `?\n- a\n- b\n:\n- c\n- d\n` is a mapping from the sequence `[a, b]` to
+/// the sequence `[c, d]`, which is what the YAML test suite expects (6PBE
+/// lists a SEQ key and a SEQ value). A bare `?` took an implicit-null key
+/// and the sequences below were stranded in an ERROR node with no parse
+/// error.
+#[test]
+fn test_explicit_key_takes_an_indentless_sequence() {
+    let yaml = "---\n?\n- a\n- b\n:\n- c\n- d\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+    assert!(!tree.contains("ERROR"), "{tree}");
+
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let (key, value) = mapping.iter().next().expect("one entry");
+    assert_eq!(key.as_sequence().expect("sequence key").len(), 2);
+    assert_eq!(value.as_sequence().expect("sequence value").len(), 2);
+
+    // Either side alone, and a bare `?` with no value.
+    for yaml in ["?\n- a\n:\n- c\n", "? k\n:\n- c\n", "?\n- a\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// The ordinary explicit-key spellings are unaffected.
+#[test]
+fn test_explicit_key_scalar_forms_still_parse() {
+    for yaml in [
+        "? k\n: v\n",
+        "keys: !!set\n  ? a\n  ? b\n",
+        "map:\n  ? complex\n  : v\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

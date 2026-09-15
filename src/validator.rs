@@ -109,6 +109,7 @@ impl fmt::Display for Violation {
 /// Performs strict validation checks on parsed YAML documents.
 /// The parser itself is lenient and focuses on error recovery,
 /// while this validator enforces strict spec compliance.
+#[derive(Debug, Clone)]
 pub struct Validator {
     /// Configuration options
     config: ValidatorConfig,

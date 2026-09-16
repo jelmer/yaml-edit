@@ -320,6 +320,18 @@ fn read_anchor_name_from<'a>(
 /// follows is inspected. Callers already in flow context should pass a
 /// non-zero `flow_depth`.
 fn is_colon_a_mapping_indicator(input: &str, colon_idx: usize, flow_depth: u32) -> bool {
+    // Per YAML 1.2 section 7.4 a `:` directly after a JSON-like node -- a
+    // closing `}` or `]`, or a quoted scalar -- separates that key from its
+    // value in flow context, with no space required: `[ {a: b}:c ]` holds
+    // the mapping `{{a: b}: c}`, as the YAML test suite's 9MMW expects.
+    if flow_depth > 0
+        && input[..colon_idx]
+            .chars()
+            .next_back()
+            .is_some_and(|ch| matches!(ch, '}' | ']' | '"' | '\''))
+    {
+        return true;
+    }
     let after = input[colon_idx + 1..].chars().next();
     match after {
         None => true,

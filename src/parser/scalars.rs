@@ -430,6 +430,17 @@ impl Parser {
                         _ => return None,
                     }
                 }
+                // Inside an explicit key, a `-` at or left of the `?` is an
+                // entry of the sequence that key sits in, not a node for us
+                // to annotate: `-\n  ? &d\n-\n  ? e\n` is one sequence, as
+                // the YAML test suite's PW8X expects.
+                SyntaxKind::DASH
+                    if self
+                        .explicit_key_column
+                        .is_some_and(|column| indent <= column) =>
+                {
+                    return None
+                }
                 SyntaxKind::DASH => return (indent >= base_indent).then_some(indent),
                 // An explicit key opens a mapping without a colon on the line.
                 SyntaxKind::QUESTION => return deep_enough(indent).then_some(indent),

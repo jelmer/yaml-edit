@@ -2441,3 +2441,73 @@ fn test_comment_between_a_complex_key_and_its_value() {
         assert_eq!(got, mappings, "{yaml:?}\n{tree}");
     }
 }
+
+/// An annotation in an explicit key does not adopt an entry of the sequence
+/// that key sits in.
+///
+/// The YAML test suite's PW8X has `-\n  ? &d\n-\n  ? e\n` as one sequence.
+/// The anchor was alone on its line, so the following `-` looked like the
+/// block node it introduced.
+#[test]
+fn test_explicit_key_annotation_leaves_a_sibling_entry() {
+    for (yaml, sequences) in [
+        ("-\n  ? &d\n-\n  ? e\n", 1),
+        ("-\n  ? &d\n-\n  x\n", 1),
+        ("-\n  ? a\n-\n  ? b\n", 1),
+        // An anchor whose body really is an indented sequence still adopts it.
+        ("k: &a\n- x\n", 1),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let got = tree.lines().filter(|l| l.trim() == "SEQUENCE").count();
+        assert_eq!(got, sequences, "{yaml:?}\n{tree}");
+    }
+}
+
+/// In flow context a `:` directly after a JSON-like node separates that key
+/// from its value, with no space required (YAML 1.2 section 7.4).
+///
+/// The YAML test suite's 9MMW has `[ {JSON: like}:adjacent ]` as a mapping
+/// keyed by the flow mapping; the colon was glued into a plain scalar, so
+/// the key and value became two separate sequence entries.
+#[test]
+fn test_colon_after_a_json_like_node_separates_in_flow() {
+    for (yaml, mappings) in [
+        ("[ {JSON: like}:adjacent ]\n", 2),
+        ("[ \"JSON like\":adjacent ]\n", 1),
+        ("[ YAML : separate ]\n", 1),
+        ("{a: b}\n", 1),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let got = tree.lines().filter(|l| l.trim() == "MAPPING").count();
+        assert_eq!(got, mappings, "{yaml:?}\n{tree}");
+    }
+}
+
+/// An alias may be a mapping key.
+///
+/// The YAML test suite's 26DV has `*alias1 : scalar3` as an entry. The
+/// alias was parsed as a value, so the `: v` after it opened a separate
+/// null-key entry instead.
+#[test]
+fn test_alias_can_be_a_mapping_key() {
+    let yaml = "k:\n  *a : v\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+    assert_eq!(tree.lines().filter(|l| l.trim() == "MAPPING").count(), 2);
+
+    // An alias as a value is unaffected.
+    let yaml = "a: &x 1\nb: *x\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+    assert_eq!(tree.lines().filter(|l| l.trim() == "MAPPING").count(), 1);
+}

@@ -422,7 +422,16 @@ impl Parser {
                     None => self.parse_value_with_base_indent(base_indent),
                 }
             }
-            Some(SyntaxKind::REFERENCE) => self.parse_alias(),
+            Some(SyntaxKind::REFERENCE) => {
+                // An alias may be a mapping key (`*a : v`), as the YAML test
+                // suite's 26DV has it. Without this the alias became the
+                // value and the `: v` after it opened a null-key entry.
+                if !self.in_flow_context && !self.in_value_context && self.is_mapping_key() {
+                    self.parse_mapping_with_base_indent(base_indent);
+                } else {
+                    self.parse_alias();
+                }
+            }
             Some(SyntaxKind::TAG) => {
                 // `!!str a: b` at document / block level -- the tag
                 // annotates the KEY of an implicit mapping, not the

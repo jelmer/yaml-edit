@@ -1946,3 +1946,46 @@ fn test_block_scalar_in_block_context_still_parses() {
         "x\n"
     );
 }
+
+/// A `-` after a sequence entry's own dash opens a nested sequence, since
+/// an entry's node may be a collection.
+///
+/// `"- - a\n"` is `[[a]]`, as saphyr and PyYAML both read it -- and as
+/// value.rs already writes a nested sequence, so the parser could not read
+/// its own output back. The dash was a sequence marker only at the start of
+/// a line or after `?`/`:`, so the inner one became the scalar `- a`.
+#[test]
+fn test_dash_after_a_dash_opens_a_nested_sequence() {
+    for (yaml, outer, inner) in [
+        ("- - a\n", 1, 1),
+        ("- - a\n  - b\n", 1, 2),
+        ("- - a\n- b\n", 2, 1),
+        ("- - - a\n", 1, 1),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let seq = file.document().unwrap().as_sequence().unwrap();
+        assert_eq!(seq.len(), outer, "{yaml:?}");
+        let nested = seq.get(0).unwrap();
+        let nested = nested.as_sequence().expect("first entry is a sequence");
+        assert_eq!(nested.len(), inner, "{yaml:?}");
+    }
+}
+
+/// A hyphen that is not a sequence marker is still scalar content.
+#[test]
+fn test_hyphen_in_content_is_not_a_sequence_marker() {
+    for (yaml, value) in [("- a-b\n", "a-b"), ("- -1\n", "-1"), ("- x -y\n", "x -y")] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let seq = file.document().unwrap().as_sequence().unwrap();
+        assert_eq!(
+            seq.get(0).unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}

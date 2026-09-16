@@ -634,12 +634,16 @@ pub fn lex_with_validation_config<'a>(
                     let only_whitespace_before = before_dash.chars().all(|c| c == ' ' || c == '\t');
 
                     // Check if the previous non-whitespace token was ? or :
-                    // indicating a value context where sequences are allowed
+                    // indicating a value context where sequences are allowed.
+                    //
+                    // A DASH counts too: an entry's own node may be a nested
+                    // sequence, so `- - x` is `[[x]]`, as saphyr and PyYAML
+                    // both read it and as value.rs already writes it.
                     let after_value_indicator = tokens
                         .iter()
                         .rev()
                         .find(|(kind, _)| !matches!(kind, WHITESPACE | INDENT))
-                        .is_some_and(|(kind, _)| matches!(kind, QUESTION | COLON));
+                        .is_some_and(|(kind, _)| matches!(kind, QUESTION | COLON | DASH));
 
                     // Check if followed by whitespace or end of input
                     let followed_by_whitespace_or_end = chars

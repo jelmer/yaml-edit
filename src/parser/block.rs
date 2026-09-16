@@ -243,7 +243,35 @@ impl Parser {
             // entries, not one scalar holding `- x`.
             self.node_is_document_root = false;
 
-            if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
+            // A comment is not a value. When nothing indented follows it the
+            // entry is an implicit null, just as a bare `-` is: `- # c\n- a\n`
+            // is two entries, as the YAML test suite's W42U expects, where
+            // parsing the comment as a value left an empty SEQUENCE behind.
+            // The entry's value may still be on the next line though
+            // (`- # c\n  v\n`, as in RZP5), so keep the comment and let the
+            // later-line handling below claim it.
+            if self.current() == Some(SyntaxKind::COMMENT)
+                && self.comment_ends_the_entry(dash_column)
+            {
+                self.bump();
+                self.builder.start_node(SyntaxKind::SCALAR.into());
+                self.builder.token(SyntaxKind::NULL.into(), "");
+                self.builder.finish_node();
+            } else if self.current() == Some(SyntaxKind::COMMENT) {
+                // The comment belongs to this entry; its value follows.
+                self.bump();
+                if let Some(indent_level) = self.entry_value_indent(dash_column) {
+                    self.bump(); // newline
+                    while self.current() == Some(SyntaxKind::NEWLINE)
+                        || (self.current() == Some(SyntaxKind::INDENT)
+                            && self.indent_is_blank_line())
+                    {
+                        self.bump();
+                    }
+                    self.bump(); // indent
+                    self.parse_value_with_base_indent(indent_level);
+                }
+            } else if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 // Use item's line indent so nested mappings parse at the right
                 // level. It is one short of the column an inline value starts
                 // at, since it counts the dash but not the space after it; a
@@ -310,11 +338,17 @@ impl Parser {
             self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
             // Parse explicit key
+            let question_column = self.error_context.current_location().1.saturating_sub(1);
             self.bump(); // consume '?'
             self.skip_whitespace();
 
             // Parse key - can be any value including sequences and mappings
             self.builder.start_node(SyntaxKind::KEY.into());
+
+            // A `:` line at or left of the `?` is this entry's value, so an
+            // annotation inside the key must not adopt it.
+            let outer_explicit_key = self.explicit_key_column;
+            self.explicit_key_column = Some(question_column);
 
             // Parse the first part of the key
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
@@ -391,6 +425,7 @@ impl Parser {
             }
 
             self.builder.finish_node();
+            self.explicit_key_column = outer_explicit_key;
 
             self.skip_ws_and_newlines();
 

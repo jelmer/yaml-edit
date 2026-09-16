@@ -2321,3 +2321,54 @@ fn test_keep_chomped_block_scalar_with_no_content() {
         assert_eq!(got, value, "{yaml:?}");
     }
 }
+
+/// An annotation in an explicit key does not adopt the line that opens that
+/// entry's value.
+///
+/// The YAML test suite's PW8X has `-\n  ? &e\n  : &a\n` as one mapping. The
+/// anchor was alone on its line, so it was read as annotating a block node
+/// starting on the next -- which swallowed the `: &a` line into the key as
+/// a nested mapping.
+#[test]
+fn test_explicit_key_annotation_leaves_the_value_line() {
+    for (yaml, mappings) in [
+        ("-\n  ? &e\n  : &a\n", 1),
+        ("-\n  ? &d\n", 1),
+        ("? a\n: 1\n", 1),
+        ("-\n  &c : &a\n", 1),
+        // An anchor whose body really is on the next line still adopts it.
+        ("k: &a\n  x: 1\n", 2),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let got = tree.lines().filter(|l| l.trim() == "MAPPING").count();
+        assert_eq!(got, mappings, "{yaml:?}\n{tree}");
+    }
+}
+
+/// A comment is not a value, so a sequence entry carrying only one is an
+/// implicit null -- unless the entry's value follows on a later line.
+///
+/// The YAML test suite's W42U has `- # Empty` as a null entry; parsing the
+/// comment as a value left an empty SEQUENCE behind. Its RZP5 has
+/// `- #lala\n  seq2`, where the value really is on the next line.
+#[test]
+fn test_comment_only_sequence_entry_is_null() {
+    for (yaml, sequences) in [
+        ("- # c\n- a\n", 1),
+        ("- # c\n- |\n b\n", 1),
+        ("- # c\n  v\n", 1),
+        ("- a # c\n- b\n", 1),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let got = tree.lines().filter(|l| l.trim() == "SEQUENCE").count();
+        assert_eq!(got, sequences, "{yaml:?}\n{tree}");
+    }
+}

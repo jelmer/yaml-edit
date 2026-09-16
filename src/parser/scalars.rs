@@ -439,6 +439,17 @@ impl Parser {
                 | SyntaxKind::GREATER
                 | SyntaxKind::LEFT_BRACKET
                 | SyntaxKind::LEFT_BRACE => return deep_enough(indent).then_some(indent),
+                // Inside an explicit key, a `:` at or left of the `?` opens
+                // that entry's value rather than a node for us to annotate.
+                // Inside an explicit key, a `:` at or left of the `?` opens
+                // that entry's value rather than a node for us to annotate.
+                SyntaxKind::COLON
+                    if self
+                        .explicit_key_column
+                        .is_some_and(|column| indent <= column) =>
+                {
+                    return None
+                }
                 // Anything else opens a plain scalar, which is a valid
                 // tagged body whether or not a colon makes it a mapping.
                 _ => return deep_enough(indent).then_some(indent),

@@ -97,6 +97,13 @@ pub(super) struct Parser {
     /// the scalar `x\ny`). Nested under a key it may not: `a: |\nb: 1\n` has
     /// an empty scalar and keeps `b` as a sibling.
     pub(super) node_is_document_root: bool,
+    /// Column of the `?` whose key is being parsed, if any.
+    ///
+    /// A `:` line at or left of that column is the entry's value, so an
+    /// annotation in the key must not adopt it as the block node it
+    /// introduces: `-\n  ? &e\n  : &a\n` is one mapping, as the YAML test
+    /// suite's PW8X expects, not an anchor whose body is a nested one.
+    pub(super) explicit_key_column: Option<usize>,
     /// Current depth of nested flow collections ([...] / {...}).
     pub(super) flow_depth: usize,
     /// Depth of `parse_value_with_base_indent` recursion (block and flow).
@@ -130,6 +137,7 @@ impl Parser {
             annotation_in_value_position: false,
             sequence_entry_column: None,
             node_is_document_root: false,
+            explicit_key_column: None,
             current_line_indent: 0,
             flow_depth: 0,
             nesting_depth: 0,
@@ -399,6 +407,17 @@ impl Parser {
                             self.parse_value_with_base_indent(indent);
                             self.scalar_continuation_floor = outer_floor;
                         }
+                    }
+                    // Nothing for the anchor to adopt. Inside an explicit
+                    // key that is because the next line opens this entry's
+                    // value, so the anchor annotates an implicit null and the
+                    // line stays for the `:` handling to claim.
+                    None if self.explicit_key_column.is_some()
+                        && self.current() == Some(SyntaxKind::NEWLINE) =>
+                    {
+                        self.builder.start_node(SyntaxKind::SCALAR.into());
+                        self.builder.token(SyntaxKind::NULL.into(), "");
+                        self.builder.finish_node();
                     }
                     None => self.parse_value_with_base_indent(base_indent),
                 }
@@ -824,6 +843,35 @@ impl Parser {
                     continue;
                 }
                 _ => return Some(indent),
+            }
+        }
+    }
+
+    /// Whether a comment on a sequence entry's line ends that entry, leaving
+    /// it an implicit null.
+    ///
+    /// It does unless the entry's value follows on a later line, indented
+    /// past the dash: `- # c\n- a\n` is two null-and-`a` entries, while
+    /// `- # c\n  v\n` is the single entry `v`. The caller is on the COMMENT.
+    pub(super) fn comment_ends_the_entry(&self, dash_column: usize) -> bool {
+        let mut rest = self.tokens.iter().rev().map(|(kind, text)| (*kind, text));
+        if !matches!(rest.next(), Some((SyntaxKind::COMMENT, _))) {
+            return true;
+        }
+        if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+            return true;
+        }
+        loop {
+            match rest.next() {
+                Some((SyntaxKind::NEWLINE, _)) => continue,
+                Some((SyntaxKind::INDENT, text)) => {
+                    let indent = text.len();
+                    if matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+                        continue;
+                    }
+                    return indent <= dash_column;
+                }
+                _ => return true,
             }
         }
     }

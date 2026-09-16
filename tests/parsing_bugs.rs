@@ -1752,3 +1752,43 @@ fn test_collection_tags_still_parse() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// A flow indicator inside a block scalar's body is literal text, so it
+/// neither opens nor closes a flow collection.
+///
+/// An unmatched `{` there raised the lexer's flow depth for the rest of the
+/// file, so every later `,` lexed as a delimiter rather than as scalar
+/// content: `"a: |\n {\nb,c: 1\nd: 2\n"` lost both following entries to an
+/// ERROR node while from_str reported success. saphyr keeps all three.
+#[test]
+fn test_flow_indicator_in_a_block_scalar_body_is_text() {
+    for yaml in [
+        "a: |\n {\nb,c: 1\nd: 2\n",
+        "a: |\n [\nb,c: 1\n",
+        "a: >\n {\nb,c: 1\n",
+        "a: |\n {\n\nb,c: 1\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// A flow collection after a block scalar has ended still parses as one.
+#[test]
+fn test_flow_collection_after_a_block_scalar() {
+    let yaml = "a: |\n  x\nb: [1, 2]\nc: {d: 1}\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let map = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        map.get(yaml_edit::ScalarValue::from("b"))
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .len(),
+        2
+    );
+}

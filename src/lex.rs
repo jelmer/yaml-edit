@@ -589,6 +589,13 @@ pub fn lex_with_validation_config<'a>(
     // Track flow collection depth for context-aware tokenization
     let mut flow_depth: u32 = 0;
 
+    // Indentation of the line carrying a block-scalar header, while its body
+    // is still running. Everything indented past that column is literal
+    // text, so a `{` or `[` there must not open a flow collection: the
+    // depth would never come back down and every later `,` in the file
+    // would lex as a delimiter.
+    let mut block_scalar_header_indent: Option<usize> = None;
+
     // Handle UTF-8 BOM (U+FEFF) at the start of the file
     // Per YAML spec, BOM is allowed and should be processed transparently
     if let Some((0, '\u{FEFF}')) = chars.peek() {
@@ -809,6 +816,22 @@ pub fn lex_with_validation_config<'a>(
             {
                 tokens.push((QUESTION, &input[token_start..start_idx + 1]))
             }
+            // A flow indicator inside a block scalar's body is literal
+            // text, so it neither opens nor closes a collection. Read the
+            // rest of the line as the scalar content it is.
+            '[' | ']' | '{' | '}' | ','
+                if in_block_scalar_body(
+                    block_scalar_header_indent,
+                    input,
+                    current_line_start,
+                    start_idx,
+                ) =>
+            {
+                let rest =
+                    read_plain_scalar_body_from(&mut chars, input, start_idx + 1, flow_depth, true);
+                let text = &input[token_start..start_idx + 1 + rest.len()];
+                tokens.push((classify_scalar(text), text));
+            }
             '[' => {
                 flow_depth += 1;
                 tokens.push((LEFT_BRACKET, &input[token_start..start_idx + 1]));
@@ -835,9 +858,11 @@ pub fn lex_with_validation_config<'a>(
             // inside it. `>` reaches this arm only at a node start already,
             // because the catch-all treats it as scalar content.
             '|' if node_property_can_start(&tokens) => {
+                block_scalar_header_indent = Some(line_indent(input, current_line_start));
                 tokens.push((PIPE, &input[token_start..start_idx + 1]))
             }
             '>' if node_property_can_start(&tokens) => {
+                block_scalar_header_indent = Some(line_indent(input, current_line_start));
                 tokens.push((GREATER, &input[token_start..start_idx + 1]))
             }
             // `<<` is a merge key only when the key is exactly `<<`, i.e. the
@@ -1068,6 +1093,13 @@ pub fn lex_with_validation_config<'a>(
 
                 tokens.push((NEWLINE, &input[token_start..start_idx + 1]));
                 current_line_start = start_idx + 1;
+                // A block scalar's body ends at the first following line
+                // that is not indented past its header and not blank.
+                if let Some(header_indent) = block_scalar_header_indent {
+                    if line_starts_content_at_or_before(input, current_line_start, header_indent) {
+                        block_scalar_header_indent = None;
+                    }
+                }
             }
             '\r' => {
                 check_line_length(
@@ -1322,6 +1354,51 @@ fn is_merge_key_at(input: &str, idx: usize) -> bool {
 /// `a: x !!b` is the scalar `x !!b` rather than a tagged node. A preceding
 /// space is not enough to start a new node: what matters is whether the
 /// last token was scalar content.
+/// Whether the line starting at `line_start` carries content at or left of
+/// `indent`, which is what ends a block scalar's body.
+///
+/// A blank line says nothing about the body's indentation, so it stays in.
+fn line_starts_content_at_or_before(input: &str, line_start: usize, indent: usize) -> bool {
+    let line = input[line_start..]
+        .split(['\n', '\r'])
+        .next()
+        .unwrap_or_default();
+    if line.trim().is_empty() {
+        return false;
+    }
+    line.len() - line.trim_start_matches([' ', '\t']).len() <= indent
+}
+
+/// Leading whitespace of the line starting at `line_start`.
+fn line_indent(input: &str, line_start: usize) -> usize {
+    input[line_start..]
+        .len()
+        .saturating_sub(input[line_start..].trim_start_matches([' ', '\t']).len())
+}
+
+/// Whether the position is inside the body of a block scalar whose header
+/// sat at `header_indent`.
+///
+/// A block scalar's body is every following line indented past its header,
+/// and all of it is literal text: `a: |\n  {\nb,c: 1\n` holds the scalar
+/// `{`, and the `,` on the next line belongs to the key `b,c`. Blank lines
+/// stay in the body without saying anything about its indentation.
+fn in_block_scalar_body(
+    header_indent: Option<usize>,
+    input: &str,
+    line_start: usize,
+    idx: usize,
+) -> bool {
+    let Some(header_indent) = header_indent else {
+        return false;
+    };
+    // The header's own line is not body yet.
+    if line_start <= header_indent {
+        return false;
+    }
+    line_indent(input, line_start) > header_indent && idx > line_start
+}
+
 fn node_property_can_start(tokens: &[(SyntaxKind, &str)]) -> bool {
     for (kind, _) in tokens.iter().rev() {
         match kind {

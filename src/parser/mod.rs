@@ -764,11 +764,6 @@ impl Parser {
         self.upcoming_tokens().next() == Some(SyntaxKind::COMMENT)
     }
 
-    /// Whether the INDENT at the current position is only the leading
-    /// whitespace of an otherwise blank line.
-    ///
-    /// A blank line's indentation is not significant in YAML, so such an
-    /// INDENT must not be read as a dedent out of the enclosing block.
     /// Indentation of the next line that carries content, looking past any
     /// run of comment-only and blank lines, or `None` if there is none.
     ///
@@ -832,6 +827,11 @@ impl Parser {
         }
     }
 
+    /// Whether the INDENT at the current position is only the leading
+    /// whitespace of an otherwise blank line.
+    ///
+    /// A blank line's indentation is not significant in YAML, so such an
+    /// INDENT must not be read as a dedent out of the enclosing block.
     pub(super) fn indent_is_blank_line(&self) -> bool {
         matches!(
             self.upcoming_tokens().next(),

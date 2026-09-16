@@ -1492,3 +1492,45 @@ fn test_plus_and_alias_continue_from_the_next_line() {
     let tree = yaml_edit::debug::tree_to_string(file.syntax());
     assert!(tree.contains("REFERENCE"), "{tree}");
 }
+
+/// A `#` glued to plain-scalar content is not a comment: `:#: v` is a
+/// mapping keyed `:#`, as saphyr reads it, and as `a#: v` already was.
+///
+/// The `#` arm emitted a COMMENT whenever a preceding arm had ended its
+/// token, so the rest of the line vanished into it and any entry after was
+/// stranded in an ERROR node with no parse error.
+#[test]
+fn test_hash_glued_to_scalar_content_is_not_a_comment() {
+    for (yaml, key) in [(":#: v\n", ":#"), ("+#: v\n", "+#"), ("a#: v\n", "a#")] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string()], "{yaml:?}");
+    }
+
+    // A following entry survives.
+    let file = YamlFile::from_str(":#: v\nc: d\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.iter().count(), 2);
+}
+
+/// A `#` after whitespace still starts a comment, and one glued to a quoted
+/// scalar is still the 6.6 violation the validator reports.
+#[test]
+fn test_hash_keeps_its_comment_role() {
+    let file = YamlFile::from_str("a: 1  # c\n").unwrap();
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(tree.contains("COMMENT"), "{tree}");
+
+    let file = YamlFile::from_str("key: \"value\"# c\n").unwrap();
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(tree.contains("COMMENT"), "{tree}");
+}

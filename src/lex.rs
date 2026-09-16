@@ -715,6 +715,9 @@ pub fn lex_with_validation_config<'a>(
                                 c,
                                 '\'' | '"' | '+' | '-' | '?' | '|' | '>' | '&' | '*' | '!' | '%'
                             )
+                            // A `#` glued to the sign is content, not a
+                            // comment: `+#: v` is keyed `+#`.
+                            || (*c == '#' && !is_hash_a_comment_start(input, *idx))
                             || (flow_depth == 0 && matches!(c, '[' | ']' | '{' | '}' | ','))
                             || (*c == ':'
                                 && !is_colon_a_mapping_indicator(input, *idx, flow_depth)))
@@ -766,32 +769,21 @@ pub fn lex_with_validation_config<'a>(
                 {
                     tokens.push((COLON, &input[token_start..start_idx + 1]));
                 } else {
-                    // This colon starts (or continues) a plain scalar
-                    // such as a URL, `::vector`, or a timestamp.
-                    let mut end_idx = start_idx + 1;
-                    while let Some((idx, next_ch)) = chars.peek().copied() {
-                        if next_ch.is_whitespace() {
-                            break;
-                        }
-                        if flow_depth > 0 && matches!(next_ch, ',' | ']' | '}') {
-                            break;
-                        }
-                        if next_ch == ':' && is_colon_a_mapping_indicator(input, idx, flow_depth) {
-                            break;
-                        }
-                        // Outside a flow collection the flow indicators are
-                        // ordinary scalar content, as the catch-all arm
-                        // already has it: `- :m{` is the single scalar `:m{`.
-                        if next_ch != ':'
-                            && is_yaml_special_except(next_ch, ":")
-                            && !(flow_depth == 0 && matches!(next_ch, '[' | ']' | '{' | '}' | ','))
-                        {
-                            break;
-                        }
-                        end_idx = idx + next_ch.len_utf8();
-                        chars.next();
-                    }
-                    let text = &input[token_start..end_idx];
+                    // This colon starts (or continues) a plain scalar such
+                    // as a URL, `::vector`, or a timestamp. The shared body
+                    // reader knows the rules: a `:` not followed by space is
+                    // content, flow indicators are content in block context,
+                    // and a `#` glued to content is not a comment. Do not let
+                    // it absorb an internal space run, though -- `: v` after
+                    // this colon is a value, not more key.
+                    let rest = read_plain_scalar_body_from(
+                        &mut chars,
+                        input,
+                        start_idx + 1,
+                        flow_depth,
+                        false,
+                    );
+                    let text = &input[token_start..start_idx + 1 + rest.len()];
                     tokens.push((classify_scalar(text), text));
                 }
             }
@@ -936,6 +928,25 @@ pub fn lex_with_validation_config<'a>(
             //     this at validation time; the lexer still emits a
             //     COMMENT token so downstream error reporting has
             //     something to point at.
+            //
+            // A `#` glued to the tail of *plain-scalar* content is different:
+            // `:#: v` is a mapping keyed `:#`, as saphyr reads it. Continue
+            // the scalar rather than starting a comment, which the catch-all
+            // arm already does for `a#: v`.
+            '#' if !is_hash_a_comment_start(input, start_idx)
+                && tokens.last().is_some_and(|(k, text)| {
+                    matches!(k, STRING | INT | FLOAT | BOOL | NULL | PLUS)
+                        // A quoted scalar ends at its closing quote, so a `#`
+                        // glued to it really is the 6.6 violation the
+                        // validator reports (`key: "value"# c`).
+                        && !text.starts_with(['"', '\''])
+                }) =>
+            {
+                let rest =
+                    read_plain_scalar_body_from(&mut chars, input, start_idx + 1, flow_depth, true);
+                let text = &input[token_start..start_idx + 1 + rest.len()];
+                tokens.push((classify_scalar(text), text));
+            }
             '#' => {
                 let mut end_idx = start_idx + 1;
                 while let Some((idx, ch)) = chars.peek() {

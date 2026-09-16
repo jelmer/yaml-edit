@@ -270,7 +270,9 @@ fn plain_scalar_continues_past_whitespace(input: &str, ws_idx: usize, flow_depth
         '\n' | '\r' | '#' => false,
         ',' | '[' | ']' | '{' | '}' if flow_depth > 0 => false,
         ':' => !is_colon_a_mapping_indicator(input, ws_idx + offset, flow_depth),
-        '-' | '\'' | '"' | ',' | '[' | ']' | '{' | '}' => true,
+        // `+` belongs here with `-`: both are content once a scalar has
+        // begun, so `+ +: v` is keyed `+ +` just as `+ -: v` is keyed `+ -`.
+        '-' | '+' | '\'' | '"' | ',' | '[' | ']' | '{' | '}' => true,
         c if is_yaml_special(c) => false,
         _ => true,
     }
@@ -686,6 +688,15 @@ pub fn lex_with_validation_config<'a>(
                 // as the `-` spellings already were. These are the same
                 // exceptions the body reader itself makes.
                 let next_starts_scalar = chars.peek().is_some_and(|(idx, c)| {
+                    // A space does not end the scalar when more scalar
+                    // content follows on the same line: `+ x: v` is keyed
+                    // `+ x`, exactly as `a x: v` is keyed `a x`. The body
+                    // reader makes the same test before absorbing a run.
+                    if c.is_whitespace() {
+                        return *c != '\n'
+                            && *c != '\r'
+                            && plain_scalar_continues_past_whitespace(input, *idx, flow_depth);
+                    }
                     !c.is_whitespace()
                         && (!is_yaml_special(*c)
                             || matches!(c, '\'' | '"')
@@ -707,11 +718,14 @@ pub fn lex_with_validation_config<'a>(
                         flow_depth,
                         true,
                     );
-                } else if !is_chomping_indicator
-                    && chars.peek().is_some_and(|(idx, c)| {
-                        *c == ':' && is_colon_a_mapping_indicator(input, *idx, flow_depth)
-                    })
-                {
+                } else if !is_chomping_indicator && {
+                    // A key may be separated from its colon by spaces
+                    // (`+ : v`), so look past them as well.
+                    let rest = &input[start_idx + 1..];
+                    let gap = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+                    rest[gap..].starts_with(':')
+                        && is_colon_a_mapping_indicator(input, start_idx + 1 + gap, flow_depth)
+                } {
                     // `+: v` is a mapping keyed by the plain scalar `+`, as
                     // `-: v` already was. A bare PLUS left the key invisible
                     // and stranded the rest of the entry.
@@ -1842,14 +1856,15 @@ double: "quoted""#;
         let input = "line with - and + and : characters";
         let tokens = lex(input);
 
+        // The `-` and `+` are content, so the whole key is one plain scalar:
+        // saphyr reads this as `line with - and + and` mapped to
+        // `characters`.
         assert!(tokens
             .iter()
-            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "line with - and"));
+            .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "line with - and + and"));
+        assert!(!tokens.iter().any(|(kind, _)| *kind == SyntaxKind::PLUS));
 
-        // Plus and colon remain separately tokenized.
-        assert!(tokens
-            .iter()
-            .any(|(kind, text)| *kind == SyntaxKind::PLUS && *text == "+"));
+        // The mapping colon still stands alone.
         assert!(tokens
             .iter()
             .any(|(kind, text)| *kind == SyntaxKind::COLON && *text == ":"));

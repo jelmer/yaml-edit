@@ -1183,3 +1183,68 @@ fn test_percent_keeps_its_directive_and_flow_roles() {
     let seq = mapping.get("a").unwrap();
     assert_eq!(seq.as_sequence().unwrap().len(), 2);
 }
+
+/// A key beginning with `+` folds across spaces like any other plain
+/// scalar, and a `+` after a space is content rather than an indicator.
+///
+/// `+ x: v` is keyed `+ x`, `+ +: v` is keyed `+ +`, and `+ :` is keyed
+/// `+`, exactly as saphyr reads them and as the `-` spellings already did.
+/// The `+` arm ended the scalar at the space, and only looked for a colon
+/// directly after the sign, so each of these emitted a bare PLUS and
+/// stranded the rest of the entry in an ERROR node with no parse error.
+#[test]
+fn test_plus_key_folds_across_spaces() {
+    for (yaml, key) in [
+        ("+ x: v\n", "+ x"),
+        ("+ +: v\n", "+ +"),
+        ("+ -: v\n", "+ -"),
+        ("+ +x: v\n", "+ +x"),
+        ("+ : v\n", "+"),
+        ("a +: v\n", "a +"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string()], "{yaml:?}");
+    }
+
+    // The fuzz case these reduced from.
+    let yaml = "+ +x ?dd  ? x: (+x";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["+ +x ?dd  ? x".to_string()]);
+}
+
+/// A single sign still prefixes a number, and a chomping `+` keeps its own
+/// token.
+#[test]
+fn test_plus_space_change_keeps_sign_and_chomping() {
+    for (yaml, value) in [("v: +5\n", "+5"), ("v: +.INF\n", "+.INF")] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            mapping.get("v").unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+
+    for yaml in ["k: |+\n  x\n", "k: |+2\n  x\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+    }
+}

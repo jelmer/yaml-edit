@@ -1813,3 +1813,31 @@ fn test_plain_entries_after_a_second_explicit_key_run() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// A mapping nested in a sequence entry does not take the equal-indent
+/// continuation rule away from the entries after it.
+///
+/// `"- k: v\n- e\n t\n"` is the mapping `{k: v}` and the scalar `e t`, as
+/// saphyr and PyYAML both read it. parse_mapping_with_base_indent cleared
+/// the flag for its own entries and never put it back, so the continuation
+/// of a later entry was swept into an ERROR node while from_str still
+/// reported success.
+#[test]
+fn test_mapping_in_an_entry_keeps_the_sequence_rule() {
+    for yaml in [
+        "- k: v\n- e\n t\n",
+        "- :\n- e\n t\n",
+        "- a: 1\n  b: 2\n- e\n t\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_sequence().unwrap().len(),
+            2,
+            "{yaml:?}"
+        );
+    }
+}

@@ -45,7 +45,11 @@ impl Parser {
     }
 
     pub(super) fn parse_mapping_with_base_indent(&mut self, base_indent: usize) {
-        // Entries inside a mapping are bounded by their key's column.
+        // Entries inside a mapping are bounded by their key's column. Put
+        // the rule back on the way out: a mapping nested in a sequence entry
+        // must not take the equal-indent rule away from the entries after
+        // it, or `- k: v\n- e\n t\n` loses the continuation of `e`.
+        let outer_equal_indent = self.equal_indent_continues_scalar;
         self.equal_indent_continues_scalar = false;
         self.builder.start_node(SyntaxKind::MAPPING.into());
         self.error_context.push_context(ParseContext::Mapping);
@@ -169,6 +173,7 @@ impl Parser {
             }
         }
 
+        self.equal_indent_continues_scalar = outer_equal_indent;
         self.builder.finish_node();
         self.error_context.pop_context();
     }
@@ -180,6 +185,8 @@ impl Parser {
     pub(super) fn parse_sequence_with_base_indent(&mut self, base_indent: usize) {
         // A sequence entry's continuation only has to clear the sequence's
         // own column, which parse_value_with_base_indent already enforces.
+        // Put the outer rule back on the way out, as the mapping does.
+        let outer_equal_indent = self.equal_indent_continues_scalar;
         self.equal_indent_continues_scalar = true;
         self.builder.start_node(SyntaxKind::SEQUENCE.into());
         self.error_context.push_context(ParseContext::Sequence);
@@ -269,9 +276,11 @@ impl Parser {
             self.builder.finish_node();
         }
 
+        self.equal_indent_continues_scalar = outer_equal_indent;
         self.builder.finish_node();
         self.error_context.pop_context();
     }
+
     pub(super) fn parse_explicit_key_mapping(&mut self, base_indent: usize) {
         // Parse mapping with explicit key indicator '?'
         self.builder.start_node(SyntaxKind::MAPPING.into());

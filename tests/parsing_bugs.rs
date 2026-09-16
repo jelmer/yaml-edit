@@ -2248,3 +2248,43 @@ fn test_carriage_return_ends_a_line_for_error_positions() {
     assert_eq!(position(&cr), position(&lf));
     assert_eq!(position(&cr).as_deref(), Some("3:5"));
 }
+
+/// A `%` introduces a directive only at the start of a document, so on a
+/// plain scalar's continuation line it is ordinary content.
+///
+/// `"v\n%\n[\n"` is the single scalar `v % [`, as saphyr and PyYAML both
+/// read it. The scalar ended at the directive instead, leaving the `[` to
+/// open a flow sequence that never closed, so a valid document was
+/// rejected with an unclosed-collection error.
+#[test]
+fn test_directive_on_a_continuation_line_is_content() {
+    for yaml in [
+        "v\n%\n[\n",
+        " v\n%\n'\n",
+        " v\n%\n{\n",
+        " v\n%\n\"\n",
+        "v\n%\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// A directive at the start of a document is still a directive.
+#[test]
+fn test_document_directives_still_parse() {
+    for yaml in [
+        "%YAML 1.2\n---\na: 1\n",
+        "%TAG ! x\n---\na\n",
+        "%YAML 1.2\n---\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(tree.contains("DIRECTIVE"), "{yaml:?}\n{tree}");
+    }
+}

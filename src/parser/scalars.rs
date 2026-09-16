@@ -924,6 +924,13 @@ impl Parser {
                     | SyntaxKind::PLUS
                     | SyntaxKind::PIPE
                     | SyntaxKind::GREATER
+                    // A `%` introduces a directive only at the start of a
+                    // document, so on a continuation line it is content:
+                    // `v\n%\n[\n` is the scalar `v % [`, as saphyr and
+                    // PyYAML both read it. Without this the scalar ended at
+                    // the directive and the `[` opened a flow sequence that
+                    // never closed.
+                    | SyntaxKind::DIRECTIVE
             ) || (matches!(
                 kind,
                 SyntaxKind::LEFT_BRACKET

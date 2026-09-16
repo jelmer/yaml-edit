@@ -118,7 +118,13 @@ impl Parser {
                 break;
             }
 
-            // In block context, stop at flow collection delimiters
+            // Stop at a flow collection delimiter inside a flow collection,
+            // where it really delimits.
+            //
+            // Outside one it is ordinary scalar content, and the lexer has
+            // already folded any that share a line with the scalar; reaching
+            // here means we are on a continuation line, where `a\n}` is the
+            // scalar `a }`, as both saphyr and PyYAML read it.
             if matches!(
                 kind,
                 SyntaxKind::LEFT_BRACKET
@@ -126,7 +132,8 @@ impl Parser {
                     | SyntaxKind::RIGHT_BRACKET
                     | SyntaxKind::RIGHT_BRACE
                     | SyntaxKind::COMMA
-            ) {
+            ) && (self.flow_depth > 0 || self.is_complex_mapping_key())
+            {
                 break;
             }
 
@@ -859,6 +866,11 @@ impl Parser {
         // is inside a node already. `" a\n|\n"` is the scalar `a |`, as both
         // saphyr and PyYAML read it.
         //
+        // The flow indicators count outside a flow collection, where they
+        // are ordinary scalar content: `a\n}` is the scalar `a }`, as both
+        // saphyr and PyYAML read it. Inside one they delimit, so they end
+        // the scalar as before.
+        //
         // A QUESTION does not: it opens the next explicit key of the mapping
         // we may sit in, so `? a\n: 1\n? b\n: 2\n` has two entries rather
         // than one folded value. Only a root scalar, which has no mapping to
@@ -886,9 +898,17 @@ impl Parser {
                     | SyntaxKind::ASTERISK
                     | SyntaxKind::PIPE
                     | SyntaxKind::GREATER
-            ) || (*kind == SyntaxKind::QUESTION
-                && self.scalar_continuation_floor == Some(0)
-                && self.sequence_entry_column.is_none())
+            ) || (matches!(
+                kind,
+                SyntaxKind::LEFT_BRACKET
+                    | SyntaxKind::RIGHT_BRACKET
+                    | SyntaxKind::LEFT_BRACE
+                    | SyntaxKind::RIGHT_BRACE
+                    | SyntaxKind::COMMA
+            ) && self.flow_depth == 0)
+                || (*kind == SyntaxKind::QUESTION
+                    && self.scalar_continuation_floor == Some(0)
+                    && self.sequence_entry_column.is_none())
                 || (*kind == SyntaxKind::DASH
                     && match self.sequence_entry_column {
                         // Inside a sequence: only past our own dash, where it

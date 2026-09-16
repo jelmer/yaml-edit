@@ -1326,3 +1326,50 @@ fn test_bare_three_dots_is_still_a_document_end_marker() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// A flow indicator opening a continuation line is scalar content outside a
+/// flow collection: `a\n}` is the scalar `a }`, as both saphyr and PyYAML
+/// read it.
+///
+/// The scalar folding loop broke at these tokens unconditionally, so the
+/// indicator was stranded in an ERROR node with no parse error. The lexer
+/// already folds any that share a line with the scalar, so reaching that
+/// point means a continuation line.
+#[test]
+fn test_flow_indicator_continues_a_block_scalar() {
+    for (yaml, value) in [
+        ("a\n}", "a }"),
+        ("a\n{", "a {"),
+        ("a\n]", "a ]"),
+        ("a\n[", "a ["),
+        ("1\n}", "1 }"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}
+
+/// A flow collection that is a mapping key still opens its own entry, and
+/// inside a flow collection the indicators still delimit.
+#[test]
+fn test_flow_collection_key_still_opens_an_entry() {
+    for yaml in ["[a, b]: v1\n[c, d]: v2\n", "x: 1\n[c]: 2\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(mapping.iter().count(), 2, "{yaml:?}");
+    }
+
+    let file = YamlFile::from_str("k: [1, 2]\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let seq = mapping.get("k").unwrap();
+    assert_eq!(seq.as_sequence().unwrap().len(), 2);
+}

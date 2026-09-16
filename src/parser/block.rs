@@ -400,11 +400,15 @@ impl Parser {
             // is_mapping_key() returns true for QUESTION, but
             // parse_mapping_key_value_pair does not consume a `?` key - that
             // would loop forever. Re-enter explicit-key handling for `?`.
+            //
+            // It takes the whole run of them, so the plain entries after that
+            // run are still ours to parse: `?\nk:\n?\na:\n` has four. Leave
+            // the loop to the progress guard below rather than breaking here.
             if self.current() == Some(SyntaxKind::QUESTION) {
                 self.parse_explicit_key_entries();
-                break;
+            } else {
+                self.parse_mapping_key_value_pair(base_indent);
             }
-            self.parse_mapping_key_value_pair(base_indent);
             self.skip_ws_and_newlines();
             // Progress guard against any future case where the body consumes
             // nothing (e.g. recovery via synthetic-token insertion).

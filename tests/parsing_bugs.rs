@@ -1792,3 +1792,24 @@ fn test_flow_collection_after_a_block_scalar() {
         2
     );
 }
+
+/// Plain entries after a run of explicit keys still belong to the mapping.
+///
+/// `"?\nk:\n?\na:\n"` has four entries, as saphyr and PyYAML both read it.
+/// Meeting a `?` in the plain-entry loop handed the run to the explicit-key
+/// parser and then left the loop outright, so anything after that run was
+/// swept into an ERROR node while from_str still reported success.
+#[test]
+fn test_plain_entries_after_a_second_explicit_key_run() {
+    for yaml in [
+        "?\nk:\n?\na:\n",
+        "?\n::\n?\na:\n",
+        "? a\n: 1\nb: 2\n? c\n: 3\nd: 4\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

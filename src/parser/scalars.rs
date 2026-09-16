@@ -854,10 +854,10 @@ impl Parser {
 
         // Check if we have content token using safe get()
         //
-        // A TAG or ANCHOR counts: the lexer reads `!x` and `&a` as node
-        // properties because a newline precedes them, but a property only
-        // applies at the start of a node, and a continuation line is inside
-        // one already. `- a\n !\n` is the scalar `a !`, and `k:#foo\n &a !t s`
+        // A TAG, ANCHOR or REFERENCE counts: the lexer reads `!x`, `&a` and
+        // `*a` as node properties because a newline precedes them, but a
+        // property only applies at the start of a node, and a continuation
+        // line is inside one already. `- a\n !\n` is the scalar `a !`, and `k:#foo\n &a !t s`
         // the scalar `k:#foo &a !t s`, as both saphyr and PyYAML read them.
         //
         // PIPE and GREATER count for the same reason. They open a block
@@ -892,10 +892,14 @@ impl Parser {
                     | SyntaxKind::UNTERMINATED_STRING
                     | SyntaxKind::TAG
                     | SyntaxKind::ANCHOR
+                    | SyntaxKind::REFERENCE
                     // A bare `&` or `*` with no name is punctuation the
                     // lexer could not make a property of, so it is content.
+                    // A lone `+` likewise: it is an indicator only as a
+                    // block-scalar chomping suffix, so `a\n+\n` is `a +`.
                     | SyntaxKind::AMPERSAND
                     | SyntaxKind::ASTERISK
+                    | SyntaxKind::PLUS
                     | SyntaxKind::PIPE
                     | SyntaxKind::GREATER
             ) || (matches!(

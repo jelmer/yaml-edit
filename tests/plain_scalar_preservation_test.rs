@@ -1428,3 +1428,67 @@ fn test_block_scalar_header_still_chomps() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// The node properties and block headers are indicators only at the start
+/// of a node, so once a plain scalar has begun they are content: `+?: v` is
+/// keyed `+?`, and `+ ?: v` keyed `+ ?`, as saphyr reads them.
+///
+/// Three places disagreed, each leaving a bare PLUS and stranding the rest
+/// of the entry: what may start a scalar body after `+`, what the body
+/// reader keeps, and what may follow an internal space.
+#[test]
+fn test_indicators_are_content_once_a_scalar_has_begun() {
+    for (yaml, key) in [
+        ("+?: v\n", "+?"),
+        ("+|: v\n", "+|"),
+        ("+>: v\n", "+>"),
+        ("+&: v\n", "+&"),
+        ("+*: v\n", "+*"),
+        ("+!: v\n", "+!"),
+        ("+%: v\n", "+%"),
+        ("-?: v\n", "-?"),
+        ("+ ?: v\n", "+ ?"),
+        ("+ |: v\n", "+ |"),
+        ("+ &: v\n", "+ &"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string()], "{yaml:?}");
+    }
+}
+
+/// A lone `+` and an alias both continue a scalar from the next line.
+#[test]
+fn test_plus_and_alias_continue_from_the_next_line() {
+    for (yaml, value) in [
+        ("a\n+\n", "a +"),
+        ("a\n +\n", "a +"),
+        ("a\n*x\n", "a *x"),
+        ("a\n*-\n", "a *-"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+
+    // An alias that really starts a node still resolves.
+    let file = YamlFile::from_str("a: &anc 1\nb: *anc\n").unwrap();
+    common::assert_file_cst_ok(&file);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(tree.contains("REFERENCE"), "{tree}");
+}

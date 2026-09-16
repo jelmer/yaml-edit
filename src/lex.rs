@@ -270,9 +270,12 @@ fn plain_scalar_continues_past_whitespace(input: &str, ws_idx: usize, flow_depth
         '\n' | '\r' | '#' => false,
         ',' | '[' | ']' | '{' | '}' if flow_depth > 0 => false,
         ':' => !is_colon_a_mapping_indicator(input, ws_idx + offset, flow_depth),
-        // `+` belongs here with `-`: both are content once a scalar has
-        // begun, so `+ +: v` is keyed `+ +` just as `+ -: v` is keyed `+ -`.
-        '-' | '+' | '\'' | '"' | ',' | '[' | ']' | '{' | '}' => true,
+        // Once a scalar has begun these are all content on the next word:
+        // the signs, the quotes, the flow indicators, and the node
+        // properties and block headers, which are indicators only at the
+        // start of a node. So `+ ?: v` is keyed `+ ?`, as `+ -: v` was.
+        '-' | '+' | '?' | '|' | '>' | '&' | '*' | '!' | '%' | '\'' | '"' | ',' | '[' | ']'
+        | '{' | '}' => true,
         c if is_yaml_special(c) => false,
         _ => true,
     }
@@ -481,7 +484,10 @@ fn read_plain_scalar_body_from<'a>(
         // `-` and `+` are indicators only where a node starts (a sequence
         // entry, or a block-scalar chomping suffix); inside a body they are
         // content, so `++` is the single scalar `++`.
-        if is_yaml_special_except(ch, "-+:#'\"")
+        // `?`, `|`, `>`, `&`, `*`, `!` and `%` are indicators only at the
+        // start of a node; this is a scalar body, so they are content here,
+        // as the catch-all arm already has it. `+?` is one scalar.
+        if is_yaml_special_except(ch, "-+:#'\"?|>&*!%")
             && !(flow_depth == 0 && matches!(ch, ',' | '[' | ']' | '{' | '}'))
         {
             break;
@@ -699,11 +705,16 @@ pub fn lex_with_validation_config<'a>(
                     }
                     !c.is_whitespace()
                         && (!is_yaml_special(*c)
-                            || matches!(c, '\'' | '"')
-                            // A sign is content once a scalar has begun, so
-                            // `++` is the plain scalar `++` rather than a
-                            // PLUS with a stray `+` after it.
-                            || matches!(c, '+' | '-')
+                            // Everything the body reader keeps as content
+                            // starts a body: quotes, signs, and the node
+                            // properties and block headers, which are
+                            // indicators only at the start of a node. So
+                            // `+?`, `+|` and `+&` are each one scalar, as
+                            // `+x` already was.
+                            || matches!(
+                                c,
+                                '\'' | '"' | '+' | '-' | '?' | '|' | '>' | '&' | '*' | '!' | '%'
+                            )
                             || (flow_depth == 0 && matches!(c, '[' | ']' | '{' | '}' | ','))
                             || (*c == ':'
                                 && !is_colon_a_mapping_indicator(input, *idx, flow_depth)))

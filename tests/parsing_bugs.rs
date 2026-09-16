@@ -2200,3 +2200,51 @@ fn test_indented_document_still_nests_a_deeper_value() {
     let depth = tree.lines().filter(|l| l.trim() == "MAPPING").count();
     assert_eq!(depth, 2, "{yaml:?}\n{tree}");
 }
+
+/// A mapping's block value on a later line has to clear the key's own
+/// column, which in a sequence entry is not the column the mapping was
+/// measured from: `- k:` puts `k` at column 2 while the mapping's base is
+/// the dash's column plus the dash, 1.
+///
+/// `"- k:\n  j: 1\n"` is one mapping with two entries, as saphyr and PyYAML
+/// both read it, but `j` was parsed as the value of `k`.
+#[test]
+fn test_mapping_value_clears_the_key_column_in_a_sequence_entry() {
+    for (yaml, depth) in [
+        ("- k:\n  j: 1\n", 1),
+        ("- k: v\n  j: 1\n", 1),
+        ("- a b: 1\n  c d: 2\n", 1),
+        ("- k:\n  - x\n", 1),
+        ("- - k:\n    j: 1\n", 1),
+        // A value that really does clear the key's column still nests.
+        ("- k:\n   j: 1\n", 2),
+        ("- k:\n    j: 1\n", 2),
+        ("a:\n  - k:\n    j: 1\n", 2),
+        ("k:\n  j: 1\n", 2),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let got = tree.lines().filter(|l| l.trim() == "MAPPING").count();
+        assert_eq!(got, depth, "{yaml:?}\n{tree}");
+    }
+}
+
+/// A bare `\r` ends a line in YAML, so it resets the reported column.
+///
+/// The error context counted only `\n`, so line and column climbed across a
+/// whole CR-delimited file and an error on its third line was reported at
+/// `1:15` rather than `3:5`.
+#[test]
+fn test_carriage_return_ends_a_line_for_error_positions() {
+    let cr = yaml_edit::YamlFile::parse("a: 1\rb: 2\r... x\r");
+    let lf = yaml_edit::YamlFile::parse("a: 1\nb: 2\n... x\n");
+    let position = |p: &yaml_edit::Parse<YamlFile>| -> Option<String> {
+        let text: String = p.errors().first()?.to_string();
+        Some(text.split(':').take(2).collect::<Vec<_>>().join(":"))
+    };
+    assert_eq!(position(&cr), position(&lf));
+    assert_eq!(position(&cr).as_deref(), Some("3:5"));
+}

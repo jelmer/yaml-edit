@@ -245,16 +245,10 @@ impl Parser {
 
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
                 // Use item's line indent so nested mappings parse at the right
-                // level.
-                //
-                // TODO: current_line_indent counts the dash but not the space
-                // after it, so this is one short of the column an inline value
-                // really starts at. A mapping opening here is bounded by its
-                // key's column, so `- k:\n  j: 1\n` nests `j` under `k` where
-                // saphyr and PyYAML make them siblings. Passing the true
-                // column instead breaks the far commoner `- a b: 1\n  c d: 2\n`,
-                // which relies on this value being measured from the dash;
-                // telling the two apart needs the entry to carry both columns.
+                // level. It is one short of the column an inline value starts
+                // at, since it counts the dash but not the space after it; a
+                // mapping opening here measures its own entries from its key's
+                // column instead, which parse_mapping_key_value_pair reads.
                 self.parse_value_with_base_indent(item_indent);
             } else if self.current() == Some(SyntaxKind::NEWLINE) {
                 // Nested content is a NEWLINE then INDENT. A bare `-` item is
@@ -792,6 +786,9 @@ impl Parser {
         false
     }
     fn parse_mapping_key_value_pair(&mut self, base_indent: usize) {
+        // The key's own column, read before anything is consumed. It is
+        // 1-based, so step back to a column.
+        let key_column = self.error_context.current_location().1.saturating_sub(1);
         // Start MAPPING_ENTRY node to wrap the entire key-value pair
         self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
@@ -873,7 +870,14 @@ impl Parser {
                 }
             } else if self.current() == Some(SyntaxKind::NEWLINE) {
                 self.skip_ws_and_newlines();
-                if self.current_line_indent > base_indent {
+                // A block value on a later line has to clear the *key's*
+                // column, not the column the mapping was measured from. In a
+                // sequence entry those differ: `- k:` puts `k` at column 2
+                // while the mapping's base is 1, the dash's own column plus
+                // the dash. Against the base, `- k:\n  j: 1\n` reads `j` as
+                // the value of `k`; against the key it is the sibling entry
+                // saphyr and PyYAML both give.
+                if self.current_line_indent > base_indent.max(key_column) {
                     // Nested value is more indented than the enclosing mapping's
                     // base indent - belongs to this key.
                     //

@@ -1354,51 +1354,6 @@ fn is_merge_key_at(input: &str, idx: usize) -> bool {
 /// `a: x !!b` is the scalar `x !!b` rather than a tagged node. A preceding
 /// space is not enough to start a new node: what matters is whether the
 /// last token was scalar content.
-/// Whether the line starting at `line_start` carries content at or left of
-/// `indent`, which is what ends a block scalar's body.
-///
-/// A blank line says nothing about the body's indentation, so it stays in.
-fn line_starts_content_at_or_before(input: &str, line_start: usize, indent: usize) -> bool {
-    let line = input[line_start..]
-        .split(['\n', '\r'])
-        .next()
-        .unwrap_or_default();
-    if line.trim().is_empty() {
-        return false;
-    }
-    line.len() - line.trim_start_matches([' ', '\t']).len() <= indent
-}
-
-/// Leading whitespace of the line starting at `line_start`.
-fn line_indent(input: &str, line_start: usize) -> usize {
-    input[line_start..]
-        .len()
-        .saturating_sub(input[line_start..].trim_start_matches([' ', '\t']).len())
-}
-
-/// Whether the position is inside the body of a block scalar whose header
-/// sat at `header_indent`.
-///
-/// A block scalar's body is every following line indented past its header,
-/// and all of it is literal text: `a: |\n  {\nb,c: 1\n` holds the scalar
-/// `{`, and the `,` on the next line belongs to the key `b,c`. Blank lines
-/// stay in the body without saying anything about its indentation.
-fn in_block_scalar_body(
-    header_indent: Option<usize>,
-    input: &str,
-    line_start: usize,
-    idx: usize,
-) -> bool {
-    let Some(header_indent) = header_indent else {
-        return false;
-    };
-    // The header's own line is not body yet.
-    if line_start <= header_indent {
-        return false;
-    }
-    line_indent(input, line_start) > header_indent && idx > line_start
-}
-
 fn node_property_can_start(tokens: &[(SyntaxKind, &str)]) -> bool {
     for (kind, _) in tokens.iter().rev() {
         match kind {
@@ -1425,6 +1380,48 @@ fn node_property_can_start(tokens: &[(SyntaxKind, &str)]) -> bool {
     }
     // Nothing before it: the very start of the input is a node start.
     true
+}
+
+/// Leading whitespace of the line starting at `line_start`.
+fn line_indent(input: &str, line_start: usize) -> usize {
+    let line = &input[line_start..];
+    line.len() - line.trim_start_matches([' ', '\t']).len()
+}
+
+/// Whether the line starting at `line_start` carries content at or left of
+/// `indent`, which is what ends a block scalar's body.
+///
+/// A blank line says nothing about the body's indentation, so it stays in.
+fn line_starts_content_at_or_before(input: &str, line_start: usize, indent: usize) -> bool {
+    let line = input[line_start..]
+        .split(['\n', '\r'])
+        .next()
+        .unwrap_or_default();
+    if line.trim().is_empty() {
+        return false;
+    }
+    line.len() - line.trim_start_matches([' ', '\t']).len() <= indent
+}
+
+/// Whether `idx` is inside the body of a block scalar whose header sat on a
+/// line indented `header_indent`.
+///
+/// A block scalar's body is every following line indented past its header,
+/// and all of it is literal text: `a: |\n  {\nb,c: 1\n` holds the scalar
+/// `{`, and the `,` on the next line belongs to the key `b,c`. The caller
+/// clears `header_indent` once a line ends the body, so this only has to
+/// rule out the header's own line, which `idx > line_start` does not cover
+/// on its own.
+fn in_block_scalar_body(
+    header_indent: Option<usize>,
+    input: &str,
+    line_start: usize,
+    idx: usize,
+) -> bool {
+    let Some(header_indent) = header_indent else {
+        return false;
+    };
+    idx > line_start && line_indent(input, line_start) > header_indent
 }
 
 fn is_tag_char(ch: char) -> bool {

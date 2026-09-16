@@ -857,11 +857,16 @@ pub fn lex_with_validation_config<'a>(
             // the start of a node: `a|b` is the scalar `a|b`, not a header
             // inside it. `>` reaches this arm only at a node start already,
             // because the catch-all treats it as scalar content.
-            '|' if node_property_can_start(&tokens) => {
+            //
+            // And only in block context: YAML 1.2 section 8.1 gives block
+            // scalars a block-context production only, so inside a flow
+            // collection a `|` is plain content and `[|, x]` has two
+            // entries, as saphyr reads it.
+            '|' if flow_depth == 0 && node_property_can_start(&tokens) => {
                 block_scalar_header_indent = Some(line_indent(input, current_line_start));
                 tokens.push((PIPE, &input[token_start..start_idx + 1]))
             }
-            '>' if node_property_can_start(&tokens) => {
+            '>' if flow_depth == 0 && node_property_can_start(&tokens) => {
                 block_scalar_header_indent = Some(line_indent(input, current_line_start));
                 tokens.push((GREATER, &input[token_start..start_idx + 1]))
             }

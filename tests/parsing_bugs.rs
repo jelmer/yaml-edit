@@ -1904,3 +1904,45 @@ fn test_explicit_key_value_line_is_not_part_of_the_key() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// A block-scalar header opens a block scalar only in block context, so
+/// inside a flow collection `|` and `>` are plain content.
+///
+/// YAML 1.2 section 8.1 gives block scalars a block-context production
+/// only, and saphyr reads `[|, x]` as the two entries `|` and `x`. The
+/// lexer emitted a header there, so the rest of the collection was consumed
+/// as its body and the parse failed with a spurious unclosed-collection
+/// error.
+#[test]
+fn test_block_header_in_flow_context_is_content() {
+    for yaml in [
+        "[|, x]\n",
+        "[|]\n",
+        "{a: |, b: 1}\n",
+        "[>, x]\n",
+        "k: [|, x]\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// A block scalar in block context still parses as one.
+#[test]
+fn test_block_scalar_in_block_context_still_parses() {
+    let yaml = "k: |\n  x\nk2: >\n  y\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let map = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        map.get(yaml_edit::ScalarValue::from("k"))
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "x\n"
+    );
+}

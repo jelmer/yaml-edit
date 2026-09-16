@@ -483,3 +483,53 @@ fn sequence_insert_at_head_into_single_entry_block() {
     assert_eq!(doc.to_string(), "s:\n  - b\n  - a\n");
     check(&doc);
 }
+
+/// A sequence that is the document's own node starts at column 0, so a
+/// pushed entry is a sibling of the others rather than nested inside the
+/// last one.
+///
+/// detect_indentation fell through to a hardcoded two spaces for a root
+/// sequence, so `push` wrote `"- a\n  - new\n"` -- a nested sequence that
+/// as_sequence could no longer reach the new entry through.
+#[test]
+fn root_sequence_push_appends_a_sibling() {
+    for (yaml, want) in [
+        ("- a\n", "- a\n- new\n"),
+        ("- a\n- b\n", "- a\n- b\n- new\n"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let seq = file.document().unwrap().as_sequence().unwrap();
+        seq.push("new");
+        assert_eq!(file.to_string(), want, "{yaml:?}");
+
+        let reparsed = YamlFile::from_str(&file.to_string()).unwrap();
+        let seq = reparsed.document().unwrap().as_sequence().unwrap();
+        assert_eq!(
+            seq.get(seq.len() - 1)
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .as_string(),
+            "new",
+            "{yaml:?}"
+        );
+    }
+}
+
+/// A sequence nested under a key keeps its own indentation.
+#[test]
+fn nested_sequence_push_keeps_its_indent() {
+    let file = YamlFile::from_str("a:\n  - x\n").unwrap();
+    let seq = file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get(yaml_edit::ScalarValue::from("a"))
+        .unwrap()
+        .as_sequence()
+        .cloned()
+        .unwrap();
+    seq.push("new");
+    assert_eq!(file.to_string(), "a:\n  - x\n  - new\n");
+}

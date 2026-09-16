@@ -323,6 +323,16 @@ impl Sequence {
             }
         }
 
+        // A sequence that is the document's own node starts at column 0, so
+        // there is nothing to indent by. Guessing two spaces here made
+        // `push` write the new entry as a nested sequence inside the last
+        // one, where as_sequence could no longer reach it.
+        match self.0.parent() {
+            None => return String::new(),
+            Some(parent) if parent.kind() == SyntaxKind::DOCUMENT => return String::new(),
+            Some(_) => {}
+        }
+
         "  ".to_string()
     }
 

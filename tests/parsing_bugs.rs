@@ -2053,3 +2053,41 @@ fn test_document_markers_still_parse() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// A block-scalar header's indicators are ASCII, so it must be matched by
+/// character rather than by byte.
+///
+/// `">\u{a0}"` panicked: the no-break space is two bytes, so the two-byte
+/// arm split it at byte 1, inside the character. from_str is safe to call on
+/// untrusted input, so it has to report rather than abort.
+#[test]
+fn test_block_scalar_header_does_not_panic_on_a_multibyte_char() {
+    for yaml in [
+        ">\u{a0}",
+        "|\u{a0}",
+        "k: >\u{a0}\n",
+        "|\u{2028}",
+        ">\u{3000}",
+    ] {
+        // Parsing must not panic; either outcome is acceptable.
+        let _ = YamlFile::from_str(yaml);
+    }
+}
+
+/// The headers that really do carry an indent and a chomping indicator
+/// still parse.
+#[test]
+fn test_block_scalar_header_indicators_still_parse() {
+    for yaml in [
+        "k: |-\n  x\n",
+        "k: |2-\n  x\n",
+        "k: |-2\n  x\n",
+        "k: >+\n  x\n\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

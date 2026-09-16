@@ -612,12 +612,15 @@ impl Parser {
                     let Some(text) = self.current_text() else {
                         break;
                     };
-                    let is_header = match text.len() {
-                        1 => text == "+" || text == "-",
-                        2 => {
-                            let (a, b) = text.split_at(1);
-                            let digit = |s: &str| s.chars().all(|c| c.is_ascii_digit() && c != '0');
-                            let chomp = |s: &str| s == "+" || s == "-";
+                    // A header's indicators are ASCII, so compare characters
+                    // rather than bytes: `text.len()` is 2 for a single
+                    // no-break space, and splitting it at byte 1 panics.
+                    let mut chars = text.chars();
+                    let is_header = match (chars.next(), chars.next(), chars.next()) {
+                        (Some(a), None, _) => a == '+' || a == '-',
+                        (Some(a), Some(b), None) => {
+                            let digit = |c: char| c.is_ascii_digit() && c != '0';
+                            let chomp = |c: char| c == '+' || c == '-';
                             (digit(a) && chomp(b)) || (chomp(a) && digit(b))
                         }
                         _ => false,

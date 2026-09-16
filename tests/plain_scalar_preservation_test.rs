@@ -1284,3 +1284,45 @@ fn test_percent_scalar_folds_across_spaces() {
     let tree = yaml_edit::debug::tree_to_string(file.syntax());
     assert!(tree.contains("DIRECTIVE"), "{tree}");
 }
+
+/// `...` is the document-end marker only when it is the whole line, so
+/// `...w` is the plain scalar `...w` -- as both saphyr and PyYAML read it,
+/// and as `---x` already was.
+///
+/// The `.` arm emitted DOC_END for any three dots, so the text after them
+/// was stranded in an ERROR node with no parse error.
+#[test]
+fn test_three_dots_with_trailing_text_is_a_scalar() {
+    for (yaml, value) in [("...w\n", "...w"), ("...x.y\n", "...x.y")] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+
+    // In a value position too.
+    let file = YamlFile::from_str("k: ...w\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("k").unwrap().as_scalar().unwrap().as_string(),
+        "...w"
+    );
+}
+
+/// A `...` alone on its line is still the document-end marker.
+#[test]
+fn test_bare_three_dots_is_still_a_document_end_marker() {
+    for yaml in ["a\n...\n", "--- a\n...\n--- b\n", "a\n...\nb: 1\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(tree.contains("DOC_END"), "{yaml:?}\n{tree}");
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

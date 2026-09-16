@@ -869,7 +869,18 @@ pub fn lex_with_validation_config<'a>(
             // Document end
             '.' => {
                 // Check for three dots (document end marker)
-                if chars.peek() == Some(&(start_idx + 1, '.')) {
+                // `...` is the document-end marker only when it is the whole
+                // line, in block context: the same three conditions the `---`
+                // arm applies. `...w` is the plain scalar `...w`, as both
+                // saphyr and PyYAML read it, and `---x` already was.
+                let is_doc_end = flow_depth == 0
+                    && start_idx == current_line_start
+                    && input[start_idx..].starts_with("...")
+                    && input[start_idx + 3..]
+                        .chars()
+                        .next()
+                        .map_or(true, |next| next.is_whitespace());
+                if is_doc_end && chars.peek() == Some(&(start_idx + 1, '.')) {
                     chars.next(); // consume second .
                     if chars.peek() == Some(&(start_idx + 2, '.')) {
                         chars.next(); // consume third .

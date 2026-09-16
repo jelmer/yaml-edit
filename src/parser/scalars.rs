@@ -473,6 +473,9 @@ impl Parser {
     fn parse_tagged_collection(&mut self, is_mapping: bool, min_mapping_indent: Option<usize>) {
         self.builder.start_node(SyntaxKind::TAGGED_NODE.into());
 
+        // Read the tag's text before bumping past it, for the error below.
+        let tag_text = self.peek_tag_text().unwrap_or("tag").to_string();
+
         // Consume the tag
         self.bump(); // TAG token
 
@@ -520,6 +523,21 @@ impl Parser {
                 }
             }
             _ => {
+                // These tags name a collection, so a plain scalar on the
+                // tag's own line cannot be their content: the collection
+                // parser below finds nothing to take and the scalar is left
+                // with nowhere to go. saphyr calls `!!omap 3` a bad value;
+                // say so rather than dropping the scalar into an ERROR node
+                // with no error reported.
+                if self
+                    .current()
+                    .is_some_and(|kind| is_plain_scalar_kind(kind) || kind == SyntaxKind::QUESTION)
+                {
+                    self.add_error(
+                        format!("{tag_text} requires a collection, found a scalar"),
+                        ParseErrorKind::Other,
+                    );
+                }
                 let inner_base = self.current_line_indent;
                 if is_mapping {
                     self.parse_mapping_with_base_indent(inner_base);

@@ -1718,3 +1718,37 @@ fn test_blank_line_before_an_indentless_sequence() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// `!!omap`, `!!pairs` and `!!set` name a collection, so a plain scalar on
+/// the tag's own line cannot be their content.
+///
+/// saphyr calls `!!omap 3` a bad value. The collection parser found nothing
+/// to take, leaving an empty node, and the scalar was dropped into an ERROR
+/// node with no error reported at all.
+#[test]
+fn test_collection_tag_on_a_scalar_is_reported() {
+    for yaml in ["!!omap 3", "!!pairs a", "!!set x"] {
+        let err = YamlFile::from_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("requires a collection"),
+            "{yaml:?} -> {err}"
+        );
+    }
+}
+
+/// The collection forms of those tags are unaffected.
+#[test]
+fn test_collection_tags_still_parse() {
+    for yaml in [
+        "!!omap\n- a: 1\n",
+        "!!pairs\n- a: 1\n",
+        "!!set\n? a\n",
+        "!!omap []\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

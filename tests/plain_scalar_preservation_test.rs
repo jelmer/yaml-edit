@@ -1138,3 +1138,48 @@ fn test_bare_property_punctuation_continues_a_scalar() {
         );
     }
 }
+
+/// A scalar continuing through `%` keeps flow indicators as content outside
+/// a flow collection, like any other plain scalar. `a %}` is the single
+/// scalar `a %}`, as both saphyr and PyYAML read it.
+///
+/// The `%` arm broke at every YAML-special character, so the `}` ended the
+/// scalar and was stranded in an ERROR node with no parse error, while the
+/// identically shaped `a b}` lexed as one scalar.
+#[test]
+fn test_percent_scalar_keeps_flow_indicators() {
+    for (yaml, value) in [
+        ("a %}\n", "a %}"),
+        ("a %x}\n", "a %x}"),
+        ("a %,b\n", "a %,b"),
+        ("a %[1]\n", "a %[1]"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}
+
+/// A `%` opening a line is still a directive, and inside a flow collection
+/// the indicators still delimit.
+#[test]
+fn test_percent_keeps_its_directive_and_flow_roles() {
+    let yaml = "%YAML 1.2\n---\na: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(tree.contains("DIRECTIVE"), "{tree}");
+
+    let yaml = "a: [x, y]\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let seq = mapping.get("a").unwrap();
+    assert_eq!(seq.as_sequence().unwrap().len(), 2);
+}

@@ -1516,3 +1516,40 @@ fn test_annotation_alone_on_its_line_keeps_its_block_indent() {
     let tree = yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
     assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
 }
+
+/// `+` is a chomping indicator only as the suffix of a block-scalar header,
+/// so everywhere else it is ordinary plain-scalar content.
+///
+/// A `+` at the end of its line had no arm to open a scalar with, so it was
+/// emitted as a bare PLUS token that no parse rule claims. Whatever followed
+/// was stranded in an ERROR node while from_str still reported success, and
+/// the `+` itself was left invisible to as_mapping and as_sequence.
+#[test]
+fn test_lone_plus_is_plain_scalar_content() {
+    for yaml in [
+        "+\nx\n",
+        "- +\n- x\n",
+        "k: +\nk2: w\n",
+        "a: 1\n+: 2\nb: 3\n",
+        "- +\n  x\n- y\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// A `+` that really does close a block-scalar header stays a chomping
+/// indicator, and the block keeps its trailing newlines.
+#[test]
+fn test_block_scalar_keep_chomping_still_parses() {
+    for yaml in ["k: |+\n  a\n\n", "k: >+\n  a\n\n", "k: |2+\n  a\n\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

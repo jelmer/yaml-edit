@@ -745,8 +745,16 @@ pub fn lex_with_validation_config<'a>(
                     // and stranded the rest of the entry.
                     let text = &input[token_start..start_idx + 1];
                     tokens.push((classify_scalar(text), text));
-                } else {
+                } else if is_chomping_indicator {
                     tokens.push((PLUS, &input[token_start..start_idx + 1]));
+                } else {
+                    // Nothing follows on this line to extend the body, but a
+                    // `+` outside a block-scalar header is still content, not
+                    // an indicator: `+\nx\n` is the scalar `+ x`. A bare PLUS
+                    // token no parse rule claims left the `+` invisible and
+                    // stranded whatever followed it.
+                    let text = &input[token_start..start_idx + 1];
+                    tokens.push((classify_scalar(text), text));
                 }
             }
             ':' => {

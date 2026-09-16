@@ -244,7 +244,17 @@ impl Parser {
             self.node_is_document_root = false;
 
             if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                // Use item's line indent so nested mappings parse at the right level
+                // Use item's line indent so nested mappings parse at the right
+                // level.
+                //
+                // TODO: current_line_indent counts the dash but not the space
+                // after it, so this is one short of the column an inline value
+                // really starts at. A mapping opening here is bounded by its
+                // key's column, so `- k:\n  j: 1\n` nests `j` under `k` where
+                // saphyr and PyYAML make them siblings. Passing the true
+                // column instead breaks the far commoner `- a b: 1\n  c d: 2\n`,
+                // which relies on this value being measured from the dash;
+                // telling the two apart needs the entry to carry both columns.
                 self.parse_value_with_base_indent(item_indent);
             } else if self.current() == Some(SyntaxKind::NEWLINE) {
                 // Nested content is a NEWLINE then INDENT. A bare `-` item is

@@ -1693,3 +1693,28 @@ fn test_question_at_the_key_column_still_opens_a_key() {
         );
     }
 }
+
+/// A blank line between an explicit key's indicator and an indentless
+/// sequence carries no indentation of its own, so it neither ends the entry
+/// nor stops the sequence being that key.
+///
+/// `"?\n\n- a\n: v\n"` is keyed by the sequence `[a]`, exactly as
+/// `"?\n- a\n: v\n"` is, as saphyr reads it and as PyYAML parses it before
+/// refusing the unhashable key. The lookahead peeked a single token past
+/// the newline, so the blank line hid the dash and the key and its value
+/// were both swept into an ERROR node while from_str reported success.
+#[test]
+fn test_blank_line_before_an_indentless_sequence() {
+    for yaml in [
+        "?\n\n- a\n: v\n",
+        "?\n\n-\n",
+        "k:\n\n- a\n",
+        "?\n\n\n- a\n: v\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

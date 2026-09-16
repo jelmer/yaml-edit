@@ -670,8 +670,21 @@ impl Parser {
     /// straight after that line break carries no INDENT token, which is what
     /// makes the sequence indentless.
     fn indentless_sequence_follows(&self) -> bool {
-        self.current() == Some(SyntaxKind::NEWLINE)
-            && self.upcoming_tokens().next() == Some(SyntaxKind::DASH)
+        if self.current() != Some(SyntaxKind::NEWLINE) {
+            return false;
+        }
+        // A blank line between the indicator and the sequence carries no
+        // indentation of its own, so it neither ends the entry nor stops the
+        // sequence being the indentless one: `?\n\n- a\n: v\n` is keyed by
+        // the sequence `[a]`, exactly as `?\n- a\n: v\n` is.
+        let mut rest = self.upcoming_tokens();
+        loop {
+            match rest.next() {
+                Some(SyntaxKind::NEWLINE) => continue,
+                Some(kind) => return kind == SyntaxKind::DASH,
+                None => return false,
+            }
+        }
     }
 
     pub(super) fn is_mapping_key(&self) -> bool {

@@ -225,7 +225,16 @@ impl Parser {
             self.bump(); // consume dash
             self.skip_whitespace();
 
-            // Record the dash's line indentation for the item value parsing
+            // Record the dash's line indentation for the item value parsing.
+            //
+            // TODO: this is the column the entry's *value* starts at, and a
+            // nested sequence opened on this line (`- -`) then takes it as
+            // the column its own *entries* start at, which is one further
+            // left than its dash. A later entry at the dash's column reads
+            // as nested again, so `- -\n  -\n` parses as `[[[null]]]` where
+            // saphyr and PyYAML both give `[[null, null]]`. Telling the two
+            // columns apart means separating value indent from entry indent
+            // throughout, rather than adjusting either one here.
             let item_indent = self.current_line_indent;
 
             // A `-` on a later line continues this entry's scalar when it is

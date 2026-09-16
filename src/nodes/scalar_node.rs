@@ -257,8 +257,14 @@ impl Scalar {
                 // Keep all trailing newlines - preserve the count we detected
                 // Remove all trailing newlines first, then add back the original count
                 result = result.trim_end_matches('\n').to_string();
-                // Add one newline for the content line, plus trailing empties
-                for _ in 0..=trailing_empty_count {
+                // One newline ends the last content line, then one per
+                // trailing blank. A body that is nothing but blank lines has
+                // no content line to end, so it gets only the blanks:
+                // `k: |+\n\n\n` is `"\n\n"`, as saphyr and PyYAML both
+                // read it, not `"\n\n\n"`.
+                let has_content = content_lines.len() > trailing_empty_count;
+                let newlines = trailing_empty_count + usize::from(has_content);
+                for _ in 0..newlines {
                     result.push('\n');
                 }
             }

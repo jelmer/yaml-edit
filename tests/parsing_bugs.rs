@@ -2288,3 +2288,36 @@ fn test_document_directives_still_parse() {
         assert!(tree.contains("DIRECTIVE"), "{yaml:?}\n{tree}");
     }
 }
+
+/// A keep-chomped block scalar whose body is nothing but blank lines has no
+/// content line to terminate, so it keeps only the blanks.
+///
+/// `"k: |+\n\n\n"` is `"\n\n"`, as saphyr and PyYAML both read it. The
+/// decoder always added one newline for a content line, so an all-blank
+/// body came back one newline too long and a value set through the API did
+/// not survive a serialise and reparse.
+#[test]
+fn test_keep_chomped_block_scalar_with_no_content() {
+    for (yaml, value) in [
+        ("k: |+\n\n\n", "\n\n"),
+        ("k: |+\n\n\n\n", "\n\n\n"),
+        // With content, the content line's own break is kept as before.
+        ("k: |+\n  x\n\n\n", "x\n\n\n"),
+        ("k: |+\n  x\n", "x\n"),
+        ("k: |\n  x\n", "x\n"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let got = file
+            .document()
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get(yaml_edit::ScalarValue::from("k"))
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string();
+        assert_eq!(got, value, "{yaml:?}");
+    }
+}

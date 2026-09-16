@@ -10,17 +10,12 @@ fn test_preserve_invalid_flow_block_mix() {
 key1: value1
 key2: value2"#;
 
-    // Our parser is LOSSLESS - it preserves everything, even invalid content
-    // The block entries after {} are wrapped in ERROR nodes but preserved
-    let yaml = YamlFile::from_str(invalid_yaml).unwrap();
-    let result = yaml.to_string();
-
-    // The parser preserves ALL content for lossless editing
-    assert_eq!(result, invalid_yaml);
-
-    // But we should detect this is invalid
-    // The parser should have registered an error or warning about this
-    // Note: The exact error handling mechanism depends on the implementation
+    // The entries after {} cannot be attached to it, so the parser reports
+    // them rather than returning a value they have been dropped from. The
+    // text is still preserved for lossless editing.
+    let parsed = YamlFile::parse(invalid_yaml);
+    assert_eq!(parsed.errors().len(), 1);
+    assert_eq!(parsed.tree().to_string(), invalid_yaml);
 }
 
 #[test]
@@ -30,7 +25,7 @@ fn test_set_with_field_order_on_invalid_flow_block_mix() {
 {}
 key1: value1"#;
 
-    let yaml = YamlFile::from_str(invalid_yaml).unwrap();
+    let yaml = YamlFile::parse(invalid_yaml).tree();
 
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
@@ -56,7 +51,7 @@ fn test_operations_preserve_invalid_structure() {
 name: test
 version: 1.0"#;
 
-    let yaml = YamlFile::from_str(invalid_yaml).unwrap();
+    let yaml = YamlFile::parse(invalid_yaml).tree();
 
     // Initially, the invalid content is preserved as-is
     assert_eq!(yaml.to_string(), invalid_yaml);
@@ -85,14 +80,14 @@ fn test_reparse_invalid_yaml_loses_data() {
 key1: value1
 key2: value2"#;
 
-    let yaml = YamlFile::from_str(invalid_yaml).unwrap();
+    let yaml = YamlFile::parse(invalid_yaml).tree();
     let result = yaml.to_string();
 
     // Our parser preserves everything for lossless editing
     assert_eq!(result, invalid_yaml);
 
     // Reparse with our parser - still preserves everything
-    let reparsed = YamlFile::from_str(&result).unwrap();
+    let reparsed = YamlFile::parse(&result).tree();
 
     // Lossless round-trip: parse -> serialize -> parse -> serialize
     assert_eq!(reparsed.to_string(), invalid_yaml);

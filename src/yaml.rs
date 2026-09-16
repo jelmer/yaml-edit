@@ -2307,37 +2307,14 @@ quoted_yaml: >
         // `bad_block: |` has no indented body, so it is an empty scalar and
         // `incomplete_key` is not its content. That bare line makes the rest
         // invalid YAML -- both saphyr and PyYAML reject this input -- and the
-        // lenient parser sweeps it into an ERROR node, keeping the text.
+        // lines after it cannot be attached to the document at all.
         let yaml = r#"good_key: value
 bad_block: |
 incomplete_key
 another_good: works
 "#;
-        let parsed = YamlFile::from_str(yaml).expect("Should parse leniently");
-
-        // Whatever it could parse is still reachable, and the text survives.
-        let doc = parsed.document().expect("Should have document");
-        let mapping = doc.as_mapping().expect("Should be a mapping");
-        assert_eq!(
-            mapping
-                .get("good_key")
-                .unwrap()
-                .as_scalar()
-                .unwrap()
-                .as_string(),
-            "value"
-        );
-        assert_eq!(
-            mapping
-                .get("bad_block")
-                .unwrap()
-                .as_scalar()
-                .unwrap()
-                .as_string(),
-            ""
-        );
-
-        assert_eq!(parsed.to_string(), yaml);
+        let err = YamlFile::from_str(yaml).unwrap_err();
+        assert!(err.to_string().contains("could not be parsed"), "{err}");
     }
 
     #[test]

@@ -195,6 +195,14 @@ impl Parser {
                 && self.current() != Some(SyntaxKind::DIRECTIVE)
                 && self.current() != Some(SyntaxKind::DOC_END);
             if has_stray {
+                // Whatever lands here could not be attached to any document,
+                // so it is gone from the parsed value. Say so: returning Ok
+                // with the content only in an ERROR node drops it silently.
+                let stray = self.current_text().unwrap_or("").to_string();
+                self.add_error(
+                    format!("Content after the document could not be parsed: {stray:?}"),
+                    ParseErrorKind::Other,
+                );
                 self.builder.start_node(SyntaxKind::ERROR.into());
                 while self.current().is_some()
                     && self.current() != Some(SyntaxKind::EOF)

@@ -48,10 +48,13 @@ fn test_invalid_bracket_colon_combination() {
     // sequence followed by unexpected text). Degraded parsing recovers
     // the [::1] part as a flow sequence with one plain-scalar item
     // "::1" (colon-not-followed-by-whitespace is scalar content per
-    // YAML 1.2), and the :8080 tail is dropped.
+    // YAML 1.2), and the `:8080` tail is reported rather than dropped
+    // from the value in silence.
     let yaml = r#"ipv6: [::1]:8080"#;
 
-    let parsed = YamlFile::from_str(yaml).expect("Parser uses degraded parsing");
+    let parsed = YamlFile::parse(yaml);
+    assert_eq!(parsed.errors().len(), 1);
+    let parsed = parsed.tree();
     let doc = parsed.document().expect("Should have document");
     let mapping = doc.as_mapping().expect("Should be mapping");
 

@@ -276,10 +276,13 @@ impl Parser {
             // for every root value would also fold a stray line after a
             // finished collection (`- a\n- b\ninvalid\n`, YAML test suite
             // TD5N), which is an error rather than a continuation.
-            let root_is_plain_scalar = self
-                .current()
-                .is_some_and(crate::parser::scalars::is_plain_scalar_kind)
-                && !self.is_mapping_key();
+            //
+            // An annotated root is still such a scalar: `" !x t\no\n"` is
+            // the tagged scalar `t o`, so look past any run of tags and
+            // anchors to the node they cover. Only on the same line, though
+            // -- an annotation alone on its line opens a block node, whose
+            // body keeps its own indent.
+            let root_is_plain_scalar = self.root_annotations_cover_plain_scalar();
             let outer_floor = self.scalar_continuation_floor;
             let outer_root = self.node_is_document_root;
             self.equal_indent_continues_scalar = true;
@@ -708,6 +711,41 @@ impl Parser {
         (0..len.saturating_sub(1))
             .rev()
             .map(move |i| self.tokens[i].0)
+    }
+
+    /// Whether the document root is a plain scalar, looking past any tags
+    /// and anchors annotating it.
+    ///
+    /// Such a scalar has no enclosing collection, so its continuation lines
+    /// need clear no column, and an annotation in front does not change that.
+    /// The annotations have to sit on the scalar's own line: one alone on its
+    /// line opens a block node instead, and that node's body keeps its indent.
+    fn root_annotations_cover_plain_scalar(&self) -> bool {
+        let mut kind = match self.current() {
+            Some(kind) => kind,
+            None => return false,
+        };
+        let mut rest = self.upcoming_tokens();
+        let mut saw_annotation = false;
+        while matches!(kind, SyntaxKind::TAG | SyntaxKind::ANCHOR) {
+            saw_annotation = true;
+            kind = match rest.next() {
+                // A line break ends the annotation's line, so whatever
+                // follows is a block node rather than an annotated scalar.
+                Some(SyntaxKind::WHITESPACE) | Some(SyntaxKind::INDENT) => match rest.next() {
+                    Some(kind) => kind,
+                    None => return false,
+                },
+                Some(kind) => kind,
+                None => return false,
+            };
+        }
+        if !crate::parser::scalars::is_plain_scalar_kind(kind) {
+            return false;
+        }
+        // An unannotated root scalar can still be a mapping key; an
+        // annotated one was already dispatched to mapping parsing.
+        saw_annotation || !self.is_mapping_key()
     }
 
     /// Whether the INDENT at the current position is only the leading

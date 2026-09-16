@@ -1478,3 +1478,41 @@ fn test_explicit_key_scalar_forms_still_parse() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// An annotation in front of the document root does not change that the root
+/// is a plain scalar, so its continuation lines still need clear no column.
+///
+/// `" !x t\no\n"` is the tagged scalar `t o`, as saphyr reads it, exactly as
+/// the untagged `" t\no\n"` is `t o`. The root-scalar check only looked at
+/// the first token, which for an annotated root is the TAG or ANCHOR, so the
+/// floor stayed at the annotation's own column and the continuation was
+/// swept into an ERROR node while from_str still reported success.
+#[test]
+fn test_annotated_root_scalar_folds_a_less_indented_continuation() {
+    for yaml in [
+        " !x t\no\n",
+        " ! t\no\n",
+        " &a t\no\n",
+        "  !x t\n b\n",
+        " !x &a t\no\n",
+        " &a !x t\no\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// An annotation on its own line opens a block node rather than annotating a
+/// scalar on the same line, so the relaxed floor must not reach it: a
+/// following dedented line ends that node instead of folding into it.
+#[test]
+fn test_annotation_alone_on_its_line_keeps_its_block_indent() {
+    let yaml = "!x\n  a: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+    assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+}

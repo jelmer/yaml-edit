@@ -981,24 +981,19 @@ pub fn lex_with_validation_config<'a>(
                 // and anywhere inside a flow collection, it is ordinary plain
                 // scalar content (`a: b%c`).
                 if flow_depth > 0 || start_idx != current_line_start {
-                    // Treat as part of a plain scalar
-                    let mut end_idx = start_idx + 1;
-                    while let Some((idx, next_ch)) = chars.peek() {
-                        if next_ch.is_whitespace() {
-                            break;
-                        }
-                        // Outside a flow collection the flow indicators are
-                        // ordinary scalar content, as the catch-all arm
-                        // already has it: `a %}` is the single scalar `a %}`.
-                        if is_yaml_special_except(*next_ch, "%")
-                            && !(flow_depth == 0 && matches!(*next_ch, '[' | ']' | '{' | '}' | ','))
-                        {
-                            break;
-                        }
-                        end_idx = *idx + next_ch.len_utf8();
-                        chars.next();
-                    }
-                    let text = &input[token_start..end_idx];
+                    // Treat as part of a plain scalar. The shared body reader
+                    // knows the rules this needs: flow indicators are content
+                    // in block context, and an internal whitespace run stays
+                    // in the scalar when more content follows on the line, so
+                    // `r % {` is the single scalar `r % {`.
+                    let rest = read_plain_scalar_body_from(
+                        &mut chars,
+                        input,
+                        start_idx + 1,
+                        flow_depth,
+                        true,
+                    );
+                    let text = &input[token_start..start_idx + 1 + rest.len()];
                     tokens.push((classify_scalar(text), text));
                 } else {
                     // At the start of a line in block context, % starts a directive

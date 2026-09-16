@@ -1248,3 +1248,39 @@ fn test_plus_space_change_keeps_sign_and_chomping() {
         common::assert_file_cst_ok(&file);
     }
 }
+
+/// A scalar continuing through `%` folds across internal spaces like any
+/// other, so `r % {` is the single scalar `r % {` -- exactly as `r x {`
+/// already was.
+///
+/// The `%` arm had its own token loop that stopped at any whitespace, so
+/// the `{` after the space became a flow token and was stranded in an ERROR
+/// node with no parse error. It now uses the shared plain-scalar body
+/// reader, which knows both rules.
+#[test]
+fn test_percent_scalar_folds_across_spaces() {
+    for (yaml, value) in [
+        ("r % {\n", "r % {"),
+        ("r % x\n", "r % x"),
+        ("a % }\n", "a % }"),
+        ("r %{\n", "r %{"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+
+    // A `%` opening a line is still a directive.
+    let yaml = "%YAML 1.2\n---\na: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(tree.contains("DIRECTIVE"), "{tree}");
+}

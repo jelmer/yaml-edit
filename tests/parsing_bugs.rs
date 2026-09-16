@@ -1989,3 +1989,37 @@ fn test_hyphen_in_content_is_not_a_sequence_marker() {
         );
     }
 }
+
+/// A tag says what the node beneath it means, so it does not stop the
+/// document's root being reachable as that kind.
+///
+/// `"!!map\n a: 1\n"` is a mapping, as saphyr reads it, but as_mapping,
+/// as_sequence and as_scalar all answered None for an annotated root, which
+/// left the whole document unreachable through Document.
+#[test]
+fn test_tagged_document_root_is_reachable() {
+    let file = YamlFile::from_str("!!map\n a: 1\n").unwrap();
+    let doc = file.document().unwrap();
+    assert_eq!(doc.as_mapping().unwrap().len(), 1);
+
+    let file = YamlFile::from_str("!!seq\n- x\n- y\n").unwrap();
+    let doc = file.document().unwrap();
+    assert_eq!(doc.as_sequence().unwrap().len(), 2);
+
+    let file = YamlFile::from_str("!!str v\n").unwrap();
+    let doc = file.document().unwrap();
+    assert_eq!(doc.as_scalar().unwrap().as_string(), "v");
+}
+
+/// The tag itself is still reachable, and an untagged root is unaffected.
+#[test]
+fn test_document_as_tagged_exposes_the_tag() {
+    let file = YamlFile::from_str("!!map\n a: 1\n").unwrap();
+    let doc = file.document().unwrap();
+    assert_eq!(doc.as_tagged().unwrap().tag().as_deref(), Some("!!map"));
+
+    let file = YamlFile::from_str("a: 1\n").unwrap();
+    let doc = file.document().unwrap();
+    assert!(doc.as_tagged().is_none());
+    assert_eq!(doc.as_mapping().unwrap().len(), 1);
+}

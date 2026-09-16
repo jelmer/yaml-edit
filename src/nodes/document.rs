@@ -158,23 +158,49 @@ impl Document {
         })
     }
 
+    /// The document's root value, stepping through a tag that annotates it.
+    ///
+    /// A tag says what the node beneath it means, so `!!map\n a: 1\n` is
+    /// still a mapping. Without this the accessors below all answer `None`
+    /// for an annotated root, leaving it unreachable.
+    fn root_value_node(&self) -> Option<SyntaxNode> {
+        let node = self.root_node()?;
+        if node.kind() != SyntaxKind::TAGGED_NODE {
+            return Some(node);
+        }
+        node.children().find(|child| {
+            matches!(
+                child.kind(),
+                SyntaxKind::MAPPING | SyntaxKind::SEQUENCE | SyntaxKind::SCALAR | SyntaxKind::ALIAS
+            )
+        })
+    }
+
     /// Get this document as a mapping, if it is one.
     ///
     /// Note: `Mapping` supports mutation even though this method takes `&self`.
     /// Mutations are applied directly to the underlying syntax tree via rowan's
     /// persistent data structures. All references to the tree will see the changes.
     pub fn as_mapping(&self) -> Option<Mapping> {
-        self.root_node().and_then(Mapping::cast)
+        self.root_value_node().and_then(Mapping::cast)
     }
 
     /// Get this document's root value as a sequence, or `None` if it isn't one.
     pub fn as_sequence(&self) -> Option<Sequence> {
-        self.root_node().and_then(Sequence::cast)
+        self.root_value_node().and_then(Sequence::cast)
     }
 
     /// Get this document's root value as a scalar, or `None` if it isn't one.
     pub fn as_scalar(&self) -> Option<Scalar> {
-        self.root_node().and_then(Scalar::cast)
+        self.root_value_node().and_then(Scalar::cast)
+    }
+
+    /// Get this document's root value as a tagged node, or `None` if it
+    /// carries no tag.
+    pub fn as_tagged(&self) -> Option<crate::yaml::TaggedNode> {
+        self.root_node()
+            .filter(|node| node.kind() == SyntaxKind::TAGGED_NODE)
+            .and_then(crate::yaml::TaggedNode::cast)
     }
 
     /// Returns `true` if this document is a mapping that contains the given key.

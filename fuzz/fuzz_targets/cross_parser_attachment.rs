@@ -67,8 +67,11 @@ fuzz_target!(|data: &[u8]| {
         let Some(rest) = line.strip_prefix('%') else {
             return false;
         };
+        // YAML delimits a directive name with a space or tab, not with
+        // whatever char::is_whitespace admits: `%TAG\u{a0}x` names the
+        // reserved directive `TAG\u{a0}x`, and wedges saphyr as `%FOO` does.
         let name = rest
-            .split(|c: char| c.is_whitespace())
+            .split([' ', '\t'])
             .next()
             .unwrap_or(rest);
         if name != "YAML" && name != "TAG" {
@@ -77,7 +80,7 @@ fuzz_target!(|data: &[u8]| {
         // Even a well-named directive wedges saphyr when nothing follows it
         // on the line: `%TAG` alone asks for a 2GB allocation and aborts, as
         // `%YAML` does. Anything after the name avoids it.
-        rest.trim().len() == name.len()
+        rest[name.len()..].trim_matches([' ', '\t']).is_empty()
     }) {
         return;
     }

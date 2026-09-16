@@ -182,22 +182,20 @@ fn test_replace_block_scalar_with_multiline() {
     // Verify the content changed
     let new_val = mapping.get("description").expect("Should have description");
     let actual_content = new_val.as_scalar().unwrap().as_string();
-    // Block scalars preserve trailing newline
-    assert_eq!(actual_content, format!("{}\n", new_content));
+    // The value round-trips exactly: it ends without a line break, so it is
+    // written with `|-` rather than a `|` that would add one.
+    assert_eq!(actual_content, new_content);
 
     // Verify output is valid YAML
     let output = doc.to_string();
     let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
     assert!(reparsed.document().is_some());
 
-    // Verify re-parsed content matches (with trailing newline from block scalar)
+    // The value survives a serialise and reparse unchanged.
     let reparsed_doc = reparsed.document().unwrap();
     let reparsed_mapping = reparsed_doc.as_mapping().unwrap();
     let reparsed_val = reparsed_mapping.get("description").unwrap();
-    assert_eq!(
-        reparsed_val.as_scalar().unwrap().as_string(),
-        format!("{}\n", new_content)
-    );
+    assert_eq!(reparsed_val.as_scalar().unwrap().as_string(), new_content);
 }
 
 /// Test mutating tagged nodes

@@ -1089,9 +1089,13 @@ impl ScalarValue {
 
     /// Render as a block scalar introduced by `marker` (`|` literal, `>` folded).
     fn to_block_with_indent(&self, marker: char, indent: usize) -> String {
+        // A bare `|` clips: the body keeps exactly one trailing line break,
+        // whatever the value had. Strip with `|-` when the value ends without
+        // one, or reading it back gains a newline it never had.
+        let chomp = if self.value.ends_with('\n') { "" } else { "-" };
         // Content that already carries consistent indentation is preserved.
         if self.detect_content_indentation().is_some() {
-            return format!("{marker}\n{}", self.value);
+            return format!("{marker}{chomp}\n{}", self.value);
         }
         let indent_str = " ".repeat(indent);
         let indented = self
@@ -1106,7 +1110,7 @@ impl ScalarValue {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        format!("{marker}\n{indented}")
+        format!("{marker}{chomp}\n{indented}")
     }
 
     /// Detect the minimum indentation level of non-empty lines in the content
@@ -1538,7 +1542,7 @@ mod tests {
         let yaml_output = scalar.to_literal_with_indent(2);
         assert_eq!(
             yaml_output,
-            "|\n    Line 1\n      Line 2 more indented\n    Line 3"
+            "|-\n    Line 1\n      Line 2 more indented\n    Line 3"
         );
     }
 
@@ -1577,10 +1581,10 @@ mod tests {
         let scalar = ScalarValue::literal(content);
 
         let yaml_4_spaces = scalar.to_literal_with_indent(4);
-        assert_eq!(yaml_4_spaces, "|\n    Line 1\n    Line 2\n    Line 3");
+        assert_eq!(yaml_4_spaces, "|-\n    Line 1\n    Line 2\n    Line 3");
 
         let yaml_1_space = scalar.to_literal_with_indent(1);
-        assert_eq!(yaml_1_space, "|\n Line 1\n Line 2\n Line 3");
+        assert_eq!(yaml_1_space, "|-\n Line 1\n Line 2\n Line 3");
     }
 
     #[test]
@@ -1590,7 +1594,7 @@ mod tests {
         let scalar = ScalarValue::folded(content);
 
         let yaml_3_spaces = scalar.to_folded_with_indent(3);
-        assert_eq!(yaml_3_spaces, ">\n   Line 1\n   Line 2\n   Line 3");
+        assert_eq!(yaml_3_spaces, ">-\n   Line 1\n   Line 2\n   Line 3");
     }
 
     #[test]
@@ -1600,7 +1604,7 @@ mod tests {
         let scalar = ScalarValue::literal(content_with_empty_lines);
 
         let yaml_output = scalar.to_literal_with_indent(2);
-        assert_eq!(yaml_output, "|\n  Line 1\n\n  Line 3\n\n\n  Line 6");
+        assert_eq!(yaml_output, "|-\n  Line 1\n\n  Line 3\n\n\n  Line 6");
 
         // Empty lines should remain empty (no indentation added)
         // Input has 3 empty lines; they should appear unchanged in the output
@@ -2403,10 +2407,10 @@ mod tests {
         // Literal and folded styles render the block indicator on its own line
         // followed by the content indented by two spaces.
         let s = ScalarValue::with_style("line one\nline two", ScalarStyle::Literal);
-        assert_eq!(s.to_yaml_string(), "|\n  line one\n  line two");
+        assert_eq!(s.to_yaml_string(), "|-\n  line one\n  line two");
 
         let s = ScalarValue::with_style("line one\nline two", ScalarStyle::Folded);
-        assert_eq!(s.to_yaml_string(), ">\n  line one\n  line two");
+        assert_eq!(s.to_yaml_string(), ">-\n  line one\n  line two");
     }
 
     #[test]

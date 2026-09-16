@@ -983,6 +983,33 @@ impl Parser {
         if peek_idx > 0 {
             let mut check_idx = peek_idx.saturating_sub(1);
 
+            // A `:` inside a flow collection separates that collection's own
+            // entries, so step over a balanced one before looking: in
+            // `a\n[:]\n` the colon is the flow mapping's, and the line
+            // continues the scalar `a [:]`. Only the colon after the closing
+            // bracket would make the line a key of ours.
+            if self.tokens.get(peek_idx).is_some_and(|(kind, _)| {
+                matches!(kind, SyntaxKind::LEFT_BRACKET | SyntaxKind::LEFT_BRACE)
+            }) {
+                let mut depth = 0usize;
+                // `tokens` is in reverse order, so walking the index down
+                // reads the line forwards. An unbalanced collection runs out
+                // of tokens, which leaves the scan where it started.
+                while let Some(kind) = self.tokens.get(check_idx + 1).map(|(kind, _)| *kind) {
+                    match kind {
+                        SyntaxKind::LEFT_BRACKET | SyntaxKind::LEFT_BRACE => depth += 1,
+                        SyntaxKind::RIGHT_BRACKET | SyntaxKind::RIGHT_BRACE => {
+                            depth = depth.saturating_sub(1)
+                        }
+                        _ => {}
+                    }
+                    if depth == 0 || check_idx == 0 {
+                        break;
+                    }
+                    check_idx -= 1;
+                }
+            }
+
             // Skip any whitespace after the content
             while self
                 .tokens

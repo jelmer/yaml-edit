@@ -1841,3 +1841,31 @@ fn test_mapping_in_an_entry_keeps_the_sequence_rule() {
         );
     }
 }
+
+/// A `:` inside a flow collection separates that collection's own entries,
+/// so it does not make the line a key of the block mapping around it.
+///
+/// `"a\n[:]\n"` is the single scalar `a [:]`, as saphyr and PyYAML both read
+/// it, exactly as `"a\n[1]\n"` is `a [1]`. The continuation check looked at
+/// the token straight after the line's first, so the flow mapping's colon
+/// read as a key separator and the line was swept into an ERROR node while
+/// from_str still reported success.
+#[test]
+fn test_colon_inside_a_flow_collection_is_not_a_key_separator() {
+    for yaml in ["a\n[:]\n", "a\n{:}\n", "a\n[a: 1]\n", "a\n[[:]]\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// A colon after the closing bracket still makes the line a complex key.
+#[test]
+fn test_complex_key_after_a_scalar_line_still_parses() {
+    let yaml = "[a, b]: v1\n[c, d]: v2\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    assert_eq!(file.document().unwrap().as_mapping().unwrap().len(), 2);
+}

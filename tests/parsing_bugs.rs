@@ -2091,3 +2091,30 @@ fn test_block_scalar_header_indicators_still_parse() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// A comment is not content, so one on the `...` line does not violate the
+/// rule against content after a document end marker.
+///
+/// `"... # done\n"` is as valid as the `"...\n# done\n"` spelling, which
+/// already kept the comment in the tree. On the marker's own line it was
+/// swept into an ERROR node with no error reported.
+#[test]
+fn test_comment_after_a_document_end_marker() {
+    for yaml in ["... #", "... # done\n", "a\n... # done\n", "a: 1\n...  #\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// Real content after the marker is still a violation.
+#[test]
+fn test_content_after_a_document_end_marker_is_reported() {
+    let err = YamlFile::from_str("... x\n").unwrap_err();
+    assert!(
+        err.to_string().contains("after the document end marker"),
+        "{err}"
+    );
+}

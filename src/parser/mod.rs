@@ -308,22 +308,33 @@ impl Parser {
         if self.current() == Some(SyntaxKind::DOC_END) {
             self.bump();
 
-            // Check for content after document end marker (spec violation)
+            // Check for content after document end marker (spec violation).
+            // A comment is not content: `... # done` is as valid as the
+            // `...\n# done` spelling, which already kept it in the tree.
             self.skip_whitespace();
-            if self.current().is_some()
-                && self.current() != Some(SyntaxKind::NEWLINE)
-                && self.current() != Some(SyntaxKind::EOF)
-                && self.current() != Some(SyntaxKind::DOC_START)
-                && self.current() != Some(SyntaxKind::DIRECTIVE)
-            {
-                // Found content after DOC_END - wrap it in an ERROR node
+            let is_stray = |kind: Option<SyntaxKind>| {
+                kind.is_some_and(|kind| {
+                    !matches!(
+                        kind,
+                        SyntaxKind::NEWLINE
+                            | SyntaxKind::EOF
+                            | SyntaxKind::DOC_START
+                            | SyntaxKind::DIRECTIVE
+                            | SyntaxKind::COMMENT
+                    )
+                })
+            };
+            if is_stray(self.current()) {
+                // Found content after DOC_END. Both saphyr and PyYAML reject
+                // this; say so rather than returning a document the content
+                // has quietly been dropped from.
+                let stray = self.current_text().unwrap_or("").to_string();
+                self.add_error(
+                    format!("Content after the document end marker: {stray:?}"),
+                    ParseErrorKind::Other,
+                );
                 self.builder.start_node(SyntaxKind::ERROR.into());
-                while self.current().is_some()
-                    && self.current() != Some(SyntaxKind::NEWLINE)
-                    && self.current() != Some(SyntaxKind::EOF)
-                    && self.current() != Some(SyntaxKind::DOC_START)
-                    && self.current() != Some(SyntaxKind::DIRECTIVE)
-                {
+                while is_stray(self.current()) {
                     self.bump();
                 }
                 self.builder.finish_node();

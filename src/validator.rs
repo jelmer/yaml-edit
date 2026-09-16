@@ -2221,10 +2221,13 @@ mod tests {
 
     #[test]
     fn test_validator_content_after_doc_end() {
-        // Test 3HFZ: Content after document end marker
-        // Parser wraps this in ERROR node, validator detects it
+        // Test 3HFZ: Content after document end marker. The suite marks it
+        // an error case, and the parser now reports it, so take the tree
+        // from parse(); the validator still detects it from the ERROR node.
         let yaml = "---\nkey: value\n... invalid\n";
-        let doc = Document::from_str(yaml).unwrap();
+        let parsed = crate::YamlFile::parse(yaml);
+        assert_eq!(parsed.errors().len(), 1);
+        let doc = parsed.tree().document().unwrap();
 
         let validator = Validator::new();
         let violations = validator.validate(&doc);

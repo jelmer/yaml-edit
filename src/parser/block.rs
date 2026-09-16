@@ -45,10 +45,14 @@ impl Parser {
     }
 
     pub(super) fn parse_mapping_with_base_indent(&mut self, base_indent: usize) {
-        // Entries inside a mapping are bounded by their key's column. Put
-        // the rule back on the way out: a mapping nested in a sequence entry
-        // must not take the equal-indent rule away from the entries after
-        // it, or `- k: v\n- e\n t\n` loses the continuation of `e`.
+        // Entries inside a mapping are bounded by their key's column, which
+        // is not always the column the caller measured from: a document
+        // indented as a whole keeps its leading INDENT outside DOCUMENT, so
+        // the caller still says 0 and every line looks nested. Take the
+        // first key's own column when it is further right, or
+        // `"  k:\n  j: 1\n"` reads as `{k: {j: 1}}` where saphyr and PyYAML
+        // both give two sibling entries.
+        let base_indent = base_indent.max(self.current_line_indent);
         let outer_equal_indent = self.equal_indent_continues_scalar;
         self.equal_indent_continues_scalar = false;
         self.builder.start_node(SyntaxKind::MAPPING.into());

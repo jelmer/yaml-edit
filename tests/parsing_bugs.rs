@@ -2164,3 +2164,39 @@ fn test_sibling_entries_after_an_empty_nested_entry() {
     let inner = outer.get(0).unwrap();
     assert_eq!(inner.as_sequence().unwrap().len(), 2);
 }
+
+/// A mapping's entries are bounded by their key's column, which is not
+/// always the column the caller measured from: a document indented as a
+/// whole keeps its leading INDENT outside DOCUMENT, so the caller still
+/// says 0 and every line looks nested.
+///
+/// `"  k:\n  j: 1\n"` is two sibling entries, as saphyr and PyYAML both read
+/// it, but `j` was parsed as the value of `k`.
+#[test]
+fn test_indented_document_mapping_keeps_its_key_column() {
+    for yaml in [
+        "  k:\n  j: 1\n",
+        " k:\n j: 1\n",
+        "   k:\n   j: 1\n",
+        "  a:\n  b:\n  c: 1\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let depth = tree.lines().filter(|l| l.trim() == "MAPPING").count();
+        assert_eq!(depth, 1, "{yaml:?}\n{tree}");
+    }
+}
+
+/// A value really is nested when it clears the key's column.
+#[test]
+fn test_indented_document_still_nests_a_deeper_value() {
+    let yaml = "  k:\n    j: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+    let depth = tree.lines().filter(|l| l.trim() == "MAPPING").count();
+    assert_eq!(depth, 2, "{yaml:?}\n{tree}");
+}

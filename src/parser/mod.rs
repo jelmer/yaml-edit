@@ -798,6 +798,24 @@ impl Parser {
         }
     }
 
+    /// Whether a sequence entry's value follows on a later line, looking
+    /// past any run of blank lines between the dash and that line.
+    ///
+    /// The caller is positioned on the NEWLINE ending the dash's line. A
+    /// blank line's indentation is not significant, so it neither supplies
+    /// the value's indent nor ends the entry: `- \n\n m\n` is the entry
+    /// `m`, exactly as `- \n m\n` is, as saphyr and PyYAML both read it.
+    pub(super) fn entry_value_follows_blank_lines(&self) -> bool {
+        let mut rest = self.upcoming_tokens();
+        loop {
+            match rest.next() {
+                Some(SyntaxKind::NEWLINE) => continue,
+                Some(SyntaxKind::INDENT) => return true,
+                _ => return false,
+            }
+        }
+    }
+
     pub(super) fn indent_is_blank_line(&self) -> bool {
         matches!(
             self.upcoming_tokens().next(),

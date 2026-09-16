@@ -1583,3 +1583,41 @@ fn test_question_at_the_entry_column_still_opens_a_key() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// A blank line between a sequence entry's dash and its value carries no
+/// indentation of its own, so it neither supplies the value's indent nor
+/// ends the entry.
+///
+/// `"-\n\n m\n"` is the entry `m`, exactly as `"-\n m\n"` is, as saphyr and
+/// PyYAML both read it. The value lookahead peeked a single token past the
+/// newline, so a blank line hid the INDENT behind it: the entry took its
+/// implicit-null branch and the value was swept into an ERROR node while
+/// from_str still reported success.
+#[test]
+fn test_blank_line_before_a_sequence_entry_value() {
+    for yaml in [
+        "-\n\n m\n",
+        "-\n\n\n m\n",
+        "- a\n-\n\n  b\n",
+        "a:\n  -\n\n    b\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// A bare dash with no value after it is still an implicit null, and a blank
+/// line does not turn a following dedented line into its value.
+#[test]
+fn test_bare_dash_entry_stays_null() {
+    for yaml in ["-\n", "- a\n-\n", "a:\n  - x\n\nb: 1\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

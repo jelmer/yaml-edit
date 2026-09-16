@@ -239,8 +239,15 @@ impl Parser {
                 // Nested content is a NEWLINE then INDENT. A bare `-` item is
                 // an implicit null; leave the NEWLINE for the terminator bump
                 // so set/remove see DASH, SCALAR, NEWLINE in that order.
-                if self.upcoming_tokens().next() == Some(SyntaxKind::INDENT) {
+                //
+                // A blank line between the dash and its value carries no
+                // indentation of its own, so look past a run of them:
+                // `- \n\n m\n` is the entry `m`, just as `- \n m\n` is.
+                if self.entry_value_follows_blank_lines() {
                     self.bump(); // consume newline
+                    while self.current() == Some(SyntaxKind::NEWLINE) {
+                        self.bump(); // consume a blank line
+                    }
                     let indent_level = self.tokens.last().map_or(0, |(_, text)| text.len());
                     self.bump(); // consume indent
                     self.parse_value_with_base_indent(indent_level);

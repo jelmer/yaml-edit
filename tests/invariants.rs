@@ -276,10 +276,7 @@ fn set_path_after_explicit_key_does_not_leave_blank_line() {
 }
 
 // Regression tests for bugs surfaced by the post-conditioned mutation
-// proptest in `tests/proptest_invariants.rs`. Most are now-passing
-// regressions; the two `#[ignore]`d ones document deeper bugs still to
-// fix. Un-ignore them (and update the assertion to the correct output)
-// when addressed.
+// proptest in `tests/proptest_invariants.rs`.
 
 #[test]
 fn sequence_pop_last_item_collapses_to_flow_empty() {

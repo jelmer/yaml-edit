@@ -23,6 +23,13 @@ impl Parser {
     /// - `[ [a, b]: value ]` → true (colon after nested collection completes)
     /// - `[ {a: 1}, b ]` → false (colon is inside braces, not at depth 0)
     fn next_flow_element_is_implicit_mapping(&self) -> bool {
+        // A `?` makes the entry an explicit-key mapping, which parse_value
+        // builds complete. Wrapping that in an implicit single-pair mapping
+        // as well gives `[? a : b]` two mappings where the YAML test suite's
+        // CT4Q expects one.
+        if self.current() == Some(SyntaxKind::QUESTION) {
+            return false;
+        }
         // Chain current token with upcoming tokens (no allocation needed)
         let tokens = std::iter::once(self.current().unwrap_or(SyntaxKind::EOF))
             .chain(self.upcoming_tokens());

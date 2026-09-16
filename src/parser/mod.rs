@@ -674,6 +674,23 @@ impl Parser {
             self.parse_value();
         } else if self.current() == Some(SyntaxKind::NEWLINE) {
             self.bump(); // consume newline
+
+            // A comment line between the key and its value says nothing
+            // about where the value sits, so step over any run of them: the
+            // YAML test suite's Q9WF has a column-0 comment between a
+            // flow-collection key and its indented block mapping.
+            while self.current() == Some(SyntaxKind::COMMENT)
+                || (self.current() == Some(SyntaxKind::INDENT)
+                    && self.upcoming_tokens().next() == Some(SyntaxKind::COMMENT))
+            {
+                if self.current() == Some(SyntaxKind::INDENT) {
+                    self.bump();
+                }
+                self.bump(); // comment
+                if self.current() == Some(SyntaxKind::NEWLINE) {
+                    self.bump();
+                }
+            }
             if self.current() == Some(SyntaxKind::INDENT) {
                 self.bump(); // consume indent
                 if track_indent {

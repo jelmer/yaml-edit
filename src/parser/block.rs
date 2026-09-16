@@ -65,6 +65,18 @@ impl Parser {
                 break;
             }
 
+            // A `:` at or left of the `?` we sit inside opens that entry's
+            // value, not another entry of ours: `? a: 1\n: b: 2\n` keys the
+            // outer mapping with `{a: 1}` and values it `{b: 2}`, as the
+            // YAML test suite's V9D5 expects.
+            if self.current() == Some(SyntaxKind::COLON)
+                && self
+                    .explicit_key_column
+                    .is_some_and(|column| self.current_line_indent <= column)
+            {
+                break;
+            }
+
             // Emit comments as children of MAPPING
             if self.absorb_entry_comments(base_indent) {
                 break;

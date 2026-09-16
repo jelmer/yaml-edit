@@ -2372,3 +2372,72 @@ fn test_comment_only_sequence_entry_is_null() {
         assert_eq!(got, sequences, "{yaml:?}\n{tree}");
     }
 }
+
+/// An explicit key in a flow sequence is already a complete mapping, so it
+/// is not also wrapped as an implicit single-pair one.
+///
+/// The YAML test suite's CT4Q has `[\n? foo\n bar : baz\n]` as one mapping
+/// inside one sequence; the wrapper made it two.
+#[test]
+fn test_explicit_key_in_a_flow_sequence_is_not_double_wrapped() {
+    for (yaml, mappings) in [
+        ("[? a : b]\n", 1),
+        ("[a: b]\n", 1),
+        ("{? a : b}\n", 1),
+        ("[? a\n b : c]\n", 1),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let got = tree.lines().filter(|l| l.trim() == "MAPPING").count();
+        assert_eq!(got, mappings, "{yaml:?}\n{tree}");
+    }
+}
+
+/// A `:` line at or left of the `?` opens that entry's value, so a mapping
+/// parsed as the key stops there rather than claiming it as its own entry.
+///
+/// The YAML test suite's V9D5 keys an entry with `{earth: blue}` and values
+/// it `{moon: white}`; both landed in the key as sibling entries.
+#[test]
+fn test_mapping_key_stops_at_the_explicit_value_line() {
+    for (yaml, mappings) in [
+        ("? a: 1\n: b: 2\n", 3),
+        ("- ? earth: blue\n  : moon: white\n", 3),
+        ("? a\n: 1\n", 1),
+        ("a: 1\nb: 2\n", 1),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let got = tree.lines().filter(|l| l.trim() == "MAPPING").count();
+        assert_eq!(got, mappings, "{yaml:?}\n{tree}");
+    }
+}
+
+/// A comment line between a complex key and its value says nothing about
+/// where that value sits.
+///
+/// The YAML test suite's Q9WF puts a column-0 comment between a
+/// flow-collection key and its indented block mapping; the value lookup
+/// stopped at the comment and the mapping became a sibling entry instead.
+#[test]
+fn test_comment_between_a_complex_key_and_its_value() {
+    for (yaml, mappings) in [
+        ("{a: 1}:\n# c\n  b: 2\n", 3),
+        ("{a: 1}:\n  b: 2\n", 3),
+        ("{a: 1}: v\n", 2),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let got = tree.lines().filter(|l| l.trim() == "MAPPING").count();
+        assert_eq!(got, mappings, "{yaml:?}\n{tree}");
+    }
+}

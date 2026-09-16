@@ -813,20 +813,32 @@ mod tests {
     #[test]
     fn from_str_rejects_stranded_content() {
         // The parser sweeps tokens it cannot attach into a stream-level
-        // ERROR node without reporting an error. from_str returned only the
-        // first DOCUMENT, so that text vanished from the output: `&b\nx: 1\n`
-        // came back as `&b\n`, losing an entire mapping.
-        for src in ["&b\nJ", "&b\nx: 1\n", "&b\n- a\n"] {
+        // ERROR node. from_str returned only the first DOCUMENT, so that
+        // text vanished from the output rather than being reported.
+        //
+        // A mapping entry cannot follow the document's own scalar, which
+        // PyYAML rejects too, so there is nothing to attach these to.
+        for src in ["a\nx: 1\n", "- a\nx: 1\n"] {
             let err = Document::from_str(src).expect_err("stranded content must not be dropped");
             let message = err.to_string();
             assert!(
-                message.contains("could not be parsed as part of the document"),
+                message.contains("could not be parsed"),
                 "{src:?}: unexpected error {message}"
             );
         }
 
-        // Documents with nothing stranded still parse and round-trip.
-        for src in ["a: 1\n", "a\nJ", "- a\n- b\n", "key: value"] {
+        // Documents with nothing stranded still parse and round-trip. An
+        // anchor annotates the node on the following line, so `&b\nx: 1\n`
+        // is the mapping `{x: 1}`, as saphyr and PyYAML both read it.
+        for src in [
+            "a: 1\n",
+            "a\nJ",
+            "- a\n- b\n",
+            "key: value",
+            "&b\nJ",
+            "&b\nx: 1\n",
+            "&b\n- a\n",
+        ] {
             let doc = Document::from_str(src).expect("valid document");
             assert_eq!(doc.to_string(), src, "{src:?}");
         }

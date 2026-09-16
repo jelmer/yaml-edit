@@ -871,10 +871,11 @@ impl Parser {
         // saphyr and PyYAML read it. Inside one they delimit, so they end
         // the scalar as before.
         //
-        // A QUESTION does not: it opens the next explicit key of the mapping
-        // we may sit in, so `? a\n: 1\n? b\n: 2\n` has two entries rather
-        // than one folded value. Only a root scalar, which has no mapping to
-        // open an entry of, reads it as content.
+        // A QUESTION counts only where it cannot open the next explicit
+        // key of the mapping or sequence we may sit in: past the scalar's
+        // own column, or in a root scalar that has no such collection. So
+        // `? a\n: 1\n? b\n: 2\n` still has two entries, while `k: v\n  ?\n`
+        // is the single value `v ?`, as saphyr and PyYAML both read it.
         //
         // A DASH counts only when the line is indented past the scalar's own,
         // where it cannot be the next entry of the sequence we sit in:
@@ -919,7 +920,15 @@ impl Parser {
                         // Inside a sequence: only past our own dash, where
                         // it cannot start the entry's own node.
                         Some(column) => next_line_indent > column,
-                        None => self.scalar_continuation_floor == Some(0),
+                        // No sequence to open an entry of, so the mapping
+                        // is what a `?` could start a node of. Past the
+                        // scalar's own column it cannot: `k: v\n  ?\n` is
+                        // the value `v ?`. A root scalar has no mapping
+                        // either way.
+                        None => {
+                            next_line_indent > scalar_indent
+                                || self.scalar_continuation_floor == Some(0)
+                        }
                     })
                 || (*kind == SyntaxKind::DASH
                     && match self.sequence_entry_column {

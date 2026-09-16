@@ -1645,3 +1645,51 @@ fn test_indented_comment_does_not_end_the_block() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// A `?` indented past a mapping value's own column cannot open the next
+/// explicit key of that mapping, so it continues the value's scalar.
+///
+/// `"k: v\n  ?\nk2: w\n"` is the value `v ?` and a second entry `k2`, as
+/// saphyr and PyYAML both read it. The continuation check admitted a `?`
+/// only in a root scalar, so elsewhere it invented an explicit-key entry
+/// with a null key and null value, and with a blank line in front the rest
+/// of the mapping was stranded in an ERROR node.
+#[test]
+fn test_question_indented_past_a_value_continues_the_scalar() {
+    for (yaml, value) in [
+        ("k: v\n  ?\nk2: w\n", "v\n  ?"),
+        ("k: v\n\n  ?\nk2: w\n", "v\n\n  ?"),
+        ("k: v\n  ?\n", "v\n  ?"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let map = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            map.get(yaml_edit::ScalarValue::from("k"))
+                .map(|v| v.to_string()),
+            Some(value.to_string()),
+            "{yaml:?}"
+        );
+    }
+}
+
+/// A `?` at or left of the scalar's column still opens the next explicit
+/// key, so a mapping written that way keeps both its entries.
+#[test]
+fn test_question_at_the_key_column_still_opens_a_key() {
+    for yaml in ["? a\n: 1\n? b\n: 2\n", "k: v\n? a\n: 1\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_mapping().unwrap().len(),
+            2,
+            "{yaml:?}"
+        );
+    }
+}

@@ -332,7 +332,27 @@ impl Parser {
                             if *token_after_indent != SyntaxKind::DASH {
                                 // This is a multiline scalar key continuation
                                 self.bump(); // consume newline
+                                let key_indent =
+                                    self.tokens.last().map_or(0, |(_, text)| text.len());
                                 self.bump(); // consume indent
+
+                                // Unless the key is a block mapping starting
+                                // on this line: `?\n s: 1\n e: 2\n: v\n` is
+                                // keyed by `{s: 1, e: 2}`, as saphyr reads it
+                                // and as the inline `? s: 1\n  e: 2\n` spelling
+                                // already parsed. Reading it as scalar parts
+                                // stopped at the first colon and dropped every
+                                // entry after it, and the value with them.
+                                // A line starting at the colon is this
+                                // entry's own value (`? a\n: 1\n`), not part
+                                // of the key, even though is_mapping_key
+                                // counts it as the null-key entry it would be
+                                // anywhere else.
+                                if self.current() != Some(SyntaxKind::COLON)
+                                    && self.is_mapping_key()
+                                {
+                                    self.parse_mapping_with_base_indent(key_indent);
+                                }
 
                                 // Parse scalar tokens at this indentation level as part of the key
                                 while self.current().is_some()

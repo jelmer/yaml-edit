@@ -1869,3 +1869,38 @@ fn test_complex_key_after_a_scalar_line_still_parses() {
     assert_eq!(file.to_string(), yaml);
     assert_eq!(file.document().unwrap().as_mapping().unwrap().len(), 2);
 }
+
+/// An explicit key whose mapping starts on the line after the `?` keeps all
+/// of that mapping's entries.
+///
+/// `"?\n s: 1\n e: 2\n: v\n"` is keyed by `{s: 1, e: 2}`, as saphyr reads it
+/// and as the inline `"? s: 1\n  e: 2\n: v\n"` spelling already parsed. The
+/// indented line was read as scalar parts of the key, which stopped at the
+/// first colon, so every entry after it was swept into an ERROR node --
+/// taking the entry's own value with it -- while from_str reported success.
+#[test]
+fn test_explicit_key_mapping_starting_on_the_next_line() {
+    for yaml in [
+        "?\n s: 1\n e: 2\n: v\n",
+        "?\n s:\n e:\n",
+        "?\n a: 1\n b: 2\n c: 3\n: v\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// The value line of an explicit key is still its value, not part of the key.
+#[test]
+fn test_explicit_key_value_line_is_not_part_of_the_key() {
+    for yaml in ["m:\n  ? a\n  : 1\nuf: v\n", "? a\n: 1\n? b\n: 2\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

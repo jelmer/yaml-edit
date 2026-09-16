@@ -1553,3 +1553,33 @@ fn test_block_scalar_keep_chomping_still_parses() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// `?` opens an explicit key only at the start of a node, so indented past a
+/// sequence entry's dash it continues that entry's scalar.
+///
+/// `"- x\n  ?\n- y\n"` is the two entries `x ?` and `y`, as saphyr and
+/// PyYAML both read it. The continuation check refused a `?` inside any
+/// sequence, so it was swept into an ERROR node along with every entry that
+/// followed, while from_str still reported success.
+#[test]
+fn test_question_indented_past_a_dash_continues_the_entry() {
+    let yaml = "- x\n  ?\n- y\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+    assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    let seq = file.document().unwrap().as_sequence().unwrap();
+    assert_eq!(seq.len(), 2, "{yaml:?}");
+}
+
+/// A `?` at the entry's own column still opens an explicit key.
+#[test]
+fn test_question_at_the_entry_column_still_opens_a_key() {
+    for yaml in ["- ? k\n  : v\n", "- x\n- ? k\n  : v\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

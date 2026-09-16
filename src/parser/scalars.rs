@@ -910,9 +910,17 @@ impl Parser {
                     | SyntaxKind::RIGHT_BRACE
                     | SyntaxKind::COMMA
             ) && self.flow_depth == 0)
+                // `?` opens an explicit key only at the start of a node.
+                // On a line that merely continues a scalar it is content:
+                // `- x\n  ?\n- y\n` is the two entries `x ?` and `y`, as
+                // saphyr and PyYAML both read it.
                 || (*kind == SyntaxKind::QUESTION
-                    && self.scalar_continuation_floor == Some(0)
-                    && self.sequence_entry_column.is_none())
+                    && match self.sequence_entry_column {
+                        // Inside a sequence: only past our own dash, where
+                        // it cannot start the entry's own node.
+                        Some(column) => next_line_indent > column,
+                        None => self.scalar_continuation_floor == Some(0),
+                    })
                 || (*kind == SyntaxKind::DASH
                     && match self.sequence_entry_column {
                         // Inside a sequence: only past our own dash, where it

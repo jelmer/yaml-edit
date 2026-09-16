@@ -1373,3 +1373,58 @@ fn test_flow_collection_key_still_opens_an_entry() {
     let seq = mapping.get("k").unwrap();
     assert_eq!(seq.as_sequence().unwrap().len(), 2);
 }
+
+/// A `+` is a chomping indicator only where the `|` or `>` before it opens
+/// the value. In `/|+: v` the pipe is scalar content, so the `+` is content
+/// too and the key is `/|+`, as saphyr reads it.
+///
+/// The check scanned back to the first non-digit and accepted any `|` it
+/// found, so the `+` became a bare PLUS. With another entry after it the
+/// rest was stranded in an ERROR node with no parse error.
+#[test]
+fn test_plus_after_a_content_pipe_is_not_chomping() {
+    for (yaml, key) in [
+        ("/|+: v\n", "/|+"),
+        ("a|+: v\n", "a|+"),
+        ("x>+: v\n", "x>+"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string()], "{yaml:?}");
+    }
+
+    // The reduced fuzz case: a second entry after such a key.
+    let yaml = "/|+:\n:";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(!tree.contains("ERROR"), "{tree}");
+}
+
+/// A `|` or `>` that really opens the value still takes its chomping and
+/// indentation indicators.
+#[test]
+fn test_block_scalar_header_still_chomps() {
+    for yaml in [
+        "k: |+\n  x\n",
+        "k: |2+\n  x\n",
+        "k: >-\n  x\n",
+        "- |+\n  x\n",
+        "|+\nx\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

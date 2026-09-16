@@ -1160,12 +1160,28 @@ pub fn lex_with_validation_config<'a>(
                     // an indicator only as the chomping suffix of such a
                     // header, where `|2+` must keep it as its own token;
                     // anywhere else it is content (`a+b`).
-                    let plus_is_chomping = next_ch == '+'
-                        && input[current_line_start..idx]
-                            .bytes()
-                            .rev()
-                            .find(|b| !b.is_ascii_digit())
-                            .is_some_and(|b| b == b'|' || b == b'>');
+                    // A `+` closing a block-scalar header (`|+`, `>2+`) is a
+                    // chomping indicator. The `|` has to *open* the value for
+                    // that, though: in `/|+:` the pipe is scalar content, so
+                    // the `+` is content too and the key is `/|+`. Require
+                    // nothing but the value's start before the `|`.
+                    let plus_is_chomping = next_ch == '+' && {
+                        // Step back over any explicit indentation digits to
+                        // the `|` or `>` this `+` would close.
+                        let head = input[current_line_start..idx]
+                            .trim_end_matches(|c: char| c.is_ascii_digit());
+                        match head.strip_suffix(['|', '>']) {
+                            // The header must open the value: only the value's
+                            // start may precede it. In `/|+:` the pipe is
+                            // scalar content, so the `+` is content too and the
+                            // key is `/|+`.
+                            Some(before) => {
+                                let before = before.trim_end();
+                                before.is_empty() || before.ends_with(':') || before.ends_with('-')
+                            }
+                            None => false,
+                        }
+                    };
                     if plus_is_chomping {
                         break;
                     }

@@ -616,7 +616,7 @@ pub fn lex_with_validation_config<'a>(
                     && input[start_idx + 3..]
                         .chars()
                         .next()
-                        .map_or(true, |next| next.is_whitespace())
+                        .map_or(true, ends_document_marker)
                 {
                     chars.next();
                     chars.next();
@@ -924,7 +924,7 @@ pub fn lex_with_validation_config<'a>(
                     && input[start_idx + 3..]
                         .chars()
                         .next()
-                        .map_or(true, |next| next.is_whitespace());
+                        .map_or(true, ends_document_marker);
                 if is_doc_end && chars.peek() == Some(&(start_idx + 1, '.')) {
                     chars.next(); // consume second .
                     if chars.peek() == Some(&(start_idx + 2, '.')) {
@@ -1363,6 +1363,16 @@ fn is_merge_key_at(input: &str, idx: usize) -> bool {
 /// `a: x !!b` is the scalar `x !!b` rather than a tagged node. A preceding
 /// space is not enough to start a new node: what matters is whether the
 /// last token was scalar content.
+/// Whether the character ends a `---` or `...` marker.
+///
+/// YAML 1.2 `s-white` is space and tab only, and a marker may also end at a
+/// line break. Rust's `char::is_whitespace` is Unicode-wide and counts
+/// U+00A0 and friends, which are ordinary scalar content here: `"...\u{a0}-"`
+/// is one plain scalar, as saphyr and PyYAML both read it.
+fn ends_document_marker(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\n' | '\r')
+}
+
 fn node_property_can_start(tokens: &[(SyntaxKind, &str)]) -> bool {
     for (kind, _) in tokens.iter().rev() {
         match kind {

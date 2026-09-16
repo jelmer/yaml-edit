@@ -2023,3 +2023,33 @@ fn test_document_as_tagged_exposes_the_tag() {
     assert!(doc.as_tagged().is_none());
     assert_eq!(doc.as_mapping().unwrap().len(), 1);
 }
+
+/// A `---` or `...` marker ends at a space, a tab or a line break, which is
+/// all YAML 1.2 counts as whitespace there.
+///
+/// Rust's char::is_whitespace is Unicode-wide, so a no-break space after the
+/// dots looked like the end of a marker. `"...\u{a0}-"` is one plain scalar,
+/// as saphyr and PyYAML both read it, but it parsed as a document end with
+/// the rest stranded in an ERROR node and no error reported.
+#[test]
+fn test_unicode_space_does_not_end_a_document_marker() {
+    for yaml in ["...\u{a0}-", "---\u{a0}x", "...\u{2028}a", "---\u{00a0}"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// A marker followed by real whitespace, or by nothing, is still a marker.
+#[test]
+fn test_document_markers_still_parse() {
+    for yaml in ["---\na: 1\n", "--- a\n", "a\n...\nb: 1\n", "a: 1\n...\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

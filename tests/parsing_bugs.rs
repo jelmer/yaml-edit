@@ -1621,3 +1621,27 @@ fn test_bare_dash_entry_stays_null() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// A comment's own column says nothing about the block it sits in, so an
+/// indented comment line does not end that block any more than one at
+/// column 0 does. What ends it is the next line that carries content.
+///
+/// `"k: x\n\n  #\nk2: w\n"` is the two-entry mapping both saphyr and PyYAML
+/// read. The dedent check only excused a comment at column 0, so an
+/// indented one ended the mapping and the whole `k2` entry was swept into an
+/// ERROR node while from_str still reported success.
+#[test]
+fn test_indented_comment_does_not_end_the_block() {
+    for yaml in [
+        "k: x\n\n  #\nk2: w\n",
+        "k: x\n  # c\nk2: w\n",
+        "- v\n\n  #\n- x\n",
+        "a:\n  b: 1\n\n    # c\nc: 2\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

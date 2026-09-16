@@ -537,7 +537,12 @@ impl Parser {
                         Some(SyntaxKind::INDENT) => {
                             // A blank line's indentation says nothing about the
                             // block we are in, so never read it as a dedent.
-                            let blank_line = self.indent_is_blank_line();
+                            // Neither does a comment's: what ends the block is
+                            // the next line that carries content, so an
+                            // indented comment gets the same treatment as one
+                            // at column 0 below.
+                            let blank_line =
+                                self.indent_is_blank_line() || self.indent_starts_comment_line();
                             if let Some((_, text)) = self.tokens.last() {
                                 if !blank_line && text.len() < base_indent {
                                     // Dedent detected - don't consume the indent token
@@ -746,6 +751,17 @@ impl Parser {
         // An unannotated root scalar can still be a mapping key; an
         // annotated one was already dispatched to mapping parsing.
         saw_annotation || !self.is_mapping_key()
+    }
+
+    /// Whether the INDENT at the current position is only the leading
+    /// whitespace of a comment line.
+    ///
+    /// A comment's own column says nothing about the block it sits in, so
+    /// such an INDENT must not be read as a dedent out of it any more than a
+    /// blank line's may. Whether the block ends there is decided by the next
+    /// line with content, which the COMMENT arm reads once it is reached.
+    pub(super) fn indent_starts_comment_line(&self) -> bool {
+        self.upcoming_tokens().next() == Some(SyntaxKind::COMMENT)
     }
 
     /// Whether the INDENT at the current position is only the leading

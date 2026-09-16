@@ -225,16 +225,7 @@ impl Parser {
             self.bump(); // consume dash
             self.skip_whitespace();
 
-            // Record the dash's line indentation for the item value parsing.
-            //
-            // TODO: this is the column the entry's *value* starts at, and a
-            // nested sequence opened on this line (`- -`) then takes it as
-            // the column its own *entries* start at, which is one further
-            // left than its dash. A later entry at the dash's column reads
-            // as nested again, so `- -\n  -\n` parses as `[[[null]]]` where
-            // saphyr and PyYAML both give `[[null, null]]`. Telling the two
-            // columns apart means separating value indent from entry indent
-            // throughout, rather than adjusting either one here.
+            // Record the dash's line indentation for the item value parsing
             let item_indent = self.current_line_indent;
 
             // A `-` on a later line continues this entry's scalar when it is
@@ -259,12 +250,17 @@ impl Parser {
                 // A blank line between the dash and its value carries no
                 // indentation of its own, so look past a run of them:
                 // `- \n\n m\n` is the entry `m`, just as `- \n m\n` is.
-                if self.entry_value_follows_blank_lines() {
+                // The value has to clear our own dash's column, or the line
+                // opens the next entry rather than belonging to this one.
+                if let Some(indent_level) = self.entry_value_indent(dash_column) {
                     self.bump(); // consume newline
-                    while self.current() == Some(SyntaxKind::NEWLINE) {
-                        self.bump(); // consume a blank line
+                                 // Step over the blank lines the helper looked past.
+                    while self.current() == Some(SyntaxKind::NEWLINE)
+                        || (self.current() == Some(SyntaxKind::INDENT)
+                            && self.indent_is_blank_line())
+                    {
+                        self.bump();
                     }
-                    let indent_level = self.tokens.last().map_or(0, |(_, text)| text.len());
                     self.bump(); // consume indent
                     self.parse_value_with_base_indent(indent_level);
                 } else {

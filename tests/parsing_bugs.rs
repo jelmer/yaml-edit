@@ -2118,3 +2118,49 @@ fn test_content_after_a_document_end_marker_is_reported() {
         "{err}"
     );
 }
+
+/// A sequence entry's value on a later line has to clear the entry's own
+/// dash column. At or left of it the line opens the next entry instead, and
+/// this entry is an implicit null.
+///
+/// `"- -\n  -\n"` is `[[null, null]]` while `"- -\n   -\n"` is `[[[null]]]`,
+/// as saphyr and PyYAML both read them. The lookahead accepted any indented
+/// line as the value, so a sibling dash at the entry's own column opened a
+/// sequence nested one level too deep.
+#[test]
+fn test_entry_value_on_a_later_line_clears_the_dash_column() {
+    // (yaml, nesting depth measured as the number of SEQUENCE nodes)
+    for (yaml, sequences) in [
+        ("- -\n  -\n", 2),
+        ("- -\n\n  -\n", 2),
+        ("- a\n- -\n  -\n", 2),
+        ("- -\n   -\n", 3),
+        ("- -\n    - x\n", 3),
+        ("-\n  - x\n", 2),
+        ("- -\n  - x\n", 2),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        // tree_to_string prints bare node names, and SEQUENCE_ENTRY starts
+        // with SEQUENCE, so count the lines that are exactly a SEQUENCE.
+        let depth = tree
+            .lines()
+            .filter(|line| line.trim() == "SEQUENCE")
+            .count();
+        assert_eq!(depth, sequences, "{yaml:?}\n{tree}");
+    }
+}
+
+/// The sibling entries really are reachable as siblings.
+#[test]
+fn test_sibling_entries_after_an_empty_nested_entry() {
+    let yaml = "- -\n  -\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    let outer = file.document().unwrap().as_sequence().unwrap();
+    assert_eq!(outer.len(), 1);
+    let inner = outer.get(0).unwrap();
+    assert_eq!(inner.as_sequence().unwrap().len(), 2);
+}

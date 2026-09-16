@@ -828,20 +828,41 @@ impl Parser {
         }
     }
 
-    /// Whether a sequence entry's value follows on a later line, looking
-    /// past any run of blank lines between the dash and that line.
+    /// The indentation of a sequence entry's value when that value is on a
+    /// later line, looking past any run of blank lines between the dash and
+    /// that line. `None` when the entry has no such value.
     ///
-    /// The caller is positioned on the NEWLINE ending the dash's line. A
-    /// blank line's indentation is not significant, so it neither supplies
-    /// the value's indent nor ends the entry: `- \n\n m\n` is the entry
-    /// `m`, exactly as `- \n m\n` is, as saphyr and PyYAML both read it.
-    pub(super) fn entry_value_follows_blank_lines(&self) -> bool {
-        let mut rest = self.upcoming_tokens();
+    /// The caller is positioned on the NEWLINE ending the dash's line, whose
+    /// dash sits at `dash_column`. A blank line's indentation is not
+    /// significant, so it neither supplies the value's indent nor ends the
+    /// entry: `- \n\n m\n` is the entry `m`, exactly as `- \n m\n` is.
+    ///
+    /// The value has to clear the dash's own column. At or left of it the
+    /// line opens the next entry instead, and this one is an implicit null:
+    /// `- -\n  -\n` is `[[null, null]]` while `- -\n   -\n` is `[[[null]]]`,
+    /// as saphyr and PyYAML both read them.
+    pub(super) fn entry_value_indent(&self, dash_column: usize) -> Option<usize> {
+        // `tokens` is in reverse order, so walk it backwards to read the
+        // lines that follow.
+        let mut rest = self.tokens.iter().rev().map(|(kind, text)| (*kind, text));
+        // The NEWLINE we are standing on.
+        if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+            return None;
+        }
         loop {
             match rest.next() {
-                Some(SyntaxKind::NEWLINE) => continue,
-                Some(SyntaxKind::INDENT) => return true,
-                _ => return false,
+                // A blank line: its own line break is the one we just read.
+                Some((SyntaxKind::NEWLINE, _)) => continue,
+                Some((SyntaxKind::INDENT, text)) => {
+                    let indent = text.len();
+                    // An indent that only leads a blank line says nothing
+                    // about where the value sits.
+                    if matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+                        continue;
+                    }
+                    return (indent > dash_column).then_some(indent);
+                }
+                _ => return None,
             }
         }
     }

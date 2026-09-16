@@ -142,11 +142,23 @@ impl Scalar {
             return String::new();
         }
 
-        // Detect base indentation from first non-empty line
-        let base_indent = content_lines
-            .iter()
-            .find(|line| !line.trim().is_empty())
-            .map_or(0, |line| line.chars().take_while(|c| *c == ' ').count());
+        // An explicit indentation indicator (`|2`, `>2-`) says where the
+        // content starts, counted from the block's own column. Anything
+        // further right is part of the value: `|2` over a 4-space body is
+        // `"  x"`, not `"x"`. Without it, take the first non-empty line's
+        // indentation as the base.
+        let explicit_indent = header
+            .chars()
+            .find(|c| c.is_ascii_digit() && *c != '0')
+            .and_then(|c| c.to_digit(10))
+            .map(|d| d as usize);
+        let base_indent = match explicit_indent {
+            Some(explicit) => explicit,
+            None => content_lines
+                .iter()
+                .find(|line| !line.trim().is_empty())
+                .map_or(0, |line| line.chars().take_while(|c| *c == ' ').count()),
+        };
 
         // Count trailing empty lines for Keep chomping
         let trailing_empty_count = content_lines

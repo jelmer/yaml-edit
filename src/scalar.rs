@@ -868,12 +868,15 @@ impl ScalarValue {
 
     /// Detect the appropriate style for a value
     fn detect_style(value: &str) -> ScalarStyle {
-        // Multi-line strings use literal style. This comes first: a literal
-        // block renders the newlines faithfully, so such a value does not
-        // also need quoting.
+        // A line break has to be decided first. A quoted scalar folds its
+        // breaks into spaces, so `"x\ny\n"` written as `'x\ny\n'` reads back
+        // as `x y`, while a literal block keeps them. A literal also answers
+        // every reason needs_quoting gives, so nothing multi-line needs
+        // quotes.
         if value.contains('\n') {
             return ScalarStyle::Literal;
         }
+        // Check if value needs quoting
         if Self::needs_quoting(value) {
             // Prefer single quotes if no single quotes in value
             if !value.contains('\'') {
@@ -1089,12 +1092,40 @@ impl ScalarValue {
 
     /// Render as a block scalar introduced by `marker` (`|` literal, `>` folded).
     fn to_block_with_indent(&self, marker: char, indent: usize) -> String {
-        // A bare `|` clips: the body keeps exactly one trailing line break,
-        // whatever the value had. Strip with `|-` when the value ends without
-        // one, or reading it back gains a newline it never had.
-        let chomp = if self.value.ends_with('\n') { "" } else { "-" };
+        // Pick the chomping indicator that preserves the value's trailing
+        // line breaks: a bare `|` clips to exactly one, `|-` strips them all
+        // and `|+` keeps them. Otherwise reading the value back gains or
+        // loses a newline.
+        let trailing = self.value.len() - self.value.trim_end_matches('\n').len();
+        let chomp = match trailing {
+            0 => "-",
+            1 => "",
+            _ => "+",
+        };
         // Content that already carries consistent indentation is preserved.
-        if self.detect_content_indentation().is_some() {
+        // That indentation would be read as the block's own and stripped on
+        // the way back in, though, losing the value's leading spaces, so say
+        // where the content really starts: `|2` for `"  x\n  y"`.
+        if let Some(content_indent) = self.detect_content_indentation() {
+            if content_indent > 0 {
+                // The indicator counts from the block's own column, so the
+                // body has to sit that much further right for the value's
+                // leading spaces to survive.
+                let body = " ".repeat(indent);
+                let shifted = self
+                    .value
+                    .lines()
+                    .map(|line| {
+                        if line.is_empty() {
+                            String::new()
+                        } else {
+                            format!("{body}{line}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return format!("{marker}{indent}{chomp}\n{shifted}");
+            }
             return format!("{marker}{chomp}\n{}", self.value);
         }
         let indent_str = " ".repeat(indent);

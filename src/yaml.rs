@@ -1378,9 +1378,11 @@ null_ref: *null_val"#;
         let scalar1 = mapping1
             .get("explicit")
             .expect("Should have 'explicit' key");
+        // `|2` puts the content at column 2, so the two further spaces on
+        // each line are part of the value, as saphyr and PyYAML both read it.
         assert_eq!(
             scalar1.as_scalar().unwrap().as_string(),
-            "Two space indent\nAnother line\n"
+            "  Two space indent\n  Another line\n"
         );
 
         let output1 = parsed1.to_string();
@@ -1398,9 +1400,12 @@ null_ref: *null_val"#;
         let scalar2 = mapping2
             .get("folded_explicit")
             .expect("Should have 'folded_explicit' key");
+        // `>3` puts the content at column 3, so the three further spaces are
+        // part of the value -- and a more-indented line in a folded scalar
+        // keeps its break rather than folding, as both references read it.
         assert_eq!(
             scalar2.as_scalar().unwrap().as_string(),
-            "Three space indent Another folded line\n"
+            "   Three space indent\n   Another folded line\n"
         );
 
         let output2 = parsed2.to_string();

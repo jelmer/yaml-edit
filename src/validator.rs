@@ -1735,19 +1735,17 @@ impl Validator {
         // Explicit-key entries (`? key\n : value`) are allowed to span
         // multiple lines by construction; the QUESTION indicator makes
         // them explicit rather than implicit.
-        let is_explicit = has_child_token(entry_node, |k| k == crate::SyntaxKind::QUESTION);
+        // The `?` sits in the MAPPING_ENTRY for a block explicit key, but
+        // inside the KEY for a flow one (`{\n? explicit: entry,\n?\n}`), so
+        // look in both -- the test suite's DFF7 has the latter.
+        let is_explicit = has_child_token(entry_node, |k| k == crate::SyntaxKind::QUESTION)
+            || entry_node
+                .children()
+                .filter(|c| c.kind() == crate::SyntaxKind::KEY)
+                .any(|key| has_child_token(&key, |k| k == crate::SyntaxKind::QUESTION));
         if is_explicit {
             return;
         }
-
-        // TODO: this reports 8 files the test suite marks valid, all flow
-        // mappings spread over lines (`{\nunquoted : "x",\n}` -- 4ABK, DFF7,
-        // the `- { ... }` shapes), which YAML allows. What an implicit key
-        // really may not do is put its `:` on a different line from the key
-        // (C2SP's `[23\n]: 42`, DK4H, ZXT5), and those three are reported
-        // only because this rule is broad. Exempting flow context wholesale
-        // loses them, so the fix needs the key-to-colon span rather than the
-        // entry's.
 
         for child in entry_node.children() {
             if child.kind() != crate::SyntaxKind::KEY {
@@ -1759,7 +1757,28 @@ impl Validator {
                 }
                 _ => false,
             });
-            if spans_lines {
+            // A flow scalar may span lines, so a key inside a flow
+            // collection is allowed to: the test suite's 8KB6, 9BXH, 9SA2
+            // and NJ66 all key an entry with `{ multi\n  line: value}`. The
+            // restriction is on an implicit key in block context (7LBH).
+            // What matters is the collection this entry belongs to: a flow
+            // one lets its keys span lines (8KB6's `- { multi\n  line: v}`),
+            // a block one does not, even when the key is itself a flow
+            // collection (C2SP's `[23\n]: 42`, DK4H).
+            // A flow collection holds its own `{`/`[` as a direct child;
+            // first_token() would instead reach into the key's flow
+            // sequence, making C2SP's block mapping look like a flow one.
+            let in_flow = entry_node.parent().is_some_and(|m| {
+                m.children_with_tokens()
+                    .filter_map(|c| c.into_token())
+                    .any(|t| {
+                        matches!(
+                            t.kind(),
+                            crate::SyntaxKind::LEFT_BRACE | crate::SyntaxKind::LEFT_BRACKET
+                        )
+                    })
+            });
+            if spans_lines && !in_flow {
                 violations.push(Violation::error_at(
                     Rule::Other,
                     child.text_range(),
@@ -1772,6 +1791,18 @@ impl Validator {
         // The key can also be separated from its own COLON by a line break
         // (`[ "key"\n  :value ]`): the NEWLINE is then a sibling of KEY
         // rather than part of it.
+        //
+        // Inside a flow *mapping* that is an ordinary entry spread over
+        // lines, which the test suite's 5MUD and K3WX (`{ "foo"\n  :bar }`)
+        // allow; only a flow sequence needs an implicit key there, which is
+        // ZXT5's error.
+        if entry_node.ancestors().any(|a| {
+            a.kind() == crate::SyntaxKind::MAPPING
+                && a.first_token()
+                    .is_some_and(|t| t.kind() == crate::SyntaxKind::LEFT_BRACE)
+        }) {
+            return;
+        }
         let mut seen_key = false;
         for el in entry_node.children_with_tokens() {
             match el {

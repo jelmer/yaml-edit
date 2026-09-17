@@ -2834,3 +2834,36 @@ fn test_anchor_before_a_complex_key_is_inside_the_key() {
     assert!(!flags_anchors("---\n&mapping\n&key [ a ]: value\n"));
     assert!(flags_anchors("top1: &n1\n  &k1 k: v\n"));
 }
+
+/// The multi-line restriction is on an implicit key in *block* context.
+///
+/// A flow collection may spread its entries over lines and its keys may
+/// span them (8KB6's `- { multi\n  line: value}`), and a flow mapping may
+/// put the `:` on a later line (5MUD's `{ "foo"\n  :bar }`). What stays an
+/// error is a block mapping whose key spans lines -- C2SP's `[23\n]: 42`,
+/// where the flow sequence is the key rather than the surrounding
+/// collection -- and ZXT5's flow *sequence* with the same shape.
+#[test]
+fn test_implicit_key_multiline_applies_in_block_context() {
+    use yaml_edit::validator::Validator;
+    let flagged = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        Validator::new()
+            .validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file))
+            .iter()
+            .any(|v| v.message.contains("Implicit key cannot span"))
+    };
+
+    for yaml in [
+        "{\nunquoted : \"separate\",\n}\n",
+        "- { multi\n  line: value}\n",
+        "---\n{ \"foo\"\n  :bar }\n",
+        "{\n? explicit: entry,\n?\n}\n",
+    ] {
+        assert!(!flagged(yaml), "{yaml:?} should not be flagged");
+    }
+
+    for yaml in ["[23\n]: 42\n", "[ \"key\"\n  :value ]\n", "\"a\nb\": 1\n"] {
+        assert!(flagged(yaml), "{yaml:?} should be flagged");
+    }
+}

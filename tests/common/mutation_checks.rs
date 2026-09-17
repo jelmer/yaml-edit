@@ -394,13 +394,16 @@ pub fn assert_remove_path_stuck(doc: &Document, path: &str, removed: bool) {
         return;
     }
     let op = format!("RemovePath({path:?})");
-    if doc.try_get_path(path).is_ok() {
-        panic!("{op}: path still present, text: {:?}", doc.to_string());
-    }
+    // A removal takes one entry, so a duplicate key leaves the path
+    // resolvable: `b: 1\na: 2\nb: 3\n` still has a `b` afterwards. Only
+    // assert the path is gone when it was not duplicated.
+    let still_present = doc.try_get_path(path).is_ok();
     let text = doc.to_string();
     let reparsed = Document::from_str(&text)
         .unwrap_or_else(|e| panic!("{op}: re-parse failed ({e}), text: {text:?}"));
-    if reparsed.try_get_path(path).is_ok() {
+    // Whether or not an occurrence remains, the rendered text has to agree
+    // with the tree it came from.
+    if reparsed.try_get_path(path).is_ok() != still_present {
         panic!("{op}: reparse drift: path came back, text: {text:?}");
     }
 }

@@ -350,12 +350,37 @@ impl ScalarValue {
     /// Try to parse this scalar as an `i64`.
     ///
     /// Returns `None` if the scalar type is not `Integer`.
+    ///
+    /// A bare leading zero is read as YAML 1.1 octal, so `0755` gives 493.
+    /// Use [`to_i64_yaml_1_2`](Self::to_i64_yaml_1_2) for the 1.2 reading,
+    /// where the same text is 755.
     pub fn to_i64(&self) -> Option<i64> {
         if self.scalar_type == ScalarType::Integer {
             Self::parse_integer(&self.value)
         } else {
             None
         }
+    }
+
+    /// As [`to_i64`](Self::to_i64), under YAML 1.2's `!!int` rules.
+    ///
+    /// YAML 1.2 dropped 1.1's bare-octal form, so `0755` is seven hundred
+    /// and fifty five here where [`to_i64`](Self::to_i64) gives 493. Every
+    /// other spelling, `0o755` included, reads the same both ways.
+    pub fn to_i64_yaml_1_2(&self) -> Option<i64> {
+        if self.scalar_type != ScalarType::Integer {
+            return None;
+        }
+        if Self::is_legacy_octal(&self.value) {
+            let body = self.value.strip_prefix(['+', '-']).unwrap_or(&self.value);
+            let magnitude = body.parse::<i64>().ok()?;
+            return Some(if self.value.starts_with('-') {
+                -magnitude
+            } else {
+                magnitude
+            });
+        }
+        Self::parse_integer(&self.value)
     }
 
     /// Try to parse this scalar as an `f64`.
@@ -554,6 +579,16 @@ impl ScalarValue {
         parsed.map(|n| if is_negative { -n } else { n })
     }
 
+    /// Whether `value` is written in YAML 1.1's bare-octal form (a leading
+    /// `0` before more digits, as in `0755`).
+    ///
+    /// YAML 1.2's `!!int` has no such form: `0755` is seven hundred and
+    /// fifty five, where 1.1 read it as 493. `0o755` is the 1.2 spelling.
+    pub(crate) fn is_legacy_octal(value: &str) -> bool {
+        let body = value.strip_prefix(['+', '-']).unwrap_or(value);
+        body.len() > 1 && body.starts_with('0') && body.bytes().all(|b| b.is_ascii_digit())
+    }
+
     /// Classify a plain (unquoted) scalar's text per the YAML 1.2 core
     /// schema tag-resolution rules.
     ///
@@ -576,7 +611,14 @@ impl ScalarValue {
             _ => {}
         }
 
-        if Self::parse_integer(value).is_some() {
+        // A bare leading zero is YAML 1.1 octal, which 1.2 dropped: the
+        // value is still an integer, just a decimal one, so the text
+        // classifies the same way either side of the change. A digit
+        // outside 0-7 makes it no octal at all, and `parse_integer` gives
+        // up there by contract, so recognise the run of digits here rather
+        // than letting `08` fall through to the float parser below: no
+        // YAML version reads it as a float.
+        if Self::parse_integer(value).is_some() || Self::is_legacy_octal(value) {
             return CoreScalarType::Integer;
         }
 
@@ -868,12 +910,15 @@ impl ScalarValue {
 
     /// Detect the appropriate style for a value
     fn detect_style(value: &str) -> ScalarStyle {
-        // Multi-line strings use literal style. This comes first: a literal
-        // block renders the newlines faithfully, so such a value does not
-        // also need quoting.
+        // A line break has to be decided first. A quoted scalar folds its
+        // breaks into spaces, so `"x\ny\n"` written as `'x\ny\n'` reads back
+        // as `x y`, while a literal block keeps them. A literal also answers
+        // every reason needs_quoting gives, so nothing multi-line needs
+        // quotes.
         if value.contains('\n') {
             return ScalarStyle::Literal;
         }
+        // Check if value needs quoting
         if Self::needs_quoting(value) {
             // Prefer single quotes if no single quotes in value
             if !value.contains('\'') {
@@ -983,8 +1028,19 @@ impl ScalarValue {
         false
     }
 
-    /// Render the scalar as a YAML string with proper escaping
+    /// Render the scalar as a YAML string with proper escaping.
+    ///
+    /// A block scalar's body is indented two spaces. Use
+    /// [`to_yaml_string_with_indent`](Self::to_yaml_string_with_indent) where
+    /// the value sits inside an indented entry, whose body has to clear that
+    /// entry's own column.
     pub fn to_yaml_string(&self) -> String {
+        self.to_yaml_string_with_indent(2)
+    }
+
+    /// As [`to_yaml_string`](Self::to_yaml_string), indenting a block
+    /// scalar's body by `block_indent` spaces.
+    pub fn to_yaml_string_with_indent(&self, block_indent: usize) -> String {
         // For special data types, always include the tag regardless of style
         let tag_prefix = match self.scalar_type {
             #[cfg(feature = "base64")]
@@ -1019,8 +1075,8 @@ impl ScalarValue {
             }
             ScalarStyle::SingleQuoted => self.to_single_quoted(),
             ScalarStyle::DoubleQuoted => self.to_double_quoted(),
-            ScalarStyle::Literal => self.to_literal(),
-            ScalarStyle::Folded => self.to_folded(),
+            ScalarStyle::Literal => self.to_literal_with_indent(block_indent),
+            ScalarStyle::Folded => self.to_folded_with_indent(block_indent),
         };
 
         format!("{tag_prefix}{content}")
@@ -1067,16 +1123,6 @@ impl ScalarValue {
         result
     }
 
-    /// Convert to literal block scalar
-    fn to_literal(&self) -> String {
-        self.to_literal_with_indent(2)
-    }
-
-    /// Convert to folded block scalar
-    fn to_folded(&self) -> String {
-        self.to_folded_with_indent(2)
-    }
-
     /// Convert to literal block scalar with specific indentation
     pub fn to_literal_with_indent(&self, indent: usize) -> String {
         self.to_block_with_indent('|', indent)
@@ -1089,9 +1135,41 @@ impl ScalarValue {
 
     /// Render as a block scalar introduced by `marker` (`|` literal, `>` folded).
     fn to_block_with_indent(&self, marker: char, indent: usize) -> String {
+        // Pick the chomping indicator that preserves the value's trailing
+        // line breaks: a bare `|` clips to exactly one, `|-` strips them all
+        // and `|+` keeps them. Otherwise reading the value back gains or
+        // loses a newline.
+        let trailing = self.value.len() - self.value.trim_end_matches('\n').len();
+        let chomp = match trailing {
+            0 => "-",
+            1 => "",
+            _ => "+",
+        };
         // Content that already carries consistent indentation is preserved.
-        if self.detect_content_indentation().is_some() {
-            return format!("{marker}\n{}", self.value);
+        // That indentation would be read as the block's own and stripped on
+        // the way back in, though, losing the value's leading spaces, so say
+        // where the content really starts: `|2` for `"  x\n  y"`.
+        if let Some(content_indent) = self.detect_content_indentation() {
+            if content_indent > 0 {
+                // The indicator counts from the block's own column, so the
+                // body has to sit that much further right for the value's
+                // leading spaces to survive.
+                let body = " ".repeat(indent);
+                let shifted = self
+                    .value
+                    .lines()
+                    .map(|line| {
+                        if line.is_empty() {
+                            String::new()
+                        } else {
+                            format!("{body}{line}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return format!("{marker}{indent}{chomp}\n{shifted}");
+            }
+            return format!("{marker}{chomp}\n{}", self.value);
         }
         let indent_str = " ".repeat(indent);
         let indented = self
@@ -1106,7 +1184,7 @@ impl ScalarValue {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        format!("{marker}\n{indented}")
+        format!("{marker}{chomp}\n{indented}")
     }
 
     /// Detect the minimum indentation level of non-empty lines in the content
@@ -1218,7 +1296,7 @@ impl crate::AsYaml for ScalarValue {
     fn build_content(
         &self,
         builder: &mut rowan::GreenNodeBuilder,
-        _indent: usize,
+        indent: usize,
         _flow_context: bool,
     ) -> bool {
         use crate::lex::SyntaxKind;
@@ -1226,7 +1304,10 @@ impl crate::AsYaml for ScalarValue {
         // quotes (e.g. the string "null", or text containing ": "), the
         // rendered text starts with a quote and must be tokenized as a
         // STRING regardless of the semantic type.
-        let text = self.to_yaml_string();
+        // A block scalar's body has to clear the column its entry sits at,
+        // or the text it renders to is not the value it stood for:
+        // `a:\n  b: |-\n  x\n` has an empty scalar and a stray `x`.
+        let text = self.to_yaml_string_with_indent(indent + 2);
         let quoted = text.starts_with('\'') || text.starts_with('"');
         let token_kind = if quoted {
             SyntaxKind::STRING
@@ -1538,7 +1619,7 @@ mod tests {
         let yaml_output = scalar.to_literal_with_indent(2);
         assert_eq!(
             yaml_output,
-            "|\n    Line 1\n      Line 2 more indented\n    Line 3"
+            "|-\n    Line 1\n      Line 2 more indented\n    Line 3"
         );
     }
 
@@ -1577,10 +1658,10 @@ mod tests {
         let scalar = ScalarValue::literal(content);
 
         let yaml_4_spaces = scalar.to_literal_with_indent(4);
-        assert_eq!(yaml_4_spaces, "|\n    Line 1\n    Line 2\n    Line 3");
+        assert_eq!(yaml_4_spaces, "|-\n    Line 1\n    Line 2\n    Line 3");
 
         let yaml_1_space = scalar.to_literal_with_indent(1);
-        assert_eq!(yaml_1_space, "|\n Line 1\n Line 2\n Line 3");
+        assert_eq!(yaml_1_space, "|-\n Line 1\n Line 2\n Line 3");
     }
 
     #[test]
@@ -1590,7 +1671,7 @@ mod tests {
         let scalar = ScalarValue::folded(content);
 
         let yaml_3_spaces = scalar.to_folded_with_indent(3);
-        assert_eq!(yaml_3_spaces, ">\n   Line 1\n   Line 2\n   Line 3");
+        assert_eq!(yaml_3_spaces, ">-\n   Line 1\n   Line 2\n   Line 3");
     }
 
     #[test]
@@ -1600,7 +1681,7 @@ mod tests {
         let scalar = ScalarValue::literal(content_with_empty_lines);
 
         let yaml_output = scalar.to_literal_with_indent(2);
-        assert_eq!(yaml_output, "|\n  Line 1\n\n  Line 3\n\n\n  Line 6");
+        assert_eq!(yaml_output, "|-\n  Line 1\n\n  Line 3\n\n\n  Line 6");
 
         // Empty lines should remain empty (no indentation added)
         // Input has 3 empty lines; they should appear unchanged in the output
@@ -2403,10 +2484,10 @@ mod tests {
         // Literal and folded styles render the block indicator on its own line
         // followed by the content indented by two spaces.
         let s = ScalarValue::with_style("line one\nline two", ScalarStyle::Literal);
-        assert_eq!(s.to_yaml_string(), "|\n  line one\n  line two");
+        assert_eq!(s.to_yaml_string(), "|-\n  line one\n  line two");
 
         let s = ScalarValue::with_style("line one\nline two", ScalarStyle::Folded);
-        assert_eq!(s.to_yaml_string(), ">\n  line one\n  line two");
+        assert_eq!(s.to_yaml_string(), ">-\n  line one\n  line two");
     }
 
     #[test]

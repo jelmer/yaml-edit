@@ -134,18 +134,29 @@ still_broken: value"#;
 /// Test that plain scalar with spaces is valid YAML
 #[test]
 fn test_plain_scalar_with_spaces_valid() {
+    // A plain scalar may contain spaces, so `key1 value` is the document's
+    // own scalar rather than a key. A mapping entry cannot follow one, which
+    // both saphyr and PyYAML reject, so the entry is reported rather than
+    // dropped.
     let yaml = "key1 value\nkey2: value";
 
     let parsed = YamlFile::parse(yaml);
-    let errors = parsed.errors();
+    assert_eq!(parsed.errors().len(), 1);
 
-    // Plain scalars can contain spaces, so "key1 value" is valid as a key
-    // with implicit null value. No errors expected.
-    assert_eq!(errors.len(), 0, "Plain scalar with space is valid YAML");
-
-    // Verify document exists
+    // The scalar itself still parses, and the text survives.
     let tree = parsed.tree();
     assert!(tree.document().is_some());
+    assert_eq!(tree.to_string(), yaml);
+}
+
+/// A plain scalar with spaces is a perfectly good mapping key.
+#[test]
+fn test_plain_scalar_with_spaces_as_a_key() {
+    let yaml = "key1 value: 1\nkey2: value\n";
+
+    let parsed = YamlFile::parse(yaml);
+    assert_eq!(parsed.errors().len(), 0);
+    assert_eq!(parsed.tree().to_string(), yaml);
 }
 
 /// Test multiple errors in single document

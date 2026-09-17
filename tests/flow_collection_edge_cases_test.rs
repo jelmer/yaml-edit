@@ -123,8 +123,12 @@ omitted value:,
     assert!(reparsed.document().is_some());
 }
 
-/// Test 652Z: Flow mapping with explicit key indicator (?)
-/// The ? indicator can be used for complex keys in flow style
+/// Test 652Z: a `?` not followed by a space is part of the key.
+///
+/// The `?` opens an explicit key only when a space or line break follows
+/// it, so `?foo` is the plain scalar `?foo`. The suite's own expectations
+/// say so: test-data/652Z/test.event has `=VAL :?foo` and in.json has
+/// `"?foo" : "bar"`.
 #[test]
 fn test_652z_question_mark_flow_key() {
     let yaml = r#"{ ?foo: bar,
@@ -139,8 +143,8 @@ bar: 42
     // Verify 2 keys
     assert_eq!(mapping.keys().count(), 2, "Should have 2 keys");
 
-    // Verify 'foo' key (explicit with ?) has value 'bar'
-    let foo_val = mapping.get("foo").expect("Should have 'foo' key");
+    // The `?` belongs to the key, so the key is `?foo` rather than `foo`.
+    let foo_val = mapping.get("?foo").expect("Should have '?foo' key");
     assert_eq!(foo_val.as_scalar().unwrap().as_string(), "bar");
 
     // Verify 'bar' key has value 42
@@ -508,10 +512,13 @@ fn test_trailing_comma_with_whitespace() {
     assert_eq!(output, yaml);
 }
 
+/// A `?` not followed by a space is part of the key, so `{a, ?b: c, d: e}`
+/// has the keys `a`, `?b` and `d`. The YAML test suite agrees: 652Z expects
+/// `=VAL :?foo`, and 2EBW lists `?foo` among its "safe" plain keys. PyYAML
+/// reads the key as `b` instead, but saphyr and the suite's own expectations
+/// keep the `?`.
 #[test]
 fn test_mixed_implicit_explicit_keys() {
-    // Mixed implicit and explicit keys in flow mapping
-    // {a, ?b: c, d: e} - 'a' is implicit, '?b: c' is explicit, 'd: e' is normal
     let yaml = "{a, ?b: c, d: e}";
 
     let parsed = YamlFile::from_str(yaml).unwrap();
@@ -525,8 +532,8 @@ fn test_mixed_implicit_explicit_keys() {
     let a_val = mapping.get("a").unwrap();
     assert!(a_val.as_scalar().unwrap().is_null());
 
-    // Explicit key 'b' with value 'c'
-    let b_val = mapping.get("b").unwrap();
+    // The `?` belongs to the key, so it is `?b` rather than `b`.
+    let b_val = mapping.get("?b").unwrap();
     assert_eq!(b_val.as_scalar().unwrap().as_string(), "c");
 
     // Normal key 'd' with value 'e'

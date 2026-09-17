@@ -31,6 +31,104 @@ fn test_block_scalar_windows_line_endings() {
     assert_eq!(reparsed.errors().len(), 0);
 }
 
+/// A block scalar's body must end at the first line that dedents out of it,
+/// whatever the line ending. With CRLF the lexer kept treating later lines as
+/// body text, so a flow collection after a block scalar was read as literal
+/// content and never closed.
+#[test]
+fn test_flow_collection_after_block_scalar_windows_line_endings() {
+    let yaml =
+        "Not indented:\r\n By one space: |\r\n    By four\r\n Flow style: [\r\n   a,\r\n  ]\r\n";
+
+    let parsed = YamlFile::parse(yaml);
+    assert_eq!(
+        parsed.errors(),
+        &[] as &[String],
+        "flow collection after a CRLF block scalar should parse"
+    );
+
+    let tree = parsed.tree();
+    let doc = tree.document().expect("Should have document");
+    let outer = doc.as_mapping().expect("Should be mapping");
+    let inner_node = outer.get("Not indented").expect("Should have outer key");
+    let inner = inner_node.as_mapping().expect("Should be nested mapping");
+
+    let seq_node = inner.get("Flow style").expect("Should have flow style key");
+    let seq = seq_node.as_sequence().expect("Should be a sequence");
+    let items: Vec<String> = seq
+        .values()
+        .map(|item| item.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(items, vec!["a".to_string()]);
+}
+
+/// The YAML test suite's 6HB6, with the line endings git hands out on Windows.
+///
+/// The suite runner in `tests/yaml_test_suite.rs` only sees this input if
+/// `test-data/` has been cloned, and reads it however git checked it out, so on
+/// Linux it never exercises the CRLF path that broke here. Converting the input
+/// in the test pins both line endings on every platform.
+#[test]
+fn test_yaml_suite_6hb6_windows_line_endings() {
+    let yaml = concat!(
+        "  # Leading comment line spaces are\n",
+        "   # neither content nor indentation.\n",
+        "    \n",
+        "Not indented:\n",
+        " By one space: |\n",
+        "    By four\n",
+        "      spaces\n",
+        " Flow style: [    # Leading spaces\n",
+        "   By two,        # in flow style\n",
+        "  Also by two,    # are neither\n",
+        "  \tStill by two   # content nor\n",
+        "    ]             # indentation.\n",
+    );
+
+    for (label, source) in [
+        ("LF", yaml.to_string()),
+        ("CRLF", yaml.replace('\n', "\r\n")),
+    ] {
+        let parsed = YamlFile::parse(&source);
+        assert_eq!(
+            parsed.errors(),
+            &[] as &[String],
+            "6HB6 should parse ({label})"
+        );
+
+        let tree = parsed.tree();
+        let doc = tree.document().expect("Should have document");
+        let outer = doc.as_mapping().expect("Should be mapping");
+        let inner_node = outer.get("Not indented").expect("Should have outer key");
+        let inner = inner_node.as_mapping().expect("Should be nested mapping");
+
+        let scalar = inner
+            .get("By one space")
+            .expect("Should have block scalar key");
+        assert_eq!(
+            scalar.as_scalar().unwrap().as_string(),
+            "By four\n  spaces\n",
+            "block scalar body ({label})"
+        );
+
+        let seq_node = inner.get("Flow style").expect("Should have flow style key");
+        let seq = seq_node.as_sequence().expect("Should be a sequence");
+        let items: Vec<String> = seq
+            .values()
+            .map(|item| item.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(
+            items,
+            vec![
+                "By two".to_string(),
+                "Also by two".to_string(),
+                "Still by two".to_string(),
+            ],
+            "flow sequence entries ({label})"
+        );
+    }
+}
+
 /// Test empty block scalar with literal indicator
 #[test]
 fn test_empty_block_scalar_literal() {

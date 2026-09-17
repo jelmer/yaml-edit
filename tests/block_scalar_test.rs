@@ -756,9 +756,10 @@ keep: |+
 
 #[test]
 fn test_explicit_indentation_greater_than_9() {
-    // Test explicit indentation indicator > 9 (e.g., |10)
-    // YAML spec allows single-digit indentation indicators (1-9)
-    // Parser treats "10" as "1" (indentation level), ignoring the "0"
+    // Test explicit indentation indicator > 9 (e.g., |10). YAML allows only
+    // a single digit, 1 to 9, and both saphyr and PyYAML reject this; the
+    // lenient parser reads the `1` and ignores the `0`. Content therefore
+    // starts at column 1, so the nine further spaces are part of the value.
     let yaml = "text: |10\n          Deep\n";
 
     let parsed = YamlFile::parse(yaml).to_result().unwrap();
@@ -767,7 +768,7 @@ fn test_explicit_indentation_greater_than_9() {
 
     // Verify exact content
     let text_val = mapping.get("text").unwrap();
-    assert_eq!(text_val.as_scalar().unwrap().as_string(), "Deep\n");
+    assert_eq!(text_val.as_scalar().unwrap().as_string(), "         Deep\n");
 
     // Verify exact round-trip
     let output = parsed.to_string();

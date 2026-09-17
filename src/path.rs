@@ -152,6 +152,11 @@ pub trait YamlPath {
     /// [`YamlNode`](crate::as_yaml::YamlNode) on success, or a specific
     /// [`PathError`] describing why the removal did not happen.
     ///
+    /// One entry is removed. Duplicate keys are legal YAML, so a path can
+    /// still resolve afterwards; use
+    /// [`Mapping::remove_nth_occurrence`](crate::Mapping::remove_nth_occurrence)
+    /// to choose between them.
+    ///
     /// # Errors
     ///
     /// Same shape as [`try_get_path`](Self::try_get_path).
@@ -1047,6 +1052,19 @@ fn set_path_on_mapping<V: crate::AsYaml>(
                 at: segment_display(&segments[0]),
             });
         }
+        // A sequence created here starts empty, so an index past the
+        // growth bound is known to fail. Say so before writing anything:
+        // creating the key first left `k:\n  \n` behind, a half-built
+        // entry that no longer reparses as the sequence it claimed.
+        if let PathSegment::Index(index) = segments[1] {
+            if index >= MAX_INDEX_GROWTH {
+                return Err(PathError::IndexTooFar {
+                    at: segment_display(&segments[1]),
+                    len: 0,
+                    index,
+                });
+            }
+        }
         // Match the parent's style so we don't mix block content into a flow
         // container.
         if mapping.is_flow_style() {
@@ -1113,6 +1131,8 @@ fn set_path_on_sequence<V: crate::AsYaml>(
     // within reason: an index far past the end would otherwise let a single
     // path allocate unboundedly.
     let len = sequence.len();
+    // A single sequence edit is linear in its length, so pad in one splice
+    // rather than one push per placeholder.
     if index >= len && index - len >= MAX_INDEX_GROWTH {
         return Err(PathError::IndexTooFar {
             at: segment_display(&segments[0]),
@@ -1120,8 +1140,8 @@ fn set_path_on_sequence<V: crate::AsYaml>(
             index,
         });
     }
-    while sequence.len() <= index {
-        sequence.push(crate::scalar::ScalarValue::null());
+    if let Some(growth) = (index + 1).checked_sub(len) {
+        sequence.extend_with(crate::scalar::ScalarValue::null(), growth);
     }
 
     if segments.len() == 1 {

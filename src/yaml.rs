@@ -170,15 +170,6 @@ pub(crate) fn detach_empty_collection_placeholder_newline(
     }
 }
 
-/// If `collection` is an empty block MAPPING or SEQUENCE sitting
-/// inside a MAPPING_ENTRY's VALUE, replace the `NEWLINE INDENT
-/// COLLECTION` placeholder with an inline flow-empty
-/// (` {}` or ` []`) so the entry renders as `key: {}` / `key: []`
-/// instead of an unterminated `key:\n    ` shape.
-///
-/// Skips flow collections (`{}` / `[]` already render correctly) and
-/// VALUEs carrying anything beyond decoration around the collection
-/// (comments, sibling scalars, anchors, tags).
 /// Turn an empty placeholder collection into a block one: drop its flow
 /// delimiters, remove the now-dangling inline separator after the entry's
 /// colon, and scaffold `NEWLINE INDENT` on the parent VALUE so the first
@@ -243,6 +234,15 @@ pub(crate) fn convert_placeholder_to_block(collection: &SyntaxNode) {
     parent.splice_children(pos..pos, vec![nl.into(), indent.into()]);
 }
 
+/// If `collection` is an empty block MAPPING or SEQUENCE sitting
+/// inside a MAPPING_ENTRY's VALUE, replace the `NEWLINE INDENT
+/// COLLECTION` placeholder with an inline flow-empty
+/// (` {}` or ` []`) so the entry renders as `key: {}` / `key: []`
+/// instead of an unterminated `key:\n    ` shape.
+///
+/// Skips flow collections (`{}` / `[]` already render correctly) and
+/// VALUEs carrying anything beyond decoration around the collection
+/// (comments, sibling scalars, anchors, tags).
 pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode) {
     let (open_kind, close_kind, open_txt, close_txt) = match collection.kind() {
         SyntaxKind::MAPPING => (SyntaxKind::LEFT_BRACE, SyntaxKind::RIGHT_BRACE, "{", "}"),
@@ -318,12 +318,36 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
     inner_builder.finish_node();
     let new_collection = SyntaxNode::new_root_mut(inner_builder.finish());
     let mut replacement: Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>> = Vec::new();
+    let tagged = tag_token.is_some();
     if let Some(tag) = tag_token {
         replacement.push(crate::nodes::fresh_token(SyntaxKind::TAG, tag.text()).into());
+        replacement.push(ws.clone().into());
     }
-    replacement.push(ws.into());
     replacement.push(new_collection.into());
     host.splice_children(0..0, replacement);
+
+    // The space separating the colon from its value belongs to the
+    // entry, not the value: a parsed `key: {}` puts it between COLON
+    // and VALUE. Left inside, a later edit that replaces the whole
+    // VALUE took the space with it and wrote `key:value`, which is a
+    // plain scalar rather than an entry.
+    if !tagged {
+        let value_index = entry_node
+            .children_with_tokens()
+            .position(|el| el.as_node() == Some(&value_node));
+        if let Some(index) = value_index {
+            let separated = index
+                .checked_sub(1)
+                .and_then(|p| entry_node.children_with_tokens().nth(p))
+                .is_some_and(|el| {
+                    el.as_token()
+                        .is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE)
+                });
+            if !separated {
+                entry_node.splice_children(index..index, vec![ws.into()]);
+            }
+        }
+    }
 
     // The next sibling entry needs a NEWLINE separator inside this
     // entry (see the "entry termination" invariant in
@@ -1378,9 +1402,11 @@ null_ref: *null_val"#;
         let scalar1 = mapping1
             .get("explicit")
             .expect("Should have 'explicit' key");
+        // `|2` puts the content at column 2, so the two further spaces on
+        // each line are part of the value, as saphyr and PyYAML both read it.
         assert_eq!(
             scalar1.as_scalar().unwrap().as_string(),
-            "Two space indent\nAnother line\n"
+            "  Two space indent\n  Another line\n"
         );
 
         let output1 = parsed1.to_string();
@@ -1398,9 +1424,12 @@ null_ref: *null_val"#;
         let scalar2 = mapping2
             .get("folded_explicit")
             .expect("Should have 'folded_explicit' key");
+        // `>3` puts the content at column 3, so the three further spaces are
+        // part of the value -- and a more-indented line in a folded scalar
+        // keeps its break rather than folding, as both references read it.
         assert_eq!(
             scalar2.as_scalar().unwrap().as_string(),
-            "Three space indent Another folded line\n"
+            "   Three space indent\n   Another folded line\n"
         );
 
         let output2 = parsed2.to_string();
@@ -1515,18 +1544,17 @@ version: "1.0"
 
     #[test]
     fn test_block_scalar_edge_cases() {
-        // Edge case: block scalar where the next line becomes its content
-        // When a block scalar has no indented content, the next line at the same level
-        // is treated as content, not as a new key
+        // A block scalar with no indented content is empty, and the next line
+        // at the key's own column is a sibling entry rather than its content.
+        // Both saphyr and PyYAML read it that way.
         let yaml1 = r#"empty_literal: |
 empty_folded: >
 "#;
         let parsed1 = YamlFile::from_str(yaml1).expect("Should parse this edge case");
 
-        // Verify API access - the "empty_folded: >" line is the CONTENT of empty_literal!
         let doc1 = parsed1.document().expect("Should have document");
         let mapping1 = doc1.as_mapping().expect("Should be a mapping");
-        assert_eq!(mapping1.len(), 1, "Should have only one key");
+        assert_eq!(mapping1.len(), 2, "Both keys are entries of their own");
         assert_eq!(
             mapping1
                 .get("empty_literal")
@@ -1534,8 +1562,9 @@ empty_folded: >
                 .as_scalar()
                 .unwrap()
                 .as_string(),
-            "empty_folded: >\n"
+            ""
         );
+        assert!(mapping1.get("empty_folded").is_some());
 
         assert_eq!(parsed1.to_string(), yaml1);
 
@@ -2304,52 +2333,17 @@ quoted_yaml: >
 
     #[test]
     fn test_block_scalar_error_recovery() {
-        // Test block scalar followed by another key at same indentation level
+        // `bad_block: |` has no indented body, so it is an empty scalar and
+        // `incomplete_key` is not its content. That bare line makes the rest
+        // invalid YAML -- both saphyr and PyYAML reject this input -- and the
+        // lines after it cannot be attached to the document at all.
         let yaml = r#"good_key: value
 bad_block: |
 incomplete_key
 another_good: works
 "#;
-        let parsed = YamlFile::from_str(yaml).expect("Should parse");
-
-        let doc = parsed.document().expect("Should have document");
-        let mapping = doc.as_mapping().expect("Should be a mapping");
-
-        // Check that all keys are accessible
-        assert_eq!(
-            mapping
-                .get("good_key")
-                .unwrap()
-                .as_scalar()
-                .unwrap()
-                .as_string(),
-            "value"
-        );
-
-        // bad_block contains the indented line "incomplete_key"
-        assert_eq!(
-            mapping
-                .get("bad_block")
-                .unwrap()
-                .as_scalar()
-                .unwrap()
-                .as_string(),
-            "incomplete_key\n"
-        );
-
-        // another_good is a separate key (not part of bad_block)
-        assert_eq!(
-            mapping
-                .get("another_good")
-                .unwrap()
-                .as_scalar()
-                .unwrap()
-                .as_string(),
-            "works"
-        );
-
-        let output = parsed.to_string();
-        assert_eq!(output, yaml);
+        let err = YamlFile::from_str(yaml).unwrap_err();
+        assert!(err.to_string().contains("could not be parsed"), "{err}");
     }
 
     #[test]

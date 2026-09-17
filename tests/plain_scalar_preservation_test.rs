@@ -487,3 +487,1050 @@ fn a_verbatim_tag_keeps_its_uri() {
     assert!(!tree.contains("ERROR"), "{tree}");
     assert!(tree.contains("TAG: \"!<tag:yaml.org,2002:str>\""), "{tree}");
 }
+
+/// A `-` not followed by a space is scalar content, not a sequence
+/// indicator, so `-{ [a]: v }` is a mapping whose key is the plain scalar
+/// `-{ [a]` -- as both saphyr and PyYAML read it.
+///
+/// The `-` arm's body reader stopped at the first space, so the `[` after
+/// it lexed as a flow collection instead of scalar content. The rest of the
+/// line then had nowhere to go and was stranded in an ERROR node with no
+/// parse error reported.
+#[test]
+fn test_dash_prefixed_key_keeps_flow_indicator_as_content() {
+    for yaml in [
+        "-{ [a]: v }\n",
+        ".{ [a]: v }\n",
+        "-{ [al b]: value1  value2 }\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        assert!(
+            !yaml_edit::debug::tree_to_string(file.syntax()).contains("ERROR"),
+            "stranded tokens for {yaml:?}"
+        );
+    }
+
+    let file = YamlFile::from_str("-{ [a]: v }\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .iter()
+        .map(|(k, _)| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["-{ [a]".to_string()]);
+}
+
+/// A plain scalar starting with `-` or `.` spans internal spaces like any
+/// other, rather than ending at the first one.
+#[test]
+fn test_dash_prefixed_scalar_spans_internal_spaces() {
+    let file = YamlFile::from_str("args: --verbose --log-level=debug\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping
+            .get("args")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "--verbose --log-level=debug"
+    );
+}
+
+/// A `-` closing a block-scalar header is a chomping indicator and stands
+/// alone, so it must not absorb the space after it.
+#[test]
+fn test_block_scalar_chomping_dash_is_not_scalar_content() {
+    let yaml = "key: >-\n  folded body\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    assert!(!yaml_edit::debug::tree_to_string(file.syntax()).contains("ERROR"));
+}
+
+/// `?` is an explicit-key indicator only at the start of a node. Once a
+/// plain scalar has begun it is ordinary content, so `a ?,b` is one scalar.
+/// Lexing it as QUESTION left the following `,b` with nowhere to go and
+/// stranded it in an ERROR node with no parse error.
+#[test]
+fn test_question_mark_mid_scalar_is_plain_content() {
+    for yaml in ["a ?,b\n", "a ?b\n", ")  .exp  ?,expect(\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        assert!(
+            !yaml_edit::debug::tree_to_string(file.syntax()).contains("ERROR"),
+            "stranded tokens for {yaml:?}"
+        );
+    }
+
+    let file = YamlFile::from_str("x ?y: v\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .iter()
+        .map(|(k, _)| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["x ?y".to_string()]);
+}
+
+/// A `?` that really does start a node still opens an explicit key.
+#[test]
+fn test_question_mark_at_node_start_still_opens_explicit_key() {
+    for yaml in [
+        "? key\n: value\n",
+        "keys: !!set\n  ? a\n  ? b\n",
+        "map:\n  ? complex\n  : v\n",
+        "a: {? k: v}\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        assert!(
+            !yaml_edit::debug::tree_to_string(file.syntax()).contains("ERROR"),
+            "stranded tokens for {yaml:?}"
+        );
+    }
+
+    let file = YamlFile::from_str("? key\n: value\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("key").unwrap().as_scalar().unwrap().as_string(),
+        "value"
+    );
+}
+
+/// Outside a flow collection the flow indicators are ordinary plain-scalar
+/// content, so a `+` followed by one continues the scalar. The `+` arm only
+/// let a non-special character begin a body, so `a+[b]` emitted a bare PLUS
+/// and let `[` open a flow sequence, stranding the rest with no parse error.
+///
+/// A regex is the realistic shape: `[\.a-zA-Z]{2,}$` after a `+` quantifier.
+#[test]
+fn test_plus_before_flow_indicator_stays_scalar_content() {
+    for yaml in ["a+[b]\n", "a+{b}\n", "a: x+[1]\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    let pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+[\.a-zA-Z]{2,}$";
+    let yaml = format!("pattern: {pattern}\nnext: keep\n");
+    let file = YamlFile::from_str(&yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping
+            .get("pattern")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        pattern
+    );
+    assert_eq!(
+        mapping
+            .get("next")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "keep"
+    );
+}
+
+/// A `+` sign prefix and a block-scalar chomping `+` keep their meanings.
+#[test]
+fn test_plus_keeps_sign_and_chomping_roles() {
+    for (yaml, value) in [("v: +5\n", "+5"), ("f: +.INF\n", "+.INF")] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            mapping
+                .get(yaml.split(':').next().unwrap())
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .as_string(),
+            value
+        );
+    }
+
+    let yaml = "b: |+\n  x\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    common::assert_file_cst_ok(&file);
+}
+
+/// A `:` that is not followed by whitespace is scalar content, so it can
+/// begin a plain-scalar body after a `+`. The `+` arm let only a
+/// non-special character start one, so `a {b+:c}` emitted a bare PLUS and
+/// the trailing `}` was stranded in an ERROR node with no parse error.
+#[test]
+fn test_plus_before_non_indicator_colon_stays_scalar_content() {
+    for yaml in [
+        "a {b+:c}\n",
+        "a +:b}\n",
+        "call query-trends {kind+:\"TrendsQuery\"}\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// A `:` that really is a mapping indicator still ends the key.
+#[test]
+fn test_plus_key_still_ends_at_a_mapping_colon() {
+    let yaml = "a: b\n+c: d\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["a".to_string(), "+c".to_string()]);
+}
+
+/// A bare `+` before a mapping colon is the key, exactly as a bare `-` is.
+/// The `+` arm emitted a PLUS token there, so the mapping exposed no key at
+/// all and `: v` was stranded in an ERROR node with no parse error.
+#[test]
+fn test_bare_plus_is_a_mapping_key() {
+    let yaml = "+: v\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    common::assert_file_cst_ok(&file);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(!tree.contains("ERROR"), "{tree}");
+
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["+".to_string()]);
+    assert_eq!(
+        mapping.get("+").unwrap().as_scalar().unwrap().as_string(),
+        "v"
+    );
+
+    // The `-` spelling this now matches.
+    let file = YamlFile::from_str("-: v\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("-").unwrap().as_scalar().unwrap().as_string(),
+        "v"
+    );
+}
+
+/// `|` and `>` open a block scalar only at the start of a node. Inside a
+/// plain scalar they are ordinary content, so `a|b: v` is keyed `a|b`, as
+/// both saphyr and PyYAML read it. Lexing the `|` as a header split the key
+/// and stranded the following entry in an ERROR node with no parse error.
+#[test]
+fn test_block_scalar_indicator_mid_scalar_is_plain_content() {
+    for (yaml, key) in [
+        ("a|b: v\nc: d\n", "a|b"),
+        ("a>b: v\nc: d\n", "a>b"),
+        ("a+b: v\nc: d\n", "a+b"),
+        ("a|: v\nc: d\n", "a|"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string(), "c".to_string()], "{yaml:?}");
+    }
+}
+
+/// A `|` or `>` that does start a node still opens a block scalar, and the
+/// header keeps its explicit indent and chomping indicators.
+#[test]
+fn test_block_scalar_headers_still_lex() {
+    for yaml in [
+        "k: |\n  body\n",
+        "k: >\n  folded\n",
+        "k: |-\n  x\n",
+        "k: |+\n  x\n",
+        "k: |2\n   x\n",
+        "s:\n  - |\n    b\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// A `!` on a continuation line is scalar content, not a tag. The lexer
+/// reads it as a TAG because a newline precedes it, but a node property
+/// applies only at the start of a node and a continuation line is already
+/// inside one. The continuation check did not count a TAG as content, so
+/// the scalar ended and the tag was stranded in an ERROR node with no
+/// parse error.
+#[test]
+fn test_tag_on_a_continuation_line_is_scalar_content() {
+    for yaml in ["- a\n !\n", "- a\n !x\n", "x\n !\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    // Both lines fold into one scalar, as PyYAML and saphyr read them.
+    let file = YamlFile::from_str("- a\n !\n").unwrap();
+    let seq = file.document().unwrap().as_sequence().unwrap();
+    assert_eq!(seq.len(), 1);
+    assert_eq!(seq.get(0).unwrap().as_scalar().unwrap().as_string(), "a !");
+}
+
+/// A tag that really does start a node is still a tag.
+#[test]
+fn test_tag_at_a_node_start_still_applies() {
+    let file = YamlFile::from_str("a: !!str v\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping
+            .get("a")
+            .unwrap()
+            .as_tagged()
+            .unwrap()
+            .tag()
+            .as_deref(),
+        Some("!!str")
+    );
+}
+
+/// `?` opens an explicit key only when a space or line break follows it.
+/// Glued to what comes next it is ordinary plain-scalar content, which the
+/// YAML test suite states directly: 652Z expects `=VAL :?foo`, and 2EBW
+/// and FBC9 both list `?foo` as a safe plain scalar.
+///
+/// Without that test `a: ?!!r{2}x` opened an explicit key and then read
+/// `!!r` as a tag, so the `{2}` closed a flow collection that was never
+/// opened and the rest of the line was stranded in an ERROR node with no
+/// parse error.
+#[test]
+fn test_question_mark_without_a_space_is_scalar_content() {
+    for yaml in [
+        "a: ?!!r{2}x\n",
+        "a: ?x\n",
+        "?key: v\n",
+        "es_ttpattern: ?!!r\\d{2}-\\d{2}'\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    // The regex keeps every character, as PyYAML reads it.
+    let yaml = "es_ttpattern: ?!!r\\d{2}-\\d{2}'\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping
+            .get("es_ttpattern")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "?!!r\\d{2}-\\d{2}'"
+    );
+
+    // A `?` glued to a key keeps it in the key.
+    let file = YamlFile::from_str("?key: v\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["?key".to_string()]);
+}
+
+/// A `?` followed by a space still opens an explicit key, in block and flow.
+#[test]
+fn test_question_mark_with_a_space_still_opens_an_explicit_key() {
+    for yaml in [
+        "? key\n: value\n",
+        "keys: !!set\n  ? a\n  ? b\n",
+        "map:\n  ? complex\n  : v\n",
+        "a: {? k: v}\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    let file = YamlFile::from_str("? key\n: value\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("key").unwrap().as_scalar().unwrap().as_string(),
+        "value"
+    );
+}
+
+/// A quote no longer opens a quoted scalar once a plain one has begun, so
+/// `+'a': 1` is keyed `+'a'`, as PyYAML reads it. The `+` arm did not count
+/// a quote as starting a scalar body, so it emitted a bare PLUS and the
+/// quoted run became a scalar of its own, stranding the `: 1` after it.
+#[test]
+fn test_plus_before_a_quote_stays_scalar_content() {
+    for (yaml, key) in [
+        ("+'a': 1\n", "+'a'"),
+        ("+\"a\": 1\n", "+\"a\""),
+        ("+'a' : 1\n", "+'a'"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string()], "{yaml:?}");
+    }
+}
+
+/// A quote that really does start a node still opens a quoted scalar.
+#[test]
+fn test_quote_at_a_node_start_still_quotes() {
+    let file = YamlFile::from_str("'quoted': v\na: 'q'\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping
+            .get("quoted")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "v"
+    );
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "q"
+    );
+}
+
+/// A `+` or `-` is an indicator only where a node starts, so once a plain
+/// scalar has begun a second sign is content: `++: v` is keyed `++`, as
+/// both saphyr and PyYAML read it.
+///
+/// The `+` arm did not count a sign as starting a scalar body, so `++`
+/// lexed as a bare PLUS followed by a separate `+`, and the colon after it
+/// was stranded in an ERROR node with no parse error.
+#[test]
+fn test_repeated_sign_is_one_plain_scalar() {
+    for (yaml, key) in [("++: v\n", "++"), ("+-: v\n", "+-"), ("--: v\n", "--")] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string()], "{yaml:?}");
+    }
+
+    // The same in a value position.
+    let file = YamlFile::from_str("a: ++\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "++"
+    );
+}
+
+/// A single sign still prefixes a number, and a block-scalar chomping `+`
+/// keeps its own token.
+#[test]
+fn test_single_sign_keeps_its_meaning() {
+    for (yaml, value) in [
+        ("v: +5\n", "+5"),
+        ("v: -5\n", "-5"),
+        ("v: +.INF\n", "+.INF"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            mapping.get("v").unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+
+    let yaml = "k: |+2\n  x\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    common::assert_file_cst_ok(&file);
+}
+
+/// A scalar that starts with `:` keeps flow indicators as content outside a
+/// flow collection, like any other plain scalar. `- :m{` is the single item
+/// `:m{`, as both saphyr and PyYAML read it.
+///
+/// The `:` arm broke at every YAML-special character, so the `{` ended the
+/// scalar and was stranded in an ERROR node with no parse error, while the
+/// identically shaped `- x{` lexed as one token.
+#[test]
+fn test_colon_prefixed_scalar_keeps_flow_indicators() {
+    for (yaml, value) in [
+        ("- :m{\n", ":m{"),
+        ("- :m}x\n", ":m}x"),
+        ("- :m,n\n", ":m,n"),
+        ("- :m[1]\n", ":m[1]"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let seq = file.document().unwrap().as_sequence().unwrap();
+        assert_eq!(seq.len(), 1, "{yaml:?}");
+        assert_eq!(
+            seq.get(0).unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+
+    // The same in a value position.
+    let file = YamlFile::from_str("a: :m{\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        ":m{"
+    );
+}
+
+/// Inside a flow collection those indicators still delimit, so a
+/// colon-prefixed scalar ends at a comma or bracket.
+#[test]
+fn test_colon_prefixed_scalar_still_ends_in_flow_context() {
+    let yaml = "a: [::v, ::w]\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    common::assert_file_cst_ok(&file);
+
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let seq = mapping.get("a").unwrap();
+    let seq = seq.as_sequence().unwrap();
+    assert_eq!(seq.len(), 2);
+    assert_eq!(seq.get(0).unwrap().as_scalar().unwrap().as_string(), "::v");
+    assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().as_string(), "::w");
+}
+
+/// An anchor or alias name runs to whitespace or a flow indicator, as
+/// `ns-anchor-name` has it: `-`, `*` and `:` are ordinary name characters.
+/// saphyr reads `&xT*U---` as the single anchor `xT*U---`.
+///
+/// The name was read with the general scalar reader, which stops at every
+/// YAML-special character, so the rest of the name was stranded in an ERROR
+/// node with no parse error.
+#[test]
+fn test_anchor_name_runs_to_whitespace_or_flow_indicator() {
+    for (yaml, name) in [
+        ("&xT*U---", "&xT*U---"),
+        ("&a---\n", "&a---"),
+        ("&a:b\n", "&a:b"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert!(
+            tree.contains(&format!("ANCHOR: {name:?}")),
+            "{yaml:?}\n{tree}"
+        );
+    }
+
+    // A flow indicator still ends the name.
+    let file = YamlFile::from_str("[&a x, *a]\n").unwrap();
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(tree.contains("ANCHOR: \"&a\""), "{tree}");
+    assert!(tree.contains("REFERENCE: \"*a\""), "{tree}");
+}
+
+/// Anchors and aliases still resolve normally, including merge keys.
+#[test]
+fn test_anchor_name_change_keeps_resolution() {
+    for yaml in [
+        "a: &anc 1\nb: *anc\n",
+        "defaults: &d\n  t: 30\nprod:\n  <<: *d\n  h: p\n",
+        "- &x 1\n- *x\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// An anchor on a continuation line is scalar content, not a node property.
+///
+/// `k:#foo\n &a !t s\n` is the single scalar `k:#foo &a !t s` (no space
+/// before the `#`, so it is not a comment), as both saphyr and PyYAML read
+/// it. The continuation check did not count an ANCHOR as content, so the
+/// scalar ended and the rest was stranded in an ERROR node with no parse
+/// error (suite case 3MYT).
+#[test]
+fn test_anchor_on_a_continuation_line_is_scalar_content() {
+    let yaml = "k:#foo\n &a !t s\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(!tree.contains("ERROR"), "{tree}");
+    assert_eq!(
+        file.document().unwrap().as_scalar().unwrap().as_string(),
+        "k:#foo &a !t s"
+    );
+
+    // An anchor that really starts a node still annotates it.
+    for yaml in ["a: &anc 1\nb: *anc\n", "- &x 1\n- *x\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// A bare `&` or `*` on a continuation line is scalar content too. With no
+/// name after it the lexer emits AMPERSAND or ASTERISK rather than an
+/// anchor or alias, so counting only ANCHOR left `a\n&\n` stranding the
+/// `&` in an ERROR node with no parse error.
+#[test]
+fn test_bare_property_punctuation_continues_a_scalar() {
+    // A blank line between the two folds to a line break, not a space.
+    for (yaml, value) in [("a\n&\n", "a &"), ("a\n*\n", "a *"), (" a\n\n &\n", "a\n&")] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}
+
+/// A scalar continuing through `%` keeps flow indicators as content outside
+/// a flow collection, like any other plain scalar. `a %}` is the single
+/// scalar `a %}`, as both saphyr and PyYAML read it.
+///
+/// The `%` arm broke at every YAML-special character, so the `}` ended the
+/// scalar and was stranded in an ERROR node with no parse error, while the
+/// identically shaped `a b}` lexed as one scalar.
+#[test]
+fn test_percent_scalar_keeps_flow_indicators() {
+    for (yaml, value) in [
+        ("a %}\n", "a %}"),
+        ("a %x}\n", "a %x}"),
+        ("a %,b\n", "a %,b"),
+        ("a %[1]\n", "a %[1]"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}
+
+/// A `%` opening a line is still a directive, and inside a flow collection
+/// the indicators still delimit.
+#[test]
+fn test_percent_keeps_its_directive_and_flow_roles() {
+    let yaml = "%YAML 1.2\n---\na: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(tree.contains("DIRECTIVE"), "{tree}");
+
+    let yaml = "a: [x, y]\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let seq = mapping.get("a").unwrap();
+    assert_eq!(seq.as_sequence().unwrap().len(), 2);
+}
+
+/// A key beginning with `+` folds across spaces like any other plain
+/// scalar, and a `+` after a space is content rather than an indicator.
+///
+/// `+ x: v` is keyed `+ x`, `+ +: v` is keyed `+ +`, and `+ :` is keyed
+/// `+`, exactly as saphyr reads them and as the `-` spellings already did.
+/// The `+` arm ended the scalar at the space, and only looked for a colon
+/// directly after the sign, so each of these emitted a bare PLUS and
+/// stranded the rest of the entry in an ERROR node with no parse error.
+#[test]
+fn test_plus_key_folds_across_spaces() {
+    for (yaml, key) in [
+        ("+ x: v\n", "+ x"),
+        ("+ +: v\n", "+ +"),
+        ("+ -: v\n", "+ -"),
+        ("+ +x: v\n", "+ +x"),
+        ("+ : v\n", "+"),
+        ("a +: v\n", "a +"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string()], "{yaml:?}");
+    }
+
+    // The fuzz case these reduced from.
+    let yaml = "+ +x ?dd  ? x: (+x";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["+ +x ?dd  ? x".to_string()]);
+}
+
+/// A single sign still prefixes a number, and a chomping `+` keeps its own
+/// token.
+#[test]
+fn test_plus_space_change_keeps_sign_and_chomping() {
+    for (yaml, value) in [("v: +5\n", "+5"), ("v: +.INF\n", "+.INF")] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            mapping.get("v").unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+
+    for yaml in ["k: |+\n  x\n", "k: |+2\n  x\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+    }
+}
+
+/// A scalar continuing through `%` folds across internal spaces like any
+/// other, so `r % {` is the single scalar `r % {` -- exactly as `r x {`
+/// already was.
+///
+/// The `%` arm had its own token loop that stopped at any whitespace, so
+/// the `{` after the space became a flow token and was stranded in an ERROR
+/// node with no parse error. It now uses the shared plain-scalar body
+/// reader, which knows both rules.
+#[test]
+fn test_percent_scalar_folds_across_spaces() {
+    for (yaml, value) in [
+        ("r % {\n", "r % {"),
+        ("r % x\n", "r % x"),
+        ("a % }\n", "a % }"),
+        ("r %{\n", "r %{"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+
+    // A `%` opening a line is still a directive.
+    let yaml = "%YAML 1.2\n---\na: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(tree.contains("DIRECTIVE"), "{tree}");
+}
+
+/// `...` is the document-end marker only when it is the whole line, so
+/// `...w` is the plain scalar `...w` -- as both saphyr and PyYAML read it,
+/// and as `---x` already was.
+///
+/// The `.` arm emitted DOC_END for any three dots, so the text after them
+/// was stranded in an ERROR node with no parse error.
+#[test]
+fn test_three_dots_with_trailing_text_is_a_scalar() {
+    for (yaml, value) in [("...w\n", "...w"), ("...x.y\n", "...x.y")] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+
+    // In a value position too.
+    let file = YamlFile::from_str("k: ...w\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("k").unwrap().as_scalar().unwrap().as_string(),
+        "...w"
+    );
+}
+
+/// A `...` alone on its line is still the document-end marker.
+#[test]
+fn test_bare_three_dots_is_still_a_document_end_marker() {
+    for yaml in ["a\n...\n", "--- a\n...\n--- b\n", "a\n...\nb: 1\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(tree.contains("DOC_END"), "{yaml:?}\n{tree}");
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// A flow indicator opening a continuation line is scalar content outside a
+/// flow collection: `a\n}` is the scalar `a }`, as both saphyr and PyYAML
+/// read it.
+///
+/// The scalar folding loop broke at these tokens unconditionally, so the
+/// indicator was stranded in an ERROR node with no parse error. The lexer
+/// already folds any that share a line with the scalar, so reaching that
+/// point means a continuation line.
+#[test]
+fn test_flow_indicator_continues_a_block_scalar() {
+    for (yaml, value) in [
+        ("a\n}", "a }"),
+        ("a\n{", "a {"),
+        ("a\n]", "a ]"),
+        ("a\n[", "a ["),
+        ("1\n}", "1 }"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+}
+
+/// A flow collection that is a mapping key still opens its own entry, and
+/// inside a flow collection the indicators still delimit.
+#[test]
+fn test_flow_collection_key_still_opens_an_entry() {
+    for yaml in ["[a, b]: v1\n[c, d]: v2\n", "x: 1\n[c]: 2\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(mapping.iter().count(), 2, "{yaml:?}");
+    }
+
+    let file = YamlFile::from_str("k: [1, 2]\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let seq = mapping.get("k").unwrap();
+    assert_eq!(seq.as_sequence().unwrap().len(), 2);
+}
+
+/// A `+` is a chomping indicator only where the `|` or `>` before it opens
+/// the value. In `/|+: v` the pipe is scalar content, so the `+` is content
+/// too and the key is `/|+`, as saphyr reads it.
+///
+/// The check scanned back to the first non-digit and accepted any `|` it
+/// found, so the `+` became a bare PLUS. With another entry after it the
+/// rest was stranded in an ERROR node with no parse error.
+#[test]
+fn test_plus_after_a_content_pipe_is_not_chomping() {
+    for (yaml, key) in [
+        ("/|+: v\n", "/|+"),
+        ("a|+: v\n", "a|+"),
+        ("x>+: v\n", "x>+"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string()], "{yaml:?}");
+    }
+
+    // The reduced fuzz case: a second entry after such a key.
+    let yaml = "/|+:\n:";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(!tree.contains("ERROR"), "{tree}");
+}
+
+/// A `|` or `>` that really opens the value still takes its chomping and
+/// indentation indicators.
+#[test]
+fn test_block_scalar_header_still_chomps() {
+    for yaml in [
+        "k: |+\n  x\n",
+        "k: |2+\n  x\n",
+        "k: >-\n  x\n",
+        "- |+\n  x\n",
+        "|+\nx\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}
+
+/// The node properties and block headers are indicators only at the start
+/// of a node, so once a plain scalar has begun they are content: `+?: v` is
+/// keyed `+?`, and `+ ?: v` keyed `+ ?`, as saphyr reads them.
+///
+/// Three places disagreed, each leaving a bare PLUS and stranding the rest
+/// of the entry: what may start a scalar body after `+`, what the body
+/// reader keeps, and what may follow an internal space.
+#[test]
+fn test_indicators_are_content_once_a_scalar_has_begun() {
+    for (yaml, key) in [
+        ("+?: v\n", "+?"),
+        ("+|: v\n", "+|"),
+        ("+>: v\n", "+>"),
+        ("+&: v\n", "+&"),
+        ("+*: v\n", "+*"),
+        ("+!: v\n", "+!"),
+        ("+%: v\n", "+%"),
+        ("-?: v\n", "-?"),
+        ("+ ?: v\n", "+ ?"),
+        ("+ |: v\n", "+ |"),
+        ("+ &: v\n", "+ &"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string()], "{yaml:?}");
+    }
+}
+
+/// A lone `+` and an alias both continue a scalar from the next line.
+#[test]
+fn test_plus_and_alias_continue_from_the_next_line() {
+    for (yaml, value) in [
+        ("a\n+\n", "a +"),
+        ("a\n +\n", "a +"),
+        ("a\n*x\n", "a *x"),
+        ("a\n*-\n", "a *-"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        assert_eq!(
+            file.document().unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{yaml:?}"
+        );
+    }
+
+    // An alias that really starts a node still resolves.
+    let file = YamlFile::from_str("a: &anc 1\nb: *anc\n").unwrap();
+    common::assert_file_cst_ok(&file);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(tree.contains("REFERENCE"), "{tree}");
+}
+
+/// A `#` glued to plain-scalar content is not a comment: `:#: v` is a
+/// mapping keyed `:#`, as saphyr reads it, and as `a#: v` already was.
+///
+/// The `#` arm emitted a COMMENT whenever a preceding arm had ended its
+/// token, so the rest of the line vanished into it and any entry after was
+/// stranded in an ERROR node with no parse error.
+#[test]
+fn test_hash_glued_to_scalar_content_is_not_a_comment() {
+    for (yaml, key) in [(":#: v\n", ":#"), ("+#: v\n", "+#"), ("a#: v\n", "a#")] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        common::assert_file_cst_ok(&file);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec![key.to_string()], "{yaml:?}");
+    }
+
+    // A following entry survives.
+    let file = YamlFile::from_str(":#: v\nc: d\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.iter().count(), 2);
+}
+
+/// A `#` after whitespace still starts a comment, and one glued to a quoted
+/// scalar is still the 6.6 violation the validator reports.
+#[test]
+fn test_hash_keeps_its_comment_role() {
+    let file = YamlFile::from_str("a: 1  # c\n").unwrap();
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(tree.contains("COMMENT"), "{tree}");
+
+    let file = YamlFile::from_str("key: \"value\"# c\n").unwrap();
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(tree.contains("COMMENT"), "{tree}");
+}

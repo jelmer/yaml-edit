@@ -63,6 +63,51 @@ pub(super) struct Parser {
     /// where a continuation only has to clear the sequence's own column
     /// (`- x\n y`).
     pub(super) equal_indent_continues_scalar: bool,
+    /// Column a plain scalar's continuation must clear, when that is not the
+    /// scalar's own line.
+    ///
+    /// A lone tag annotates a block node that starts on a later, more
+    /// indented line, and the body is parsed with that line's column as its
+    /// base. The scalar itself is still a node of the enclosing collection
+    /// though, so its continuation only has to clear *that* column: `!\n  a\n b\n`
+    /// is the tagged scalar `a b`, exactly as the untagged `x\n  a\n b\n`
+    /// is `x a b`.
+    pub(super) scalar_continuation_floor: Option<usize>,
+    /// Whether the node being parsed sits in a block mapping's value
+    /// position, where a block body has to clear the key's column.
+    ///
+    /// A tag hands this to the anchor that may follow it: `k: !!str &a` runs
+    /// the tag arm, which declines to adopt a dedented sibling, and then
+    /// falls through to the anchor arm. Without the flag that arm asks the
+    /// same question as a document-level anchor and answers it differently,
+    /// adopting the sibling the tag arm just refused.
+    pub(super) annotation_in_value_position: bool,
+    /// Column of the `-` of the block sequence entry being parsed, if any.
+    ///
+    /// A `-` on a later line opens the next entry when it sits at this
+    /// column, and is plain-scalar content when it is indented past it:
+    /// `a:\n- x\n  - y\n` is the single item `x - y`. Comparing against the
+    /// scalar's own line cannot tell those apart, since an explicit key
+    /// (`? - a\n  - b\n`) puts its entries deeper than the scalar too.
+    pub(super) sequence_entry_column: Option<usize>,
+    /// The column of the mapping whose value is being parsed on the colon's
+    /// own line, for deciding whether a `?` on a later line opens that
+    /// mapping's next entry rather than continuing the value's scalar.
+    pub(super) mapping_value_column: Option<usize>,
+    /// Whether the node being parsed is the document's own, with no
+    /// enclosing collection.
+    ///
+    /// A block scalar there may hold body lines at column 0 (`|\nx\ny\n` is
+    /// the scalar `x\ny`). Nested under a key it may not: `a: |\nb: 1\n` has
+    /// an empty scalar and keeps `b` as a sibling.
+    pub(super) node_is_document_root: bool,
+    /// Column of the `?` whose key is being parsed, if any.
+    ///
+    /// A `:` line at or left of that column is the entry's value, so an
+    /// annotation in the key must not adopt it as the block node it
+    /// introduces: `-\n  ? &e\n  : &a\n` is one mapping, as the YAML test
+    /// suite's PW8X expects, not an anchor whose body is a nested one.
+    pub(super) explicit_key_column: Option<usize>,
     /// Current depth of nested flow collections ([...] / {...}).
     pub(super) flow_depth: usize,
     /// Depth of `parse_value_with_base_indent` recursion (block and flow).
@@ -92,6 +137,12 @@ impl Parser {
             error_context: ErrorRecoveryContext::new(text.to_string()),
             in_value_context: false,
             equal_indent_continues_scalar: false,
+            scalar_continuation_floor: None,
+            annotation_in_value_position: false,
+            sequence_entry_column: None,
+            mapping_value_column: None,
+            node_is_document_root: false,
+            explicit_key_column: None,
             current_line_indent: 0,
             flow_depth: 0,
             nesting_depth: 0,
@@ -146,18 +197,54 @@ impl Parser {
         // Consume any remaining tokens as ERROR nodes
         // A lenient parser should consume all input, not leave it unparsed
         while self.current().is_some() && self.current() != Some(SyntaxKind::EOF) {
-            self.builder.start_node(SyntaxKind::ERROR.into());
-
-            // Consume tokens until we hit EOF or a document/directive marker
-            while self.current().is_some()
+            // A `...` ends the document it closes and belongs to the tree,
+            // not to an ERROR node; a `---` or `%YAML` starts the next one.
+            // This loop drives multi-document parsing as well as the sweep,
+            // so it is entered with nothing to sweep -- make the ERROR node
+            // only when there are stray tokens to hold.
+            let has_stray = self.current().is_some()
                 && self.current() != Some(SyntaxKind::EOF)
                 && self.current() != Some(SyntaxKind::DOC_START)
                 && self.current() != Some(SyntaxKind::DIRECTIVE)
-            {
-                self.bump();
+                && self.current() != Some(SyntaxKind::DOC_END);
+            if has_stray {
+                // Whatever lands here could not be attached to any document,
+                // so it is gone from the parsed value. Say so: returning Ok
+                // with the content only in an ERROR node drops it silently.
+                let stray = self.current_text().unwrap_or("").to_string();
+                self.add_error(
+                    format!("Content after the document could not be parsed: {stray:?}"),
+                    ParseErrorKind::Other,
+                );
+                self.builder.start_node(SyntaxKind::ERROR.into());
+                while self.current().is_some()
+                    && self.current() != Some(SyntaxKind::EOF)
+                    && self.current() != Some(SyntaxKind::DOC_START)
+                    && self.current() != Some(SyntaxKind::DIRECTIVE)
+                    && self.current() != Some(SyntaxKind::DOC_END)
+                {
+                    self.bump();
+                }
+                self.builder.finish_node();
             }
 
-            self.builder.finish_node();
+            // A `...` closes the document before it. What follows may be a
+            // fresh document with no `---` of its own (`a\n...\nb: 1\n` is
+            // two documents), so parse one rather than sweeping it away.
+            if self.current() == Some(SyntaxKind::DOC_END) {
+                self.bump();
+                self.skip_ws_and_newlines();
+                if self.current().is_some()
+                    && self.current() != Some(SyntaxKind::EOF)
+                    && self.current() != Some(SyntaxKind::DOC_START)
+                    && self.current() != Some(SyntaxKind::DIRECTIVE)
+                    && self.current() != Some(SyntaxKind::DOC_END)
+                {
+                    self.parse_document();
+                    self.skip_ws_and_newlines();
+                }
+                continue;
+            }
 
             // If we hit a document/directive marker, try to parse it
             if self.current() == Some(SyntaxKind::DOC_START)
@@ -200,8 +287,33 @@ impl Parser {
             && self.current() != Some(SyntaxKind::DOC_END)
             && self.current() != Some(SyntaxKind::DOC_START)
         {
+            // A plain scalar that *is* the document has no enclosing
+            // collection, so its continuation lines need clear no column:
+            // `" a\nb\n"` is the single scalar `a b` even though the second
+            // line is less indented than the first, as both saphyr and
+            // PyYAML read it.
+            //
+            // Only when the root really is such a scalar. Relaxing the floor
+            // for every root value would also fold a stray line after a
+            // finished collection (`- a\n- b\ninvalid\n`, YAML test suite
+            // TD5N), which is an error rather than a continuation.
+            //
+            // An annotated root is still such a scalar: `" !x t\no\n"` is
+            // the tagged scalar `t o`, so look past any run of tags and
+            // anchors to the node they cover. Only on the same line, though
+            // -- an annotation alone on its line opens a block node, whose
+            // body keeps its own indent.
+            let root_is_plain_scalar = self.root_annotations_cover_plain_scalar();
+            let outer_floor = self.scalar_continuation_floor;
+            let outer_root = self.node_is_document_root;
             self.equal_indent_continues_scalar = true;
+            self.node_is_document_root = true;
+            if root_is_plain_scalar {
+                self.scalar_continuation_floor = Some(0);
+            }
             self.parse_value();
+            self.node_is_document_root = outer_root;
+            self.scalar_continuation_floor = outer_floor;
             self.equal_indent_continues_scalar = false;
         }
 
@@ -209,22 +321,33 @@ impl Parser {
         if self.current() == Some(SyntaxKind::DOC_END) {
             self.bump();
 
-            // Check for content after document end marker (spec violation)
+            // Check for content after document end marker (spec violation).
+            // A comment is not content: `... # done` is as valid as the
+            // `...\n# done` spelling, which already kept it in the tree.
             self.skip_whitespace();
-            if self.current().is_some()
-                && self.current() != Some(SyntaxKind::NEWLINE)
-                && self.current() != Some(SyntaxKind::EOF)
-                && self.current() != Some(SyntaxKind::DOC_START)
-                && self.current() != Some(SyntaxKind::DIRECTIVE)
-            {
-                // Found content after DOC_END - wrap it in an ERROR node
+            let is_stray = |kind: Option<SyntaxKind>| {
+                kind.is_some_and(|kind| {
+                    !matches!(
+                        kind,
+                        SyntaxKind::NEWLINE
+                            | SyntaxKind::EOF
+                            | SyntaxKind::DOC_START
+                            | SyntaxKind::DIRECTIVE
+                            | SyntaxKind::COMMENT
+                    )
+                })
+            };
+            if is_stray(self.current()) {
+                // Found content after DOC_END. Both saphyr and PyYAML reject
+                // this; say so rather than returning a document the content
+                // has quietly been dropped from.
+                let stray = self.current_text().unwrap_or("").to_string();
+                self.add_error(
+                    format!("Content after the document end marker: {stray:?}"),
+                    ParseErrorKind::Other,
+                );
                 self.builder.start_node(SyntaxKind::ERROR.into());
-                while self.current().is_some()
-                    && self.current() != Some(SyntaxKind::NEWLINE)
-                    && self.current() != Some(SyntaxKind::EOF)
-                    && self.current() != Some(SyntaxKind::DOC_START)
-                    && self.current() != Some(SyntaxKind::DIRECTIVE)
-                {
+                while is_stray(self.current()) {
                     self.bump();
                 }
                 self.builder.finish_node();
@@ -262,11 +385,86 @@ impl Parser {
                 self.parse_sequence_with_base_indent(base_indent)
             }
             Some(SyntaxKind::ANCHOR) => {
+                // An anchor alone on its line annotates a block node starting
+                // on a later line, just as a lone tag does. Ask before
+                // consuming the ANCHOR: tagged_block_node_indent reads from
+                // the current token and steps over a leading anchor itself.
+                //
+                // Only reached outside a mapping value; parse_mapping_value
+                // keeps a value-position anchor on the implicit-null path, so
+                // a dedented sibling entry stays a sibling.
+                // An anchor introducing a complex key belongs inside that
+                // key's KEY node, so let the complex-key parser take it
+                // rather than emitting it as a sibling of the mapping.
+                if !self.in_flow_context
+                    && !self.in_value_context
+                    && matches!(
+                        self.upcoming_tokens().find(|k| {
+                            !matches!(k, SyntaxKind::WHITESPACE | SyntaxKind::INDENT)
+                        }),
+                        Some(SyntaxKind::LEFT_BRACKET | SyntaxKind::LEFT_BRACE)
+                    )
+                    && self.is_complex_mapping_key_after_annotations()
+                {
+                    self.parse_complex_key_mapping();
+                    self.nesting_depth -= 1;
+                    return;
+                }
+
+                // Likewise for a plain key: `&k1 key1: one` anchors the key,
+                // and parse_mapping_key_value_pair absorbs a leading anchor
+                // into the KEY. Emitting it here instead left it beside the
+                // mapping, where it looked like a second anchor on the same
+                // node (test suite 7BMT, U3XV).
+                if !self.in_flow_context && !self.in_value_context && self.is_mapping_key() {
+                    self.parse_mapping_with_base_indent(base_indent);
+                    self.nesting_depth -= 1;
+                    return;
+                }
+                let body_indent =
+                    self.tagged_block_node_indent(base_indent, self.annotation_in_value_position);
                 self.bump(); // consume and emit anchor token to CST
                 self.skip_whitespace();
-                self.parse_value_with_base_indent(base_indent);
+                match body_indent {
+                    Some(indent) => {
+                        self.skip_ws_and_newlines();
+                        if self.current() == Some(SyntaxKind::DASH) {
+                            self.parse_sequence_with_base_indent(indent);
+                        } else {
+                            // As in the tagged case, a plain scalar body is
+                            // still a node of the collection the anchor sits
+                            // in, so its continuation only has to clear the
+                            // anchor's own column.
+                            let outer_floor = self.scalar_continuation_floor;
+                            self.scalar_continuation_floor = Some(base_indent);
+                            self.parse_value_with_base_indent(indent);
+                            self.scalar_continuation_floor = outer_floor;
+                        }
+                    }
+                    // Nothing for the anchor to adopt. Inside an explicit
+                    // key that is because the next line opens this entry's
+                    // value, so the anchor annotates an implicit null and the
+                    // line stays for the `:` handling to claim.
+                    None if self.explicit_key_column.is_some()
+                        && self.current() == Some(SyntaxKind::NEWLINE) =>
+                    {
+                        self.builder.start_node(SyntaxKind::SCALAR.into());
+                        self.builder.token(SyntaxKind::NULL.into(), "");
+                        self.builder.finish_node();
+                    }
+                    None => self.parse_value_with_base_indent(base_indent),
+                }
             }
-            Some(SyntaxKind::REFERENCE) => self.parse_alias(),
+            Some(SyntaxKind::REFERENCE) => {
+                // An alias may be a mapping key (`*a : v`), as the YAML test
+                // suite's 26DV has it. Without this the alias became the
+                // value and the `: v` after it opened a null-key entry.
+                if !self.in_flow_context && !self.in_value_context && self.is_mapping_key() {
+                    self.parse_mapping_with_base_indent(base_indent);
+                } else {
+                    self.parse_alias();
+                }
+            }
             Some(SyntaxKind::TAG) => {
                 // `!!str a: b` at document / block level -- the tag
                 // annotates the KEY of an implicit mapping, not the
@@ -345,6 +543,14 @@ impl Parser {
                     self.emit_implicit_null();
                 }
             }
+            // A line that starts at the colon is a mapping entry whose key
+            // is empty: `: v` maps null to `v`, as the YAML test suite has
+            // it (2JQS expects `=VAL :` for the key). parse_scalar consumes
+            // nothing here, so without this the colon and everything after
+            // it was stranded in an ERROR node with no parse error.
+            Some(SyntaxKind::COLON) if !self.in_flow_context => {
+                self.parse_mapping_with_base_indent(base_indent)
+            }
             _ => self.parse_scalar(),
         }
         self.nesting_depth -= 1;
@@ -409,12 +615,20 @@ impl Parser {
                     // Check next token for indentation
                     match self.current() {
                         Some(SyntaxKind::INDENT) => {
+                            // A blank line's indentation says nothing about the
+                            // block we are in, so never read it as a dedent.
+                            // Neither does a comment's: what ends the block is
+                            // the next line that carries content, so an
+                            // indented comment gets the same treatment as one
+                            // at column 0 below.
+                            let blank_line =
+                                self.indent_is_blank_line() || self.indent_starts_comment_line();
                             if let Some((_, text)) = self.tokens.last() {
-                                if text.len() < base_indent {
+                                if !blank_line && text.len() < base_indent {
                                     // Dedent detected - don't consume the indent token
                                     return true;
                                 }
-                                if base_indent == 0 && !text.is_empty() {
+                                if !blank_line && base_indent == 0 && !text.is_empty() {
                                     // At root level, any indentation means content doesn't belong at root
                                     return true;
                                 }
@@ -422,10 +636,22 @@ impl Parser {
                             self.bump(); // consume indent if at appropriate level
                         }
                         Some(SyntaxKind::COMMENT) => {
-                            // COMMENT at column 0 (no INDENT after NEWLINE)
+                            // COMMENT at column 0 (no INDENT after NEWLINE).
+                            //
+                            // The comment's own column says nothing about the
+                            // block: what ends it is the next line with
+                            // content. `a:\n  - x\n# c\n  - y\n` keeps both
+                            // entries, as both saphyr and PyYAML read it.
                             if base_indent > 0 {
-                                // This is dedented - don't consume it
-                                return true;
+                                return match self.indent_after_comment_lines() {
+                                    // Content still inside the block: the
+                                    // comment belongs to it, not to whatever
+                                    // encloses us.
+                                    Some(indent) => indent < base_indent,
+                                    // Nothing follows, so the comment is a
+                                    // trailer of the enclosing scope.
+                                    None => true,
+                                };
                             }
                             // base_indent==0, let caller handle the comment
                             return false;
@@ -449,8 +675,9 @@ impl Parser {
                 }
                 Some(SyntaxKind::INDENT) => {
                     // Standalone indent token (NEWLINE was consumed by prior entry)
+                    let blank_line = self.indent_is_blank_line();
                     if let Some((_, text)) = self.tokens.last() {
-                        if text.len() < base_indent {
+                        if !blank_line && text.len() < base_indent {
                             return true; // dedent detected
                         }
                     }
@@ -489,6 +716,23 @@ impl Parser {
             self.parse_value();
         } else if self.current() == Some(SyntaxKind::NEWLINE) {
             self.bump(); // consume newline
+
+            // A comment line between the key and its value says nothing
+            // about where the value sits, so step over any run of them: the
+            // YAML test suite's Q9WF has a column-0 comment between a
+            // flow-collection key and its indented block mapping.
+            while self.current() == Some(SyntaxKind::COMMENT)
+                || (self.current() == Some(SyntaxKind::INDENT)
+                    && self.upcoming_tokens().next() == Some(SyntaxKind::COMMENT))
+            {
+                if self.current() == Some(SyntaxKind::INDENT) {
+                    self.bump();
+                }
+                self.bump(); // comment
+                if self.current() == Some(SyntaxKind::NEWLINE) {
+                    self.bump();
+                }
+            }
             if self.current() == Some(SyntaxKind::INDENT) {
                 self.bump(); // consume indent
                 if track_indent {
@@ -538,7 +782,10 @@ impl Parser {
                     // Reset to 0 until we see the next INDENT
                     self.current_line_indent = 0;
                 }
-                SyntaxKind::DASH => {
+                // A `-` or `?` puts the node it introduces further right, so
+                // the column a nested collection measures from is past the
+                // indicator rather than at the line's own indent.
+                SyntaxKind::DASH | SyntaxKind::QUESTION => {
                     self.current_line_indent += text.len();
                 }
                 _ => {}
@@ -569,6 +816,177 @@ impl Parser {
         (0..len.saturating_sub(1))
             .rev()
             .map(move |i| self.tokens[i].0)
+    }
+
+    /// Whether the document root is a plain scalar, looking past any tags
+    /// and anchors annotating it.
+    ///
+    /// Such a scalar has no enclosing collection, so its continuation lines
+    /// need clear no column, and an annotation in front does not change that.
+    /// The annotations have to sit on the scalar's own line: one alone on its
+    /// line opens a block node instead, and that node's body keeps its indent.
+    fn root_annotations_cover_plain_scalar(&self) -> bool {
+        let mut kind = match self.current() {
+            Some(kind) => kind,
+            None => return false,
+        };
+        let mut rest = self.upcoming_tokens();
+        let mut saw_annotation = false;
+        while matches!(kind, SyntaxKind::TAG | SyntaxKind::ANCHOR) {
+            saw_annotation = true;
+            kind = match rest.next() {
+                // A line break ends the annotation's line, so whatever
+                // follows is a block node rather than an annotated scalar.
+                Some(SyntaxKind::WHITESPACE) | Some(SyntaxKind::INDENT) => match rest.next() {
+                    Some(kind) => kind,
+                    None => return false,
+                },
+                Some(kind) => kind,
+                None => return false,
+            };
+        }
+        if !crate::parser::scalars::is_plain_scalar_kind(kind) {
+            return false;
+        }
+        // An unannotated root scalar can still be a mapping key; an
+        // annotated one was already dispatched to mapping parsing.
+        saw_annotation || !self.is_mapping_key()
+    }
+
+    /// Whether the INDENT at the current position is only the leading
+    /// whitespace of a comment line.
+    ///
+    /// A comment's own column says nothing about the block it sits in, so
+    /// such an INDENT must not be read as a dedent out of it any more than a
+    /// blank line's may. Whether the block ends there is decided by the next
+    /// line with content, which the COMMENT arm reads once it is reached.
+    pub(super) fn indent_starts_comment_line(&self) -> bool {
+        self.upcoming_tokens().next() == Some(SyntaxKind::COMMENT)
+    }
+
+    /// Indentation of the next line that carries content, looking past any
+    /// run of comment-only and blank lines, or `None` if there is none.
+    ///
+    /// A comment's own column says nothing about the block it sits in: YAML
+    /// lets `a:\n  - x\n# c\n  - y\n` keep both entries, because what ends
+    /// the sequence is the next content line, not the comment. The caller is
+    /// positioned on the COMMENT token.
+    pub(super) fn indent_after_comment_lines(&self) -> Option<usize> {
+        // `tokens` is in reverse order, so walk it backwards from the current
+        // token to read the lines that follow.
+        let mut rest = self.tokens.iter().rev().map(|(kind, text)| (*kind, text));
+        // The COMMENT we are standing on, and its line break.
+        if !matches!(rest.next(), Some((SyntaxKind::COMMENT, _))) {
+            return None;
+        }
+        // Step over the comment's own line break, then read whole lines
+        // until one carries content. A line is blank when a NEWLINE follows
+        // its leading whitespace directly, and a comment line ends at the
+        // COMMENT token, so both leave the loop looking at a line break.
+        if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+            return None;
+        }
+        loop {
+            let mut indent = 0;
+            let mut token = rest.next()?;
+            if token.0 == SyntaxKind::INDENT {
+                indent = token.1.len();
+                token = rest.next()?;
+            }
+            match token.0 {
+                // A blank line's indentation is not significant either; its
+                // NEWLINE is the one we just read.
+                SyntaxKind::NEWLINE => continue,
+                // Another comment line: step over its line break too.
+                SyntaxKind::COMMENT => {
+                    if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+                        return None;
+                    }
+                    continue;
+                }
+                _ => return Some(indent),
+            }
+        }
+    }
+
+    /// Whether a comment on a sequence entry's line ends that entry, leaving
+    /// it an implicit null.
+    ///
+    /// It does unless the entry's value follows on a later line, indented
+    /// past the dash: `- # c\n- a\n` is two null-and-`a` entries, while
+    /// `- # c\n  v\n` is the single entry `v`. The caller is on the COMMENT.
+    pub(super) fn comment_ends_the_entry(&self, dash_column: usize) -> bool {
+        let mut rest = self.tokens.iter().rev().map(|(kind, text)| (*kind, text));
+        if !matches!(rest.next(), Some((SyntaxKind::COMMENT, _))) {
+            return true;
+        }
+        if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+            return true;
+        }
+        loop {
+            match rest.next() {
+                Some((SyntaxKind::NEWLINE, _)) => continue,
+                Some((SyntaxKind::INDENT, text)) => {
+                    let indent = text.len();
+                    if matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+                        continue;
+                    }
+                    return indent <= dash_column;
+                }
+                _ => return true,
+            }
+        }
+    }
+
+    /// The indentation of a sequence entry's value when that value is on a
+    /// later line, looking past any run of blank lines between the dash and
+    /// that line. `None` when the entry has no such value.
+    ///
+    /// The caller is positioned on the NEWLINE ending the dash's line, whose
+    /// dash sits at `dash_column`. A blank line's indentation is not
+    /// significant, so it neither supplies the value's indent nor ends the
+    /// entry: `- \n\n m\n` is the entry `m`, exactly as `- \n m\n` is.
+    ///
+    /// The value has to clear the dash's own column. At or left of it the
+    /// line opens the next entry instead, and this one is an implicit null:
+    /// `- -\n  -\n` is `[[null, null]]` while `- -\n   -\n` is `[[[null]]]`,
+    /// as saphyr and PyYAML both read them.
+    pub(super) fn entry_value_indent(&self, dash_column: usize) -> Option<usize> {
+        // `tokens` is in reverse order, so walk it backwards to read the
+        // lines that follow.
+        let mut rest = self.tokens.iter().rev().map(|(kind, text)| (*kind, text));
+        // The NEWLINE we are standing on.
+        if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+            return None;
+        }
+        loop {
+            match rest.next() {
+                // A blank line: its own line break is the one we just read.
+                Some((SyntaxKind::NEWLINE, _)) => continue,
+                Some((SyntaxKind::INDENT, text)) => {
+                    let indent = text.len();
+                    // An indent that only leads a blank line says nothing
+                    // about where the value sits.
+                    if matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+                        continue;
+                    }
+                    return (indent > dash_column).then_some(indent);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Whether the INDENT at the current position is only the leading
+    /// whitespace of an otherwise blank line.
+    ///
+    /// A blank line's indentation is not significant in YAML, so such an
+    /// INDENT must not be read as a dedent out of the enclosing block.
+    pub(super) fn indent_is_blank_line(&self) -> bool {
+        matches!(
+            self.upcoming_tokens().next(),
+            Some(SyntaxKind::NEWLINE) | None
+        )
     }
 
     pub(super) fn add_error(&mut self, message: String, kind: ParseErrorKind) {

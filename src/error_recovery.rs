@@ -90,12 +90,25 @@ impl ErrorRecoveryContext {
         let end = (self.position + bytes).min(self.text.len());
         let advanced_text = &self.text[self.position..end];
 
-        for ch in advanced_text.chars() {
-            if ch == '\n' {
-                self.line += 1;
-                self.column = 1;
-            } else {
-                self.column += 1;
+        // YAML 1.2 `b-char` is a line feed or a carriage return, so a bare
+        // `\r` ends a line too. Counting only `\n` left line and column
+        // climbing across a whole CR-delimited file.
+        let mut chars = advanced_text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '\r' => {
+                    // A `\r\n` pair is one line break.
+                    if chars.peek() == Some(&'\n') {
+                        chars.next();
+                    }
+                    self.line += 1;
+                    self.column = 1;
+                }
+                '\n' => {
+                    self.line += 1;
+                    self.column = 1;
+                }
+                _ => self.column += 1,
             }
         }
 

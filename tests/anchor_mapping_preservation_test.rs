@@ -215,13 +215,12 @@ fn tagged_indentless_sequence_nested_in_a_mapping() {
 #[test]
 fn tagged_sequence_dedented_past_its_key_is_not_absorbed() {
     // `- a` at column 0 cannot belong to `tags`, which is indented by two.
-    // PyYAML rejects this outright; the CST must not quietly adopt it into
-    // the tagged node.
+    // PyYAML rejects this outright, and so does from_str: the entry cannot
+    // be attached to the document, so reporting it beats returning a value
+    // it has quietly been dropped from.
     let yaml = "outer:\n  tags: !!seq\n- a\n";
-    let file = YamlFile::from_str(yaml).unwrap();
-    assert_eq!(file.to_string(), yaml);
-    let tree = debug::tree_to_string(file.syntax());
-    assert!(tree.contains("ERROR"), "{tree}");
+    let err = YamlFile::from_str(yaml).unwrap_err();
+    assert!(err.to_string().contains("could not be parsed"), "{err}");
 }
 
 #[test]

@@ -943,10 +943,10 @@ impl AsYaml for String {
     fn build_content(
         &self,
         builder: &mut rowan::GreenNodeBuilder,
-        _indent: usize,
+        indent: usize,
         flow_context: bool,
     ) -> bool {
-        self.as_str().build_content(builder, _indent, flow_context)
+        self.as_str().build_content(builder, indent, flow_context)
     }
 
     fn is_inline(&self) -> bool {
@@ -966,7 +966,7 @@ impl AsYaml for &str {
     fn build_content(
         &self,
         builder: &mut rowan::GreenNodeBuilder,
-        _indent: usize,
+        indent: usize,
         flow_context: bool,
     ) -> bool {
         use crate::lex::SyntaxKind;
@@ -980,7 +980,9 @@ impl AsYaml for &str {
             ScalarValue::string(*self)
         };
 
-        let yaml_text = scalar.to_yaml_string();
+        // A multi-line string renders as a block scalar, whose body has to
+        // clear the column its entry sits at.
+        let yaml_text = scalar.to_yaml_string_with_indent(indent + 2);
         // Both quoted and unquoted strings use STRING token kind;
         // the token text includes any quotes needed for disambiguation.
         builder.start_node(SyntaxKind::SCALAR.into());

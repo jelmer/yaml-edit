@@ -158,23 +158,49 @@ impl Document {
         })
     }
 
+    /// The document's root value, stepping through a tag that annotates it.
+    ///
+    /// A tag says what the node beneath it means, so `!!map\n a: 1\n` is
+    /// still a mapping. Without this the accessors below all answer `None`
+    /// for an annotated root, leaving it unreachable.
+    fn root_value_node(&self) -> Option<SyntaxNode> {
+        let node = self.root_node()?;
+        if node.kind() != SyntaxKind::TAGGED_NODE {
+            return Some(node);
+        }
+        node.children().find(|child| {
+            matches!(
+                child.kind(),
+                SyntaxKind::MAPPING | SyntaxKind::SEQUENCE | SyntaxKind::SCALAR | SyntaxKind::ALIAS
+            )
+        })
+    }
+
     /// Get this document as a mapping, if it is one.
     ///
     /// Note: `Mapping` supports mutation even though this method takes `&self`.
     /// Mutations are applied directly to the underlying syntax tree via rowan's
     /// persistent data structures. All references to the tree will see the changes.
     pub fn as_mapping(&self) -> Option<Mapping> {
-        self.root_node().and_then(Mapping::cast)
+        self.root_value_node().and_then(Mapping::cast)
     }
 
     /// Get this document's root value as a sequence, or `None` if it isn't one.
     pub fn as_sequence(&self) -> Option<Sequence> {
-        self.root_node().and_then(Sequence::cast)
+        self.root_value_node().and_then(Sequence::cast)
     }
 
     /// Get this document's root value as a scalar, or `None` if it isn't one.
     pub fn as_scalar(&self) -> Option<Scalar> {
-        self.root_node().and_then(Scalar::cast)
+        self.root_value_node().and_then(Scalar::cast)
+    }
+
+    /// Get this document's root value as a tagged node, or `None` if it
+    /// carries no tag.
+    pub fn as_tagged(&self) -> Option<crate::yaml::TaggedNode> {
+        self.root_node()
+            .filter(|node| node.kind() == SyntaxKind::TAGGED_NODE)
+            .and_then(crate::yaml::TaggedNode::cast)
     }
 
     /// Returns `true` if this document is a mapping that contains the given key.
@@ -787,20 +813,32 @@ mod tests {
     #[test]
     fn from_str_rejects_stranded_content() {
         // The parser sweeps tokens it cannot attach into a stream-level
-        // ERROR node without reporting an error. from_str returned only the
-        // first DOCUMENT, so that text vanished from the output: `&b\nx: 1\n`
-        // came back as `&b\n`, losing an entire mapping.
-        for src in ["&b\nJ", "&b\nx: 1\n", "&b\n- a\n"] {
+        // ERROR node. from_str returned only the first DOCUMENT, so that
+        // text vanished from the output rather than being reported.
+        //
+        // A mapping entry cannot follow the document's own scalar, which
+        // PyYAML rejects too, so there is nothing to attach these to.
+        for src in ["a\nx: 1\n", "- a\nx: 1\n"] {
             let err = Document::from_str(src).expect_err("stranded content must not be dropped");
             let message = err.to_string();
             assert!(
-                message.contains("could not be parsed as part of the document"),
+                message.contains("could not be parsed"),
                 "{src:?}: unexpected error {message}"
             );
         }
 
-        // Documents with nothing stranded still parse and round-trip.
-        for src in ["a: 1\n", "a\nJ", "- a\n- b\n", "key: value"] {
+        // Documents with nothing stranded still parse and round-trip. An
+        // anchor annotates the node on the following line, so `&b\nx: 1\n`
+        // is the mapping `{x: 1}`, as saphyr and PyYAML both read it.
+        for src in [
+            "a: 1\n",
+            "a\nJ",
+            "- a\n- b\n",
+            "key: value",
+            "&b\nJ",
+            "&b\nx: 1\n",
+            "&b\n- a\n",
+        ] {
             let doc = Document::from_str(src).expect("valid document");
             assert_eq!(doc.to_string(), src, "{src:?}");
         }

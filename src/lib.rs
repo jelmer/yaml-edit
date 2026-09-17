@@ -189,6 +189,7 @@ pub mod debug;
 mod error;
 pub mod error_recovery;
 mod lex;
+pub mod migrate;
 mod nodes;
 mod parse;
 mod parser;
@@ -209,10 +210,13 @@ pub use lex::{
 };
 pub use parse::Parse;
 pub use scalar::{CoreScalarType, ScalarStyle, ScalarType, ScalarValue};
+// `CustomTagHandler` is public and its methods take and return this, so
+// without the re-export no caller outside the crate can implement the trait.
 pub use schema::{
     CustomSchema, CustomValidationResult, Schema, SchemaValidator, ValidationError,
     ValidationErrorKind, ValidationResult,
 };
+pub use value::YamlValue;
 pub use yaml::{
     Alias, Comment, Directive, Document, Entry, Lang, Mapping, MappingEntry, OccupiedEntry, Scalar,
     ScalarConversionError, Sequence, Set, TaggedNode, VacantEntry, YamlFile,

@@ -73,6 +73,51 @@ fn sequence_push_existing() {
     check(&doc);
 }
 
+/// Building a sequence a push at a time stays usable at scale.
+///
+/// `push` used to hold every child of the SEQUENCE alive in a Vec across
+/// `splice_children`, which has to fix up each live SyntaxNode handle. That
+/// made one push cost O(len) twice over and building a sequence O(len^2):
+/// 800 pushes took over a second. The bound here is loose enough not to be
+/// flaky, but a return of the old behaviour blows straight through it.
+#[test]
+fn sequence_push_scales() {
+    let doc = Document::from_str("items:\n  - a\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
+
+    let start = std::time::Instant::now();
+    for i in 0..1500 {
+        seq.push(format!("v{i}"));
+    }
+    let elapsed = start.elapsed();
+
+    assert_eq!(seq.len(), 1501);
+    check(&doc);
+
+    // Re-parsing the result must give the same sequence back.
+    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+    let reparsed_seq = reparsed
+        .as_mapping()
+        .unwrap()
+        .get_sequence("items")
+        .unwrap();
+    assert_eq!(reparsed_seq.len(), 1501);
+    assert_eq!(
+        reparsed_seq
+            .get(1500)
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "v1499"
+    );
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(15),
+        "1500 pushes took {elapsed:?}, which suggests push is quadratic again"
+    );
+}
+
 #[test]
 fn set_empty_mapping_then_populate() {
     let doc = Document::from_str("existing: v\n").unwrap();
@@ -231,10 +276,7 @@ fn set_path_after_explicit_key_does_not_leave_blank_line() {
 }
 
 // Regression tests for bugs surfaced by the post-conditioned mutation
-// proptest in `tests/proptest_invariants.rs`. Most are now-passing
-// regressions; the two `#[ignore]`d ones document deeper bugs still to
-// fix. Un-ignore them (and update the assertion to the correct output)
-// when addressed.
+// proptest in `tests/proptest_invariants.rs`.
 
 #[test]
 fn sequence_pop_last_item_collapses_to_flow_empty() {
@@ -437,4 +479,54 @@ fn sequence_insert_at_head_into_single_entry_block() {
     seq.insert(0, "b");
     assert_eq!(doc.to_string(), "s:\n  - b\n  - a\n");
     check(&doc);
+}
+
+/// A sequence that is the document's own node starts at column 0, so a
+/// pushed entry is a sibling of the others rather than nested inside the
+/// last one.
+///
+/// detect_indentation fell through to a hardcoded two spaces for a root
+/// sequence, so `push` wrote `"- a\n  - new\n"` -- a nested sequence that
+/// as_sequence could no longer reach the new entry through.
+#[test]
+fn root_sequence_push_appends_a_sibling() {
+    for (yaml, want) in [
+        ("- a\n", "- a\n- new\n"),
+        ("- a\n- b\n", "- a\n- b\n- new\n"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let seq = file.document().unwrap().as_sequence().unwrap();
+        seq.push("new");
+        assert_eq!(file.to_string(), want, "{yaml:?}");
+
+        let reparsed = YamlFile::from_str(&file.to_string()).unwrap();
+        let seq = reparsed.document().unwrap().as_sequence().unwrap();
+        assert_eq!(
+            seq.get(seq.len() - 1)
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .as_string(),
+            "new",
+            "{yaml:?}"
+        );
+    }
+}
+
+/// A sequence nested under a key keeps its own indentation.
+#[test]
+fn nested_sequence_push_keeps_its_indent() {
+    let file = YamlFile::from_str("a:\n  - x\n").unwrap();
+    let seq = file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get(yaml_edit::ScalarValue::from("a"))
+        .unwrap()
+        .as_sequence()
+        .cloned()
+        .unwrap();
+    seq.push("new");
+    assert_eq!(file.to_string(), "a:\n  - x\n  - new\n");
 }

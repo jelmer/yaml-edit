@@ -24,64 +24,6 @@ use rowan::ast::AstNode;
 use saphyr::{LoadableYamlNode, Yaml};
 use yaml_edit::{Parse, SyntaxKind, YamlFile};
 
-
-/// Whether any line could be a plain scalar continued on a later, more
-/// indented line. Multi-line plain scalars are valid YAML that yaml-edit
-/// does not implement: the continuation lands in an ERROR node, so it is
-/// not the attachment bug this target hunts.
-///
-/// Deliberately broad. Rather than decide which lines really end in a
-/// plain scalar (the thing the parser itself gets wrong), treat any
-/// content line that is not unambiguously a block-structure opener as a
-/// possible plain scalar. That costs coverage but keeps a known gap from
-/// masking the bug class this target is for.
-fn has_plain_scalar_continuation(input: &str) -> bool {
-    let mut prev_plain_indent: Option<usize> = None;
-    for line in input.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let indent = line.len() - line.trim_start().len();
-        // A plain scalar folds in following lines indented at least as far
-        // as itself, so same-indent continuation counts too.
-        if prev_plain_indent.is_some_and(|plain| indent >= plain) {
-            return true;
-        }
-
-        // The value this line leaves open, if any: text after `key: `, or
-        // the whole line when it is not a mapping entry.
-        let value = match trimmed.split_once(": ") {
-            Some((_, v)) => v.trim(),
-            None if trimmed.ends_with(':') => "",
-            None => trimmed,
-        };
-
-        // A value that opens a block collection or a nested node cannot be
-        // continued as a plain scalar; anything else might be one. A `-` or
-        // `?` counts as an opener only when a space follows it.
-        let opens_block = value.is_empty()
-            || value.starts_with(['[', '{', '|', '>', '#', '*'])
-            || matches!(value, "-" | "?")
-            || value.starts_with("- ")
-            || value.starts_with("? ");
-        // A value made only of node properties (`!!seq`, `&a`, `!!seq &a`)
-        // annotates a block node on a later line rather than being a plain
-        // scalar, so nothing continues from it.
-        let annotation_only = !value.is_empty()
-            && value
-                .split_whitespace()
-                .all(|word| word.starts_with(['!', '&']));
-
-        prev_plain_indent = if opens_block || annotation_only {
-            None
-        } else {
-            Some(indent)
-        };
-    }
-    false
-}
-
 fn first_error_node(node: &rowan::SyntaxNode<yaml_edit::Lang>) -> Option<String> {
     if node.kind() == SyntaxKind::ERROR {
         return Some(node.text().to_string());
@@ -102,24 +44,43 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    // A bare `:` opening a block mapping is a spec grey area: saphyr reads
-    // it as a null-keyed entry, PyYAML rejects it outright. Neither answer
-    // is authoritative, so skip rather than police a disagreement between
-    // reference parsers.
-    if input
-        .lines()
-        .any(|line| line.trim_start().starts_with(':'))
-    {
+    // A `:` straight after an anchor or alias name is another grey area:
+    // saphyr reads `k: &a: v` as `k: v` and drops the anchor, PyYAML
+    // rejects it as "mapping values are not allowed here". With the
+    // reference parsers split there is no answer to hold yaml-edit to.
+    if input.lines().any(|line| {
+        line.split_whitespace()
+            .any(|word| word.starts_with(['&', '*']) && word.contains(':'))
+    }) {
         return;
     }
 
-    // A `:` inside a tag shorthand is lexed as the end of the tag, leaving
-    // the rest as a stray scalar that detaches the real value. That is a
-    // known lexer bug (`is_yaml_special` stops the tag name at ':'), not
-    // the attachment bug this target hunts; skip until it is fixed.
+    // saphyr 0.0.12 hangs forever on a reserved directive: a `%` starting
+    // any line, followed by a name other than YAML or TAG (`%FOO`, `%!!`).
+    // It need not be the first line -- `%TAG ! tag:e\n%!! v` wedges it too.
+    // Reported upstream; skip so the oracle cannot hang the run. yaml-edit
+    // parses these in microseconds.
+    // The name has to be delimited to count as YAML or TAG: `%TAG!!x` is a
+    // reserved directive named `TAG!!x`, and hangs saphyr just as `%FOO`
+    // does.
     if input.lines().any(|line| {
-        line.split_whitespace()
-            .any(|word| word.starts_with('!') && word.contains(':'))
+        let Some(rest) = line.strip_prefix('%') else {
+            return false;
+        };
+        // YAML delimits a directive name with a space or tab, not with
+        // whatever char::is_whitespace admits: `%TAG\u{a0}x` names the
+        // reserved directive `TAG\u{a0}x`, and wedges saphyr as `%FOO` does.
+        let name = rest
+            .split([' ', '\t'])
+            .next()
+            .unwrap_or(rest);
+        if name != "YAML" && name != "TAG" {
+            return true;
+        }
+        // Even a well-named directive wedges saphyr when nothing follows it
+        // on the line: `%TAG` alone asks for a 2GB allocation and aborts, as
+        // `%YAML` does. Anything after the name avoids it.
+        rest[name.len()..].trim_matches([' ', '\t']).is_empty()
     }) {
         return;
     }
@@ -127,16 +88,6 @@ fuzz_target!(|data: &[u8]| {
     // Only inputs a conformant parser accepts can hold yaml-edit to this
     // standard. saphyr rejecting the input means an ERROR node is fair.
     if Yaml::load_from_str(input).is_err() {
-        return;
-    }
-
-    // Multi-line plain scalars (a plain scalar continued on following, more
-    // indented lines) are not implemented: the continuation always lands in
-    // an ERROR node, with or without a blank line, so it is not the
-    // attachment bug this target hunts. Skip inputs whose first content
-    // line is a plain scalar that something indented follows, so that known
-    // gap does not mask everything else.
-    if has_plain_scalar_continuation(input) {
         return;
     }
 

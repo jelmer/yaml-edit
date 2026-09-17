@@ -142,11 +142,23 @@ impl Scalar {
             return String::new();
         }
 
-        // Detect base indentation from first non-empty line
-        let base_indent = content_lines
-            .iter()
-            .find(|line| !line.trim().is_empty())
-            .map_or(0, |line| line.chars().take_while(|c| *c == ' ').count());
+        // An explicit indentation indicator (`|2`, `>2-`) says where the
+        // content starts, counted from the block's own column. Anything
+        // further right is part of the value: `|2` over a 4-space body is
+        // `"  x"`, not `"x"`. Without it, take the first non-empty line's
+        // indentation as the base.
+        let explicit_indent = header
+            .chars()
+            .find(|c| c.is_ascii_digit() && *c != '0')
+            .and_then(|c| c.to_digit(10))
+            .map(|d| d as usize);
+        let base_indent = match explicit_indent {
+            Some(explicit) => explicit,
+            None => content_lines
+                .iter()
+                .find(|line| !line.trim().is_empty())
+                .map_or(0, |line| line.chars().take_while(|c| *c == ' ').count()),
+        };
 
         // Count trailing empty lines for Keep chomping
         let trailing_empty_count = content_lines
@@ -245,8 +257,14 @@ impl Scalar {
                 // Keep all trailing newlines - preserve the count we detected
                 // Remove all trailing newlines first, then add back the original count
                 result = result.trim_end_matches('\n').to_string();
-                // Add one newline for the content line, plus trailing empties
-                for _ in 0..=trailing_empty_count {
+                // One newline ends the last content line, then one per
+                // trailing blank. A body that is nothing but blank lines has
+                // no content line to end, so it gets only the blanks:
+                // `k: |+\n\n\n` is `"\n\n"`, as saphyr and PyYAML both
+                // read it, not `"\n\n\n"`.
+                let has_content = content_lines.len() > trailing_empty_count;
+                let newlines = trailing_empty_count + usize::from(has_content);
+                for _ in 0..newlines {
                     result.push('\n');
                 }
             }

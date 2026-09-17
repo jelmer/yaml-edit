@@ -183,3 +183,195 @@ proptest! {
         prop_assert_eq!(file.to_string(), yaml);
     }
 }
+
+/// A tagged plain scalar whose continuation line is *less* indented than
+/// its first line strands the continuation in an ERROR node, while the
+/// untagged spelling folds it in:
+///
+/// ```text
+/// x          !
+///   a          a
+///  b          b        <- stranded only in the tagged form
+/// ```
+///
+/// parse_tagged_value_inner opens the body with the first body line's own
+/// column as the base indent, so a shallower continuation read as a dedent.
+/// A plain scalar's continuation only has to clear the enclosing block's
+/// indent (0 here), not its own first line.
+#[test]
+fn tagged_scalar_keeps_a_less_indented_continuation() {
+    for yaml in ["!\n  a\n b\n", "!!str\n  a\n b\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    // Both lines belong to one SCALAR, as they do untagged: the tagged node
+    // holds a single scalar child spanning them, not one per line.
+    let file = YamlFile::from_str("!!str\n  a\n b\n").unwrap();
+    let tagged = file
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == yaml_edit::SyntaxKind::TAGGED_NODE)
+        .expect("TAGGED_NODE");
+    let scalars: Vec<_> = tagged
+        .children()
+        .filter(|n| n.kind() == yaml_edit::SyntaxKind::SCALAR)
+        .collect();
+    assert_eq!(scalars.len(), 1);
+    assert_eq!(scalars[0].text().to_string(), "a\n b");
+
+    // The untagged spelling this matches.
+    let file = YamlFile::from_str("x\n  a\n b\n").unwrap();
+    let tree = debug::tree_to_string(file.syntax());
+    assert!(!tree.contains("ERROR"), "{tree}");
+}
+
+/// A tag alone on a line annotates a block mapping at its own column when
+/// there is no enclosing key to nest under.
+///
+/// tagged_block_node_indent required the body to be indented *past* the
+/// tag, which is right for a tag in the value position (`k: !!map` must not
+/// adopt a sibling key) but wrong at document level: `!!map\na: 1\n` is a
+/// tagged mapping, as saphyr reads it. The mapping and every entry in it
+/// landed in an ERROR node with no parse error.
+#[test]
+fn document_level_tag_adopts_a_mapping_at_its_own_column() {
+    for yaml in ["!\na: 1\n", "!!map\na: 1\nb: 2\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    // The mapping hangs off the tag, with both entries intact.
+    let file = YamlFile::from_str("!!map\na: 1\nb: 2\n").unwrap();
+    let tagged = file
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == yaml_edit::SyntaxKind::TAGGED_NODE)
+        .expect("TAGGED_NODE");
+    let mapping = tagged
+        .children()
+        .find(|n| n.kind() == yaml_edit::SyntaxKind::MAPPING)
+        .expect("MAPPING inside the TAGGED_NODE");
+    assert_eq!(
+        mapping
+            .children()
+            .filter(|n| n.kind() == yaml_edit::SyntaxKind::MAPPING_ENTRY)
+            .count(),
+        2
+    );
+}
+
+/// A tag in the value position still must not adopt a sibling key: the body
+/// of `k: !!map` has to nest under `k`.
+#[test]
+fn value_position_tag_leaves_a_dedented_key_alone() {
+    let yaml = "k: !!map\na: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["k".to_string(), "a".to_string()]);
+}
+
+/// An anchor alone on its line annotates the block node that starts on the
+/// next line, exactly as a lone tag does.
+///
+/// The anchor arm consumed the anchor and then called `skip_whitespace`,
+/// which does not cross a line break, so the body was never parsed and
+/// landed in an ERROR node with no parse error.
+#[test]
+fn lone_anchor_adopts_the_node_on_the_next_line() {
+    for yaml in ["&a\nx\n", "&a\na: 1\n", "&a\n- x\n- y\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+
+    // The scalar hangs off the anchor rather than being stranded.
+    let file = YamlFile::from_str("&a\nx\n").unwrap();
+    let doc = file.document().unwrap();
+    assert_eq!(doc.as_scalar().unwrap().as_string(), "x");
+
+    // A mapping body keeps its entries.
+    let file = YamlFile::from_str("&a\na: 1\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "1"
+    );
+}
+
+/// An anchor in a mapping's value position must still leave a dedented
+/// sibling entry alone, including when a tag precedes it.
+///
+/// `k: !!str &a` runs the tag arm, which declines to adopt the sibling, and
+/// then falls through to the anchor arm; without the position flag that arm
+/// answered the same question differently and swallowed the sibling.
+#[test]
+fn value_position_anchor_leaves_a_dedented_sibling_alone() {
+    for yaml in [
+        "tags: &a\nk: v\nsibling: kept\n",
+        "tags: !!str &a\nk: v\nsibling: kept\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(
+            keys,
+            vec!["tags".to_string(), "k".to_string(), "sibling".to_string()],
+            "{yaml:?}"
+        );
+    }
+
+    // An indented body is still the anchored value, not a sibling.
+    let yaml = "tags: &a\n  k: v\nsib: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["tags".to_string(), "sib".to_string()]);
+}
+
+/// A lone anchor may annotate an indentless sequence, whose entries sit at
+/// the key's column rather than the anchor's.
+///
+/// `seq:\n &anchor\n- a\n- b\n` is a sequence of two, as saphyr reads it.
+/// The value was parsed with the anchor's own line as the base, so entries
+/// at the key's column looked dedented and were stranded in an ERROR node
+/// with no parse error (suite case SKE5).
+#[test]
+fn lone_anchor_adopts_an_indentless_sequence() {
+    let yaml = "seq:\n &anchor\n- a\n- b\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = debug::tree_to_string(file.syntax());
+    assert!(!tree.contains("ERROR"), "{tree}");
+
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let seq = mapping.get_sequence("seq").expect("sequence value");
+    assert_eq!(seq.len(), 2);
+
+    // An indented body still works, and a sibling key still survives.
+    for yaml in ["seq:\n &a\n  - a\n", "k:\n &a\n  v\nj: 1\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

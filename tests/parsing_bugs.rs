@@ -3159,3 +3159,13 @@ fn test_zero_indented_block_scalar_at_the_document_root() {
     assert_eq!(doc.to_string(), "--- >\nline1\nline2\n");
     assert!(doc.as_mapping().is_none());
 }
+
+#[test]
+fn test_sequence_entry_scalar_folds_from_the_dash_column() {
+    // `-\n   b\n  - z\n`: the `- z` line is shallower than the scalar `b`
+    // but still past the entry's dash, so it continues the scalar rather
+    // than opening a sibling entry.
+    let doc = yaml_edit::Document::from_str("-\n   b\n  - z\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    assert_eq!(seq.len(), 1);
+}

@@ -306,7 +306,19 @@ impl Parser {
                         self.bump();
                     }
                     self.bump(); // consume indent
+
+                    // The value parses at its own column, but a plain scalar
+                    // there is still a node of this sequence, so a
+                    // continuation only has to clear the *dash's* column:
+                    // `-\n   b\n  - z\n` is the single item `b - z`, as
+                    // both saphyr and PyYAML read it. Only for a scalar: a
+                    // nested collection's entries set their own column.
+                    let outer_floor = self.scalar_continuation_floor;
+                    if self.current() != Some(SyntaxKind::DASH) {
+                        self.scalar_continuation_floor = Some(dash_column);
+                    }
                     self.parse_value_with_base_indent(indent_level);
+                    self.scalar_continuation_floor = outer_floor;
                 } else {
                     self.emit_implicit_null();
                 }

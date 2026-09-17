@@ -288,23 +288,24 @@ impl Mapping {
                 .any(|t| t.kind() == SyntaxKind::WHITESPACE && t.text().is_empty())
     }
 
-    /// Reorder fields according to the specified order.
+    /// Slice this mapping's children into leading decoration, one
+    /// `(entry, postscript)` group per entry, and trailing decoration.
     ///
-    /// Fields not in the order list will appear after the ordered fields,
-    /// in their original relative order.
-    pub fn reorder_fields<I, K>(&self, order: I)
-    where
-        I: IntoIterator<Item = K>,
-        K: crate::AsYaml,
-    {
-        let order_keys: Vec<K> = order.into_iter().collect();
-
-        // Slice the children into leading decoration, (entry, tokens
-        // that follow it up to the next entry), and trailing
-        // decoration. Reshuffling (entry, postscript) pairs keeps a
-        // between-entry comment glued to the entry it visually
-        // followed.
-        let all: Vec<_> = self.0.children_with_tokens().collect();
+    /// A group carries the tokens between its entry and the next, so
+    /// reshuffling groups keeps a between-entry comment glued to the entry it
+    /// visually followed.
+    #[allow(clippy::type_complexity)]
+    fn slice_into_entry_groups(
+        &self,
+        all: &[rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>],
+    ) -> (
+        Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>>,
+        Vec<(
+            SyntaxNode,
+            Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>>,
+        )>,
+        Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>>,
+    ) {
         let entry_indices: Vec<usize> = all
             .iter()
             .enumerate()
@@ -337,9 +338,6 @@ impl Mapping {
                 .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE))
         .then(|| trailing.remove(0));
 
-        // Each entry pairs with the tokens between it and the next
-        // entry (empty for the last entry -- that spillover becomes
-        // `trailing` above).
         let mut groups: Vec<(SyntaxNode, Vec<_>)> = entry_indices
             .windows(2)
             .map(|w| {
@@ -352,19 +350,43 @@ impl Mapping {
             let postscript = last_entry_terminator.into_iter().collect();
             groups.push((all[last].as_node().cloned().unwrap(), postscript));
         }
+        (leading, groups, trailing)
+    }
 
+    /// Reorder fields according to the specified order.
+    ///
+    /// Fields not in the order list will appear after the ordered fields,
+    /// in their original relative order.
+    pub fn reorder_fields<I, K>(&self, order: I)
+    where
+        I: IntoIterator<Item = K>,
+        K: crate::AsYaml,
+    {
+        let order_keys: Vec<K> = order.into_iter().collect();
+
+        // Slice the children into leading decoration, (entry, tokens
+        // that follow it up to the next entry), and trailing
+        // decoration. Reshuffling (entry, postscript) pairs keeps a
+        // between-entry comment glued to the entry it visually
+        // followed.
+        let all: Vec<_> = self.0.children_with_tokens().collect();
+        let (leading, mut groups, trailing) = self.slice_into_entry_groups(&all);
+
+        // Take each named key's group in the order given; anything the
+        // caller did not name keeps its relative position at the end.
+        let entry_has_key = |entry: &SyntaxNode, key: &K| {
+            entry
+                .children()
+                .find(|n| n.kind() == SyntaxKind::KEY)
+                .is_some_and(|k| key_content_matches(&k, key))
+        };
         let mut ordered: Vec<_> = order_keys
             .iter()
-            .filter_map(|order_key| {
-                groups
+            .filter_map(|key| {
+                let pos = groups
                     .iter()
-                    .position(|(entry, _)| {
-                        entry
-                            .children()
-                            .find(|n| n.kind() == SyntaxKind::KEY)
-                            .is_some_and(|k| key_content_matches(&k, order_key))
-                    })
-                    .map(|pos| groups.remove(pos))
+                    .position(|(entry, _)| entry_has_key(entry, key))?;
+                Some(groups.remove(pos))
             })
             .collect();
         ordered.extend(groups);

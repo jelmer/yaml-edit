@@ -435,6 +435,7 @@ impl Parser {
 
             // Parse value if there's a colon
             if self.current() == Some(SyntaxKind::COLON) {
+                let colon_column = self.error_context.current_location().1.saturating_sub(1);
                 self.bump(); // consume ':'
                 self.skip_whitespace();
 
@@ -442,7 +443,7 @@ impl Parser {
                 // sit at the `:`'s own column rather than past it. The shared
                 // value-after-colon shape measures from the indent it finds,
                 // so this one case is handled before delegating to it.
-                if self.indentless_sequence_follows() {
+                if self.indentless_sequence_follows(colon_column) {
                     self.builder.start_node(SyntaxKind::VALUE.into());
                     self.bump(); // consume the newline
                     self.parse_sequence_with_base_indent(base_indent);
@@ -812,7 +813,7 @@ impl Parser {
     fn parse_explicit_key_node(&mut self, question_column: usize, base_indent: usize) {
         if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
             self.parse_value();
-        } else if self.indentless_sequence_follows() {
+        } else if self.indentless_sequence_follows(question_column) {
             self.bump(); // consume the newline
             self.parse_sequence_with_base_indent(base_indent);
         } else if let Some(indent) = self.indented_sequence_indent(question_column) {
@@ -924,8 +925,11 @@ impl Parser {
     /// The caller is on the NEWLINE that ends the `?` or `:` line. A `-`
     /// straight after that line break carries no INDENT token, which is what
     /// makes the sequence indentless.
-    fn indentless_sequence_follows(&self) -> bool {
-        if self.current() != Some(SyntaxKind::NEWLINE) {
+    fn indentless_sequence_follows(&self, indicator_column: usize) -> bool {
+        // The dashes carry no INDENT, so they start their line: only an
+        // indicator in column 0 shares that column. Further in, `- ?\n- a\n`
+        // dedents out of the entry and the sequence is the enclosing one's.
+        if self.current() != Some(SyntaxKind::NEWLINE) || indicator_column != 0 {
             return false;
         }
         // A blank line between the indicator and the sequence carries no

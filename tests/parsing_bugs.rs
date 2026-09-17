@@ -3123,3 +3123,17 @@ fn test_collapsed_empty_mapping_keeps_its_separator_in_the_entry() {
     assert_eq!(doc.to_string(), "a: 1\nt: b\n");
     yaml_edit::Document::from_str(&doc.to_string()).unwrap();
 }
+
+#[test]
+fn test_dash_left_of_the_indicator_is_not_an_indentless_key() {
+    // `- ?\n- a\n`: the dashes start their line, so they sit left of the
+    // `?` at column 2 and dedent out of the entry. Claiming them as the
+    // key's indentless sequence left a zero-width empty SEQUENCE behind.
+    let doc = yaml_edit::Document::from_str("- ?\n- a\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    assert_eq!(seq.len(), 2);
+    let entry = seq.get(0).unwrap();
+    let key = entry.as_mapping().unwrap().keys().next().unwrap();
+    assert!(key.as_sequence().is_none());
+    assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().value(), "a");
+}

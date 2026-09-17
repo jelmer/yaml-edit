@@ -170,15 +170,6 @@ pub(crate) fn detach_empty_collection_placeholder_newline(
     }
 }
 
-/// If `collection` is an empty block MAPPING or SEQUENCE sitting
-/// inside a MAPPING_ENTRY's VALUE, replace the `NEWLINE INDENT
-/// COLLECTION` placeholder with an inline flow-empty
-/// (` {}` or ` []`) so the entry renders as `key: {}` / `key: []`
-/// instead of an unterminated `key:\n    ` shape.
-///
-/// Skips flow collections (`{}` / `[]` already render correctly) and
-/// VALUEs carrying anything beyond decoration around the collection
-/// (comments, sibling scalars, anchors, tags).
 /// Turn an empty placeholder collection into a block one: drop its flow
 /// delimiters, remove the now-dangling inline separator after the entry's
 /// colon, and scaffold `NEWLINE INDENT` on the parent VALUE so the first
@@ -243,6 +234,15 @@ pub(crate) fn convert_placeholder_to_block(collection: &SyntaxNode) {
     parent.splice_children(pos..pos, vec![nl.into(), indent.into()]);
 }
 
+/// If `collection` is an empty block MAPPING or SEQUENCE sitting
+/// inside a MAPPING_ENTRY's VALUE, replace the `NEWLINE INDENT
+/// COLLECTION` placeholder with an inline flow-empty
+/// (` {}` or ` []`) so the entry renders as `key: {}` / `key: []`
+/// instead of an unterminated `key:\n    ` shape.
+///
+/// Skips flow collections (`{}` / `[]` already render correctly) and
+/// VALUEs carrying anything beyond decoration around the collection
+/// (comments, sibling scalars, anchors, tags).
 pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode) {
     let (open_kind, close_kind, open_txt, close_txt) = match collection.kind() {
         SyntaxKind::MAPPING => (SyntaxKind::LEFT_BRACE, SyntaxKind::RIGHT_BRACE, "{", "}"),

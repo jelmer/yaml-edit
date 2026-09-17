@@ -13,7 +13,7 @@ ast_node!(Sequence, SEQUENCE, "A YAML sequence (list)");
 /// True if `node` cannot be rendered as a block collection: any
 /// flow ancestor forbids it, and so does sitting inline after a `- `
 /// (no NEWLINE + INDENT scaffold to hang a block entry off).
-fn must_render_flow(node: &SyntaxNode) -> bool {
+pub(crate) fn must_render_flow(node: &SyntaxNode) -> bool {
     if node
         .parent()
         .is_some_and(|p| p.kind() == SyntaxKind::SEQUENCE_ENTRY)
@@ -28,7 +28,12 @@ fn must_render_flow(node: &SyntaxNode) -> bool {
             _ => None,
         };
         if let Some(open) = opener {
-            if has_child_token(&p, |k| k == open) {
+            // A pending-block placeholder is `{}` in the text but is headed
+            // for block style, so it does not force flow on what nests inside
+            // it (see `Mapping::new_pending_block`).
+            let pending =
+                crate::nodes::Mapping::cast(p.clone()).is_some_and(|m| m.is_block_placeholder());
+            if has_child_token(&p, |k| k == open) && !pending {
                 return true;
             }
         }
@@ -208,10 +213,63 @@ impl Sequence {
 impl Sequence {
     /// Create a new empty sequence.
     pub fn new() -> Self {
+        Self::new_pending_block()
+    }
+
+    /// An empty sequence that renders as `[]` and stays flow when filled.
+    ///
+    /// Use this for a sequence that is meant to be flow-style in the output,
+    /// including one that is left empty.
+    pub fn new_flow() -> Self {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::SEQUENCE.into());
+        builder.token(SyntaxKind::LEFT_BRACKET.into(), "[");
+        builder.token(SyntaxKind::RIGHT_BRACKET.into(), "]");
         builder.finish_node();
         Sequence(SyntaxNode::new_root_mut(builder.finish()))
+    }
+
+    /// An empty sequence that becomes a block sequence once an item is added.
+    ///
+    /// YAML has no block syntax for an empty sequence: block collections are
+    /// written as their entries, so with none left there is nothing to write,
+    /// and a bare `key:` reads back as null. An empty sequence is therefore
+    /// `[]` whatever its eventual style, and block-vs-flow only becomes a
+    /// real choice once there is an item.
+    ///
+    /// This renders as exactly `[]`, plus a zero-width token that marks it as
+    /// destined for block style. [`Sequence::push`] rewrites it into block
+    /// form when the first item arrives; a `[]` that came from the source has
+    /// no such marker and keeps its flow style.
+    ///
+    /// The marker lives only in the tree. Serializing and re-parsing yields
+    /// an ordinary `[]`, which stays flow, since YAML has nowhere to record
+    /// the intent.
+    pub fn new_pending_block() -> Self {
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::SEQUENCE.into());
+        builder.token(SyntaxKind::LEFT_BRACKET.into(), "[");
+        // Zero-width sentinel: renders as nothing, so this is still exactly
+        // `[]` in the text, but marks the sequence as one that should become
+        // block when it gets its first item.
+        builder.token(SyntaxKind::WHITESPACE.into(), "");
+        builder.token(SyntaxKind::RIGHT_BRACKET.into(), "]");
+        builder.finish_node();
+        Sequence(SyntaxNode::new_root_mut(builder.finish()))
+    }
+
+    /// Is this an empty sequence awaiting its first item? See
+    /// [`Sequence::new_pending_block`].
+    pub(crate) fn is_block_placeholder(&self) -> bool {
+        !self
+            .0
+            .children()
+            .any(|c| c.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            && self
+                .0
+                .children_with_tokens()
+                .filter_map(|c| c.into_token())
+                .any(|t| t.kind() == SyntaxKind::WHITESPACE && t.text().is_empty())
     }
 
     /// Indentation string used by entries in this sequence: a
@@ -268,63 +326,16 @@ impl Sequence {
         "  ".to_string()
     }
 
-    /// Reshape an empty flow sequence (`[]`) into an empty block
-    /// sequence with a `NEWLINE INDENT` scaffold on the parent VALUE,
-    /// so a follow-up push has somewhere to hang its INDENT.
-    fn convert_empty_flow_to_block(&self) {
-        let indent_width = self
-            .0
-            .parent()
-            .filter(|p| p.kind() == SyntaxKind::VALUE)
-            .and_then(|v| v.parent())
-            .filter(|e| e.kind() == SyntaxKind::MAPPING_ENTRY)
-            .and_then(|e| e.parent())
-            .filter(|m| m.kind() == SyntaxKind::MAPPING)
-            .and_then(crate::nodes::Mapping::cast)
-            .map_or(2, |m| m.detect_indentation_level() + 2);
-        let indent_text = " ".repeat(indent_width);
-
-        // Detach a snapshot; range-splicing walks the live sibling
-        // list mid-detach and skips subsequent elements.
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        for child in children {
-            child.detach();
-        }
-
-        // Prepend `NEWLINE INDENT` in the parent VALUE if not already scaffolded.
-        let Some(parent) = self.0.parent() else {
-            return;
-        };
-        if parent.kind() != SyntaxKind::VALUE {
-            return;
-        }
-        let seq_pos = parent
-            .children_with_tokens()
-            .position(|c| c.as_node() == Some(&self.0))
-            .unwrap_or(0);
-        let already_scaffolded = seq_pos >= 1
-            && parent
-                .children_with_tokens()
-                .nth(seq_pos - 1)
-                .and_then(|c| c.into_token())
-                .is_some_and(|t| t.kind() == SyntaxKind::INDENT || t.kind() == SyntaxKind::NEWLINE);
-        if already_scaffolded {
-            return;
-        }
-        let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
-        let indent = fresh_token(SyntaxKind::INDENT, &indent_text);
-        parent.splice_children(seq_pos..seq_pos, vec![nl.into(), indent.into()]);
-    }
-
     /// Add an item to the end of the sequence.
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn push(&self, value: impl crate::AsYaml) {
-        // Top-level empty flow (`seq: []`) converts to block so we
-        // can emit a `- x` entry; empty flow *inside* another flow
-        // container has to stay flow to avoid mixed-style output.
-        if self.is_flow_style() && self.is_empty() && !must_render_flow(&self.0) {
-            self.convert_empty_flow_to_block();
+        // A placeholder from `Sequence::new_pending_block` turns into a real
+        // block sequence now that it has an item. A `[]` from the source is
+        // not marked and keeps its flow style; a placeholder nested inside a
+        // flow container stays flow to avoid mixed output.
+        if self.is_block_placeholder() && !must_render_flow(&self.0) {
+            crate::yaml::convert_placeholder_to_block(&self.0);
         }
         if self.is_flow_style() {
             self.insert_flow(usize::MAX, value);
@@ -490,8 +501,8 @@ impl Sequence {
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn insert(&self, index: usize, value: impl crate::AsYaml) {
         // Same rule as `push`; see there for the "why".
-        if self.is_flow_style() && self.is_empty() && !must_render_flow(&self.0) {
-            self.convert_empty_flow_to_block();
+        if self.is_block_placeholder() && !must_render_flow(&self.0) {
+            crate::yaml::convert_placeholder_to_block(&self.0);
         }
         if self.is_flow_style() {
             self.insert_flow(index, value);
@@ -903,12 +914,73 @@ mod tests {
     use crate::yaml::YamlFile;
     use std::str::FromStr;
 
+    /// `Sequence::new_pending_block` serializes as `[]` so an empty sequence
+    /// survives a round-trip, and turns into a block sequence once it has an
+    /// item. Before this it rendered as `key:` followed by blank space, which
+    /// reparses as null: the empty sequence was silently lost.
+    #[test]
+    fn pending_block_sequence_round_trips_and_becomes_block() {
+        use crate::yaml::Sequence;
+        use crate::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("a: 1\n").unwrap();
+        doc.as_mapping()
+            .unwrap()
+            .set("s", Sequence::new_pending_block());
+        let text = doc.to_string();
+        assert_eq!(text, "a: 1\ns: []\n");
+
+        let reparsed = Document::from_str(&text).unwrap();
+        let value = reparsed.as_mapping().and_then(|m| m.get("s")).unwrap();
+        assert!(
+            value.as_sequence().is_some(),
+            "empty sequence must survive as a sequence"
+        );
+
+        let doc = Document::from_str("a: 1\n").unwrap();
+        let root = doc.as_mapping().unwrap();
+        root.set("s", Sequence::new_pending_block());
+        let nested = root.get("s").unwrap();
+        nested.as_sequence().unwrap().push("x");
+        assert_eq!(doc.to_string(), "a: 1\ns:\n  - x\n");
+    }
+
+    /// A `[]` that was in the source keeps its flow style when an item is
+    /// added; only a pending-block placeholder is rewritten.
+    #[test]
+    fn parsed_flow_sequence_stays_flow_when_filled() {
+        use crate::yaml::Sequence;
+        use crate::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("a: 1\n").unwrap();
+        let root = doc.as_mapping().unwrap();
+        root.set("s", Sequence::new_flow());
+        let nested = root.get("s").unwrap();
+        nested.as_sequence().unwrap().push("x");
+        assert_eq!(doc.to_string(), "a: 1\ns: [x]\n");
+    }
+
+    /// `set_path` builds sequence intermediates as pending-block sequences,
+    /// so an indexed path produces readable block YAML.
+    #[test]
+    fn set_path_builds_block_sequence_intermediates() {
+        use crate::path::YamlPath;
+        use crate::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("name: test\n").unwrap();
+        doc.try_set_path("a.b[0]", "v").unwrap();
+        assert_eq!(doc.to_string(), "name: test\na:\n  b:\n    - v\n");
+    }
+
     #[test]
     fn test_push_into_empty_flow_sequence_reshapes_to_block() {
         // Regression: `push` on an empty flow sequence `[]` used to append
         // the block entry after the `]`, producing `seq: []  - item1\n`.
-        // Now the `[]` is dropped and the parent VALUE gets a NEWLINE+INDENT
-        // scaffold, so the entry lands correctly.
+        // A `[]` the source contained keeps its flow style, so the item goes
+        // inside the brackets.
         use crate::path::YamlPath;
         use crate::Document;
         let doc = Document::from_str("seq: []").unwrap();
@@ -919,7 +991,7 @@ mod tests {
             .unwrap()
             .clone();
         seq.push("item1");
-        assert_eq!(doc.to_string(), "seq: \n  - item1\n");
+        assert_eq!(doc.to_string(), "seq: [item1]");
     }
 
     #[test]
@@ -934,7 +1006,7 @@ mod tests {
             .unwrap()
             .clone();
         seq.push("item1");
-        assert_eq!(doc.to_string(), "a:\n  seq: \n    - item1\n");
+        assert_eq!(doc.to_string(), "a:\n  seq: [item1]\n");
     }
 
     #[test]

@@ -58,7 +58,6 @@
 //!
 //! All operations preserve formatting, comments, and whitespace.
 
-use crate::builder::MappingBuilder;
 use crate::yaml::Mapping;
 
 /// Trait for YAML types that support path-based access.
@@ -1048,18 +1047,12 @@ fn set_path_on_mapping<V: crate::AsYaml>(
                 at: segment_display(&segments[0]),
             });
         }
-        // Match the parent's style: nested-under-flow keeps flow, so
-        // the intermediate sequence is created via SequenceBuilder
-        // (renders as `[]`). Nested-under-block gets a bare empty
-        // SEQUENCE (renders as block after push).
+        // Match the parent's style so we don't mix block content into a flow
+        // container.
         if mapping.is_flow_style() {
-            let flow_empty = crate::builder::SequenceBuilder::new()
-                .build_document()
-                .as_sequence()
-                .expect("SequenceBuilder always produces a sequence");
-            mapping.set(first_key, flow_empty);
+            mapping.set(first_key, crate::yaml::Sequence::new_flow());
         } else {
-            mapping.set(first_key, crate::yaml::Sequence::new());
+            mapping.set(first_key, crate::yaml::Sequence::new_pending_block());
         }
         let nested = mapping
             .get_sequence(first_key)
@@ -1077,16 +1070,11 @@ fn set_path_on_mapping<V: crate::AsYaml>(
     }
 
     // Match the parent's style so we don't mix block content into a flow
-    // container. `Mapping::new()` is a bare empty MAPPING (renders block);
-    // `MappingBuilder::new()` produces the flow-empty `{}` form.
+    // container.
     if mapping.is_flow_style() {
-        let flow_empty = MappingBuilder::new()
-            .build_document()
-            .as_mapping()
-            .expect("MappingBuilder always produces a mapping");
-        mapping.set(first_key, flow_empty);
+        mapping.set(first_key, Mapping::new_flow());
     } else {
-        mapping.set(first_key, Mapping::new());
+        mapping.set(first_key, Mapping::new_pending_block());
     }
 
     let nested = mapping

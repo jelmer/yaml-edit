@@ -210,10 +210,67 @@ impl Mapping {
 
     /// Create a new empty mapping
     pub fn new() -> Self {
+        Self::new_pending_block()
+    }
+
+    /// An empty mapping that renders as `{}` and stays flow when filled.
+    ///
+    /// Use this for a mapping that is meant to be flow-style in the output,
+    /// including one that is left empty.
+    pub fn new_flow() -> Self {
+        Self::empty_with_brace_text("{", "}")
+    }
+
+    /// An empty mapping that becomes a block mapping once an entry is added.
+    ///
+    /// YAML has no block syntax for an empty mapping: block collections are
+    /// written as their entries, so with none left there is nothing to write,
+    /// and a bare `key:` reads back as null. An empty mapping is therefore
+    /// `{}` whatever its eventual style, and block-vs-flow only becomes a
+    /// real choice once there is an entry.
+    ///
+    /// This renders as exactly `{}`, plus a zero-width token that marks it as
+    /// destined for block style. [`Mapping::set`] rewrites it into block form
+    /// when the first entry arrives; a `{}` that came from the source has no
+    /// such marker and keeps its flow style.
+    ///
+    /// The marker lives only in the tree. Serializing and re-parsing yields
+    /// an ordinary `{}`, which stays flow, since YAML has nowhere to record
+    /// the intent.
+    pub fn new_pending_block() -> Self {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::MAPPING.into());
+        builder.token(SyntaxKind::LEFT_BRACE.into(), "{");
+        // Zero-width sentinel: renders as nothing, so this is still exactly
+        // `{}` in the text, but marks the mapping as one that should become
+        // block when it gets its first entry.
+        builder.token(SyntaxKind::WHITESPACE.into(), "");
+        builder.token(SyntaxKind::RIGHT_BRACE.into(), "}");
         builder.finish_node();
         Mapping(SyntaxNode::new_root_mut(builder.finish()))
+    }
+
+    fn empty_with_brace_text(open: &str, close: &str) -> Self {
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::MAPPING.into());
+        builder.token(SyntaxKind::LEFT_BRACE.into(), open);
+        builder.token(SyntaxKind::RIGHT_BRACE.into(), close);
+        builder.finish_node();
+        Mapping(SyntaxNode::new_root_mut(builder.finish()))
+    }
+
+    /// Is this an empty mapping awaiting its first entry? See
+    /// [`Mapping::new_pending_block`].
+    pub(crate) fn is_block_placeholder(&self) -> bool {
+        !self
+            .0
+            .children()
+            .any(|c| c.kind() == SyntaxKind::MAPPING_ENTRY)
+            && self
+                .0
+                .children_with_tokens()
+                .filter_map(|c| c.into_token())
+                .any(|t| t.kind() == SyntaxKind::WHITESPACE && t.text().is_empty())
     }
 
     /// Reorder fields according to the specified order.
@@ -324,8 +381,10 @@ impl Mapping {
     /// Returns `true` if the mapping uses flow style (e.g., `{key: value}`),
     /// `false` if it uses block style (e.g., `key: value`).
     pub fn is_flow_style(&self) -> bool {
-        // Flow-style mappings start with LEFT_BRACE token
-        has_child_token(&self.0, |k| k == SyntaxKind::LEFT_BRACE)
+        // Flow-style mappings start with LEFT_BRACE token. A block
+        // placeholder is `{}` in the text but is destined to become block, so
+        // it does not count as flow.
+        has_child_token(&self.0, |k| k == SyntaxKind::LEFT_BRACE) && !self.is_block_placeholder()
     }
 
     /// Find the [`MappingEntry`] whose key matches `key`, or `None` if not found.
@@ -492,6 +551,13 @@ impl Mapping {
 
     /// Internal unified method to set any YAML value type
     fn set_as_yaml<K: crate::AsYaml, V: crate::AsYaml>(&self, key: K, value: V) {
+        // A placeholder from `Mapping::new_pending_block` turns into a real block
+        // mapping now that it has an entry to hold. This runs before the
+        // flow_context check below so the entry is laid out as block.
+        if self.is_block_placeholder() && !crate::nodes::sequence::must_render_flow(&self.0) {
+            crate::yaml::convert_placeholder_to_block(&self.0);
+        }
+
         // Detect if this mapping is in flow style (JSON format)
         let flow_context = self.is_flow_style();
 

@@ -179,6 +179,70 @@ pub(crate) fn detach_empty_collection_placeholder_newline(
 /// Skips flow collections (`{}` / `[]` already render correctly) and
 /// VALUEs carrying anything beyond decoration around the collection
 /// (comments, sibling scalars, anchors, tags).
+/// Turn an empty placeholder collection into a block one: drop its flow
+/// delimiters, remove the now-dangling inline separator after the entry's
+/// colon, and scaffold `NEWLINE INDENT` on the parent VALUE so the first
+/// entry lands in block position.
+///
+/// Shared by `Mapping` and `Sequence`; see `Mapping::new_pending_block`.
+pub(crate) fn convert_placeholder_to_block(collection: &SyntaxNode) {
+    let children: Vec<_> = collection.children_with_tokens().collect();
+    for child in children {
+        child.detach();
+    }
+
+    let Some(parent) = collection
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::VALUE)
+    else {
+        return;
+    };
+    let entry = parent
+        .parent()
+        .filter(|e| e.kind() == SyntaxKind::MAPPING_ENTRY);
+    let indent_width = entry
+        .as_ref()
+        .and_then(|e| e.parent())
+        .filter(|m| m.kind() == SyntaxKind::MAPPING)
+        .and_then(crate::nodes::Mapping::cast)
+        .map_or(2, |m| m.detect_indentation_level() + 2);
+
+    // The placeholder was laid out inline, so the entry carries a
+    // `WHITESPACE " "` separator between COLON and VALUE. Block content
+    // starts on the next line, which would leave that space after the colon.
+    if let Some(entry) = entry {
+        let sep = entry
+            .children_with_tokens()
+            .position(|c| c.as_node() == Some(&parent))
+            .filter(|&i| i >= 1)
+            .and_then(|i| entry.children_with_tokens().nth(i - 1))
+            .filter(|c| {
+                c.as_token()
+                    .is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE)
+            });
+        if let Some(sep) = sep {
+            sep.detach();
+        }
+    }
+
+    let pos = parent
+        .children_with_tokens()
+        .position(|c| c.as_node() == Some(collection))
+        .unwrap_or(0);
+    let already_scaffolded = pos >= 1
+        && parent
+            .children_with_tokens()
+            .nth(pos - 1)
+            .and_then(|c| c.into_token())
+            .is_some_and(|t| matches!(t.kind(), SyntaxKind::INDENT | SyntaxKind::NEWLINE));
+    if already_scaffolded {
+        return;
+    }
+    let nl = crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n");
+    let indent = crate::nodes::fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_width));
+    parent.splice_children(pos..pos, vec![nl.into(), indent.into()]);
+}
+
 pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode) {
     let (open_kind, close_kind, open_txt, close_txt) = match collection.kind() {
         SyntaxKind::MAPPING => (SyntaxKind::LEFT_BRACE, SyntaxKind::RIGHT_BRACE, "{", "}"),

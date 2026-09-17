@@ -2919,3 +2919,38 @@ fn test_comment_whitespace_seen_across_node_boundaries() {
     }
     assert!(flagged("k: \"v\"# c\n"));
 }
+
+/// A verbatim tag carries a URI, an escaped line break folds a quoted
+/// scalar, and a block-scalar indicator may carry its digit either side of
+/// the chomping indicator.
+#[test]
+fn test_validator_accepts_more_well_formed_yaml() {
+    use yaml_edit::validator::Validator;
+    let messages = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        Validator::new()
+            .validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file))
+            .iter()
+            .map(|v| v.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    // A verbatim tag's URI may hold commas and brackets (7FWL, UGM3).
+    assert!(messages("!<tag:e.com,2002:x> a\n").is_empty());
+    // `\\` takes the character after it, so `\\$` is two valid escapes (6SLA),
+    // and `\` before a line break folds the line (565N).
+    assert!(messages("k: \"a\\\\$b\"\n").is_empty());
+    assert!(messages("k: \"a\\\n  b\"\n").is_empty());
+    // Either order of digit and chomping indicator (D83L).
+    assert!(messages("k: |-2\n  x\n").is_empty());
+    assert!(messages("k: |2-\n  x\n").is_empty());
+
+    // The genuine faults are still reported.
+    assert!(messages("!!str, x\n")
+        .iter()
+        .any(|m| m.contains("comma after tag")));
+    assert!(messages("k: \"a\\qb\"\n")
+        .iter()
+        .any(|m| m.contains("Invalid escape")));
+    assert!(messages("--- |0\n").iter().any(|m| m.contains("digit 1-9")));
+}

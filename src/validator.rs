@@ -649,9 +649,12 @@ impl Validator {
             if ch == '\\' {
                 if let Some(&next) = chars.peek() {
                     // Valid escape sequences in YAML 1.2
+                    // A `\\` before a line break escapes that break, folding
+                    // the line: the test suite's 565N wraps a long binary
+                    // value that way.
                     let valid_escapes = [
                         '0', 'a', 'b', 't', 'n', 'v', 'f', 'r', 'e', ' ', '"', '/', '\\', 'N', '_',
-                        'L', 'P', 'x', 'u', 'U',
+                        'L', 'P', 'x', 'u', 'U', '\n', '\r', '\t',
                     ];
 
                     if !valid_escapes.contains(&next) {
@@ -727,9 +730,11 @@ impl Validator {
                         // An indentation indicator is a single digit 1-9;
                         // `|0` and `|10` are errors the YAML test suite
                         // expects (2G84).
+                        // `|2-` and `|-2` both carry the digit 2, so strip a
+                        // chomping indicator before checking it (D83L).
                         crate::SyntaxKind::INT
                             if !matches!(
-                                token.text(),
+                                token.text().trim_matches(['+', '-']),
                                 "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
                             ) =>
                         {

@@ -607,6 +607,11 @@ pub fn lex_with_validation_config<'a>(
     // depth would never come back down and every later `,` in the file
     // would lex as a delimiter.
     let mut block_scalar_header_indent: Option<usize> = None;
+    // Column of the block scalar's body, set by its first content line. The
+    // body is every later line reaching that column; the header's own indent
+    // is only a lower bound, so a line between the two ends the body rather
+    // than continuing it.
+    let mut block_scalar_body_indent: Option<usize> = None;
 
     // Handle UTF-8 BOM (U+FEFF) at the start of the file
     // Per YAML spec, BOM is allowed and should be processed transparently
@@ -836,7 +841,12 @@ pub fn lex_with_validation_config<'a>(
             // text, so it neither opens nor closes a collection. Read the
             // rest of the line as the scalar content it is.
             '[' | ']' | '{' | '}' | ','
-                if in_block_scalar_body(
+                if at_block_scalar_body_indent(
+                    block_scalar_body_indent,
+                    input,
+                    current_line_start,
+                    start_idx,
+                ) || in_block_scalar_body(
                     block_scalar_header_indent,
                     input,
                     current_line_start,
@@ -880,10 +890,12 @@ pub fn lex_with_validation_config<'a>(
             // entries, as saphyr reads it.
             '|' if flow_depth == 0 && node_property_can_start(&tokens) => {
                 block_scalar_header_indent = Some(line_indent(input, current_line_start));
+                block_scalar_body_indent = None;
                 tokens.push((PIPE, &input[token_start..start_idx + 1]))
             }
             '>' if flow_depth == 0 && node_property_can_start(&tokens) => {
                 block_scalar_header_indent = Some(line_indent(input, current_line_start));
+                block_scalar_body_indent = None;
                 tokens.push((GREATER, &input[token_start..start_idx + 1]))
             }
             // `<<` is a merge key only when the key is exactly `<<`, i.e. the
@@ -987,6 +999,23 @@ pub fn lex_with_validation_config<'a>(
             // `:#: v` is a mapping keyed `:#`, as saphyr reads it. Continue
             // the scalar rather than starting a comment, which the catch-all
             // arm already does for `a#: v`.
+            // A `#` inside a block scalar's body is literal text: the body
+            // is taken verbatim, so `- >\n  # detected\n` holds the content
+            // `# detected` rather than a comment (test suite 4QFQ). A line
+            // that does not reach the body's column has left it, where a
+            // comment is a comment again (T26H).
+            '#' if at_block_scalar_body_indent(
+                block_scalar_body_indent,
+                input,
+                current_line_start,
+                start_idx,
+            ) =>
+            {
+                let rest =
+                    read_plain_scalar_body_from(&mut chars, input, start_idx + 1, flow_depth, true);
+                let text = &input[token_start..start_idx + 1 + rest.len()];
+                tokens.push((classify_scalar(text), text));
+            }
             '#' if !is_hash_a_comment_start(input, start_idx)
                 && tokens.last().is_some_and(|(k, text)| {
                     matches!(k, STRING | INT | FLOAT | BOOL | NULL | PLUS)
@@ -1117,8 +1146,17 @@ pub fn lex_with_validation_config<'a>(
                 // A block scalar's body ends at the first following line
                 // that is not indented past its header and not blank.
                 if let Some(header_indent) = block_scalar_header_indent {
-                    if line_starts_content_at_or_before(input, current_line_start, header_indent) {
+                    // The body's own column, once a content line has set it,
+                    // is what later lines must reach; before that the
+                    // header's indent is the only bound we have.
+                    let bound = block_scalar_body_indent.unwrap_or(header_indent);
+                    if line_starts_content_at_or_before(input, current_line_start, bound) {
                         block_scalar_header_indent = None;
+                        block_scalar_body_indent = None;
+                    } else if block_scalar_body_indent.is_none()
+                        && !line_is_blank(input, current_line_start)
+                    {
+                        block_scalar_body_indent = Some(line_indent(input, current_line_start));
                     }
                 }
             }
@@ -1413,6 +1451,16 @@ fn node_property_can_start(tokens: &[(SyntaxKind, &str)]) -> bool {
     true
 }
 
+/// Whether the line starting at `line_start` carries no content.
+fn line_is_blank(input: &str, line_start: usize) -> bool {
+    input[line_start..]
+        .split(['\n', '\r'])
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+}
+
 /// Leading whitespace of the line starting at `line_start`.
 fn line_indent(input: &str, line_start: usize) -> usize {
     let line = &input[line_start..];
@@ -1453,6 +1501,24 @@ fn in_block_scalar_body(
         return false;
     };
     idx > line_start && line_indent(input, line_start) > header_indent
+}
+
+/// As [`in_block_scalar_body`], for a body whose own column is known.
+///
+/// A body line sits *at* that column rather than past it, so `>` followed by
+/// `  # detected` at the body's indent holds the literal text `# detected`
+/// (test suite 4QFQ), while a line left of it has ended the body and a `#`
+/// there is a comment again (T26H).
+fn at_block_scalar_body_indent(
+    body_indent: Option<usize>,
+    input: &str,
+    line_start: usize,
+    idx: usize,
+) -> bool {
+    let Some(body_indent) = body_indent else {
+        return false;
+    };
+    idx > line_start && line_indent(input, line_start) >= body_indent
 }
 
 fn is_tag_char(ch: char) -> bool {

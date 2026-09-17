@@ -2731,3 +2731,31 @@ fn test_explicit_key_entries_are_on_separate_lines() {
         );
     }
 }
+
+/// A `#` inside a block scalar's body is literal text; one on a line that
+/// has left the body is a comment again.
+///
+/// The body's own column, set by its first content line, is what decides:
+/// 4QFQ's `- >\n \n  \n  # detected\n` holds the content `# detected` at the
+/// body's indent, while T26H's `# Comment` sits left of it and really is a
+/// comment. Measuring against the header's indent alone could not tell them
+/// apart.
+#[test]
+fn test_hash_inside_a_block_scalar_body_is_content() {
+    use yaml_edit::SyntaxKind;
+    let comments = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        <YamlFile as rowan::ast::AstNode>::syntax(&file)
+            .descendants_with_tokens()
+            .filter_map(|c| c.into_token())
+            .filter(|t| t.kind() == SyntaxKind::COMMENT)
+            .count()
+    };
+    // At the body's column: content.
+    assert_eq!(comments("- >\n \n  \n  # detected\n"), 0);
+    assert_eq!(comments("a: |\n  # in body\n"), 0);
+    // Left of it, so the body has ended: a comment.
+    assert_eq!(comments("--- |\n  text\n\n # Comment\n"), 1);
+    // And an ordinary trailing comment is untouched.
+    assert_eq!(comments("k: v # real\n"), 1);
+}

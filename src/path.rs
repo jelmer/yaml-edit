@@ -152,6 +152,11 @@ pub trait YamlPath {
     /// [`YamlNode`](crate::as_yaml::YamlNode) on success, or a specific
     /// [`PathError`] describing why the removal did not happen.
     ///
+    /// One entry is removed. Duplicate keys are legal YAML, so a path can
+    /// still resolve afterwards; use
+    /// [`Mapping::remove_nth_occurrence`](crate::Mapping::remove_nth_occurrence)
+    /// to choose between them.
+    ///
     /// # Errors
     ///
     /// Same shape as [`try_get_path`](Self::try_get_path).

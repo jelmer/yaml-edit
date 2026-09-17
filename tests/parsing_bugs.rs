@@ -3275,3 +3275,14 @@ fn test_explicit_key_collection_starts_past_the_indicator() {
     let mapping = doc.as_mapping().unwrap();
     assert_eq!(mapping.keys().count(), 2);
 }
+
+#[test]
+fn test_remove_path_takes_one_duplicate_occurrence() {
+    // Duplicate keys are legal YAML, and a removal takes a single entry, so
+    // the path still resolves afterwards. A fuzz check asserted otherwise.
+    use yaml_edit::path::YamlPath;
+    let doc = yaml_edit::Document::from_str("b: 1\na: 2\nb: 3\n").unwrap();
+    assert!(doc.try_remove_path("b").is_ok());
+    assert_eq!(doc.to_string(), "a: 2\nb: 3\n");
+    assert!(doc.try_get_path("b").is_ok());
+}

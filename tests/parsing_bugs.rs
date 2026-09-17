@@ -2832,7 +2832,10 @@ fn test_anchor_before_a_complex_key_is_inside_the_key() {
     );
 
     assert!(!flags_anchors("---\n&mapping\n&key [ a ]: value\n"));
-    assert!(flags_anchors("top1: &n1\n  &k1 k: v\n"));
+    // `&n1` anchors the nested mapping and `&k1` its key -- different nodes,
+    // as the test suite's 7BMT has it. Two anchors on one scalar still are.
+    assert!(!flags_anchors("top1: &n1\n  &k1 k: v\n"));
+    assert!(flags_anchors("top2: &n2\n  &v2 val2\n"));
 }
 
 /// The multi-line restriction is on an implicit key in *block* context.

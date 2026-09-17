@@ -405,6 +405,17 @@ impl Parser {
                     self.nesting_depth -= 1;
                     return;
                 }
+
+                // Likewise for a plain key: `&k1 key1: one` anchors the key,
+                // and parse_mapping_key_value_pair absorbs a leading anchor
+                // into the KEY. Emitting it here instead left it beside the
+                // mapping, where it looked like a second anchor on the same
+                // node (test suite 7BMT, U3XV).
+                if !self.in_flow_context && !self.in_value_context && self.is_mapping_key() {
+                    self.parse_mapping_with_base_indent(base_indent);
+                    self.nesting_depth -= 1;
+                    return;
+                }
                 let body_indent =
                     self.tagged_block_node_indent(base_indent, self.annotation_in_value_position);
                 self.bump(); // consume and emit anchor token to CST

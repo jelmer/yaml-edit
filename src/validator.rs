@@ -2438,11 +2438,10 @@ mod tests {
         let doc2 = Document::from_str(yaml).unwrap();
         let violations2 = validator.validate(&doc2);
 
-        // Should detect 2 violations (one for each VALUE node with 2 anchors)
-        assert!(
-            violations2.len() >= 2,
-            "Expected at least 2 violations for 4JVG"
-        );
+        // Only the second entry really carries two anchors on one node: in
+        // the first, `&node1` anchors the nested mapping and `&k1` its key,
+        // which is why the test suite calls the same shape valid in 7BMT.
+        assert_eq!(violations2.len(), 1, "{violations2:?}");
     }
 
     #[test]

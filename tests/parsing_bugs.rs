@@ -3253,3 +3253,14 @@ fn test_enclosing_sequence_claims_a_dash_at_its_own_column() {
     assert_eq!(inner.len(), 2);
     assert_eq!(inner.get(1).unwrap().as_scalar().unwrap().value(), "b");
 }
+
+#[test]
+fn test_inline_key_sequence_is_bounded_by_the_indicator() {
+    // `-\n  ? - c\n- z\n`: the key's sequence opens on the `?` line at
+    // column 6, so the column-0 `- z` dedents out of it and belongs to the
+    // document's own sequence. Measured from column 0 it was swallowed.
+    let doc = yaml_edit::Document::from_str("-\n  ? - c\n- z\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    assert_eq!(seq.len(), 2);
+    assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().value(), "z");
+}

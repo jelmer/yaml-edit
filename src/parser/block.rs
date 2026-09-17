@@ -830,7 +830,15 @@ impl Parser {
     /// null.
     fn parse_explicit_key_node(&mut self, question_column: usize, base_indent: usize) {
         if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-            self.parse_value();
+            // A sequence opening on the indicator's own line is bounded by
+            // it: measured from column 0 instead, the key's sequence in
+            // `-\n  ? - c\n- z\n` swallowed the enclosing sequence's next
+            // entry. Other node kinds set their own bounds as before.
+            if self.current() == Some(SyntaxKind::DASH) {
+                self.parse_sequence_with_base_indent(question_column);
+            } else {
+                self.parse_value();
+            }
         } else if self.indentless_sequence_follows(question_column) {
             self.bump(); // consume the newline
             self.parse_sequence_with_base_indent(base_indent);

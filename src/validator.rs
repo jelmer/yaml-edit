@@ -1191,6 +1191,44 @@ impl Validator {
             return;
         }
 
+        // A `---` or `...` at the start of a line ends the document, so it
+        // cannot appear inside a flow collection: the test suite's N782 is
+        // the error `[\n--- ,\n...\n]`. Inside the collection the lexer
+        // gives them as plain scalars, so no document-marker rule sees them.
+        let mut line_start = true;
+        for el in node.descendants_with_tokens() {
+            let rowan::NodeOrToken::Token(t) = el else {
+                continue;
+            };
+            match t.kind() {
+                crate::SyntaxKind::NEWLINE => line_start = true,
+                crate::SyntaxKind::INDENT | crate::SyntaxKind::WHITESPACE => {}
+                _ if line_start && matches!(t.text(), "---" | "...") => {
+                    violations.push(Violation::error_at(
+                        Rule::InvalidDocumentMarker,
+                        t.text_range(),
+                        "Document marker inside a flow collection",
+                    ));
+                    return;
+                }
+                _ => line_start = false,
+            }
+        }
+
+        // Only a flow collection sitting inside a block collection can be
+        // confused with one: at column zero its continuation would read as a
+        // new entry of that block (9C9N's `flow: [a,\nb,\nc]`). A flow
+        // collection that is the document's own node has no such neighbour,
+        // so its entries may start at column zero (4ABK).
+        if !node.ancestors().skip(1).any(|a| {
+            matches!(
+                a.kind(),
+                crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
+            )
+        }) {
+            return;
+        }
+
         let mut after_newline = false;
         for el in node.descendants_with_tokens() {
             let rowan::NodeOrToken::Token(t) = el else {

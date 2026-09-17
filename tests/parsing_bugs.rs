@@ -2601,3 +2601,45 @@ fn test_block_scalar_header_indicator_validation() {
         assert!(violations.is_empty(), "{yaml:?}: {violations:?}");
     }
 }
+
+/// A flow collection's continuation only has to clear a block context it
+/// sits inside; as the document's own node it may start at column zero.
+///
+/// The test suite's 9C9N makes `flow: [a,\nb,\nc]` an error because the
+/// continuation would read as a new entry of the block mapping around it.
+/// 4ABK's `{\nunquoted : "separate",\n...}` has no such neighbour and is
+/// valid; requiring indentation regardless hit 16 valid files.
+#[test]
+fn test_flow_continuation_indent_applies_inside_a_block() {
+    use yaml_edit::validator::Validator;
+    let violations = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        Validator::new().validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file))
+    };
+
+    // Nested in a block mapping: the continuation must be indented.
+    let v = violations("---\nflow: [a,\nb,\nc]\n");
+    assert!(
+        v.iter().any(|x| x.message.contains("continuation line")),
+        "{v:?}"
+    );
+
+    // The document's own node, and a properly indented one: both fine.
+    for yaml in ["{\na: 1,\nb: 2,\n}\n", "k: [a,\n  b]\n", "[a, b]\n"] {
+        assert!(violations(yaml).is_empty(), "{yaml:?}");
+    }
+}
+
+/// A `---` or `...` at the start of a line ends the document, so it cannot
+/// appear inside a flow collection (the test suite's N782). The lexer gives
+/// them as plain scalars there, so no document-marker rule sees them.
+#[test]
+fn test_document_marker_inside_a_flow_collection_is_reported() {
+    use yaml_edit::validator::Validator;
+    let file = YamlFile::from_str("[\n--- ,\n...\n]\n").unwrap();
+    let v = Validator::new().validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+    assert!(
+        v.iter().any(|x| x.message.contains("flow collection")),
+        "{v:?}"
+    );
+}

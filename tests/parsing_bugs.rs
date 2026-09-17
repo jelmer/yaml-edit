@@ -2643,3 +2643,39 @@ fn test_document_marker_inside_a_flow_collection_is_reported() {
         "{v:?}"
     );
 }
+
+/// A mapping's expected entry column comes from wherever its indentation
+/// really is, which for a sequence entry's value is not a VALUE node.
+///
+/// `-\n  a: 1\n  b: 2\n` keeps its INDENT in the SEQUENCE_ENTRY, and a
+/// compact `- a: 1\n  b: 2\n` has none at all -- its entries line up under
+/// the dash's gap. Both fell back to the empty string, so every entry
+/// looked wrongly indented.
+#[test]
+fn test_sibling_indentation_in_a_sequence_entry() {
+    use yaml_edit::validator::Validator;
+    let violations = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        Validator::new().validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file))
+    };
+    for yaml in [
+        "-\n  a: 1\n  b: 2\n",
+        "- a: 1\n  b: 2\n",
+        " - key: value\n   key2: value2\n",
+        "k:\n  a: 1\n  b: 2\n",
+    ] {
+        assert!(
+            violations(yaml).is_empty(),
+            "{yaml:?}: {:?}",
+            violations(yaml)
+        );
+    }
+
+    // A genuinely misindented sibling is still reported.
+    let v = violations("a: 1\n  b: 2\n");
+    assert!(
+        v.iter()
+            .any(|x| x.message.contains("inconsistent indentation")),
+        "{v:?}"
+    );
+}

@@ -1117,9 +1117,19 @@ impl Validator {
         // expected indent. Otherwise the parser has admitted a
         // wrong-indented sibling that the YAML spec rejects (see
         // yaml-test-suite EW3V / DMG6 / N4JP / U44R).
+        // A mapping that is a sequence entry's value has its INDENT in the
+        // SEQUENCE_ENTRY rather than a VALUE, in the same position relative
+        // to the MAPPING. Without it the expected indent fell back to the
+        // empty string and every entry of `-\n  a: 1\n  b: 2\n` looked
+        // wrongly indented.
         let expected_indent: String = node
             .parent()
-            .filter(|p| p.kind() == crate::SyntaxKind::VALUE)
+            .filter(|p| {
+                matches!(
+                    p.kind(),
+                    crate::SyntaxKind::VALUE | crate::SyntaxKind::SEQUENCE_ENTRY
+                )
+            })
             .and_then(|parent_value| {
                 // Look for the INDENT token that immediately precedes
                 // this MAPPING in the parent VALUE.
@@ -1134,6 +1144,21 @@ impl Validator {
                     }
                 }
                 last_indent
+            })
+            .or_else(|| {
+                // A compact mapping on a sequence entry's own line has no
+                // INDENT of its own (`- key: value\n  key2: value2\n`); its
+                // entries line up under the dash's gap. Take the column from
+                // the node's offset within its line.
+                let parent = node.parent()?;
+                if parent.kind() != crate::SyntaxKind::SEQUENCE_ENTRY {
+                    return None;
+                }
+                let start: usize = node.text_range().start().into();
+                let root = node.ancestors().last()?;
+                let text = root.text().to_string();
+                let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
+                Some(" ".repeat(start - line_start))
             })
             .unwrap_or_default();
 

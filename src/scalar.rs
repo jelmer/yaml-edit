@@ -350,12 +350,37 @@ impl ScalarValue {
     /// Try to parse this scalar as an `i64`.
     ///
     /// Returns `None` if the scalar type is not `Integer`.
+    ///
+    /// A bare leading zero is read as YAML 1.1 octal, so `0755` gives 493.
+    /// Use [`to_i64_yaml_1_2`](Self::to_i64_yaml_1_2) for the 1.2 reading,
+    /// where the same text is 755.
     pub fn to_i64(&self) -> Option<i64> {
         if self.scalar_type == ScalarType::Integer {
             Self::parse_integer(&self.value)
         } else {
             None
         }
+    }
+
+    /// As [`to_i64`](Self::to_i64), under YAML 1.2's `!!int` rules.
+    ///
+    /// YAML 1.2 dropped 1.1's bare-octal form, so `0755` is seven hundred
+    /// and fifty five here where [`to_i64`](Self::to_i64) gives 493. Every
+    /// other spelling, `0o755` included, reads the same both ways.
+    pub fn to_i64_yaml_1_2(&self) -> Option<i64> {
+        if self.scalar_type != ScalarType::Integer {
+            return None;
+        }
+        if Self::is_legacy_octal(&self.value) {
+            let body = self.value.strip_prefix(['+', '-']).unwrap_or(&self.value);
+            let magnitude = body.parse::<i64>().ok()?;
+            return Some(if self.value.starts_with('-') {
+                -magnitude
+            } else {
+                magnitude
+            });
+        }
+        Self::parse_integer(&self.value)
     }
 
     /// Try to parse this scalar as an `f64`.
@@ -554,6 +579,16 @@ impl ScalarValue {
         parsed.map(|n| if is_negative { -n } else { n })
     }
 
+    /// Whether `value` is written in YAML 1.1's bare-octal form (a leading
+    /// `0` before more digits, as in `0755`).
+    ///
+    /// YAML 1.2's `!!int` has no such form: `0755` is seven hundred and
+    /// fifty five, where 1.1 read it as 493. `0o755` is the 1.2 spelling.
+    pub(crate) fn is_legacy_octal(value: &str) -> bool {
+        let body = value.strip_prefix(['+', '-']).unwrap_or(value);
+        body.len() > 1 && body.starts_with('0') && body.bytes().all(|b| b.is_ascii_digit())
+    }
+
     /// Classify a plain (unquoted) scalar's text per the YAML 1.2 core
     /// schema tag-resolution rules.
     ///
@@ -576,7 +611,14 @@ impl ScalarValue {
             _ => {}
         }
 
-        if Self::parse_integer(value).is_some() {
+        // A bare leading zero is YAML 1.1 octal, which 1.2 dropped: the
+        // value is still an integer, just a decimal one, so the text
+        // classifies the same way either side of the change. A digit
+        // outside 0-7 makes it no octal at all, and `parse_integer` gives
+        // up there by contract, so recognise the run of digits here rather
+        // than letting `08` fall through to the float parser below: no
+        // YAML version reads it as a float.
+        if Self::parse_integer(value).is_some() || Self::is_legacy_octal(value) {
             return CoreScalarType::Integer;
         }
 

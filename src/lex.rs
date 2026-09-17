@@ -1156,22 +1156,12 @@ pub fn lex_with_validation_config<'a>(
 
                 tokens.push((NEWLINE, &input[token_start..start_idx + 1]));
                 current_line_start = start_idx + 1;
-                // A block scalar's body ends at the first following line
-                // that is not indented past its header and not blank.
-                if let Some(header_indent) = block_scalar_header_indent {
-                    // The body's own column, once a content line has set it,
-                    // is what later lines must reach; before that the
-                    // header's indent is the only bound we have.
-                    let bound = block_scalar_body_indent.unwrap_or(header_indent);
-                    if line_starts_content_at_or_before(input, current_line_start, bound) {
-                        block_scalar_header_indent = None;
-                        block_scalar_body_indent = None;
-                    } else if block_scalar_body_indent.is_none()
-                        && !line_is_blank(input, current_line_start)
-                    {
-                        block_scalar_body_indent = Some(line_indent(input, current_line_start));
-                    }
-                }
+                track_block_scalar_body(
+                    input,
+                    current_line_start,
+                    &mut block_scalar_header_indent,
+                    &mut block_scalar_body_indent,
+                );
             }
             '\r' => {
                 check_line_length(
@@ -1198,6 +1188,12 @@ pub fn lex_with_validation_config<'a>(
 
                 tokens.push((NEWLINE, &input[token_start..end_pos]));
                 current_line_start = end_pos;
+                track_block_scalar_body(
+                    input,
+                    current_line_start,
+                    &mut block_scalar_header_indent,
+                    &mut block_scalar_body_indent,
+                );
             }
 
             // Whitespace (spaces and tabs)
@@ -1493,6 +1489,34 @@ fn line_starts_content_at_or_before(input: &str, line_start: usize, indent: usiz
         return false;
     }
     line.len() - line.trim_start_matches([' ', '\t']).len() <= indent
+}
+
+/// Update the lexer's block-scalar tracking at the start of a new line.
+///
+/// A block scalar's body ends at the first following line that is not
+/// indented past its header and not blank. This runs for every line ending,
+/// CRLF and lone CR included: left to the `\n` arm alone, a CRLF file kept
+/// the tracking set and read a later `[` as literal body text rather than a
+/// flow collection.
+fn track_block_scalar_body(
+    input: &str,
+    line_start: usize,
+    header_indent: &mut Option<usize>,
+    body_indent: &mut Option<usize>,
+) {
+    let Some(header) = *header_indent else {
+        return;
+    };
+    // The body's own column, once a content line has set it, is what later
+    // lines must reach; before that the header's indent is the only bound we
+    // have.
+    let bound = body_indent.unwrap_or(header);
+    if line_starts_content_at_or_before(input, line_start, bound) {
+        *header_indent = None;
+        *body_indent = None;
+    } else if body_indent.is_none() && !line_is_blank(input, line_start) {
+        *body_indent = Some(line_indent(input, line_start));
+    }
 }
 
 /// Whether `idx` is inside the body of a block scalar whose header sat on a

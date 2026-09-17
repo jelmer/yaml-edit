@@ -741,22 +741,13 @@ impl Mapping {
         // Collect field_order so we can iterate it multiple times.
         let field_order: Vec<K> = field_order.into_iter().collect();
 
-        // First check if the key already exists - if so, just update it
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        for child in children.iter() {
-            if let Some(node) = child
-                .as_node()
-                .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-            {
-                if let Some(key_node) = entry_key(node) {
-                    if key_content_matches(&key_node, &key) {
-                        // Key exists, update its value using unified method
-                        self.set_as_yaml(&key, &value);
-                        return;
-                    }
-                }
-            }
+        // An existing key just takes the new value, wherever it sits.
+        if self.find_entry_by_key(&key).is_some() {
+            self.set_as_yaml(&key, &value);
+            return;
         }
+
+        let children: Vec<_> = self.0.children_with_tokens().collect();
 
         // Key doesn't exist, need to find the correct insertion position based on field order.
         // Find position of this key in the field order (if it matches any)
@@ -769,22 +760,11 @@ impl Mapping {
             let mut insert_after_node: Option<SyntaxNode> = None;
             let mut insert_before_node: Option<SyntaxNode> = None;
 
-            // Look backwards in field_order to find the last existing key before this one
+            // The nearest preceding field that is actually present decides
+            // where the new entry goes.
             for field in field_order.iter().take(key_index).rev() {
-                for child in children.iter() {
-                    if let Some(node) = child
-                        .as_node()
-                        .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-                    {
-                        if let Some(key_node) = entry_key(node) {
-                            if key_content_matches(&key_node, field) {
-                                insert_after_node = Some(node.clone());
-                                break;
-                            }
-                        }
-                    }
-                }
-                if insert_after_node.is_some() {
+                if let Some(entry) = self.find_entry_by_key(field) {
+                    insert_after_node = Some(entry.0);
                     break;
                 }
             }
@@ -792,27 +772,15 @@ impl Mapping {
             // If no predecessor found, look for the first existing key in document order
             // that comes after this one in field_order
             if insert_after_node.is_none() {
-                for child in children.iter() {
-                    if let Some(node) = child
-                        .as_node()
-                        .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-                    {
-                        if let Some(existing_key_node) = entry_key(node) {
-                            // Find this existing key's position in field_order
-                            let existing_key_position = field_order
-                                .iter()
-                                .position(|field| key_content_matches(&existing_key_node, field));
-
-                            // If this existing key comes after our new key in field_order, insert before it
-                            if let Some(existing_pos) = existing_key_position {
-                                if existing_pos > key_index {
-                                    insert_before_node = Some(node.clone());
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
+                // Nothing precedes it, so go before the first present field
+                // that the order puts after it.
+                insert_before_node = self.entries().find_map(|entry| {
+                    let key_node = entry.key()?;
+                    let pos = field_order
+                        .iter()
+                        .position(|field| key_content_matches(&key_node, field))?;
+                    (pos > key_index).then_some(entry.0)
+                });
             }
 
             // Build the new entry with proper newline ownership
@@ -828,63 +796,79 @@ impl Mapping {
             )
             .0;
 
-            if let Some(after_node) = insert_after_node {
-                if flow_context {
-                    self.insert_flow_entry_cst_at(&new_entry, FlowInsertPos::After(after_node));
-                } else {
-                    ensure_trailing_newline(&after_node);
-                    let idx = children
-                        .iter()
-                        .position(|c| c.as_node() == Some(&after_node))
-                        .expect("after_node was found in children earlier");
-                    let insert_at = index_after_entry_line(&self.0, idx);
-                    let mut new_elements = Vec::new();
-                    let indent_level = self.detect_indentation_level();
-                    if indent_level > 0 {
-                        new_elements.push(
-                            super::fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level))
-                                .into(),
-                        );
-                    }
-                    new_elements.push(new_entry.into());
-                    self.0.splice_children(insert_at..insert_at, new_elements);
+            match (insert_after_node, insert_before_node) {
+                (Some(after), _) if flow_context => {
+                    self.insert_flow_entry_cst_at(&new_entry, FlowInsertPos::After(after));
                 }
-            } else if let Some(before_node) = insert_before_node {
-                if flow_context {
-                    self.insert_flow_entry_cst_at(&new_entry, FlowInsertPos::Before(before_node));
-                } else {
-                    let idx = children
-                        .iter()
-                        .position(|c| c.as_node() == Some(&before_node))
-                        .expect("before_node was found in children earlier");
-                    if let Some(prev_entry) = children[..idx].iter().rev().find_map(|c| {
-                        c.as_node()
-                            .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-                    }) {
-                        ensure_trailing_newline(prev_entry);
-                    }
-                    // The indent preceding before_node (the parent VALUE's for
-                    // the first child, a sibling INDENT token otherwise) now
-                    // serves the new entry, so the displaced before_node needs
-                    // its own sibling INDENT.
-                    let mut new_elements = vec![new_entry.into()];
-                    let indent_level = self.detect_indentation_level();
-                    if indent_level > 0 {
-                        new_elements.push(
-                            super::fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level))
-                                .into(),
-                        );
-                    }
-                    self.0.splice_children(idx..idx, new_elements);
+                (Some(after), _) => self.insert_block_entry_after(&children, &new_entry, &after),
+                (None, Some(before)) if flow_context => {
+                    self.insert_flow_entry_cst_at(&new_entry, FlowInsertPos::Before(before));
                 }
-            } else {
-                // No existing ordered keys, just append using CST
-                self.set_as_yaml(&key, &value);
+                (None, Some(before)) => {
+                    self.insert_block_entry_before(&children, &new_entry, &before)
+                }
+                // No ordered key is present yet, so order says nothing about
+                // where this one goes.
+                (None, None) => self.set_as_yaml(&key, &value),
             }
         } else {
             // Key is not in field order, append at the end using CST
             self.set_as_yaml(&key, &value);
         }
+    }
+
+    /// The INDENT token entries of this mapping are preceded by, if any.
+    fn entry_indent_token(&self) -> Option<rowan::SyntaxToken<Lang>> {
+        let level = self.detect_indentation_level();
+        (level > 0).then(|| super::fresh_token(SyntaxKind::INDENT, &" ".repeat(level)))
+    }
+
+    /// Splice `new_entry` into this block mapping on the line after `after`.
+    fn insert_block_entry_after(
+        &self,
+        children: &[rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>],
+        new_entry: &SyntaxNode,
+        after: &SyntaxNode,
+    ) {
+        ensure_trailing_newline(after);
+        let idx = children
+            .iter()
+            .position(|c| c.as_node() == Some(after))
+            .expect("after was found in children earlier");
+        let at = index_after_entry_line(&self.0, idx);
+        let mut elements: Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>> = self
+            .entry_indent_token()
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        elements.push(new_entry.clone().into());
+        self.0.splice_children(at..at, elements);
+    }
+
+    /// Splice `new_entry` into this block mapping ahead of `before`.
+    fn insert_block_entry_before(
+        &self,
+        children: &[rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>],
+        new_entry: &SyntaxNode,
+        before: &SyntaxNode,
+    ) {
+        let idx = children
+            .iter()
+            .position(|c| c.as_node() == Some(before))
+            .expect("before was found in children earlier");
+        if let Some(prev) = children[..idx].iter().rev().find_map(|c| {
+            c.as_node()
+                .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+        }) {
+            ensure_trailing_newline(prev);
+        }
+        // The indent preceding `before` (the parent VALUE's for the first
+        // child, a sibling INDENT token otherwise) now serves the new entry,
+        // so the displaced `before` needs its own sibling INDENT.
+        let mut elements: Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>> =
+            vec![new_entry.clone().into()];
+        elements.extend(self.entry_indent_token().map(Into::into));
+        self.0.splice_children(idx..idx, elements);
     }
 
     /// Detect the indentation level (in spaces) used by entries in this mapping.

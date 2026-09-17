@@ -802,8 +802,17 @@ impl Validator {
         // Walk tokens after the block indicator's NEWLINE. Track the
         // deepest INDENT seen so far (from blank-only lines); flag any
         // subsequent INDENT + non-blank content whose text is shorter.
+        //
+        // Indentation is spaces only (s-indent), so a tab in an INDENT
+        // token starts the line's content: R4YG's " \t" line is indented
+        // one, not two, and its expected events keep the tab.
+        fn space_indent(token: &rowan::SyntaxToken<crate::Lang>) -> usize {
+            token.text().chars().take_while(|c| *c == ' ').count()
+        }
+
         let mut past_first_newline = false;
         let mut max_blank_indent = 0usize;
+        let mut body_indent: Option<usize> = None;
         let mut pending_indent: Option<rowan::SyntaxToken<crate::Lang>> = None;
         for child in node.children_with_tokens() {
             let Some(token) = child.as_token().cloned() else {
@@ -821,19 +830,30 @@ impl Validator {
                 }
                 crate::SyntaxKind::NEWLINE => {
                     // Blank line: the pending INDENT (if any) tells us
-                    // how far the blank line was padded. Update the
-                    // running maximum.
+                    // how far the blank line was padded. A tab makes the
+                    // line non-blank, so it carries no indentation claim.
                     if let Some(ind) = pending_indent.take() {
-                        max_blank_indent = max_blank_indent.max(ind.text().len());
+                        if !ind.text().contains('\t') {
+                            max_blank_indent = max_blank_indent.max(space_indent(&ind));
+                        }
                     }
                 }
                 _ => {
-                    // Non-blank content. Compare the pending INDENT to
-                    // the observed max_blank_indent.
+                    // Non-blank content. Once a content line has set the
+                    // body's indent, a deeper blank line is content rather
+                    // than indentation and cannot raise the bar: H2RW's
+                    // 4-space blank contributes two spaces to a body
+                    // indented 2, as its expected events show. Only a blank
+                    // deeper than the body's own indent, seen before any
+                    // content, is 5LLU's error.
                     if let Some(ind) = pending_indent.take() {
-                        if ind.text().len() < max_blank_indent {
-                            violations.push(Violation::error_at(Rule::Other, ind.text_range(), format!( "Block scalar content under-indented ({} spaces) relative to preceding blank line ({} spaces)", ind.text().len(), max_blank_indent )));
-                            return;
+                        if body_indent.is_none() {
+                            let indent = space_indent(&ind);
+                            body_indent = Some(indent);
+                            if indent < max_blank_indent {
+                                violations.push(Violation::error_at(Rule::Other, ind.text_range(), format!( "Block scalar content under-indented ({indent} spaces) relative to preceding blank line ({max_blank_indent} spaces)" )));
+                                return;
+                            }
                         }
                     }
                 }
@@ -985,7 +1005,10 @@ impl Validator {
                 // which may not be one: the test suite's Y79Y/000 is the
                 // error `foo: |\n\t\nbar: 1`.
                 if token.kind() == crate::SyntaxKind::INDENT
-                    && token.text().contains('\t')
+                    // The tab has to *be* the indentation. After a space it
+                    // is content, which is how the suite reads R4YG's
+                    // `- >\n \t\n detected`.
+                    && token.text().starts_with('\t')
                     && node.first_token().is_some_and(|t| {
                         matches!(
                             t.kind(),
@@ -1361,18 +1384,28 @@ impl Validator {
             })
             .unwrap_or_default();
 
+        // Only an INDENT that introduces a sibling entry states that
+        // entry's indentation. One followed by a NEWLINE pads a blank
+        // line (H2RW), and a trailing one belongs to the enclosing
+        // construct rather than to this mapping (V9D5's explicit key).
         let mut seen_entry = false;
+        let mut pending: Option<rowan::SyntaxToken<crate::Lang>> = None;
         for child in node.children_with_tokens() {
             match child {
                 rowan::NodeOrToken::Token(t) if t.kind() == crate::SyntaxKind::INDENT => {
-                    if seen_entry && t.text() != expected_indent {
-                        violations.push(Violation::error_at(Rule::Other, t.text_range(), format!( "Sibling block mapping entries have inconsistent indentation (expected {:?}, found {:?})", expected_indent, t.text() )));
-                    }
+                    pending = Some(t);
                 }
                 rowan::NodeOrToken::Node(n) if n.kind() == crate::SyntaxKind::MAPPING_ENTRY => {
+                    if let Some(t) = pending.take() {
+                        if seen_entry && t.text() != expected_indent {
+                            violations.push(Violation::error_at(Rule::Other, t.text_range(), format!( "Sibling block mapping entries have inconsistent indentation (expected {:?}, found {:?})", expected_indent, t.text() )));
+                        }
+                    }
                     seen_entry = true;
                 }
-                _ => {}
+                _ => {
+                    pending = None;
+                }
             }
         }
     }

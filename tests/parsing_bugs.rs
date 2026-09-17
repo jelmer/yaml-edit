@@ -2989,3 +2989,37 @@ fn test_validator_anchor_alias_and_block_scalar_bodies() {
         .iter()
         .any(|m| m.contains("mapping syntax")));
 }
+
+fn assert_validator_clean(src: &str) {
+    let doc = yaml_edit::Document::from_str(src).unwrap();
+    let violations = yaml_edit::validator::Validator::new().validate(&doc);
+    assert_eq!(violations.len(), 0, "unexpected violations: {violations:?}");
+}
+
+#[test]
+fn test_block_scalar_tab_is_content_not_indentation() {
+    // R4YG: the " \t" line is indented one space; the tab is content, so
+    // the following one-space "detected" is not under-indented.
+    assert_validator_clean("- >\n \t\n detected\n");
+}
+
+#[test]
+fn test_block_scalar_blank_deeper_than_body_is_content() {
+    // H2RW: once content sets the body indent, a deeper blank line
+    // contributes content rather than raising the indentation bar.
+    assert_validator_clean("text: |\n  a\n    \n  b\n");
+}
+
+#[test]
+fn test_blank_line_indent_is_not_a_sibling_entry_indent() {
+    // H2RW: whitespace padding a blank line between entries says nothing
+    // about how the next entry is indented.
+    assert_validator_clean("foo: 1\nbar: 2\n    \ntext: 3\n");
+}
+
+#[test]
+fn test_explicit_key_mapping_trailing_indent_is_not_a_sibling() {
+    // V9D5: the indent before the outer `:` belongs to the explicit-key
+    // entry, not to the nested mapping that forms the key.
+    assert_validator_clean("- sun: yellow\n- ? earth: blue\n  : moon: white\n");
+}

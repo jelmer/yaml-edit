@@ -662,6 +662,10 @@ impl Validator {
                         ));
                         return; // Found one, no need to continue
                     }
+                    // Consume the escaped character, or `\\$` reads as a
+                    // valid `\\` followed by an invalid `\$` (test suite
+                    // 6SLA).
+                    chars.next();
                 }
             }
         }
@@ -1269,11 +1273,19 @@ impl Validator {
                 if parent.kind() != crate::SyntaxKind::SEQUENCE_ENTRY {
                     return None;
                 }
-                let start: usize = node.text_range().start().into();
-                let root = node.ancestors().last()?;
-                let text = root.text().to_string();
-                let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
-                Some(" ".repeat(start - line_start))
+                // Walk back over the preceding tokens to the line break,
+                // summing their widths. Materialising the whole document to
+                // find the line start made this quadratic in its size.
+                let mut column = 0usize;
+                let mut token = node.first_token()?.prev_token();
+                while let Some(t) = token {
+                    if t.kind() == crate::SyntaxKind::NEWLINE {
+                        break;
+                    }
+                    column += t.text().len();
+                    token = t.prev_token();
+                }
+                Some(" ".repeat(column))
             })
             .unwrap_or_default();
 
@@ -1624,6 +1636,14 @@ impl Validator {
     ) {
         let tag_text = token.text();
 
+        // A verbatim tag `!<...>` carries a URI, where these are all legal:
+        // `!<tag:yaml.org,2002:str>` is the test suite's 7FWL and UGM3. The
+        // restriction is on the shorthand form, whose `ns-tag-char` excludes
+        // the flow indicators.
+        if tag_text.starts_with("!<") {
+            return;
+        }
+
         // Check for invalid characters in tags
         let invalid_chars = ['{', '}', '[', ']', ','];
         for ch in invalid_chars {
@@ -1761,16 +1781,9 @@ impl Validator {
             // A flow collection holds its own `{`/`[` as a direct child;
             // first_token() would instead reach into the key's flow
             // sequence, making C2SP's block mapping look like a flow one.
-            let in_flow = entry_node.parent().is_some_and(|m| {
-                m.children_with_tokens()
-                    .filter_map(|c| c.into_token())
-                    .any(|t| {
-                        matches!(
-                            t.kind(),
-                            crate::SyntaxKind::LEFT_BRACE | crate::SyntaxKind::LEFT_BRACKET
-                        )
-                    })
-            });
+            let in_flow = entry_node
+                .parent()
+                .is_some_and(|m| starts_a_flow_collection(&m));
             if spans_lines && !in_flow {
                 violations.push(Violation::error_at(
                     Rule::Other,
@@ -1789,11 +1802,10 @@ impl Validator {
         // lines, which the test suite's 5MUD and K3WX (`{ "foo"\n  :bar }`)
         // allow; only a flow sequence needs an implicit key there, which is
         // ZXT5's error.
-        if entry_node.ancestors().any(|a| {
-            a.kind() == crate::SyntaxKind::MAPPING
-                && a.first_token()
-                    .is_some_and(|t| t.kind() == crate::SyntaxKind::LEFT_BRACE)
-        }) {
+        if entry_node
+            .parent()
+            .is_some_and(|m| m.kind() == crate::SyntaxKind::MAPPING && starts_a_flow_collection(&m))
+        {
             return;
         }
         let mut seen_key = false;
@@ -2011,6 +2023,34 @@ impl Validator {
             return; // Single line, no indentation to check
         }
 
+        // A scalar that is the document's own node starts at column zero and
+        // its continuations need clear no column, so there is nothing to
+        // check: the test suite's 6WPF, TL85, Q8AD and NP9H all open a
+        // quoted scalar at the document level. Inside a mapping value or a
+        // sequence entry the continuation must clear the enclosing column.
+        // A `---` or `...` at the start of a line ends the document, so it
+        // cannot sit inside a quoted scalar: the test suite's 9MQT/01 is the
+        // error `--- "a\n... x\nb"`. The lexer keeps the whole quoted body
+        // in one token, so no document-marker rule sees it.
+        if text
+            .split('\n')
+            .skip(1)
+            .any(|line| line.starts_with("---") || line.starts_with("..."))
+        {
+            violations.push(Violation::error_at(
+                Rule::InvalidDocumentMarker,
+                node.text_range(),
+                "Document marker inside a quoted scalar",
+            ));
+            return;
+        }
+
+        match node.parent() {
+            None => return,
+            Some(parent) if parent.kind() == crate::SyntaxKind::DOCUMENT => return,
+            Some(_) => {}
+        }
+
         // For multiline quoted strings, continuation lines should be indented
 
         // Check each line after the first
@@ -2153,6 +2193,25 @@ impl Default for Validator {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Whether `node` is a flow collection, by its own delimiter.
+///
+/// A flow collection holds its `{`/`[` as a direct child; `first_token()`
+/// instead descends the whole left spine, which made validating a large
+/// mapping quadratic.
+fn starts_a_flow_collection(node: &SyntaxNode) -> bool {
+    // The delimiter opens the collection, so it is among the first children;
+    // scanning them all is O(entries) and ran per entry.
+    node.children_with_tokens()
+        .take_while(|c| c.as_token().is_some())
+        .filter_map(|c| c.into_token())
+        .any(|t| {
+            matches!(
+                t.kind(),
+                crate::SyntaxKind::LEFT_BRACE | crate::SyntaxKind::LEFT_BRACKET
+            )
+        })
 }
 
 #[cfg(test)]

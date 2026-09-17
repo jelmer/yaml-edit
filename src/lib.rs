@@ -189,6 +189,7 @@ pub mod debug;
 mod error;
 pub mod error_recovery;
 mod lex;
+pub mod migrate;
 mod nodes;
 mod parse;
 mod parser;

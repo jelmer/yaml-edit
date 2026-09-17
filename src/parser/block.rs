@@ -821,8 +821,42 @@ impl Parser {
             self.bump(); // consume the newline
             self.bump(); // consume the indent
             self.parse_sequence_with_base_indent(indent);
+        } else if let Some(indent) = self.indented_key_node_indent(question_column) {
+            // The same for a mapping or scalar key node: `?\n  j: 1\n` is
+            // keyed by `{j: 1}`. Emitting the implicit null first left the
+            // real key beside it in the KEY node, where every accessor read
+            // the null instead.
+            self.bump(); // consume the newline
+            self.bump(); // consume the indent
+            self.parse_value_with_base_indent(indent);
         } else {
             self.emit_implicit_null();
+        }
+    }
+
+    /// The indentation of a non-sequence key node starting on the line after
+    /// an explicit key indicator at `question_column`, if one does.
+    ///
+    /// A line opening at the colon is the entry's own value rather than part
+    /// of its key, so `? a\n: 1\n` is left alone.
+    fn indented_key_node_indent(&self, question_column: usize) -> Option<usize> {
+        if self.current() != Some(SyntaxKind::NEWLINE) {
+            return None;
+        }
+        let mut rest = self.tokens.iter().rev().skip(1);
+        let indent = loop {
+            match rest.next()? {
+                (SyntaxKind::NEWLINE, _) => continue,
+                (SyntaxKind::INDENT, text) => break text.len(),
+                _ => return None,
+            }
+        };
+        if indent <= question_column {
+            return None;
+        }
+        match rest.next()? {
+            (SyntaxKind::COLON, _) | (SyntaxKind::DASH, _) => None,
+            _ => Some(indent),
         }
     }
 

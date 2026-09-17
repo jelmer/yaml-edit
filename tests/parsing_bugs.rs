@@ -3082,3 +3082,16 @@ fn test_mapping_key_at_the_key_column_stays_a_sibling() {
     let mapping = entry.as_mapping().unwrap();
     assert_eq!(mapping.keys().count(), 2);
 }
+
+#[test]
+fn test_indented_explicit_key_is_reachable() {
+    // `?\n  j: 1\n` is keyed by the mapping on the following line. The key
+    // parsed correctly but an implicit null was emitted beside it, so every
+    // accessor read the null and the real key was unreachable.
+    let doc = yaml_edit::Document::from_str("?\n  j: 1\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let key = mapping.keys().next().unwrap();
+    let key_map = key.as_mapping().unwrap();
+    assert_eq!(key_map.keys().count(), 1);
+    assert_eq!(key_map.get("j").unwrap().as_scalar().unwrap().value(), "1");
+}

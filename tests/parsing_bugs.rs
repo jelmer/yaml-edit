@@ -2708,3 +2708,26 @@ fn test_document_level_anchor_annotating_a_node() {
         "{v:?}"
     );
 }
+
+/// An explicit key's entry ends with the zero-width implicit-null scalar of
+/// its VALUE, so the newline that separates it from the next entry sits
+/// inside it rather than between the two.
+///
+/// `? a\n? b\n` is two entries on separate lines, but looking only at the
+/// entry's very last token found the null scalar and reported them as
+/// sharing a line; 6 files the test suite marks valid were flagged.
+#[test]
+fn test_explicit_key_entries_are_on_separate_lines() {
+    use yaml_edit::validator::Validator;
+    let violations = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        Validator::new().validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file))
+    };
+    for yaml in ["? a\n? b\n", "a: 1\nb: 2\n", "? a\n: 1\n? b\n: 2\n"] {
+        let v = violations(yaml);
+        assert!(
+            !v.iter().any(|x| x.message.contains("separate lines")),
+            "{yaml:?}: {v:?}"
+        );
+    }
+}

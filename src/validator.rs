@@ -1043,9 +1043,17 @@ impl Validator {
                     // The newline may be inside the previous entry (as its last
                     // token) or between entries as a sibling token.
                     let has_newline_between = {
-                        // First check if the previous entry ends with a newline
+                        // First check if the previous entry ends with a newline.
+                        //
+                        // An explicit key's entry ends with the zero-width
+                        // implicit-null scalar of its VALUE, so look past
+                        // tokens that render as nothing: `? a\n? b\n` has its
+                        // newline inside the first entry, not between them.
                         let prev_ends_with_newline = prev
-                            .last_token()
+                            .descendants_with_tokens()
+                            .filter_map(|c| c.into_token())
+                            .filter(|t| !t.text().is_empty())
+                            .last()
                             .is_some_and(|t| t.kind() == crate::SyntaxKind::NEWLINE);
 
                         if prev_ends_with_newline {

@@ -2550,3 +2550,54 @@ fn test_scalar_value_still_folds_at_the_key_column() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// The validator's document-marker rule applies to block collections only.
+///
+/// YAML 1.2 `l-explicit-document` lets a node share the marker's line, so
+/// `--- a`, `--- >`, `--- {a: 1}` and a tagged node are all valid, as
+/// PyYAML reads them. Flagging every node there hit 11 files the test suite
+/// marks valid.
+#[test]
+fn test_document_marker_allows_a_node_on_its_line() {
+    use yaml_edit::validator::Validator;
+    for yaml in ["--- a\n", "--- >\n ab\n", "--- {a: 1}\n", "--- [1]\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let violations =
+            Validator::new().validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(violations.is_empty(), "{yaml:?}: {violations:?}");
+    }
+
+    // A block mapping on the marker's line is still reported.
+    let yaml = "--- key1: value1\n    key2: value2\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    let violations =
+        Validator::new().validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.message.contains("same line as document start")),
+        "{violations:?}"
+    );
+}
+
+/// A block scalar's indentation indicator is a single digit 1-9, and a
+/// chomping indicator may share the header's line.
+#[test]
+fn test_block_scalar_header_indicator_validation() {
+    use yaml_edit::validator::Validator;
+    for yaml in ["--- |0\n", "--- |10\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let violations =
+            Validator::new().validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(
+            violations.iter().any(|v| v.message.contains("digit 1-9")),
+            "{yaml:?}: {violations:?}"
+        );
+    }
+    for yaml in ["k: |-\n  x\n", "k: |2-\n    x\n", "k: |2\n    x\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let violations =
+            Validator::new().validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(violations.is_empty(), "{yaml:?}: {violations:?}");
+    }
+}

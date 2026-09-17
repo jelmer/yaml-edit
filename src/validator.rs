@@ -274,10 +274,70 @@ impl Validator {
         // Check for directives after documents without document end marker
         self.check_directive_after_document(node, &mut violations);
 
+        // Check that a `%TAG` shorthand is only used in its own document
+        self.check_tag_shorthand_scope(node, &mut violations);
+
         // Walk the syntax tree and check for violations
         self.validate_node(node, &mut violations);
 
         violations
+    }
+
+    /// Check that a `%TAG` shorthand is only used in the document that
+    /// declares it.
+    ///
+    /// A directive applies to the document it introduces, not to the whole
+    /// stream, so `!prefix!` declared before the first `---` is undefined in
+    /// every later document. The YAML test suite's QLJ7 is exactly that.
+    fn check_tag_shorthand_scope(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        let mut handles: Vec<String> = Vec::new();
+        let mut documents_seen = 0usize;
+
+        for child in node.children_with_tokens() {
+            match child {
+                rowan::NodeOrToken::Node(ref n) if n.kind() == crate::SyntaxKind::DIRECTIVE => {
+                    // `%TAG !handle! prefix` -- collect the handle it defines.
+                    let text = n.text().to_string();
+                    let mut words = text.split_whitespace();
+                    if words.next() == Some("%TAG") {
+                        if let Some(handle) = words.next() {
+                            if documents_seen == 0 {
+                                handles.push(handle.to_string());
+                            }
+                        }
+                    }
+                }
+                rowan::NodeOrToken::Node(ref n) if n.kind() == crate::SyntaxKind::DOCUMENT => {
+                    documents_seen += 1;
+                    if documents_seen < 2 || handles.is_empty() {
+                        continue;
+                    }
+                    // Any tag in a later document using a first-document
+                    // handle is undefined there.
+                    for tag in n
+                        .descendants_with_tokens()
+                        .filter_map(|c| c.into_token())
+                        .filter(|t| t.kind() == crate::SyntaxKind::TAG)
+                    {
+                        // The lexer splits `!prefix!A` into the TAG tokens
+                        // `!prefix` and `!A`, so match the handle without
+                        // its closing `!`.
+                        if let Some(handle) = handles.iter().find(|h| {
+                            tag.text() == h.as_str() || tag.text() == h.trim_end_matches('!')
+                        }) {
+                            violations.push(Violation::error_at(
+                                Rule::Other,
+                                tag.text_range(),
+                                format!(
+                                    "Tag shorthand {handle} is only defined in the document that declares it"
+                                ),
+                            ));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn validate_node(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
@@ -640,11 +700,35 @@ impl Validator {
                         crate::SyntaxKind::NEWLINE => {
                             found_newline = true;
                         }
+                        // A chomping indicator and an indentation digit may
+                        // share the indicator's line; the lexer gives `-`,
+                        // `+`, `2-` and `-2` as STRING, so they are not the
+                        // content this rule is looking for.
+                        crate::SyntaxKind::STRING
+                            if token.text().chars().all(|c| matches!(c, '+' | '-'))
+                                || (token.text().len() == 2
+                                    && token.text().chars().any(|c| c.is_ascii_digit())
+                                    && token.text().chars().any(|c| matches!(c, '+' | '-'))) => {}
                         crate::SyntaxKind::STRING => {
                             // Found content on same line as indicator
                             violations.push(Violation::error(
                                 Rule::Other,
                                 "Block scalar content cannot appear on same line as indicator",
+                            ));
+                            return;
+                        }
+                        // An indentation indicator is a single digit 1-9;
+                        // `|0` and `|10` are errors the YAML test suite
+                        // expects (2G84).
+                        crate::SyntaxKind::INT
+                            if !matches!(
+                                token.text(),
+                                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+                            ) =>
+                        {
+                            violations.push(Violation::error(
+                                Rule::Other,
+                                "Block scalar indentation indicator must be a digit 1-9",
                             ));
                             return;
                         }
@@ -1287,12 +1371,19 @@ impl Validator {
                     t.next_sibling_or_token()
                 }
                 rowan::NodeOrToken::Node(n) => {
-                    // Any node here means content
+                    // Only a *block* collection is illegal here. YAML 1.2
+                    // `l-explicit-document` lets a node share the marker's
+                    // line, so `--- a`, `--- >`, `--- {a: 1}` and a tagged
+                    // node are all valid, as PyYAML reads them; a block
+                    // mapping or sequence (`--- key: v`, `--- - a`) is not.
+                    let is_flow = n.first_token().is_some_and(|t| {
+                        matches!(
+                            t.kind(),
+                            crate::SyntaxKind::LEFT_BRACKET | crate::SyntaxKind::LEFT_BRACE
+                        )
+                    });
                     match n.kind() {
-                        crate::SyntaxKind::MAPPING
-                        | crate::SyntaxKind::SEQUENCE
-                        | crate::SyntaxKind::SCALAR
-                        | crate::SyntaxKind::TAGGED_NODE => {
+                        crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE if !is_flow => {
                             found_content = true;
                             break;
                         }

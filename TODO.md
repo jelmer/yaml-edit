@@ -3,8 +3,10 @@
 ### Code Quality
 
 **Reduce nesting in mutation methods**
-- nodes/mapping.rs and nodes/sequence.rs have deeply nested code
-- Extract helper functions to improve readability
+- The worst offenders are done: `set_with_field_order` (9 levels to 6),
+  `rename_key` (8 to 6) and `Sequence::remove` (8 to 5).
+- `reorder_fields`, `insert_at_index_preserving` and `Sequence::set` are
+  still around 7 levels and 100 lines each.
 
 **Evaluate YamlValue necessity**
 - YamlValue is a detached representation that loses formatting
@@ -25,12 +27,11 @@
 
 ### Testing & Validation
 
-**Property-based testing**
-- Round-trip invariants
-- Format preservation properties
-
-**YAML spec conformance**
-- Automated conformance report generator
+Both items here are covered: `tests/invariants.rs` and
+`tests/proptest_invariants.rs` hold round-trip and format-preservation
+properties over generated mutation sequences, and `tests/yaml_test_suite.rs`
+prints a pass/fail conformance report, with per-case detail under
+`VERBOSE=1`.
 
 ### Known deviations from other parsers
 

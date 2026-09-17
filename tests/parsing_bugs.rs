@@ -2511,3 +2511,42 @@ fn test_alias_can_be_a_mapping_key() {
     let tree = yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
     assert_eq!(tree.lines().filter(|l| l.trim() == "MAPPING").count(), 1);
 }
+
+/// A sequence's entries set their own column, so a line dedented past them
+/// ends the mapping rather than continuing an entry's scalar.
+///
+/// The YAML test suite marks `"key:\n - a\ninvalid\n"` an error (6S55,
+/// 9CWY), and saphyr and PyYAML both reject it. The relaxed continuation
+/// floor a scalar value gets -- which lets `"a:\n  x y\n z\n"` be the single
+/// scalar `x y z` -- was applied to a sequence value too, so the stray line
+/// folded into the last entry and nothing was reported.
+#[test]
+fn test_line_dedented_past_a_sequence_ends_the_mapping() {
+    for yaml in [
+        "key:\n - bar\n - baz\n invalid\n",
+        "key:\n - item1\n - item2\ninvalid\n",
+    ] {
+        let err = YamlFile::from_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("could not be parsed"),
+            "{yaml:?}: {err}"
+        );
+    }
+}
+
+/// A scalar value still folds a continuation at the key's own column, and a
+/// well-formed sequence value is unaffected.
+#[test]
+fn test_scalar_value_still_folds_at_the_key_column() {
+    for yaml in [
+        "a:\n  x y\n z\n",
+        "key:\n - a\n - b\n",
+        "key:\n  - a\n  - b\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    }
+}

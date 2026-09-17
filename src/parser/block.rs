@@ -933,8 +933,16 @@ impl Parser {
                     // continuation line only has to clear the *key's* column:
                     // `a:\n  x y\n z\n` is the single scalar `x y z`, as
                     // both saphyr and PyYAML read it.
+                    //
+                    // Only for a scalar value. A sequence's entries set their
+                    // own column, so a line dedented past them ends the
+                    // mapping rather than continuing an entry:
+                    // `key:\n - a\ninvalid\n` is the error the YAML test
+                    // suite's 6S55 and 9CWY expect, not the scalar `a invalid`.
                     let outer_floor = self.scalar_continuation_floor;
-                    self.scalar_continuation_floor = Some(base_indent);
+                    if self.current() != Some(SyntaxKind::DASH) {
+                        self.scalar_continuation_floor = Some(base_indent);
+                    }
                     // A lone anchor may annotate an indentless sequence, whose
                     // entries sit at the *key's* column rather than the
                     // anchor's (`seq:\n &a\n- x\n`). Hand it the key's base

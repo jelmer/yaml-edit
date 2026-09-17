@@ -13,7 +13,7 @@ ast_node!(Sequence, SEQUENCE, "A YAML sequence (list)");
 /// True if `node` cannot be rendered as a block collection: any
 /// flow ancestor forbids it, and so does sitting inline after a `- `
 /// (no NEWLINE + INDENT scaffold to hang a block entry off).
-fn must_render_flow(node: &SyntaxNode) -> bool {
+pub(crate) fn must_render_flow(node: &SyntaxNode) -> bool {
     if node
         .parent()
         .is_some_and(|p| p.kind() == SyntaxKind::SEQUENCE_ENTRY)
@@ -28,7 +28,12 @@ fn must_render_flow(node: &SyntaxNode) -> bool {
             _ => None,
         };
         if let Some(open) = opener {
-            if has_child_token(&p, |k| k == open) {
+            // A pending-block placeholder is `{}` in the text but is headed
+            // for block style, so it does not force flow on what nests inside
+            // it (see `Mapping::new_pending_block`).
+            let pending =
+                crate::nodes::Mapping::cast(p.clone()).is_some_and(|m| m.is_block_placeholder());
+            if has_child_token(&p, |k| k == open) && !pending {
                 return true;
             }
         }

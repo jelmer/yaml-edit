@@ -58,7 +58,6 @@
 //!
 //! All operations preserve formatting, comments, and whitespace.
 
-use crate::builder::MappingBuilder;
 use crate::yaml::Mapping;
 
 /// Trait for YAML types that support path-based access.
@@ -1077,16 +1076,11 @@ fn set_path_on_mapping<V: crate::AsYaml>(
     }
 
     // Match the parent's style so we don't mix block content into a flow
-    // container. `Mapping::new()` is a bare empty MAPPING (renders block);
-    // `MappingBuilder::new()` produces the flow-empty `{}` form.
+    // container.
     if mapping.is_flow_style() {
-        let flow_empty = MappingBuilder::new()
-            .build_document()
-            .as_mapping()
-            .expect("MappingBuilder always produces a mapping");
-        mapping.set(first_key, flow_empty);
+        mapping.set(first_key, Mapping::new_flow());
     } else {
-        mapping.set(first_key, Mapping::new());
+        mapping.set(first_key, Mapping::new_pending_block());
     }
 
     let nested = mapping

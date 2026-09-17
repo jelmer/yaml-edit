@@ -1285,3 +1285,88 @@ fn test_flow_mapping_implicit_null_key_and_value_shapes() {
             .unwrap_or_else(|e| panic!("roundtrip({:?}) failed: {}", src, e));
     }
 }
+
+/// `Mapping::new_pending_block` serializes as `{}` so an empty mapping
+/// survives a round-trip, and turns into a block mapping once it has an
+/// entry. Before this, it rendered as `key:` followed by blank space, which
+/// reparses as null: the empty mapping was silently lost.
+#[test]
+fn pending_block_mapping_round_trips_and_becomes_block() {
+    use crate::nodes::Mapping;
+    use crate::Document;
+
+    let doc = Document::from_str("a: 1\n").unwrap();
+    doc.as_mapping()
+        .unwrap()
+        .set("k", Mapping::new_pending_block());
+    let text = doc.to_string();
+    assert_eq!(text, "a: 1\nk: {}\n");
+
+    let reparsed = Document::from_str(&text).unwrap();
+    let value = reparsed.as_mapping().and_then(|m| m.get("k")).unwrap();
+    assert!(
+        value.as_mapping().is_some(),
+        "empty mapping must survive as a mapping"
+    );
+
+    let doc = Document::from_str("a: 1\n").unwrap();
+    let root = doc.as_mapping().unwrap();
+    root.set("k", Mapping::new_pending_block());
+    let nested = root.get("k").unwrap();
+    nested.as_mapping().unwrap().set("x", "1");
+    assert_eq!(doc.to_string(), "a: 1\nk:\n  x: '1'\n");
+}
+
+/// A `{}` that was in the source keeps its flow style when an entry is
+/// added; only a pending-block placeholder is rewritten.
+#[test]
+fn parsed_flow_mapping_stays_flow_when_filled() {
+    use crate::nodes::Mapping;
+    use crate::Document;
+
+    let doc = Document::from_str("m: {}\n").unwrap();
+    let nested = doc.as_mapping().unwrap().get("m").unwrap();
+    nested.as_mapping().unwrap().set("x", "1");
+    assert_eq!(doc.to_string(), "m: {x: \"1\"}\n");
+
+    let doc = Document::from_str("a: 1\n").unwrap();
+    let root = doc.as_mapping().unwrap();
+    root.set("k", Mapping::new_flow());
+    let nested = root.get("k").unwrap();
+    nested.as_mapping().unwrap().set("x", "1");
+    assert_eq!(doc.to_string(), "a: 1\nk: {x: \"1\"}\n");
+}
+
+/// The placeholder marker lives only in the tree: once serialized and
+/// reparsed there is nothing left to distinguish it from a source `{}`, so
+/// it stays flow. YAML has nowhere to record the intent.
+#[test]
+fn pending_block_marker_does_not_survive_reparse() {
+    use crate::nodes::Mapping;
+    use crate::Document;
+
+    let doc = Document::from_str("a: 1\n").unwrap();
+    doc.as_mapping()
+        .unwrap()
+        .set("k", Mapping::new_pending_block());
+    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+    let nested = reparsed.as_mapping().unwrap().get("k").unwrap();
+    nested.as_mapping().unwrap().set("x", "1");
+    assert_eq!(reparsed.to_string(), "a: 1\nk: {x: \"1\"}\n");
+}
+
+/// `set_path` builds nested intermediates as pending-block mappings, so a
+/// deep path produces readable block YAML rather than nested flow.
+#[test]
+fn set_path_builds_block_intermediates() {
+    use crate::path::YamlPath;
+    use crate::Document;
+
+    let doc = Document::from_str("name: test\n").unwrap();
+    doc.try_set_path("server.database.host", "localhost")
+        .unwrap();
+    assert_eq!(
+        doc.to_string(),
+        "name: test\nserver:\n  database:\n    host: localhost\n"
+    );
+}

@@ -700,6 +700,13 @@ impl Parser {
         // suppressed for exactly that line and an empty block scalar eats the
         // entry after it (`empty: |\nnext: 1\n` lost `next`).
         let mut last_was_newline = true;
+        // The body has to clear the column of the collection this scalar is
+        // a node of, or the line is a dedent out of it rather than the
+        // body's first line. Taking such a line's column as the base
+        // swallowed it: `- -\n   |\n  - z\n` has an empty scalar, and
+        // `- z` is the inner sequence's next entry. A scalar that is the
+        // document's own node has no such collection.
+        let enclosing_column = self.sequence_entry_column.or(self.mapping_value_column);
         // An explicit indentation indicator (`>2`) states the body's column
         // outright, so the first line does not get to set it: in
         // `a: >2\n   more\n  regular\n` the `regular` line is body at the
@@ -723,6 +730,13 @@ impl Parser {
                     // (`- >\n \t\n detected\n`), so it must not set the base.
                     SyntaxKind::INDENT if self.indent_is_blank_line() => {
                         self.bump();
+                    }
+                    SyntaxKind::INDENT
+                        if enclosing_column.is_some_and(|column| {
+                            self.current_text().is_some_and(|text| text.len() <= column)
+                        }) =>
+                    {
+                        break;
                     }
                     SyntaxKind::INDENT => {
                         first_content_indent = self.current_text().map(|t| t.len());

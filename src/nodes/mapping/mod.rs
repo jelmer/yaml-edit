@@ -259,65 +259,6 @@ impl Mapping {
         Mapping(SyntaxNode::new_root_mut(builder.finish()))
     }
 
-    /// Drop the zero-width braces and scaffold a `NEWLINE INDENT` on the
-    /// parent VALUE, so the first entry lands in block position.
-    fn convert_placeholder_to_block(&self) {
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        for child in children {
-            child.detach();
-        }
-
-        let Some(parent) = self.0.parent().filter(|p| p.kind() == SyntaxKind::VALUE) else {
-            return;
-        };
-        let indent_width = parent
-            .parent()
-            .filter(|e| e.kind() == SyntaxKind::MAPPING_ENTRY)
-            .and_then(|e| e.parent())
-            .filter(|m| m.kind() == SyntaxKind::MAPPING)
-            .and_then(Mapping::cast)
-            .map_or(2, |m| m.detect_indentation_level() + 2);
-
-        // The placeholder was laid out inline, so the entry carries a
-        // `WHITESPACE " "` separator between COLON and VALUE. Block content
-        // starts on the next line, so that space would be left dangling
-        // after the colon.
-        if let Some(entry) = parent
-            .parent()
-            .filter(|e| e.kind() == SyntaxKind::MAPPING_ENTRY)
-        {
-            let sep = entry
-                .children_with_tokens()
-                .position(|c| c.as_node() == Some(&parent))
-                .filter(|&i| i >= 1)
-                .and_then(|i| entry.children_with_tokens().nth(i - 1))
-                .filter(|c| {
-                    c.as_token()
-                        .is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE)
-                });
-            if let Some(sep) = sep {
-                sep.detach();
-            }
-        }
-
-        let pos = parent
-            .children_with_tokens()
-            .position(|c| c.as_node() == Some(&self.0))
-            .unwrap_or(0);
-        let already_scaffolded = pos >= 1
-            && parent
-                .children_with_tokens()
-                .nth(pos - 1)
-                .and_then(|c| c.into_token())
-                .is_some_and(|t| matches!(t.kind(), SyntaxKind::INDENT | SyntaxKind::NEWLINE));
-        if already_scaffolded {
-            return;
-        }
-        let nl = crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n");
-        let indent = crate::nodes::fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_width));
-        parent.splice_children(pos..pos, vec![nl.into(), indent.into()]);
-    }
-
     /// Is this an empty mapping awaiting its first entry? See
     /// [`Mapping::new_pending_block`].
     pub(crate) fn is_block_placeholder(&self) -> bool {
@@ -614,7 +555,7 @@ impl Mapping {
         // mapping now that it has an entry to hold. This runs before the
         // flow_context check below so the entry is laid out as block.
         if self.is_block_placeholder() && !crate::nodes::sequence::must_render_flow(&self.0) {
-            self.convert_placeholder_to_block();
+            crate::yaml::convert_placeholder_to_block(&self.0);
         }
 
         // Detect if this mapping is in flow style (JSON format)

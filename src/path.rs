@@ -1047,18 +1047,12 @@ fn set_path_on_mapping<V: crate::AsYaml>(
                 at: segment_display(&segments[0]),
             });
         }
-        // Match the parent's style: nested-under-flow keeps flow, so
-        // the intermediate sequence is created via SequenceBuilder
-        // (renders as `[]`). Nested-under-block gets a bare empty
-        // SEQUENCE (renders as block after push).
+        // Match the parent's style so we don't mix block content into a flow
+        // container.
         if mapping.is_flow_style() {
-            let flow_empty = crate::builder::SequenceBuilder::new()
-                .build_document()
-                .as_sequence()
-                .expect("SequenceBuilder always produces a sequence");
-            mapping.set(first_key, flow_empty);
+            mapping.set(first_key, crate::yaml::Sequence::new_flow());
         } else {
-            mapping.set(first_key, crate::yaml::Sequence::new());
+            mapping.set(first_key, crate::yaml::Sequence::new_pending_block());
         }
         let nested = mapping
             .get_sequence(first_key)

@@ -2759,3 +2759,43 @@ fn test_hash_inside_a_block_scalar_body_is_content() {
     // And an ordinary trailing comment is untouched.
     assert_eq!(comments("k: v # real\n"), 1);
 }
+
+/// A tab is illegal only where YAML requires indentation (`s-indent`).
+///
+/// Checking every token flagged 19 files the test suite marks valid: a tab
+/// inside a scalar's continuation, after a document marker, or in a
+/// root-level flow collection is content or legal separation. The errors
+/// are a tab that indents a node -- 4EJS's nested mapping, Y79Y's `-\t-`
+/// where a block collection follows, DK95/01's quoted continuation in a
+/// mapping value.
+#[test]
+fn test_tab_is_flagged_only_where_indentation_is_required() {
+    use yaml_edit::validator::Validator;
+    let flags_a_tab = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        Validator::new()
+            .validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file))
+            .iter()
+            .any(|v| v.message.contains("Tabs are not allowed"))
+    };
+
+    // Indentation: illegal.
+    assert!(
+        flags_a_tab("a:\n\tb: 1\n"),
+        "tab indenting a nested mapping"
+    );
+    assert!(flags_a_tab("-\t-\n"), "tab before a nested sequence");
+    assert!(flags_a_tab("foo: \"bar\n\tbaz\"\n"), "quoted continuation");
+
+    // Content or separation: legal.
+    for yaml in [
+        "1st\n\t2nd\n",
+        "x:\n - x\n  \tx\n",
+        "a: |\n  x\n   \ty\n",
+        "\t[\n\t]\n",
+        "a: b\t\nseq:\t\n - a\t\n",
+        "-\t-1\n",
+    ] {
+        assert!(!flags_a_tab(yaml), "{yaml:?} should not be flagged");
+    }
+}

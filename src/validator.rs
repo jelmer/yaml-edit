@@ -934,6 +934,110 @@ impl Validator {
         // Check each token directly without allocation
         for token in node.children_with_tokens() {
             if let rowan::NodeOrToken::Token(token) = token {
+                // A quoted scalar keeps its continuation lines inside one
+                // token, so check its text directly: a continuation opening
+                // with a tab supplies no indentation at all, which
+                // DK95/01's `foo: "bar\n\tbaz"` needs. A blank tab line
+                // (DK95/04) indents nothing and is fine.
+                // Only where indentation is actually required: a quoted
+                // scalar that is the document's own node needs none, so a
+                // tab there is content (7A4E, PRH3), while one inside a
+                // mapping value must clear the key's column (DK95/01).
+                if node.kind() == crate::SyntaxKind::SCALAR
+                    && node
+                        .parent()
+                        .is_some_and(|p| p.kind() == crate::SyntaxKind::VALUE)
+                    && token.text().starts_with(['"', '\''])
+                    && token
+                        .text()
+                        .split('\n')
+                        .skip(1)
+                        .any(|line| line.starts_with('\t') && !line.trim().is_empty())
+                {
+                    violations.push(Violation::error_at(
+                        Rule::InvalidTabUsage,
+                        token.text_range(),
+                        "Tabs are not allowed for indentation in YAML",
+                    ));
+                    return;
+                }
+                // Only an INDENT that supplies a node's indentation can hold
+                // an illegal tab. YAML 1.2 forbids a tab in `s-indent`, but
+                // elsewhere -- inside a scalar's continuation line, or as
+                // separation at the stream's own level -- it is content or
+                // legal whitespace, which is how the test suite reads 4ZYM,
+                // HS5T, NB6Z, UV7Q, 6CA3, K54U and T5N4.
+                if !matches!(
+                    node.kind(),
+                    crate::SyntaxKind::VALUE
+                        | crate::SyntaxKind::MAPPING
+                        | crate::SyntaxKind::SEQUENCE
+                        | crate::SyntaxKind::MAPPING_ENTRY
+                        | crate::SyntaxKind::SEQUENCE_ENTRY
+                ) {
+                    continue;
+                }
+                // A flow collection at the stream's own level is not
+                // indentation-sensitive, so a tab inside one is separation
+                // whitespace (6CA3's `\t[\n\t]`). Nested in a block
+                // collection it still has to clear that block's column, as
+                // Y79Y/003's `- [\n\tfoo,` does not.
+                let is_flow = node.first_token().is_some_and(|t| {
+                    matches!(
+                        t.kind(),
+                        crate::SyntaxKind::LEFT_BRACKET | crate::SyntaxKind::LEFT_BRACE
+                    )
+                });
+                let inside_a_block = node.ancestors().skip(1).any(|a| {
+                    matches!(
+                        a.kind(),
+                        crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
+                    )
+                });
+                if is_flow && !inside_a_block {
+                    continue;
+                }
+                // A tab may separate an indicator from a scalar (`- \tx`),
+                // but a block collection after it needs `s-indent`, which
+                // forbids tabs: `-\t-` and `?\t-` are errors the test suite
+                // expects (Y79Y), while `-\t-1` is the scalar `-1`.
+                // The tab has to separate the indicator from the node on
+                // the same line; trailing whitespace before a line break
+                // (DC7X's `seq:\t`) indents nothing.
+                if token.kind() == crate::SyntaxKind::WHITESPACE
+                    && token.text().contains('\t')
+                    && !token
+                        .next_sibling_or_token()
+                        .and_then(|n| n.into_node())
+                        .and_then(|n| n.first_token())
+                        .is_some_and(|t| t.kind() == crate::SyntaxKind::NEWLINE)
+                    && token
+                        .next_sibling_or_token()
+                        .and_then(|n| n.into_node())
+                        .is_some_and(|n| {
+                            let opens_a_block = |k| {
+                                matches!(
+                                    k,
+                                    crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
+                                )
+                            };
+                            opens_a_block(n.kind())
+                                || (matches!(
+                                    n.kind(),
+                                    crate::SyntaxKind::VALUE | crate::SyntaxKind::KEY
+                                ) && n.children().any(|c| opens_a_block(c.kind())))
+                        })
+                {
+                    violations.push(Violation::error_at(
+                        Rule::InvalidTabUsage,
+                        token.text_range(),
+                        "Tabs are not allowed for indentation in YAML",
+                    ));
+                    return;
+                }
+                if token.kind() != crate::SyntaxKind::INDENT {
+                    continue;
+                }
                 // Check the token text directly - this is a cheap slice operation
                 if token.text().contains('\t') {
                     violations.push(Violation::error_at(

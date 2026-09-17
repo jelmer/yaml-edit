@@ -1081,8 +1081,15 @@ impl Parser {
                 && self.current() != Some(SyntaxKind::NEWLINE)
                 && self.current() != Some(SyntaxKind::COMMENT)
             {
-                // Inline value on the same line as the colon
+                // Inline value on the same line as the colon. A `?` opening
+                // a later line at this mapping's own column is its next
+                // entry, not part of the value's scalar: `- a: 1\n  ? c\n`
+                // is two entries, while `- x\n  ? c\n` (no mapping) is the
+                // single scalar `x ? c`.
+                let outer_column = self.mapping_value_column;
+                self.mapping_value_column = Some(base_indent.max(key_column));
                 self.parse_mapping_value(base_indent);
+                self.mapping_value_column = outer_column;
                 has_value = true;
 
                 // Capture any trailing whitespace and comment on the same line (before NEWLINE)

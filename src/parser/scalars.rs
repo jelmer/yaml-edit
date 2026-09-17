@@ -966,9 +966,10 @@ impl Parser {
                 // `- x\n  ?\n- y\n` is the two entries `x ?` and `y`, as
                 // saphyr and PyYAML both read it.
                 || (*kind == SyntaxKind::QUESTION
-                    && match self.sequence_entry_column {
-                        // Inside a sequence: only past our own dash, where
-                        // it cannot start the entry's own node.
+                    && match self.mapping_value_column.or(self.sequence_entry_column) {
+                        // Inside a mapping's value, or a sequence entry: only
+                        // past that collection's own column, where the `?`
+                        // cannot start its next node.
                         Some(column) => next_line_indent > column,
                         // No sequence to open an entry of, so the mapping
                         // is what a `?` could start a node of. Past the

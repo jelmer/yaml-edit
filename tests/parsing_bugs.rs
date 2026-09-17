@@ -3169,3 +3169,22 @@ fn test_sequence_entry_scalar_folds_from_the_dash_column() {
     let seq = doc.as_sequence().unwrap();
     assert_eq!(seq.len(), 1);
 }
+
+#[test]
+fn test_question_at_the_mapping_column_opens_the_next_entry() {
+    // `- a: 1\n  ? c\n`: the `?` sits at the mapping's own column, so it
+    // opens that mapping's next entry rather than continuing the value `1`.
+    let doc = yaml_edit::Document::from_str("- a: 1\n  ? c\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    let entry = seq.get(0).unwrap();
+    assert_eq!(entry.as_mapping().unwrap().keys().count(), 2);
+}
+
+#[test]
+fn test_question_past_a_sequence_entry_stays_scalar_content() {
+    // The counterpart: with no mapping, a `?` past the dash is content.
+    let doc = yaml_edit::Document::from_str("- x\n  ? c\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    assert_eq!(seq.len(), 1);
+    assert!(seq.get(0).unwrap().as_mapping().is_none());
+}

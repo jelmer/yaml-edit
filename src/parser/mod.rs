@@ -90,6 +90,10 @@ pub(super) struct Parser {
     /// scalar's own line cannot tell those apart, since an explicit key
     /// (`? - a\n  - b\n`) puts its entries deeper than the scalar too.
     pub(super) sequence_entry_column: Option<usize>,
+    /// The column of the mapping whose value is being parsed on the colon's
+    /// own line, for deciding whether a `?` on a later line opens that
+    /// mapping's next entry rather than continuing the value's scalar.
+    pub(super) mapping_value_column: Option<usize>,
     /// Whether the node being parsed is the document's own, with no
     /// enclosing collection.
     ///
@@ -136,6 +140,7 @@ impl Parser {
             scalar_continuation_floor: None,
             annotation_in_value_position: false,
             sequence_entry_column: None,
+            mapping_value_column: None,
             node_is_document_root: false,
             explicit_key_column: None,
             current_line_indent: 0,

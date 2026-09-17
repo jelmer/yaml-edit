@@ -32,7 +32,6 @@
 **YAML spec conformance**
 - Automated conformance report generator
 
-
 ### Known deviations from other parsers
 
 These were each checked against the YAML 1.2 spec and both reference

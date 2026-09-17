@@ -3023,3 +3023,34 @@ fn test_explicit_key_mapping_trailing_indent_is_not_a_sibling() {
     // entry, not to the nested mapping that forms the key.
     assert_validator_clean("- sun: yellow\n- ? earth: blue\n  : moon: white\n");
 }
+
+#[test]
+fn test_explicit_key_node_on_the_following_line() {
+    // `c-l-block-map-explicit-key` admits any block-indented node, so the
+    // key may start on the line after the `?`. This was rejected outright.
+    let doc = yaml_edit::Document::from_str("?\n  - a\n: v\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let key = mapping.keys().next().unwrap();
+    let key_seq = key.as_sequence().unwrap();
+    assert_eq!(key_seq.len(), 1);
+    assert_eq!(key_seq.get(0).unwrap().as_scalar().unwrap().value(), "a");
+}
+
+#[test]
+fn test_explicit_key_sequence_aligned_with_indicator() {
+    // `- ?\n  - a\n`: the dashes line up with the `?` itself, so they are
+    // the key's indentless sequence. They used to escape to the document's
+    // own sequence, giving [{null: null}, "a"] instead of [{[a]: null}].
+    let doc = yaml_edit::Document::from_str("- ?\n  - a\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    assert_eq!(seq.len(), 1);
+    let key = seq
+        .get(0)
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap();
+    assert_eq!(key.as_sequence().unwrap().len(), 1);
+}

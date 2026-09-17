@@ -144,16 +144,12 @@ impl Parser {
                 self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
                 // Parse explicit key
+                let question_column = self.error_context.current_location().1.saturating_sub(1);
                 self.bump(); // consume '?'
                 self.skip_whitespace();
 
                 self.builder.start_node(SyntaxKind::KEY.into());
-                if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                    self.parse_value();
-                } else {
-                    // Bare `?\n` -- implicit-null key.
-                    self.emit_implicit_null();
-                }
+                self.parse_explicit_key_node(question_column, question_column);
                 self.builder.finish_node();
 
                 self.skip_ws_and_newlines();
@@ -363,17 +359,7 @@ impl Parser {
             self.explicit_key_column = Some(question_column);
 
             // Parse the first part of the key
-            if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                self.parse_value();
-            } else if self.indentless_sequence_follows() {
-                // `?\n- a\n` -- the key is an indentless sequence, whose
-                // entries sit at the `?`'s own column rather than past it.
-                self.bump(); // consume the newline
-                self.parse_sequence_with_base_indent(base_indent);
-            } else {
-                // Bare `?\n` -- implicit-null key.
-                self.emit_implicit_null();
-            }
+            self.parse_explicit_key_node(question_column, base_indent);
 
             // Check if this is a multiline key (newline followed by indent)
             // Only for scalar keys, not sequences or mappings
@@ -646,16 +632,12 @@ impl Parser {
             // Start a MAPPING_ENTRY to wrap this key-value pair
             self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
+            let question_column = self.error_context.current_location().1.saturating_sub(1);
             self.bump(); // consume '?'
             self.skip_whitespace();
 
             self.builder.start_node(SyntaxKind::KEY.into());
-            if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                self.parse_value();
-            } else {
-                // Bare `?\n` -- implicit-null key.
-                self.emit_implicit_null();
-            }
+            self.parse_explicit_key_node(question_column, question_column);
             self.builder.finish_node();
 
             self.skip_ws_and_newlines();
@@ -821,6 +803,87 @@ impl Parser {
     /// The caller is on the NEWLINE that ends the `?` or `:` line. A `-`
     /// straight after that line break carries no INDENT token, which is what
     /// makes the sequence indentless.
+    /// Parse the node an explicit key indicator introduces.
+    ///
+    /// The key may sit on the indicator's own line, or start on the next
+    /// line: indentless when its dashes line up with the `?` itself, and
+    /// otherwise indented past it. With neither, the key is an implicit
+    /// null.
+    fn parse_explicit_key_node(&mut self, question_column: usize, base_indent: usize) {
+        if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
+            self.parse_value();
+        } else if self.indentless_sequence_follows() {
+            self.bump(); // consume the newline
+            self.parse_sequence_with_base_indent(base_indent);
+        } else if let Some(indent) = self.indented_sequence_indent(question_column) {
+            self.bump(); // consume the newline
+            self.bump(); // consume the indent
+            self.parse_sequence_with_base_indent(indent);
+        } else if let Some(indent) = self.aligned_sequence_indent(question_column) {
+            // `- ?\n  - a\n`: the `?` sits at a column the sequence's own
+            // indentation reproduces, so the dashes are written out as an
+            // INDENT rather than starting the line. They still belong to
+            // the key.
+            self.bump(); // consume the newline
+            self.bump(); // consume the indent
+            self.parse_sequence_with_base_indent(indent);
+        } else {
+            self.emit_implicit_null();
+        }
+    }
+
+    /// As [`indented_sequence_indent`](Self::indented_sequence_indent), for a
+    /// sequence whose dashes line up with the `?` itself.
+    ///
+    /// The indicator only looks indentless when it starts its line; nested in
+    /// a sequence entry, the same alignment arrives as an INDENT token.
+    fn aligned_sequence_indent(&self, question_column: usize) -> Option<usize> {
+        if self.current() != Some(SyntaxKind::NEWLINE) || question_column == 0 {
+            return None;
+        }
+        let mut rest = self.tokens.iter().rev().skip(1);
+        let indent = loop {
+            match rest.next()? {
+                (SyntaxKind::NEWLINE, _) => continue,
+                (SyntaxKind::INDENT, text) => break text.len(),
+                _ => return None,
+            }
+        };
+        if indent != question_column {
+            return None;
+        }
+        match rest.next()? {
+            (SyntaxKind::DASH, _) => Some(indent),
+            _ => None,
+        }
+    }
+
+    /// The indentation of a sequence starting on the line after an explicit
+    /// key indicator at `question_column`, if one does.
+    ///
+    /// `?\n  - a\n` keys the entry on `[a]`: the key's node is allowed to
+    /// start on the following line as long as it is indented past the `?`.
+    fn indented_sequence_indent(&self, question_column: usize) -> Option<usize> {
+        if self.current() != Some(SyntaxKind::NEWLINE) {
+            return None;
+        }
+        let mut rest = self.tokens.iter().rev().skip(1);
+        let indent = loop {
+            match rest.next()? {
+                (SyntaxKind::NEWLINE, _) => continue,
+                (SyntaxKind::INDENT, text) => break text.len(),
+                _ => return None,
+            }
+        };
+        if indent <= question_column {
+            return None;
+        }
+        match rest.next()? {
+            (SyntaxKind::DASH, _) => Some(indent),
+            _ => None,
+        }
+    }
+
     fn indentless_sequence_follows(&self) -> bool {
         if self.current() != Some(SyntaxKind::NEWLINE) {
             return false;

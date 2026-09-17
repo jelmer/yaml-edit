@@ -1508,6 +1508,18 @@ impl Validator {
         // If there's no value, nothing to check
         let Some(value) = value_node else { return };
 
+        // An explicit key's value may be a compact sequence on the `:` line
+        // (`? k\n: - one\n  - two\n`), which YAML 1.2 allows and PyYAML
+        // accepts. Only a plain key's `:` requires the line break, so this
+        // rule does not apply to an entry introduced by `?`.
+        if entry_node
+            .children_with_tokens()
+            .filter_map(|c| c.into_token())
+            .any(|t| t.kind() == SyntaxKind::QUESTION)
+        {
+            return;
+        }
+
         // Check if the value is a block sequence
         let mut sequence_node: Option<SyntaxNode> = None;
         for child in value.children() {
@@ -1537,7 +1549,22 @@ impl Validator {
         let mut found_colon = false;
         let mut has_newline = false;
 
-        if let Some(key) = key_node {
+        // The parser puts the line break inside the VALUE when the sequence
+        // is indentless (`k:\n- a\n`), where the entries sit at the key's
+        // own column. That is valid YAML, so look there first; the scan
+        // below only sees tokens at the MAPPING_ENTRY level.
+        for child in value.children_with_tokens() {
+            match child {
+                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::NEWLINE => {
+                    has_newline = true;
+                    break;
+                }
+                rowan::NodeOrToken::Node(ref n) if n == &sequence => break,
+                _ => {}
+            }
+        }
+
+        if let Some(key) = key_node.filter(|_| !has_newline) {
             // Start from after the key
             let mut current = key.next_sibling_or_token();
 

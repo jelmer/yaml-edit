@@ -2679,3 +2679,32 @@ fn test_sibling_indentation_in_a_sequence_entry() {
         "{v:?}"
     );
 }
+
+/// An anchor at document level annotates the document's own node, which is
+/// the ordinary spelling of `&sequence\n- a\n` and `&flowseq [ ... ]`.
+///
+/// Flagging every such anchor hit 7 files the test suite marks valid. It is
+/// stranded only when nothing follows it, or when what follows on its own
+/// line is a sequence entry, which cannot sit there (SY6V).
+#[test]
+fn test_document_level_anchor_annotating_a_node() {
+    use yaml_edit::validator::Validator;
+    let violations = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        Validator::new().validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file))
+    };
+    for yaml in ["&sequence\n- a\n", "&a a: b\n", "&flowseq [ a ]\n"] {
+        let v = violations(yaml);
+        assert!(
+            !v.iter().any(|x| x.message.contains("document level")),
+            "{yaml:?}: {v:?}"
+        );
+    }
+
+    // A sequence entry cannot follow the anchor on its own line.
+    let v = violations("&anchor - sequence entry\n");
+    assert!(
+        v.iter().any(|x| x.message.contains("document level")),
+        "{v:?}"
+    );
+}

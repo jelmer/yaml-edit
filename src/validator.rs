@@ -612,7 +612,13 @@ impl Validator {
     /// Check for multiple anchors on the same node
     fn check_multiple_anchors(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // Count ANCHOR tokens (not nodes) in this node's children
-        let anchor_count = node
+        //
+        // TODO: this cannot tell 4JVG's two anchors on one value (an error)
+        // from 6BFJ's `&mapping\n&key [ ... ]: v`, where they annotate the
+        // document's mapping and its key. The parser leaves both at document
+        // level, so the distinction is not in the tree to test; 6BFJ is
+        // reported although the test suite marks it valid.
+        let adjacent_anchors = node
             .children_with_tokens()
             .filter(|child| {
                 child
@@ -621,7 +627,7 @@ impl Validator {
             })
             .count();
 
-        if anchor_count > 1 {
+        if adjacent_anchors > 1 {
             violations.push(Violation::error_at(
                 Rule::InvalidAnchor,
                 node.text_range(),
@@ -1317,11 +1323,50 @@ impl Validator {
         for child in node.children_with_tokens() {
             if let rowan::NodeOrToken::Token(token) = child {
                 if token.kind() == crate::SyntaxKind::ANCHOR {
-                    violations.push(Violation::error_at(
-                        Rule::Other,
-                        token.text_range(),
-                        "Anchor must be attached to a node, not at document level",
-                    ));
+                    // An anchor at document level annotates the document's
+                    // own node, which is the ordinary spelling of
+                    // `&sequence\n- a\n` and `&flowseq [ ... ]`. It is
+                    // stranded only when nothing follows it, or when what
+                    // follows on its own line is a sequence entry, which
+                    // cannot sit there: `&anchor - sequence entry` is the
+                    // test suite's SY6V error.
+                    let mut annotates_a_node = false;
+                    let mut same_line = true;
+                    for sibling in token.siblings_with_tokens(rowan::Direction::Next).skip(1) {
+                        match sibling {
+                            rowan::NodeOrToken::Token(ref t)
+                                if t.kind() == crate::SyntaxKind::NEWLINE =>
+                            {
+                                same_line = false;
+                            }
+                            rowan::NodeOrToken::Node(ref n) => {
+                                let opens_an_entry = same_line
+                                    && n.kind() == crate::SyntaxKind::SCALAR
+                                    && n.text().to_string().starts_with("- ");
+                                if !opens_an_entry
+                                    && matches!(
+                                        n.kind(),
+                                        crate::SyntaxKind::MAPPING
+                                            | crate::SyntaxKind::SEQUENCE
+                                            | crate::SyntaxKind::SCALAR
+                                            | crate::SyntaxKind::TAGGED_NODE
+                                            | crate::SyntaxKind::ALIAS
+                                    )
+                                {
+                                    annotates_a_node = true;
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !annotates_a_node {
+                        violations.push(Violation::error_at(
+                            Rule::Other,
+                            token.text_range(),
+                            "Anchor must be attached to a node, not at document level",
+                        ));
+                    }
                 }
             }
         }

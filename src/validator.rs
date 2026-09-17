@@ -570,7 +570,35 @@ impl Validator {
         let has_directive = node
             .children_with_tokens()
             .any(|c| c.kind() == SyntaxKind::DIRECTIVE);
-        if has_directive {
+        // Only when a document really follows. With none, the `%` line is
+        // just more of this scalar -- the test suite's XLQ9 reads
+        // `---\nscalar\n%YAML 1.2\n` as the scalar `scalar %YAML 1.2`,
+        // where EB22 and RHX7 go on to open a second document with `---`.
+        let a_document_follows = node
+            .ancestors()
+            .find(|a| a.kind() == SyntaxKind::DOCUMENT)
+            .is_some_and(|d| {
+                d.siblings_with_tokens(rowan::Direction::Next)
+                    .skip(1)
+                    .filter(|c| {
+                        !c.as_token().is_some_and(|t| {
+                            matches!(
+                                t.kind(),
+                                SyntaxKind::NEWLINE
+                                    | SyntaxKind::WHITESPACE
+                                    | SyntaxKind::INDENT
+                                    | SyntaxKind::COMMENT
+                            )
+                        })
+                    })
+                    .any(|c| {
+                        c.as_node()
+                            .is_some_and(|n| n.kind() == SyntaxKind::DOCUMENT)
+                            || c.as_token()
+                                .is_some_and(|t| t.kind() == SyntaxKind::DOC_START)
+                    })
+            });
+        if has_directive && a_document_follows {
             violations.push(Violation::error_at(Rule::Other, node.text_range(), "Directive in document content (missing document end marker `...` before directive)".to_string()));
         }
     }

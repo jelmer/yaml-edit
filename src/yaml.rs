@@ -318,12 +318,36 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
     inner_builder.finish_node();
     let new_collection = SyntaxNode::new_root_mut(inner_builder.finish());
     let mut replacement: Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>> = Vec::new();
+    let tagged = tag_token.is_some();
     if let Some(tag) = tag_token {
         replacement.push(crate::nodes::fresh_token(SyntaxKind::TAG, tag.text()).into());
+        replacement.push(ws.clone().into());
     }
-    replacement.push(ws.into());
     replacement.push(new_collection.into());
     host.splice_children(0..0, replacement);
+
+    // The space separating the colon from its value belongs to the
+    // entry, not the value: a parsed `key: {}` puts it between COLON
+    // and VALUE. Left inside, a later edit that replaces the whole
+    // VALUE took the space with it and wrote `key:value`, which is a
+    // plain scalar rather than an entry.
+    if !tagged {
+        let value_index = entry_node
+            .children_with_tokens()
+            .position(|el| el.as_node() == Some(&value_node));
+        if let Some(index) = value_index {
+            let separated = index
+                .checked_sub(1)
+                .and_then(|p| entry_node.children_with_tokens().nth(p))
+                .is_some_and(|el| {
+                    el.as_token()
+                        .is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE)
+                });
+            if !separated {
+                entry_node.splice_children(index..index, vec![ws.into()]);
+            }
+        }
+    }
 
     // The next sibling entry needs a NEWLINE separator inside this
     // entry (see the "entry termination" invariant in

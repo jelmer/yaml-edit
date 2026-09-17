@@ -3107,3 +3107,19 @@ fn test_explicit_key_content_must_clear_the_indicator() {
     let mapping = entry.as_mapping().unwrap();
     assert_eq!(mapping.keys().count(), 2);
 }
+
+#[test]
+fn test_collapsed_empty_mapping_keeps_its_separator_in_the_entry() {
+    // Draining a nested mapping collapses it to `key: {}`. The space
+    // separating the colon from the value belongs to the entry, as it does
+    // when parsed; left inside the VALUE, a later edit replacing that value
+    // carried the space off and wrote `t:a`, which is a plain scalar.
+    use yaml_edit::path::YamlPath;
+    let doc = yaml_edit::Document::from_str("a: 1\n").unwrap();
+    doc.try_set_path("t.t", "9").unwrap();
+    doc.try_remove_path("t.t").unwrap();
+    assert_eq!(doc.to_string(), "a: 1\nt: {}\n");
+    doc.try_set_path("t", "b").unwrap();
+    assert_eq!(doc.to_string(), "a: 1\nt: b\n");
+    yaml_edit::Document::from_str(&doc.to_string()).unwrap();
+}

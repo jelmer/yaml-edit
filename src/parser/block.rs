@@ -1155,6 +1155,14 @@ impl Parser {
                 } else if self.current() == Some(SyntaxKind::DASH)
                     && (self.current_line_indent == base_indent
                         || self.current_line_indent == key_column)
+                    // A dash at the column of a sequence we sit in is that
+                    // sequence's next entry, which it claims before we can:
+                    // `- - k:\n  - b\n` is the two items `{k: null}` and
+                    // `b`, not one item keyed by `[b]`.
+                    && match self.sequence_entry_column {
+                        Some(column) => self.current_line_indent > column,
+                        None => true,
+                    }
                 {
                     // An indentless sequence: its entries sit at the key's
                     // own column rather than past it, so it is the key's

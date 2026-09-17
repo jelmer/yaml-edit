@@ -3238,3 +3238,18 @@ fn test_multiline_value_indents_its_block_body_past_the_entry() {
     assert_eq!(file.to_string(), "a:\n  b: |-\n    x\n    y\n");
     yaml_edit::YamlFile::from_str(&file.to_string()).unwrap();
 }
+
+#[test]
+fn test_enclosing_sequence_claims_a_dash_at_its_own_column() {
+    // `- - k:\n  - b\n`: the `- b` line sits at the inner sequence's own
+    // column, so it is that sequence's next entry. Read as `k`'s indentless
+    // value it gave one item keyed by [b] instead of the two saphyr and
+    // PyYAML both report.
+    let doc = yaml_edit::Document::from_str("- - k:\n  - b\n").unwrap();
+    let outer = doc.as_sequence().unwrap();
+    assert_eq!(outer.len(), 1);
+    let inner_node = outer.get(0).unwrap();
+    let inner = inner_node.as_sequence().unwrap();
+    assert_eq!(inner.len(), 2);
+    assert_eq!(inner.get(1).unwrap().as_scalar().unwrap().value(), "b");
+}

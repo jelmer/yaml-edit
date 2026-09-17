@@ -1740,6 +1740,15 @@ impl Validator {
             return;
         }
 
+        // TODO: this reports 8 files the test suite marks valid, all flow
+        // mappings spread over lines (`{\nunquoted : "x",\n}` -- 4ABK, DFF7,
+        // the `- { ... }` shapes), which YAML allows. What an implicit key
+        // really may not do is put its `:` on a different line from the key
+        // (C2SP's `[23\n]: 42`, DK4H, ZXT5), and those three are reported
+        // only because this rule is broad. Exempting flow context wholesale
+        // loses them, so the fix needs the key-to-colon span rather than the
+        // entry's.
+
         for child in entry_node.children() {
             if child.kind() != crate::SyntaxKind::KEY {
                 continue;

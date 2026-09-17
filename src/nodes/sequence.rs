@@ -103,6 +103,74 @@ fn trailing_newline_indent(node: &SyntaxNode) -> Option<String> {
 /// whitespace off the sequence would strand a following mapping entry
 /// that relied on the separator NEWLINE. Conservative `false` when
 /// the sequence isn't under a MAPPING_ENTRY at all.
+/// Rebuild `entry` with `value` in place of the node it currently holds,
+/// keeping everything else the entry carried.
+fn rebuild_entry_with_value(entry: &SyntaxNode, value: &impl crate::AsYaml) -> SyntaxNode {
+    let entry_children: Vec<_> = entry.children_with_tokens().collect();
+
+    // Build a new SEQUENCE_ENTRY with the new value using AsYaml
+    let mut builder = GreenNodeBuilder::new();
+    builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
+
+    let mut value_inserted = false;
+    let mut trailing_text: Option<String> = None;
+    let mut after_dash = false;
+
+    for entry_child in entry_children {
+        match &entry_child {
+            rowan::NodeOrToken::Node(n)
+                if matches!(
+                    n.kind(),
+                    SyntaxKind::SCALAR
+                        | SyntaxKind::MAPPING
+                        | SyntaxKind::SEQUENCE
+                        | SyntaxKind::ALIAS
+                        | SyntaxKind::TAGGED_NODE
+                ) =>
+            {
+                // A multi-line value (a nested mapping, say) ends with a
+                // NEWLINE and often an INDENT, which separate the entry
+                // from whatever follows and outlive the value itself.
+                trailing_text = trailing_newline_indent(n);
+                if !value_inserted {
+                    // A bare `-` item is DASH then a zero-width NULL
+                    // scalar, so a written value needs the space that
+                    // was never there: without it `set` gives `-x`.
+                    if after_dash {
+                        builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                    }
+                    value.build_content(&mut builder, 0, false);
+                    value_inserted = true;
+                }
+                after_dash = false;
+            }
+            rowan::NodeOrToken::Node(n) => {
+                // Copy other nodes as-is (like VALUE wrappers, etc.)
+                crate::yaml::copy_node_to_builder(&mut builder, n);
+                after_dash = false;
+            }
+            rowan::NodeOrToken::Token(t) => {
+                // Copy tokens as-is
+                builder.token(t.kind().into(), t.text());
+                after_dash = t.kind() == SyntaxKind::DASH;
+            }
+        }
+    }
+
+    // Restore trailing whitespace extracted from the old value
+    if let Some(trailing) = trailing_text {
+        if let Some(indent_part) = trailing.strip_prefix('\n') {
+            builder.token(SyntaxKind::NEWLINE.into(), "\n");
+            if !indent_part.is_empty() {
+                builder.token(SyntaxKind::INDENT.into(), indent_part);
+            }
+        }
+    }
+
+    builder.finish_node();
+    SyntaxNode::new_root_mut(builder.finish())
+}
+
 /// Drop the run of blank tokens (newline, indent, whitespace) that ends
 /// `entry`, so removing the entry after it leaves no stray blank line.
 fn strip_trailing_blank_tokens(entry: &SyntaxNode) {
@@ -725,73 +793,7 @@ impl Sequence {
             return false;
         };
         let node = children[i].as_node().expect("entry index names a node");
-
-        // Build a new SEQUENCE_ENTRY with the new value using AsYaml
-        let entry_children: Vec<_> = node.children_with_tokens().collect();
-        let mut builder = GreenNodeBuilder::new();
-        builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
-
-        let mut value_inserted = false;
-        let mut trailing_text: Option<String> = None;
-        let mut after_dash = false;
-
-        for entry_child in entry_children {
-            match &entry_child {
-                rowan::NodeOrToken::Node(n)
-                    if matches!(
-                        n.kind(),
-                        SyntaxKind::SCALAR
-                            | SyntaxKind::MAPPING
-                            | SyntaxKind::SEQUENCE
-                            | SyntaxKind::ALIAS
-                            | SyntaxKind::TAGGED_NODE
-                    ) =>
-                {
-                    // Extract trailing NEWLINE(+INDENT) tokens from the old
-                    // value node's tail. Multi-line values (e.g. nested
-                    // mappings) end with a NEWLINE and often a following
-                    // INDENT that must be preserved as the entry's
-                    // separator from whatever follows.
-                    trailing_text = trailing_newline_indent(n);
-
-                    // Replace the value node with the new value built from AsYaml
-                    if !value_inserted {
-                        // A bare `-` item is DASH then a zero-width NULL
-                        // scalar. Insert the space that a written value
-                        // needs so set does not serialize as `-x`.
-                        if after_dash {
-                            builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                        }
-                        value.build_content(&mut builder, 0, false);
-                        value_inserted = true;
-                    }
-                    after_dash = false;
-                }
-                rowan::NodeOrToken::Node(n) => {
-                    // Copy other nodes as-is (like VALUE wrappers, etc.)
-                    crate::yaml::copy_node_to_builder(&mut builder, n);
-                    after_dash = false;
-                }
-                rowan::NodeOrToken::Token(t) => {
-                    // Copy tokens as-is
-                    builder.token(t.kind().into(), t.text());
-                    after_dash = t.kind() == SyntaxKind::DASH;
-                }
-            }
-        }
-
-        // Restore trailing whitespace extracted from the old value
-        if let Some(trailing) = trailing_text {
-            if let Some(indent_part) = trailing.strip_prefix('\n') {
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                if !indent_part.is_empty() {
-                    builder.token(SyntaxKind::INDENT.into(), indent_part);
-                }
-            }
-        }
-
-        builder.finish_node();
-        let new_entry = SyntaxNode::new_root_mut(builder.finish());
+        let new_entry = rebuild_entry_with_value(node, &value);
 
         // Replace the old SEQUENCE_ENTRY with the new one
         self.0.splice_children(i..i + 1, vec![new_entry.into()]);

@@ -1229,24 +1229,7 @@ impl Mapping {
             for entry_child in node.children_with_tokens() {
                 match entry_child {
                     rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::KEY => {
-                        // Replace the KEY node using AsYaml::build_content
-                        builder.start_node(SyntaxKind::KEY.into());
-                        super::build_key_content(&mut builder, &new_key);
-                        // An explicit key (`? k\n  : v`) puts the `:` on its
-                        // own line, and the parser keeps that line break and
-                        // indent inside KEY. They describe the entry's layout
-                        // rather than the key, so carry them over or the entry
-                        // collapses onto one line and reparses as one node.
-                        for trailing in n
-                            .children_with_tokens()
-                            .skip_while(|c| {
-                                !matches!(c.as_token().map(|t| t.kind()), Some(SyntaxKind::NEWLINE))
-                            })
-                            .filter_map(|c| c.into_token())
-                        {
-                            builder.token(trailing.kind().into(), trailing.text());
-                        }
-                        builder.finish_node(); // KEY
+                        Self::rebuild_key(&mut builder, &n, &new_key);
                     }
                     rowan::NodeOrToken::Node(n) => {
                         crate::yaml::copy_node_to_builder(&mut builder, &n);
@@ -1263,6 +1246,26 @@ impl Mapping {
             return true;
         }
         false
+    }
+
+    /// Rebuild an entry's KEY node around `new_key`, keeping the layout
+    /// tokens the old one carried.
+    ///
+    /// An explicit key (`? k\n  : v`) puts the `:` on its own line, and the
+    /// parser keeps that line break and indent inside KEY. They describe the
+    /// entry's layout rather than the key, so they carry over; dropped, the
+    /// entry collapses onto one line and reparses as one node.
+    fn rebuild_key(builder: &mut GreenNodeBuilder, old: &SyntaxNode, new_key: &impl crate::AsYaml) {
+        builder.start_node(SyntaxKind::KEY.into());
+        super::build_key_content(builder, new_key);
+        for trailing in old
+            .children_with_tokens()
+            .skip_while(|c| !matches!(c.as_token().map(|t| t.kind()), Some(SyntaxKind::NEWLINE)))
+            .filter_map(|c| c.into_token())
+        {
+            builder.token(trailing.kind().into(), trailing.text());
+        }
+        builder.finish_node();
     }
 
     /// Helper to create a MAPPING_ENTRY node from key and value strings

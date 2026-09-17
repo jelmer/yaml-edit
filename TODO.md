@@ -1,18 +1,5 @@
 # TODO: yaml-edit
 
-### Code Quality
-
-**Reduce nesting in mutation methods**
-- The worst offenders are done: `set_with_field_order` (9 levels to 6),
-  `rename_key` (8 to 6) and `Sequence::remove` (8 to 5).
-- `reorder_fields`, `insert_at_index_preserving` and `Sequence::set` are
-  still around 7 levels and 100 lines each.
-
-**Evaluate YamlValue necessity**
-- YamlValue is a detached representation that loses formatting
-- May be able to simplify by using AsYaml trait everywhere
-- Consider removal if not serving a clear purpose
-
 ### Developer Experience
 
 **YAML 1.1 compatibility warnings**
@@ -24,14 +11,6 @@
 
 **Consistent formatting tool**
 - Pretty-printer for standardizing YAML style
-
-### Testing & Validation
-
-Both items here are covered: `tests/invariants.rs` and
-`tests/proptest_invariants.rs` hold round-trip and format-preservation
-properties over generated mutation sequences, and `tests/yaml_test_suite.rs`
-prints a pass/fail conformance report, with per-case detail under
-`VERBOSE=1`.
 
 ### Known deviations from other parsers
 

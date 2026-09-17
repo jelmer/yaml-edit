@@ -1047,6 +1047,19 @@ fn set_path_on_mapping<V: crate::AsYaml>(
                 at: segment_display(&segments[0]),
             });
         }
+        // A sequence created here starts empty, so an index past the
+        // growth bound is known to fail. Say so before writing anything:
+        // creating the key first left `k:\n  \n` behind, a half-built
+        // entry that no longer reparses as the sequence it claimed.
+        if let PathSegment::Index(index) = segments[1] {
+            if index >= MAX_INDEX_GROWTH {
+                return Err(PathError::IndexTooFar {
+                    at: segment_display(&segments[1]),
+                    len: 0,
+                    index,
+                });
+            }
+        }
         // Match the parent's style so we don't mix block content into a flow
         // container.
         if mapping.is_flow_style() {

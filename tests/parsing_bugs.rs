@@ -3188,3 +3188,14 @@ fn test_question_past_a_sequence_entry_stays_scalar_content() {
     assert_eq!(seq.len(), 1);
     assert!(seq.get(0).unwrap().as_mapping().is_none());
 }
+
+#[test]
+fn test_rejected_set_path_leaves_the_document_untouched() {
+    // An index past the growth bound is rejected, but the intermediate
+    // sequence was created first, leaving `nn:\n  \n` behind: a half-built
+    // entry that no longer reparses as a sequence.
+    use yaml_edit::path::YamlPath;
+    let doc = yaml_edit::Document::from_str("a: 1\n").unwrap();
+    assert!(doc.try_set_path("nn.9487", "xx").is_err());
+    assert_eq!(doc.to_string(), "a: 1\n");
+}

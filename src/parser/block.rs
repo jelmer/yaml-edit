@@ -797,12 +797,6 @@ impl Parser {
         }
     }
 
-    /// Whether the next line opens an indentless block sequence, whose
-    /// entries sit at the current construct's own column.
-    ///
-    /// The caller is on the NEWLINE that ends the `?` or `:` line. A `-`
-    /// straight after that line break carries no INDENT token, which is what
-    /// makes the sequence indentless.
     /// Parse the node an explicit key indicator introduces.
     ///
     /// The key may sit on the indicator's own line, or start on the next
@@ -884,6 +878,12 @@ impl Parser {
         }
     }
 
+    /// Whether the next line opens an indentless block sequence, whose
+    /// entries sit at the current construct's own column.
+    ///
+    /// The caller is on the NEWLINE that ends the `?` or `:` line. A `-`
+    /// straight after that line break carries no INDENT token, which is what
+    /// makes the sequence indentless.
     fn indentless_sequence_follows(&self) -> bool {
         if self.current() != Some(SyntaxKind::NEWLINE) {
             return false;
@@ -1078,12 +1078,16 @@ impl Parser {
                     self.parse_value_with_base_indent(value_indent);
                     self.scalar_continuation_floor = outer_floor;
                     has_value = true;
-                } else if self.current_line_indent == base_indent
-                    && self.current() == Some(SyntaxKind::DASH)
+                } else if self.current() == Some(SyntaxKind::DASH)
+                    && (self.current_line_indent == base_indent
+                        || self.current_line_indent == key_column)
                 {
-                    // Zero-indented sequence (same indentation as key)
-                    // This is valid YAML: the sequence is the value for the key
-                    self.parse_sequence_with_base_indent(base_indent);
+                    // An indentless sequence: its entries sit at the key's
+                    // own column rather than past it, so it is the key's
+                    // value even though nothing is more indented. A mapping
+                    // key at that column would be a sibling entry instead
+                    // (`- k:\n  j: 1\n`), which is why only a dash counts.
+                    self.parse_sequence_with_base_indent(self.current_line_indent);
                     has_value = true;
                 }
                 // Otherwise the "value" would be at the parent's indent or

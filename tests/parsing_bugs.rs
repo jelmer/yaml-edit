@@ -3054,3 +3054,31 @@ fn test_explicit_key_sequence_aligned_with_indicator() {
         .unwrap();
     assert_eq!(key.as_sequence().unwrap().len(), 1);
 }
+
+#[test]
+fn test_indentless_sequence_value_at_the_key_column() {
+    // `- k:\n  - a\n`: the dashes sit at the key's own column, which makes
+    // the sequence that key's indentless value. It used to escape into the
+    // document's sequence, giving [{k: null}, "a"] instead of [{k: [a]}].
+    let doc = yaml_edit::Document::from_str("- k:\n  - a\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    assert_eq!(seq.len(), 1);
+    let entry = seq.get(0).unwrap();
+    let mapping = entry.as_mapping().unwrap();
+    let k = mapping.get("k").unwrap();
+    let value = k.as_sequence().unwrap();
+    assert_eq!(value.len(), 1);
+    assert_eq!(value.get(0).unwrap().as_scalar().unwrap().value(), "a");
+}
+
+#[test]
+fn test_mapping_key_at_the_key_column_stays_a_sibling() {
+    // The counterpart to the sequence above: only a dash is indentless, so
+    // `- k:\n  j: 1\n` is two entries in one mapping, not a nested one.
+    let doc = yaml_edit::Document::from_str("- k:\n  j: 1\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    assert_eq!(seq.len(), 1);
+    let entry = seq.get(0).unwrap();
+    let mapping = entry.as_mapping().unwrap();
+    assert_eq!(mapping.keys().count(), 2);
+}

@@ -611,13 +611,10 @@ impl Validator {
 
     /// Check for multiple anchors on the same node
     fn check_multiple_anchors(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        // Count ANCHOR tokens (not nodes) in this node's children
-        //
-        // TODO: this cannot tell 4JVG's two anchors on one value (an error)
-        // from 6BFJ's `&mapping\n&key [ ... ]: v`, where they annotate the
-        // document's mapping and its key. The parser leaves both at document
-        // level, so the distinction is not in the tree to test; 6BFJ is
-        // reported although the test suite marks it valid.
+        // Count ANCHOR tokens (not nodes) in this node's children. An
+        // anchor that annotates a complex key now sits inside that KEY, so
+        // 6BFJ's `&mapping\n&key [ ... ]: v` leaves one here while 4JVG's
+        // two anchors on a single value still leave both.
         let adjacent_anchors = node
             .children_with_tokens()
             .filter(|child| {

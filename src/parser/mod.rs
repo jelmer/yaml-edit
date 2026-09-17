@@ -388,6 +388,23 @@ impl Parser {
                 // Only reached outside a mapping value; parse_mapping_value
                 // keeps a value-position anchor on the implicit-null path, so
                 // a dedented sibling entry stays a sibling.
+                // An anchor introducing a complex key belongs inside that
+                // key's KEY node, so let the complex-key parser take it
+                // rather than emitting it as a sibling of the mapping.
+                if !self.in_flow_context
+                    && !self.in_value_context
+                    && matches!(
+                        self.upcoming_tokens().find(|k| {
+                            !matches!(k, SyntaxKind::WHITESPACE | SyntaxKind::INDENT)
+                        }),
+                        Some(SyntaxKind::LEFT_BRACKET | SyntaxKind::LEFT_BRACE)
+                    )
+                    && self.is_complex_mapping_key_after_annotations()
+                {
+                    self.parse_complex_key_mapping();
+                    self.nesting_depth -= 1;
+                    return;
+                }
                 let body_indent =
                     self.tagged_block_node_indent(base_indent, self.annotation_in_value_position);
                 self.bump(); // consume and emit anchor token to CST

@@ -2799,3 +2799,38 @@ fn test_tab_is_flagged_only_where_indentation_is_required() {
         assert!(!flags_a_tab(yaml), "{yaml:?} should not be flagged");
     }
 }
+
+/// An anchor before a complex key annotates that key, so it belongs inside
+/// the KEY node rather than beside the mapping.
+///
+/// `&key [ a ]: value` anchors the flow sequence. Left outside, it looked
+/// like a second anchor on the mapping itself, so the test suite's 6BFJ
+/// (`&mapping\n&key [ ... ]: value`) was reported as having two anchors on
+/// one node -- which 4JVG genuinely does.
+#[test]
+fn test_anchor_before_a_complex_key_is_inside_the_key() {
+    use yaml_edit::validator::Validator;
+    let flags_anchors = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        Validator::new()
+            .validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file))
+            .iter()
+            .any(|v| v.message.contains("Multiple anchors"))
+    };
+
+    let file = YamlFile::from_str("&key [ a ]: value\n").unwrap();
+    let tree = yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+    assert_eq!(file.to_string(), "&key [ a ]: value\n");
+    assert!(!tree.contains("ERROR"), "{tree}");
+    // The anchor is a child of KEY, not a sibling of MAPPING.
+    let key_line = tree.lines().position(|l| l.trim() == "KEY").unwrap();
+    assert!(
+        tree.lines()
+            .nth(key_line + 1)
+            .is_some_and(|l| l.contains("ANCHOR")),
+        "{tree}"
+    );
+
+    assert!(!flags_anchors("---\n&mapping\n&key [ a ]: value\n"));
+    assert!(flags_anchors("top1: &n1\n  &k1 k: v\n"));
+}

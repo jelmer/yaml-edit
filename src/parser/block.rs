@@ -524,6 +524,14 @@ impl Parser {
 
         // Parse the complex key
         self.builder.start_node(SyntaxKind::KEY.into());
+        // An anchor before the key annotates that key, so it belongs inside
+        // the KEY node: `&key [ a ]: value` anchors the flow sequence, not
+        // the mapping. Left outside, it looked like a second anchor on the
+        // mapping itself (test suite 6BFJ).
+        while matches!(self.current(), Some(SyntaxKind::ANCHOR | SyntaxKind::TAG)) {
+            self.bump();
+            self.skip_whitespace();
+        }
         if self.current() == Some(SyntaxKind::LEFT_BRACKET) {
             self.parse_flow_sequence();
         } else if self.current() == Some(SyntaxKind::LEFT_BRACE) {
@@ -667,6 +675,57 @@ impl Parser {
 
             self.skip_ws_and_newlines();
         }
+    }
+
+    /// As [`is_complex_mapping_key`](Self::is_complex_mapping_key), reading
+    /// past a run of leading anchors and tags.
+    ///
+    /// `&key [ a ]: value` anchors the flow sequence that is the key, so the
+    /// shape has to be recognised with the annotation still in front of it.
+    pub(super) fn is_complex_mapping_key_after_annotations(&self) -> bool {
+        let mut rest = self
+            .upcoming_tokens()
+            .skip_while(|k| {
+                matches!(
+                    k,
+                    SyntaxKind::ANCHOR
+                        | SyntaxKind::TAG
+                        | SyntaxKind::WHITESPACE
+                        | SyntaxKind::INDENT
+                )
+            })
+            .peekable();
+        let start_kind = match rest.peek() {
+            Some(SyntaxKind::LEFT_BRACKET) => SyntaxKind::LEFT_BRACKET,
+            Some(SyntaxKind::LEFT_BRACE) => SyntaxKind::LEFT_BRACE,
+            _ => return false,
+        };
+        let close_kind = match start_kind {
+            SyntaxKind::LEFT_BRACKET => SyntaxKind::RIGHT_BRACKET,
+            _ => SyntaxKind::RIGHT_BRACE,
+        };
+        let mut depth = 0usize;
+        let mut found_close = false;
+        for kind in rest.skip(1) {
+            if !found_close {
+                if kind == start_kind {
+                    depth += 1;
+                } else if kind == close_kind {
+                    if depth == 0 {
+                        found_close = true;
+                    } else {
+                        depth -= 1;
+                    }
+                }
+            } else {
+                match kind {
+                    SyntaxKind::COLON => return true,
+                    SyntaxKind::WHITESPACE => continue,
+                    _ => return false,
+                }
+            }
+        }
+        false
     }
 
     pub(super) fn is_complex_mapping_key(&self) -> bool {

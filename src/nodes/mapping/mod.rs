@@ -601,25 +601,20 @@ impl Mapping {
         // Detect if existing entries use explicit keys
         let use_explicit_keys = self.uses_explicit_keys();
 
-        // First, look for an existing entry with this key
-        for (i, child) in self.0.children_with_tokens().enumerate() {
-            if let Some(node) = child
-                .as_node()
-                .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-            {
-                if let Some(entry) = MappingEntry::cast(node.clone()) {
-                    // Check if this entry matches our key by comparing using yaml_eq
-                    if let Some(entry_key_node) = entry.key() {
-                        if key_content_matches(&entry_key_node, &key) {
-                            // Found it! Update the value in place
-                            entry.set_value(value, flow_context);
-
-                            self.0.splice_children(i..i + 1, vec![entry.0.into()]);
-                            return;
-                        }
-                    }
-                }
-            }
+        // An existing entry with this key takes the value in place.
+        let existing = self
+            .0
+            .children_with_tokens()
+            .enumerate()
+            .find_map(|(i, c)| {
+                let entry = MappingEntry::cast(c.into_node()?)?;
+                let matches = entry.key().is_some_and(|k| key_content_matches(&k, &key));
+                matches.then_some((i, entry))
+            });
+        if let Some((i, entry)) = existing {
+            entry.set_value(value, flow_context);
+            self.0.splice_children(i..i + 1, vec![entry.0.into()]);
+            return;
         }
 
         // Entry doesn't exist, create a new one. Tell the constructor at

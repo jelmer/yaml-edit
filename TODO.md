@@ -2,10 +2,6 @@
 
 ### Developer Experience
 
-**YAML 1.1 compatibility warnings**
-- Detect `yes/no`, octal `0755`, etc.
-- Migration helpers for YAML 1.1 → 1.2 conversion
-
 **Optional serde integration**
 - Support struct serialization/deserialization
 

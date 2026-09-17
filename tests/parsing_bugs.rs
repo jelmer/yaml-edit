@@ -3264,3 +3264,14 @@ fn test_inline_key_sequence_is_bounded_by_the_indicator() {
     assert_eq!(seq.len(), 2);
     assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().value(), "z");
 }
+
+#[test]
+fn test_explicit_key_collection_starts_past_the_indicator() {
+    // `? k: 1\nk2: 2\n`: the key's mapping starts at column 2, past the
+    // `?`, so the column-0 `k2` dedents out of it and is a sibling entry of
+    // the `?` entry. Measured from the line's own indent the key swallowed
+    // it, which both saphyr and PyYAML disagree with.
+    let doc = yaml_edit::Document::from_str("? k: 1\nk2: 2\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(mapping.keys().count(), 2);
+}

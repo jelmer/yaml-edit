@@ -782,7 +782,10 @@ impl Parser {
                     // Reset to 0 until we see the next INDENT
                     self.current_line_indent = 0;
                 }
-                SyntaxKind::DASH => {
+                // A `-` or `?` puts the node it introduces further right, so
+                // the column a nested collection measures from is past the
+                // indicator rather than at the line's own indent.
+                SyntaxKind::DASH | SyntaxKind::QUESTION => {
                     self.current_line_indent += text.len();
                 }
                 _ => {}

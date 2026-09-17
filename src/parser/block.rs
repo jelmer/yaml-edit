@@ -369,6 +369,11 @@ impl Parser {
             // annotation inside the key must not adopt it.
             let outer_explicit_key = self.explicit_key_column;
             self.explicit_key_column = Some(question_column);
+            // A `?` opening a line at this mapping's own column is its next
+            // entry, not part of the key's scalar: `- ? k\n  ? c\n` is two
+            // entries, as saphyr and PyYAML both read it.
+            let outer_value_column = self.mapping_value_column;
+            self.mapping_value_column = Some(question_column);
 
             // Parse the first part of the key
             self.parse_explicit_key_node(question_column, base_indent);
@@ -442,6 +447,7 @@ impl Parser {
 
             self.builder.finish_node();
             self.explicit_key_column = outer_explicit_key;
+            self.mapping_value_column = outer_value_column;
 
             self.skip_ws_and_newlines();
 

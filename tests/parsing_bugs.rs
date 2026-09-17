@@ -3199,3 +3199,13 @@ fn test_rejected_set_path_leaves_the_document_untouched() {
     assert!(doc.try_set_path("nn.9487", "xx").is_err());
     assert_eq!(doc.to_string(), "a: 1\n");
 }
+
+#[test]
+fn test_repeated_explicit_key_at_the_mapping_column() {
+    // `- ? k\n  ? c\n`: the second `?` sits at the mapping's own column, so
+    // it opens the next entry rather than continuing the key scalar `k`.
+    let doc = yaml_edit::Document::from_str("- ? k\n  ? c\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    let entry = seq.get(0).unwrap();
+    assert_eq!(entry.as_mapping().unwrap().keys().count(), 2);
+}

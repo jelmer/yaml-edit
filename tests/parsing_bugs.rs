@@ -3137,3 +3137,25 @@ fn test_dash_left_of_the_indicator_is_not_an_indentless_key() {
     assert!(key.as_sequence().is_none());
     assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().value(), "a");
 }
+
+#[test]
+fn test_empty_block_scalar_on_its_own_line_keeps_the_next_entry() {
+    // `k:\n  |\nz: 1\n` has an empty block scalar. The value was still
+    // flagged as the document's own node, so its body was read as starting
+    // at column 0 and swallowed `z: 1`.
+    let doc = yaml_edit::Document::from_str("k:\n  |\nz: 1\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(
+        mapping.keys().map(|k| k.to_string()).collect::<Vec<_>>(),
+        vec!["k", "z"]
+    );
+}
+
+#[test]
+fn test_zero_indented_block_scalar_at_the_document_root() {
+    // The counterpart: a block scalar that is the document's own node does
+    // read a column-0 body (test suite FP8R).
+    let doc = yaml_edit::Document::from_str("--- >\nline1\nline2\n").unwrap();
+    assert_eq!(doc.to_string(), "--- >\nline1\nline2\n");
+    assert!(doc.as_mapping().is_none());
+}

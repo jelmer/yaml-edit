@@ -1083,6 +1083,11 @@ impl Parser {
                 }
             } else if self.current() == Some(SyntaxKind::NEWLINE) {
                 self.skip_ws_and_newlines();
+                // A mapping's value is never the document's own node,
+                // whatever the caller was parsing. Left set, a block scalar
+                // here read its body as starting at column 0 and swallowed
+                // the next entry: `k:\n  |\nz: 1\n` lost `z`.
+                self.node_is_document_root = false;
                 // A block value on a later line has to clear the *key's*
                 // column, not the column the mapping was measured from. In a
                 // sequence entry those differ: `- k:` puts `k` at column 2

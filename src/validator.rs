@@ -72,6 +72,8 @@ pub enum Rule {
     InvalidAnchor,
     /// Invalid tag
     InvalidTag,
+    /// A construct that YAML 1.1 read differently from YAML 1.2
+    LegacyYaml11,
     /// Other spec violations
     Other,
 }
@@ -222,6 +224,17 @@ impl Violation {
         Violation {
             text_range: Some(range_to_text_position(range)),
             ..Violation::error(rule, message)
+        }
+    }
+
+    /// A warning-severity violation covering `range` in the source.
+    ///
+    /// The document is valid YAML 1.2; a warning says only that some other
+    /// implementation may read it differently.
+    fn warning_at(rule: Rule, range: rowan::TextRange, message: impl Into<String>) -> Self {
+        Violation {
+            severity: Severity::Warning,
+            ..Violation::error_at(rule, range, message)
         }
     }
 }
@@ -391,6 +404,8 @@ impl Validator {
                 self.check_document_marker_in_string(node, violations);
                 // Check for directives inside document content (e.g. %YAML after ---)
                 self.check_directive_in_content(node, violations);
+                // Warn about constructs YAML 1.1 read differently
+                self.check_legacy_yaml_1_1(node, violations);
             }
             SyntaxKind::DOC_START | SyntaxKind::DOC_END if self.config.check_document_markers => {
                 self.check_document_marker_placement(node, violations);
@@ -858,6 +873,66 @@ impl Validator {
                     }
                 }
             }
+        }
+    }
+
+    /// Warn about plain scalars that YAML 1.1 resolved differently.
+    ///
+    /// The document is valid either way, so these are warnings: they say the
+    /// text means one thing here and another to a 1.1 reader.
+    ///
+    /// Bare-octal is the case that changes a value silently. `0755` was 493
+    /// in YAML 1.1 and is 755 in 1.2, with no syntax error either way, so a
+    /// file carried across versions changes meaning without complaint. The
+    /// 1.1 booleans (`yes`, `no`, `on`, `off`) are already strings here, as
+    /// 1.2 requires, but a 1.1 reader still takes them as booleans.
+    fn check_legacy_yaml_1_1(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        // Only a plain scalar resolves by its text; a quoted one is a string
+        // in every version.
+        let Some(token) = node.children_with_tokens().find_map(|c| {
+            c.into_token().filter(|t| {
+                matches!(
+                    t.kind(),
+                    crate::SyntaxKind::INT | crate::SyntaxKind::STRING | crate::SyntaxKind::BOOL
+                )
+            })
+        }) else {
+            return;
+        };
+        let text = token.text();
+        if text.starts_with(['"', '\'']) {
+            return;
+        }
+
+        if crate::ScalarValue::is_legacy_octal(text) {
+            let sign = if text.starts_with('-') { "-" } else { "" };
+            let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
+            let Ok(as_octal) = i64::from_str_radix(digits, 8) else {
+                return;
+            };
+            let Ok(as_decimal) = digits.parse::<i64>() else {
+                return;
+            };
+            violations.push(Violation::warning_at(
+                Rule::LegacyYaml11,
+                token.text_range(),
+                format!(
+                    "`{text}` is YAML 1.1 octal, read as {sign}{as_octal}; YAML 1.2 reads it as {sign}{as_decimal}. Write `{sign}0o{}` to keep the octal meaning",
+                    digits.trim_start_matches('0')
+                ),
+            ));
+            return;
+        }
+
+        if matches!(
+            text,
+            "yes" | "no" | "on" | "off" | "Yes" | "No" | "On" | "Off" | "YES" | "NO" | "ON" | "OFF"
+        ) {
+            violations.push(Violation::warning_at(
+                Rule::LegacyYaml11,
+                token.text_range(),
+                format!("`{text}` is the string \"{text}\" in YAML 1.2, but a boolean to a YAML 1.1 reader; quote it or write true/false to be unambiguous"),
+            ));
         }
     }
 

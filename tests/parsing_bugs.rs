@@ -3286,3 +3286,76 @@ fn test_remove_path_takes_one_duplicate_occurrence() {
     assert_eq!(doc.to_string(), "a: 2\nb: 3\n");
     assert!(doc.try_get_path("b").is_ok());
 }
+
+#[test]
+fn test_malformed_legacy_octal_is_an_integer_not_a_float() {
+    // `08` is not valid octal, so parse_integer gives up by contract and
+    // the value fell through to the float parser. It is a run of digits:
+    // saphyr reads 8 and PyYAML the string, but no YAML reads a float.
+    use yaml_edit::{CoreScalarType, ScalarValue};
+    assert_eq!(ScalarValue::classify_plain("08"), CoreScalarType::Integer);
+    assert_eq!(ScalarValue::classify_plain("099"), CoreScalarType::Integer);
+    assert_eq!(ScalarValue::classify_plain("0755"), CoreScalarType::Integer);
+}
+
+#[test]
+fn test_yaml_1_2_reading_of_a_bare_octal() {
+    // YAML 1.2 dropped the bare-octal form, so the same text is a
+    // different number depending on which version reads it.
+    use yaml_edit::ScalarValue;
+    let scalar = ScalarValue::parse("0755");
+    assert_eq!(scalar.to_i64(), Some(493));
+    assert_eq!(scalar.to_i64_yaml_1_2(), Some(755));
+
+    let negative = ScalarValue::parse("-0755");
+    assert_eq!(negative.to_i64(), Some(-493));
+    assert_eq!(negative.to_i64_yaml_1_2(), Some(-755));
+
+    // Every other spelling reads the same both ways.
+    for text in ["0o755", "0x1f", "42", "-42"] {
+        let s = ScalarValue::parse(text);
+        assert_eq!(s.to_i64(), s.to_i64_yaml_1_2(), "{text}");
+    }
+}
+
+#[test]
+fn test_legacy_yaml_1_1_warnings() {
+    use yaml_edit::validator::{Rule, Severity, Validator};
+    let warn = |src: &str| -> Vec<(Rule, Severity, String)> {
+        let doc = yaml_edit::Document::from_str(src).unwrap();
+        Validator::new()
+            .validate(&doc)
+            .into_iter()
+            .map(|v| (v.rule, v.severity, v.message))
+            .collect()
+    };
+
+    // A bare-octal changes value between versions with no syntax error, so
+    // it is the case worth flagging.
+    let octal = warn("mode: 0755\n");
+    assert_eq!(octal.len(), 1);
+    assert_eq!(octal[0].0, Rule::LegacyYaml11);
+    assert_eq!(octal[0].1, Severity::Warning);
+    assert_eq!(
+        octal[0].2,
+        "`0755` is YAML 1.1 octal, read as 493; YAML 1.2 reads it as 755. \
+         Write `0o755` to keep the octal meaning"
+    );
+
+    // The 1.1 booleans are already strings here, but a 1.1 reader differs.
+    assert_eq!(warn("a: yes\n").len(), 1);
+    assert_eq!(warn("a: OFF\n").len(), 1);
+
+    // Quoting settles it, and the 1.2 spellings are clean.
+    for clean in [
+        "a: 'yes'\n",
+        "a: \"no\"\n",
+        "mode: 0o755\n",
+        "mode: 755\n",
+        "a: true\n",
+        "z: 0\n",
+        "f: 0.5\n",
+    ] {
+        assert_eq!(warn(clean), vec![], "{clean:?}");
+    }
+}

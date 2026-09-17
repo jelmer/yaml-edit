@@ -921,6 +921,21 @@ impl Mapping {
         crate::as_yaml::source_base_indent(&self.0)
     }
 
+    /// The child position of the entry whose key matches `entry`'s, if any.
+    ///
+    /// The position is in `children_with_tokens` space, which is what
+    /// `splice_children` indexes, so it is not the entry's ordinal.
+    fn child_index_of_matching_entry(&self, entry: &SyntaxNode) -> Option<usize> {
+        let key_node = MappingEntry::cast(entry.clone())?.key()?;
+        let existing = self.entries().find(|e| {
+            e.key()
+                .is_some_and(|k| self.compare_key_nodes(&k, &key_node))
+        })?;
+        self.0
+            .children_with_tokens()
+            .position(|c| c.as_node() == Some(existing.syntax()))
+    }
+
     /// Insert a key-value pair at a specific index (0-based), preserving formatting.
     ///
     /// If `new_key` already exists in the mapping, the existing entry is replaced
@@ -937,37 +952,13 @@ impl Mapping {
         // Create the new entry using create_mapping_entry
         let (new_entry, _has_trailing_newline) = self.create_mapping_entry(new_key, new_value);
 
-        // Check if key already exists in newly created entry for update detection
-        if let Some(created_entry) = MappingEntry::cast(new_entry.clone()) {
-            if let Some(created_key_node) = created_entry.key() {
-                // Find existing entry with matching key by comparing nodes directly
-                let existing_entry_opt = self.entries().find(|entry| {
-                    if let Some(entry_key) = entry.key() {
-                        self.compare_key_nodes(&entry_key, &created_key_node)
-                    } else {
-                        false
-                    }
-                });
-
-                if let Some(existing_entry) = existing_entry_opt {
-                    // Replace the existing entry + its trailing newline if present
-                    let children: Vec<_> = self.0.children_with_tokens().collect();
-                    for (i, child) in children.iter().enumerate() {
-                        let Some(node) = child.as_node() else {
-                            continue;
-                        };
-                        if node != existing_entry.syntax() {
-                            continue;
-                        };
-
-                        // Simple: new entries always end with newline (DESIGN.md rule)
-                        // Just replace the old entry node with the new one
-                        self.0.splice_children(i..i + 1, vec![new_entry.into()]);
-
-                        return;
-                    }
-                }
-            }
+        // An existing entry with this key is replaced where it stands, so the
+        // index is only consulted for a key that is not there yet. New
+        // entries always end with a newline (DESIGN.md), so the old entry's
+        // own terminator goes with it.
+        if let Some(i) = self.child_index_of_matching_entry(&new_entry) {
+            self.0.splice_children(i..i + 1, vec![new_entry.into()]);
+            return;
         }
 
         // Key doesn't exist, insert at the specified index

@@ -986,8 +986,19 @@ impl ScalarValue {
         false
     }
 
-    /// Render the scalar as a YAML string with proper escaping
+    /// Render the scalar as a YAML string with proper escaping.
+    ///
+    /// A block scalar's body is indented two spaces. Use
+    /// [`to_yaml_string_with_indent`](Self::to_yaml_string_with_indent) where
+    /// the value sits inside an indented entry, whose body has to clear that
+    /// entry's own column.
     pub fn to_yaml_string(&self) -> String {
+        self.to_yaml_string_with_indent(2)
+    }
+
+    /// As [`to_yaml_string`](Self::to_yaml_string), indenting a block
+    /// scalar's body by `block_indent` spaces.
+    pub fn to_yaml_string_with_indent(&self, block_indent: usize) -> String {
         // For special data types, always include the tag regardless of style
         let tag_prefix = match self.scalar_type {
             #[cfg(feature = "base64")]
@@ -1022,8 +1033,8 @@ impl ScalarValue {
             }
             ScalarStyle::SingleQuoted => self.to_single_quoted(),
             ScalarStyle::DoubleQuoted => self.to_double_quoted(),
-            ScalarStyle::Literal => self.to_literal(),
-            ScalarStyle::Folded => self.to_folded(),
+            ScalarStyle::Literal => self.to_literal_with_indent(block_indent),
+            ScalarStyle::Folded => self.to_folded_with_indent(block_indent),
         };
 
         format!("{tag_prefix}{content}")
@@ -1068,16 +1079,6 @@ impl ScalarValue {
         }
         result.push('"');
         result
-    }
-
-    /// Convert to literal block scalar
-    fn to_literal(&self) -> String {
-        self.to_literal_with_indent(2)
-    }
-
-    /// Convert to folded block scalar
-    fn to_folded(&self) -> String {
-        self.to_folded_with_indent(2)
     }
 
     /// Convert to literal block scalar with specific indentation
@@ -1253,7 +1254,7 @@ impl crate::AsYaml for ScalarValue {
     fn build_content(
         &self,
         builder: &mut rowan::GreenNodeBuilder,
-        _indent: usize,
+        indent: usize,
         _flow_context: bool,
     ) -> bool {
         use crate::lex::SyntaxKind;
@@ -1261,7 +1262,10 @@ impl crate::AsYaml for ScalarValue {
         // quotes (e.g. the string "null", or text containing ": "), the
         // rendered text starts with a quote and must be tokenized as a
         // STRING regardless of the semantic type.
-        let text = self.to_yaml_string();
+        // A block scalar's body has to clear the column its entry sits at,
+        // or the text it renders to is not the value it stood for:
+        // `a:\n  b: |-\n  x\n` has an empty scalar and a stray `x`.
+        let text = self.to_yaml_string_with_indent(indent + 2);
         let quoted = text.starts_with('\'') || text.starts_with('"');
         let token_kind = if quoted {
             SyntaxKind::STRING

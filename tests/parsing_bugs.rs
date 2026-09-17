@@ -3209,3 +3209,32 @@ fn test_repeated_explicit_key_at_the_mapping_column() {
     let entry = seq.get(0).unwrap();
     assert_eq!(entry.as_mapping().unwrap().keys().count(), 2);
 }
+
+#[test]
+fn test_block_scalar_body_clears_the_enclosing_collection() {
+    // `- -\n   |\n  - z\n`: the `- z` line sits at the inner sequence's own
+    // column, so it is that sequence's next entry rather than the block
+    // scalar's body. Taking its column as the body's base swallowed it.
+    let doc = yaml_edit::Document::from_str("- -\n   |\n  - z\n").unwrap();
+    let outer = doc.as_sequence().unwrap();
+    assert_eq!(outer.len(), 1);
+    let entry = outer.get(0).unwrap();
+    assert_eq!(entry.as_sequence().unwrap().len(), 2);
+}
+
+#[test]
+fn test_multiline_value_indents_its_block_body_past_the_entry() {
+    // Setting a multi-line value on a nested entry wrote the block body at
+    // a fixed two spaces, which put it at the key's own column and made the
+    // document unparseable.
+    let file = yaml_edit::YamlFile::from_str("a:\n  b: 1\n").unwrap();
+    let inner = file
+        .document()
+        .and_then(|d| d.as_mapping())
+        .and_then(|m| m.get(yaml_edit::ScalarValue::from("a")))
+        .and_then(|x| x.as_mapping().cloned())
+        .unwrap();
+    inner.set("b", "x\ny");
+    assert_eq!(file.to_string(), "a:\n  b: |-\n    x\n    y\n");
+    yaml_edit::YamlFile::from_str(&file.to_string()).unwrap();
+}

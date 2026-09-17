@@ -372,7 +372,9 @@ impl MappingEntry {
             value_builder.token(SyntaxKind::ANCHOR.into(), a);
             value_builder.token(SyntaxKind::WHITESPACE.into(), " ");
         }
-        new_value.build_content(&mut value_builder, 0, flow_context);
+        // A block scalar rendered here has to clear this entry's own
+        // column, so hand it that rather than the document's.
+        new_value.build_content(&mut value_builder, self.indent_of_line(), flow_context);
         if let Some((ws, comment)) = &trailing_comment {
             value_builder.token(SyntaxKind::WHITESPACE.into(), ws);
             value_builder.token(SyntaxKind::COMMENT.into(), comment);

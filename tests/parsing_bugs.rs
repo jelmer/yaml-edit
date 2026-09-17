@@ -2867,3 +2867,55 @@ fn test_implicit_key_multiline_applies_in_block_context() {
         assert!(flagged(yaml), "{yaml:?} should be flagged");
     }
 }
+
+/// A `#` is a comment only when whitespace precedes it, wherever it sits.
+///
+/// On a plain scalar's continuation line the previous token is the INDENT,
+/// so requiring the previous *token* to be scalar content made `#` a
+/// comment there: the test suite's FBC9 keeps `!"#$%` as content on both
+/// its lines. Glued to a flow delimiter (`c,#x`) it is still the 6.6
+/// violation CVW2 expects.
+#[test]
+fn test_hash_glued_to_content_on_a_continuation_line() {
+    use yaml_edit::SyntaxKind;
+    let comments = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        <YamlFile as rowan::ast::AstNode>::syntax(&file)
+            .descendants_with_tokens()
+            .filter_map(|c| c.into_token())
+            .filter(|t| t.kind() == SyntaxKind::COMMENT)
+            .count()
+    };
+    assert_eq!(comments("safe: a!\"#$%\n     !\"#$%\n"), 0);
+    assert_eq!(comments("k: v# c\n"), 0);
+    // A quote ends the scalar, and a flow delimiter is not content.
+    assert_eq!(comments("k: \"v\"# c\n"), 1);
+    assert_eq!(comments("[ a, b,#x\n]\n"), 1);
+    assert_eq!(comments("k: v # c\n"), 1);
+}
+
+/// A comment's separating whitespace may sit a level up in the tree.
+///
+/// `hr: # c` puts the COMMENT first inside the VALUE, so it has no previous
+/// sibling; the whitespace is before the VALUE. Checking siblings alone
+/// reported 5 files the test suite marks valid.
+#[test]
+fn test_comment_whitespace_seen_across_node_boundaries() {
+    use yaml_edit::validator::Validator;
+    let flagged = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        Validator::new()
+            .validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file))
+            .iter()
+            .any(|v| v.message.contains("Comment without whitespace"))
+    };
+    for yaml in [
+        "hr: # c\n",
+        "key:    # c\n",
+        "- # Empty\n",
+        "a: 1\n# c\nb: 2\n",
+    ] {
+        assert!(!flagged(yaml), "{yaml:?} should not be flagged");
+    }
+    assert!(flagged("k: \"v\"# c\n"));
+}

@@ -1530,30 +1530,23 @@ impl Validator {
         token: &rowan::SyntaxToken<crate::Lang>,
         violations: &mut Vec<Violation>,
     ) {
-        // Check if there's a previous sibling token/node
-        if let Some(prev) = token.prev_sibling_or_token() {
-            match prev {
-                rowan::NodeOrToken::Token(prev_token) => {
-                    // Comment should be preceded by whitespace or newline token
-                    if prev_token.kind() != crate::SyntaxKind::WHITESPACE
-                        && prev_token.kind() != crate::SyntaxKind::NEWLINE
-                    {
-                        violations.push(Violation::error_at(
-                            Rule::Other,
-                            token.text_range(),
-                            "Comment without whitespace separation",
-                        ));
-                    }
-                }
-                rowan::NodeOrToken::Node(_prev_node) => {
-                    // If preceded by a node (not whitespace token), that's also invalid
-                    violations.push(Violation::error_at(
-                        Rule::Other,
-                        token.text_range(),
-                        "Comment without whitespace separation",
-                    ));
-                }
-            }
+        // What matters is the token before the comment in document order,
+        // not the previous sibling: a comment opening a VALUE (`hr: # c`)
+        // has no sibling before it, and the separating whitespace sits one
+        // level up. Walking siblings alone reported 5 files the test suite
+        // marks valid.
+        let Some(prev) = token.prev_token() else {
+            return;
+        };
+        if !matches!(
+            prev.kind(),
+            crate::SyntaxKind::WHITESPACE | crate::SyntaxKind::NEWLINE | crate::SyntaxKind::INDENT
+        ) {
+            violations.push(Violation::error_at(
+                Rule::Other,
+                token.text_range(),
+                "Comment without whitespace separation",
+            ));
         }
     }
 

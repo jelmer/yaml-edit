@@ -1016,13 +1016,26 @@ pub fn lex_with_validation_config<'a>(
                 let text = &input[token_start..start_idx + 1 + rest.len()];
                 tokens.push((classify_scalar(text), text));
             }
+            // A `#` not preceded by whitespace is scalar content wherever it
+            // sits, including a continuation line whose previous token is the
+            // INDENT (`safe: a!"#$%\n     !"#$%` -- test suite FBC9).
+            //
+            // A quoted scalar ends at its closing quote, so a `#` glued to
+            // one really is the 6.6 violation the validator reports
+            // (`key: "value"# c`).
             '#' if !is_hash_a_comment_start(input, start_idx)
-                && tokens.last().is_some_and(|(k, text)| {
-                    matches!(k, STRING | INT | FLOAT | BOOL | NULL | PLUS)
-                        // A quoted scalar ends at its closing quote, so a `#`
-                        // glued to it really is the 6.6 violation the
-                        // validator reports (`key: "value"# c`).
-                        && !text.starts_with(['"', '\''])
+                && {
+                    // The character before decides, but it has to belong to
+                    // scalar content: glued to a flow delimiter (`c,#x`) the
+                    // `#` is still the 6.6 violation CVW2 expects.
+                    let prev = input[..start_idx].chars().next_back();
+                    prev.is_some_and(|c| !is_yaml_special(c) || matches!(c, '!' | '"' | '\''))
+                }
+                && !tokens.last().is_some_and(|(k, text)| {
+                    matches!(k, STRING | UNTERMINATED_STRING)
+                        && text.starts_with(['"', '\''])
+                        // Only when the quote really ends at this `#`.
+                        && input[..start_idx].ends_with(['"', '\''])
                 }) =>
             {
                 let rest =

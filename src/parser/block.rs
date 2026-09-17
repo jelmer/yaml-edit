@@ -372,9 +372,15 @@ impl Parser {
                         // Check what comes after the indent (at position len() - 3)
                         if self.tokens.len() >= 3 {
                             let (token_after_indent, _) = &self.tokens[self.tokens.len() - 3];
+                            // The key's own content has to clear the `?`;
+                            // a line at the indicator's column opens the
+                            // next entry instead (`- ?\n  j: 1\n` is two
+                            // entries, as saphyr reads it).
+                            let clears_indicator =
+                                self.tokens[self.tokens.len() - 2].1.len() > question_column;
                             // If it's a DASH, this is a sequence continuation which was already
                             // handled by parse_value() above - don't try to parse it as multiline scalar
-                            if *token_after_indent != SyntaxKind::DASH {
+                            if *token_after_indent != SyntaxKind::DASH && clears_indicator {
                                 // This is a multiline scalar key continuation
                                 self.bump(); // consume newline
                                 let key_indent =

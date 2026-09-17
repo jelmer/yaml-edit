@@ -3095,3 +3095,15 @@ fn test_indented_explicit_key_is_reachable() {
     assert_eq!(key_map.keys().count(), 1);
     assert_eq!(key_map.get("j").unwrap().as_scalar().unwrap().value(), "1");
 }
+
+#[test]
+fn test_explicit_key_content_must_clear_the_indicator() {
+    // `- ?\n  j: 1\n` puts `j` at the `?`'s own column, so it opens the
+    // next entry rather than continuing the key: two entries, not one
+    // keyed by {j: 1}.
+    let doc = yaml_edit::Document::from_str("- ?\n  j: 1\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    let entry = seq.get(0).unwrap();
+    let mapping = entry.as_mapping().unwrap();
+    assert_eq!(mapping.keys().count(), 2);
+}

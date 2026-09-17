@@ -38,6 +38,11 @@
 These were each checked against the YAML 1.2 spec and both reference
 parsers, and left as they are. Listed so they are not re-investigated.
 
+Compare against `yaml.parse`, not `yaml.safe_load`: the loader raises on
+unhashable and duplicate keys, which looks like a parse failure but says
+nothing about how the input parses. saphyr's `load` deduplicates equal
+keys for the same reason.
+
 **An explicit key's value indicator indented past the mapping**
 - `?\n  : c\n` reads as `{null: c}` here.
 - `c-l-block-map-explicit-value(n)` wants `s-indent(n)` before the `:`, so

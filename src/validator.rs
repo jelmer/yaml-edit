@@ -913,6 +913,18 @@ impl Validator {
             text.starts_with('"') || text.starts_with('\'')
         });
 
+        // A block scalar's body is literal text, so a colon there is content
+        // just as it is in a quoted scalar: the test suite's 4WA9 is
+        // `- aaa: |2\n    xxx\n  bbb: |\n    xxx\n`.
+        if node.first_token().is_some_and(|t| {
+            matches!(
+                t.kind(),
+                crate::SyntaxKind::PIPE | crate::SyntaxKind::GREATER
+            )
+        }) {
+            return;
+        }
+
         if is_quoted {
             return;
         }
@@ -968,6 +980,33 @@ impl Validator {
         // Check each token directly without allocation
         for token in node.children_with_tokens() {
             if let rowan::NodeOrToken::Token(token) = token {
+                // A block scalar whose body holds no content has nothing to
+                // continue, so a tab line there is the body's indentation,
+                // which may not be one: the test suite's Y79Y/000 is the
+                // error `foo: |\n\t\nbar: 1`.
+                if token.kind() == crate::SyntaxKind::INDENT
+                    && token.text().contains('\t')
+                    && node.first_token().is_some_and(|t| {
+                        matches!(
+                            t.kind(),
+                            crate::SyntaxKind::PIPE | crate::SyntaxKind::GREATER
+                        )
+                    })
+                    // The body's first indentation, right after the header's
+                    // line break.
+                    && node
+                        .children_with_tokens()
+                        .filter_map(|c| c.into_token())
+                        .find(|t| t.kind() == crate::SyntaxKind::INDENT)
+                        .is_some_and(|first| first == token)
+                {
+                    violations.push(Violation::error_at(
+                        Rule::InvalidTabUsage,
+                        token.text_range(),
+                        "Tabs are not allowed for indentation in YAML",
+                    ));
+                    return;
+                }
                 // A quoted scalar keeps its continuation lines inside one
                 // token, so check its text directly: a continuation opening
                 // with a tab supplies no indentation at all, which
@@ -1548,13 +1587,28 @@ impl Validator {
         // We can't restrict to SCALAR-only because the parser emits
         // `&b *a` with the ALIAS node as a sibling of the ANCHOR token,
         // not wrapped in a SCALAR.
-        for token in node
-            .descendants_with_tokens()
-            .filter_map(|el| el.into_token())
-        {
-            if token.kind() == crate::SyntaxKind::REFERENCE {
-                has_alias = true;
-                break;
+        // Not past a nested collection, though: `top3: &node3\n  *alias1 : v`
+        // anchors the value's mapping while the alias is that mapping's key,
+        // which are different nodes (test suite 26DV).
+        for child in node.children_with_tokens() {
+            match child {
+                rowan::NodeOrToken::Token(t) if t.kind() == crate::SyntaxKind::REFERENCE => {
+                    has_alias = true;
+                    break;
+                }
+                rowan::NodeOrToken::Node(ref n)
+                    if !matches!(
+                        n.kind(),
+                        crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
+                    ) && n
+                        .descendants_with_tokens()
+                        .filter_map(|el| el.into_token())
+                        .any(|t| t.kind() == crate::SyntaxKind::REFERENCE) =>
+                {
+                    has_alias = true;
+                    break;
+                }
+                _ => {}
             }
         }
 

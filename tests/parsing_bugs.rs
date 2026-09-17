@@ -2957,3 +2957,35 @@ fn test_validator_accepts_more_well_formed_yaml() {
         .any(|m| m.contains("Invalid escape")));
     assert!(messages("--- |0\n").iter().any(|m| m.contains("digit 1-9")));
 }
+
+/// An anchor and an alias on *different* nodes are fine, a block scalar's
+/// body may hold a colon, and a tab may not open that body.
+#[test]
+fn test_validator_anchor_alias_and_block_scalar_bodies() {
+    use yaml_edit::validator::Validator;
+    let messages = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        Validator::new()
+            .validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file))
+            .iter()
+            .map(|v| v.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    // `&node3` anchors the value's mapping, `*alias1` is that mapping's key
+    // -- different nodes (26DV).
+    assert!(messages("top3: &node3\n  *alias1 : v\n").is_empty());
+    // A block scalar's body is literal text, colons included (4WA9).
+    assert!(messages("- aaa: |2\n    xxx\n  bbb: |\n    xxx\n").is_empty());
+
+    // Both anchors on one scalar, and a tab opening a body, are errors.
+    assert!(messages("a: &b *c\n")
+        .iter()
+        .any(|m| m.contains("anchor and be an alias")));
+    assert!(messages("foo: |\n\t\nbar: 1\n")
+        .iter()
+        .any(|m| m.contains("Tabs are not allowed")));
+    assert!(messages("k: a: b\n")
+        .iter()
+        .any(|m| m.contains("mapping syntax")));
+}

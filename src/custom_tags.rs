@@ -505,41 +505,62 @@ impl CustomTagHandler for JsonHandler {
         }
     }
 
+    /// Content that is not strictly valid JSON is accepted as the raw
+    /// string, as with any other scalar; [`validate`](Self::validate)
+    /// reports it instead.
     fn deserialize(&self, content: &str) -> Result<YamlValue, CustomTagError> {
-        // TODO: implement a proper JSON parser here
-        let content = content.trim();
-        if content.len() >= 2 && content.starts_with('"') && content.ends_with('"') {
-            let inner = &content[1..content.len() - 1];
-            json_unescape(inner)
-                .map(YamlValue::scalar)
-                .map_err(|msg| CustomTagError::with_content("!json", msg, content))
-        } else if content.starts_with('[') && content.ends_with(']') {
-            Err(CustomTagError::with_content(
-                "!json",
-                "JSON arrays are not supported",
-                content,
-            ))
-        } else if content.starts_with('{') && content.ends_with('}') {
-            Err(CustomTagError::with_content(
-                "!json",
-                "JSON objects are not supported",
-                content,
-            ))
-        } else if content == "\"" || content == "'" {
-            Err(CustomTagError::with_content(
-                "!json",
-                "Unterminated quoted string",
-                content,
-            ))
-        } else {
-            json_literal(content)
-                .map(YamlValue::Scalar)
-                .ok_or_else(|| CustomTagError::with_content("!json", "Invalid JSON value", content))
-        }
+        parse_json(content, false)
+    }
+
+    fn validate(&self, content: &str) -> Result<(), CustomTagError> {
+        parse_json(content, true).map(|_| ())
     }
 
     fn description(&self) -> &str {
         "JSON data embedded in YAML"
+    }
+}
+
+/// Parse `content` as a JSON scalar. Unless `strict`, content that is not
+/// valid JSON is returned as the raw string.
+fn parse_json(content: &str, strict: bool) -> Result<YamlValue, CustomTagError> {
+    // TODO: implement a proper JSON parser here
+    let content = content.trim();
+    if content.len() >= 2 && content.starts_with('"') && content.ends_with('"') {
+        let inner = &content[1..content.len() - 1];
+        match json_unescape(inner) {
+            Ok(unescaped) => Ok(YamlValue::scalar(unescaped)),
+            Err(msg) if strict => Err(CustomTagError::with_content("!json", msg, content)),
+            Err(_) => Ok(YamlValue::scalar(inner)),
+        }
+    } else if content.starts_with('[') && content.ends_with(']') {
+        Err(CustomTagError::with_content(
+            "!json",
+            "JSON arrays are not supported",
+            content,
+        ))
+    } else if content.starts_with('{') && content.ends_with('}') {
+        Err(CustomTagError::with_content(
+            "!json",
+            "JSON objects are not supported",
+            content,
+        ))
+    } else if content == "\"" || content == "'" {
+        Err(CustomTagError::with_content(
+            "!json",
+            "Unterminated quoted string",
+            content,
+        ))
+    } else if let Some(literal) = json_literal(content) {
+        Ok(YamlValue::Scalar(literal))
+    } else if strict {
+        Err(CustomTagError::with_content(
+            "!json",
+            "Invalid JSON value",
+            content,
+        ))
+    } else {
+        Ok(YamlValue::scalar(content))
     }
 }
 
@@ -845,6 +866,7 @@ mod tests {
 
         // Test deserialization of scalar and quoted-string values
         assert!(handler.deserialize("\"hello\"").is_ok());
+        assert!(handler.deserialize("plain").is_ok());
 
         // Test validation (implicit through deserialization)
         assert!(handler.validate("\"valid\"").is_ok());
@@ -947,7 +969,9 @@ mod tests {
             "\"a\u{1}\"",
             r#""a\""#,
         ] {
-            let err = handler.deserialize(bad).unwrap_err();
+            // Invalid JSON is read as the raw string, but does not validate.
+            assert_eq!(value(bad).value(), &bad[1..bad.len() - 1], "{}", bad);
+            let err = handler.validate(bad).unwrap_err();
             assert_eq!(err.tag, "!json", "{}", bad);
             assert_eq!(err.content.as_deref(), Some(bad), "{}", bad);
         }
@@ -964,9 +988,12 @@ mod tests {
         assert_eq!(value("null").scalar_type(), crate::scalar::ScalarType::Null);
 
         for bad in ["plain", "0x1F", "01", "1.", ".5", "+1", "True", "~"] {
-            let err = handler.deserialize(bad).unwrap_err();
+            assert_eq!(value(bad).value(), bad);
+            let err = handler.validate(bad).unwrap_err();
             assert_eq!(err.message, "Invalid JSON value", "{}", bad);
         }
+        assert_eq!(handler.validate("42"), Ok(()));
+        assert_eq!(handler.validate(r#""a\"b""#), Ok(()));
     }
 
     #[test]

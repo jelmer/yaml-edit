@@ -55,8 +55,9 @@ use std::collections::HashMap;
 /// A registry of anchors defined in a YAML document
 #[derive(Debug, Clone)]
 pub struct AnchorRegistry {
-    /// Map from anchor name to the syntax node it refers to
-    anchors: HashMap<String, SyntaxNode>,
+    /// Map from anchor name to every definition of it, in document order,
+    /// as (offset of the `&name` token, anchored node)
+    anchors: HashMap<String, Vec<(rowan::TextSize, SyntaxNode)>>,
 }
 
 impl AnchorRegistry {
@@ -94,7 +95,10 @@ impl AnchorRegistry {
                     if let Some(name) = text.strip_prefix('&') {
                         // Find the associated value node
                         if let Some(value_node) = self.find_anchored_value(node) {
-                            self.anchors.insert(name.to_string(), value_node);
+                            self.anchors
+                                .entry(name.to_string())
+                                .or_default()
+                                .push((token.text_range().start(), value_node));
                         }
                     }
                 }
@@ -124,8 +128,27 @@ impl AnchorRegistry {
     }
 
     /// Look up an anchor by name
+    ///
+    /// If the anchor is defined more than once, this returns the last
+    /// definition in the document.
     pub fn resolve(&self, name: &str) -> Option<&SyntaxNode> {
-        self.anchors.get(name)
+        self.anchors.get(name)?.last().map(|(_, node)| node)
+    }
+
+    /// Look up the node that an alias at `alias` refers to.
+    ///
+    /// An alias refers to the most recent definition of its anchor that
+    /// precedes it in the document, so a redefined anchor only affects the
+    /// aliases that follow the redefinition. `alias` must belong to the same
+    /// tree this registry was built from.
+    pub(crate) fn resolve_alias(&self, name: &str, alias: &SyntaxNode) -> Option<&SyntaxNode> {
+        let position = alias.text_range().start();
+        self.anchors
+            .get(name)?
+            .iter()
+            .rev()
+            .find(|(anchor, _)| *anchor < position)
+            .map(|(_, node)| node)
     }
 
     /// Check if an anchor is defined
@@ -204,7 +227,7 @@ impl DocumentResolvedExt for crate::yaml::Document {
         if let Some(node) = mapping.get_node(&key) {
             if let Some(alias_name) = find_alias_reference(&node) {
                 // Resolve the alias
-                if let Some(resolved_node) = registry.resolve(&alias_name) {
+                if let Some(resolved_node) = registry.resolve_alias(&alias_name, &node) {
                     // Convert the resolved node back to YamlValue
                     return YamlValue::cast(resolved_node.clone());
                 }
@@ -300,7 +323,7 @@ fn apply_merge_keys(
                 let Some(alias_name) = alias_target(&value) else {
                     continue;
                 };
-                merge_from_alias(&mut merged_pairs, &alias_name, registry);
+                merge_from_alias(&mut merged_pairs, &alias_name, value.syntax(), registry);
             }
             // Multiple aliases: `<<: [*alias1, *alias2]`
             YamlNode::Sequence(seq) => {
@@ -309,7 +332,12 @@ fn apply_merge_keys(
                     let Some(alias_name) = alias_target(&alias_node) else {
                         continue;
                     };
-                    merge_from_alias(&mut merged_pairs, &alias_name, registry);
+                    merge_from_alias(
+                        &mut merged_pairs,
+                        &alias_name,
+                        alias_node.syntax(),
+                        registry,
+                    );
                 }
             }
             _ => continue,
@@ -360,11 +388,12 @@ fn alias_target(node: &crate::as_yaml::YamlNode) -> Option<String> {
 fn merge_from_alias(
     merged_pairs: &mut std::collections::BTreeMap<String, YamlValue>,
     alias_name: &str,
+    alias: &SyntaxNode,
     registry: &AnchorRegistry,
 ) {
     use rowan::ast::AstNode;
 
-    let Some(resolved_node) = registry.resolve(alias_name) else {
+    let Some(resolved_node) = registry.resolve_alias(alias_name, alias) else {
         return;
     };
 
@@ -594,7 +623,7 @@ fn merge_sources(
             YamlNode::Scalar(_) => {
                 if let Some(alias_text) = node_as_string(&value) {
                     if let Some(alias_name) = alias_text.strip_prefix('*') {
-                        if let Some(target) = registry.resolve(alias_name) {
+                        if let Some(target) = registry.resolve_alias(alias_name, value.syntax()) {
                             if let Some(m) = crate::yaml::Mapping::cast(target.clone()) {
                                 sources.push(m);
                             }
@@ -617,7 +646,7 @@ fn merge_sources(
                         }
                         _ => continue,
                     };
-                    let Some(target) = registry.resolve(&alias_name) else {
+                    let Some(target) = registry.resolve_alias(&alias_name, item.syntax()) else {
                         continue;
                     };
                     if let Some(m) = crate::yaml::Mapping::cast(target.clone()) {
@@ -626,7 +655,7 @@ fn merge_sources(
                 }
             }
             YamlNode::Alias(alias) => {
-                if let Some(target) = registry.resolve(&alias.name()) {
+                if let Some(target) = registry.resolve_alias(&alias.name(), alias.syntax()) {
                     if let Some(m) = crate::yaml::Mapping::cast(target.clone()) {
                         sources.push(m);
                     }
@@ -647,7 +676,7 @@ fn resolve_alias_node(
     use crate::as_yaml::YamlNode;
 
     if let YamlNode::Alias(alias) = &node {
-        if let Some(target) = registry.resolve(&alias.name()) {
+        if let Some(target) = registry.resolve_alias(&alias.name(), node.syntax()) {
             if let Some(resolved) = YamlNode::from_syntax_peeled(target.clone()) {
                 return resolved;
             }
@@ -1037,5 +1066,35 @@ m:
         let _ = inner.merged(&reg).get("a");
         // Original document text should round-trip unchanged.
         assert_eq!(d.to_string(), yaml);
+    }
+
+    #[test]
+    fn merged_alias_uses_preceding_anchor_definition() {
+        let d = doc("a: &x 1\nb: *x\nc: &x 2\nd: *x\n");
+        let view = d.merged().unwrap();
+        assert_eq!(view.get("b").unwrap().to_i64(), Some(1));
+        assert_eq!(view.get("d").unwrap().to_i64(), Some(2));
+    }
+
+    #[test]
+    fn merged_merge_key_uses_preceding_anchor_definition() {
+        let d = doc("a: &x {k: 1}\nm:\n  <<: *x\nc: &x {k: 2}\n");
+        let view = d.merged().unwrap();
+        let m = view.as_mapping().get_merged("m").unwrap();
+        assert_eq!(m.get("k").unwrap().to_i64(), Some(1));
+    }
+
+    #[test]
+    fn merged_alias_ignores_later_anchor() {
+        let d = doc("b: *x\na: &x 1\n");
+        let view = d.merged().unwrap();
+        assert!(view.get("b").unwrap().is_alias());
+    }
+
+    #[test]
+    fn registry_resolve_returns_last_definition() {
+        let d = doc("a: &x 1\nc: &x 2\n");
+        let reg = d.build_anchor_registry();
+        assert_eq!(reg.resolve("x").unwrap().text().to_string(), "2");
     }
 }

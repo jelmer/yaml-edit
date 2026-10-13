@@ -87,7 +87,7 @@ pub trait YamlPath {
     /// # Errors
     ///
     /// - [`PathError::Parse`] for a malformed path.
-    /// - [`PathError::EmptyPath`] when the path parses to zero segments.
+    /// - [`PathError::EmptyPath`] when the path is empty.
     /// - [`PathError::NoRoot`] when the receiver has no value to descend into.
     /// - [`PathError::TypeMismatch`] when a segment tries to descend into a
     ///   value of the wrong container type.
@@ -119,7 +119,7 @@ pub trait YamlPath {
     /// # Errors
     ///
     /// - [`PathError::Parse`] for a malformed path.
-    /// - [`PathError::EmptyPath`] when the path parses to zero segments.
+    /// - [`PathError::EmptyPath`] when the path is empty.
     /// - [`PathError::NoRoot`] when the receiver has no root mapping to
     ///   write into (Document with no root, or with a scalar/sequence root).
     /// - [`PathError::TypeMismatch`] when an intermediate segment lands on
@@ -275,11 +275,20 @@ pub enum PathSegment {
 
 /// Error from [`try_parse_path`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PathParseError {
     /// A `[` was not closed by `]`.
     UnclosedIndex,
-    /// The text between `[` and `]` is not a `usize` index.
+    /// The text between `[` and `]` is not a decimal `usize` index.
     InvalidIndex(String),
+    /// The path ends with a `\` that has nothing to escape.
+    TrailingBackslash,
+    /// A segment is empty: the path starts or ends with `.`, contains
+    /// `..`, or has a `.` directly before `[`.
+    EmptySegment,
+    /// A `[...]` index is followed by something other than `.`, `[` or
+    /// the end of the path, as in `a[0]b`.
+    MissingSeparator,
 }
 
 impl std::fmt::Display for PathParseError {
@@ -290,6 +299,13 @@ impl std::fmt::Display for PathParseError {
             }
             PathParseError::InvalidIndex(text) => {
                 write!(f, "invalid path index [{text}]")
+            }
+            PathParseError::TrailingBackslash => {
+                write!(f, "path ends with an unescaped '\\'")
+            }
+            PathParseError::EmptySegment => write!(f, "empty segment in path"),
+            PathParseError::MissingSeparator => {
+                write!(f, "expected '.' or '[' after ']' in path")
             }
         }
     }
@@ -315,10 +331,10 @@ pub const MAX_INDEX_GROWTH: usize = 256;
 /// no-op or ambiguous `None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathError {
-    /// The path string is malformed (unclosed `[`, non-`usize` index).
+    /// The path string is malformed; see [`PathParseError`].
     Parse(PathParseError),
-    /// The path parsed to zero segments (typically the empty string or
-    /// a run of stray dots).
+    /// The path is the empty string. Stray dots are a
+    /// [`PathParseError::EmptySegment`] instead.
     EmptyPath,
     /// The receiver has no root value to descend into: `Document` was
     /// empty, or the requested operation needed a root mapping and the
@@ -450,8 +466,12 @@ impl From<PathParseError> for PathError {
 /// - Escaped dots: `"key\\.with\\.dots"` → `[Key("key.with.dots")]`
 /// - Escaped digits are keys: `"items.\\0"` -> `[Key("items"), Key("0")]`
 ///
-/// An empty path returns an empty list. A malformed `[...]` index is an
-/// error (unclosed `]` or a non-`usize` index).
+/// An index is ASCII digits only, so `"items.+1"` is the key `"+1"` and
+/// `"items[+1]"` is an error. A `[...]` index may start the path and may
+/// be followed only by `.`, another `[...]` or the end of the path.
+///
+/// An empty path returns an empty list; any other path yields at least
+/// one segment or an error.
 ///
 /// # Examples
 ///
@@ -480,91 +500,98 @@ impl From<PathParseError> for PathError {
 ///
 /// # Errors
 ///
-/// Returns [`PathParseError::UnclosedIndex`] when a `[` has no matching `]`,
-/// or [`PathParseError::InvalidIndex`] when the brackets do not contain a
-/// `usize`.
+/// - [`PathParseError::UnclosedIndex`] when a `[` has no matching `]`.
+/// - [`PathParseError::InvalidIndex`] when the brackets do not contain a
+///   decimal `usize`.
+/// - [`PathParseError::TrailingBackslash`] when the path ends in an
+///   unescaped `\\`.
+/// - [`PathParseError::EmptySegment`] for `a..b`, `.a`, `a.` or `a.[0]`.
+/// - [`PathParseError::MissingSeparator`] for `a[0]b`.
 pub fn try_parse_path(path: &str) -> Result<Vec<PathSegment>, PathParseError> {
-    if path.is_empty() {
-        return Ok(vec![]);
+    #[derive(PartialEq)]
+    enum State {
+        // At the start of the path, where `[0]` may appear without a key.
+        Start,
+        // Just after a `.`; a key or digits must follow.
+        AfterDot,
+        InSegment,
+        AfterIndex,
     }
 
     let mut segments = Vec::new();
     let mut current = String::new();
-    let mut chars = path.chars().peekable();
-    let mut escaped = false;
     // A segment with an escaped character is always a key, so `\0`
     // names the key "0" rather than an index.
     let mut current_has_escape = false;
+    let mut state = State::Start;
+    let mut chars = path.chars();
 
     while let Some(ch) = chars.next() {
-        if escaped {
-            // Previous character was backslash, add this character literally
-            current.push(ch);
-            escaped = false;
-            current_has_escape = true;
-            continue;
-        }
-
-        match ch {
-            '\\' => {
-                // Escape next character
-                escaped = true;
+        match (ch, &state) {
+            ('.', State::Start | State::AfterDot) | ('[', State::AfterDot) => {
+                return Err(PathParseError::EmptySegment);
             }
-            '.' => {
-                // Segment separator
-                if !current.is_empty() {
-                    segments.push(dotted_segment(&current, current_has_escape));
-                    current.clear();
+            ('.', State::InSegment) => {
+                segments.push(dotted_segment(&current, current_has_escape));
+                current.clear();
+                current_has_escape = false;
+                state = State::AfterDot;
+            }
+            ('.', State::AfterIndex) => state = State::AfterDot,
+            ('[', _) => {
+                if state == State::InSegment {
+                    segments.push(PathSegment::Key(std::mem::take(&mut current)));
                     current_has_escape = false;
                 }
-            }
-            '[' => {
-                // Array index with bracket notation
-                if !current.is_empty() {
-                    segments.push(PathSegment::Key(current.clone()));
-                    current.clear();
-                    current_has_escape = false;
-                }
-
-                // Parse the index until we hit ']'
                 let mut index_str = String::new();
-                let mut closed = false;
-                while let Some(&next_ch) = chars.peek() {
-                    if next_ch == ']' {
-                        chars.next(); // consume the ']'
-                        closed = true;
-                        break;
+                loop {
+                    match chars.next() {
+                        Some(']') => break,
+                        Some(c) => index_str.push(c),
+                        None => return Err(PathParseError::UnclosedIndex),
                     }
-                    index_str.push(chars.next().unwrap());
                 }
-
-                if !closed {
-                    return Err(PathParseError::UnclosedIndex);
-                }
-                match index_str.parse::<usize>() {
-                    Ok(index) => segments.push(PathSegment::Index(index)),
-                    Err(_) => return Err(PathParseError::InvalidIndex(index_str)),
-                }
+                let index = parse_index(&index_str)
+                    .ok_or_else(|| PathParseError::InvalidIndex(index_str.clone()))?;
+                segments.push(PathSegment::Index(index));
+                state = State::AfterIndex;
+            }
+            (_, State::AfterIndex) => return Err(PathParseError::MissingSeparator),
+            ('\\', _) => {
+                current.push(chars.next().ok_or(PathParseError::TrailingBackslash)?);
+                current_has_escape = true;
+                state = State::InSegment;
             }
             _ => {
                 current.push(ch);
+                state = State::InSegment;
             }
         }
     }
 
-    // Add the last segment
-    if !current.is_empty() {
-        segments.push(dotted_segment(&current, current_has_escape));
+    match state {
+        State::AfterDot => return Err(PathParseError::EmptySegment),
+        State::InSegment => segments.push(dotted_segment(&current, current_has_escape)),
+        State::Start | State::AfterIndex => {}
     }
 
     Ok(segments)
 }
 
+/// Parse an index made of ASCII digits only; `usize::from_str` would
+/// also accept a leading `+`.
+fn parse_index(text: &str) -> Option<usize> {
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
 /// A dot-separated segment is an index when it is a bare number
 /// (`items.0`), and a key otherwise.
 fn dotted_segment(text: &str, has_escape: bool) -> PathSegment {
-    match text.parse::<usize>() {
-        Ok(index) if !has_escape => PathSegment::Index(index),
+    match parse_index(text) {
+        Some(index) if !has_escape => PathSegment::Index(index),
         _ => PathSegment::Key(text.to_string()),
     }
 }
@@ -1356,6 +1383,76 @@ mod tests {
         assert_eq!(
             try_parse_path("items[0"),
             Err(PathParseError::UnclosedIndex)
+        );
+    }
+
+    #[test]
+    fn test_try_parse_path_trailing_backslash() {
+        assert_eq!(
+            try_parse_path("a\\"),
+            Err(PathParseError::TrailingBackslash)
+        );
+        assert_eq!(
+            try_parse_path("a.\\"),
+            Err(PathParseError::TrailingBackslash)
+        );
+    }
+
+    #[test]
+    fn test_try_parse_path_empty_segment() {
+        for path in [".", "..", ".a", "a.", "a..b", "a.[0]", "a[0].", "a[0]..b"] {
+            assert_eq!(
+                try_parse_path(path),
+                Err(PathParseError::EmptySegment),
+                "{path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_try_parse_path_missing_separator_after_index() {
+        assert_eq!(
+            try_parse_path("a[0]b"),
+            Err(PathParseError::MissingSeparator)
+        );
+        assert_eq!(
+            try_parse_path("a[0]\\.b"),
+            Err(PathParseError::MissingSeparator)
+        );
+    }
+
+    #[test]
+    fn test_try_parse_path_index_must_be_digits() {
+        assert_eq!(
+            try_parse_path("a[+1]"),
+            Err(PathParseError::InvalidIndex("+1".to_string()))
+        );
+        assert_eq!(
+            try_parse_path("a.+1").unwrap(),
+            vec![
+                PathSegment::Key("a".to_string()),
+                PathSegment::Key("+1".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn test_try_parse_path_index_chains() {
+        assert_eq!(
+            try_parse_path("[0][1].a").unwrap(),
+            vec![
+                PathSegment::Index(0),
+                PathSegment::Index(1),
+                PathSegment::Key("a".to_string())
+            ]
+        );
+        assert_eq!(
+            try_parse_path("a[0].1").unwrap(),
+            vec![
+                PathSegment::Key("a".to_string()),
+                PathSegment::Index(0),
+                PathSegment::Index(1)
+            ]
         );
     }
 

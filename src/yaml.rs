@@ -3717,7 +3717,7 @@ fifth: 5"#;
         let output = doc.to_string();
 
         // Verify exact output (note: MappingBuilder adds trailing space after non-inline value keys)
-        let expected = "name: project\nconfig:\n  server: \n    host: 0.0.0.0\n    port: 8080\n  debug: true\n  features: \n    - api\n    - web\n    - cli\n";
+        let expected = "name: project\nconfig:\n  server:\n    host: 0.0.0.0\n    port: 8080\n  debug: true\n  features:\n    - api\n    - web\n    - cli\n";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
@@ -4067,7 +4067,7 @@ fifth: 5"#;
 
         let output = doc.to_string();
 
-        let expected = "name: project\nnested_data:\n  - item1\n  - \n    config: \n      - debug\n      - true\n      - 8080\n    name: service- 42\n";
+        let expected = "name: project\nnested_data:\n  - item1\n  -\n    config:\n      - debug\n      - true\n      - 8080\n    name: service\n  - 42\n";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
@@ -4078,9 +4078,7 @@ fifth: 5"#;
             .get("nested_data")
             .expect("Should have nested_data key");
         let nested_seq = nested_value.as_sequence().expect("Should be sequence");
-        // Note: Due to formatting issue, the sequence has 2 items instead of expected 3
-        // The "- 42" is appended to "service" value due to missing newline
-        assert_eq!(nested_seq.len(), 2);
+        assert_eq!(nested_seq.len(), 3);
 
         // First item is a string
         assert_eq!(
@@ -4104,7 +4102,6 @@ fifth: 5"#;
         assert_eq!(config_seq.get(1).unwrap().to_bool(), Some(true));
         assert_eq!(config_seq.get(2).unwrap().to_i64(), Some(8080));
 
-        // Note: The "name" value includes "- 42" due to formatting issue
         assert_eq!(
             second_mapping
                 .get("name")
@@ -4112,8 +4109,9 @@ fifth: 5"#;
                 .as_scalar()
                 .unwrap()
                 .as_string(),
-            "service- 42"
+            "service"
         );
+        assert_eq!(nested_seq.get(2).unwrap().to_i64(), Some(42));
     }
 
     #[test]

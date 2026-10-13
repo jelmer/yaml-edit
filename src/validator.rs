@@ -32,7 +32,7 @@ use std::fmt;
 pub struct Violation {
     /// Human-readable description of the violation
     pub message: String,
-    /// Location in the source (line:column format)
+    /// Location in the source, as 1-based `line:column` of the range start
     pub location: Option<String>,
     /// Byte range in the source text where the violation occurred
     pub text_range: Option<crate::TextPosition>,
@@ -234,27 +234,40 @@ fn entry_is_empty(entry: &SyntaxNode) -> bool {
             .is_empty()
 }
 
+/// Set each violation's `line:column` location from its range, using the
+/// text of the tree `node` belongs to.
+fn fill_locations(node: &SyntaxNode, violations: &mut [Violation]) {
+    let tree = node.ancestors().last().unwrap_or_else(|| node.clone());
+    let text = tree.text().to_string();
+    let line_starts: Vec<usize> = std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(i, _)| i + 1))
+        .collect();
+    for v in violations.iter_mut() {
+        let Some(range) = v.text_range else {
+            continue;
+        };
+        let offset = range.start as usize;
+        let line = line_starts.partition_point(|&s| s <= offset) - 1;
+        let column = text[line_starts[line]..offset].chars().count();
+        v.location = Some(crate::LineColumn::new(line + 1, column + 1).to_string());
+    }
+}
+
 fn range_to_text_position(range: rowan::TextRange) -> crate::TextPosition {
     crate::TextPosition::new(u32::from(range.start()), u32::from(range.end()))
 }
 
 impl Violation {
-    /// An error-severity violation with no associated source range.
-    fn error(rule: Rule, message: impl Into<String>) -> Self {
+    /// An error-severity violation covering `range` in the source.
+    ///
+    /// `location` is filled in once validation knows the source text.
+    fn error_at(rule: Rule, range: rowan::TextRange, message: impl Into<String>) -> Self {
         Violation {
             message: message.into(),
             location: None,
-            text_range: None,
+            text_range: Some(range_to_text_position(range)),
             severity: Severity::Error,
             rule,
-        }
-    }
-
-    /// An error-severity violation covering `range` in the source.
-    fn error_at(rule: Rule, range: rowan::TextRange, message: impl Into<String>) -> Self {
-        Violation {
-            text_range: Some(range_to_text_position(range)),
-            ..Violation::error(rule, message)
         }
     }
 
@@ -301,6 +314,7 @@ impl Validator {
         // This will catch ERROR nodes created by parser (including content after doc end)
         self.validate_node(doc.syntax(), &mut violations);
 
+        fill_locations(doc.syntax(), &mut violations);
         violations
     }
 
@@ -324,6 +338,7 @@ impl Validator {
         // Walk the syntax tree and check for violations
         self.validate_node(node, &mut violations);
 
+        fill_locations(node, &mut violations);
         violations
     }
 
@@ -595,8 +610,9 @@ impl Validator {
                     }
 
                     if !found_doc_with_end {
-                        violations.push(Violation::error(
+                        violations.push(Violation::error_at(
                             Rule::Other,
+                            child.text_range(),
                             "Directive after document requires document end marker (...)",
                         ));
                     }
@@ -759,8 +775,9 @@ impl Validator {
                                     && token.text().chars().any(|c| matches!(c, '+' | '-'))) => {}
                         crate::SyntaxKind::STRING => {
                             // Found content on same line as indicator
-                            violations.push(Violation::error(
+                            violations.push(Violation::error_at(
                                 Rule::Other,
+                                token.text_range(),
                                 "Block scalar content cannot appear on same line as indicator",
                             ));
                             return;
@@ -776,8 +793,9 @@ impl Validator {
                                 "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
                             ) =>
                         {
-                            violations.push(Violation::error(
+                            violations.push(Violation::error_at(
                                 Rule::Other,
+                                token.text_range(),
                                 "Block scalar indentation indicator must be a digit 1-9",
                             ));
                             return;
@@ -965,8 +983,9 @@ impl Validator {
                             }
                         } else if found_quote_end && !found_newline {
                             // Found content after quoted string ended, before newline
-                            violations.push(Violation::error(
+                            violations.push(Violation::error_at(
                                 Rule::Other,
+                                token.text_range(),
                                 "Trailing content after quoted string",
                             ));
                             return;
@@ -990,12 +1009,13 @@ impl Validator {
     /// without being quoted. This indicates an attempt to create a nested mapping
     /// within a plain scalar, which is invalid.
     fn check_colon_in_plain_scalar(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        // Check if this scalar contains COLON tokens
-        let has_colon = has_child_token(node, |k| k == crate::SyntaxKind::COLON);
-
-        if !has_colon {
+        let Some(colon) = node
+            .children_with_tokens()
+            .filter_map(|c| c.into_token())
+            .find(|t| t.kind() == crate::SyntaxKind::COLON)
+        else {
             return;
-        }
+        };
 
         // Check if this is a quoted string (which can contain colons)
         let is_quoted = node.first_token().is_some_and(|t| {
@@ -1026,8 +1046,9 @@ impl Validator {
             .is_some_and(|p| p.kind() == crate::SyntaxKind::VALUE);
 
         if parent_is_value {
-            violations.push(Violation::error(
+            violations.push(Violation::error_at(
                 Rule::Other,
+                colon.text_range(),
                 "Plain scalar value cannot contain mapping syntax (colon)",
             ));
         }
@@ -1304,7 +1325,7 @@ impl Validator {
 
         // Flow collections need n-1 commas for n entries (except when trailing comma)
         if entry_count > 1 && comma_count < entry_count - 1 {
-            violations.push(Violation::error(Rule::MissingSyntax, format!( "Flow collection missing commas: {entry_count} entries but only {comma_count} commas" )));
+            violations.push(Violation::error_at(Rule::MissingSyntax, node.text_range(), format!( "Flow collection missing commas: {entry_count} entries but only {comma_count} commas" )));
         }
     }
 
@@ -1385,8 +1406,9 @@ impl Validator {
                     };
 
                     if !has_newline_between {
-                        violations.push(Violation::error(
+                        violations.push(Violation::error_at(
                             Rule::Other,
+                            child.text_range(),
                             "Block mapping entries must be on separate lines",
                         ));
                         return; // One violation is enough
@@ -1775,8 +1797,9 @@ impl Validator {
         }
 
         if has_anchor && has_alias {
-            violations.push(Violation::error(
+            violations.push(Violation::error_at(
                 Rule::Other,
+                node.text_range(),
                 "Node cannot have both an anchor and be an alias",
             ));
         }
@@ -1867,8 +1890,9 @@ impl Validator {
         }
 
         if found_content && !found_newline {
-            violations.push(Violation::error(
+            violations.push(Violation::error_at(
                 Rule::InvalidDocumentMarker,
+                token.text_range(),
                 "Content on same line as document start marker",
             ));
         }
@@ -1958,8 +1982,9 @@ impl Validator {
                                 if t.kind() == crate::SyntaxKind::COMMA || t.text().starts_with(',')
                                 {
                                     // The scalar starts with a comma - invalid after a tag
-                                    violations.push(Violation::error(
+                                    violations.push(Violation::error_at(
                                         Rule::InvalidTag,
+                                        t.text_range(),
                                         "Invalid comma after tag",
                                     ));
                                     return;
@@ -2193,8 +2218,9 @@ impl Validator {
 
         // If there's no newline between the colon and the sequence, it's invalid
         if !has_newline {
-            violations.push(Violation::error(
+            violations.push(Violation::error_at(
                 Rule::Other,
+                sequence.text_range(),
                 "Block sequence cannot start on same line as mapping key",
             ));
         }
@@ -2208,8 +2234,6 @@ impl Validator {
         if node.kind() != SyntaxKind::SEQUENCE {
             return;
         }
-
-        let mut dash_columns: Vec<usize> = Vec::new();
 
         // Recursively collect all DASH tokens in this sequence and nested sequences
         fn collect_dashes(
@@ -2235,21 +2259,17 @@ impl Validator {
         let mut dashes = Vec::new();
         collect_dashes(node, &mut dashes);
 
-        for token in dashes {
-            dash_columns.push(token_column(&token));
-        }
-
         // Check if all dashes are at the same column (consistent indentation)
-        if let Some(&first_col) = dash_columns.first() {
-            for &col in &dash_columns[1..] {
-                if col != first_col {
-                    violations.push(Violation::error(
-                        Rule::InvalidIndentation,
-                        "Inconsistent sequence item indentation",
-                    ));
-                    return; // Only report once
-                }
-            }
+        let Some((first, rest)) = dashes.split_first() else {
+            return;
+        };
+        let first_col = token_column(first);
+        if let Some(misplaced) = rest.iter().find(|t| token_column(t) != first_col) {
+            violations.push(Violation::error_at(
+                Rule::InvalidIndentation,
+                misplaced.text_range(),
+                "Inconsistent sequence item indentation",
+            ));
         }
     }
 
@@ -2319,8 +2339,9 @@ impl Validator {
                 // Continuation lines starting at column 0 are invalid
                 // (they should be indented at least to align with content)
                 if leading_spaces == 0 && !line.trim().is_empty() {
-                    violations.push(Violation::error(
+                    violations.push(Violation::error_at(
                         Rule::InvalidIndentation,
+                        node.text_range(),
                         "Wrong indented multiline quoted scalar",
                     ));
                     return;
@@ -3230,5 +3251,74 @@ mod tests {
                 "{yaml:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_violations_carry_locations() {
+        for (yaml, expected) in [
+            (
+                "%YAML 1.2\n%YAML 1.2\n---\na\n",
+                ("Duplicate %YAML directive", "2:1"),
+            ),
+            (
+                "---\nk: v\n%YAML 1.2\n---\n",
+                (
+                    "Directive after document requires document end marker (...)",
+                    "3:1",
+                ),
+            ),
+            (
+                "a: |0\n  b\n",
+                (
+                    "Block scalar indentation indicator must be a digit 1-9",
+                    "1:5",
+                ),
+            ),
+            (
+                "a: \"b\" c\n",
+                ("Trailing content after quoted string", "1:8"),
+            ),
+            (
+                "x: 1\na: b: c\n",
+                (
+                    "Plain scalar value cannot contain mapping syntax (colon)",
+                    "2:5",
+                ),
+            ),
+            (
+                "k: - a\n",
+                (
+                    "Block sequence cannot start on same line as mapping key",
+                    "1:4",
+                ),
+            ),
+            (
+                "\u{e9}: \"a\nb\"\n",
+                ("Wrong indented multiline quoted scalar", "1:4"),
+            ),
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location))
+                .collect();
+            assert_eq!(
+                violations,
+                vec![(expected.0.to_string(), Some(expected.1.to_string()))],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_fills_locations() {
+        let doc = Document::from_str("a: 1\nb: 2\na: 3\n").unwrap();
+        let locations: Vec<_> = Validator::new()
+            .validate(&doc)
+            .into_iter()
+            .map(|v| v.location)
+            .collect();
+        assert_eq!(locations, vec![Some("3:1".to_string())]);
     }
 }

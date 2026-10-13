@@ -349,6 +349,18 @@ impl Parser {
                     // (`k: !!str &a`) which position we are in, so it asks
                     // the same attachment question we just answered and
                     // leaves a dedented sibling entry alone.
+                    // A tag w/o a value at the end of a line is valueless,
+                    // unless you're evil and are doing block scalar tomfoolery.
+                    // (YAML test suite M5C3).
+                    None if self.current() == Some(SyntaxKind::NEWLINE)
+                        && !matches!(
+                            self.upcoming_tokens()
+                                .find(|k| !matches!(k, SyntaxKind::NEWLINE | SyntaxKind::INDENT)),
+                            Some(SyntaxKind::PIPE | SyntaxKind::GREATER)
+                        ) =>
+                    {
+                        self.emit_implicit_null();
+                    }
                     None => {
                         let outer = self.annotation_in_value_position;
                         self.annotation_in_value_position = as_mapping_value;

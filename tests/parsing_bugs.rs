@@ -73,6 +73,91 @@ fn test_valueless_tag_parsing() {
     let tagged = item.as_tagged().expect("Should be a tagged node");
     assert_eq!(tagged.tag().unwrap(), "!e");
     assert!(tagged.value().unwrap().is_null());
+
+    let first = sequence.first().unwrap();
+    let g = first
+        .get("f")
+        .expect("Should have a key 'f'")
+        .as_sequence()
+        .expect("Should be a sequence")
+        .first()
+        .expect("Should have an item");
+    let g = g.as_tagged().expect("Should be a tagged node");
+    assert_eq!(g.tag().unwrap(), "!g");
+    let h = g
+        .as_mapping()
+        .expect("Should be a mapping")
+        .get("h")
+        .expect("Should have a key 'h'");
+    assert_eq!(h.as_scalar().unwrap().as_string(), "1");
+
+    let j = first
+        .get("i")
+        .expect("Should have a key 'i'")
+        .as_sequence()
+        .expect("Should be a sequence")
+        .first()
+        .expect("Should have an item");
+    assert_eq!(j.as_tagged().unwrap().tag().unwrap(), "!j");
+}
+
+#[test]
+fn test_comment_between_mapping_entries_parsing() {
+    // A comment left of the entries used to end the mapping, turning `d`
+    // into a top-level key.
+    let yaml = "a:\n  b: 1\n # c\n  d: 2\n";
+    let parsed = YamlFile::from_str(yaml).expect("Failed to parse YAML");
+    let mapping = parsed.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.len(), 1);
+    let inner = mapping.get("a").expect("Should have a key 'a'");
+    assert_eq!(
+        inner.get("b").unwrap().as_scalar().unwrap().as_string(),
+        "1"
+    );
+    assert_eq!(
+        inner.get("d").unwrap().as_scalar().unwrap().as_string(),
+        "2"
+    );
+    assert_eq!(parsed.to_string(), yaml);
+}
+
+#[test]
+fn test_valueless_tag_with_anchor_parsing() {
+    // The anchor after the tag used to adopt the dedented `f: 1` as its
+    // value.
+    let yaml = "- a:\n  - !e &x\n  f: 1\n";
+    let parsed = YamlFile::from_str(yaml).expect("Failed to parse YAML");
+    let sequence = parsed.document().unwrap().as_sequence().unwrap();
+    let first = sequence.first().unwrap();
+    let e = first
+        .get("a")
+        .expect("Should have a key 'a'")
+        .as_sequence()
+        .expect("Should be a sequence")
+        .first()
+        .expect("Should have an item");
+    let e = e.as_tagged().expect("Should be a tagged node");
+    assert_eq!(e.tag().unwrap(), "!e");
+    assert!(e.value().unwrap().is_null());
+    let f = first.get("f").expect("Should have a key 'f'");
+    assert_eq!(f.as_scalar().unwrap().as_string(), "1");
+    assert_eq!(parsed.to_string(), yaml);
+}
+
+#[test]
+fn test_valueless_anchor_parsing() {
+    let yaml = "- a:\n  - &x\n  f: 1\n";
+    let parsed = YamlFile::from_str(yaml).expect("Failed to parse YAML");
+    let sequence = parsed.document().unwrap().as_sequence().unwrap();
+    let first = sequence.first().unwrap();
+    let a = first.get("a").expect("Should have a key 'a'");
+    let a = a.as_sequence().expect("Should be a sequence");
+    assert_eq!(a.len(), 1);
+    let item = a.first().unwrap();
+    assert!(item.as_scalar().expect("Should be a scalar").is_null());
+    let f = first.get("f").expect("Should have a key 'f'");
+    assert_eq!(f.as_scalar().unwrap().as_string(), "1");
+    assert_eq!(parsed.to_string(), yaml);
 }
 
 #[test]

@@ -4413,3 +4413,25 @@ fn test_quoted_scalar_keeps_trailing_text_on_its_line() {
         "e"
     );
 }
+
+/// A comment line less indented than a block scalar's body ends it, even
+/// at column 0 (the spec's l-trail-comments, as in the YAML test suite's
+/// 7T8X).
+#[test]
+fn test_block_scalar_trailing_comment_at_column_zero() {
+    for (yaml, key, value, next) in [
+        ("k: |\n  a\n# c\nz: 1\n", "k", "a\n", "z"),
+        ("a: >\n line\n# Comment\nb: 1\n", "a", "line\n", "b"),
+        ("a: |\n  line\n\n# Comment\nb: 1\n", "a", "line\n", "b"),
+    ] {
+        let parsed = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(parsed.to_string(), yaml);
+        let document = parsed.document().unwrap();
+        let mapping = document.as_mapping().unwrap();
+        assert_eq!(mapping.len(), 2, "{yaml:?}");
+        let scalar = mapping.get(key).unwrap();
+        assert_eq!(scalar.as_scalar().unwrap().as_string(), value, "{yaml:?}");
+        let next = mapping.get(next).unwrap();
+        assert_eq!(next.as_scalar().unwrap().as_string(), "1", "{yaml:?}");
+    }
+}

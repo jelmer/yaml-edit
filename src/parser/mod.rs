@@ -441,17 +441,12 @@ impl Parser {
                             self.scalar_continuation_floor = outer_floor;
                         }
                     }
-                    // Nothing for the anchor to adopt. Inside an explicit
-                    // key that is because the next line opens this entry's
-                    // value, so the anchor annotates an implicit null and the
-                    // line stays for the `:` handling to claim.
-                    None if self.explicit_key_column.is_some()
-                        && self.current() == Some(SyntaxKind::NEWLINE) =>
-                    {
-                        self.builder.start_node(SyntaxKind::SCALAR.into());
-                        self.builder.token(SyntaxKind::NULL.into(), "");
-                        self.builder.finish_node();
-                    }
+                    // Nothing for the anchor to adopt, and nothing after it on
+                    // its line: it annotates an implicit null, and the next
+                    // line is left for the enclosing collection. Inside an
+                    // explicit key that line opens the entry's value, for the
+                    // `:` handling to claim.
+                    None if self.annotation_ends_line() => self.emit_implicit_null(),
                     None => self.parse_value_with_base_indent(base_indent),
                 }
             }
@@ -751,6 +746,21 @@ impl Parser {
             self.emit_implicit_null();
         }
         self.builder.finish_node();
+    }
+
+    /// Whether a tag or anchor whose line holds nothing else, and which
+    /// adopted nothing from the following lines, annotates an implicit null.
+    ///
+    /// A block scalar header on a later line is the exception: the value
+    /// path still attaches it to the annotation, as in the YAML test suite's
+    /// M5C3.
+    pub(super) fn annotation_ends_line(&self) -> bool {
+        self.current() == Some(SyntaxKind::NEWLINE)
+            && !matches!(
+                self.upcoming_tokens()
+                    .find(|k| !matches!(k, SyntaxKind::NEWLINE | SyntaxKind::INDENT)),
+                Some(SyntaxKind::PIPE | SyntaxKind::GREATER)
+            )
     }
 
     /// Emit the zero-width `SCALAR { NULL "" }` that fills every value slot

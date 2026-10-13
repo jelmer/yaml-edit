@@ -542,14 +542,27 @@ fn is_merge_key(key: &impl crate::AsYaml) -> bool {
 
 /// Walk the `<<:` entries of `base` and return the resolved source mappings,
 /// in precedence order (highest first).
+///
+/// Each source is followed by the sources it merges in itself, since its own
+/// keys shadow those it inherits. A mapping is only collected once, which
+/// also stops a merge that refers back to an enclosing anchor.
 fn merge_sources(
     base: &crate::yaml::Mapping,
     registry: &AnchorRegistry,
 ) -> Vec<crate::yaml::Mapping> {
+    let mut sources = Vec::new();
+    collect_merge_sources(base, registry, &mut sources);
+    sources
+}
+
+fn collect_merge_sources(
+    base: &crate::yaml::Mapping,
+    registry: &AnchorRegistry,
+    sources: &mut Vec<crate::yaml::Mapping>,
+) {
     use crate::as_yaml::YamlNode;
     use rowan::ast::AstNode;
 
-    let mut sources = Vec::new();
     for (key, value) in base.iter() {
         if node_as_string(&key).as_deref() != Some("<<") {
             continue;
@@ -559,17 +572,27 @@ fn merge_sources(
             other => vec![other],
         };
         for operand in operands {
-            let Some(target) = alias_target(&operand)
-                .and_then(|name| registry.resolve_alias(&name, operand.syntax()))
-            else {
-                continue;
+            let source = match operand {
+                YamlNode::Mapping(m) => m,
+                other => {
+                    let Some(target) = alias_target(&other)
+                        .and_then(|name| registry.resolve_alias(&name, other.syntax()))
+                    else {
+                        continue;
+                    };
+                    let Some(m) = crate::yaml::Mapping::cast(target.clone()) else {
+                        continue;
+                    };
+                    m
+                }
             };
-            if let Some(m) = crate::yaml::Mapping::cast(target.clone()) {
-                sources.push(m);
+            if sources.iter().any(|s| s.syntax() == source.syntax()) {
+                continue;
             }
+            sources.push(source.clone());
+            collect_merge_sources(&source, registry, sources);
         }
     }
-    sources
 }
 
 /// If `node` is an alias, resolve it via `registry`; otherwise return it as-is.
@@ -700,6 +723,57 @@ mod tests {
         assert_eq!(
             resolved_pairs(yaml, "m"),
             pairs(&[("j", "2"), ("k", "from_a")])
+        );
+    }
+
+    fn merged_pairs(yaml: &str, key: &str) -> Vec<(String, String)> {
+        let d = doc(yaml);
+        let reg = d.build_anchor_registry();
+        let m = d.as_mapping().unwrap().get_mapping(key).unwrap();
+        let merged = m.merged(&reg);
+        merged
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn nested_merge_keys_are_followed() {
+        use crate::path::YamlPath;
+        let yaml = "b: &b {x: 1, y: 0}\nmid: &m\n  <<: *b\n  y: 2\ntop:\n  <<: *m\n";
+        assert_eq!(
+            resolved_pairs(yaml, "top"),
+            pairs(&[("x", "1"), ("y", "2")])
+        );
+        assert_eq!(merged_pairs(yaml, "top"), pairs(&[("y", "2"), ("x", "1")]));
+        let d = doc(yaml);
+        assert_eq!(d.try_get_path("top.x").unwrap().to_string(), "1");
+        assert_eq!(d.try_get_path("top.y").unwrap().to_string(), "2");
+    }
+
+    #[test]
+    fn self_referencing_merge_terminates() {
+        let yaml = "a: &a\n  k: 1\n  <<: *a\n";
+        assert_eq!(resolved_pairs(yaml, "a"), pairs(&[("k", "1")]));
+        assert_eq!(merged_pairs(yaml, "a"), pairs(&[("k", "1")]));
+    }
+
+    #[test]
+    fn inline_mapping_merge_value() {
+        use crate::path::YamlPath;
+        for (yaml, expected) in [
+            ("m:\n  <<: {z: 1}\n  y: 2\n", vec![("y", "2"), ("z", "1")]),
+            (
+                "a: &a {w: 0}\nm:\n  <<: [{z: 1}, *a]\n  y: 2\n",
+                vec![("w", "0"), ("y", "2"), ("z", "1")],
+            ),
+        ] {
+            assert_eq!(resolved_pairs(yaml, "m"), pairs(&expected), "{yaml:?}");
+            assert_eq!(doc(yaml).try_get_path("m.z").unwrap().to_string(), "1");
+        }
+        assert_eq!(
+            merged_pairs("m:\n  <<: {z: 1}\n  y: 2\n", "m"),
+            pairs(&[("y", "2"), ("z", "1")])
         );
     }
 

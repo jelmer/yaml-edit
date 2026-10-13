@@ -92,8 +92,8 @@ pub trait AsYaml {
 /// Compare two [`AsYaml`] values for semantic equality.
 ///
 /// Semantic equality ignores formatting: `name`, `"name"`, and `'name'` all
-/// compare equal.  Both sides can be any combination of CST nodes and raw
-/// Rust values.
+/// compare equal, as do mappings whose keys appear in a different order.
+/// Both sides can be any combination of CST nodes and raw Rust values.
 pub fn yaml_eq<A, B>(a: &A, b: &B) -> bool
 where
     A: AsYaml + ?Sized,
@@ -258,30 +258,33 @@ fn mapping_eq_rhs<B: AsYaml + ?Sized>(lhs: &Mapping, rhs: &B) -> bool {
     let Some(r) = Mapping::cast(node.clone()) else {
         return false;
     };
-    let lhs_pairs: Vec<_> = lhs.pairs().collect();
-    let rhs_pairs: Vec<_> = r.pairs().collect();
+    // pairs() yields raw KEY/VALUE wrapper nodes - peel them before comparing.
+    let peel = |m: &Mapping| -> Option<Vec<(YamlNode, YamlNode)>> {
+        m.pairs()
+            .map(|(k, v)| {
+                Some((
+                    YamlNode::from_syntax_peeled(k)?,
+                    YamlNode::from_syntax_peeled(v)?,
+                ))
+            })
+            .collect()
+    };
+    let (Some(lhs_pairs), Some(rhs_pairs)) = (peel(lhs), peel(&r)) else {
+        return false;
+    };
     if lhs_pairs.len() != rhs_pairs.len() {
         return false;
     }
-    // pairs() yields raw KEY/VALUE wrapper nodes - peel them before comparing.
-    lhs_pairs
-        .iter()
-        .zip(rhs_pairs.iter())
-        .all(|((lk, lv), (rk, rv))| {
-            let Some(lk) = YamlNode::from_syntax_peeled(lk.clone()) else {
-                return false;
-            };
-            let Some(rk) = YamlNode::from_syntax_peeled(rk.clone()) else {
-                return false;
-            };
-            let Some(lv) = YamlNode::from_syntax_peeled(lv.clone()) else {
-                return false;
-            };
-            let Some(rv) = YamlNode::from_syntax_peeled(rv.clone()) else {
-                return false;
-            };
-            yaml_eq(&lk, &rk) && yaml_eq(&lv, &rv)
-        })
+    // Mappings are unordered, so match each pair against a not yet used pair
+    // on the other side.
+    let mut used = vec![false; rhs_pairs.len()];
+    lhs_pairs.iter().all(|(lk, lv)| {
+        let found = rhs_pairs
+            .iter()
+            .zip(&used)
+            .position(|((rk, rv), u)| !u && yaml_eq(lk, rk) && yaml_eq(lv, rv));
+        found.map(|i| used[i] = true).is_some()
+    })
 }
 
 fn sequence_eq_rhs<B: AsYaml + ?Sized>(lhs: &Sequence, rhs: &B) -> bool {
@@ -1199,6 +1202,29 @@ key: value
     }
 
     #[test]
+    fn test_yaml_eq_mapping_ignores_order() {
+        let doc1 = Document::from_str("{a: 1, b: 2}").unwrap();
+        let doc2 = Document::from_str("{b: 2, a: 1}").unwrap();
+        let doc3 = Document::from_str("{b: 1, a: 2}").unwrap();
+        let m1 = doc1.as_mapping().unwrap();
+        let m2 = doc2.as_mapping().unwrap();
+        let m3 = doc3.as_mapping().unwrap();
+        assert!(yaml_eq(&m1, &m2));
+        assert!(yaml_eq(&m2, &m1));
+        assert!(!yaml_eq(&m1, &m3));
+    }
+
+    #[test]
+    fn test_yaml_eq_mapping_duplicate_keys() {
+        let doc1 = Document::from_str("{a: 1, a: 1}").unwrap();
+        let doc2 = Document::from_str("{a: 1, b: 1}").unwrap();
+        let m1 = doc1.as_mapping().unwrap();
+        let m2 = doc2.as_mapping().unwrap();
+        assert!(!yaml_eq(&m1, &m2));
+        assert!(!yaml_eq(&m2, &m1));
+    }
+
+    #[test]
     fn test_yaml_eq_mappings() {
         let yaml1 = r#"
 a: 1
@@ -1229,8 +1255,8 @@ b: 2
         // Same mappings should be equal
         assert!(yaml_eq(&mapping1, &mapping2));
 
-        // Different order should NOT be equal (order matters for yaml_eq)
-        assert!(!yaml_eq(&mapping1, &mapping3));
+        // Mappings are unordered, so key order does not matter
+        assert!(yaml_eq(&mapping1, &mapping3));
     }
 
     #[test]

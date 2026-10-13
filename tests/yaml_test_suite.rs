@@ -17,7 +17,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use yaml_edit::validator::Validator;
+use yaml_edit::validator::{Severity, Validator};
 use yaml_edit::YamlFile;
 
 /// Represents a single test case from the YAML Test Suite.
@@ -130,6 +130,21 @@ fn collect_tests() -> Vec<TestCase> {
     tests
 }
 
+/// Valid cases that the validator still reports errors for. A listed case
+/// that validates cleanly fails the run, so drop it here once it is fixed.
+#[rustfmt::skip]
+const KNOWN_VALIDATOR_FALSE_POSITIVES: &[&str] = &[
+    // Duplicate null keys, which the validator reports deliberately; the
+    // suite only checks syntax.
+    "2JQS",
+    // TODO: remove once #185 (validator-tabs) lands.
+    "6HB6", "DK95/00", "DK95/04", "DK95/05", "Y79Y/002",
+    // TODO: remove once #183 (validator-quoted-markers) lands.
+    "9MQT/00",
+    // TODO: remove once #186 (validator-tagged-mapping-indent) lands.
+    "C4HZ",
+];
+
 #[derive(Debug, Default)]
 struct TestResults {
     passed: usize,
@@ -176,12 +191,44 @@ fn run_test(test: &TestCase, verbose: bool) -> bool {
     let parse_result = std::panic::catch_unwind(|| YamlFile::from_str(&input));
 
     let success = match parse_result {
-        Ok(Ok(_yaml)) if !test.should_error => {
-            // Test expects success and got success - pass
-            if verbose {
-                println!("PASS {}: Successfully parsed", test.id);
+        Ok(Ok(yaml)) if !test.should_error => {
+            // A valid document should also pass the validator.
+            use rowan::ast::AstNode;
+            let errors: Vec<_> = Validator::new()
+                .validate_syntax(yaml.syntax())
+                .into_iter()
+                .filter(|v| v.severity == Severity::Error)
+                .collect();
+            let known = KNOWN_VALIDATOR_FALSE_POSITIVES.contains(&test.id.as_str());
+            match (errors.is_empty(), known) {
+                (true, false) => {
+                    if verbose {
+                        println!("PASS {}: Successfully parsed and validated", test.id);
+                    }
+                    true
+                }
+                (false, true) => {
+                    if verbose {
+                        println!("PASS {}: Known validator false positive", test.id);
+                    }
+                    true
+                }
+                (true, true) => {
+                    println!(
+                        "FAIL {}: Listed as a known validator false positive but validates cleanly",
+                        test.id
+                    );
+                    false
+                }
+                (false, false) => {
+                    println!("FAIL {}: Validator rejected a valid case", test.id);
+                    println!("  Name: {}", test.name);
+                    for violation in &errors {
+                        println!("    {}", violation);
+                    }
+                    false
+                }
             }
-            true
         }
         Ok(Err(_)) if test.should_error => {
             // Test expects error and got error - pass

@@ -2813,13 +2813,8 @@ fn test_sibling_indentation_in_a_sequence_entry() {
         );
     }
 
-    // A genuinely misindented sibling is still reported.
-    let v = violations("a: 1\n  b: 2\n");
-    assert!(
-        v.iter()
-            .any(|x| x.message.contains("inconsistent indentation")),
-        "{v:?}"
-    );
+    // A genuinely misindented sibling is rejected by the parser itself.
+    assert!(YamlFile::from_str("a: 1\n  b: 2\n").is_err());
 }
 
 /// An anchor at document level annotates the document's own node, which is
@@ -3394,6 +3389,40 @@ fn test_enclosing_sequence_claims_a_dash_at_its_own_column() {
     let inner = inner_node.as_sequence().unwrap();
     assert_eq!(inner.len(), 2);
     assert_eq!(inner.get(1).unwrap().as_scalar().unwrap().value(), "b");
+}
+
+/// Plain scalar items of the block sequence `seq`, with nested sequences
+/// written out as lists.
+fn sequence_items(seq: &yaml_edit::Sequence) -> String {
+    let items: Vec<String> = seq
+        .values()
+        .map(|item| match item.as_sequence() {
+            Some(inner) => sequence_items(inner),
+            None => item.as_scalar().unwrap().as_string(),
+        })
+        .collect();
+    format!("[{}]", items.join(", "))
+}
+
+#[test]
+fn test_compact_nested_sequence_ends_at_its_own_column() {
+    // A dash left of a compact sequence's column belongs to an enclosing
+    // sequence. It used to be taken as the innermost one's next entry,
+    // giving `[[[a, x, y]]]`.
+    for (yaml, expected) in [
+        ("- - - a\n    - x\n  - y\n", "[[[a, x], y]]"),
+        ("- - - a\n  - y\n", "[[[a], y]]"),
+        ("-   - a\n    - b\n", "[[a, b]]"),
+    ] {
+        let doc = yaml_edit::Document::from_str(yaml).unwrap();
+        assert_eq!(sequence_items(&doc.as_sequence().unwrap()), expected);
+    }
+
+    // A dash or key between the enclosing column and the compact
+    // collection's own is in neither.
+    for yaml in ["-   - a\n  - b\n", "-   k: 1\n  j: 2\n"] {
+        assert!(YamlFile::from_str(yaml).is_err(), "{yaml:?}");
+    }
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! Value wrapper that can represent any YAML value type (scalar, sequence, mapping).
 
-use crate::scalar::{CoreScalarType, ScalarValue};
+use crate::scalar::{CoreScalarType, ScalarStyle, ScalarValue};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -425,13 +425,7 @@ impl YamlValue {
                     for item in seq {
                         result.push_str(&indent_str);
                         result.push_str("  - ");
-                        match item {
-                            YamlValue::Scalar(s) => result.push_str(&s.to_yaml_string()),
-                            _ => {
-                                result.push('\n');
-                                result.push_str(&item.to_yaml_string(indent + 4));
-                            }
-                        }
+                        item.push_entry_value(&mut result, indent + 4);
                         result.push('\n');
                     }
                     result.truncate(result.trim_end().len());
@@ -446,15 +440,9 @@ impl YamlValue {
                     let indent_str = " ".repeat(indent);
                     for (key, value) in map {
                         result.push_str(&indent_str);
-                        result.push_str(key);
+                        result.push_str(&Self::render_key(key));
                         result.push_str(": ");
-                        match value {
-                            YamlValue::Scalar(s) => result.push_str(&s.to_yaml_string()),
-                            _ => {
-                                result.push('\n');
-                                result.push_str(&value.to_yaml_string(indent + 2));
-                            }
-                        }
+                        value.push_entry_value(&mut result, indent + 2);
                         result.push('\n');
                     }
                     result.truncate(result.trim_end().len());
@@ -471,7 +459,7 @@ impl YamlValue {
                     let indent_str = " ".repeat(indent);
                     for item in set {
                         result.push_str(&indent_str);
-                        result.push_str(item);
+                        result.push_str(&Self::render_key(item));
                         result.push_str(": null");
                         result.push('\n');
                     }
@@ -481,6 +469,36 @@ impl YamlValue {
             }
             YamlValue::OrderedMapping(pairs) => Self::render_tagged_pairs("!!omap", pairs, indent),
             YamlValue::Pairs(pairs) => Self::render_tagged_pairs("!!pairs", pairs, indent),
+        }
+    }
+
+    /// Render a mapping key, which has to fit on one line.
+    fn render_key(key: &str) -> String {
+        let scalar = ScalarValue::string(key);
+        match scalar.style() {
+            ScalarStyle::Literal | ScalarStyle::Folded => {
+                ScalarValue::double_quoted(key).to_yaml_string()
+            }
+            _ => scalar.to_yaml_string(),
+        }
+    }
+
+    /// Append this value after a `key: ` or `- ` indicator, where anything
+    /// nested has to start at column `indent`.
+    fn push_entry_value(&self, result: &mut String, indent: usize) {
+        match self {
+            YamlValue::Scalar(s) => result.push_str(&s.to_yaml_string_with_indent(indent)),
+            YamlValue::Sequence(seq) if !seq.is_empty() => {
+                result.push('\n');
+                result.push_str(&self.to_yaml_string(indent));
+            }
+            YamlValue::Mapping(map) if !map.is_empty() => {
+                result.push('\n');
+                result.push_str(&self.to_yaml_string(indent));
+            }
+            // Empty collections are flow style and tagged ones open with
+            // their tag, so both stay on the indicator's line.
+            _ => result.push_str(&self.to_yaml_string(indent)),
         }
     }
 
@@ -495,15 +513,10 @@ impl YamlValue {
         for (key, value) in pairs {
             result.push_str(&indent_str);
             result.push_str("  - ");
-            result.push_str(key);
+            result.push_str(&Self::render_key(key));
             result.push_str(": ");
-            match value {
-                YamlValue::Scalar(s) => result.push_str(&s.to_yaml_string()),
-                _ => {
-                    result.push('\n');
-                    result.push_str(&value.to_yaml_string(indent + 4));
-                }
-            }
+            // The key sits at indent + 4, so its value has to start right of it.
+            value.push_entry_value(&mut result, indent + 6);
             result.push('\n');
         }
         result.truncate(result.trim_end().len());
@@ -861,19 +874,19 @@ mod tests {
         );
         assert_eq!(YamlValue::Mapping(m).to_yaml_string(0), "k: \n    - a");
 
-        // Ordered mapping with a non-scalar value: nested mapping at indent + 4.
+        // Ordered mapping with a non-scalar value: the nested mapping has to
+        // sit right of the key at indent + 4, or it becomes a sibling of it.
         let mut inner2 = BTreeMap::new();
         inner2.insert("x".to_string(), YamlValue::from("y"));
         let omap =
             YamlValue::from_ordered_mapping(vec![("a".to_string(), YamlValue::Mapping(inner2))]);
-        assert_eq!(omap.to_yaml_string(0), "!!omap\n  - a: \n    x: y");
+        assert_eq!(omap.to_yaml_string(0), "!!omap\n  - a: \n      x: y");
 
-        // Pairs with a non-scalar value: nested sequence at indent + 4.
         let pairs = YamlValue::from_pairs(vec![(
             "a".to_string(),
             YamlValue::Sequence(vec![YamlValue::from("z")]),
         )]);
-        assert_eq!(pairs.to_yaml_string(0), "!!pairs\n  - a: \n      - z");
+        assert_eq!(pairs.to_yaml_string(0), "!!pairs\n  - a: \n        - z");
     }
 
     #[test]
@@ -901,6 +914,62 @@ mod tests {
         // Empty sequence
         let val = YamlValue::sequence();
         assert_eq!(val.to_yaml_string(0), "[]");
+    }
+
+    #[test]
+    fn test_to_yaml_string_quotes_keys() {
+        let mut m = BTreeMap::new();
+        for k in ["a: b", "", "true", "x\ny"] {
+            m.insert(k.to_string(), YamlValue::from("v"));
+        }
+        let v = YamlValue::Mapping(m);
+        let out = v.to_yaml_string(0);
+        assert_eq!(out, "'': v\n'a: b': v\n'true': v\n\"x\\ny\": v");
+        assert_eq!(YamlValue::parse_raw(&out), v);
+    }
+
+    #[test]
+    fn test_to_yaml_string_nested_block_scalars() {
+        let mut inner = BTreeMap::new();
+        inner.insert("s".to_string(), YamlValue::from("l1\nl2"));
+        let mut m = BTreeMap::new();
+        m.insert("n".to_string(), YamlValue::Mapping(inner));
+        m.insert(
+            "q".to_string(),
+            YamlValue::from(vec![YamlValue::from("l1\nl2")]),
+        );
+        m.insert(
+            "o".to_string(),
+            YamlValue::from_ordered_mapping(vec![("a".into(), YamlValue::from("l1\nl2"))]),
+        );
+        let v = YamlValue::Mapping(m);
+        let out = v.to_yaml_string(0);
+        assert_eq!(
+            out,
+            "n: \n  s: |-\n    l1\n    l2\n\
+             o: !!omap\n    - a: |-\n        l1\n        l2\n\
+             q: \n    - |-\n      l1\n      l2"
+        );
+        assert_eq!(YamlValue::parse_raw(&out), v);
+    }
+
+    #[test]
+    fn test_to_yaml_string_nested_inline_values() {
+        let set: BTreeSet<String> = ["#c", "a: b"].into_iter().map(String::from).collect();
+        let mut m = BTreeMap::new();
+        m.insert("s".to_string(), YamlValue::Set(set));
+        m.insert("e".to_string(), YamlValue::mapping());
+        m.insert(
+            "l".to_string(),
+            YamlValue::from(vec![YamlValue::sequence()]),
+        );
+        let v = YamlValue::Mapping(m);
+        let out = v.to_yaml_string(0);
+        assert_eq!(
+            out,
+            "e: {}\nl: \n    - []\ns: !!set\n  '#c': null\n  'a: b': null"
+        );
+        assert_eq!(YamlValue::parse_raw(&out), v);
     }
 
     fn tagged_value(src: &str) -> ScalarValue {

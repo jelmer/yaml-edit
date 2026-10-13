@@ -1136,6 +1136,18 @@ pub fn lex_with_validation_config<'a>(
                 if let Some((_, '!')) = chars.peek() {
                     chars.next(); // consume the second !
                     end_idx = start_idx + 2;
+                } else {
+                    // A named handle `!e!` is a run of word characters
+                    // closed by another `!`.
+                    let word = input[start_idx + 1..]
+                        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                        .map_or(input.len(), |i| start_idx + 1 + i);
+                    if word > start_idx + 1 && input[word..].starts_with('!') {
+                        while chars.peek().is_some_and(|(idx, _)| *idx <= word) {
+                            chars.next();
+                        }
+                        end_idx = word + 1;
+                    }
                 }
 
                 // Read the tag name after the ! or !!
@@ -1446,13 +1458,6 @@ fn is_merge_key_at(input: &str, idx: usize) -> bool {
 }
 
 /// Check if a character has special meaning in YAML
-/// Whether `ch` may appear in a tag shorthand's suffix.
-///
-/// YAML 1.2 `ns-tag-char` is any URI character except the flow indicators
-/// `,`, `[`, `]`, `{`, `}` and the `!` that would start another tag. That
-/// admits plenty the lexer treats as special elsewhere -- `:` in `!!ss:eq`,
-/// `-` in `!!ss---` -- so a tag cannot be scanned with the general
-/// [`YAML_SPECIAL_CHARS`] set.
 /// Whether a node property (`!tag`, `&anchor`, `*alias`) may start here.
 ///
 /// Per YAML 1.2 §7.1 these apply to the start of a node. Once a plain
@@ -1623,11 +1628,18 @@ fn in_block_scalar_body(body: Option<BlockScalarBody>, line_start: usize) -> boo
     body.is_some_and(|body| body.header_line_start != line_start)
 }
 
+/// Whether `ch` may appear in a tag shorthand's suffix.
+///
+/// YAML 1.2 `ns-tag-char` is any URI character except the flow indicators
+/// `,`, `[`, `]`, `{`, `}` and the `!` that would start another tag. That
+/// admits plenty the lexer treats as special elsewhere -- `:` in `!!ss:eq`,
+/// `-` in `!!ss---` -- so a tag cannot be scanned with the general
+/// [`YAML_SPECIAL_CHARS`] set.
 fn is_tag_char(ch: char) -> bool {
     if ch.is_whitespace() {
         return false;
     }
-    !matches!(ch, ',' | '[' | ']' | '{' | '}' | '!' | '#')
+    !matches!(ch, ',' | '[' | ']' | '{' | '}' | '!')
 }
 
 /// Whether the character is YAML whitespace (`s-white`, space and tab

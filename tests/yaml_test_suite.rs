@@ -341,12 +341,7 @@ fn yaml_test_suite() {
 /// until it is removed from here.
 const KNOWN_VALUE_FAILURES: &[(&str, &str)] = &[
     ("3GZX", "redefined anchor"),
-    ("5TYM", "tag handles"),
-    ("6CK3", "tag handles"),
     ("7T8X", "block scalar blank lines, trailing comment"),
-    ("CC74", "tag handles"),
-    ("U3C3", "tag handles"),
-    ("Z9M4", "tag handles"),
 ];
 
 /// Converts parsed documents to the JSON that `in.json` holds.

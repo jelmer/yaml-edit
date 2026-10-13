@@ -1139,12 +1139,10 @@ fn set_path_at_key<K: crate::AsYaml + Copy, V: crate::AsYaml>(
     // overwrite user data to continue. Null placeholders are treated
     // as "vacant" and get replaced by the appropriate container.
     if let Some(existing) = mapping.get(first_key) {
-        if let Some(sc) = existing.as_scalar() {
-            if !sc.is_null() {
-                return Err(PathError::TypeMismatch {
-                    at: segment_display(&segments[0]),
-                });
-            }
+        if existing.as_scalar().is_some_and(|sc| !sc.is_null()) {
+            return Err(PathError::TypeMismatch {
+                at: segment_display(&segments[0]),
+            });
         }
     }
 
@@ -1283,12 +1281,10 @@ fn set_path_on_sequence<V: crate::AsYaml>(
     // sequence, or an existing `null` the user chose). Reject only when
     // we'd have to overwrite a non-null user value.
     if let Some(existing) = sequence.get(index) {
-        if let Some(sc) = existing.as_scalar() {
-            if !sc.is_null() {
-                return Err(PathError::TypeMismatch {
-                    at: segment_display(&segments[0]),
-                });
-            }
+        if existing.as_scalar().is_some_and(|sc| !sc.is_null()) {
+            return Err(PathError::TypeMismatch {
+                at: segment_display(&segments[0]),
+            });
         }
     }
 
@@ -2497,6 +2493,50 @@ config:
             Err(PathError::TypeMismatch { .. })
         ));
         assert_eq!(doc.to_string(), original);
+    }
+
+    #[test]
+    fn test_set_path_does_not_replace_null_lookalike_strings() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        for original in [
+            "a: \"null\"\n",
+            "a: 'null'\n",
+            "a: ''\n",
+            "a: \"~\"\n",
+            "a: nUlL\n",
+        ] {
+            let doc = Document::from_str(original).unwrap();
+            assert_eq!(
+                doc.try_set_path("a.b", "v"),
+                Err(PathError::TypeMismatch { at: "a".into() }),
+                "{original:?}"
+            );
+            assert_eq!(doc.to_string(), original);
+        }
+
+        for original in ["items:\n  - 'null'\n", "items:\n  - nUlL\n"] {
+            let doc = Document::from_str(original).unwrap();
+            assert_eq!(
+                doc.try_set_path("items[0].b", "v"),
+                Err(PathError::TypeMismatch { at: "[0]".into() }),
+                "{original:?}"
+            );
+            assert_eq!(doc.to_string(), original);
+        }
+    }
+
+    #[test]
+    fn test_set_path_replaces_null_placeholders() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        for null in ["null", "Null", "NULL", "~", ""] {
+            let doc = Document::from_str(&format!("a: {null}\n")).unwrap();
+            doc.try_set_path("a.b", "v").unwrap();
+            assert_eq!(doc.to_string(), "a:\n  b: v\n", "{null:?}");
+        }
     }
 
     const ALIASED: &str = "shared: &shared\n  timeout: 30\nservice: *shared\n";

@@ -1339,10 +1339,18 @@ impl Validator {
                         // implicit-null scalar of its VALUE, so look past
                         // tokens that render as nothing: `? a\n? b\n` has its
                         // newline inside the first entry, not between them.
+                        // In a nested mapping the next line's indentation
+                        // follows that newline (`k:\n  ? a\n  ? b\n`).
                         let prev_ends_with_newline = prev
                             .descendants_with_tokens()
                             .filter_map(|c| c.into_token())
-                            .filter(|t| !t.text().is_empty())
+                            .filter(|t| {
+                                !t.text().is_empty()
+                                    && !matches!(
+                                        t.kind(),
+                                        crate::SyntaxKind::INDENT | crate::SyntaxKind::WHITESPACE
+                                    )
+                            })
                             .last()
                             .is_some_and(|t| t.kind() == crate::SyntaxKind::NEWLINE);
 
@@ -1425,13 +1433,16 @@ impl Validator {
         // SEQUENCE_ENTRY rather than a VALUE, in the same position relative
         // to the MAPPING. Without it the expected indent fell back to the
         // empty string and every entry of `-\n  a: 1\n  b: 2\n` looked
-        // wrongly indented.
+        // wrongly indented. A tagged mapping (`k: !t\n  a: 1\n`, C4HZ) has
+        // it in the TAGGED_NODE.
         let expected_indent: String = node
             .parent()
             .filter(|p| {
                 matches!(
                     p.kind(),
-                    crate::SyntaxKind::VALUE | crate::SyntaxKind::SEQUENCE_ENTRY
+                    crate::SyntaxKind::VALUE
+                        | crate::SyntaxKind::SEQUENCE_ENTRY
+                        | crate::SyntaxKind::TAGGED_NODE
                 )
             })
             .and_then(|parent_value| {
@@ -3121,5 +3132,23 @@ mod tests {
             violations[0].message,
             "Directive in document content (missing document end marker `...` before directive)"
         );
+    }
+
+    #[test]
+    fn test_nested_mapping_indentation_accepted() {
+        for yaml in [
+            "k: !t\n  a: 1\n  b: 2\n",
+            "- !!map\n  a: 1\n  b: 2\n",
+            "- &a !t\n  a: 1\n  b: 2\n",
+            "k:\n  ? a\n  ? b\n",
+            "set: !!set\n  ? a\n  ? b\n",
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
     }
 }

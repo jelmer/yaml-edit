@@ -19,6 +19,63 @@ use std::str::FromStr;
 use yaml_edit::YamlFile;
 
 #[test]
+fn test_comment_between_entries_parsing() {
+    let str = "a:\n  - x\n # c\n  - y\n";
+    let parsed = YamlFile::from_str(str).expect("Failed to parse YAML");
+    let document = parsed.document().expect("Should have a document");
+    let mapping = document.as_mapping().expect("Should be a mapping");
+    let value = mapping.get("a").expect("Should have a key 'a'");
+    let sequence = value.as_sequence().expect("Should be a sequence");
+
+    assert_eq!(sequence.len(), 2);
+    assert_eq!(
+        sequence.get(0).unwrap().as_scalar().unwrap().as_string(),
+        "x"
+    );
+    assert_eq!(
+        sequence.get(1).unwrap().as_scalar().unwrap().as_string(),
+        "y"
+    );
+}
+
+#[test]
+fn test_valueless_tag_parsing() {
+    let yaml = r#"
+- a: 1
+  b:
+    c:
+      d:
+      - !e
+  f:
+  - !g
+    h: 1
+  i:
+  - !j { }
+    "#;
+
+    let parsed = YamlFile::from_str(yaml).expect("Failed to parse YAML");
+    let doc = parsed.document().expect("Should have a document");
+    let sequence = doc.as_sequence().expect("Root should be a sequence");
+    let item = sequence
+        .first()
+        .expect("Should have a first item")
+        .get("b")
+        .expect("Should have a key 'b'")
+        .get("c")
+        .expect("Should have a key 'c'")
+        .get("d")
+        .expect("Should have a key 'd'")
+        .as_sequence()
+        .expect("Should be a sequence")
+        .first()
+        .expect("Should have an item");
+
+    let tagged = item.as_tagged().expect("Should be a tagged node");
+    assert_eq!(tagged.tag().unwrap(), "!e");
+    assert!(tagged.value().unwrap().is_null());
+}
+
+#[test]
 fn test_timestamp_parsing_with_spaces() {
     // Test case from the bug fix: timestamps with spaces and timezone
     let yaml = r#"timestamp: 2001-12-14 21:59:43.10 -5"#;

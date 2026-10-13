@@ -675,7 +675,8 @@ impl Parser {
                 }
                 Some(SyntaxKind::INDENT) => {
                     // Standalone indent token (NEWLINE was consumed by prior entry)
-                    let blank_line = self.indent_is_blank_line();
+                    let blank_line =
+                        self.indent_is_blank_line() || self.indent_starts_comment_line();
                     if let Some((_, text)) = self.tokens.last() {
                         if !blank_line && text.len() < base_indent {
                             return true; // dedent detected

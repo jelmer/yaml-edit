@@ -1085,7 +1085,45 @@ impl Mapping {
                 .cloned()
         });
 
+        // Blank lines on both sides of the entry would merge into a double
+        // gap; keep only the ones after it. An explicit-key entry's line
+        // break sits beside it rather than inside, and is not a blank line.
+        let mut before = std::iter::successors(removed.prev_sibling_or_token(), |c| {
+            c.prev_sibling_or_token()
+        })
+        .skip_while(|c| c.kind() == SyntaxKind::INDENT)
+        .peekable();
+        let mut blank_lines_before = Vec::new();
+        while let Some(newline) = before.next_if(|c| c.kind() == SyntaxKind::NEWLINE) {
+            blank_lines_before.push(newline);
+        }
+        if before
+            .peek()
+            .and_then(|c| c.as_node())
+            .is_some_and(|n| !trailing_newline_reachable(n))
+        {
+            blank_lines_before.pop();
+        }
+        let mut after = std::iter::successors(removed.next_sibling_or_token(), |c| {
+            c.next_sibling_or_token()
+        })
+        .take_while(|c| c.kind() == SyntaxKind::NEWLINE);
+        let own_line_break = if trailing_newline_reachable(removed) {
+            None
+        } else {
+            after.next()
+        };
+        let blank_line_after = after.next().is_some();
+
         self.0.splice_children(i..(i + 1), vec![]);
+        if let Some(newline) = own_line_break {
+            newline.detach();
+        }
+        if blank_line_after {
+            for newline in blank_lines_before {
+                newline.detach();
+            }
+        }
         // Removing the first entry promotes the next one, but the parent
         // VALUE already supplies its indent, so the INDENT now leading
         // this mapping would double it. Drop whichever applies.

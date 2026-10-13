@@ -712,7 +712,18 @@ impl Mapping {
         };
 
         let mut new_elements = Vec::new();
-        let insert_pos = count;
+        // When the mapping's last line is a comment, the parser leaves that
+        // line's INDENT here (and the comment in the parent). It belongs to
+        // the comment line, so the new entry goes in front of it.
+        let insert_pos = if self
+            .0
+            .last_child_or_token()
+            .is_some_and(|c| c.kind() == SyntaxKind::INDENT)
+        {
+            count - 1
+        } else {
+            count
+        };
 
         // Give the previous entry its own trailing NEWLINE (see
         // insert_at_index for why standalone separators are fragile).
@@ -1482,7 +1493,13 @@ impl Mapping {
         // Inserting before an existing entry hands the new entry the indent
         // that already precedes it, so the displaced entry needs a fresh one.
         // Appending at the end has no such donor: the indent goes in front.
-        let displaces_entry = insert_pos < self.0.children_with_tokens().count();
+        // A trailing INDENT is a donor too: it belongs to a comment line
+        // that the parser lifted out of this mapping.
+        let displaces_entry = insert_pos < self.0.children_with_tokens().count()
+            || self
+                .0
+                .last_child_or_token()
+                .is_some_and(|c| c.kind() == SyntaxKind::INDENT);
         let indent_level = self.detect_indentation_level();
         if indent_level > 0 {
             let token = fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level));

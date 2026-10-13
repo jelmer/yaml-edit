@@ -1310,4 +1310,69 @@ item:
         assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "-\n  - 1\n- x\n");
     }
+
+    /// The first key of `yaml` as read back by the parser, with its type.
+    fn first_key(yaml: &YamlFile) -> (String, crate::scalar::ScalarType) {
+        let reparsed = Document::from_str(&yaml.to_string()).unwrap();
+        let mapping = reparsed.as_mapping().unwrap();
+        let (key, _) = mapping.iter().next().unwrap();
+        let key = key.as_scalar().unwrap();
+        (
+            key.as_string(),
+            crate::scalar::ScalarValue::from_scalar(key).scalar_type(),
+        )
+    }
+
+    #[test]
+    fn test_pair_quotes_keys() {
+        use crate::scalar::ScalarType;
+
+        let yaml = YamlBuilder::mapping().pair("a: b", 1).build().build();
+        assert_eq!(yaml.to_string(), "'a: b': 1\n");
+
+        for key in [
+            "a: b", "true", "null", "1.0", "0x10", "", "#x", "a #b", "a\nb",
+        ] {
+            let yaml = YamlBuilder::mapping().pair(key, 1).build().build();
+            assert_eq!(
+                first_key(&yaml),
+                (key.to_string(), ScalarType::String),
+                "{yaml}"
+            );
+            let reparsed = Document::from_str(&yaml.to_string()).unwrap();
+            assert_eq!(
+                reparsed.get(key).and_then(|v| v.to_i64()),
+                Some(1),
+                "{yaml}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_nested_collection_keys_quoted() {
+        let yaml = YamlBuilder::mapping()
+            .sequence("true", |s| s.item(1))
+            .build()
+            .build();
+        assert_eq!(first_key(&yaml).0, "true");
+        assert_eq!(first_key(&yaml).1, crate::scalar::ScalarType::String);
+
+        let yaml = YamlBuilder::mapping()
+            .mapping("#x", |m| m.pair("a", 1))
+            .build()
+            .build();
+        assert_eq!(first_key(&yaml).0, "#x");
+
+        let yaml = YamlBuilder::mapping()
+            .insert_sequence("a: b", SequenceBuilder::new().item(1))
+            .build()
+            .build();
+        assert_eq!(first_key(&yaml).0, "a: b");
+
+        let yaml = YamlBuilder::mapping()
+            .insert_mapping("null", MappingBuilder::new().pair("a", 1))
+            .build()
+            .build();
+        assert_eq!(first_key(&yaml).1, crate::scalar::ScalarType::String);
+    }
 }

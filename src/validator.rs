@@ -428,8 +428,6 @@ impl Validator {
                 self.check_trailing_content_after_quoted(node, violations);
                 // Check for colons in plain scalar values
                 self.check_colon_in_plain_scalar(node, violations);
-                // Check for document markers inside quoted strings
-                self.check_document_marker_in_string(node, violations);
                 // Check for directives inside document content (e.g. %YAML after ---)
                 self.check_directive_in_content(node, violations);
                 // Warn about constructs YAML 1.1 read differently
@@ -1050,37 +1048,6 @@ impl Validator {
                 Rule::Other,
                 colon.text_range(),
                 "Plain scalar value cannot contain mapping syntax (colon)",
-            ));
-        }
-    }
-
-    /// Check for document markers (--- or ...) appearing in quoted strings
-    ///
-    /// Document markers on their own line should always be recognized as document
-    /// boundaries, even if they appear to be within a quoted string. A quoted string
-    /// containing "\n---\n" or "\n...\n" is invalid.
-    fn check_document_marker_in_string(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        // Get the text of the scalar
-        let text = node.text().to_string();
-
-        // Check if this is a quoted string
-        if !text.starts_with('"') && !text.starts_with('\'') {
-            return;
-        }
-
-        // Check for document markers on their own line within the string
-        // Look for \n--- or \n... where the marker is followed by \n or end of string
-        if text.contains("\n---\n")
-            || text.contains("\n---\"")
-            || text.contains("\n---'")
-            || text.contains("\n...\n")
-            || text.contains("\n...\"")
-            || text.contains("\n...'")
-        {
-            violations.push(Violation::error_at(
-                Rule::InvalidDocumentMarker,
-                node.text_range(),
-                "Document marker on its own line inside quoted string",
             ));
         }
     }
@@ -2301,11 +2268,15 @@ impl Validator {
         // cannot sit inside a quoted scalar: the test suite's 9MQT/01 is the
         // error `--- "a\n... x\nb"`. The lexer keeps the whole quoted body
         // in one token, so no document-marker rule sees it.
-        if text
-            .split('\n')
-            .skip(1)
-            .any(|line| line.starts_with("---") || line.starts_with("..."))
-        {
+        // The marker has to be followed by whitespace or the line's end:
+        // `---x` and `---"` are content (9MQT/00).
+        if text.split('\n').skip(1).any(|line| {
+            (line.starts_with("---") || line.starts_with("..."))
+                && line[3..]
+                    .chars()
+                    .next()
+                    .map_or(true, |c| matches!(c, ' ' | '\t' | '\r'))
+        }) {
             violations.push(Violation::error_at(
                 Rule::InvalidDocumentMarker,
                 node.text_range(),
@@ -3320,5 +3291,32 @@ mod tests {
             .map(|v| v.location)
             .collect();
         assert_eq!(locations, vec![Some("3:1".to_string())]);
+    }
+
+    #[test]
+    fn test_document_marker_in_quoted_scalar() {
+        // The parser reports the same error; validate the lenient tree.
+        let messages = |yaml: &str| -> Vec<String> {
+            let file = crate::YamlFile::parse(yaml).tree();
+            Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| v.message)
+                .collect()
+        };
+        for yaml in ["--- \"a\n---x\nb\"\n", "--- \"a\n---\"\n", "--- 'a\n...'\n"] {
+            assert_eq!(messages(yaml), Vec::<String>::new(), "{yaml:?}");
+        }
+        for yaml in [
+            "--- \"a\n--- b\"\n",
+            "--- \"a\n...\tb\"\n",
+            "---\n\"\n---\n\"\n",
+        ] {
+            assert_eq!(
+                messages(yaml),
+                vec!["Document marker inside a quoted scalar".to_string()],
+                "{yaml:?}"
+            );
+        }
     }
 }

@@ -137,8 +137,6 @@ const KNOWN_VALIDATOR_FALSE_POSITIVES: &[&str] = &[
     // Duplicate null keys, which the validator reports deliberately; the
     // suite only checks syntax.
     "2JQS",
-    // TODO: remove once #183 (validator-quoted-markers) lands.
-    "9MQT/00",
 ];
 
 #[derive(Debug, Default)]

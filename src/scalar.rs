@@ -126,8 +126,8 @@ pub struct ScalarValue {
     tag: Option<String>,
 }
 
-/// Parse a `\uNNNN` or `\UNNNNNNNN` unicode escape from `chars` (with
-/// the leading `\u`/`\U` already consumed) and append the resulting
+/// Parse a `\xNN`, `\uNNNN` or `\UNNNNNNNN` escape from `chars` (with
+/// the leading `\x`/`\u`/`\U` already consumed) and append the resulting
 /// character to `out`, falling back to the literal `\<prefix><digits>`
 /// when the digits are missing, non-hex, or outside the valid unicode
 /// range.
@@ -138,7 +138,9 @@ fn push_unicode_escape(
     width: usize,
 ) {
     let hex_digits: String = chars.by_ref().take(width).collect();
-    let decoded = if hex_digits.len() == width {
+    // from_str_radix would accept a leading '+'
+    let decoded = if hex_digits.len() == width && hex_digits.chars().all(|c| c.is_ascii_hexdigit())
+    {
         u32::from_str_radix(&hex_digits, 16)
             .ok()
             .and_then(char::from_u32)
@@ -152,6 +154,23 @@ fn push_unicode_escape(
             out.push(prefix);
             out.push_str(&hex_digits);
         }
+    }
+}
+
+/// Skip the leading white space of the lines following a line break,
+/// returning how many of those lines were empty.
+fn skip_line_prefixes(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> usize {
+    let mut empty_lines = 0;
+    loop {
+        while chars.next_if(|c| *c == ' ' || *c == '\t').is_some() {}
+        match chars.next_if(|c| *c == '\n' || *c == '\r') {
+            Some('\r') => {
+                chars.next_if_eq(&'\n');
+            }
+            Some(_) => {}
+            None => return empty_lines,
+        }
+        empty_lines += 1;
     }
 }
 
@@ -197,19 +216,39 @@ impl ScalarValue {
         }
     }
 
-    /// Parse escape sequences in a double-quoted string
+    /// Decode the content of a double-quoted string: process escape
+    /// sequences and fold line breaks as described in the YAML spec.
     pub fn parse_escape_sequences(text: &str) -> String {
         let mut result = String::with_capacity(text.len()); // Pre-allocate
         let mut chars = text.chars().peekable();
+        // Unescaped white space is dropped if a line break follows it
+        let mut pending_white = String::new();
 
         while let Some(ch) = chars.next() {
+            if ch == '\n' || ch == '\r' {
+                if ch == '\r' {
+                    chars.next_if_eq(&'\n');
+                }
+                pending_white.clear();
+                match skip_line_prefixes(&mut chars) {
+                    0 => result.push(' '),
+                    n => result.push_str(&"\n".repeat(n)),
+                }
+                continue;
+            }
+            if ch == ' ' || ch == '\t' {
+                pending_white.push(ch);
+                continue;
+            }
+            result.push_str(&pending_white);
+            pending_white.clear();
             if ch == '\\' {
                 if let Some(&escaped) = chars.peek() {
                     chars.next(); // consume the escaped character
                     match escaped {
                         // Standard escape sequences
                         'n' => result.push('\n'),
-                        't' => result.push('\t'),
+                        't' | '\t' => result.push('\t'),
                         'r' => result.push('\r'),
                         'b' => result.push('\x08'),
                         'f' => result.push('\x0C'),
@@ -221,52 +260,21 @@ impl ScalarValue {
                         '"' => result.push('"'),
                         '\'' => result.push('\''),
                         '/' => result.push('/'),
-                        // Line break escape (YAML specific)
-                        ' ' => {
-                            // Escaped space followed by line break - line folding
-                            if let Some(&'\n') = chars.peek() {
-                                chars.next(); // consume the newline
-                                              // In YAML, escaped line breaks are folded to nothing
-                                continue;
+                        'N' => result.push('\u{85}'),
+                        '_' => result.push('\u{A0}'),
+                        'L' => result.push('\u{2028}'),
+                        'P' => result.push('\u{2029}'),
+                        ' ' => result.push(' '),
+                        '\n' | '\r' => {
+                            // An escaped line break is dropped, but empty
+                            // lines after it each still produce a line feed
+                            if escaped == '\r' {
+                                chars.next_if_eq(&'\n');
                             }
-                            result.push(' ');
+                            let empty_lines = skip_line_prefixes(&mut chars);
+                            result.push_str(&"\n".repeat(empty_lines));
                         }
-                        '\n' => {
-                            // Escaped line break - removes the line break
-                            continue;
-                        }
-                        // Unicode escapes
-                        'x' => {
-                            // \xNN - 2-digit hex
-                            let mut hex_chars = [0u8; 2];
-                            let mut count = 0;
-                            for (i, ch) in chars.by_ref().take(2).enumerate() {
-                                if let Some(digit) = ch.to_digit(16) {
-                                    hex_chars[i] = digit as u8;
-                                    count += 1;
-                                } else {
-                                    // Put back invalid char
-                                    result.push('\\');
-                                    result.push('x');
-                                    for &hex_char in hex_chars.iter().take(count) {
-                                        result.push(char::from_digit(hex_char as u32, 16).unwrap());
-                                    }
-                                    result.push(ch);
-                                    break;
-                                }
-                            }
-                            if count == 2 {
-                                let code = hex_chars[0] * 16 + hex_chars[1];
-                                result.push(code as char);
-                            } else if count > 0 {
-                                // Incomplete hex escape
-                                result.push('\\');
-                                result.push('x');
-                                for &hex_char in hex_chars.iter().take(count) {
-                                    result.push(char::from_digit(hex_char as u32, 16).unwrap());
-                                }
-                            }
-                        }
+                        'x' => push_unicode_escape(&mut result, &mut chars, 'x', 2),
                         'u' => push_unicode_escape(&mut result, &mut chars, 'u', 4),
                         'U' => push_unicode_escape(&mut result, &mut chars, 'U', 8),
                         // Unknown escape sequence - preserve as literal
@@ -283,6 +291,7 @@ impl ScalarValue {
                 result.push(ch);
             }
         }
+        result.push_str(&pending_white);
 
         result
     }
@@ -1663,6 +1672,10 @@ mod tests {
         // Test invalid hex sequences
         assert_eq!(ScalarValue::parse_escape_sequences("\\xGH"), "\\xGH"); // Invalid hex
         assert_eq!(ScalarValue::parse_escape_sequences("\\x4"), "\\x4"); // Incomplete
+        assert_eq!(ScalarValue::parse_escape_sequences("\\x4Z"), "\\x4Z");
+        assert_eq!(ScalarValue::parse_escape_sequences("\\xAZ"), "\\xAZ");
+        assert_eq!(ScalarValue::parse_escape_sequences("\\x+4"), "\\x+4");
+        assert_eq!(ScalarValue::parse_escape_sequences("\\u+041"), "\\u+041");
     }
 
     #[test]
@@ -1702,11 +1715,13 @@ mod tests {
 
     #[test]
     fn test_escape_sequences_line_folding() {
-        // Test line folding with escaped spaces and newlines
+        // An escaped space is content; the raw line break after it folds
         assert_eq!(
             ScalarValue::parse_escape_sequences("line\\ \nfolding"),
-            "linefolding"
+            "line  folding"
         );
+        assert_eq!(ScalarValue::parse_escape_sequences("a\\\n  b"), "ab");
+        assert_eq!(ScalarValue::parse_escape_sequences("a\\\r\n  b"), "ab");
         assert_eq!(
             ScalarValue::parse_escape_sequences("escaped\\nline\\nbreak"),
             "escaped\nline\nbreak"
@@ -1728,6 +1743,14 @@ mod tests {
         let input = "Quote\\\"back\\\\slash\\ttab";
         let expected = "Quote\"back\\slash\ttab";
         assert_eq!(ScalarValue::parse_escape_sequences(input), expected);
+    }
+
+    #[test]
+    fn test_escape_sequences_yaml_specific() {
+        assert_eq!(
+            ScalarValue::parse_escape_sequences("\\N\\_\\L\\P\\\t"),
+            "\u{85}\u{A0}\u{2028}\u{2029}\t"
+        );
     }
 
     #[test]

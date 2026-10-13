@@ -63,14 +63,32 @@ impl Scalar {
             let unescaped = content.replace("''", "'");
             // Only fold lines if actually multi-line
             if unescaped.contains('\n') {
-                // Fold line breaks (newlines + indentation) to spaces per YAML spec
-                // Using fold() avoids intermediate Vec allocation
-                let mut result = String::new();
-                for (i, line) in unescaped.lines().enumerate() {
-                    if i > 0 {
-                        result.push(' ');
+                // A line break folds to a space, or to one newline per empty
+                // line after it, and takes the white space around it along.
+                let lines: Vec<&str> = unescaped
+                    .split('\n')
+                    .map(|line| line.strip_suffix('\r').unwrap_or(line))
+                    .collect();
+                let last = lines.len() - 1;
+                let mut result = lines[0].trim_end_matches([' ', '\t']).to_string();
+                let mut empty_lines = 0;
+                for (i, line) in lines.iter().enumerate().skip(1) {
+                    let line = line.trim_start_matches([' ', '\t']);
+                    let line = if i == last {
+                        line
+                    } else {
+                        line.trim_end_matches([' ', '\t'])
+                    };
+                    if line.is_empty() && i != last {
+                        empty_lines += 1;
+                        continue;
                     }
-                    result.push_str(line.trim());
+                    match empty_lines {
+                        0 => result.push(' '),
+                        n => result.push_str(&"\n".repeat(n)),
+                    }
+                    empty_lines = 0;
+                    result.push_str(line);
                 }
                 result
             } else {
@@ -485,11 +503,11 @@ mod tests {
         // as children of the SCALAR node instead of as siblings.
 
         let json = r#"{
-  "items": [
+      "items": [
     "first",
     "second"
-  ]
-}"#;
+      ]
+    }"#;
 
         let doc = Document::from_str(json).unwrap();
         let mapping = doc.as_mapping().unwrap();
@@ -559,8 +577,8 @@ mod tests {
     fn test_yaml_flow_arrays_quoted_strings() {
         // YAML flow-style arrays should behave the same
         let yaml = r#"
-items: ["first", "second"]
-"#;
+    items: ["first", "second"]
+    "#;
 
         let doc = Document::from_str(yaml).unwrap();
         let mapping = doc.as_mapping().unwrap();
@@ -659,5 +677,22 @@ items: ["first", "second"]
         assert_eq!(got[5], Some(f64::NEG_INFINITY));
         assert!(got[6].unwrap().is_nan());
         assert_eq!(got[7], Some(1.5));
+    }
+
+    #[test]
+    fn test_single_quoted_line_folding() {
+        let value = |yaml: &str| {
+            let doc = Document::from_str(yaml).unwrap();
+            let node = doc.as_mapping().unwrap().get("k").unwrap();
+            node.as_scalar().unwrap().as_string()
+        };
+        assert_eq!(value("k: 'a\n  b'\n"), "a b");
+        assert_eq!(value("k: 'a\n\n  b'\n"), "a\nb");
+        assert_eq!(value("k: 'a\n\n\n  b'\n"), "a\n\nb");
+        assert_eq!(value("k: 'a \t\n \t\n\t b'\n"), "a\nb");
+        assert_eq!(value("k: ' a\n  b '\n"), " a b ");
+        assert_eq!(value("k: 'a\n  '\n"), "a ");
+        assert_eq!(value("k: 'a\r\n\r\n  b'\r\n"), "a\nb");
+        assert_eq!(value("k: 'a''\n  ''b'\n"), "a' 'b");
     }
 }

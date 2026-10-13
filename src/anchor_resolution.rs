@@ -298,65 +298,28 @@ fn has_merge_keys(mapping: &crate::yaml::Mapping) -> bool {
 }
 
 /// Apply merge keys to create a new merged mapping (returns BTreeMap for YamlValue::Mapping)
+///
+/// Direct keys win over merged ones, and merge sources are taken in the
+/// precedence order [`merge_sources`] returns them.
 fn apply_merge_keys(
     mapping: &crate::yaml::Mapping,
     registry: &AnchorRegistry,
 ) -> std::collections::BTreeMap<String, YamlValue> {
-    use crate::as_yaml::YamlNode;
-    use std::collections::BTreeMap;
-
-    let mut merged_pairs: BTreeMap<String, YamlValue> = BTreeMap::new();
-
-    // First pass: process merge keys and collect merged values
-    for (key, value) in mapping.iter() {
-        let Some(key_str) = node_as_string(&key) else {
-            continue;
-        };
-        if key_str != "<<" {
-            continue;
-        }
-
-        // Handle both single alias and sequence of aliases
-        match &value {
-            // Single alias: `<<: *alias`
-            YamlNode::Alias(_) | YamlNode::Scalar(_) => {
-                let Some(alias_name) = alias_target(&value) else {
-                    continue;
-                };
-                merge_from_alias(&mut merged_pairs, &alias_name, value.syntax(), registry);
+    let mut merged_pairs = std::collections::BTreeMap::new();
+    let sources = merge_sources(mapping, registry);
+    for source in std::iter::once(mapping).chain(&sources) {
+        for (key, value) in source.iter() {
+            let Some(key_str) = node_as_string(&key) else {
+                continue;
+            };
+            if key_str == "<<" || merged_pairs.contains_key(&key_str) {
+                continue;
             }
-            // Multiple aliases: `<<: [*alias1, *alias2]`
-            YamlNode::Sequence(seq) => {
-                // Process aliases in order - later aliases override earlier ones
-                for alias_node in seq.values() {
-                    let Some(alias_name) = alias_target(&alias_node) else {
-                        continue;
-                    };
-                    merge_from_alias(
-                        &mut merged_pairs,
-                        &alias_name,
-                        alias_node.syntax(),
-                        registry,
-                    );
-                }
+            if let Some(yaml_value) = resolved_value(value, registry) {
+                merged_pairs.insert(key_str, yaml_value);
             }
-            _ => continue,
         }
     }
-
-    // Second pass: add direct keys (override merged keys)
-    for (key, value) in mapping.iter() {
-        let Some(key_str) = node_as_string(&key) else {
-            continue;
-        };
-        if key_str == "<<" {
-            continue;
-        }
-        if let Some(yaml_value) = resolved_value(value, registry) {
-            merged_pairs.insert(key_str, yaml_value);
-        }
-    }
-
     merged_pairs
 }
 
@@ -381,32 +344,6 @@ fn alias_target(node: &crate::as_yaml::YamlNode) -> Option<String> {
     match node {
         crate::as_yaml::YamlNode::Alias(alias) => Some(alias.name()),
         _ => node_as_string(node)?.strip_prefix('*').map(str::to_string),
-    }
-}
-
-/// Helper function to merge keys from a single alias
-fn merge_from_alias(
-    merged_pairs: &mut std::collections::BTreeMap<String, YamlValue>,
-    alias_name: &str,
-    alias: &SyntaxNode,
-    registry: &AnchorRegistry,
-) {
-    use rowan::ast::AstNode;
-
-    let Some(resolved_node) = registry.resolve_alias(alias_name, alias) else {
-        return;
-    };
-
-    // Get the resolved mapping and merge its keys
-    if let Some(resolved_mapping) = crate::yaml::Mapping::cast(resolved_node.clone()) {
-        for (src_key, src_value) in resolved_mapping.iter() {
-            let Some(k_str) = node_as_string(&src_key) else {
-                continue;
-            };
-            if let Some(yaml_value) = resolved_value(src_value, registry) {
-                merged_pairs.insert(k_str, yaml_value);
-            }
-        }
     }
 }
 
@@ -613,58 +550,25 @@ fn merge_sources(
     use rowan::ast::AstNode;
 
     let mut sources = Vec::new();
-
     for (key, value) in base.iter() {
         if node_as_string(&key).as_deref() != Some("<<") {
             continue;
         }
-
-        match &value {
-            YamlNode::Scalar(_) => {
-                if let Some(alias_text) = node_as_string(&value) {
-                    if let Some(alias_name) = alias_text.strip_prefix('*') {
-                        if let Some(target) = registry.resolve_alias(alias_name, value.syntax()) {
-                            if let Some(m) = crate::yaml::Mapping::cast(target.clone()) {
-                                sources.push(m);
-                            }
-                        }
-                    }
-                }
+        let operands = match value {
+            YamlNode::Sequence(seq) => seq.values().collect(),
+            other => vec![other],
+        };
+        for operand in operands {
+            let Some(target) = alias_target(&operand)
+                .and_then(|name| registry.resolve_alias(&name, operand.syntax()))
+            else {
+                continue;
+            };
+            if let Some(m) = crate::yaml::Mapping::cast(target.clone()) {
+                sources.push(m);
             }
-            YamlNode::Sequence(seq) => {
-                for item in seq.values() {
-                    let alias_name = match &item {
-                        YamlNode::Alias(a) => a.name(),
-                        YamlNode::Scalar(_) => {
-                            let Some(text) = node_as_string(&item) else {
-                                continue;
-                            };
-                            let Some(name) = text.strip_prefix('*') else {
-                                continue;
-                            };
-                            name.to_string()
-                        }
-                        _ => continue,
-                    };
-                    let Some(target) = registry.resolve_alias(&alias_name, item.syntax()) else {
-                        continue;
-                    };
-                    if let Some(m) = crate::yaml::Mapping::cast(target.clone()) {
-                        sources.push(m);
-                    }
-                }
-            }
-            YamlNode::Alias(alias) => {
-                if let Some(target) = registry.resolve_alias(&alias.name(), alias.syntax()) {
-                    if let Some(m) = crate::yaml::Mapping::cast(target.clone()) {
-                        sources.push(m);
-                    }
-                }
-            }
-            _ => continue,
         }
     }
-
     sources
 }
 
@@ -770,6 +674,33 @@ mod tests {
 
     fn doc(text: &str) -> Document {
         Document::from_str(text).expect("parse")
+    }
+
+    /// `get_resolved(key)` on `yaml` as `(key, value)` pairs, with each
+    /// value rendered through `Display`.
+    fn resolved_pairs(yaml: &str, key: &str) -> Vec<(String, String)> {
+        let resolved = doc(yaml).get_resolved(key).expect("key resolves");
+        let mapping = resolved.as_mapping().expect("value is a mapping");
+        mapping
+            .iter()
+            .map(|(k, v)| (k.clone(), v.to_string()))
+            .collect()
+    }
+
+    fn pairs(expected: &[(&str, &str)]) -> Vec<(String, String)> {
+        expected
+            .iter()
+            .map(|&(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn get_resolved_merge_sequence_earlier_wins() {
+        let yaml = "a: &a {k: from_a}\nb: &b {k: from_b, j: 2}\nm:\n  <<: [*a, *b]\n";
+        assert_eq!(
+            resolved_pairs(yaml, "m"),
+            pairs(&[("j", "2"), ("k", "from_a")])
+        );
     }
 
     #[test]

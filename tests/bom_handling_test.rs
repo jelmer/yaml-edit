@@ -47,6 +47,27 @@ fn test_utf8_bom_not_present() {
 }
 
 #[test]
+fn test_bom_takes_no_column() {
+    // The BOM is not part of the first line, so a body indented one space
+    // past a column-0 entry is still indented past it.
+    let parsed = YamlFile::from_str("\u{FEFF}- |\n x\n- y\n").unwrap();
+    let doc = parsed.documents().next().unwrap();
+    let seq = doc.as_sequence().unwrap();
+    assert_eq!(seq.len(), 2);
+    assert_eq!(seq.get(0).unwrap().as_scalar().unwrap().as_string(), "x\n");
+
+    let parsed = YamlFile::from_str("\u{FEFF}key: &anchor\n !!map\n  a: b\n").unwrap();
+    let doc = parsed.documents().next().unwrap();
+    let keys: Vec<String> = doc
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert_eq!(keys, vec!["key"]);
+}
+
+#[test]
 fn test_bom_with_document_marker() {
     // BOM followed by explicit document marker
     let bom_doc_yaml = "\u{FEFF}---\nkey: value";

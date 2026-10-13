@@ -525,7 +525,8 @@ impl YamlValue {
     /// nested has to start at column `indent`.
     fn push_entry_value(&self, result: &mut String, indent: usize) {
         match self {
-            YamlValue::Scalar(s) => result.push_str(&s.to_yaml_string_with_indent(indent)),
+            // The indicator's own line is `indent - 2`: a key, or a `-`.
+            YamlValue::Scalar(s) => result.push_str(&s.to_yaml_string_with_indent(indent - 2, 2)),
             v if v.is_block_collection() => {
                 if result.ends_with(' ') {
                     result.pop();
@@ -1002,6 +1003,21 @@ mod tests {
         let v = YamlValue::Mapping(m);
         let out = v.to_yaml_string(0);
         assert_eq!(out, "o:\n  k: |\n    x\n    y");
+        assert_eq!(YamlValue::parse_raw(&out), v);
+    }
+
+    #[test]
+    fn test_to_yaml_string_nested_indented_block_scalar() {
+        let mut inner = BTreeMap::new();
+        inner.insert(
+            "k".to_string(),
+            YamlValue::Scalar(ScalarValue::literal("  x\n")),
+        );
+        let mut m = BTreeMap::new();
+        m.insert("o".to_string(), YamlValue::Mapping(inner));
+        let v = YamlValue::Mapping(m);
+        let out = v.to_yaml_string(0);
+        assert_eq!(out, "o:\n  k: |2\n      x");
         assert_eq!(YamlValue::parse_raw(&out), v);
     }
 

@@ -920,7 +920,7 @@ impl AsYaml for &str {
 
         // A multi-line string renders as a block scalar, whose body has to
         // clear the column its entry sits at.
-        let yaml_text = scalar.to_yaml_string_for_entry(indent);
+        let yaml_text = scalar.to_yaml_string_with_indent(indent, 2);
         // Both quoted and unquoted strings use STRING token kind;
         // the token text includes any quotes needed for disambiguation.
         builder.start_node(SyntaxKind::SCALAR.into());

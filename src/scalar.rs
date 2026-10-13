@@ -1124,30 +1124,28 @@ impl ScalarValue {
 
     /// Render the scalar as a YAML string with proper escaping.
     ///
-    /// A block scalar's body is indented two spaces. Use
-    /// [`to_yaml_string_with_indent`](Self::to_yaml_string_with_indent) where
-    /// the value sits inside an indented entry, whose body has to clear that
-    /// entry's own column.
+    /// A block scalar is laid out for a top-level entry, with its body
+    /// indented two spaces. Use
+    /// [`to_yaml_string_with_indent`](Self::to_yaml_string_with_indent) for
+    /// a value nested deeper.
     pub fn to_yaml_string(&self) -> String {
-        self.to_yaml_string_with_indent(2)
+        self.to_yaml_string_with_indent(0, 2)
     }
 
-    /// As [`to_yaml_string`](Self::to_yaml_string), indenting a block
-    /// scalar's body by `block_indent` spaces.
-    pub fn to_yaml_string_with_indent(&self, block_indent: usize) -> String {
-        self.to_yaml_string_in(0, block_indent)
-    }
-
-    /// Render the scalar as the value of an entry at `entry_column`, with a
-    /// block scalar's body two spaces past it.
-    pub(crate) fn to_yaml_string_for_entry(&self, entry_column: usize) -> String {
-        self.to_yaml_string_in(entry_column, entry_column + 2)
-    }
-
-    /// As [`to_yaml_string_with_indent`](Self::to_yaml_string_with_indent),
-    /// for a scalar that is a node of a collection at `parent_column`, which
-    /// a block scalar's indentation indicator counts from.
-    fn to_yaml_string_in(&self, parent_column: usize, block_indent: usize) -> String {
+    /// As [`to_yaml_string`](Self::to_yaml_string), for a value of the
+    /// collection whose entries sit at `parent_column`, with a block
+    /// scalar's body `indent` spaces further right.
+    ///
+    /// `parent_column` is the column of the entry's key, or of the `-` of a
+    /// sequence entry, and 0 for a top-level entry or the document root.
+    /// It matters because a block scalar's indentation indicator (`|2`)
+    /// counts from there: for `a:\n  k: <value>` pass 2.
+    ///
+    /// # Panics
+    ///
+    /// For a block scalar, if `indent` is 0, or above 9 when the value
+    /// needs an indentation indicator (its lines all start with spaces).
+    pub fn to_yaml_string_with_indent(&self, parent_column: usize, indent: usize) -> String {
         // Special data types carry their tag unless an explicit one is set
         let tag = self.tag.as_deref().or(match self.scalar_type {
             #[cfg(feature = "base64")]
@@ -1156,7 +1154,7 @@ impl ScalarValue {
             ScalarType::Regex => Some("!!regex"),
             _ => None,
         });
-        let content = self.render_content(parent_column, block_indent);
+        let content = self.render_content(parent_column, indent);
         match tag {
             Some(tag) if content.is_empty() => tag.to_string(),
             Some(tag) => format!("{tag} {content}"),
@@ -1165,7 +1163,7 @@ impl ScalarValue {
     }
 
     /// Render the scalar without any tag.
-    fn render_content(&self, parent_column: usize, block_indent: usize) -> String {
+    fn render_content(&self, parent_column: usize, indent: usize) -> String {
         match self.style {
             ScalarStyle::Plain => {
                 // Check if we need to quote based on type vs content
@@ -1204,8 +1202,8 @@ impl ScalarValue {
             }
             ScalarStyle::SingleQuoted => self.to_single_quoted(),
             ScalarStyle::DoubleQuoted => self.to_double_quoted(),
-            ScalarStyle::Literal => self.to_block_with_indent('|', parent_column, block_indent),
-            ScalarStyle::Folded => self.to_block_with_indent('>', parent_column, block_indent),
+            ScalarStyle::Literal => self.to_block_with_indent('|', parent_column, indent),
+            ScalarStyle::Folded => self.to_block_with_indent('>', parent_column, indent),
         }
     }
 
@@ -1255,20 +1253,32 @@ impl ScalarValue {
         result
     }
 
-    /// Convert to literal block scalar with specific indentation
-    pub fn to_literal_with_indent(&self, indent: usize) -> String {
-        self.to_block_with_indent('|', 0, indent)
+    /// Render as a literal block scalar (`|`) whose body sits `indent`
+    /// spaces past `parent_column`; see
+    /// [`to_yaml_string_with_indent`](Self::to_yaml_string_with_indent).
+    ///
+    /// # Panics
+    ///
+    /// As [`to_yaml_string_with_indent`](Self::to_yaml_string_with_indent).
+    pub fn to_literal_with_indent(&self, parent_column: usize, indent: usize) -> String {
+        self.to_block_with_indent('|', parent_column, indent)
     }
 
-    /// Convert to folded block scalar with specific indentation
-    pub fn to_folded_with_indent(&self, indent: usize) -> String {
-        self.to_block_with_indent('>', 0, indent)
+    /// Render as a folded block scalar (`>`) whose body sits `indent`
+    /// spaces past `parent_column`; see
+    /// [`to_yaml_string_with_indent`](Self::to_yaml_string_with_indent).
+    ///
+    /// # Panics
+    ///
+    /// As [`to_yaml_string_with_indent`](Self::to_yaml_string_with_indent).
+    pub fn to_folded_with_indent(&self, parent_column: usize, indent: usize) -> String {
+        self.to_block_with_indent('>', parent_column, indent)
     }
 
     /// Render as a block scalar introduced by `marker` (`|` literal, `>` folded),
-    /// with its body at column `indent` inside a collection at
-    /// `parent_column`.
+    /// with its body `indent` columns past `parent_column`.
     fn to_block_with_indent(&self, marker: char, parent_column: usize, indent: usize) -> String {
+        assert!(indent > 0, "a block scalar's body must be indented");
         // Pick the chomping indicator that preserves the value's trailing
         // line breaks: a bare `|` clips to exactly one, `|-` strips them all
         // and `|+` keeps them. Otherwise reading the value back gains or
@@ -1288,8 +1298,11 @@ impl ScalarValue {
                 // The indicator counts from the parent collection's column,
                 // and the body has to sit at the column it names for the
                 // value's leading spaces to survive.
-                let body = " ".repeat(indent);
-                let indicator = indent - parent_column;
+                assert!(
+                    indent <= 9,
+                    "indentation indicator {indent} does not fit in one digit"
+                );
+                let body = " ".repeat(parent_column + indent);
                 let shifted = self
                     .value
                     .lines()
@@ -1302,11 +1315,11 @@ impl ScalarValue {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                return format!("{marker}{indicator}{chomp}\n{shifted}");
+                return format!("{marker}{indent}{chomp}\n{shifted}");
             }
             return format!("{marker}{chomp}\n{}", self.value);
         }
-        let indent_str = " ".repeat(indent);
+        let indent_str = " ".repeat(parent_column + indent);
         let indented = self
             .value
             .lines()
@@ -1477,7 +1490,7 @@ impl crate::AsYaml for ScalarValue {
         if let Some(tag) = &self.tag {
             builder.start_node(SyntaxKind::TAGGED_NODE.into());
             builder.token(SyntaxKind::TAG.into(), tag);
-            let content = self.render_content(indent, indent + 2);
+            let content = self.render_content(indent, 2);
             // Like the parser, give a tag with no content an empty scalar.
             let kind = if content.is_empty() {
                 SyntaxKind::NULL
@@ -1498,7 +1511,7 @@ impl crate::AsYaml for ScalarValue {
         // A block scalar's body has to clear the column its entry sits at,
         // or the text it renders to is not the value it stood for:
         // `a:\n  b: |-\n  x\n` has an empty scalar and a stray `x`.
-        let text = self.to_yaml_string_for_entry(indent);
+        let text = self.to_yaml_string_with_indent(indent, 2);
         builder.start_node(SyntaxKind::SCALAR.into());
         builder.token(self.token_kind(&text).into(), &text);
         builder.finish_node();
@@ -1818,7 +1831,7 @@ mod tests {
         let scalar = ScalarValue::literal(content_with_indent);
 
         // Should detect that content already has indentation and preserve it
-        let yaml_output = scalar.to_literal_with_indent(2);
+        let yaml_output = scalar.to_literal_with_indent(0, 2);
         assert_eq!(
             yaml_output,
             "|-\n    Line 1\n      Line 2 more indented\n    Line 3"
@@ -1859,11 +1872,45 @@ mod tests {
         let content = "Line 1\nLine 2\nLine 3";
         let scalar = ScalarValue::literal(content);
 
-        let yaml_4_spaces = scalar.to_literal_with_indent(4);
+        let yaml_4_spaces = scalar.to_literal_with_indent(0, 4);
         assert_eq!(yaml_4_spaces, "|-\n    Line 1\n    Line 2\n    Line 3");
 
-        let yaml_1_space = scalar.to_literal_with_indent(1);
+        let yaml_1_space = scalar.to_literal_with_indent(0, 1);
         assert_eq!(yaml_1_space, "|-\n Line 1\n Line 2\n Line 3");
+    }
+
+    #[test]
+    fn test_block_indent_counts_from_parent_column() {
+        let scalar = ScalarValue::literal("  x\n  y");
+        assert_eq!(scalar.to_yaml_string(), "|2-\n    x\n    y");
+        assert_eq!(
+            scalar.to_yaml_string_with_indent(2, 2),
+            "|2-\n      x\n      y"
+        );
+        assert_eq!(
+            scalar.to_literal_with_indent(4, 3),
+            "|3-\n         x\n         y"
+        );
+        assert_eq!(
+            ScalarValue::folded("  x\n").to_folded_with_indent(2, 2),
+            ">2\n      x"
+        );
+        assert_eq!(
+            ScalarValue::literal("x\ny\n").to_yaml_string_with_indent(2, 2),
+            "|\n    x\n    y"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "does not fit in one digit")]
+    fn test_block_indent_indicator_too_large() {
+        ScalarValue::literal("  x").to_literal_with_indent(0, 10);
+    }
+
+    #[test]
+    #[should_panic(expected = "must be indented")]
+    fn test_block_indent_zero() {
+        ScalarValue::literal("x").to_literal_with_indent(2, 0);
     }
 
     #[test]
@@ -1872,7 +1919,7 @@ mod tests {
         let content = "Line 1\nLine 2\nLine 3";
         let scalar = ScalarValue::folded(content);
 
-        let yaml_3_spaces = scalar.to_folded_with_indent(3);
+        let yaml_3_spaces = scalar.to_folded_with_indent(0, 3);
         assert_eq!(yaml_3_spaces, ">-\n   Line 1\n   Line 2\n   Line 3");
     }
 
@@ -1882,7 +1929,7 @@ mod tests {
         let content_with_empty_lines = "Line 1\n\nLine 3\n\n\nLine 6";
         let scalar = ScalarValue::literal(content_with_empty_lines);
 
-        let yaml_output = scalar.to_literal_with_indent(2);
+        let yaml_output = scalar.to_literal_with_indent(0, 2);
         assert_eq!(yaml_output, "|-\n  Line 1\n\n  Line 3\n\n\n  Line 6");
 
         // Empty lines should remain empty (no indentation added)

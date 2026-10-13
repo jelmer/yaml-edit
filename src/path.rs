@@ -448,6 +448,7 @@ impl From<PathParseError> for PathError {
 /// - Array indices with brackets: `"items[0].name"` → `[Key("items"), Index(0), Key("name")]`
 /// - Array indices with dots: `"items.0.name"` → `[Key("items"), Index(0), Key("name")]`
 /// - Escaped dots: `"key\\.with\\.dots"` → `[Key("key.with.dots")]`
+/// - Escaped digits are keys: `"items.\\0"` -> `[Key("items"), Key("0")]`
 ///
 /// An empty path returns an empty list. A malformed `[...]` index is an
 /// error (unclosed `]` or a non-`usize` index).
@@ -491,12 +492,16 @@ pub fn try_parse_path(path: &str) -> Result<Vec<PathSegment>, PathParseError> {
     let mut current = String::new();
     let mut chars = path.chars().peekable();
     let mut escaped = false;
+    // A segment with an escaped character is always a key, so `\0`
+    // names the key "0" rather than an index.
+    let mut current_has_escape = false;
 
     while let Some(ch) = chars.next() {
         if escaped {
             // Previous character was backslash, add this character literally
             current.push(ch);
             escaped = false;
+            current_has_escape = true;
             continue;
         }
 
@@ -508,13 +513,9 @@ pub fn try_parse_path(path: &str) -> Result<Vec<PathSegment>, PathParseError> {
             '.' => {
                 // Segment separator
                 if !current.is_empty() {
-                    // Check if current segment is a number (for array index notation like "items.0")
-                    if let Ok(index) = current.parse::<usize>() {
-                        segments.push(PathSegment::Index(index));
-                    } else {
-                        segments.push(PathSegment::Key(current.clone()));
-                    }
+                    segments.push(dotted_segment(&current, current_has_escape));
                     current.clear();
+                    current_has_escape = false;
                 }
             }
             '[' => {
@@ -522,6 +523,7 @@ pub fn try_parse_path(path: &str) -> Result<Vec<PathSegment>, PathParseError> {
                 if !current.is_empty() {
                     segments.push(PathSegment::Key(current.clone()));
                     current.clear();
+                    current_has_escape = false;
                 }
 
                 // Parse the index until we hit ']'
@@ -552,14 +554,19 @@ pub fn try_parse_path(path: &str) -> Result<Vec<PathSegment>, PathParseError> {
 
     // Add the last segment
     if !current.is_empty() {
-        if let Ok(index) = current.parse::<usize>() {
-            segments.push(PathSegment::Index(index));
-        } else {
-            segments.push(PathSegment::Key(current));
-        }
+        segments.push(dotted_segment(&current, current_has_escape));
     }
 
     Ok(segments)
+}
+
+/// A dot-separated segment is an index when it is a bare number
+/// (`items.0`), and a key otherwise.
+fn dotted_segment(text: &str, has_escape: bool) -> PathSegment {
+    match text.parse::<usize>() {
+        Ok(index) if !has_escape => PathSegment::Index(index),
+        _ => PathSegment::Key(text.to_string()),
+    }
 }
 
 /// Parse a path string into components.
@@ -1414,6 +1421,31 @@ mod tests {
                 PathSegment::Key("b".to_string())
             ]
         );
+        // An escaped digit is part of a key, not an index.
+        assert_eq!(
+            try_parse_path("a.\\0").unwrap(),
+            vec![
+                PathSegment::Key("a".to_string()),
+                PathSegment::Key("0".to_string())
+            ]
+        );
+        assert_eq!(
+            try_parse_path("\\1.b").unwrap(),
+            vec![
+                PathSegment::Key("1".to_string()),
+                PathSegment::Key("b".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn test_set_path_escaped_digit_creates_mapping_key() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("x: 1\n").unwrap();
+        doc.try_set_path("a.\\0", "v").unwrap();
+        assert_eq!(doc.to_string(), "x: 1\na:\n  '0': v\n");
     }
 
     #[test]

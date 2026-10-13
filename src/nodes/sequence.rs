@@ -189,7 +189,7 @@ fn strip_trailing_blank_tokens(entry: &SyntaxNode) {
         .count();
     if blanks > 0 {
         let total = children.len();
-        entry.splice_children((total - blanks)..total, vec![]);
+        crate::nodes::replace_children(entry, (total - blanks)..total, vec![]);
     }
 }
 

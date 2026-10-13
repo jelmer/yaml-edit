@@ -390,7 +390,7 @@ impl Mapping {
         }
         new_children.extend(trailing);
 
-        self.0.splice_children(0..all.len(), new_children);
+        crate::nodes::replace_children(&self.0, 0..all.len(), new_children);
     }
 }
 

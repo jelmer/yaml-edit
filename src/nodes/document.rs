@@ -491,7 +491,7 @@ impl Document {
         let new_doc = Self::from_mapping(mapping);
         let new_children: Vec<_> = new_doc.0.children_with_tokens().collect();
         let child_count = self.0.children_with_tokens().count();
-        self.0.splice_children(0..child_count, new_children);
+        crate::nodes::replace_children(&self.0, 0..child_count, new_children);
         true
     }
 

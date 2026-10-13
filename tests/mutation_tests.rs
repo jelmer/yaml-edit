@@ -14,7 +14,7 @@
 //! 3. Round-trip validity - output can be re-parsed
 
 use std::str::FromStr;
-use yaml_edit::YamlFile;
+use yaml_edit::{Document, YamlFile};
 
 mod common;
 use common::assert_file_cst_ok;
@@ -288,4 +288,30 @@ fn test_deeply_nested_mutations() {
     let output = yaml.to_string();
     let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
     assert!(reparsed.document().is_some());
+}
+
+#[test]
+fn test_scalar_set_value_multiline_plain() {
+    let doc = Document::from_str("a: foo\n  bar\nb: 2\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    mapping
+        .get("a")
+        .unwrap()
+        .as_scalar()
+        .unwrap()
+        .set_value("x");
+    assert_eq!(doc.to_string(), "a: x\nb: 2\n");
+}
+
+#[test]
+fn test_scalar_set_value_block_scalar() {
+    let doc = Document::from_str("a: |\n  hello\nb: 2\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    mapping
+        .get("a")
+        .unwrap()
+        .as_scalar()
+        .unwrap()
+        .set_value("x");
+    assert_eq!(doc.to_string(), "a: x\nb: 2\n");
 }

@@ -305,9 +305,17 @@ impl Scalar {
     /// If token-kind accuracy matters, build a replacement scalar node via the
     /// higher-level API instead.
     pub fn set_value(&self, value: &str) {
-        let children_count = self.0.children_with_tokens().count();
-        self.0.splice_children(
-            0..children_count,
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        // A block scalar owns the line break that ends its body; keep it so
+        // the next entry stays on its own line.
+        let trailing_newlines = children
+            .iter()
+            .rev()
+            .take_while(|c| c.kind() == SyntaxKind::NEWLINE)
+            .count();
+        crate::nodes::replace_children(
+            &self.0,
+            0..children.len() - trailing_newlines,
             vec![fresh_token(SyntaxKind::STRING, value).into()],
         );
     }

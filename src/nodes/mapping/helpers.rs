@@ -73,7 +73,7 @@ pub(super) fn ensure_top_level_empty_renders_as_flow(mapping: &SyntaxNode) {
         return;
     }
     if !leftovers.is_empty() {
-        mapping.splice_children(0..leftovers.len(), vec![]);
+        crate::nodes::replace_children(mapping, 0..leftovers.len(), vec![]);
     }
     let lbrace = fresh_token(SyntaxKind::LEFT_BRACE, "{");
     let rbrace = fresh_token(SyntaxKind::RIGHT_BRACE, "}");

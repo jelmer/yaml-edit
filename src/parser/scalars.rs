@@ -741,7 +741,10 @@ impl Parser {
         // swallowed it: `- -\n   |\n  - z\n` has an empty scalar, and
         // `- z` is the inner sequence's next entry. A scalar that is the
         // document's own node has no such collection.
-        let enclosing_column = self.sequence_entry_column.or(self.mapping_value_column);
+        //
+        // Both columns can be set at once, as in `- a: |`, and the innermost
+        // collection is the one with the larger column.
+        let enclosing_column = self.sequence_entry_column.max(self.mapping_value_column);
         // An explicit indentation indicator (`>2`) states the body's column
         // outright, so the first line does not get to set it: in
         // `a: >2\n   more\n  regular\n` the `regular` line is body at the

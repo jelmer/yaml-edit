@@ -317,6 +317,57 @@ simple: value1
     assert_eq!(output, yaml);
 }
 
+/// Scalar keys of the root mapping of `yaml`, with `None` for any other key.
+fn root_scalar_keys(yaml: &str) -> Vec<Option<String>> {
+    let doc = yaml.parse::<YamlFile>().unwrap();
+    let mapping = doc.document().unwrap().as_mapping().unwrap();
+    mapping
+        .iter()
+        .map(|(k, _)| k.as_scalar().map(|s| s.as_string()))
+        .collect()
+}
+
+#[test]
+fn test_plain_key_after_complex_key() {
+    // The second key used to be a bare STRING with no SCALAR node, so it
+    // was invisible to keys() and get().
+    let doc = "[1]: 2\nk: v\n".parse::<YamlFile>().unwrap();
+    let document = doc.document().unwrap();
+    assert_eq!(document.get_string("k"), Some("v".to_string()));
+    assert_eq!(root_scalar_keys("[1]: 2\nk: v\n"), [None, Some("k".into())]);
+}
+
+#[test]
+fn test_annotated_key_after_complex_key() {
+    // Used to be the single value `2 &a k: v`.
+    assert_eq!(
+        root_scalar_keys("[1]: 2\n&a k: v\n"),
+        [None, Some("k".into())]
+    );
+    assert_eq!(root_scalar_keys("&k [a]: v\n&j {b: 1}: w\n"), [None, None]);
+}
+
+#[test]
+fn test_explicit_key_after_complex_key() {
+    assert_eq!(
+        root_scalar_keys("[1]: 2\n? x\n: y\nz: 1\n"),
+        [None, Some("x".into()), Some("z".into())]
+    );
+}
+
+#[test]
+fn test_nested_complex_key_mapping_ends_at_dedent() {
+    assert_eq!(
+        root_scalar_keys("a:\n  [1]: 2\nj: w\n"),
+        [Some("a".into()), Some("j".into())]
+    );
+}
+
+#[test]
+fn test_sequence_entry_after_complex_key_is_an_error() {
+    assert!("[1]: 2\n- x\n".parse::<YamlFile>().is_err());
+}
+
 #[test]
 fn test_nested_complex_keys() {
     let yaml = r#"

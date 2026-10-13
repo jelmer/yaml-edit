@@ -97,56 +97,16 @@ impl Parser {
             }
 
             // No mapping key found - exit
-            if !self.is_mapping_key() && !self.is_complex_mapping_key() {
+            if !self.is_mapping_key()
+                && !self.is_complex_mapping_key()
+                && !(matches!(self.current(), Some(SyntaxKind::ANCHOR | SyntaxKind::TAG))
+                    && self.is_complex_mapping_key_after_annotations())
+            {
                 break;
             }
 
-            // Check for complex keys (sequences or mappings as keys)
-            if self.current() == Some(SyntaxKind::LEFT_BRACKET)
-                || self.current() == Some(SyntaxKind::LEFT_BRACE)
-            {
-                // Start a MAPPING_ENTRY to wrap this key-value pair
-                self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
-
-                self.builder.start_node(SyntaxKind::KEY.into());
-                if self.current() == Some(SyntaxKind::LEFT_BRACKET) {
-                    self.parse_flow_sequence();
-                } else if self.current() == Some(SyntaxKind::LEFT_BRACE) {
-                    self.parse_flow_mapping();
-                }
-                self.builder.finish_node();
-
-                self.skip_ws_and_newlines();
-
-                if self.current() == Some(SyntaxKind::COLON) {
-                    self.bump();
-                    self.skip_whitespace();
-
-                    self.builder.start_node(SyntaxKind::VALUE.into());
-                    if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                        self.parse_value();
-                    } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                        self.bump();
-                        if self.current() == Some(SyntaxKind::INDENT) {
-                            self.bump();
-                            self.parse_value();
-                        }
-                    }
-                    self.builder.finish_node();
-                } else {
-                    let error_msg = self.create_detailed_error(
-                        "Missing colon in mapping",
-                        "':' after key",
-                        self.current_text(),
-                    );
-                    self.add_error_and_recover(error_msg, SyntaxKind::COLON, ParseErrorKind::Other);
-                }
-
-                // Finish the MAPPING_ENTRY node
-                self.builder.finish_node();
-            }
             // Check for explicit key indicator
-            else if self.current() == Some(SyntaxKind::QUESTION) {
+            if self.current() == Some(SyntaxKind::QUESTION) {
                 self.parse_explicit_key_entry();
             } else {
                 self.parse_mapping_key_value_pair(base_indent);
@@ -544,131 +504,6 @@ impl Parser {
         self.builder.finish_node();
     }
 
-    pub(super) fn parse_complex_key_mapping(&mut self) {
-        // Parse mapping where the key is a complex structure (sequence or mapping)
-        self.builder.start_node(SyntaxKind::MAPPING.into());
-
-        // Start a MAPPING_ENTRY to wrap this key-value pair
-        self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
-
-        // Parse the complex key
-        self.builder.start_node(SyntaxKind::KEY.into());
-        // An anchor before the key annotates that key, so it belongs inside
-        // the KEY node: `&key [ a ]: value` anchors the flow sequence, not
-        // the mapping. Left outside, it looked like a second anchor on the
-        // mapping itself (test suite 6BFJ).
-        while matches!(self.current(), Some(SyntaxKind::ANCHOR | SyntaxKind::TAG)) {
-            self.bump();
-            self.skip_whitespace();
-        }
-        if self.current() == Some(SyntaxKind::LEFT_BRACKET) {
-            self.parse_flow_sequence();
-        } else if self.current() == Some(SyntaxKind::LEFT_BRACE) {
-            self.parse_flow_mapping();
-        }
-        self.builder.finish_node();
-
-        self.skip_ws_and_newlines(); // Allow newlines between key and colon
-
-        // Expect colon
-        if self.current() == Some(SyntaxKind::COLON) {
-            self.bump();
-            self.skip_whitespace();
-
-            // Parse value
-            self.parse_value_after_colon(false, None);
-        } else {
-            let error_msg = self.create_detailed_error(
-                "Missing colon in complex mapping",
-                "':' after complex key",
-                self.current_text(),
-            );
-            self.add_error_and_recover(error_msg, SyntaxKind::COLON, ParseErrorKind::Other);
-        }
-
-        // Finish the first MAPPING_ENTRY node
-        self.builder.finish_node();
-
-        self.skip_ws_and_newlines();
-
-        // Continue parsing more entries if they exist
-        while self.current().is_some() {
-            let tokens_before_iter = self.tokens.len();
-            if self.current() == Some(SyntaxKind::QUESTION) {
-                // Switch to explicit key parsing
-                self.parse_explicit_key_entries();
-                break;
-            } else if self.is_complex_mapping_key()
-                || (self.is_mapping_key() && self.current() != Some(SyntaxKind::QUESTION))
-            {
-                // Start a MAPPING_ENTRY for this additional entry
-                self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
-
-                // Parse another entry
-                self.builder.start_node(SyntaxKind::KEY.into());
-
-                if self.current() == Some(SyntaxKind::LEFT_BRACKET) {
-                    self.parse_flow_sequence();
-                } else if self.current() == Some(SyntaxKind::LEFT_BRACE) {
-                    self.parse_flow_mapping();
-                } else if matches!(
-                    self.current(),
-                    Some(
-                        SyntaxKind::STRING
-                            | SyntaxKind::INT
-                            | SyntaxKind::FLOAT
-                            | SyntaxKind::BOOL
-                            | SyntaxKind::NULL
-                            | SyntaxKind::MERGE_KEY
-                    )
-                ) {
-                    self.bump();
-                }
-                self.builder.finish_node();
-
-                self.skip_whitespace();
-
-                if self.current() == Some(SyntaxKind::COLON) {
-                    self.bump();
-                    self.skip_whitespace();
-
-                    self.builder.start_node(SyntaxKind::VALUE.into());
-                    if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                        self.parse_value();
-                    } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                        self.bump();
-                        if self.current() == Some(SyntaxKind::INDENT) {
-                            self.bump();
-                            self.parse_value();
-                        }
-                    }
-                    self.builder.finish_node();
-                }
-
-                // Finish the MAPPING_ENTRY node
-                self.builder.finish_node();
-
-                self.skip_ws_and_newlines();
-            } else {
-                break;
-            }
-
-            // Progress guard: if is_mapping_key() returned true but nothing
-            // consumed the current token (e.g. `]:` at top level), break to
-            // avoid an infinite loop.
-            if self.tokens.len() == tokens_before_iter {
-                let unexpected = self.current_text().unwrap_or("").to_string();
-                self.add_error(
-                    format!("Unexpected token in complex mapping: {unexpected:?}"),
-                    ParseErrorKind::Other,
-                );
-                self.bump();
-            }
-        }
-
-        self.builder.finish_node();
-    }
-
     fn parse_explicit_key_entries(&mut self) {
         // Helper to continue parsing explicit key entries within a mapping
         while self.current() == Some(SyntaxKind::QUESTION) {
@@ -833,7 +668,7 @@ impl Parser {
             Some(SyntaxKind::LEFT_BRACKET) => {
                 // Check if this is a complex key in a mapping
                 if !self.in_flow_context && self.is_complex_mapping_key() {
-                    self.parse_complex_key_mapping();
+                    self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_flow_sequence();
                 }
@@ -841,7 +676,7 @@ impl Parser {
             Some(SyntaxKind::LEFT_BRACE) => {
                 // Check if this is a complex key in a mapping
                 if !self.in_flow_context && self.is_complex_mapping_key() {
-                    self.parse_complex_key_mapping();
+                    self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_flow_mapping();
                 }
@@ -1080,6 +915,10 @@ impl Parser {
         } else if self.current() == Some(SyntaxKind::REFERENCE) {
             // Handle alias as key (*b:)
             self.parse_alias();
+        } else if self.current() == Some(SyntaxKind::LEFT_BRACKET) {
+            self.parse_flow_sequence();
+        } else if self.current() == Some(SyntaxKind::LEFT_BRACE) {
+            self.parse_flow_mapping();
         } else if self.current().is_some_and(is_plain_scalar_kind) {
             self.builder.start_node(SyntaxKind::SCALAR.into());
             self.bump();

@@ -996,6 +996,14 @@ impl ScalarValue {
             return ScalarStyle::DoubleQuoted;
         }
         if value.contains('\n') {
+            // A block scalar holds a whitespace-only line as nothing but
+            // trailing spaces, which editors and readers commonly strip.
+            if value
+                .split('\n')
+                .any(|line| !line.is_empty() && line.trim_matches([' ', '\t']).is_empty())
+            {
+                return ScalarStyle::DoubleQuoted;
+            }
             return ScalarStyle::Literal;
         }
         // Check if value needs quoting
@@ -1209,7 +1217,7 @@ impl ScalarValue {
                         if Self::needs_double_quotes(&self.value) {
                             self.to_double_quoted()
                         } else if Self::needs_quoting_as_tagged(&self.value) {
-                            self.to_single_quoted()
+                            self.to_single_quoted(parent_column + indent)
                         } else {
                             self.value.clone()
                         }
@@ -1219,7 +1227,7 @@ impl ScalarValue {
                         if Self::needs_double_quotes(&self.value) {
                             self.to_double_quoted()
                         } else if Self::needs_quoting(&self.value) {
-                            self.to_single_quoted()
+                            self.to_single_quoted(parent_column + indent)
                         } else {
                             self.value.clone()
                         }
@@ -1235,23 +1243,51 @@ impl ScalarValue {
                     ScalarType::Binary => self.value.clone(),
                 }
             }
-            ScalarStyle::SingleQuoted => self.to_single_quoted(),
+            ScalarStyle::SingleQuoted => self.to_single_quoted(parent_column + indent),
             ScalarStyle::DoubleQuoted => self.to_double_quoted(),
             ScalarStyle::Literal => self.to_block_with_indent('|', parent_column, indent),
             ScalarStyle::Folded => self.to_block_with_indent('>', parent_column, indent),
         }
     }
 
-    /// Convert to single-quoted string
-    fn to_single_quoted(&self) -> String {
+    /// Convert to single-quoted string, indenting continuation lines by
+    /// `indent` spaces.
+    fn to_single_quoted(&self, indent: usize) -> String {
         // A single-quoted scalar folds a raw line break into a space, so a
         // lone `\r` can only be written escaped.
         if self.value.contains('\r') {
             return self.to_double_quoted();
         }
-        // Escape single quotes by doubling them
-        let escaped = self.value.replace('\'', "''");
-        format!("'{escaped}'")
+        // Line folding trims whitespace around a break, which only double
+        // quotes can keep.
+        let white = [' ', '\t'];
+        if self
+            .value
+            .split('\n')
+            .skip(1)
+            .zip(self.value.split('\n'))
+            .any(|(next, prev)| next.starts_with(white) || prev.ends_with(white))
+        {
+            return self.to_double_quoted();
+        }
+        // A run of n breaks folds to n - 1 newlines, or a space for n = 1.
+        let mut result = String::from("'");
+        let mut prev_empty = false;
+        for (i, part) in self.value.split('\n').enumerate() {
+            if i > 0 {
+                result.push('\n');
+                if !prev_empty || i == 1 {
+                    result.push('\n');
+                }
+                if !part.is_empty() {
+                    result.push_str(&" ".repeat(indent));
+                }
+            }
+            result.push_str(&part.replace('\'', "''"));
+            prev_empty = part.is_empty();
+        }
+        result.push('\'');
+        result
     }
 
     /// Convert to double-quoted string
@@ -1324,15 +1360,18 @@ impl ScalarValue {
             1 => "",
             _ => "+",
         };
-        // A reader takes the block's indentation from its first non-blank
+        let mut lines: Vec<&str> = self.value.split('\n').collect();
+        if trailing > 0 {
+            lines.pop();
+        }
+        // A reader takes the block's indentation from its first non-empty
         // line, so leading spaces there would be stripped as indentation
         // (or make later lines look dedented) unless an indicator says
         // where the body starts. It counts from the parent collection's
         // column.
-        let needs_indicator = self
-            .value
-            .lines()
-            .find(|line| line.starts_with(' ') || !line.trim().is_empty())
+        let needs_indicator = lines
+            .iter()
+            .find(|line| !line.is_empty())
             .is_some_and(|line| line.starts_with(' '));
         let indicator = if needs_indicator {
             assert!(
@@ -1343,20 +1382,24 @@ impl ScalarValue {
         } else {
             String::new()
         };
-        let body = " ".repeat(parent_column + indent);
-        let indented = self
-            .value
-            .lines()
-            .map(|line| {
-                if line.is_empty() {
-                    String::new()
-                } else {
-                    format!("{body}{line}")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!("{marker}{indicator}{chomp}\n{indented}")
+        let indent_str = " ".repeat(parent_column + indent);
+        let is_folded_text = |line: &str| !line.is_empty() && !line.starts_with([' ', '\t']);
+        let mut body = Vec::with_capacity(lines.len());
+        let mut prev_text: Option<&str> = None;
+        for line in lines {
+            if line.is_empty() {
+                body.push(String::new());
+                continue;
+            }
+            // A folded block turns a break between two unindented lines into
+            // a space; an extra empty line keeps it a newline.
+            if marker == '>' && is_folded_text(line) && prev_text.is_some_and(is_folded_text) {
+                body.push(String::new());
+            }
+            prev_text = Some(line);
+            body.push(format!("{indent_str}{line}"));
+        }
+        format!("{marker}{indicator}{chomp}\n{}", body.join("\n"))
     }
 }
 
@@ -1915,7 +1958,87 @@ mod tests {
         let scalar = ScalarValue::folded(content);
 
         let yaml_3_spaces = scalar.to_folded_with_indent(0, 3);
-        assert_eq!(yaml_3_spaces, ">-\n   Line 1\n   Line 2\n   Line 3");
+        assert_eq!(yaml_3_spaces, ">-\n   Line 1\n\n   Line 2\n\n   Line 3");
+    }
+
+    #[test]
+    fn test_block_scalar_first_line_more_indented() {
+        // The first line's extra spaces would be taken as the block's own
+        // indentation, leaving the later line outside it.
+        assert_eq!(
+            ScalarValue::string("  a\nb").to_yaml_string(),
+            "|2-\n    a\n  b"
+        );
+        assert_eq!(
+            ScalarValue::string("  x\n y").to_yaml_string_with_indent(2, 2),
+            "|2-\n      x\n     y"
+        );
+        assert_eq!(
+            ScalarValue::string("\n x").to_yaml_string_with_indent(2, 2),
+            "|2-\n\n     x"
+        );
+    }
+
+    #[test]
+    fn test_block_scalar_whitespace_only_lines() {
+        assert_eq!(
+            ScalarValue::literal("a\n ").to_yaml_string(),
+            "|-\n  a\n   "
+        );
+        assert_eq!(
+            ScalarValue::literal("a\n   \nb").to_yaml_string(),
+            "|-\n  a\n     \n  b"
+        );
+        assert_eq!(ScalarValue::literal(" ").to_yaml_string(), "|2-\n   ");
+        assert_eq!(ScalarValue::literal(" \n").to_yaml_string(), "|2\n   ");
+        // Left to choose, such a value is double-quoted.
+        assert_eq!(ScalarValue::string("a\n ").to_yaml_string(), "\"a\\n \"");
+        assert_eq!(ScalarValue::string(" \n").to_yaml_string(), "\" \\n\"");
+    }
+
+    #[test]
+    fn test_folded_preserves_line_breaks() {
+        assert_eq!(
+            ScalarValue::folded("a\nb").to_yaml_string(),
+            ">-\n  a\n\n  b"
+        );
+        // Breaks next to a more-indented line are not folded, so they need
+        // no extra empty line.
+        assert_eq!(
+            ScalarValue::folded("a\n\nb\n  c\nd\n").to_yaml_string(),
+            ">\n  a\n\n\n  b\n    c\n  d"
+        );
+    }
+
+    #[test]
+    fn test_single_quoted_line_breaks() {
+        // Continuation lines are indented to stay inside the parent block.
+        assert_eq!(
+            ScalarValue::single_quoted("a\nb").to_yaml_string(),
+            "'a\n\n  b'"
+        );
+        assert_eq!(
+            ScalarValue::single_quoted("a\n\nb").to_yaml_string(),
+            "'a\n\n\n  b'"
+        );
+        assert_eq!(
+            ScalarValue::single_quoted("\nb\n").to_yaml_string(),
+            "'\n\n  b\n\n'"
+        );
+        assert_eq!(
+            ScalarValue::single_quoted("a\nb").to_yaml_string_with_indent(2, 2),
+            "'a\n\n    b'"
+        );
+        // Whitespace around a line break is trimmed when folding, so only
+        // double quotes can carry it.
+        assert_eq!(
+            ScalarValue::single_quoted("a \nb").to_yaml_string(),
+            "\"a \\nb\""
+        );
+        assert_eq!(
+            ScalarValue::single_quoted("a\n b").to_yaml_string(),
+            "\"a\\n b\""
+        );
     }
 
     #[test]
@@ -2721,12 +2844,13 @@ mod tests {
     #[test]
     fn test_literal_and_folded_nonempty() {
         // Literal and folded styles render the block indicator on its own line
-        // followed by the content indented by two spaces.
+        // followed by the content indented by two spaces. A folded block
+        // needs an empty line to keep a line break.
         let s = ScalarValue::with_style("line one\nline two", ScalarStyle::Literal);
         assert_eq!(s.to_yaml_string(), "|-\n  line one\n  line two");
 
         let s = ScalarValue::with_style("line one\nline two", ScalarStyle::Folded);
-        assert_eq!(s.to_yaml_string(), ">-\n  line one\n  line two");
+        assert_eq!(s.to_yaml_string(), ">-\n  line one\n\n  line two");
     }
 
     #[test]

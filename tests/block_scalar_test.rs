@@ -1028,3 +1028,50 @@ fn test_set_indented_block_value_in_nested_mapping() {
     assert_eq!(output, "o:\n  k: |2-\n      x\n      y\n");
     assert_eq!(scalar_at(&output, &["o", "k"]), "  x\n  y");
 }
+
+fn set_and_reread(value: &str) -> (String, String) {
+    let parsed = YamlFile::parse("k: 0\n").to_result().unwrap();
+    let mapping = parsed.document().unwrap().as_mapping().unwrap();
+    mapping.set("k", value);
+    let text = parsed.to_string();
+    let reparsed = YamlFile::parse(&text).to_result().unwrap();
+    let read = reparsed
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("k")
+        .unwrap()
+        .as_scalar()
+        .unwrap()
+        .as_string();
+    (text, read)
+}
+
+#[test]
+fn test_set_value_with_more_indented_first_line() {
+    assert_eq!(
+        set_and_reread("  x\n y"),
+        ("k: |2-\n    x\n   y\n".to_string(), "  x\n y".to_string())
+    );
+    assert_eq!(
+        set_and_reread("  a\nb"),
+        ("k: |2-\n    a\n  b\n".to_string(), "  a\nb".to_string())
+    );
+}
+
+#[test]
+fn test_set_value_with_whitespace_only_lines() {
+    assert_eq!(
+        set_and_reread("a\n "),
+        ("k: \"a\\n \"\n".to_string(), "a\n ".to_string())
+    );
+    assert_eq!(
+        set_and_reread("a\n   \nb"),
+        ("k: \"a\\n   \\nb\"\n".to_string(), "a\n   \nb".to_string())
+    );
+    assert_eq!(
+        set_and_reread(" \n"),
+        ("k: \" \\n\"\n".to_string(), " \n".to_string())
+    );
+}

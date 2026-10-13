@@ -19,6 +19,26 @@ use std::str::FromStr;
 use yaml_edit::YamlFile;
 
 #[test]
+fn test_comment_between_entries_parsing() {
+    let str = "a:\n  - x\n # c\n  - y\n";
+    let parsed = YamlFile::from_str(str).expect("Failed to parse YAML");
+    let document = parsed.document().expect("Should have a document");
+    let mapping = document.as_mapping().expect("Should be a mapping");
+    let value = mapping.get("a").expect("Should have a key 'a'");
+    let sequence = value.as_sequence().expect("Should be a sequence");
+
+    assert_eq!(sequence.len(), 2);
+    assert_eq!(
+        sequence.get(0).unwrap().as_scalar().unwrap().as_string(),
+        "x"
+    );
+    assert_eq!(
+        sequence.get(1).unwrap().as_scalar().unwrap().as_string(),
+        "y"
+    );
+}
+
+#[test]
 fn test_valueless_tag_parsing() {
     let yaml = r#"
 - a: 1

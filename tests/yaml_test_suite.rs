@@ -341,28 +341,11 @@ fn yaml_test_suite() {
 /// until it is removed from here.
 const KNOWN_VALUE_FAILURES: &[(&str, &str)] = &[
     ("3GZX", "redefined anchor"),
-    ("4Q9F", "block scalar blank lines"),
-    ("4QFQ", "block scalar indent indicator"),
     ("5TYM", "tag handles"),
     ("6CK3", "tag handles"),
-    ("6FWR", "block scalar blank lines"),
-    ("6VJK", "block scalar blank lines"),
     ("7T8X", "block scalar blank lines, trailing comment"),
-    ("93WF", "block scalar blank lines"),
     ("CC74", "tag handles"),
-    ("DWX9", "block scalar blank lines"),
-    ("F6MC", "block scalar indent indicator"),
-    ("H2RW", "block scalar blank lines"),
-    ("K527", "block scalar blank lines"),
-    ("K858", "block scalar blank lines"),
-    ("L24T/00", "block scalar blank lines"),
-    ("L24T/01", "block scalar blank lines"),
-    ("MJS9", "block scalar blank lines"),
-    ("R4YG", "block scalar indent indicator"),
-    ("T26H", "block scalar blank lines"),
-    ("TS54", "block scalar blank lines"),
     ("U3C3", "tag handles"),
-    ("Y79Y/001", "block scalar indentation"),
     ("Z9M4", "tag handles"),
 ];
 

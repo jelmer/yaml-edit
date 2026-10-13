@@ -4,6 +4,7 @@ use crate::lex::SyntaxKind;
 use crate::scalar::ScalarValue;
 use crate::yaml::ValueNode;
 use rowan::ast::AstNode;
+use std::borrow::Cow;
 use std::fmt;
 
 ast_node!(Scalar, SCALAR, "A YAML scalar value");
@@ -42,6 +43,16 @@ impl fmt::Display for ScalarConversionError {
 }
 
 impl std::error::Error for ScalarConversionError {}
+
+/// Replace `\r\n` and lone `\r` line breaks with `\n`, which
+/// `str::lines` does not split on.
+fn normalize_line_breaks(text: &str) -> Cow<'_, str> {
+    if text.contains('\r') {
+        Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
 
 impl Scalar {
     /// Get the string value of this scalar
@@ -98,13 +109,13 @@ impl Scalar {
             Self::parse_block_scalar(&text, self.block_parent_column())
         } else {
             // Plain scalar - fold lines if multi-line
-            if text.contains('\n') {
+            if text.contains(['\n', '\r']) {
                 // Multi-line plain scalar: a single line break folds to a
                 // space, and each additional one is kept, so a blank line
                 // between two lines becomes a newline (YAML 1.2 line folding).
                 let mut result = String::new();
                 let mut pending_breaks = 0usize;
-                for line in text.lines() {
+                for line in normalize_line_breaks(&text).lines() {
                     let trimmed = line.trim();
                     if trimmed.is_empty() {
                         // Only counts once content has started; leading blank
@@ -153,6 +164,7 @@ impl Scalar {
     /// `parent_column` is the column of the collection the scalar is a node
     /// of, which an explicit indentation indicator counts from.
     fn parse_block_scalar(text: &str, parent_column: usize) -> String {
+        let text = normalize_line_breaks(text);
         let mut lines = text.lines();
         let first_line = match lines.next() {
             Some(line) => line,
@@ -195,119 +207,76 @@ impl Scalar {
             .map(|d| d as usize);
         let base_indent = match explicit_indent {
             Some(explicit) => parent_column + explicit,
+            // With no content line at all, every line is empty however
+            // many spaces it holds.
             None => content_lines
                 .iter()
                 .find(|line| !line.trim().is_empty())
-                .map_or(0, |line| line.chars().take_while(|c| *c == ' ').count()),
+                .map_or(usize::MAX, |line| {
+                    line.chars().take_while(|c| *c == ' ').count()
+                }),
         };
 
-        // Count trailing empty lines for Keep chomping
-        let trailing_empty_count = content_lines
-            .iter()
-            .rev()
-            .take_while(|line| line.trim().is_empty())
-            .count();
-
-        // Process content
+        // A line with no more than `base_indent` spaces and nothing else is
+        // empty; other lines lose up to `base_indent` spaces of indentation.
         let mut result = String::new();
-        let mut prev_was_empty = false;
-        let mut prev_was_more_indented = false;
+        let mut empty_lines = 0;
+        // Whether the previous content line, if any, started with white space
+        let mut prev_spaced: Option<bool> = None;
 
-        for (i, line) in content_lines.iter().enumerate() {
-            if line.trim().is_empty() {
-                // Empty line
-                if is_literal {
-                    // Literal: each line (including empty) gets a newline after it
-                    result.push('\n');
-                } else {
-                    // Folded: empty lines create paragraph breaks (single newline)
-                    if !prev_was_empty && i > 0 {
-                        // Add newline to create paragraph break
-                        result.push('\n');
-                    }
-                }
-                prev_was_empty = true;
-                prev_was_more_indented = false;
-            } else {
-                // Non-empty line - strip up to `base_indent` leading spaces.
-                // base_indent is a character count, so we step by chars to
-                // stay on UTF-8 boundaries even if the line starts with
-                // multi-byte content at less than base_indent spaces of
-                // indentation.
-                let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
-                let strip = leading_spaces.min(base_indent);
-                let strip_bytes = line
-                    .char_indices()
-                    .nth(strip)
-                    .map_or(line.len(), |(i, _)| i);
-                let stripped = &line[strip_bytes..];
-
-                if is_literal {
-                    // Literal: each line gets content + newline
-                    result.push_str(stripped);
-                    result.push('\n');
-                    prev_was_more_indented = false;
-                } else {
-                    // Folded: check if line is more indented than base
-                    let line_indent = line.chars().take_while(|c| *c == ' ').count();
-                    let is_more_indented = line_indent > base_indent;
-
-                    if is_more_indented {
-                        // More-indented lines: preserve on their own line with extra indent
-                        if i > 0 && !prev_was_empty && !prev_was_more_indented {
-                            // Only add newline if transitioning from normal to more-indented
-                            result.push('\n');
-                        }
-                        result.push_str(stripped);
-                        result.push('\n');
-                        prev_was_more_indented = true;
-                    } else {
-                        // Normal line: fold with previous unless after empty line or more-indented
-                        if i > 0 {
-                            if prev_was_empty || prev_was_more_indented {
-                                // After paragraph break or more-indented section, don't add space
-                                result.push_str(stripped);
-                            } else {
-                                // Join with space
-                                result.push(' ');
-                                result.push_str(stripped);
-                            }
-                        } else {
-                            // First line
-                            result.push_str(stripped);
-                        }
-                        prev_was_more_indented = false;
-                    }
-                }
-                prev_was_empty = false;
+        for line in &content_lines {
+            // base_indent is a character count, so we step by chars to
+            // stay on UTF-8 boundaries even if the line starts with
+            // multi-byte content at less than base_indent spaces of
+            // indentation.
+            let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
+            let strip = leading_spaces.min(base_indent);
+            let strip_bytes = line
+                .char_indices()
+                .nth(strip)
+                .map_or(line.len(), |(i, _)| i);
+            let stripped = &line[strip_bytes..];
+            if stripped.is_empty() {
+                empty_lines += 1;
+                continue;
             }
+
+            // Folding joins two lines with a space, unless empty lines
+            // separate them or either starts with white space, in which
+            // case every line break is kept.
+            let spaced = stripped.starts_with([' ', '\t']);
+            let breaks = match prev_spaced {
+                None => empty_lines,
+                Some(prev) if is_literal || prev || spaced => empty_lines + 1,
+                Some(_) if empty_lines == 0 => {
+                    result.push(' ');
+                    0
+                }
+                Some(_) => empty_lines,
+            };
+            result.push_str(&"\n".repeat(breaks));
+            result.push_str(stripped);
+            prev_spaced = Some(spaced);
+            empty_lines = 0;
         }
 
-        // Apply chomping
+        // `empty_lines` is now the number of trailing empty lines
+        let has_content = prev_spaced.is_some();
         match chomping {
-            Chomping::Strip => {
-                // Remove all trailing newlines
-                result = result.trim_end_matches('\n').to_string();
-            }
+            Chomping::Strip => {}
             Chomping::Clip => {
-                // Keep single trailing newline
-                result = result.trim_end_matches('\n').to_string();
-                result.push('\n');
+                if has_content {
+                    result.push('\n');
+                }
             }
             Chomping::Keep => {
-                // Keep all trailing newlines - preserve the count we detected
-                // Remove all trailing newlines first, then add back the original count
-                result = result.trim_end_matches('\n').to_string();
                 // One newline ends the last content line, then one per
                 // trailing blank. A body that is nothing but blank lines has
                 // no content line to end, so it gets only the blanks:
                 // `k: |+\n\n\n` is `"\n\n"`, as saphyr and PyYAML both
                 // read it, not `"\n\n\n"`.
-                let has_content = content_lines.len() > trailing_empty_count;
-                let newlines = trailing_empty_count + usize::from(has_content);
-                for _ in 0..newlines {
-                    result.push('\n');
-                }
+                let newlines = empty_lines + usize::from(has_content);
+                result.push_str(&"\n".repeat(newlines));
             }
         }
 
@@ -703,5 +672,37 @@ mod tests {
         assert_eq!(value("k: 'a\n  '\n"), "a ");
         assert_eq!(value("k: 'a\r\n\r\n  b'\r\n"), "a\nb");
         assert_eq!(value("k: 'a''\n  ''b'\n"), "a' 'b");
+    }
+
+    #[test]
+    fn test_block_scalar_values() {
+        let value = |yaml: &str, key: &str| {
+            let doc = Document::from_str(yaml).unwrap();
+            let node = doc.as_mapping().unwrap().get(key).unwrap();
+            node.as_scalar().unwrap().as_string()
+        };
+        assert_eq!(value("k: >\n  a\n\n\n  b\n", "k"), "a\n\nb\n");
+        assert_eq!(value("k: >\n\n  a\n", "k"), "\na\n");
+        assert_eq!(value("k: >-\n  x\n  \ty\n", "k"), "x\n\ty");
+        assert_eq!(value("k: >\n  a\n   b\n  c\n", "k"), "a\n b\nc\n");
+        assert_eq!(value("k: >\n  a\n\n   b\n\n  c\n", "k"), "a\n\n b\n\nc\n");
+        assert_eq!(value("k: |\n  a\n    \n \n  b\n", "k"), "a\n  \n\nb\n");
+        assert_eq!(value("k: >\n\nj: 1\n", "k"), "");
+        assert_eq!(value("k: |+\n\nj: 1\n", "k"), "\n");
+        assert_eq!(value("k: |-\n\nj: 1\n", "k"), "");
+        assert_eq!(value("k: |+\n   \n", "k"), "\n");
+    }
+
+    #[test]
+    fn test_lone_carriage_return_line_breaks() {
+        let value = |yaml: &str, key: &str| {
+            let doc = Document::from_str(yaml).unwrap();
+            let node = doc.as_mapping().unwrap().get(key).unwrap();
+            node.as_scalar().unwrap().as_string()
+        };
+        assert_eq!(value("a: |\r  x\r  y\rb: 2\r", "a"), "x\ny\n");
+        assert_eq!(value("a: |\r  x\r  y\rb: 2\r", "b"), "2");
+        assert_eq!(value("a: b\r  c\rd: e\r", "a"), "b c");
+        assert_eq!(value("a: b\r\r  c\rd: e\r", "a"), "b\nc");
     }
 }

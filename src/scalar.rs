@@ -664,7 +664,7 @@ impl ScalarValue {
     ///
     /// Note that [`auto_detect_type`](Self::auto_detect_type) is
     /// deliberately more permissive (recognises YAML 1.1 `yes`/`no`
-    /// booleans, timestamps, base64) and is meant for constructing new
+    /// booleans and timestamps) and is meant for constructing new
     /// values from arbitrary strings, not for reading spec-conformant
     /// YAML back out.
     pub fn classify_plain(value: &str) -> CoreScalarType {
@@ -770,12 +770,6 @@ impl ScalarValue {
         // Check for timestamps (basic patterns)
         if Self::is_valid_timestamp_static(value) {
             return ScalarType::Timestamp;
-        }
-
-        // Check for binary data (base64)
-        #[cfg(feature = "base64")]
-        if Self::looks_like_base64(value) && base64_decode(value).is_ok() {
-            return ScalarType::Binary;
         }
 
         // Default to string
@@ -892,49 +886,6 @@ impl ScalarValue {
         };
         scalar.tag = tag;
         Some(scalar)
-    }
-
-    /// Check if a string looks like base64 encoded data
-    #[cfg(feature = "base64")]
-    fn looks_like_base64(value: &str) -> bool {
-        if value.is_empty() {
-            return false;
-        }
-
-        // Must be reasonable length and contain only base64 characters
-        // Also need to check that padding is only at the end
-        if value.len() < 4 || value.len() % 4 != 0 {
-            return false;
-        }
-
-        let padding_count = value.chars().filter(|&c| c == '=').count();
-        if padding_count > 2 {
-            return false;
-        }
-
-        // Check all characters are valid base64
-        if !value
-            .chars()
-            .all(|c| matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '+' | '/' | '='))
-        {
-            return false;
-        }
-
-        // Check that padding is only at the end
-        if padding_count > 0 {
-            let padding_start = value.len() - padding_count;
-            if !value[padding_start..].chars().all(|c| c == '=') {
-                return false;
-            }
-            // Check that non-padding part doesn't contain '='
-            if value[..padding_start].contains('=') {
-                return false;
-            }
-        }
-
-        // Final validation: try to decode it to ensure it's actually valid base64
-        // This will catch cases like "SGVs" which looks valid but isn't proper base64
-        base64_decode(value).is_ok()
     }
 
     /// Basic timestamp format validation
@@ -2247,12 +2198,7 @@ mod tests {
             ScalarValue::auto_detect_type("2023-12-25T10:30:45"),
             ScalarType::Timestamp
         );
-        #[cfg(feature = "base64")]
-        assert_eq!(
-            ScalarValue::auto_detect_type("SGVsbG8gV29ybGQ="),
-            ScalarType::Binary
-        );
-        #[cfg(not(feature = "base64"))]
+        // Base64-looking text is still a string unless tagged !!binary.
         assert_eq!(
             ScalarValue::auto_detect_type("SGVsbG8gV29ybGQ="),
             ScalarType::String
@@ -2296,23 +2242,6 @@ mod tests {
         assert!(!ScalarValue::matches_iso8601_pattern("2023/12/25")); // Wrong separator
         assert!(!ScalarValue::matches_iso8601_pattern("not-a-date"));
         assert!(!ScalarValue::matches_iso8601_pattern("2023"));
-    }
-
-    #[test]
-    #[cfg(feature = "base64")]
-    fn test_base64_detection() {
-        // Valid base64 strings
-        assert!(ScalarValue::looks_like_base64("SGVsbG8=")); // "Hello"
-        assert!(ScalarValue::looks_like_base64("V29ybGQ=")); // "World"
-        assert!(ScalarValue::looks_like_base64("SGVsbG8gV29ybGQ=")); // "Hello World"
-        assert!(ScalarValue::looks_like_base64("AAAA")); // All A's
-
-        // Invalid base64 strings
-        assert!(!ScalarValue::looks_like_base64("Hello")); // No padding, wrong chars
-        assert!(!ScalarValue::looks_like_base64("SGVsbG8")); // Missing padding (7 chars, should be 8 with padding)
-        assert!(!ScalarValue::looks_like_base64("")); // Empty
-        assert!(!ScalarValue::looks_like_base64("SGV@")); // Invalid character
-        assert!(!ScalarValue::looks_like_base64("SGVsbG8g===")); // Too much padding
     }
 
     #[test]
@@ -2521,19 +2450,6 @@ mod tests {
         // month/day. This pins the separator conjuncts in the format check.
         assert!(!ScalarValue::matches_iso8601_pattern("2023X12-25"));
         assert!(!ScalarValue::matches_iso8601_pattern("2023-12X25"));
-    }
-
-    #[test]
-    #[cfg(feature = "base64")]
-    fn test_base64_padding_bounds() {
-        // Exactly two padding characters is the maximum allowed and must pass.
-        assert!(ScalarValue::looks_like_base64("QQ==")); // "A"
-                                                         // One padding character.
-        assert!(ScalarValue::looks_like_base64("SGVsbG8=")); // "Hello"
-                                                             // Padding in the middle is rejected even with a valid count.
-        assert!(!ScalarValue::looks_like_base64("QQ=Q"));
-        // Length not a multiple of 4.
-        assert!(!ScalarValue::looks_like_base64("QQQ"));
     }
 
     #[test]
@@ -2847,5 +2763,14 @@ mod tests {
         assert!(float(".NaN").to_f64().unwrap().is_nan());
         assert_eq!(float("inf").to_f64(), None);
         assert_eq!(float("1.5").to_f64(), Some(1.5));
+    }
+
+    #[test]
+    fn test_parse_does_not_infer_binary() {
+        for text in ["test", "abcd", "noon", "SGVsbG8="] {
+            let scalar = ScalarValue::parse(text);
+            assert_eq!(scalar.scalar_type(), ScalarType::String, "{text}");
+            assert_eq!(scalar.to_yaml_string(), text);
+        }
     }
 }

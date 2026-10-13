@@ -210,6 +210,10 @@ fn token_column(token: &crate::nodes::SyntaxToken) -> usize {
     let mut col = 0;
     let mut cur = token.prev_token();
     while let Some(t) = cur {
+        // A byte order mark is not part of the line's content.
+        if t.kind() == crate::SyntaxKind::BOM {
+            break;
+        }
         let text = t.text();
         if let Some(i) = text.rfind('\n') {
             col += text[i + 1..].chars().count();
@@ -1471,19 +1475,7 @@ impl Validator {
                 if parent.kind() != crate::SyntaxKind::SEQUENCE_ENTRY {
                     return None;
                 }
-                // Walk back over the preceding tokens to the line break,
-                // summing their widths. Materialising the whole document to
-                // find the line start made this quadratic in its size.
-                let mut column = 0usize;
-                let mut token = node.first_token()?.prev_token();
-                while let Some(t) = token {
-                    if t.kind() == crate::SyntaxKind::NEWLINE {
-                        break;
-                    }
-                    column += t.text().len();
-                    token = t.prev_token();
-                }
-                Some(" ".repeat(column))
+                Some(" ".repeat(token_column(&node.first_token()?)))
             })
             .unwrap_or_default();
 
@@ -3191,6 +3183,18 @@ mod tests {
                 "x".repeat(49)
             )]
         );
+    }
+
+    #[test]
+    fn test_columns_ignore_byte_order_mark() {
+        for yaml in ["\u{feff}- a\n- b\n", "\u{feff}- a: 1\n  b: 2\n"] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
     }
 
     #[test]

@@ -269,6 +269,16 @@ impl ScalarValue {
         }
     }
 
+    /// Create a plain scalar of `scalar_type`, without checking that `value`
+    /// resolves to it.
+    pub(crate) fn plain_typed(value: impl Into<String>, scalar_type: ScalarType) -> Self {
+        Self {
+            value: value.into(),
+            style: ScalarStyle::Plain,
+            scalar_type,
+        }
+    }
+
     /// Create a plain scalar
     pub fn plain(value: impl Into<String>) -> Self {
         Self::with_style(value, ScalarStyle::Plain)

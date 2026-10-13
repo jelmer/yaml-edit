@@ -1,6 +1,6 @@
 //! Value wrapper that can represent any YAML value type (scalar, sequence, mapping).
 
-use crate::scalar::ScalarValue;
+use crate::scalar::{CoreScalarType, ScalarValue};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -23,6 +23,30 @@ pub enum YamlValue {
     OrderedMapping(Vec<(String, YamlValue)>),
     /// A sequence of key-value pairs allowing duplicates (!!pairs)
     Pairs(Vec<(String, YamlValue)>),
+}
+
+/// The non-string core schema type named by `tag`, if any.
+fn core_tag_type(tag: &str) -> Option<CoreScalarType> {
+    let name = tag
+        .strip_prefix("!!")
+        .or_else(|| tag.strip_prefix("!<tag:yaml.org,2002:")?.strip_suffix('>'))?;
+    match name {
+        "int" => Some(CoreScalarType::Integer),
+        "float" => Some(CoreScalarType::Float),
+        "bool" => Some(CoreScalarType::Boolean),
+        "null" => Some(CoreScalarType::Null),
+        _ => None,
+    }
+}
+
+/// Whether `value` is a valid spelling of a `t` under the core schema.
+fn core_tag_accepts(t: CoreScalarType, value: &str) -> bool {
+    match (t, ScalarValue::classify_plain(value)) {
+        (CoreScalarType::Null, _) if value.is_empty() => true,
+        // The core schema's float pattern also matches integers.
+        (CoreScalarType::Float, CoreScalarType::Integer) => true,
+        (t, c) => t == c,
+    }
 }
 
 impl YamlValue {
@@ -113,10 +137,14 @@ impl YamlValue {
                             .collect();
                         return Some(YamlValue::Pairs(pairs));
                     }
-                    // Plain tagged scalar: return the string value.
-                    tagged
-                        .as_string()
-                        .map(|s| YamlValue::Scalar(ScalarValue::string(s)))
+                    let value = tagged.as_string()?;
+                    let scalar = match tagged.tag().as_deref().and_then(core_tag_type) {
+                        Some(t) if core_tag_accepts(t, &value) => {
+                            ScalarValue::plain_typed(value, t.into())
+                        }
+                        _ => ScalarValue::string(value),
+                    };
+                    Some(YamlValue::Scalar(scalar))
                 })
             }
             SyntaxKind::VALUE => {
@@ -873,6 +901,50 @@ mod tests {
         // Empty sequence
         let val = YamlValue::sequence();
         assert_eq!(val.to_yaml_string(0), "[]");
+    }
+
+    fn tagged_value(src: &str) -> ScalarValue {
+        let v = YamlValue::parse_raw(src);
+        v.as_mapping().unwrap()["k"].as_scalar().unwrap().clone()
+    }
+
+    #[test]
+    fn test_cast_core_tagged_scalars() {
+        let s = tagged_value("k: !!int 42");
+        assert_eq!(s.scalar_type(), crate::ScalarType::Integer);
+        assert_eq!(s.to_i64(), Some(42));
+        assert_eq!(s.to_yaml_string(), "42");
+
+        let s = tagged_value("k: !!int \"42\"");
+        assert_eq!(s.to_i64(), Some(42));
+        assert_eq!(s.to_yaml_string(), "42");
+
+        let s = tagged_value("k: !<tag:yaml.org,2002:int> 7");
+        assert_eq!(s.to_i64(), Some(7));
+
+        let s = tagged_value("k: !!float 1.5");
+        assert_eq!(s.scalar_type(), crate::ScalarType::Float);
+        assert_eq!(s.to_f64(), Some(1.5));
+        assert_eq!(s.to_yaml_string(), "1.5");
+
+        let s = tagged_value("k: !!bool 'true'");
+        assert_eq!(s.to_bool(), Some(true));
+        assert_eq!(s.to_yaml_string(), "true");
+
+        let s = tagged_value("k: !!null null");
+        assert_eq!(s.scalar_type(), crate::ScalarType::Null);
+        assert_eq!(s.to_yaml_string(), "null");
+
+        let s = tagged_value("k: !!null\nj: 1");
+        assert_eq!(s.scalar_type(), crate::ScalarType::Null);
+
+        let s = tagged_value("k: !!str 42");
+        assert_eq!(s, ScalarValue::string("42"));
+        assert_eq!(s.to_yaml_string(), "'42'");
+
+        // Content that the tag cannot resolve stays a string.
+        let s = tagged_value("k: !!int abc");
+        assert_eq!(s, ScalarValue::string("abc"));
     }
 
     #[test]

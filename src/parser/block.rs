@@ -55,6 +55,10 @@ impl Parser {
         let base_indent = base_indent.max(self.current_line_indent);
         let outer_equal_indent = self.equal_indent_continues_scalar;
         self.equal_indent_continues_scalar = false;
+        // A floor set for a scalar node does not carry over to the values of
+        // a mapping in its place: those continue only past this mapping's
+        // own column, so `k:\n  a: b\n  c\n` does not read `c` into `b`.
+        let outer_floor = self.scalar_continuation_floor.take();
         self.builder.start_node(SyntaxKind::MAPPING.into());
         self.error_context.push_context(ParseContext::Mapping);
 
@@ -199,6 +203,7 @@ impl Parser {
         }
 
         self.equal_indent_continues_scalar = outer_equal_indent;
+        self.scalar_continuation_floor = outer_floor;
         self.builder.finish_node();
         self.error_context.pop_context();
     }

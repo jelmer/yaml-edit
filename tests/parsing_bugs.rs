@@ -178,6 +178,64 @@ fn test_valueless_anchor_parsing() {
     assert_eq!(parsed.to_string(), yaml);
 }
 
+/// Scalar entries of the block mapping `mapping`, as `(key, value)` pairs.
+fn scalar_entries(mapping: &yaml_edit::Mapping) -> Vec<(String, String)> {
+    mapping
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.as_scalar().unwrap().as_string(),
+                v.as_scalar().unwrap().as_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn test_annotated_key_after_nested_plain_value() {
+    // The key on the third line used to be read as a continuation of `b`,
+    // giving the single value `b &x c: d`.
+    let parsed = YamlFile::from_str("k:\n  a: b\n  &x c: d\n").unwrap();
+    let k = parsed.document().unwrap().as_mapping().unwrap().get("k");
+    assert_eq!(
+        scalar_entries(k.unwrap().as_mapping().unwrap()),
+        [("a".into(), "b".into()), ("c".into(), "d".into())]
+    );
+
+    let parsed = YamlFile::from_str("- a: b\n  &x c: d\n").unwrap();
+    let first = parsed.document().unwrap().as_sequence().unwrap().first();
+    assert_eq!(
+        scalar_entries(first.unwrap().as_mapping().unwrap()),
+        [("a".into(), "b".into()), ("c".into(), "d".into())]
+    );
+}
+
+#[test]
+fn test_annotated_key_after_nested_quoted_value() {
+    let parsed = YamlFile::from_str("k:\n  a: \"b\"\n  !t c: d\n").unwrap();
+    let k = parsed.document().unwrap().as_mapping().unwrap().get("k");
+    assert_eq!(
+        scalar_entries(k.unwrap().as_mapping().unwrap()),
+        [("a".into(), "b".into()), ("c".into(), "d".into())]
+    );
+}
+
+#[test]
+fn test_no_plain_continuation_at_mapping_column() {
+    // A line at the nested mapping's own column cannot continue a value in
+    // it, and a quoted scalar takes no plain continuation at all.
+    for src in [
+        "k:\n  a: b\n  c\n",
+        "k:\n  a: b\n  - c\n",
+        "- a: b\n  c\n",
+        "-\n   a: b\n  c\n",
+        "a: \"b\"\n  c\n",
+        "- x\n  &a k: v\n",
+    ] {
+        assert!(YamlFile::from_str(src).is_err(), "{src:?}");
+    }
+}
+
 #[test]
 fn test_timestamp_parsing_with_spaces() {
     // Test case from the bug fix: timestamps with spaces and timezone

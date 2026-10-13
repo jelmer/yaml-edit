@@ -126,11 +126,26 @@ impl Parser {
     /// newline is folded into the scalar. Comments and flow delimiters end
     /// it.
     fn parse_block_plain_scalar(&mut self) {
+        // A quoted scalar arrives as one complete STRING token, and the line
+        // after it is never a continuation: `a: "b"\n  c\n` is an error, not
+        // the scalar `"b" c`.
+        if self.current_is_quoted_string() {
+            self.bump();
+            return;
+        }
+
         // current_line_indent tracks the actual line indentation. For inline
         // scalars in sequence items (indent == 0 because the INDENT token was
         // already consumed) continuation must not be attempted: it cannot be
         // told apart from the next mapping key.
-        let scalar_indent = self.current_line_indent;
+        //
+        // A value on its key's line belongs to that key's mapping, so a
+        // continuation has to clear the mapping's column, which in a sequence
+        // entry is right of the line's indent: `- a: b\n  c\n` puts `a` at
+        // column 2, so `c` cannot continue `b`.
+        let scalar_indent = self
+            .current_line_indent
+            .max(self.mapping_value_column.unwrap_or(0));
 
         while let Some(kind) = self.current() {
             if kind == SyntaxKind::COMMENT {
@@ -188,10 +203,7 @@ impl Parser {
     /// Otherwise keep reading multi-word and multi-line content until a flow
     /// delimiter, a comment, or a colon acting as a key separator.
     fn parse_flow_plain_scalar(&mut self) {
-        let is_quoted_string = matches!(self.current(), Some(SyntaxKind::STRING))
-            && self
-                .current_text()
-                .is_some_and(|text| text.starts_with('"') || text.starts_with('\''));
+        let is_quoted_string = self.current_is_quoted_string();
 
         self.bump(); // Consume the initial typed token
 
@@ -245,6 +257,15 @@ impl Parser {
 
             self.bump();
         }
+    }
+
+    /// Whether the current token is a complete quoted scalar, which the
+    /// lexer emits as a single STRING.
+    fn current_is_quoted_string(&self) -> bool {
+        self.current() == Some(SyntaxKind::STRING)
+            && self
+                .current_text()
+                .is_some_and(|text| text.starts_with('"') || text.starts_with('\''))
     }
 
     /// Consume a scalar the lexer gave no specific type, up to whatever
@@ -1066,6 +1087,25 @@ impl Parser {
 
         // Check if the next line is a mapping key (has a COLON after the content)
         // If so, it's not a continuation - it's a new mapping key
+        //
+        // Tags and anchors in front annotate that key (`&x c: d`), so look
+        // past them to the content they cover.
+        while peek_idx > 0
+            && self
+                .tokens
+                .get(peek_idx)
+                .is_some_and(|(kind, _)| matches!(kind, SyntaxKind::TAG | SyntaxKind::ANCHOR))
+        {
+            peek_idx -= 1;
+            while peek_idx > 0
+                && self
+                    .tokens
+                    .get(peek_idx)
+                    .is_some_and(|(kind, _)| *kind == SyntaxKind::WHITESPACE)
+            {
+                peek_idx -= 1;
+            }
+        }
         if peek_idx > 0 {
             let mut check_idx = peek_idx.saturating_sub(1);
 

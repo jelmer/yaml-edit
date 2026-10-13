@@ -10,6 +10,7 @@ use crate::nodes::{append_children, fresh_token, has_child_token, Scalar, Sequen
 use crate::yaml::ValueNode;
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
+use std::str::FromStr;
 
 /// Where to place a new entry inside a flow-style mapping (`{...}`).
 pub(in crate::nodes) enum FlowInsertPos {
@@ -333,4 +334,101 @@ pub(super) fn block_scalar_content_indent(scalar: &SyntaxNode) -> Option<usize> 
         }
     }
     None
+}
+
+/// `value` re-rendered in flow style, or `None` if it is already inline.
+///
+/// Block collections and block scalars can't appear inside a flow
+/// collection or as an implicit key. Anchors, tags and aliases carry over;
+/// comments are dropped, since a single-line flow node has no room for them.
+pub(super) fn flow_form(value: &impl crate::AsYaml) -> Option<crate::as_yaml::YamlNode> {
+    if value.is_inline() {
+        return None;
+    }
+    let text = match value.as_node() {
+        Some(node) => node_flow_text(node),
+        None => {
+            let mut builder = GreenNodeBuilder::new();
+            builder.start_node(SyntaxKind::ROOT.into());
+            value.build_content(&mut builder, 0, false);
+            builder.finish_node();
+            let root = SyntaxNode::new_root(builder.finish());
+            let node = root.first_child().expect("build_content emits a node");
+            node_flow_text(&node)
+        }
+    };
+    let file = crate::yaml::YamlFile::from_str(&text)
+        .unwrap_or_else(|e| panic!("flow rendering {text:?} does not parse: {e}"));
+    let node = file
+        .document()
+        .and_then(|d| d.root_node())
+        .expect("flow rendering has a root node");
+    crate::as_yaml::YamlNode::from_syntax(node)
+}
+
+fn node_flow_text(node: &SyntaxNode) -> String {
+    match node.kind() {
+        SyntaxKind::MAPPING => {
+            let entries: Vec<String> = node
+                .children()
+                .filter(|e| e.kind() == SyntaxKind::MAPPING_ENTRY)
+                .map(|e| {
+                    let part = |kind| {
+                        e.children()
+                            .find(|c| c.kind() == kind)
+                            .map(|c| content_flow_text(&c))
+                            .filter(|t| !t.is_empty())
+                    };
+                    let key = part(SyntaxKind::KEY).unwrap_or_else(|| "null".to_string());
+                    let value = part(SyntaxKind::VALUE).unwrap_or_else(|| "null".to_string());
+                    format!("{key}: {value}")
+                })
+                .collect();
+            format!("{{{}}}", entries.join(", "))
+        }
+        SyntaxKind::SEQUENCE => {
+            let items: Vec<String> = node
+                .children()
+                .filter(|e| e.kind() == SyntaxKind::SEQUENCE_ENTRY)
+                .map(|e| content_flow_text(&e))
+                .collect();
+            format!("[{}]", items.join(", "))
+        }
+        SyntaxKind::SCALAR => scalar_flow_text(node),
+        SyntaxKind::TAGGED_NODE => content_flow_text(node),
+        _ => node.text().to_string().trim().to_string(),
+    }
+}
+
+/// Flow text for the node wrapped by a KEY, VALUE, SEQUENCE_ENTRY or
+/// TAGGED_NODE, including the anchor and tag in front of it.
+fn content_flow_text(wrapper: &SyntaxNode) -> String {
+    let parts: Vec<String> = wrapper
+        .children_with_tokens()
+        .filter_map(|c| match c {
+            rowan::NodeOrToken::Token(t)
+                if matches!(t.kind(), SyntaxKind::ANCHOR | SyntaxKind::TAG) =>
+            {
+                Some(t.text().to_string())
+            }
+            rowan::NodeOrToken::Node(n) => Some(node_flow_text(&n)),
+            rowan::NodeOrToken::Token(_) => None,
+        })
+        .filter(|t| !t.is_empty())
+        .collect();
+    parts.join(" ")
+}
+
+fn scalar_flow_text(node: &SyntaxNode) -> String {
+    let text = node.text().to_string();
+    let text = text.trim();
+    let quoted = text.starts_with(['"', '\'']);
+    let breaks_flow = is_block_scalar(node)
+        || text.contains('\n')
+        || (!quoted && text.contains([',', '[', ']', '{', '}']));
+    if !breaks_flow {
+        return text.to_string();
+    }
+    let value = Scalar::cast(node.clone()).expect("SCALAR node").as_string();
+    crate::scalar::ScalarValue::double_quoted(value).to_yaml_string()
 }

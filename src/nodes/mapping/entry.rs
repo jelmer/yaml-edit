@@ -5,7 +5,7 @@
 //! Split out of `nodes/mapping/mod.rs` unchanged.
 
 use super::helpers::{
-    build_block_value_node, find_key_line_comment, source_anchor_text, value_is_block,
+    build_block_value_node, find_key_line_comment, flow_form, source_anchor_text, value_is_block,
 };
 use super::{key_content_matches, MappingEntry};
 use crate::lex::SyntaxKind;
@@ -91,6 +91,12 @@ impl MappingEntry {
         use_explicit_key: bool,
         key_indent: usize,
     ) -> Self {
+        if let Some(key) = flow_form(&key) {
+            return Self::new_at_indent(key, value, flow_context, use_explicit_key, key_indent);
+        }
+        if let Some(value) = flow_context.then(|| flow_form(&value)).flatten() {
+            return Self::new_at_indent(key, value, flow_context, use_explicit_key, key_indent);
+        }
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 

@@ -4,8 +4,8 @@ mod helpers;
 mod movements;
 
 use helpers::{
-    append_comma_space_to_entry, ensure_top_level_empty_renders_as_flow, index_after_entry_line,
-    FlowInsertPos,
+    append_comma_space_to_entry, ensure_top_level_empty_renders_as_flow, flow_form,
+    index_after_entry_line, FlowInsertPos,
 };
 
 use super::{
@@ -612,7 +612,10 @@ impl Mapping {
                 matches.then_some((i, entry))
             });
         if let Some((i, entry)) = existing {
-            entry.set_value(value, flow_context);
+            match flow_context.then(|| flow_form(&value)).flatten() {
+                Some(flow) => entry.set_value(flow, flow_context),
+                None => entry.set_value(value, flow_context),
+            }
             self.0.splice_children(i..i + 1, vec![entry.0.into()]);
             return;
         }

@@ -933,8 +933,20 @@ impl ScalarValue {
         let month_str: String = chars[5..7].iter().collect();
         let day_str: String = chars[8..10].iter().collect();
 
-        if let (Ok(month), Ok(day)) = (month_str.parse::<u8>(), day_str.parse::<u8>()) {
-            if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        let year_str: String = chars[0..4].iter().collect();
+        if let (Ok(year), Ok(month), Ok(day)) = (
+            year_str.parse::<u16>(),
+            month_str.parse::<u8>(),
+            day_str.parse::<u8>(),
+        ) {
+            let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+            let days_in_month = match month {
+                2 if leap => 29,
+                2 => 28,
+                4 | 6 | 9 | 11 => 30,
+                _ => 31,
+            };
+            if !(1..=12).contains(&month) || !(1..=days_in_month).contains(&day) {
                 return false;
             }
         } else {
@@ -973,11 +985,36 @@ impl ScalarValue {
                     return false;
                 }
 
-                return true;
+                return Self::is_timestamp_tail(&chars[19..]);
             }
         }
 
         false
+    }
+
+    /// Whether `tail` is a valid fraction and time zone following the
+    /// seconds of a timestamp: `(\.[0-9]*)?([ \t]*(Z|[-+][0-9][0-9]?(:[0-9][0-9])?))?`.
+    fn is_timestamp_tail(tail: &[char]) -> bool {
+        let digits = |s: &[char]| s.iter().all(|c| c.is_ascii_digit());
+        let mut rest = tail;
+        if let Some(('.', fraction)) = rest.split_first() {
+            rest = &fraction[fraction.iter().take_while(|c| c.is_ascii_digit()).count()..];
+        }
+        if rest.is_empty() {
+            return true;
+        }
+        let zone = &rest[rest.iter().take_while(|c| matches!(c, ' ' | '\t')).count()..];
+        match zone {
+            ['Z'] => true,
+            ['+' | '-', offset @ ..] => {
+                let (hour, minute) = match offset.iter().position(|&c| c == ':') {
+                    Some(i) => (&offset[..i], &offset[i + 1..]),
+                    None => (offset, &['0', '0'][..]),
+                };
+                matches!(hour.len(), 1 | 2) && digits(hour) && minute.len() == 2 && digits(minute)
+            }
+            _ => false,
+        }
     }
 
     /// Detect the appropriate style for a value
@@ -2844,5 +2881,37 @@ mod tests {
         let node = reparsed.as_mapping().unwrap().get("k").unwrap();
         let value = ScalarValue::from_scalar(node.as_scalar().unwrap());
         assert_eq!(value.scalar_type(), ScalarType::Null);
+    }
+
+    #[test]
+    fn test_timestamp_rejects_impossible_dates_and_trailing_text() {
+        for text in [
+            "2023-02-30",
+            "2023-02-29",
+            "2023-04-31",
+            "2100-02-29",
+            "2023-01-01T10:00:00garbage",
+            "2023-01-01T10:00:00Zx",
+            "2023-01-01T10:00:00+",
+            "2023-01-01T10:00:00+01:0",
+        ] {
+            assert!(!ScalarValue::matches_iso8601_pattern(text), "{text}");
+            assert_eq!(
+                ScalarValue::auto_detect_type(text),
+                ScalarType::String,
+                "{text}"
+            );
+        }
+        for text in [
+            "2024-02-29",
+            "2000-02-29",
+            "2023-01-01T10:00:00Z",
+            "2023-01-01T10:00:00.123456Z",
+            "2023-01-01T10:00:00.5+01:00",
+            "2001-12-14 21:59:43.10 -5",
+            "2001-12-14t21:59:43.10-05:00",
+        ] {
+            assert!(ScalarValue::matches_iso8601_pattern(text), "{text}");
+        }
     }
 }

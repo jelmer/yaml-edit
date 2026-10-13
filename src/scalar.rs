@@ -602,46 +602,49 @@ impl ScalarValue {
     /// Supports: decimal, hexadecimal (0x), binary (0b), octal (0o and legacy 0)
     pub(crate) fn parse_integer(value: &str) -> Option<i64> {
         let value = value.trim();
-
-        // Handle negative numbers
-        let (is_negative, value) = if let Some(stripped) = value.strip_prefix('-') {
-            (true, stripped)
-        } else if let Some(stripped) = value.strip_prefix('+') {
-            (false, stripped)
-        } else {
-            (false, value)
+        let (is_negative, body) = match value.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, value.strip_prefix('+').unwrap_or(value)),
         };
 
-        let parsed = if let Some(hex_part) = value
-            .strip_prefix("0x")
-            .or_else(|| value.strip_prefix("0X"))
-        {
-            // Hexadecimal
-            i64::from_str_radix(hex_part, 16).ok()
-        } else if let Some(bin_part) = value
-            .strip_prefix("0b")
-            .or_else(|| value.strip_prefix("0B"))
-        {
-            // Binary
-            i64::from_str_radix(bin_part, 2).ok()
-        } else if let Some(oct_part) = value
-            .strip_prefix("0o")
-            .or_else(|| value.strip_prefix("0O"))
-        {
-            // Modern octal
-            i64::from_str_radix(oct_part, 8).ok()
-        } else if value.starts_with('0')
-            && value.len() > 1
-            && value.chars().all(|c| c.is_ascii_digit())
-        {
-            // Legacy octal (starts with 0 but not 0x, 0b, 0o)
-            i64::from_str_radix(value, 8).ok()
-        } else {
-            // Decimal
-            value.parse::<i64>().ok()
-        };
+        let (radix, digits) =
+            if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+                (16, hex)
+            } else if let Some(bin) = body.strip_prefix("0b").or_else(|| body.strip_prefix("0B")) {
+                (2, bin)
+            } else if let Some(oct) = body.strip_prefix("0o").or_else(|| body.strip_prefix("0O")) {
+                (8, oct)
+            } else if Self::is_legacy_octal(body) {
+                (8, body)
+            } else {
+                (10, body)
+            };
+        // from_str_radix accepts a sign of its own, which must not follow
+        // the one stripped above or a radix prefix.
+        if digits.starts_with(['+', '-']) {
+            return None;
+        }
+        // Parse the magnitude wider than i64 so that i64::MIN fits.
+        let magnitude = i128::from_str_radix(digits, radix).ok()?;
+        i64::try_from(if is_negative { -magnitude } else { magnitude }).ok()
+    }
 
-        parsed.map(|n| if is_negative { -n } else { n })
+    /// Whether `value` matches the YAML 1.2 core schema `!!int` regex:
+    /// `[-+]?[0-9]+`, `0o[0-7]+` or `0x[0-9a-fA-F]+`.
+    ///
+    /// This is a syntactic check, so it also holds for integers that do
+    /// not fit in an `i64`.
+    fn is_core_int(value: &str) -> bool {
+        fn all_digits(s: &str, radix: u32) -> bool {
+            !s.is_empty() && s.chars().all(|c| c.is_digit(radix))
+        }
+        if let Some(hex) = value.strip_prefix("0x") {
+            return all_digits(hex, 16);
+        }
+        if let Some(oct) = value.strip_prefix("0o") {
+            return all_digits(oct, 8);
+        }
+        all_digits(value.strip_prefix(['+', '-']).unwrap_or(value), 10)
     }
 
     /// Whether `value` is written in YAML 1.1's bare-octal form (a leading
@@ -676,14 +679,11 @@ impl ScalarValue {
             _ => {}
         }
 
-        // A bare leading zero is YAML 1.1 octal, which 1.2 dropped: the
-        // value is still an integer, just a decimal one, so the text
-        // classifies the same way either side of the change. A digit
-        // outside 0-7 makes it no octal at all, and `parse_integer` gives
-        // up there by contract, so recognise the run of digits here rather
-        // than letting `08` fall through to the float parser below: no
-        // YAML version reads it as a float.
-        if Self::parse_integer(value).is_some() || Self::is_legacy_octal(value) {
+        // `parse_integer` also takes the crate's binary and signed-radix
+        // extensions, but gives up on values outside i64 and on legacy
+        // octal digits such as `08`, which the core regex still calls
+        // integers.
+        if Self::parse_integer(value).is_some() || Self::is_core_int(value) {
             return CoreScalarType::Integer;
         }
 
@@ -760,7 +760,7 @@ impl ScalarValue {
         }
 
         // Check for numbers with various formats
-        if Self::parse_integer(value).is_some() {
+        if Self::parse_integer(value).is_some() || Self::is_core_int(value) {
             return ScalarType::Integer;
         }
         if value.parse::<f64>().is_ok() {
@@ -2772,5 +2772,60 @@ mod tests {
             assert_eq!(scalar.scalar_type(), ScalarType::String, "{text}");
             assert_eq!(scalar.to_yaml_string(), text);
         }
+    }
+
+    #[test]
+    fn test_sign_after_radix_prefix_is_not_integer() {
+        for text in ["0x-5", "0x+5", "0o-7", "0o+7", "0b-1", "+-5", "-+5"] {
+            assert_eq!(ScalarValue::parse_integer(text), None, "{text}");
+            assert_eq!(
+                ScalarValue::classify_plain(text),
+                CoreScalarType::String,
+                "{text}"
+            );
+            assert_eq!(
+                ScalarValue::auto_detect_type(text),
+                ScalarType::String,
+                "{text}"
+            );
+            let doc: crate::yaml::Document = format!("k: {text}\n").parse().unwrap();
+            let node = doc.as_mapping().unwrap().get("k").unwrap();
+            assert_eq!(node.as_scalar().unwrap().as_i64(), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn test_integers_outside_i64() {
+        assert_eq!(
+            ScalarValue::parse_integer("-9223372036854775808"),
+            Some(i64::MIN)
+        );
+        assert_eq!(
+            ScalarValue::parse_integer("-0x8000000000000000"),
+            Some(i64::MIN)
+        );
+        assert_eq!(ScalarValue::parse_integer("9223372036854775808"), None);
+        for text in [
+            "9223372036854775808",
+            "-9223372036854775808",
+            "0xFFFFFFFFFFFFFFFF",
+            "123456789012345678901234567890",
+        ] {
+            assert_eq!(
+                ScalarValue::classify_plain(text),
+                CoreScalarType::Integer,
+                "{text}"
+            );
+            assert_eq!(
+                ScalarValue::auto_detect_type(text),
+                ScalarType::Integer,
+                "{text}"
+            );
+        }
+        assert_eq!(
+            ScalarValue::parse("-9223372036854775808").to_i64(),
+            Some(i64::MIN)
+        );
+        assert_eq!(ScalarValue::parse("9223372036854775808").to_i64(), None);
     }
 }

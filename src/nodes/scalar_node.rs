@@ -393,29 +393,34 @@ impl TryFrom<&Scalar> for i64 {
         let value = scalar.as_string();
 
         // Handle different number formats
-        if let Some(hex) = value
+        let (radix, digits) = if let Some(hex) = value
             .strip_prefix("0x")
             .or_else(|| value.strip_prefix("0X"))
         {
-            i64::from_str_radix(hex, 16)
-                .map_err(|e| ScalarConversionError::ParseError(e.to_string()))
+            (16, hex)
         } else if let Some(octal) = value
             .strip_prefix("0o")
             .or_else(|| value.strip_prefix("0O"))
         {
-            i64::from_str_radix(octal, 8)
-                .map_err(|e| ScalarConversionError::ParseError(e.to_string()))
+            (8, octal)
         } else if let Some(binary) = value
             .strip_prefix("0b")
             .or_else(|| value.strip_prefix("0B"))
         {
-            i64::from_str_radix(binary, 2)
-                .map_err(|e| ScalarConversionError::ParseError(e.to_string()))
+            (2, binary)
         } else {
-            value
+            return value
                 .parse::<i64>()
-                .map_err(|e| ScalarConversionError::ParseError(e.to_string()))
+                .map_err(|e| ScalarConversionError::ParseError(e.to_string()));
+        };
+        // from_str_radix accepts a sign, which must not follow the prefix.
+        if digits.starts_with(['+', '-']) {
+            return Err(ScalarConversionError::ParseError(format!(
+                "sign after radix prefix in '{value}'"
+            )));
         }
+        i64::from_str_radix(digits, radix)
+            .map_err(|e| ScalarConversionError::ParseError(e.to_string()))
     }
 }
 

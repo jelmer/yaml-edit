@@ -343,6 +343,12 @@ impl Parser {
     }
 
     pub(super) fn parse_explicit_key_mapping(&mut self, base_indent: usize) {
+        // As in parse_mapping_with_base_indent, the entries are bounded by
+        // the first key's column when that is right of the caller's base: a
+        // compact mapping as a value, `? h\n: ? b\n  : x\n  a: 1\n`, has
+        // its entries at column 2 though its value slot was parsed from 0.
+        let base_indent =
+            base_indent.max(self.error_context.current_location().1.saturating_sub(1));
         // Parse mapping with explicit key indicator '?'
         self.builder.start_node(SyntaxKind::MAPPING.into());
 
@@ -1322,6 +1328,24 @@ mod tests {
 
         let uf = mapping.get("uf").expect("uf should be present");
         assert_eq!(uf.to_string().trim(), "v");
+    }
+
+    /// A compact explicit-key mapping as a value: its later entries sit at
+    /// the first `?`'s column, which used to read as a dedent.
+    #[test]
+    fn test_compact_explicit_key_mapping_as_value() {
+        let src = "? h\n: ? b\n  : x\n  a: 1\nc: 2\n";
+        assert_eq!(top_level_keys(src), ["h", "c"]);
+        let parsed = YamlFile::from_str(src).unwrap();
+        let h = parsed.document().unwrap().as_mapping().unwrap().get("h");
+        let keys: Vec<String> = h
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .keys()
+            .map(|k| k.to_string())
+            .collect();
+        assert_eq!(keys, ["b", "a"]);
     }
 
     /// Top-level explicit keys were never affected; this guards against a

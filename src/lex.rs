@@ -418,6 +418,48 @@ fn scan_single_quoted(
     (end_idx, false)
 }
 
+/// Whether the quote at `quote_idx` opening its line is content of the plain
+/// scalar on the lines before it rather than the start of a quoted scalar.
+///
+/// Such a line either continues that scalar or starts a new implicit key,
+/// and an implicit key fits on one line. So a quote that does not close on
+/// its own line is content: `a: b\n  'c\nd: 1\n` holds `b 'c`, where
+/// scanning it as quoted ran on to the next quote in the file.
+fn quote_continues_plain_scalar(
+    tokens: &[(SyntaxKind, &str)],
+    input: &str,
+    line_start: usize,
+    quote_idx: usize,
+) -> bool {
+    use SyntaxKind::*;
+    if !input[line_start..quote_idx]
+        .chars()
+        .all(|c| c == ' ' || c == '\t')
+    {
+        return false;
+    }
+    let after_plain_scalar = tokens
+        .iter()
+        .rev()
+        .find(|(kind, _)| !matches!(kind, WHITESPACE | INDENT | NEWLINE))
+        .is_some_and(|(kind, _)| matches!(kind, STRING | INT | FLOAT | BOOL | NULL));
+    if !after_plain_scalar {
+        return false;
+    }
+    let line = input[quote_idx..]
+        .split(['\n', '\r'])
+        .next()
+        .unwrap_or_default();
+    let mut rest = line.char_indices().peekable();
+    let quote = rest.next().map(|(_, c)| c);
+    let (_, closes_on_line) = if quote == Some('"') {
+        scan_double_quoted(&mut rest, 0)
+    } else {
+        scan_single_quoted(&mut rest, 0)
+    };
+    !closes_on_line
+}
+
 /// Push a quoted-string token, marking it UNTERMINATED_STRING when the
 /// closing quote was never reached.
 fn push_quoted_string<'a>(
@@ -925,6 +967,31 @@ pub fn lex_with_validation_config<'a>(
                 } else {
                     tokens.push((ASTERISK, &input[token_start..start_idx + 1]));
                 }
+            }
+            // A quote is literal text in a block scalar's body, and content on
+            // a line continuing a plain scalar, as the flow indicators above.
+            '"' | '\''
+                if at_block_scalar_body_indent(
+                    block_scalar_body_indent,
+                    input,
+                    current_line_start,
+                    start_idx,
+                ) || in_block_scalar_body(
+                    block_scalar_header_indent,
+                    input,
+                    current_line_start,
+                    start_idx,
+                ) || quote_continues_plain_scalar(
+                    &tokens,
+                    input,
+                    current_line_start,
+                    start_idx,
+                ) =>
+            {
+                let rest =
+                    read_plain_scalar_body_from(&mut chars, input, start_idx + 1, flow_depth, true);
+                let text = &input[token_start..start_idx + 1 + rest.len()];
+                tokens.push((classify_scalar(text), text));
             }
             '"' => {
                 let (end_idx, found_closing) = scan_double_quoted(&mut chars, start_idx);

@@ -3637,3 +3637,61 @@ fn test_explicit_key_is_a_mapping_with_an_empty_key() {
         assert!(value.as_scalar().unwrap().is_null(), "{yaml:?}");
     }
 }
+
+#[test]
+fn test_quote_opening_a_block_scalar_line_is_literal() {
+    // A quote in a block scalar's body is literal text. Scanning it as the
+    // start of a quoted scalar ran to the next matching quote, swallowing
+    // every following key.
+    let doc = yaml_edit::Document::from_str("a: |\n  'tis the season\nb: c's\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "'tis the season\n"
+    );
+    assert_eq!(
+        mapping.get("b").unwrap().as_scalar().unwrap().as_string(),
+        "c's"
+    );
+
+    let doc = yaml_edit::Document::from_str("a: |\n  \"x\nb: 1\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "\"x\n"
+    );
+    assert_eq!(
+        mapping.get("b").unwrap().as_scalar().unwrap().as_string(),
+        "1"
+    );
+}
+
+#[test]
+fn test_quote_opening_a_plain_continuation_line_is_content() {
+    // Once a plain scalar has begun a quote is ordinary content, including
+    // at the start of a continuation line.
+    let doc = yaml_edit::Document::from_str("a: b\n  'c\nd: 1\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(mapping.keys().count(), 2);
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "b 'c"
+    );
+    assert_eq!(
+        mapping.get("d").unwrap().as_scalar().unwrap().as_string(),
+        "1"
+    );
+
+    // A quoted key on the next line still opens a quoted scalar.
+    let doc = yaml_edit::Document::from_str("a: b\n'x: y': 1\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(
+        mapping
+            .get("x: y")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "1"
+    );
+}

@@ -827,19 +827,24 @@ pub fn lex_with_validation_config<'a>(
                 // Colon at token boundary. It's a mapping indicator when
                 // its lookahead matches is_colon_a_mapping_indicator, OR
                 // when we're in flow context and the immediately
-                // preceding meaningful token was a scalar (i.e., a key
-                // has been laid down and this `:` separates it from the
-                // value):
+                // preceding meaningful token was a JSON-like key (a quoted
+                // scalar or a flow collection), which YAML 1.2 lets an
+                // adjacent value follow:
                 //     { "foo"\n  :bar }    -- COLON after "foo"
                 // vs.
                 //     [ ::vector ]         -- `:` starts a plain scalar
-                let preceded_by_scalar = flow_depth > 0
+                //     [ a\n :b ]           -- `:b` continues the scalar `a`
+                let preceded_by_json_key = flow_depth > 0
                     && tokens
                         .iter()
                         .rev()
                         .find(|(k, _)| !matches!(k, WHITESPACE | INDENT | NEWLINE | COMMENT))
-                        .is_some_and(|(k, _)| matches!(k, STRING | INT | FLOAT | BOOL | NULL));
-                if preceded_by_scalar || is_colon_a_mapping_indicator(input, start_idx, flow_depth)
+                        .is_some_and(|(k, text)| {
+                            matches!(k, RIGHT_BRACKET | RIGHT_BRACE)
+                                || (*k == STRING && text.starts_with(['"', '\'']))
+                        });
+                if preceded_by_json_key
+                    || is_colon_a_mapping_indicator(input, start_idx, flow_depth)
                 {
                     tokens.push((COLON, &input[token_start..start_idx + 1]));
                 } else {

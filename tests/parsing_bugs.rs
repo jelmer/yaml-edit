@@ -4359,3 +4359,21 @@ fn test_annotated_empty_flow_node() {
         }
     }
 }
+
+#[test]
+fn test_flow_colon_after_plain_scalar_on_next_line_is_content() {
+    // An adjacent `:value` only follows a JSON-like key. After a plain
+    // scalar the `:b` continues it, as it does on one line.
+    let doc = yaml_edit::Document::from_str("[a\n :b]\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    assert_eq!(seq.len(), 1);
+    assert_eq!(seq.get(0).unwrap().as_scalar().unwrap().as_string(), "a :b");
+
+    // After a quoted key it still separates the value.
+    let doc = yaml_edit::Document::from_str("{ \"foo\"\n  :bar }\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("foo").unwrap().as_scalar().unwrap().as_string(),
+        "bar"
+    );
+}

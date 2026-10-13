@@ -3922,3 +3922,40 @@ fn test_block_scalar_body_quote_is_literal() {
         .collect();
     assert_eq!(items, vec!["'x\n", "y"]);
 }
+
+#[test]
+fn test_comment_line_before_sequence_entry_value() {
+    // A comment line between a bare `-` and its value says nothing about
+    // where the value sits, whatever its column.
+    for src in [
+        "-\n# c\n  x: 1\n",
+        "-\n      # c\n  x: 1\n",
+        "- # c\n# d\n  x: 1\n",
+    ] {
+        let parsed = YamlFile::from_str(src).unwrap();
+        let sequence = parsed.document().unwrap().as_sequence().unwrap();
+        assert_eq!(sequence.len(), 1, "{src:?}");
+        let entry = sequence.first().unwrap();
+        let x = entry.as_mapping().unwrap().get("x").unwrap();
+        assert_eq!(x.as_scalar().unwrap().as_string(), "1", "{src:?}");
+        assert_eq!(parsed.to_string(), src);
+    }
+
+    let parsed = YamlFile::from_str("-\n   # c\n  - x\n").unwrap();
+    let sequence = parsed.document().unwrap().as_sequence().unwrap();
+    assert_eq!(sequence.len(), 1);
+    let inner = sequence.first().unwrap();
+    let inner = inner.as_sequence().unwrap();
+    assert_eq!(inner.len(), 1);
+    assert_eq!(inner.first().unwrap().as_scalar().unwrap().as_string(), "x");
+
+    // The value used to be hoisted out to the top-level mapping.
+    let parsed = YamlFile::from_str("q:\n    - -\n      # c\n          x: 1\n").unwrap();
+    let mapping = parsed.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.len(), 1);
+    let q = mapping.get("q").unwrap();
+    let inner = q.as_sequence().unwrap().first().unwrap();
+    let entry = inner.as_sequence().unwrap().first().unwrap();
+    let x = entry.as_mapping().unwrap().get("x").unwrap();
+    assert_eq!(x.as_scalar().unwrap().as_string(), "1");
+}

@@ -1070,19 +1070,7 @@ impl Parser {
         if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
             return true;
         }
-        loop {
-            match rest.next() {
-                Some((SyntaxKind::NEWLINE, _)) => continue,
-                Some((SyntaxKind::INDENT, text)) => {
-                    let indent = text.len();
-                    if matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
-                        continue;
-                    }
-                    return indent <= dash_column;
-                }
-                _ => return true,
-            }
-        }
+        Self::value_indent_on_later_line(rest, dash_column).is_none()
     }
 
     /// The indentation of a sequence entry's value when that value is on a
@@ -1106,16 +1094,40 @@ impl Parser {
         if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
             return None;
         }
+        Self::value_indent_on_later_line(rest, dash_column)
+    }
+
+    /// The indentation of the next line with content in `rest`, which starts
+    /// at a line start, if it clears `dash_column`. Blank and comment lines
+    /// are stepped over, as their indentation is not significant.
+    fn value_indent_on_later_line<'a>(
+        mut rest: impl Iterator<Item = (SyntaxKind, &'a String)>,
+        dash_column: usize,
+    ) -> Option<usize> {
         loop {
             match rest.next() {
                 // A blank line: its own line break is the one we just read.
                 Some((SyntaxKind::NEWLINE, _)) => continue,
+                // Neither does a comment line say anything, at any column:
+                // `-\n# c\n  x: 1\n` is the entry `{x: 1}`.
+                Some((SyntaxKind::COMMENT, _)) => {
+                    if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+                        return None;
+                    }
+                }
                 Some((SyntaxKind::INDENT, text)) => {
                     let indent = text.len();
-                    // An indent that only leads a blank line says nothing
-                    // about where the value sits.
-                    if matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
-                        continue;
+                    // An indent that only leads a blank or comment line says
+                    // nothing about where the value sits.
+                    match rest.next() {
+                        Some((SyntaxKind::NEWLINE, _)) => continue,
+                        Some((SyntaxKind::COMMENT, _)) => {
+                            if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+                                return None;
+                            }
+                            continue;
+                        }
+                        _ => {}
                     }
                     return (indent > dash_column).then_some(indent);
                 }

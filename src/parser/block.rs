@@ -292,9 +292,11 @@ impl Parser {
                 self.bump();
                 if let Some(indent_level) = self.entry_value_indent(dash_column) {
                     self.bump(); // newline
-                    while self.current() == Some(SyntaxKind::NEWLINE)
-                        || (self.current() == Some(SyntaxKind::INDENT)
-                            && self.indent_is_blank_line())
+                    while matches!(
+                        self.current(),
+                        Some(SyntaxKind::NEWLINE | SyntaxKind::COMMENT)
+                    ) || (self.current() == Some(SyntaxKind::INDENT)
+                        && (self.indent_is_blank_line() || self.indent_starts_comment_line()))
                     {
                         self.bump();
                     }
@@ -320,10 +322,12 @@ impl Parser {
                 // opens the next entry rather than belonging to this one.
                 if let Some(indent_level) = self.entry_value_indent(dash_column) {
                     self.bump(); // consume newline
-                                 // Step over the blank lines the helper looked past.
-                    while self.current() == Some(SyntaxKind::NEWLINE)
-                        || (self.current() == Some(SyntaxKind::INDENT)
-                            && self.indent_is_blank_line())
+                                 // Step over the blank and comment lines the helper looked past.
+                    while matches!(
+                        self.current(),
+                        Some(SyntaxKind::NEWLINE | SyntaxKind::COMMENT)
+                    ) || (self.current() == Some(SyntaxKind::INDENT)
+                        && (self.indent_is_blank_line() || self.indent_starts_comment_line()))
                     {
                         self.bump();
                     }

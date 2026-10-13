@@ -527,6 +527,9 @@ impl YamlValue {
         match self {
             YamlValue::Scalar(s) => result.push_str(&s.to_yaml_string_with_indent(indent)),
             v if v.is_block_collection() => {
+                if result.ends_with(' ') {
+                    result.pop();
+                }
                 result.push('\n');
                 result.push_str(&self.to_yaml_string(indent));
             }
@@ -897,7 +900,7 @@ mod tests {
         let mut inner = BTreeMap::new();
         inner.insert("h".to_string(), YamlValue::from("x"));
         let seq = YamlValue::Sequence(vec![YamlValue::Mapping(inner)]);
-        assert_eq!(seq.to_yaml_string(0), "  - \n    h: x");
+        assert_eq!(seq.to_yaml_string(0), "  -\n    h: x");
 
         // Mapping holding a non-scalar value: nested sequence is rendered at
         // indent + 2.
@@ -906,7 +909,7 @@ mod tests {
             "k".to_string(),
             YamlValue::Sequence(vec![YamlValue::from("a")]),
         );
-        assert_eq!(YamlValue::Mapping(m).to_yaml_string(0), "k: \n    - a");
+        assert_eq!(YamlValue::Mapping(m).to_yaml_string(0), "k:\n    - a");
 
         // Ordered mapping with a non-scalar value: the nested mapping has to
         // sit right of the key at indent + 4, or it becomes a sibling of it.
@@ -914,13 +917,13 @@ mod tests {
         inner2.insert("x".to_string(), YamlValue::from("y"));
         let omap =
             YamlValue::from_ordered_mapping(vec![("a".to_string(), YamlValue::Mapping(inner2))]);
-        assert_eq!(omap.to_yaml_string(0), "!!omap\n  - a: \n      x: y");
+        assert_eq!(omap.to_yaml_string(0), "!!omap\n  - a:\n      x: y");
 
         let pairs = YamlValue::from_pairs(vec![(
             "a".to_string(),
             YamlValue::Sequence(vec![YamlValue::from("z")]),
         )]);
-        assert_eq!(pairs.to_yaml_string(0), "!!pairs\n  - a: \n        - z");
+        assert_eq!(pairs.to_yaml_string(0), "!!pairs\n  - a:\n        - z");
     }
 
     #[test]
@@ -980,10 +983,25 @@ mod tests {
         let out = v.to_yaml_string(0);
         assert_eq!(
             out,
-            "n: \n  s: |-\n    l1\n    l2\n\
+            "n:\n  s: |-\n    l1\n    l2\n\
              o: !!omap\n    - a: |-\n        l1\n        l2\n\
-             q: \n    - |-\n      l1\n      l2"
+             q:\n    - |-\n      l1\n      l2"
         );
+        assert_eq!(YamlValue::parse_raw(&out), v);
+    }
+
+    #[test]
+    fn test_to_yaml_string_nested_keep_block_scalar() {
+        let mut inner = BTreeMap::new();
+        inner.insert(
+            "k".to_string(),
+            YamlValue::Scalar(ScalarValue::literal("x\ny\n")),
+        );
+        let mut m = BTreeMap::new();
+        m.insert("o".to_string(), YamlValue::Mapping(inner));
+        let v = YamlValue::Mapping(m);
+        let out = v.to_yaml_string(0);
+        assert_eq!(out, "o:\n  k: |\n    x\n    y");
         assert_eq!(YamlValue::parse_raw(&out), v);
     }
 
@@ -1001,7 +1019,7 @@ mod tests {
         let out = v.to_yaml_string(0);
         assert_eq!(
             out,
-            "e: {}\nl: \n    - []\ns: !!set\n  '#c': null\n  'a: b': null"
+            "e: {}\nl:\n    - []\ns: !!set\n  '#c': null\n  'a: b': null"
         );
         assert_eq!(YamlValue::parse_raw(&out), v);
     }
@@ -1163,7 +1181,7 @@ mod tests {
         let yaml = val.to_yaml_string(0);
         assert_eq!(
             yaml,
-            "database: \n  host: localhost\n  port: 5432\nfeatures: \n    - auth\n    - logging\nname: app"
+            "database:\n  host: localhost\n  port: 5432\nfeatures:\n    - auth\n    - logging\nname: app"
         );
     }
 

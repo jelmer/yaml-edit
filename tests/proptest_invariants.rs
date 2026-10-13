@@ -331,7 +331,7 @@ fn apply(doc: &Document, op: &Op) {
         }
         Op::Rename(a, b) => {
             let renamed = mapping.rename_key(a.as_str(), b.as_str());
-            assert_mapping_rename_stuck(&mapping, b.as_str(), renamed, doc);
+            assert_mapping_rename_stuck(&mapping, a.as_str(), b.as_str(), renamed, doc);
         }
         Op::Clear => {
             mapping.clear();

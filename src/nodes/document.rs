@@ -555,6 +555,7 @@ impl Document {
     ///
     /// The new key is automatically escaped/quoted as needed. Returns `true` if
     /// the key was found and renamed, `false` if `old_key` does not exist.
+    /// An existing `new_key` entry is replaced; see [`Mapping::rename_key`].
     pub fn rename_key(&self, old_key: impl crate::AsYaml, new_key: impl crate::AsYaml) -> bool {
         self.as_mapping()
             .is_some_and(|m| m.rename_key(old_key, new_key))

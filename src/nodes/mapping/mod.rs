@@ -1206,47 +1206,67 @@ impl Mapping {
     /// Returns `true` if the key was found and renamed, `false` if `old_key`
     /// does not exist.
     ///
+    /// If `new_key` differs from `old_key` and is already present, the
+    /// existing `new_key` entry is removed, as with [`set`](Self::set) and
+    /// [`move_after`](Self::move_after), so the rename does not create a
+    /// duplicate key. The renamed entry keeps its position, value and
+    /// comments.
+    ///
+    /// ```
+    /// # use std::str::FromStr;
+    /// # use yaml_edit::Document;
+    /// let doc = Document::from_str("a: 1\nb: 2\nc: 3\n").unwrap();
+    /// assert!(doc.as_mapping().unwrap().rename_key("a", "b"));
+    /// assert_eq!(doc.to_string(), "b: 1\nc: 3\n");
+    /// ```
+    ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn rename_key(&self, old_key: impl crate::AsYaml, new_key: impl crate::AsYaml) -> bool {
-        let children: Vec<_> = self.0.children_with_tokens().collect();
+        let Some(node) = self.find_entry_by_key(&old_key).map(|e| e.0) else {
+            return false;
+        };
 
-        for (i, child) in children.iter().enumerate() {
-            let Some(node) = child
-                .as_node()
-                .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-            else {
-                continue;
-            };
-            let Some(key_node) = entry_key(node) else {
-                continue;
-            };
-            if !key_content_matches(&key_node, &old_key) {
-                continue;
-            }
+        let renames_to_itself = entry_key(&node).is_some_and(|k| key_content_matches(&k, &new_key));
+        if !renames_to_itself {
+            self.remove_other_entries(&node, &new_key);
+        }
 
-            let mut builder = GreenNodeBuilder::new();
-            builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
-
-            for entry_child in node.children_with_tokens() {
-                match entry_child {
-                    rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::KEY => {
-                        Self::rebuild_key(&mut builder, &n, &new_key);
-                    }
-                    rowan::NodeOrToken::Node(n) => {
-                        crate::yaml::copy_node_to_builder(&mut builder, &n);
-                    }
-                    rowan::NodeOrToken::Token(t) => {
-                        builder.token(t.kind().into(), t.text());
-                    }
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
+        for entry_child in node.children_with_tokens() {
+            match entry_child {
+                rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::KEY => {
+                    Self::rebuild_key(&mut builder, &n, &new_key);
+                }
+                rowan::NodeOrToken::Node(n) => {
+                    crate::yaml::copy_node_to_builder(&mut builder, &n);
+                }
+                rowan::NodeOrToken::Token(t) => {
+                    builder.token(t.kind().into(), t.text());
                 }
             }
-
-            builder.finish_node();
-            let new_entry = SyntaxNode::new_root_mut(builder.finish());
-            self.0.splice_children(i..i + 1, vec![new_entry.into()]);
-            return true;
         }
-        false
+        builder.finish_node();
+        let new_entry = SyntaxNode::new_root_mut(builder.finish());
+        let i = node.index();
+        self.0.splice_children(i..i + 1, vec![new_entry.into()]);
+        true
+    }
+
+    /// Remove every entry other than `keep` whose key matches `key`.
+    fn remove_other_entries(&self, keep: &SyntaxNode, key: &impl crate::AsYaml) {
+        while let Some((i, other)) = self
+            .0
+            .children_with_tokens()
+            .enumerate()
+            .find_map(|(i, c)| {
+                let entry = MappingEntry::cast(c.into_node()?)?;
+                (entry.0 != *keep && entry.key_matches(key)).then_some((i, entry.0))
+            })
+        {
+            let children: Vec<_> = self.0.children_with_tokens().collect();
+            self.remove_entry_at(&children, i, &other);
+        }
     }
 
     /// Rebuild an entry's KEY node around `new_key`, keeping the layout

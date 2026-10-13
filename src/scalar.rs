@@ -675,7 +675,7 @@ impl ScalarValue {
             "true" | "false" | "True" | "False" | "TRUE" | "FALSE" => {
                 return CoreScalarType::Boolean
             }
-            "null" | "Null" | "NULL" | "~" => return CoreScalarType::Null,
+            "null" | "Null" | "NULL" | "~" | "" => return CoreScalarType::Null,
             _ => {}
         }
 
@@ -2827,5 +2827,22 @@ mod tests {
             Some(i64::MIN)
         );
         assert_eq!(ScalarValue::parse("9223372036854775808").to_i64(), None);
+    }
+
+    #[test]
+    fn test_empty_plain_scalar_is_null() {
+        assert_eq!(ScalarValue::classify_plain(""), CoreScalarType::Null);
+
+        let doc: crate::yaml::Document = "a:\nb: 1\n".parse().unwrap();
+        let node = doc.as_mapping().unwrap().get("a").unwrap();
+        let value = ScalarValue::from_scalar(node.as_scalar().unwrap());
+        assert_eq!(value.scalar_type(), ScalarType::Null);
+
+        let doc: crate::yaml::Document = "x: 1\n".parse().unwrap();
+        doc.as_mapping().unwrap().set("k", ScalarValue::parse(""));
+        let reparsed: crate::yaml::Document = doc.to_string().parse().unwrap();
+        let node = reparsed.as_mapping().unwrap().get("k").unwrap();
+        let value = ScalarValue::from_scalar(node.as_scalar().unwrap());
+        assert_eq!(value.scalar_type(), ScalarType::Null);
     }
 }

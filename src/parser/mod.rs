@@ -109,6 +109,13 @@ pub(super) struct Parser {
     /// introduces: `-\n  ? &e\n  : &a\n` is one mapping, as the YAML test
     /// suite's PW8X expects, not an anchor whose body is a nested one.
     pub(super) explicit_key_column: Option<usize>,
+    /// The column of the mapping whose value is being parsed on a line
+    /// after its key's, the counterpart of `mapping_value_column`.
+    ///
+    /// A block scalar's indentation indicator counts from its enclosing
+    /// collection's column, and in `o:\n  k:\n    |1\n` nothing else
+    /// records that `k`'s mapping sits at column 2.
+    pub(super) mapping_block_value_column: Option<usize>,
     /// Current depth of nested flow collections ([...] / {...}).
     pub(super) flow_depth: usize,
     /// Depth of `parse_value_with_base_indent` recursion (block and flow).
@@ -150,6 +157,7 @@ impl Parser {
             mapping_value_column: None,
             node_is_document_root: false,
             explicit_key_column: None,
+            mapping_block_value_column: None,
             current_line_indent: 0,
             flow_depth: 0,
             nesting_depth: 0,

@@ -1135,6 +1135,19 @@ impl ScalarValue {
     /// As [`to_yaml_string`](Self::to_yaml_string), indenting a block
     /// scalar's body by `block_indent` spaces.
     pub fn to_yaml_string_with_indent(&self, block_indent: usize) -> String {
+        self.to_yaml_string_in(0, block_indent)
+    }
+
+    /// Render the scalar as the value of an entry at `entry_column`, with a
+    /// block scalar's body two spaces past it.
+    pub(crate) fn to_yaml_string_for_entry(&self, entry_column: usize) -> String {
+        self.to_yaml_string_in(entry_column, entry_column + 2)
+    }
+
+    /// As [`to_yaml_string_with_indent`](Self::to_yaml_string_with_indent),
+    /// for a scalar that is a node of a collection at `parent_column`, which
+    /// a block scalar's indentation indicator counts from.
+    fn to_yaml_string_in(&self, parent_column: usize, block_indent: usize) -> String {
         // Special data types carry their tag unless an explicit one is set
         let tag = self.tag.as_deref().or(match self.scalar_type {
             #[cfg(feature = "base64")]
@@ -1143,7 +1156,7 @@ impl ScalarValue {
             ScalarType::Regex => Some("!!regex"),
             _ => None,
         });
-        let content = self.render_content(block_indent);
+        let content = self.render_content(parent_column, block_indent);
         match tag {
             Some(tag) if content.is_empty() => tag.to_string(),
             Some(tag) => format!("{tag} {content}"),
@@ -1152,7 +1165,7 @@ impl ScalarValue {
     }
 
     /// Render the scalar without any tag.
-    fn render_content(&self, block_indent: usize) -> String {
+    fn render_content(&self, parent_column: usize, block_indent: usize) -> String {
         match self.style {
             ScalarStyle::Plain => {
                 // Check if we need to quote based on type vs content
@@ -1191,8 +1204,8 @@ impl ScalarValue {
             }
             ScalarStyle::SingleQuoted => self.to_single_quoted(),
             ScalarStyle::DoubleQuoted => self.to_double_quoted(),
-            ScalarStyle::Literal => self.to_literal_with_indent(block_indent),
-            ScalarStyle::Folded => self.to_folded_with_indent(block_indent),
+            ScalarStyle::Literal => self.to_block_with_indent('|', parent_column, block_indent),
+            ScalarStyle::Folded => self.to_block_with_indent('>', parent_column, block_indent),
         }
     }
 
@@ -1244,16 +1257,18 @@ impl ScalarValue {
 
     /// Convert to literal block scalar with specific indentation
     pub fn to_literal_with_indent(&self, indent: usize) -> String {
-        self.to_block_with_indent('|', indent)
+        self.to_block_with_indent('|', 0, indent)
     }
 
     /// Convert to folded block scalar with specific indentation
     pub fn to_folded_with_indent(&self, indent: usize) -> String {
-        self.to_block_with_indent('>', indent)
+        self.to_block_with_indent('>', 0, indent)
     }
 
-    /// Render as a block scalar introduced by `marker` (`|` literal, `>` folded).
-    fn to_block_with_indent(&self, marker: char, indent: usize) -> String {
+    /// Render as a block scalar introduced by `marker` (`|` literal, `>` folded),
+    /// with its body at column `indent` inside a collection at
+    /// `parent_column`.
+    fn to_block_with_indent(&self, marker: char, parent_column: usize, indent: usize) -> String {
         // Pick the chomping indicator that preserves the value's trailing
         // line breaks: a bare `|` clips to exactly one, `|-` strips them all
         // and `|+` keeps them. Otherwise reading the value back gains or
@@ -1270,10 +1285,11 @@ impl ScalarValue {
         // where the content really starts: `|2` for `"  x\n  y"`.
         if let Some(content_indent) = self.detect_content_indentation() {
             if content_indent > 0 {
-                // The indicator counts from the block's own column, so the
-                // body has to sit that much further right for the value's
-                // leading spaces to survive.
+                // The indicator counts from the parent collection's column,
+                // and the body has to sit at the column it names for the
+                // value's leading spaces to survive.
                 let body = " ".repeat(indent);
+                let indicator = indent - parent_column;
                 let shifted = self
                     .value
                     .lines()
@@ -1286,7 +1302,7 @@ impl ScalarValue {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                return format!("{marker}{indent}{chomp}\n{shifted}");
+                return format!("{marker}{indicator}{chomp}\n{shifted}");
             }
             return format!("{marker}{chomp}\n{}", self.value);
         }
@@ -1461,7 +1477,7 @@ impl crate::AsYaml for ScalarValue {
         if let Some(tag) = &self.tag {
             builder.start_node(SyntaxKind::TAGGED_NODE.into());
             builder.token(SyntaxKind::TAG.into(), tag);
-            let content = self.render_content(indent + 2);
+            let content = self.render_content(indent, indent + 2);
             // Like the parser, give a tag with no content an empty scalar.
             let kind = if content.is_empty() {
                 SyntaxKind::NULL
@@ -1482,7 +1498,7 @@ impl crate::AsYaml for ScalarValue {
         // A block scalar's body has to clear the column its entry sits at,
         // or the text it renders to is not the value it stood for:
         // `a:\n  b: |-\n  x\n` has an empty scalar and a stray `x`.
-        let text = self.to_yaml_string_with_indent(indent + 2);
+        let text = self.to_yaml_string_for_entry(indent);
         builder.start_node(SyntaxKind::SCALAR.into());
         builder.token(self.token_kind(&text).into(), &text);
         builder.finish_node();

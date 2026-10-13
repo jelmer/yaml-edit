@@ -1201,7 +1201,10 @@ impl Parser {
                     } else {
                         self.current_line_indent
                     };
+                    let outer_column = self.mapping_block_value_column;
+                    self.mapping_block_value_column = Some(base_indent.max(key_column));
                     self.parse_value_with_base_indent(value_indent);
+                    self.mapping_block_value_column = outer_column;
                     self.scalar_continuation_floor = outer_floor;
                     has_value = true;
                 } else if self.current() == Some(SyntaxKind::DASH)

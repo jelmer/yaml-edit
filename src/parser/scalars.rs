@@ -779,6 +779,17 @@ impl Parser {
         // outright, so the first line does not get to set it: in
         // `a: >2\n   more\n  regular\n` the `regular` line is body at the
         // declared column, not a dedent out of the deeper first line.
+        //
+        // The indicator counts from the innermost enclosing collection's
+        // column, which is the largest of the ones recorded, so
+        // `- aaa: |2\n    xxx\n` has its body at column 4. With none, as at
+        // the document root, it counts from column 0.
+        let parent_column = self
+            .sequence_entry_column
+            .max(self.mapping_value_column)
+            .max(self.mapping_block_value_column)
+            .unwrap_or(0);
+        let explicit_indent = explicit_indent.map(|indent| parent_column + indent);
         let mut base_indent: Option<usize> = explicit_indent;
         let mut first_content_indent: Option<usize> = explicit_indent;
 

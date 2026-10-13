@@ -14,11 +14,14 @@
 //! This is an exception to the general "no println!()" rule for tests, as this file functions
 //! as a test harness/runner that reports on YAML test suite compliance.
 
+use rowan::ast::AstNode;
+use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use yaml_edit::anchor_resolution::AnchorRegistry;
 use yaml_edit::validator::{Severity, Validator};
-use yaml_edit::YamlFile;
+use yaml_edit::{Scalar, ScalarStyle, ScalarType, ScalarValue, SyntaxKind, YamlFile, YamlNode};
 
 /// Represents a single test case from the YAML Test Suite.
 #[derive(Debug)]
@@ -241,7 +244,6 @@ fn run_test(test: &TestCase, verbose: bool) -> bool {
             // Use validate_syntax on the root to catch directive-level issues
             let validator = Validator::new();
 
-            use rowan::ast::AstNode;
             let violations = validator.validate_syntax(yaml.syntax());
 
             if !violations.is_empty() {
@@ -334,5 +336,262 @@ fn yaml_test_suite() {
         results.failed, 0,
         "{} YAML test suite case(s) failed. Run with VERBOSE=1 for details, LIMIT=N to narrow.",
         results.failed,
+    );
+}
+
+/// Valid cases whose parsed values do not match `in.json`, with the reason.
+///
+/// Keep this sorted. Once a case is fixed, `yaml_test_suite_values` fails
+/// until it is removed from here.
+const KNOWN_VALUE_FAILURES: &[(&str, &str)] = &[
+    ("3GZX", "redefined anchor"),
+    ("4Q9F", "block scalar blank lines"),
+    ("4QFQ", "block scalar indent indicator"),
+    ("4WA9", "block scalar indent indicator"),
+    ("5C5M", "trailing whitespace in scalar"),
+    ("5TYM", "tag handles"),
+    ("6CK3", "tag handles"),
+    ("6FWR", "block scalar blank lines"),
+    ("6VJK", "block scalar blank lines"),
+    ("7T8X", "block scalar blank lines, trailing comment"),
+    ("93WF", "block scalar blank lines"),
+    ("CC74", "tag handles"),
+    ("DC7X", "trailing whitespace in scalar"),
+    ("DWX9", "block scalar blank lines"),
+    ("F6MC", "block scalar indent indicator"),
+    ("H2RW", "block scalar blank lines"),
+    ("HWV9", "document end marker without document"),
+    ("K527", "block scalar blank lines"),
+    ("K858", "block scalar blank lines"),
+    ("L24T/00", "block scalar blank lines"),
+    ("L24T/01", "block scalar blank lines"),
+    ("L9U5", "trailing whitespace in scalar"),
+    ("LP6E", "trailing whitespace in scalar"),
+    ("MJS9", "block scalar blank lines"),
+    ("NAT4", "quoted folding"),
+    ("PRH3", "single-quoted folding"),
+    ("QT73", "document end marker without document"),
+    ("R4YG", "block scalar indent indicator"),
+    ("T26H", "block scalar blank lines"),
+    ("T4YY", "single-quoted folding"),
+    ("TS54", "block scalar blank lines"),
+    ("U3C3", "tag handles"),
+    ("WZ62", "trailing whitespace in scalar"),
+    ("Y79Y/001", "block scalar indentation"),
+    ("Z9M4", "tag handles"),
+];
+
+/// Converts parsed documents to the JSON that `in.json` holds.
+struct JsonConverter {
+    anchors: AnchorRegistry,
+    /// Whether `!!` still means the core schema tags, i.e. no `%TAG !!`
+    /// directive redefines it.
+    core_tags: bool,
+}
+
+impl JsonConverter {
+    fn node(&self, node: &YamlNode) -> Result<Value, String> {
+        match node {
+            YamlNode::Scalar(scalar) => self.scalar(scalar, None),
+            YamlNode::Mapping(mapping) => {
+                let mut object = serde_json::Map::new();
+                for entry in mapping.entries() {
+                    let key = match entry.key_node() {
+                        None => String::new(),
+                        Some(key) => self.key(&key)?,
+                    };
+                    let value = match entry.value_node() {
+                        None => Value::Null,
+                        Some(value) => self.node(&value)?,
+                    };
+                    object.insert(key, value);
+                }
+                Ok(Value::Object(object))
+            }
+            YamlNode::Sequence(sequence) => sequence
+                .values()
+                .map(|item| self.node(&item))
+                .collect::<Result<_, _>>()
+                .map(Value::Array),
+            YamlNode::Alias(alias) => self.node(&self.resolve_alias(&alias.name())?),
+            YamlNode::TaggedNode(tagged) => {
+                let tag = tagged.tag();
+                if let Some(mapping) = tagged.as_mapping() {
+                    self.node(&YamlNode::Mapping(mapping))
+                } else if let Some(sequence) = tagged.as_sequence() {
+                    self.node(&YamlNode::Sequence(sequence))
+                } else if let Some(scalar) = tagged.value() {
+                    self.scalar(&scalar, tag.as_deref())
+                } else {
+                    Err(format!("tagged node {:?} has no value", tag))
+                }
+            }
+        }
+    }
+
+    fn resolve_alias(&self, name: &str) -> Result<YamlNode, String> {
+        let node = self
+            .anchors
+            .resolve(name)
+            .ok_or_else(|| format!("undefined alias *{}", name))?;
+        // Anchors on mapping values point at the VALUE wrapper.
+        let node = if node.kind() == SyntaxKind::VALUE {
+            node.first_child()
+        } else {
+            Some(node.clone())
+        };
+        node.and_then(YamlNode::from_syntax)
+            .ok_or_else(|| format!("anchor &{} has no value", name))
+    }
+
+    /// JSON keys are strings, so scalar keys use their string value as written.
+    fn key(&self, key: &YamlNode) -> Result<String, String> {
+        match key {
+            YamlNode::Scalar(scalar) => Ok(scalar.as_string()),
+            YamlNode::TaggedNode(tagged) => tagged
+                .as_string()
+                .ok_or_else(|| format!("non-scalar key {}", key)),
+            YamlNode::Alias(alias) => self.key(&self.resolve_alias(&alias.name())?),
+            _ => Err(format!("non-scalar key {}", key)),
+        }
+    }
+
+    /// Resolve a scalar per the YAML 1.2 core schema, honouring its tags.
+    fn scalar(&self, scalar: &Scalar, tag: Option<&str>) -> Result<Value, String> {
+        let value = ScalarValue::from_scalar(scalar);
+        let core_tag = tag.filter(|_| self.core_tags);
+        let scalar_type = match core_tag {
+            Some("!!str") => ScalarType::String,
+            Some("!!int") => ScalarType::Integer,
+            Some("!!float") => ScalarType::Float,
+            Some("!!bool") => ScalarType::Boolean,
+            Some("!!null") => ScalarType::Null,
+            _ if tag == Some("!") => ScalarType::String,
+            _ if value.style() == ScalarStyle::Plain && value.value().is_empty() => {
+                ScalarType::Null
+            }
+            _ => value.scalar_type(),
+        };
+        let invalid = || format!("{:?} is not a valid {:?}", value.value(), scalar_type);
+        let coerced = value.coerce_to_type(scalar_type).ok_or_else(invalid)?;
+        match scalar_type {
+            ScalarType::Null => Ok(Value::Null),
+            ScalarType::Boolean => coerced.to_bool().map(Value::Bool).ok_or_else(invalid),
+            ScalarType::Integer => coerced
+                .to_i64_yaml_1_2()
+                .map(Value::from)
+                .ok_or_else(invalid),
+            ScalarType::Float => {
+                let float = coerced.to_f64().ok_or_else(invalid)?;
+                serde_json::Number::from_f64(float)
+                    .map(Value::Number)
+                    .ok_or_else(|| format!("{} has no JSON equivalent", value.value()))
+            }
+            _ => Ok(Value::String(value.value().to_string())),
+        }
+    }
+}
+
+/// Like `==`, but numbers compare by value so that `1.0` matches `1`.
+fn json_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(a), Value::Number(b)) => a.as_f64() == b.as_f64(),
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| json_eq(a, b))
+        }
+        (Value::Object(a), Value::Object(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(key, a)| b.get(key).is_some_and(|b| json_eq(a, b)))
+        }
+        _ => a == b,
+    }
+}
+
+/// Checks that `input` parses to the documents in `expected`, which may
+/// hold several concatenated JSON values, one per document.
+fn check_values(input: &str, expected: &[Value]) -> Result<(), String> {
+    let file = YamlFile::from_str(input).map_err(|err| format!("parse error: {}", err))?;
+    let core_tags = !file
+        .directives()
+        .any(|d| d.is_tag() && d.value().is_some_and(|v| v.starts_with("!! ")));
+    let mut actual = Vec::new();
+    for doc in file.documents() {
+        let converter = JsonConverter {
+            anchors: AnchorRegistry::from_document(&doc),
+            core_tags,
+        };
+        actual.push(
+            match doc.syntax().children().find_map(YamlNode::from_syntax) {
+                None => Value::Null,
+                Some(root) => converter.node(&root)?,
+            },
+        );
+    }
+    if actual.len() == expected.len() && actual.iter().zip(expected).all(|(a, e)| json_eq(a, e)) {
+        Ok(())
+    } else {
+        Err(format!(
+            "expected {}, got {}",
+            Value::Array(expected.to_vec()),
+            Value::Array(actual)
+        ))
+    }
+}
+
+/// Compares the values of every valid case that has an `in.json` against it.
+///
+/// JSON cannot express tags, so only the core schema tags are honoured, to
+/// resolve the scalars they apply to. Mapping keys are compared by their
+/// string value. Cases without an `in.json` (mostly those with non-scalar
+/// keys) are not checked.
+#[test]
+fn yaml_test_suite_values() {
+    let tests = collect_tests();
+    assert!(!tests.is_empty(), "No tests found, see yaml_test_suite");
+    assert!(
+        KNOWN_VALUE_FAILURES.windows(2).all(|w| w[0].0 < w[1].0),
+        "KNOWN_VALUE_FAILURES is not sorted"
+    );
+
+    let mut checked = 0;
+    let mut problems = Vec::new();
+    for test in tests.iter().filter(|t| !t.should_error) {
+        let json_path = test.path.join("in.json");
+        let Some(input) = test.input_yaml().filter(|_| json_path.exists()) else {
+            continue;
+        };
+        let expected_json = fs::read_to_string(&json_path)
+            .unwrap_or_else(|err| panic!("{}: cannot read in.json: {}", test.id, err));
+        let expected = serde_json::Deserializer::from_str(&expected_json)
+            .into_iter()
+            .collect::<Result<Vec<Value>, _>>()
+            .unwrap_or_else(|err| panic!("{}: invalid in.json: {}", test.id, err));
+        let known = KNOWN_VALUE_FAILURES.iter().any(|(id, _)| *id == test.id);
+        let outcome = std::panic::catch_unwind(|| check_values(&input, &expected))
+            .unwrap_or_else(|_| Err("panicked".to_string()));
+        match (outcome, known) {
+            (Ok(()), false) | (Err(_), true) => {}
+            (Ok(()), true) => problems.push(format!(
+                "{}: unexpectedly passed, remove from KNOWN_VALUE_FAILURES",
+                test.id
+            )),
+            (Err(detail), false) => {
+                problems.push(format!("{} ({}): {}", test.id, test.name, detail))
+            }
+        }
+        checked += 1;
+    }
+
+    println!(
+        "Compared values for {} cases ({} known failures)",
+        checked,
+        KNOWN_VALUE_FAILURES.len()
+    );
+    assert!(
+        problems.is_empty(),
+        "{} YAML test suite value check(s) failed:\n{}",
+        problems.len(),
+        problems.join("\n")
     );
 }

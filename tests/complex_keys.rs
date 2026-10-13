@@ -464,6 +464,47 @@ fn test_explicit_key_without_value() {
     assert_eq!(output, yaml);
 }
 
+/// Entries of a block mapping as `(key, value)` text, with `~` for a null.
+fn entry_texts(mapping: &yaml_edit::Mapping) -> Vec<(String, String)> {
+    mapping
+        .iter()
+        .map(|(k, v)| {
+            let value = match v.as_scalar() {
+                Some(s) if s.is_null() => "~".to_string(),
+                _ => v.to_string().trim_end().to_string(),
+            };
+            (k.to_string(), value)
+        })
+        .collect()
+}
+
+#[test]
+fn test_nested_explicit_key_with_empty_value() {
+    // The `b: c` line used to become the value of `a`.
+    let expected = [
+        ("a".to_string(), "~".to_string()),
+        ("b".to_string(), "c".to_string()),
+    ];
+
+    let doc = "k:\n  ? a\n  :\n  b: c\n".parse::<YamlFile>().unwrap();
+    let k = doc.document().unwrap().as_mapping().unwrap().get("k");
+    assert_eq!(entry_texts(k.unwrap().as_mapping().unwrap()), expected);
+
+    let doc = "- ? a\n  :\n  b: c\n".parse::<YamlFile>().unwrap();
+    let first = doc.document().unwrap().as_sequence().unwrap().first();
+    assert_eq!(entry_texts(first.unwrap().as_mapping().unwrap()), expected);
+}
+
+#[test]
+fn test_nested_explicit_key_with_indentless_sequence_value() {
+    let doc = "k:\n  ? a\n  :\n  - x\n".parse::<YamlFile>().unwrap();
+    let k = doc.document().unwrap().as_mapping().unwrap().get("k");
+    assert_eq!(
+        entry_texts(k.unwrap().as_mapping().unwrap()),
+        [("a".to_string(), "- x".to_string())]
+    );
+}
+
 #[test]
 fn test_complex_key_preservation() {
     let yaml = r#"

@@ -172,7 +172,7 @@ impl Parser {
                     self.bump(); // consume ':'
                     self.skip_whitespace();
 
-                    self.parse_value_after_colon(false);
+                    self.parse_value_after_colon(false, Some(question_column));
                 } else {
                     // No value, just a key - create explicit null value
                     self.emit_implicit_null_value();
@@ -507,7 +507,7 @@ impl Parser {
                     if self.current() != Some(SyntaxKind::NEWLINE) {
                         self.mapping_value_column = Some(colon_column);
                     }
-                    self.parse_value_after_colon(true);
+                    self.parse_value_after_colon(true, Some(question_column));
                     self.mapping_value_column = outer_column;
                 }
             } else {
@@ -599,7 +599,7 @@ impl Parser {
             self.skip_whitespace();
 
             // Parse value
-            self.parse_value_after_colon(false);
+            self.parse_value_after_colon(false, None);
         } else {
             let error_msg = self.create_detailed_error(
                 "Missing colon in complex mapping",
@@ -712,7 +712,7 @@ impl Parser {
                 self.bump();
                 self.skip_whitespace();
 
-                self.parse_value_after_colon(false);
+                self.parse_value_after_colon(false, Some(question_column));
             } else {
                 // No value, just a key - create explicit null value
                 self.emit_implicit_null_value();

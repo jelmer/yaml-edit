@@ -254,7 +254,15 @@ impl CustomSchema {
 
     /// Validate a scalar value with custom rules
     pub fn validate_scalar(&self, content: &str, path: &str) -> Result<(), ValidationError> {
-        let scalar_value = ScalarValue::parse(content.trim());
+        self.validate_scalar_value(&ScalarValue::parse(content.trim()), path)
+    }
+
+    fn validate_scalar_value(
+        &self,
+        scalar_value: &ScalarValue,
+        path: &str,
+    ) -> Result<(), ValidationError> {
+        let content = scalar_value.value();
         let scalar_type = scalar_value.scalar_type();
 
         // Check if type is allowed
@@ -285,13 +293,13 @@ impl CustomSchema {
 
         // Run custom validator if present
         if let Some(validator) = self.custom_validators.get(&scalar_type) {
-            let result = validator(content.trim(), path);
+            let result = validator(content, path);
             if let CustomValidationResult::Invalid { constraint, reason } = result {
                 return Err(ValidationError::custom_constraint_failed(
                     path,
                     &self.name,
                     format!("{constraint}: {reason}"),
-                    content.trim(),
+                    content,
                 ));
             }
         }
@@ -458,18 +466,17 @@ impl SchemaValidator {
 
     /// Validate a scalar value
     fn validate_scalar(&self, scalar: &Scalar, path: &str, errors: &mut Vec<ValidationError>) {
-        let content = scalar.as_string();
+        let scalar_value = ScalarValue::from_scalar(scalar);
 
         // Handle custom schema validation differently
         if let Schema::Custom(custom_schema) = &self.schema {
-            if let Err(error) = custom_schema.validate_scalar(&content, path) {
+            if let Err(error) = custom_schema.validate_scalar_value(&scalar_value, path) {
                 errors.push(error);
             }
             return;
         }
 
         // Standard schema validation
-        let scalar_value = ScalarValue::parse(content.trim());
         let scalar_type = scalar_value.scalar_type();
 
         if !self.schema.allows_scalar_type(scalar_type) {
@@ -611,7 +618,7 @@ impl SchemaValidator {
     /// Check if a document can be coerced to match the schema
     fn check_coercion(&self, document: &Document, path: &str, errors: &mut Vec<ValidationError>) {
         if let Some(scalar) = document.as_scalar() {
-            let scalar_value = ScalarValue::parse(scalar.as_string().trim());
+            let scalar_value = ScalarValue::from_scalar(&scalar);
             let scalar_type = scalar_value.scalar_type();
 
             if !self.schema.allows_scalar_type(scalar_type) {
@@ -657,7 +664,7 @@ impl SchemaValidator {
 
         // Use smart extraction to handle wrapper nodes automatically
         if let Some(scalar) = extract_scalar(node) {
-            let scalar_value = ScalarValue::parse(scalar.as_string().trim());
+            let scalar_value = ScalarValue::from_scalar(&scalar);
             let scalar_type = scalar_value.scalar_type();
 
             if !self.schema.allows_scalar_type(scalar_type) {
@@ -980,10 +987,6 @@ message: world
             }
         }
 
-        // Note: Due to current type inference limitations, quoted numbers like "42"
-        // are detected as integers rather than strings. This is a limitation of
-        // the ScalarValue::parse() function, not the schema validation logic.
-        // For now, we test with unambiguous strings.
         assert!(non_strict_result.is_ok());
         assert!(strict_result.is_ok());
     }
@@ -1505,5 +1508,65 @@ value: 42
         let schema = Schema::Custom(custom_schema);
 
         assert_eq!(schema.name(), "my-custom-schema");
+    }
+
+    #[test]
+    fn test_quoted_scalars_are_strings() {
+        let document = create_test_document("a: \"123\"\nb: 'true'\nc: \"null\"\n");
+        assert_eq!(
+            SchemaValidator::failsafe().strict().validate(&document),
+            Ok(())
+        );
+        assert_eq!(SchemaValidator::failsafe().can_coerce(&document), Ok(()));
+    }
+
+    #[test]
+    fn test_plain_base64_like_word_is_string() {
+        let document = create_test_document("k: test\n");
+        assert_eq!(SchemaValidator::json().strict().validate(&document), Ok(()));
+        assert_eq!(
+            SchemaValidator::failsafe().strict().validate(&document),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn test_quoted_date_is_string() {
+        let document = create_test_document("k: \"2023-01-01\"\n");
+        assert_eq!(SchemaValidator::json().strict().validate(&document), Ok(()));
+    }
+
+    #[test]
+    fn test_custom_schema_quoted_integer_is_string() {
+        let custom_schema = CustomSchema::new("strings")
+            .allow_type(ScalarType::String)
+            .strict();
+        let validator = SchemaValidator::custom(custom_schema);
+        let document = create_test_document("k: \"123\"\n");
+        assert_eq!(validator.validate(&document), Ok(()));
+        let document = create_test_document("k: 123\n");
+        assert_eq!(
+            validator.validate(&document),
+            Err(vec![ValidationError::type_not_allowed(
+                "root.k",
+                "strings",
+                ScalarType::Integer,
+                vec![ScalarType::String],
+            )])
+        );
+    }
+
+    #[test]
+    fn test_plain_integer_still_rejected_by_failsafe_strict() {
+        let document = create_test_document("k: 123\n");
+        assert_eq!(
+            SchemaValidator::failsafe().strict().validate(&document),
+            Err(vec![ValidationError::type_not_allowed(
+                "root.k",
+                "failsafe",
+                ScalarType::Integer,
+                vec![ScalarType::String],
+            )])
+        );
     }
 }

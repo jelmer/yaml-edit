@@ -67,6 +67,30 @@ impl From<CoreScalarType> for ScalarType {
     }
 }
 
+/// The non-string core schema type named by `tag`, if any.
+fn core_tag_type(tag: &str) -> Option<CoreScalarType> {
+    let name = tag
+        .strip_prefix("!!")
+        .or_else(|| tag.strip_prefix("!<tag:yaml.org,2002:")?.strip_suffix('>'))?;
+    match name {
+        "int" => Some(CoreScalarType::Integer),
+        "float" => Some(CoreScalarType::Float),
+        "bool" => Some(CoreScalarType::Boolean),
+        "null" => Some(CoreScalarType::Null),
+        _ => None,
+    }
+}
+
+/// Whether `value` is a valid spelling of a `t` under the core schema.
+fn core_tag_accepts(t: CoreScalarType, value: &str) -> bool {
+    match (t, ScalarValue::classify_plain(value)) {
+        (CoreScalarType::Null, _) if value.is_empty() => true,
+        // The core schema's float pattern also matches integers.
+        (CoreScalarType::Float, CoreScalarType::Integer) => true,
+        (t, c) => t == c,
+    }
+}
+
 /// Type of a scalar value
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScalarType {
@@ -98,6 +122,8 @@ pub struct ScalarValue {
     style: ScalarStyle,
     /// The type of the scalar
     scalar_type: ScalarType,
+    /// The explicit tag written on the node, e.g. `!!float` or `!local`
+    tag: Option<String>,
 }
 
 /// Parse a `\uNNNN` or `\UNNNNNNNN` unicode escape from `chars` (with
@@ -167,6 +193,7 @@ impl ScalarValue {
             value,
             style,
             scalar_type,
+            tag: None,
         }
     }
 
@@ -266,16 +293,7 @@ impl ScalarValue {
             value: value.into(),
             style,
             scalar_type: ScalarType::String,
-        }
-    }
-
-    /// Create a plain scalar of `scalar_type`, without checking that `value`
-    /// resolves to it.
-    pub(crate) fn plain_typed(value: impl Into<String>, scalar_type: ScalarType) -> Self {
-        Self {
-            value: value.into(),
-            style: ScalarStyle::Plain,
-            scalar_type,
+            tag: None,
         }
     }
 
@@ -310,6 +328,7 @@ impl ScalarValue {
             value: "null".to_string(),
             style: ScalarStyle::Plain,
             scalar_type: ScalarType::Null,
+            tag: None,
         }
     }
 
@@ -321,6 +340,7 @@ impl ScalarValue {
             value: encoded,
             style: ScalarStyle::Plain,
             scalar_type: ScalarType::Binary,
+            tag: None,
         }
     }
 
@@ -330,6 +350,7 @@ impl ScalarValue {
             value: value.into(),
             style: ScalarStyle::Plain,
             scalar_type: ScalarType::Timestamp,
+            tag: None,
         }
     }
 
@@ -339,7 +360,30 @@ impl ScalarValue {
             value: pattern.into(),
             style: ScalarStyle::Plain,
             scalar_type: ScalarType::Regex,
+            tag: None,
         }
+    }
+
+    /// Return this scalar with an explicit tag, such as `!!str` or `!local`.
+    ///
+    /// The tag is rendered in front of the content. It does not change the
+    /// scalar's [`ScalarType`].
+    ///
+    /// ```
+    /// use yaml_edit::ScalarValue;
+    ///
+    /// let scalar = ScalarValue::from(1.0).with_tag("!!float");
+    /// assert_eq!(scalar.tag(), Some("!!float"));
+    /// assert_eq!(scalar.to_yaml_string(), "!!float 1");
+    /// ```
+    pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = Some(tag.into());
+        self
+    }
+
+    /// The explicit tag on this scalar, if any.
+    pub fn tag(&self) -> Option<&str> {
+        self.tag.as_deref()
     }
 
     /// Get the raw value
@@ -503,6 +547,7 @@ impl ScalarValue {
                 value: self.value.clone(),
                 style: ScalarStyle::Plain,
                 scalar_type: ScalarType::String,
+                tag: None,
             }),
             ScalarType::Integer => Self::parse_integer(&self.value).map(ScalarValue::from),
             ScalarType::Float => self.value.parse::<f64>().ok().map(ScalarValue::from),
@@ -523,6 +568,7 @@ impl ScalarValue {
                         value: self.value.clone(),
                         style: ScalarStyle::Plain,
                         scalar_type: ScalarType::Binary,
+                        tag: None,
                     })
                 } else {
                     None
@@ -738,6 +784,7 @@ impl ScalarValue {
             value,
             style,
             scalar_type,
+            tag: None,
         }
     }
 
@@ -780,7 +827,29 @@ impl ScalarValue {
             value,
             style,
             scalar_type,
+            tag: None,
         }
+    }
+
+    /// Create a ScalarValue from a tagged scalar node, keeping its tag and
+    /// style.
+    ///
+    /// The core schema tags `!!int`, `!!float`, `!!bool` and `!!null` set
+    /// the type when the content is a valid spelling of it; any other tag, or
+    /// content the tag cannot resolve, gives a string.
+    pub(crate) fn from_tagged(tagged: &crate::yaml::TaggedNode) -> Option<Self> {
+        let tag = tagged.tag();
+        let mut scalar = match tagged.value() {
+            Some(inner) => Self::from_scalar(&inner),
+            // A tag with no content, as in `k: !!null`
+            None => Self::plain(tagged.as_string()?),
+        };
+        scalar.scalar_type = match tag.as_deref().and_then(core_tag_type) {
+            Some(t) if core_tag_accepts(t, &scalar.value) => t.into(),
+            _ => ScalarType::String,
+        };
+        scalar.tag = tag;
+        Some(scalar)
     }
 
     /// Check if a string looks like base64 encoded data
@@ -947,7 +1016,12 @@ impl ScalarValue {
         if value.is_empty() {
             return true;
         }
+        Self::resolves_to_non_string(value) || Self::needs_quoting_as_tagged(value)
+    }
 
+    /// Whether a plain scalar spelling `value` would be read back as
+    /// something other than a string when it carries no tag.
+    fn resolves_to_non_string(value: &str) -> bool {
         // Check for YAML keywords that would be misinterpreted
         // These need quotes when we want them as strings
         if value.eq_ignore_ascii_case("true")
@@ -963,10 +1037,12 @@ impl ScalarValue {
         }
 
         // Also quote things that look like numbers to preserve them as strings
-        if value.parse::<f64>().is_ok() || Self::parse_integer(value).is_some() {
-            return true;
-        }
+        value.parse::<f64>().is_ok() || Self::parse_integer(value).is_some()
+    }
 
+    /// Whether `value` needs quoting even with an explicit tag deciding its
+    /// type, because as a plain scalar it would not read back as `value`.
+    fn needs_quoting_as_tagged(value: &str) -> bool {
         // Check if starts with special characters. `#` is included because a
         // plain scalar starting with `#` reads as a comment: at column 0 the
         // whole line becomes one, and after whitespace (e.g. `key: #x`) the
@@ -1051,19 +1127,37 @@ impl ScalarValue {
     /// As [`to_yaml_string`](Self::to_yaml_string), indenting a block
     /// scalar's body by `block_indent` spaces.
     pub fn to_yaml_string_with_indent(&self, block_indent: usize) -> String {
-        // For special data types, always include the tag regardless of style
-        let tag_prefix = match self.scalar_type {
+        // Special data types carry their tag unless an explicit one is set
+        let tag = self.tag.as_deref().or(match self.scalar_type {
             #[cfg(feature = "base64")]
-            ScalarType::Binary => "!!binary ",
-            ScalarType::Timestamp => "!!timestamp ",
-            ScalarType::Regex => "!!regex ",
-            _ => "",
-        };
+            ScalarType::Binary => Some("!!binary"),
+            ScalarType::Timestamp => Some("!!timestamp"),
+            ScalarType::Regex => Some("!!regex"),
+            _ => None,
+        });
+        let content = self.render_content(block_indent);
+        match tag {
+            Some(tag) if content.is_empty() => tag.to_string(),
+            Some(tag) => format!("{tag} {content}"),
+            None => content,
+        }
+    }
 
-        let content = match self.style {
+    /// Render the scalar without any tag.
+    fn render_content(&self, block_indent: usize) -> String {
+        match self.style {
             ScalarStyle::Plain => {
                 // Check if we need to quote based on type vs content
                 match self.scalar_type {
+                    // With an explicit tag, the content can stay plain even
+                    // where it would otherwise resolve to another type.
+                    ScalarType::String if self.tag.is_some() => {
+                        if Self::needs_quoting_as_tagged(&self.value) {
+                            self.to_single_quoted()
+                        } else {
+                            self.value.clone()
+                        }
+                    }
                     ScalarType::String => {
                         // For strings, quote if the content looks like a special value
                         if Self::needs_quoting(&self.value) {
@@ -1087,9 +1181,7 @@ impl ScalarValue {
             ScalarStyle::DoubleQuoted => self.to_double_quoted(),
             ScalarStyle::Literal => self.to_literal_with_indent(block_indent),
             ScalarStyle::Folded => self.to_folded_with_indent(block_indent),
-        };
-
-        format!("{tag_prefix}{content}")
+        }
     }
 
     /// Convert to single-quoted string
@@ -1263,6 +1355,7 @@ macro_rules! impl_from_number {
                         value: value.to_string(),
                         style: ScalarStyle::Plain,
                         scalar_type: $ty,
+                        tag: None,
                     }
                 }
             }
@@ -1283,6 +1376,7 @@ impl From<bool> for ScalarValue {
             value: if value { "true" } else { "false" }.to_string(),
             style: ScalarStyle::Plain,
             scalar_type: ScalarType::Boolean,
+            tag: None,
         }
     }
 }
@@ -1294,13 +1388,33 @@ impl From<crate::yaml::Scalar> for ScalarValue {
     }
 }
 
+impl ScalarValue {
+    /// The token kind for `text`, this scalar as rendered.
+    fn token_kind(&self, text: &str) -> crate::lex::SyntaxKind {
+        use crate::lex::SyntaxKind;
+        if text.starts_with('\'') || text.starts_with('"') {
+            return SyntaxKind::STRING;
+        }
+        match self.scalar_type {
+            ScalarType::Integer => SyntaxKind::INT,
+            ScalarType::Float => SyntaxKind::FLOAT,
+            ScalarType::Boolean => SyntaxKind::BOOL,
+            ScalarType::Null => SyntaxKind::NULL,
+            _ => SyntaxKind::STRING,
+        }
+    }
+}
+
 impl crate::AsYaml for ScalarValue {
     fn as_node(&self) -> Option<&crate::yaml::SyntaxNode> {
         None
     }
 
     fn kind(&self) -> crate::as_yaml::YamlKind {
-        crate::as_yaml::YamlKind::Scalar
+        match &self.tag {
+            Some(tag) => crate::as_yaml::YamlKind::Tagged(std::borrow::Cow::Owned(tag.clone())),
+            None => crate::as_yaml::YamlKind::Scalar,
+        }
     }
 
     fn build_content(
@@ -1310,6 +1424,23 @@ impl crate::AsYaml for ScalarValue {
         _flow_context: bool,
     ) -> bool {
         use crate::lex::SyntaxKind;
+        if let Some(tag) = &self.tag {
+            builder.start_node(SyntaxKind::TAGGED_NODE.into());
+            builder.token(SyntaxKind::TAG.into(), tag);
+            let content = self.render_content(indent + 2);
+            // Like the parser, give a tag with no content an empty scalar.
+            let kind = if content.is_empty() {
+                SyntaxKind::NULL
+            } else {
+                builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                self.token_kind(&content)
+            };
+            builder.start_node(SyntaxKind::SCALAR.into());
+            builder.token(kind.into(), &content);
+            builder.finish_node();
+            builder.finish_node();
+            return false;
+        }
         // Render with proper YAML quoting/escaping. When the value needs
         // quotes (e.g. the string "null", or text containing ": "), the
         // rendered text starts with a quote and must be tokenized as a
@@ -1318,20 +1449,8 @@ impl crate::AsYaml for ScalarValue {
         // or the text it renders to is not the value it stood for:
         // `a:\n  b: |-\n  x\n` has an empty scalar and a stray `x`.
         let text = self.to_yaml_string_with_indent(indent + 2);
-        let quoted = text.starts_with('\'') || text.starts_with('"');
-        let token_kind = if quoted {
-            SyntaxKind::STRING
-        } else {
-            match self.scalar_type() {
-                ScalarType::Integer => SyntaxKind::INT,
-                ScalarType::Float => SyntaxKind::FLOAT,
-                ScalarType::Boolean => SyntaxKind::BOOL,
-                ScalarType::Null => SyntaxKind::NULL,
-                _ => SyntaxKind::STRING,
-            }
-        };
         builder.start_node(SyntaxKind::SCALAR.into());
-        builder.token(token_kind.into(), &text);
+        builder.token(self.token_kind(&text).into(), &text);
         builder.finish_node();
         false
     }
@@ -1855,7 +1974,7 @@ mod tests {
         let empty_regex = ScalarValue::regex("");
         assert!(empty_regex.is_regex());
         assert_eq!(empty_regex.value(), "");
-        assert_eq!(empty_regex.to_yaml_string(), "!!regex ");
+        assert_eq!(empty_regex.to_yaml_string(), "!!regex");
 
         // Test pattern with special characters
         let special_chars = ScalarValue::regex(r"[.*+?^${}()|[\]\\]");

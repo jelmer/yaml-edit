@@ -1,6 +1,6 @@
 //! Value wrapper that can represent any YAML value type (scalar, sequence, mapping).
 
-use crate::scalar::{CoreScalarType, ScalarStyle, ScalarValue};
+use crate::scalar::{ScalarStyle, ScalarValue};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -8,7 +8,8 @@ use std::fmt;
 ///
 /// **Deprecated:** Prefer using syntax tree types (`Mapping`, `Sequence`,
 /// `Scalar`) and the `AsYaml` trait instead - they preserve formatting and
-/// work with the CST directly. `YamlValue` loses all formatting information.
+/// work with the CST directly. `YamlValue` keeps tags and scalar styles, but
+/// loses comments, collection styles and other formatting.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum YamlValue {
     /// A scalar value (string, number, boolean, null)
@@ -23,30 +24,12 @@ pub enum YamlValue {
     OrderedMapping(Vec<(String, YamlValue)>),
     /// A sequence of key-value pairs allowing duplicates (!!pairs)
     Pairs(Vec<(String, YamlValue)>),
-}
-
-/// The non-string core schema type named by `tag`, if any.
-fn core_tag_type(tag: &str) -> Option<CoreScalarType> {
-    let name = tag
-        .strip_prefix("!!")
-        .or_else(|| tag.strip_prefix("!<tag:yaml.org,2002:")?.strip_suffix('>'))?;
-    match name {
-        "int" => Some(CoreScalarType::Integer),
-        "float" => Some(CoreScalarType::Float),
-        "bool" => Some(CoreScalarType::Boolean),
-        "null" => Some(CoreScalarType::Null),
-        _ => None,
-    }
-}
-
-/// Whether `value` is a valid spelling of a `t` under the core schema.
-fn core_tag_accepts(t: CoreScalarType, value: &str) -> bool {
-    match (t, ScalarValue::classify_plain(value)) {
-        (CoreScalarType::Null, _) if value.is_empty() => true,
-        // The core schema's float pattern also matches integers.
-        (CoreScalarType::Float, CoreScalarType::Integer) => true,
-        (t, c) => t == c,
-    }
+    /// A sequence or mapping with an explicit tag, such as `!!map` or
+    /// `!local`, other than the ones with their own variant above.
+    ///
+    /// Tags on scalars are kept on the [`ScalarValue`] instead; use
+    /// [`YamlValue::tagged`] to attach a tag to either.
+    Tagged(String, Box<YamlValue>),
 }
 
 impl YamlValue {
@@ -137,14 +120,18 @@ impl YamlValue {
                             .collect();
                         return Some(YamlValue::Pairs(pairs));
                     }
-                    let value = tagged.as_string()?;
-                    let scalar = match tagged.tag().as_deref().and_then(core_tag_type) {
-                        Some(t) if core_tag_accepts(t, &value) => {
-                            ScalarValue::plain_typed(value, t.into())
-                        }
-                        _ => ScalarValue::string(value),
-                    };
-                    Some(YamlValue::Scalar(scalar))
+                    let collection = tagged
+                        .as_mapping()
+                        .map(|m| m.syntax().clone())
+                        .or_else(|| tagged.as_sequence().map(|s| s.syntax().clone()));
+                    if let Some(collection) = collection {
+                        let tag = tagged.tag()?;
+                        return Some(YamlValue::Tagged(
+                            tag,
+                            Box::new(YamlValue::cast(collection)?),
+                        ));
+                    }
+                    ScalarValue::from_tagged(&tagged).map(YamlValue::Scalar)
                 })
             }
             SyntaxKind::VALUE => {
@@ -233,6 +220,39 @@ impl YamlValue {
     /// Create pairs from a vector of pairs
     pub const fn from_pairs(pairs: Vec<(String, YamlValue)>) -> Self {
         YamlValue::Pairs(pairs)
+    }
+
+    /// Attach an explicit tag to `value`.
+    ///
+    /// A scalar keeps the tag itself (see [`ScalarValue::with_tag`]), any
+    /// other value is wrapped in [`YamlValue::Tagged`].
+    ///
+    /// ```
+    /// use yaml_edit::YamlValue;
+    ///
+    /// let v = YamlValue::tagged("!point", YamlValue::from(vec![1, 2]));
+    /// assert_eq!(v.tag(), Some("!point"));
+    /// assert_eq!(v.to_yaml_string(0), "!point\n  - 1\n  - 2");
+    /// ```
+    pub fn tagged(tag: impl Into<String>, value: YamlValue) -> Self {
+        match value {
+            YamlValue::Scalar(s) => YamlValue::Scalar(s.with_tag(tag)),
+            v => YamlValue::Tagged(tag.into(), Box::new(v)),
+        }
+    }
+
+    /// The explicit tag on this value, if any.
+    ///
+    /// `!!set`, `!!omap` and `!!pairs` values report their tag too.
+    pub fn tag(&self) -> Option<&str> {
+        match self {
+            YamlValue::Scalar(s) => s.tag(),
+            YamlValue::Sequence(_) | YamlValue::Mapping(_) => None,
+            YamlValue::Set(_) => Some("!!set"),
+            YamlValue::OrderedMapping(_) => Some("!!omap"),
+            YamlValue::Pairs(_) => Some("!!pairs"),
+            YamlValue::Tagged(tag, _) => Some(tag),
+        }
     }
 
     /// Return `true` if this value is a scalar (string, integer, float, bool, null, etc.).
@@ -469,6 +489,24 @@ impl YamlValue {
             }
             YamlValue::OrderedMapping(pairs) => Self::render_tagged_pairs("!!omap", pairs, indent),
             YamlValue::Pairs(pairs) => Self::render_tagged_pairs("!!pairs", pairs, indent),
+            YamlValue::Tagged(tag, value) => {
+                let content = value.to_yaml_string(indent);
+                if value.is_block_collection() {
+                    format!("{tag}\n{content}")
+                } else {
+                    format!("{tag} {content}")
+                }
+            }
+        }
+    }
+
+    /// Whether this renders as a block collection, which has to start on a
+    /// line of its own.
+    fn is_block_collection(&self) -> bool {
+        match self {
+            YamlValue::Sequence(seq) => !seq.is_empty(),
+            YamlValue::Mapping(map) => !map.is_empty(),
+            _ => false,
         }
     }
 
@@ -488,11 +526,7 @@ impl YamlValue {
     fn push_entry_value(&self, result: &mut String, indent: usize) {
         match self {
             YamlValue::Scalar(s) => result.push_str(&s.to_yaml_string_with_indent(indent)),
-            YamlValue::Sequence(seq) if !seq.is_empty() => {
-                result.push('\n');
-                result.push_str(&self.to_yaml_string(indent));
-            }
-            YamlValue::Mapping(map) if !map.is_empty() => {
+            v if v.is_block_collection() => {
                 result.push('\n');
                 result.push_str(&self.to_yaml_string(indent));
             }
@@ -982,38 +1016,120 @@ mod tests {
         let s = tagged_value("k: !!int 42");
         assert_eq!(s.scalar_type(), crate::ScalarType::Integer);
         assert_eq!(s.to_i64(), Some(42));
-        assert_eq!(s.to_yaml_string(), "42");
+        assert_eq!(s.tag(), Some("!!int"));
+        assert_eq!(s.to_yaml_string(), "!!int 42");
 
         let s = tagged_value("k: !!int \"42\"");
         assert_eq!(s.to_i64(), Some(42));
-        assert_eq!(s.to_yaml_string(), "42");
+        assert_eq!(s.style(), ScalarStyle::DoubleQuoted);
+        assert_eq!(s.to_yaml_string(), "!!int \"42\"");
 
         let s = tagged_value("k: !<tag:yaml.org,2002:int> 7");
         assert_eq!(s.to_i64(), Some(7));
+        assert_eq!(s.to_yaml_string(), "!<tag:yaml.org,2002:int> 7");
 
         let s = tagged_value("k: !!float 1.5");
         assert_eq!(s.scalar_type(), crate::ScalarType::Float);
         assert_eq!(s.to_f64(), Some(1.5));
-        assert_eq!(s.to_yaml_string(), "1.5");
+        assert_eq!(s.to_yaml_string(), "!!float 1.5");
+
+        let s = tagged_value("k: !!float 1");
+        assert_eq!(s.to_f64(), Some(1.0));
+        assert_eq!(s.to_yaml_string(), "!!float 1");
 
         let s = tagged_value("k: !!bool 'true'");
         assert_eq!(s.to_bool(), Some(true));
-        assert_eq!(s.to_yaml_string(), "true");
+        assert_eq!(s.to_yaml_string(), "!!bool 'true'");
 
         let s = tagged_value("k: !!null null");
         assert_eq!(s.scalar_type(), crate::ScalarType::Null);
-        assert_eq!(s.to_yaml_string(), "null");
+        assert_eq!(s.to_yaml_string(), "!!null null");
 
         let s = tagged_value("k: !!null\nj: 1");
         assert_eq!(s.scalar_type(), crate::ScalarType::Null);
+        assert_eq!(s.to_yaml_string(), "!!null");
 
         let s = tagged_value("k: !!str 42");
-        assert_eq!(s, ScalarValue::string("42"));
-        assert_eq!(s.to_yaml_string(), "'42'");
+        assert_eq!(s, ScalarValue::plain("42").with_tag("!!str"));
+        assert_eq!(s.to_yaml_string(), "!!str 42");
 
         // Content that the tag cannot resolve stays a string.
         let s = tagged_value("k: !!int abc");
-        assert_eq!(s, ScalarValue::string("abc"));
+        assert_eq!(s, ScalarValue::plain("abc").with_tag("!!int"));
+        assert_eq!(s.to_yaml_string(), "!!int abc");
+    }
+
+    #[test]
+    fn test_tagged_values_round_trip() {
+        for src in [
+            "k: !!float 1",
+            "k: !local bar",
+            "k: !local \"bar\"",
+            "k: !local 'a: b'",
+            "k: !local true",
+            "k: !local |\n  x\n  y",
+            "k: ! 12",
+            "!local bar",
+            "k: !local\n  a: 1",
+            "k: !local []",
+            "k: !!map {}",
+            "k: !!seq\n    - a",
+            "k: !<tag:yaml.org,2002:set>\n  a: null",
+            "!local\na: !!str 1",
+            "!local\n  - a\n  - !!int 1",
+        ] {
+            let v = YamlValue::parse_raw(src);
+            assert_eq!(v.to_yaml_string(0), src);
+            assert_eq!(YamlValue::parse_raw(&v.to_yaml_string(0)), v);
+        }
+    }
+
+    #[test]
+    fn test_cast_tagged_collections() {
+        let v = YamlValue::parse_raw("k: !local {a: 1}");
+        let mut inner = BTreeMap::new();
+        inner.insert("a".to_string(), YamlValue::from(1));
+        let mut expected = BTreeMap::new();
+        expected.insert(
+            "k".to_string(),
+            YamlValue::Tagged("!local".to_string(), Box::new(YamlValue::Mapping(inner))),
+        );
+        assert_eq!(v, YamlValue::Mapping(expected));
+
+        let v = YamlValue::parse_raw("!!seq [a, b]");
+        assert_eq!(
+            v,
+            YamlValue::tagged("!!seq", YamlValue::from(vec!["a", "b"]))
+        );
+        assert_eq!(v.tag(), Some("!!seq"));
+    }
+
+    #[test]
+    fn test_tagged_constructor() {
+        let v = YamlValue::tagged("!!str", YamlValue::from(1));
+        assert_eq!(v, YamlValue::Scalar(ScalarValue::from(1).with_tag("!!str")));
+        assert_eq!(v.tag(), Some("!!str"));
+        assert_eq!(YamlValue::from(1).tag(), None);
+        assert_eq!(YamlValue::set().tag(), Some("!!set"));
+    }
+
+    #[test]
+    fn test_tagged_values_build_content() {
+        let doc = crate::Document::new();
+        doc.set("a", YamlValue::parse_raw("!!float 1"));
+        doc.set("b", YamlValue::parse_raw("!local 'x'"));
+        doc.set("c", YamlValue::parse_raw("!local [x]"));
+        doc.set("d", YamlValue::parse_raw("!!str"));
+        assert_eq!(
+            doc.to_string(),
+            "---\na: !!float 1\nb: !local 'x'\nc: !local\n  - x\nd: !!str\n"
+        );
+        let v = YamlValue::from_document(&doc);
+        let m = v.as_mapping().unwrap();
+        assert_eq!(m["a"], YamlValue::parse_raw("!!float 1"));
+        assert_eq!(m["b"], YamlValue::parse_raw("!local 'x'"));
+        assert_eq!(m["c"], YamlValue::parse_raw("!local [x]"));
+        assert_eq!(m["d"], YamlValue::parse_raw("!!str"));
     }
 
     #[test]
@@ -1453,6 +1569,7 @@ impl AsYaml for YamlValue {
             YamlValue::Set(_) => YamlKind::Tagged(std::borrow::Cow::Borrowed("!!set")),
             YamlValue::OrderedMapping(_) => YamlKind::Tagged(std::borrow::Cow::Borrowed("!!omap")),
             YamlValue::Pairs(_) => YamlKind::Tagged(std::borrow::Cow::Borrowed("!!pairs")),
+            YamlValue::Tagged(tag, _) => YamlKind::Tagged(std::borrow::Cow::Owned(tag.clone())),
         }
     }
 
@@ -1502,6 +1619,20 @@ impl AsYaml for YamlValue {
                 build_tagged_pair_seq(builder, "!!omap", pairs, indent)
             }
             YamlValue::Pairs(pairs) => build_tagged_pair_seq(builder, "!!pairs", pairs, indent),
+            YamlValue::Tagged(tag, value) => {
+                builder.start_node(SyntaxKind::TAGGED_NODE.into());
+                builder.token(SyntaxKind::TAG.into(), tag);
+                let ends_with_newline = if value.is_block_collection() {
+                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                    builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent + 2));
+                    value.build_content(builder, indent + 2, false)
+                } else {
+                    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                    value.build_content(builder, indent, flow_context)
+                };
+                builder.finish_node(); // TAGGED_NODE
+                ends_with_newline
+            }
         }
     }
 
@@ -1517,6 +1648,7 @@ impl AsYaml for YamlValue {
             YamlValue::Set(_) => true,
             YamlValue::OrderedMapping(_) => true,
             YamlValue::Pairs(_) => true,
+            YamlValue::Tagged(_, _) => true,
         }
     }
 }

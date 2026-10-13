@@ -125,8 +125,14 @@ impl Scalar {
 
         let is_literal = first_line.starts_with('|');
 
-        // Parse chomping indicator and indentation from header
-        let header = first_line.trim();
+        // Parse chomping indicator and indentation from header. Only the
+        // run straight after `|` or `>` holds them; a comment may follow
+        // (`> # a-b`) and its text says nothing about either.
+        let header: String = first_line
+            .chars()
+            .skip(1)
+            .take_while(|c| c.is_ascii_digit() || *c == '+' || *c == '-')
+            .collect();
         let chomping = if header.contains('-') {
             Chomping::Strip
         } else if header.contains('+') {

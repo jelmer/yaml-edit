@@ -10,7 +10,7 @@ use helpers::{
 
 use super::{
     ensure_trailing_newline, entry_key, entry_line_terminated, entry_value, fresh_token,
-    has_child_token, trailing_newline_reachable, Lang, Sequence, SyntaxNode,
+    has_child_token, strip_flow_separator, trailing_newline_reachable, Lang, Sequence, SyntaxNode,
 };
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
@@ -1057,6 +1057,14 @@ impl Mapping {
         if blank_line_after {
             for newline in blank_lines_before {
                 newline.detach();
+            }
+        }
+        // In a flow mapping the new last entry still carries the separator
+        // that led to the removed one, unless that one had its own.
+        if is_last && self.is_flow_style() && !has_child_token(removed, |k| k == SyntaxKind::COMMA)
+        {
+            if let Some(prev) = self.entries().last() {
+                strip_flow_separator(prev.syntax());
             }
         }
         // Removing the first entry promotes the next one, but the parent

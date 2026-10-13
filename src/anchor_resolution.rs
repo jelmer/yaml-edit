@@ -430,42 +430,23 @@ impl<'a> MergedMapping<'a> {
     ///
     /// Direct entries appear first, in their original document order.
     /// Merged-in entries follow, with duplicates (and any direct-key matches
-    /// already yielded) filtered out. The `<<` merge key itself is never
-    /// yielded.
+    /// already yielded) filtered out. Keys are compared as YAML values, so
+    /// the integer `1` and the string `'1'` are distinct. The `<<` merge key
+    /// itself is never yielded.
     pub fn iter(
         &self,
     ) -> impl Iterator<Item = (crate::as_yaml::YamlNode, crate::as_yaml::YamlNode)> + '_ {
-        let mut seen: Vec<String> = Vec::new();
-        let mut out: Vec<(crate::as_yaml::YamlNode, crate::as_yaml::YamlNode)> = Vec::new();
-
-        for (key, value) in self.base.iter() {
-            if is_merge_key(&key) {
-                continue;
-            }
-            let Some(key_str) = node_as_string(&key) else {
-                continue;
-            };
-            seen.push(key_str);
-            out.push((key, resolve_alias_node(value, self.registry)));
-        }
-
+        let mut out: Vec<_> = self.base.iter().filter(|(k, _)| !is_merge_key(k)).collect();
         for source in merge_sources(&self.base, self.registry) {
             for (key, value) in source.iter() {
-                if is_merge_key(&key) {
+                if is_merge_key(&key) || out.iter().any(|(k, _)| k.yaml_eq(&key)) {
                     continue;
                 }
-                let Some(key_str) = node_as_string(&key) else {
-                    continue;
-                };
-                if seen.contains(&key_str) {
-                    continue;
-                }
-                seen.push(key_str);
-                out.push((key, resolve_alias_node(value, self.registry)));
+                out.push((key, value));
             }
         }
-
         out.into_iter()
+            .map(|(k, v)| (k, resolve_alias_node(v, self.registry)))
     }
 
     /// Iterate over the keys of the merged view.
@@ -824,6 +805,26 @@ mod tests {
                 "{yaml:?}"
             );
         }
+    }
+
+    #[test]
+    fn merged_iter_keeps_non_string_keys() {
+        assert_eq!(
+            merged_pairs("a: &a {x: 1}\nm:\n  <<: *a\n  ? [p, q]\n  : complex\n", "m"),
+            pairs(&[("[p, q]", "complex"), ("x", "1")])
+        );
+        // The int 1 and the string '1' are different keys.
+        let yaml = "s: &s {1: from_src, x: 1}\nm:\n  <<: *s\n  '1': base\n  x: 2\n";
+        assert_eq!(
+            merged_pairs(yaml, "m"),
+            pairs(&[("'1'", "base"), ("x", "2"), ("1", "from_src")])
+        );
+        let d = doc(yaml);
+        let reg = d.build_anchor_registry();
+        let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+        assert_eq!(m.merged(&reg).len(), 3);
+        assert_eq!(m.merged(&reg).get(1).unwrap().to_string(), "from_src");
+        assert_eq!(m.merged(&reg).get("1").unwrap().to_string(), "base");
     }
 
     #[test]

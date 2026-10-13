@@ -225,6 +225,12 @@ impl DocumentResolvedExt for crate::yaml::Document {
     }
 }
 
+/// Whether `key` is the merge key. Only a plain `<<` is one; a quoted
+/// `'<<'` is an ordinary string.
+fn is_merge_key(key: &crate::as_yaml::YamlNode) -> bool {
+    key.as_scalar().is_some_and(|s| s.value() == "<<")
+}
+
 /// Extract a string value from a YamlNode scalar.
 fn node_as_string(node: &crate::as_yaml::YamlNode) -> Option<String> {
     node.as_scalar().map(|s| s.as_string())
@@ -243,10 +249,13 @@ fn apply_merge_keys(
     let sources = merge_sources(mapping, registry);
     for source in std::iter::once(mapping).chain(&sources) {
         for (key, value) in source.iter() {
+            if is_merge_key(&key) {
+                continue;
+            }
             // A non-scalar key has no string form, so use its text as
             // YamlValue::cast does.
             let key_str = node_as_string(&key).unwrap_or_else(|| key.to_string());
-            if key_str == "<<" || merged_pairs.contains_key(&key_str) {
+            if merged_pairs.contains_key(&key_str) {
                 continue;
             }
             if let Some(yaml_value) = resolved_value(value, registry, expanding) {
@@ -389,27 +398,26 @@ impl<'a> MergedMapping<'a> {
     /// Get the value associated with `key`, resolving aliases and merge keys.
     ///
     /// Direct entries in the base mapping take precedence over keys
-    /// contributed by `<<:` merge sources. The synthetic `<<` key itself is
-    /// hidden - looking it up returns `None`.
+    /// contributed by `<<:` merge sources. The merge key itself is hidden:
+    /// looking up `"<<"` only finds a quoted `'<<'` key, which is an ordinary
+    /// string.
     ///
     /// If the matched value is an alias (`*name`), the resolved target node
     /// is returned. If no such anchor is defined, the alias is left
     /// unresolved and returned as-is.
     pub fn get(&self, key: impl crate::AsYaml) -> Option<crate::as_yaml::YamlNode> {
-        if is_merge_key(&key) {
-            return None;
-        }
-
-        if let Some(node) = self.base.get(&key) {
-            return Some(resolve_alias_node(node, self.registry));
-        }
-
-        for source in merge_sources(&self.base, self.registry) {
-            if let Some(node) = source.get(&key) {
-                return Some(resolve_alias_node(node, self.registry));
-            }
-        }
-        None
+        let find = |mapping: &crate::yaml::Mapping| {
+            mapping
+                .entries()
+                .find(|e| e.key_matches(&key) && !e.key_node().is_some_and(|k| is_merge_key(&k)))
+                .and_then(|e| e.value_node())
+        };
+        let node = find(&self.base).or_else(|| {
+            merge_sources(&self.base, self.registry)
+                .iter()
+                .find_map(find)
+        })?;
+        Some(resolve_alias_node(node, self.registry))
     }
 
     /// Returns `true` if a value would be returned by [`get`](Self::get) for
@@ -431,22 +439,25 @@ impl<'a> MergedMapping<'a> {
         let mut out: Vec<(crate::as_yaml::YamlNode, crate::as_yaml::YamlNode)> = Vec::new();
 
         for (key, value) in self.base.iter() {
+            if is_merge_key(&key) {
+                continue;
+            }
             let Some(key_str) = node_as_string(&key) else {
                 continue;
             };
-            if key_str == "<<" {
-                continue;
-            }
             seen.push(key_str);
             out.push((key, resolve_alias_node(value, self.registry)));
         }
 
         for source in merge_sources(&self.base, self.registry) {
             for (key, value) in source.iter() {
+                if is_merge_key(&key) {
+                    continue;
+                }
                 let Some(key_str) = node_as_string(&key) else {
                     continue;
                 };
-                if key_str == "<<" || seen.contains(&key_str) {
+                if seen.contains(&key_str) {
                     continue;
                 }
                 seen.push(key_str);
@@ -497,11 +508,6 @@ impl std::fmt::Debug for MergedMapping<'_> {
     }
 }
 
-/// Returns `true` if `key` is the YAML merge key `<<`.
-fn is_merge_key(key: &impl crate::AsYaml) -> bool {
-    crate::as_yaml::yaml_eq(key, &"<<")
-}
-
 /// Walk the `<<:` entries of `base` and return the resolved source mappings,
 /// in precedence order (highest first).
 ///
@@ -525,7 +531,7 @@ fn collect_merge_sources(
     use crate::as_yaml::YamlNode;
 
     for (key, value) in base.iter() {
-        if node_as_string(&key).as_deref() != Some("<<") {
+        if !is_merge_key(&key) {
             continue;
         }
         let operands = match value {
@@ -779,6 +785,45 @@ mod tests {
             doc("a: &a [*a]\n").get_resolved("a"),
             Some(YamlValue::Sequence(vec![YamlValue::Sequence(vec![alias])]))
         );
+    }
+
+    #[test]
+    fn quoted_merge_key_is_an_ordinary_key() {
+        use crate::path::YamlPath;
+        for yaml in [
+            "a: &a {k: 1}\nm:\n  '<<': *a\n  j: 2\n",
+            "a: &a {k: 1}\nm:\n  \"<<\": *a\n  j: 2\n",
+        ] {
+            let d = doc(yaml);
+            let resolved = d.get_resolved("m").unwrap();
+            let keys: Vec<&str> = resolved
+                .as_mapping()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(keys, vec!["<<", "j"], "{yaml:?}");
+
+            let reg = d.build_anchor_registry();
+            let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+            let merged = m.merged(&reg);
+            let keys: Vec<String> = merged
+                .keys()
+                .map(|k| k.as_scalar().unwrap().as_string())
+                .collect();
+            assert_eq!(keys, vec!["<<", "j"], "{yaml:?}");
+            assert_eq!(merged.get("k"), None, "{yaml:?}");
+            assert_eq!(
+                merged.get("<<").map(|v| v.to_string()).as_deref(),
+                Some("{k: 1}"),
+                "{yaml:?}"
+            );
+            assert_eq!(
+                d.try_get_path("m.k"),
+                Err(crate::path::PathError::NotFound { at: "k".into() }),
+                "{yaml:?}"
+            );
+        }
     }
 
     #[test]

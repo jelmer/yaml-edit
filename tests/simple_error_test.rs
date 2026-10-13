@@ -1,6 +1,6 @@
 //! Simple test for error recovery using the Parse API
 
-use yaml_edit::Parse;
+use yaml_edit::{LineColumn, Parse};
 
 #[test]
 fn test_basic_error_reporting() {
@@ -34,5 +34,11 @@ key3: value3
     // Should have positioned errors
     let positioned = parse.positioned_errors();
     assert_eq!(positioned.len(), 1);
-    assert_eq!(positioned[0].message, "3:7: Unterminated quoted string");
+    assert_eq!(positioned[0].message, "Unterminated quoted string");
+    assert_eq!(positioned[0].start_position(yaml), LineColumn::new(3, 7));
+
+    assert_eq!(
+        parse.to_result().unwrap_err().to_string(),
+        "Parse error at line 3, column 7: Unterminated quoted string"
+    );
 }

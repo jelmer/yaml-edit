@@ -540,6 +540,15 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_error_position_with_cr_line_endings() {
+        let err = YamlFile::from_str("a: 1\rb: [a, }\r").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Parse error at line 2, column 8: Unexpected token in flow sequence: \"}\""
+        );
+    }
+
+    #[test]
     fn test_line_column_display() {
         let pos = LineColumn::new(42, 17);
         assert_eq!(format!("{}", pos), "42:17");

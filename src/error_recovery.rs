@@ -158,11 +158,10 @@ impl ErrorRecoveryContext {
         length: usize,
         kind: crate::ParseErrorKind,
     ) -> PositionedParseError {
-        let (line, column) = self.current_location();
         let range = self.current_range(length);
 
         PositionedParseError {
-            message: format!("{line}:{column}: {message}"),
+            message,
             range: range.into(),
             code: None,
             kind,

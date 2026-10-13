@@ -42,30 +42,26 @@ impl<T> Parse<T> {
         &self.positioned_errors
     }
 
-    /// Parse error messages, if any.
+    /// Parse error messages, if any, each prefixed with its `line:column`.
     pub fn errors(&self) -> Vec<String> {
+        let text = self.green_node.to_string();
         self.positioned_errors
             .iter()
-            .map(|e| e.message.clone())
+            .map(|e| format!("{}: {}", e.start_position(&text), e.message))
             .collect()
     }
 
     /// Convert parse result to a `Result`, failing with the first error if any.
-    ///
-    /// The returned `YamlError::Parse` contains the error message but **no
-    /// line/column information** because `Parse` does not retain the source
-    /// text. Use [`YamlFile::from_str`](crate::YamlFile) (which calls
-    /// `byte_offset_to_line_column` internally) if you need precise positions
-    /// in error messages.
     pub fn to_result(self) -> Result<T, crate::YamlError>
     where
         T: rowan::ast::AstNode<Language = crate::Lang>,
     {
         if let Some(first) = self.positioned_errors.first() {
+            let pos = first.start_position(&self.green_node.to_string());
             Err(crate::YamlError::Parse {
                 message: first.message.clone(),
-                line: None,
-                column: None,
+                line: Some(pos.line),
+                column: Some(pos.column),
             })
         } else {
             Ok(self.tree())

@@ -2510,7 +2510,9 @@ mod tests {
             "flow: [a,\nb,\nc]\n",
             "[ \"key\"\n  :value ]\n",
         ] {
-            let doc = Document::from_str(src).unwrap();
+            // The parser rejects some of these too; check the tree it
+            // recovers anyway.
+            let doc = crate::YamlFile::parse(src).tree().document().unwrap();
             assert_ne!(Validator::new().validate(&doc), vec![], "{src:?}");
         }
     }
@@ -2915,7 +2917,12 @@ mod tests {
         // Test U99R: Invalid comma after tag
         let yaml = "- !!str, xxx\n";
         use crate::YamlFile;
-        let file = YamlFile::from_str(yaml).unwrap();
+        let parsed = YamlFile::parse(yaml);
+        assert_eq!(
+            parsed.errors(),
+            vec!["1:8: Plain scalar cannot start with ','".to_string()]
+        );
+        let file = parsed.tree();
         let validator = Validator::new();
 
         // Print tree for debugging

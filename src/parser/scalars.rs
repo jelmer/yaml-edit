@@ -20,6 +20,7 @@ impl Parser {
 
     pub(super) fn parse_scalar(&mut self) {
         self.builder.start_node(SyntaxKind::SCALAR.into());
+        self.check_plain_scalar_start();
 
         if matches!(
             self.current(),
@@ -53,6 +54,39 @@ impl Parser {
         }
 
         self.builder.finish_node();
+    }
+
+    /// Report a plain scalar opening with an indicator that cannot start one.
+    ///
+    /// A flow indicator outside a flow collection is not scalar content at
+    /// the start of a node (`- ]`, `a: ,b`), and a `-` inside one starts a
+    /// plain scalar only when a safe character follows it, as in `-1`:
+    /// `[a, - b]` is the error the YAML test suite's G5U8 expects.
+    pub(super) fn check_plain_scalar_start(&mut self) {
+        let Some((kind, text)) = self.tokens.last() else {
+            return;
+        };
+        let invalid = if self.in_flow_context {
+            // `{-: 1}` is fine: the colon is a safe character, and the lexer
+            // splits it off as its own token.
+            is_plain_scalar_kind(*kind)
+                && text.strip_prefix('-').is_some_and(|rest| {
+                    (rest.is_empty() && self.peek_after_current() != Some(SyntaxKind::COLON))
+                        || rest.starts_with([' ', '\t', '\r', '\n', ',', '[', ']', '{', '}'])
+                })
+        } else {
+            matches!(
+                kind,
+                SyntaxKind::RIGHT_BRACKET | SyntaxKind::RIGHT_BRACE | SyntaxKind::COMMA
+            ) || (is_plain_scalar_kind(*kind) && text.starts_with([',', ']', '}']))
+        };
+        if invalid {
+            let first = text.chars().next().unwrap_or_default();
+            self.add_error(
+                format!("Plain scalar cannot start with {first:?}"),
+                ParseErrorKind::Other,
+            );
+        }
     }
 
     /// Consume a `"..."` / `'...'` scalar whose quotes the lexer left as

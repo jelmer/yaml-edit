@@ -2132,6 +2132,29 @@ fn test_hyphen_in_content_is_not_a_sequence_marker() {
     }
 }
 
+/// A flow indicator cannot start a plain scalar outside a flow collection,
+/// and inside one a `-` starts a plain scalar only when a safe character
+/// follows it.
+#[test]
+fn test_plain_scalar_cannot_start_with_an_indicator() {
+    for (yaml, error) in [
+        ("]}]}", "1:1: Plain scalar cannot start with ']'"),
+        ("a: ,b\n", "1:4: Plain scalar cannot start with ','"),
+        ("- a\n- }\n", "2:3: Plain scalar cannot start with '}'"),
+        ("[-1, - 2]", "1:6: Plain scalar cannot start with '-'"),
+        ("[a, -]", "1:5: Plain scalar cannot start with '-'"),
+    ] {
+        assert_eq!(YamlFile::parse(yaml).errors(), [error], "{yaml:?}");
+    }
+    for yaml in ["[-1, -a]", "{-: 1}", "a: x]\n", "[a\n -]"] {
+        assert_eq!(
+            YamlFile::parse(yaml).errors(),
+            Vec::<String>::new(),
+            "{yaml:?}"
+        );
+    }
+}
+
 /// A tag says what the node beneath it means, so it does not stop the
 /// document's root being reachable as that kind.
 ///
@@ -2194,6 +2217,29 @@ fn test_document_markers_still_parse() {
             yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
+}
+
+/// A document marker at the start of a line is one even inside a quoted
+/// scalar, which makes the scalar invalid (test suite 5TRB, RXY3).
+#[test]
+fn test_document_marker_inside_a_quoted_scalar() {
+    for (yaml, error) in [
+        (
+            "a: \"x\n---\ny\"\n",
+            "1:4: Document marker inside a quoted scalar",
+        ),
+        (
+            "'x\n... y'\n",
+            "1:1: Document marker inside a quoted scalar",
+        ),
+    ] {
+        assert_eq!(YamlFile::parse(yaml).errors(), [error], "{yaml:?}");
+    }
+    // Without whitespace after it the marker is plain text.
+    assert_eq!(
+        YamlFile::parse("\"x\n---y\"\n").errors(),
+        Vec::<String>::new()
+    );
 }
 
 /// A block-scalar header's indicators are ASCII, so it must be matched by
@@ -3072,7 +3118,8 @@ fn test_comment_whitespace_seen_across_node_boundaries() {
 fn test_validator_accepts_more_well_formed_yaml() {
     use yaml_edit::validator::Validator;
     let messages = |yaml: &str| {
-        let file = YamlFile::from_str(yaml).unwrap();
+        // The parser itself rejects `!!str, x`; validate what it recovers.
+        let file = YamlFile::parse(yaml).tree();
         Validator::new()
             .validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file))
             .iter()

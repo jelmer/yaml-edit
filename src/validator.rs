@@ -154,6 +154,37 @@ fn find_root(node: &SyntaxNode) -> SyntaxNode {
         .unwrap_or_else(|| node.clone())
 }
 
+/// The stream's directives, grouped by the document they introduce. Every
+/// document gets a group, possibly empty; directives that no document
+/// follows form a last group with `None`.
+fn directive_groups(root: &SyntaxNode) -> Vec<(Vec<SyntaxNode>, Option<SyntaxNode>)> {
+    let mut groups = Vec::new();
+    let mut directives = Vec::new();
+    for child in root.children() {
+        match child.kind() {
+            crate::SyntaxKind::DIRECTIVE => directives.push(child),
+            crate::SyntaxKind::DOCUMENT => {
+                groups.push((std::mem::take(&mut directives), Some(child)));
+            }
+            _ => {}
+        }
+    }
+    if !directives.is_empty() {
+        groups.push((directives, None));
+    }
+    groups
+}
+
+/// The handle a `%TAG` directive declares.
+fn tag_handle(directive: &SyntaxNode) -> Option<String> {
+    let text = directive.text().to_string();
+    let mut words = text.split_whitespace();
+    if words.next() != Some("%TAG") {
+        return None;
+    }
+    words.next().map(str::to_string)
+}
+
 /// Does this subtree hold real YAML content, as opposed to only whitespace,
 /// newlines and document markers?
 fn has_content(node: &SyntaxNode) -> bool {
@@ -258,11 +289,13 @@ impl Validator {
     pub fn validate(&self, doc: &Document) -> Vec<Violation> {
         let mut violations = Vec::new();
 
-        // Check for duplicate directives at document level
-        self.check_duplicate_directives(doc.syntax(), &mut violations);
-
-        // Check for directive without document content
-        self.check_directive_without_document(doc.syntax(), &mut violations);
+        // Only the directives that introduce this document apply to it.
+        if let Some((directives, document)) = directive_groups(&find_root(doc.syntax()))
+            .into_iter()
+            .find(|(_, d)| d.as_ref() == Some(doc.syntax()))
+        {
+            self.check_directives(&directives, document.as_ref(), &mut violations);
+        }
 
         // Walk the syntax tree and check for violations
         // This will catch ERROR nodes created by parser (including content after doc end)
@@ -278,11 +311,9 @@ impl Validator {
     pub fn validate_syntax(&self, node: &SyntaxNode) -> Vec<Violation> {
         let mut violations = Vec::new();
 
-        // Check for duplicate directives
-        self.check_duplicate_directives(node, &mut violations);
-
-        // Check for directives without document content
-        self.check_directives_at_root(node, &mut violations);
+        for (directives, document) in directive_groups(&find_root(node)) {
+            self.check_directives(&directives, document.as_ref(), &mut violations);
+        }
 
         // Check for directives after documents without document end marker
         self.check_directive_after_document(node, &mut violations);
@@ -303,53 +334,36 @@ impl Validator {
     /// stream, so `!prefix!` declared before the first `---` is undefined in
     /// every later document. The YAML test suite's QLJ7 is exactly that.
     fn check_tag_shorthand_scope(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        let mut handles: Vec<String> = Vec::new();
-        let mut documents_seen = 0usize;
+        // Handles declared for earlier documents. A document that declares
+        // the same handle again (the test suite's 5TYM) may use it.
+        let mut declared_earlier: Vec<String> = Vec::new();
 
-        for child in node.children_with_tokens() {
-            match child {
-                rowan::NodeOrToken::Node(ref n) if n.kind() == crate::SyntaxKind::DIRECTIVE => {
-                    // `%TAG !handle! prefix` -- collect the handle it defines.
-                    let text = n.text().to_string();
-                    let mut words = text.split_whitespace();
-                    if words.next() == Some("%TAG") {
-                        if let Some(handle) = words.next() {
-                            if documents_seen == 0 {
-                                handles.push(handle.to_string());
-                            }
-                        }
+        for (directives, document) in directive_groups(&find_root(node)) {
+            let own: Vec<String> = directives.iter().filter_map(tag_handle).collect();
+            if let Some(document) = document {
+                for tag in document
+                    .descendants_with_tokens()
+                    .filter_map(|c| c.into_token())
+                    .filter(|t| t.kind() == crate::SyntaxKind::TAG)
+                {
+                    // The lexer splits `!prefix!A` into the TAG tokens
+                    // `!prefix` and `!A`, so match the handle without
+                    // its closing `!`.
+                    if let Some(handle) = declared_earlier.iter().find(|h| {
+                        !own.contains(h)
+                            && (tag.text() == h.as_str() || tag.text() == h.trim_end_matches('!'))
+                    }) {
+                        violations.push(Violation::error_at(
+                            Rule::Other,
+                            tag.text_range(),
+                            format!(
+                                "Tag shorthand {handle} is only defined in the document that declares it"
+                            ),
+                        ));
                     }
                 }
-                rowan::NodeOrToken::Node(ref n) if n.kind() == crate::SyntaxKind::DOCUMENT => {
-                    documents_seen += 1;
-                    if documents_seen < 2 || handles.is_empty() {
-                        continue;
-                    }
-                    // Any tag in a later document using a first-document
-                    // handle is undefined there.
-                    for tag in n
-                        .descendants_with_tokens()
-                        .filter_map(|c| c.into_token())
-                        .filter(|t| t.kind() == crate::SyntaxKind::TAG)
-                    {
-                        // The lexer splits `!prefix!A` into the TAG tokens
-                        // `!prefix` and `!A`, so match the handle without
-                        // its closing `!`.
-                        if let Some(handle) = handles.iter().find(|h| {
-                            tag.text() == h.as_str() || tag.text() == h.trim_end_matches('!')
-                        }) {
-                            violations.push(Violation::error_at(
-                                Rule::Other,
-                                tag.text_range(),
-                                format!(
-                                    "Tag shorthand {handle} is only defined in the document that declares it"
-                                ),
-                            ));
-                        }
-                    }
-                }
-                _ => {}
             }
+            declared_earlier.extend(own);
         }
     }
 
@@ -462,62 +476,79 @@ impl Validator {
         }
     }
 
-    /// Check for directive without document content
-    fn check_directive_without_document(
+    /// Check the directives that introduce `document`, or that end the
+    /// stream when it is `None`.
+    fn check_directives(
         &self,
-        doc_node: &SyntaxNode,
+        directives: &[SyntaxNode],
+        document: Option<&SyntaxNode>,
         violations: &mut Vec<Violation>,
     ) {
-        let root = find_root(doc_node);
-
-        // Check if there are any DIRECTIVE nodes
-        let has_directives = root
-            .descendants()
-            .any(|n| n.kind() == crate::SyntaxKind::DIRECTIVE);
-
-        if !has_directives {
+        let Some(last) = directives.last() else {
             return;
-        }
+        };
 
-        // Check if the document has any actual content
-        // A document with only whitespace, newlines, or document markers is considered empty
-        let has_content = has_content(doc_node);
-
-        if !has_content {
-            violations.push(Violation::error(
+        // `l-directive-document` is the directives followed by an explicit
+        // document, so they need a `---` (B63P's `%YAML 1.2\n...\n` and
+        // 9MMA have none). The document itself may be empty.
+        if !document.is_some_and(|d| has_child_token(d, |k| k == crate::SyntaxKind::DOC_START)) {
+            violations.push(Violation::error_at(
                 Rule::Other,
-                "Directive requires a document with content",
+                last.text_range(),
+                "Directive without document start marker (---)",
             ));
         }
-    }
 
-    /// Check for directives at root level without following document
-    ///
-    /// This checks if the ROOT node has DIRECTIVE children but no DOCUMENT children with content.
-    fn check_directives_at_root(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        use crate::SyntaxKind;
-
-        let check_node = find_root(node);
-
-        // Check if there are any DIRECTIVE children
-        let has_directives = check_node
-            .children()
-            .any(|child| child.kind() == SyntaxKind::DIRECTIVE);
-
-        if !has_directives {
-            return;
-        }
-
-        // Check if there's a DOCUMENT child with actual content
-        let has_document_with_content = check_node
-            .children()
-            .any(|child| child.kind() == SyntaxKind::DOCUMENT && has_content(&child));
-
-        if !has_document_with_content {
-            violations.push(Violation::error(
-                Rule::Other,
-                "Directive without document content",
-            ));
+        let mut seen_yaml = false;
+        let mut tag_handles: Vec<String> = Vec::new();
+        for directive in directives {
+            let text = directive.text().to_string();
+            let mut words = text.split_whitespace();
+            match words.next() {
+                Some("%YAML") => {
+                    if seen_yaml {
+                        violations.push(Violation::error_at(
+                            Rule::Other,
+                            directive.text_range(),
+                            "Duplicate %YAML directive",
+                        ));
+                    }
+                    seen_yaml = true;
+                    // One `major.minor` version, then at most a comment,
+                    // which needs whitespace before its `#`: H7TQ's
+                    // `%YAML 1.2 foo` and MUS6/00's `%YAML 1.1#...` are errors.
+                    let is_version = |v: &str| {
+                        v.split_once('.').is_some_and(|(major, minor)| {
+                            [major, minor]
+                                .iter()
+                                .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+                        })
+                    };
+                    if !words.next().is_some_and(is_version)
+                        || words.next().is_some_and(|w| !w.starts_with('#'))
+                    {
+                        violations.push(Violation::error_at(
+                            Rule::Other,
+                            directive.text_range(),
+                            "Malformed %YAML directive",
+                        ));
+                    }
+                }
+                // A handle may be declared once per document.
+                Some("%TAG") => {
+                    if let Some(handle) = words.next() {
+                        if tag_handles.iter().any(|h| h == handle) {
+                            violations.push(Violation::error_at(
+                                Rule::Other,
+                                directive.text_range(),
+                                format!("Duplicate %TAG directive for {handle}"),
+                            ));
+                        }
+                        tag_handles.push(handle.to_string());
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -543,24 +574,22 @@ impl Validator {
                     }
                 }
                 SyntaxKind::DIRECTIVE if seen_document_with_content => {
-                    // If we've seen a document with content and the last document didn't have DOC_END
-                    // Check if the previous DOCUMENT had a DOC_END
-                    let mut prev_sibling = child.prev_sibling();
+                    // The previous document has to end with `...`, which
+                    // can be its last child or, as in 6WLZ, follow it at
+                    // the stream's level.
                     let mut found_doc_with_end = false;
-
-                    while let Some(prev) = prev_sibling {
-                        if prev.kind() == SyntaxKind::DOCUMENT {
-                            // Check if this document has DOC_END
-                            let has_doc_end = prev
-                                .children_with_tokens()
-                                .any(|t| t.kind() == SyntaxKind::DOC_END);
-
-                            if has_doc_end {
-                                found_doc_with_end = true;
-                            }
+                    for prev in child.siblings_with_tokens(rowan::Direction::Prev).skip(1) {
+                        if prev.kind() == SyntaxKind::DOC_END {
+                            found_doc_with_end = true;
                             break;
                         }
-                        prev_sibling = prev.prev_sibling();
+                        if let Some(prev) =
+                            prev.as_node().filter(|n| n.kind() == SyntaxKind::DOCUMENT)
+                        {
+                            found_doc_with_end =
+                                has_child_token(prev, |k| k == SyntaxKind::DOC_END);
+                            break;
+                        }
                     }
 
                     if !found_doc_with_end {
@@ -582,72 +611,36 @@ impl Validator {
     fn check_directive_in_content(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         use crate::SyntaxKind;
 
-        let has_directive = node
-            .children_with_tokens()
-            .any(|c| c.kind() == SyntaxKind::DIRECTIVE);
-        // Only when a document really follows. With none, the `%` line is
-        // just more of this scalar -- the test suite's XLQ9 reads
-        // `---\nscalar\n%YAML 1.2\n` as the scalar `scalar %YAML 1.2`,
-        // where EB22 and RHX7 go on to open a second document with `---`.
-        let a_document_follows = node
-            .ancestors()
-            .find(|a| a.kind() == SyntaxKind::DOCUMENT)
-            .is_some_and(|d| {
-                d.siblings_with_tokens(rowan::Direction::Next)
-                    .skip(1)
-                    .filter(|c| {
-                        !c.as_token().is_some_and(|t| {
-                            matches!(
-                                t.kind(),
-                                SyntaxKind::NEWLINE
-                                    | SyntaxKind::WHITESPACE
-                                    | SyntaxKind::INDENT
-                                    | SyntaxKind::COMMENT
-                            )
-                        })
-                    })
-                    .any(|c| {
-                        c.as_node()
-                            .is_some_and(|n| n.kind() == SyntaxKind::DOCUMENT)
-                            || c.as_token()
-                                .is_some_and(|t| t.kind() == SyntaxKind::DOC_START)
-                    })
-            });
-        if has_directive && a_document_follows {
-            violations.push(Violation::error_at(Rule::Other, node.text_range(), "Directive in document content (missing document end marker `...` before directive)".to_string()));
+        // A block scalar's body is literal text, though the lexer still
+        // gives a `%` line there as a DIRECTIVE token: W4TN's
+        // `--- |\n%!PS-Adobe-2.0`.
+        if node
+            .first_token()
+            .is_some_and(|t| matches!(t.kind(), SyntaxKind::PIPE | SyntaxKind::GREATER))
+        {
+            return;
         }
-    }
 
-    /// Check for duplicate YAML directives
-    fn check_duplicate_directives(&self, doc_node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        use std::collections::HashMap;
-
-        let root = find_root(doc_node);
-
-        // Collect all directives and count by type
-        let mut directive_counts: HashMap<String, usize> = HashMap::new();
-
-        for node in root.descendants() {
-            if node.kind() == crate::SyntaxKind::DIRECTIVE {
-                // Get the directive text (e.g., "%YAML 1.2" or "%TAG ! tag:yaml.org,2002:")
-                let text = node.text().to_string();
-
-                // Extract directive type (YAML, TAG, etc.)
-                if let Some(directive_type) = text.split_whitespace().next() {
-                    *directive_counts
-                        .entry(directive_type.to_string())
-                        .or_insert(0) += 1;
+        // A `%` line may continue a plain scalar (XLQ9 reads
+        // `---\nscalar\n%YAML 1.2\n` as `scalar %YAML 1.2`), but `%` cannot
+        // start one (MUS6/01), nor can the line follow a closed quoted
+        // scalar (9HCY).
+        let mut prev: Option<crate::nodes::SyntaxToken> = None;
+        for token in node.children_with_tokens().filter_map(|c| c.into_token()) {
+            if token.kind() == SyntaxKind::DIRECTIVE {
+                let continues_plain = prev.as_ref().is_some_and(|p| {
+                    p.kind() == SyntaxKind::STRING && !p.text().starts_with(['"', '\''])
+                });
+                if !continues_plain {
+                    violations.push(Violation::error_at(Rule::Other, node.text_range(), "Directive in document content (missing document end marker `...` before directive)".to_string()));
+                    return;
                 }
             }
-        }
-
-        // Check for duplicates
-        for (directive_type, count) in directive_counts {
-            if count > 1 {
-                violations.push(Violation::error(
-                    Rule::Other,
-                    format!("Duplicate {directive_type} directive"),
-                ));
+            if !matches!(
+                token.kind(),
+                SyntaxKind::NEWLINE | SyntaxKind::WHITESPACE | SyntaxKind::INDENT
+            ) {
+                prev = Some(token);
             }
         }
     }
@@ -2977,6 +2970,66 @@ mod tests {
             violations[0].message,
             "Content on same line as document start marker"
         );
+    }
+
+    fn messages(yaml: &str) -> Vec<String> {
+        let file = crate::YamlFile::from_str(yaml).unwrap();
+        Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| v.message)
+            .collect()
+    }
+
+    #[test]
+    fn test_directives_apply_per_document() {
+        for yaml in [
+            "%YAML 1.2\n--- a\n...\n%YAML 1.2\n--- b\n",
+            "%TAG !a! tag:a,\n%TAG !b! tag:b,\n--- !a!x 1\n",
+            "--- a\n...\n%YAML 1.2\n--- b\n",
+            "%TAG !e! tag:a,\n--- !e!x a\n...\n%TAG !e! tag:b,\n--- !e!y b\n",
+            "%YAML 1.2\n---\n",
+            "%YAML 1.1  # comment\n---\n",
+            "%YAM 1.1\n---\n",
+            "--- |\n%x\n...\n--- b\n",
+            "--- |\n%x\n--- b\n",
+            "---\nscalar\n%YAML 1.2\n...\n--- b\n",
+        ] {
+            assert_eq!(messages(yaml), Vec::<String>::new(), "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn test_validate_only_checks_the_documents_own_directives() {
+        let file = crate::YamlFile::from_str("%YAML 1.2\n--- a\n...\n---\n").unwrap();
+        for doc in file.documents() {
+            assert_eq!(Validator::new().validate(&doc), vec![]);
+        }
+    }
+
+    #[test]
+    fn test_directive_errors() {
+        for (yaml, expected) in [
+            ("%YAML 1.2\n%YAML 1.2\n---\na\n", "Duplicate %YAML directive"),
+            ("%TAG !a! x\n%TAG !a! y\n---\na\n", "Duplicate %TAG directive for !a!"),
+            ("%YAML 1.2\n...\n", "Directive without document start marker (---)"),
+            ("%YAML 1.2 foo\n---\n", "Malformed %YAML directive"),
+            ("%YAML 1.1#c\n---\n", "Malformed %YAML directive"),
+            (
+                "a: b\n%YAML 1.2\n--- c\n",
+                "Directive after document requires document end marker (...)",
+            ),
+            (
+                "---\n%x\n...\n--- b\n",
+                "Directive in document content (missing document end marker `...` before directive)",
+            ),
+            (
+                "%TAG !e! tag:a,\n--- !e!x a\n...\n--- !e!y b\n",
+                "Tag shorthand !e! is only defined in the document that declares it",
+            ),
+        ] {
+            assert_eq!(messages(yaml), vec![expected.to_string()], "{yaml:?}");
+        }
     }
 
     #[test]

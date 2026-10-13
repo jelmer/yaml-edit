@@ -70,6 +70,11 @@ use crate::yaml::Mapping;
 ///     host: value
 /// ```
 ///
+/// A segment names a string key, or failing that the first scalar key
+/// of another type written the same way: `m.1` reaches `1: one` and
+/// `m.true` reaches `true: t`. Setting a key that does not exist yet
+/// creates a string key.
+///
 /// The `try_` methods ([`try_get_path`](Self::try_get_path),
 /// [`try_set_path`](Self::try_set_path),
 /// [`try_remove_path`](Self::try_remove_path)) return
@@ -688,18 +693,40 @@ fn resolve_for_read(
     })
 }
 
+/// Find the first scalar key spelled `segment`, whatever type it
+/// resolves to, so a path can name keys such as `1`, `true` or `0x10`.
+/// The match is on the key text: `m.16` does not reach a `0x10` key.
+fn spelled_key(
+    mut keys: impl Iterator<Item = crate::as_yaml::YamlNode>,
+    segment: &str,
+) -> Option<crate::as_yaml::YamlNode> {
+    keys.find(|k| k.as_scalar().is_some_and(|s| s.as_string() == segment))
+}
+
+/// Look up the key a path segment names in `mapping`'s own entries: a
+/// string key equal to `key` if there is one, otherwise the first scalar
+/// key spelled `key`.
+fn lookup_own(mapping: &Mapping, key: &str) -> Option<crate::as_yaml::YamlNode> {
+    mapping
+        .get(key)
+        .or_else(|| mapping.get(spelled_key(mapping.keys(), key)?))
+}
+
 /// Look up `key` in `mapping`, falling back to the keys it inherits
 /// through `<<:` merge keys.
 ///
 /// A direct entry always wins: YAML 1.1 says a mapping's own key
 /// shadows one merged in from an anchor.
 fn lookup_merged(mapping: &Mapping, key: &str) -> Option<crate::as_yaml::YamlNode> {
-    if let Some(found) = mapping.get(key) {
+    if let Some(found) = lookup_own(mapping, key) {
         return Some(found);
     }
     use crate::anchor_resolution::MappingMergedExt;
     let registry = registry_for(&crate::as_yaml::YamlNode::Mapping(mapping.clone()));
-    mapping.merged(&registry).get(key)
+    let merged = mapping.merged(&registry);
+    merged
+        .get(key)
+        .or_else(|| merged.get(spelled_key(merged.keys(), key)?))
 }
 
 fn descend_one(
@@ -841,15 +868,17 @@ fn remove_path_impl(
         let mapping = node_as_mapping(&root).ok_or_else(|| PathError::TypeMismatch {
             at: segment_display(seg),
         })?;
-        // Grab the value before removal so we can return it. If the
-        // entry has no VALUE child (unusual: implicit-null entry), fall
-        // back to a null scalar.
-        let value = mapping
-            .get(key.as_str())
-            .ok_or_else(|| PathError::NotFound {
-                at: segment_display(seg),
-            })?;
-        mapping.remove(key.as_str());
+        let not_found = || PathError::NotFound {
+            at: segment_display(seg),
+        };
+        // Grab the value before removal so we can return it.
+        if let Some(value) = mapping.get(key.as_str()) {
+            mapping.remove(key.as_str());
+            return Ok(value);
+        }
+        let key = spelled_key(mapping.keys(), &key).ok_or_else(not_found)?;
+        let value = mapping.get(&key).ok_or_else(not_found)?;
+        mapping.remove(&key);
         return Ok(value);
     }
 
@@ -985,10 +1014,26 @@ fn set_path_on_mapping<V: crate::AsYaml>(
     debug_assert!(!segments.is_empty(), "caller must reject empty paths");
 
     // First segment: numeric segments (from `foo.997`) are stringified
-    // so they still address a mapping key.
-    let first_key_owned = segment_key(&segments[0]);
-    let first_key = first_key_owned.as_str();
+    // so they still address a mapping key. Without a string key of that
+    // name, write to an existing scalar key spelled the same.
+    let key = segment_key(&segments[0]);
+    if mapping.contains_key(key.as_str()) {
+        return set_path_at_key(mapping, key.as_str(), segments, value, policy);
+    }
+    match spelled_key(mapping.keys(), &key) {
+        Some(existing) => set_path_at_key(mapping, &existing, segments, value, policy),
+        None => set_path_at_key(mapping, key.as_str(), segments, value, policy),
+    }
+}
 
+/// [`set_path_on_mapping`] once the key for `segments[0]` is chosen.
+fn set_path_at_key<K: crate::AsYaml + Copy, V: crate::AsYaml>(
+    mapping: &Mapping,
+    first_key: K,
+    segments: &[PathSegment],
+    value: V,
+    policy: AliasPolicy,
+) -> Result<(), PathError> {
     if segments.len() == 1 {
         // Base case: set directly. Replacing an alias outright is not
         // writing *through* it -- no other alias is affected -- so it
@@ -2470,5 +2515,52 @@ config:
         // referential anchor consumes path segments instead of looping.
         let doc = Document::from_str("a: &x\n  b: *x\n").unwrap();
         assert!(doc.try_get_path("a.b.b.b").is_ok());
+    }
+
+    #[test]
+    fn test_path_reaches_non_string_scalar_keys() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let yaml = "m:\n  1: one\n  true: t\n  null: n\n  0x10: hex\n";
+        let doc = Document::from_str(yaml).unwrap();
+        let get = |path: &str| {
+            doc.try_get_path(path)
+                .map(|n| n.as_scalar().unwrap().as_string())
+        };
+        assert_eq!(get("m.1"), Ok("one".to_string()));
+        assert_eq!(get("m[1]"), Ok("one".to_string()));
+        assert_eq!(get("m.true"), Ok("t".to_string()));
+        assert_eq!(get("m.null"), Ok("n".to_string()));
+        assert_eq!(get("m.0x10"), Ok("hex".to_string()));
+        // Matching is on the key as written, not its resolved value.
+        assert_eq!(
+            get("m.16"),
+            Err(PathError::NotFound {
+                at: "[16]".to_string()
+            })
+        );
+
+        doc.try_set_path("m.1", "uno").unwrap();
+        assert_eq!(
+            doc.try_remove_path("m.true").unwrap().to_string(),
+            "t".to_string()
+        );
+        assert_eq!(doc.to_string(), "m:\n  1: uno\n  null: n\n  0x10: hex\n");
+
+        let doc = Document::from_str("m:\n  '1': s\n").unwrap();
+        assert_eq!(
+            doc.try_get_path("m.1").unwrap().to_string(),
+            "s".to_string()
+        );
+    }
+
+    #[test]
+    fn test_path_reaches_non_string_key_through_merge() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("base: &b\n  1: one\nm:\n  <<: *b\n").unwrap();
+        assert_eq!(doc.try_get_path("m.1").unwrap().to_string(), "one");
     }
 }

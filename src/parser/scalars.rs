@@ -138,7 +138,7 @@ impl Parser {
             }
 
             if kind == SyntaxKind::NEWLINE {
-                if self.is_plain_scalar_continuation(scalar_indent) {
+                if self.is_plain_scalar_continuation(0, scalar_indent) {
                     self.bump(); // consume NEWLINE
                     while matches!(
                         self.current(),
@@ -171,11 +171,21 @@ impl Parser {
                 break;
             }
 
-            // Leave whitespace that precedes a comment to the comment itself
-            if kind == SyntaxKind::WHITESPACE
-                && self.peek_after_current() == Some(SyntaxKind::COMMENT)
-            {
-                break;
+            // Leave whitespace that precedes a comment to the comment itself,
+            // and trailing whitespace at the end of the scalar's last line
+            // outside it: `a: b \n` has the value `b`. Whitespace before a
+            // line break the scalar continues past is folded into it.
+            if kind == SyntaxKind::WHITESPACE {
+                let ends_scalar = match self.peek_after_current() {
+                    Some(SyntaxKind::COMMENT) | None => true,
+                    Some(SyntaxKind::NEWLINE) => {
+                        !self.is_plain_scalar_continuation(1, scalar_indent)
+                    }
+                    Some(_) => false,
+                };
+                if ends_scalar {
+                    break;
+                }
             }
 
             self.bump();
@@ -243,6 +253,24 @@ impl Parser {
                 break;
             }
 
+            // Whitespace before a key separator is not part of the key:
+            // `{foo : bar}` is keyed by `foo`.
+            if kind == SyntaxKind::WHITESPACE
+                && self.peek_after_current() == Some(SyntaxKind::COLON)
+                && matches!(
+                    self.peek_nth(2),
+                    Some(
+                        SyntaxKind::COMMA
+                            | SyntaxKind::RIGHT_BRACE
+                            | SyntaxKind::RIGHT_BRACKET
+                            | SyntaxKind::WHITESPACE
+                            | SyntaxKind::NEWLINE
+                    )
+                )
+            {
+                break;
+            }
+
             self.bump();
         }
     }
@@ -296,11 +324,13 @@ impl Parser {
     /// `self.tokens` is a stack popped from the end, so the next-but-one
     /// token sits two from the top.
     fn peek_after_current(&self) -> Option<SyntaxKind> {
-        if self.tokens.len() >= 2 {
-            Some(self.tokens[self.tokens.len() - 2].0)
-        } else {
-            None
-        }
+        self.peek_nth(1)
+    }
+
+    /// The kind of the token `n` places after the current one, if any.
+    fn peek_nth(&self, n: usize) -> Option<SyntaxKind> {
+        let idx = self.tokens.len().checked_sub(n + 1)?;
+        Some(self.tokens[idx].0)
     }
 
     /// Is the COLON at the cursor separating a flow mapping key from its
@@ -887,10 +917,14 @@ impl Parser {
     }
     /// Check if a plain scalar continues on the next line after a NEWLINE
     /// This looks ahead to see if the next line has content at greater indentation
-    fn is_plain_scalar_continuation(&self, scalar_indent: usize) -> bool {
-        // Current token should be NEWLINE. Peek ahead to see what follows.
-        // Tokens are in reverse order, so we look at earlier indices (closer to front)
-        let current_idx = self.tokens.len().saturating_sub(1);
+    ///
+    /// The NEWLINE sits `offset` tokens after the current one.
+    fn is_plain_scalar_continuation(&self, offset: usize, scalar_indent: usize) -> bool {
+        // Peek ahead to see what follows the NEWLINE. Tokens are in reverse
+        // order, so we look at earlier indices (closer to front)
+        let Some(current_idx) = self.tokens.len().checked_sub(offset + 1) else {
+            return false;
+        };
 
         if current_idx == 0 {
             return false; // No more tokens

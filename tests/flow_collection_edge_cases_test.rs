@@ -75,6 +75,34 @@ fn test_url_as_flow_key() {
     assert!(reparsed.document().is_some());
 }
 
+/// Whitespace before a flow key's separator stays outside the key's scalar.
+#[test]
+fn test_flow_key_space_before_colon() {
+    for yaml in ["{foo : bar}\n", "{? foo : bar}\n"] {
+        let parsed = YamlFile::from_str(yaml).unwrap();
+        let mapping = parsed.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, ["foo"], "{yaml:?}");
+        assert_eq!(
+            mapping.get("foo").unwrap().as_scalar().unwrap().as_string(),
+            "bar"
+        );
+        assert_eq!(parsed.to_string(), yaml);
+    }
+
+    let parsed = YamlFile::from_str("[foo : bar]\n").unwrap();
+    let seq = parsed.document().unwrap().as_sequence().unwrap();
+    let pair = seq.first().unwrap();
+    let pair = pair.as_mapping().unwrap();
+    assert_eq!(
+        pair.get("foo").unwrap().as_scalar().unwrap().as_string(),
+        "bar"
+    );
+}
+
 /// Test 4ABK: Flow mapping with omitted values
 /// In YAML, you can have a key without a value in flow mappings (similar to block style)
 #[test]
@@ -93,10 +121,8 @@ omitted value:,
     // Verify 3 keys
     assert_eq!(mapping.keys().count(), 3, "Should have 3 keys");
 
-    // Verify 'unquoted ' key (with trailing space) has value 'separate'
-    let unquoted_val = mapping
-        .get("unquoted ")
-        .expect("Should have 'unquoted ' key");
+    // The space before the separator is not part of the key
+    let unquoted_val = mapping.get("unquoted").expect("Should have 'unquoted' key");
     assert_eq!(unquoted_val.as_scalar().unwrap().as_string(), "separate");
 
     // Verify URL key exists (with null value)

@@ -350,7 +350,9 @@ impl Parser {
 
             self.sequence_entry_column = outer_entry_column;
 
-            // Block-style SEQUENCE_ENTRY owns its NEWLINE terminator (DESIGN.md)
+            // Trailing whitespace the entry's scalar left behind belongs to
+            // the entry, as does its NEWLINE terminator (DESIGN.md)
+            self.skip_whitespace();
             if self.current() == Some(SyntaxKind::NEWLINE) {
                 self.bump();
             }

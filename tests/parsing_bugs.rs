@@ -329,6 +329,31 @@ fn test_binary_round_trip() {
 }
 
 #[test]
+fn test_trailing_whitespace_outside_plain_scalar() {
+    // Trailing spaces and tabs used to end up in the SCALAR node, making the
+    // value `b ` or `b\t`. They stay in the tree, outside the scalar.
+    for yaml in ["a: b \n", "a: b\t\n", "a: b \n  c \n"] {
+        let parsed = YamlFile::from_str(yaml).unwrap();
+        let mapping = parsed.document().unwrap().as_mapping().unwrap();
+        let a = mapping.get("a").unwrap();
+        let scalar = a.as_scalar().unwrap();
+        let expected = if yaml.contains('c') { "b c" } else { "b" };
+        assert_eq!(scalar.as_string(), expected, "{yaml:?}");
+        assert_eq!(parsed.to_string(), yaml);
+    }
+
+    let yaml = "- b \n- c\t\n";
+    let parsed = YamlFile::from_str(yaml).unwrap();
+    let seq = parsed.document().unwrap().as_sequence().unwrap();
+    let items: Vec<String> = seq
+        .values()
+        .map(|v| v.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(items, ["b", "c"]);
+    assert_eq!(parsed.to_string(), yaml);
+}
+
+#[test]
 fn test_mapping_key_detection_with_colon_in_value() {
     // Test that colons in values don't trigger false mapping detection
     // Note: This test demonstrates a limitation with complex URLs containing colons

@@ -346,6 +346,11 @@ impl Parser {
         // Parse mapping with explicit key indicator '?'
         self.builder.start_node(SyntaxKind::MAPPING.into());
 
+        // Neither key nor value is the document's own node, so a block
+        // scalar in either needs an indented body: `? a\n: |\nb: 1\n` keeps
+        // `b` as the next entry.
+        self.node_is_document_root = false;
+
         // `?` and `:` lines delimit this mapping's own entries, so a scalar
         // inside one must not keep folding at an enclosing key's column: an
         // inherited floor would let `? a\n: 1\n? c\n` read `? c` as part of
@@ -467,7 +472,15 @@ impl Parser {
                     self.parse_sequence_with_base_indent(base_indent);
                     self.builder.finish_node();
                 } else {
+                    // A value on the colon's own line is bounded by this
+                    // mapping's column, as for an implicit key: in
+                    // `x:\n  ? a\n  : |\n  b: 1\n` the `b` line is not body.
+                    let outer_column = self.mapping_value_column;
+                    if self.current() != Some(SyntaxKind::NEWLINE) {
+                        self.mapping_value_column = Some(colon_column);
+                    }
                     self.parse_value_after_colon(true);
+                    self.mapping_value_column = outer_column;
                 }
             } else {
                 // No value, just a key - create explicit null value

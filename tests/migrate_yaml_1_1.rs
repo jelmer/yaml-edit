@@ -15,7 +15,7 @@ fn a_bare_octal_keeps_its_value() {
     // The point of migrating: `0755` meant 493 to a 1.1 reader and means
     // 755 to a 1.2 one, so rewrite it to the spelling that still means 493.
     assert_eq!(migrated("mode: 0755\n"), "mode: 0o755\n");
-    assert_eq!(ScalarValue::parse("0755").to_i64(), Some(493));
+    assert_eq!(ScalarValue::parse("0755").to_i64(), Some(755));
     assert_eq!(ScalarValue::parse("0o755").to_i64(), Some(493));
 }
 

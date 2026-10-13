@@ -3569,22 +3569,85 @@ fn test_malformed_legacy_octal_is_an_integer_not_a_float() {
 }
 
 #[test]
-fn test_yaml_1_2_reading_of_a_bare_octal() {
-    // YAML 1.2 dropped the bare-octal form, so the same text is a
-    // different number depending on which version reads it.
+fn test_bare_octal_reads_as_decimal() {
+    // YAML 1.2 dropped the bare-octal form, so a leading zero is decimal.
     use yaml_edit::ScalarValue;
     let scalar = ScalarValue::parse("0755");
-    assert_eq!(scalar.to_i64(), Some(493));
-    assert_eq!(scalar.to_i64_yaml_1_2(), Some(755));
+    assert_eq!(scalar.to_i64(), Some(755));
+    #[allow(deprecated)]
+    let compat = scalar.to_i64_yaml_1_2();
+    assert_eq!(compat, Some(755));
+    assert_eq!(ScalarValue::parse("-0755").to_i64(), Some(-755));
 
-    let negative = ScalarValue::parse("-0755");
-    assert_eq!(negative.to_i64(), Some(-493));
-    assert_eq!(negative.to_i64_yaml_1_2(), Some(-755));
+    let doc = yaml_edit::Document::from_str("mode: 0755\n").unwrap();
+    let mode = doc.as_mapping().unwrap().get("mode").unwrap();
+    assert_eq!(mode.as_scalar().unwrap().as_i64(), Some(755));
+    assert_eq!(mode.to_i64(), Some(755));
+}
 
-    // Every other spelling reads the same both ways.
-    for text in ["0o755", "0x1f", "42", "-42"] {
-        let s = ScalarValue::parse(text);
-        assert_eq!(s.to_i64(), s.to_i64_yaml_1_2(), "{text}");
+#[test]
+fn test_typed_accessors_follow_core_schema() {
+    // Forms outside the YAML 1.2 core schema are strings, and every typed
+    // accessor agrees on that.
+    use yaml_edit::{CoreScalarType, ScalarValue};
+    for text in ["+0x1F", "-0o7", "0b101", "0X1F", "0O7", "-0x1F", "+0o7"] {
+        assert_eq!(
+            ScalarValue::classify_plain(text),
+            CoreScalarType::String,
+            "{text}"
+        );
+        let doc = yaml_edit::Document::from_str(&format!("k: {text}\n")).unwrap();
+        let node = doc.as_mapping().unwrap().get("k").unwrap();
+        assert_eq!(node.as_scalar().unwrap().as_i64(), None, "{text}");
+        assert_eq!(node.as_scalar().unwrap().as_f64(), None, "{text}");
+        assert_eq!(node.to_i64(), None, "{text}");
+        assert_eq!(ScalarValue::parse(text).to_i64(), None, "{text}");
+    }
+
+    for text in ["yes", "No", "on", "OFF", "tRUE"] {
+        assert_eq!(
+            ScalarValue::classify_plain(text),
+            CoreScalarType::String,
+            "{text}"
+        );
+        let doc = yaml_edit::Document::from_str(&format!("k: {text}\n")).unwrap();
+        let node = doc.as_mapping().unwrap().get("k").unwrap();
+        assert_eq!(node.as_scalar().unwrap().as_bool(), None, "{text}");
+        assert_eq!(node.to_bool(), None, "{text}");
+        assert_eq!(ScalarValue::parse(text).to_bool(), None, "{text}");
+    }
+
+    for (text, expected) in [
+        (".inf", f64::INFINITY),
+        ("-.Inf", f64::NEG_INFINITY),
+        ("+.INF", f64::INFINITY),
+        ("1.", 1.0),
+        (".5", 0.5),
+        ("1e3", 1000.0),
+        ("-2.5E-1", -0.25),
+    ] {
+        assert_eq!(
+            ScalarValue::classify_plain(text),
+            CoreScalarType::Float,
+            "{text}"
+        );
+        assert_eq!(ScalarValue::parse(text).to_f64(), Some(expected), "{text}");
+        let doc = yaml_edit::Document::from_str(&format!("k: {text}\n")).unwrap();
+        let node = doc.as_mapping().unwrap().get("k").unwrap();
+        assert_eq!(node.to_f64(), Some(expected), "{text}");
+        assert_eq!(node.as_scalar().unwrap().as_f64(), Some(expected), "{text}");
+    }
+    assert!(ScalarValue::parse(".NaN").to_f64().unwrap().is_nan());
+
+    for text in [
+        "inf", "nan", "Infinity", "1_000", "1e", "e5", ".", "+.", "1.5.2",
+    ] {
+        assert_eq!(
+            ScalarValue::classify_plain(text),
+            CoreScalarType::String,
+            "{text}"
+        );
+        assert_eq!(ScalarValue::parse(text).to_f64(), None, "{text}");
     }
 }
 

@@ -316,23 +316,24 @@ impl Scalar {
 
     /// Try to interpret this scalar as an i64.
     ///
-    /// Returns `None` if the scalar is quoted (string type) or cannot be parsed as an integer.
-    /// Supports decimal, octal (0o), hexadecimal (0x), and binary (0b) notation.
+    /// Returns `None` if the scalar is not a plain YAML 1.2 integer (decimal,
+    /// `0o` octal or `0x` hexadecimal) or does not fit in an `i64`.
     pub fn as_i64(&self) -> Option<i64> {
         TryInto::<i64>::try_into(self).ok()
     }
 
     /// Try to interpret this scalar as an f64.
     ///
-    /// Returns `None` if the scalar is quoted (string type) or cannot be parsed as a float.
+    /// Returns `None` if the scalar is not a plain YAML 1.2 float or
+    /// integer.
     pub fn as_f64(&self) -> Option<f64> {
         TryInto::<f64>::try_into(self).ok()
     }
 
     /// Try to interpret this scalar as a bool.
     ///
-    /// Returns `None` if the scalar is quoted (string type) or is not a recognized boolean value.
-    /// Recognizes: true, false, True, False, TRUE, FALSE, yes, no, Yes, No, YES, NO, on, off, On, Off, ON, OFF
+    /// Returns `None` if the scalar is not a plain YAML 1.2 boolean: true,
+    /// True, TRUE, false, False or FALSE.
     pub fn as_bool(&self) -> Option<bool> {
         TryInto::<bool>::try_into(self).ok()
     }
@@ -381,46 +382,27 @@ impl AsYaml for Scalar {
     }
 }
 
-// TryFrom implementations for typed access
+// TryFrom implementations for typed access. These read the scalar the way
+// the YAML 1.2 core schema resolves it, so only a plain scalar of the
+// matching type converts.
+fn typed_value(scalar: &Scalar) -> Result<ScalarValue, ScalarConversionError> {
+    if scalar.is_quoted() {
+        return Err(ScalarConversionError::QuotedValue);
+    }
+    Ok(ScalarValue::from_scalar(scalar))
+}
+
 impl TryFrom<&Scalar> for i64 {
     type Error = ScalarConversionError;
 
     fn try_from(scalar: &Scalar) -> Result<Self, Self::Error> {
-        if scalar.is_quoted() {
-            return Err(ScalarConversionError::QuotedValue);
-        }
-
-        let value = scalar.as_string();
-
-        // Handle different number formats
-        let (radix, digits) = if let Some(hex) = value
-            .strip_prefix("0x")
-            .or_else(|| value.strip_prefix("0X"))
-        {
-            (16, hex)
-        } else if let Some(octal) = value
-            .strip_prefix("0o")
-            .or_else(|| value.strip_prefix("0O"))
-        {
-            (8, octal)
-        } else if let Some(binary) = value
-            .strip_prefix("0b")
-            .or_else(|| value.strip_prefix("0B"))
-        {
-            (2, binary)
-        } else {
-            return value
-                .parse::<i64>()
-                .map_err(|e| ScalarConversionError::ParseError(e.to_string()));
-        };
-        // from_str_radix accepts a sign, which must not follow the prefix.
-        if digits.starts_with(['+', '-']) {
-            return Err(ScalarConversionError::ParseError(format!(
-                "sign after radix prefix in '{value}'"
-            )));
-        }
-        i64::from_str_radix(digits, radix)
-            .map_err(|e| ScalarConversionError::ParseError(e.to_string()))
+        let value = typed_value(scalar)?;
+        value.to_i64().ok_or_else(|| {
+            ScalarConversionError::ParseError(format!(
+                "'{}' is not an integer that fits in an i64",
+                value.value()
+            ))
+        })
     }
 }
 
@@ -428,13 +410,13 @@ impl TryFrom<&Scalar> for f64 {
     type Error = ScalarConversionError;
 
     fn try_from(scalar: &Scalar) -> Result<Self, Self::Error> {
-        if scalar.is_quoted() {
-            return Err(ScalarConversionError::QuotedValue);
-        }
-
-        let value = scalar.as_string();
-        crate::scalar::ScalarValue::parse_float(&value)
-            .ok_or_else(|| ScalarConversionError::ParseError(format!("invalid float: {value}")))
+        let value = typed_value(scalar)?;
+        value
+            .to_f64()
+            .or_else(|| value.to_i64().map(|i| i as f64))
+            .ok_or_else(|| {
+                ScalarConversionError::ParseError(format!("'{}' is not a float", value.value()))
+            })
     }
 }
 
@@ -442,23 +424,13 @@ impl TryFrom<&Scalar> for bool {
     type Error = ScalarConversionError;
 
     fn try_from(scalar: &Scalar) -> Result<Self, Self::Error> {
-        if scalar.is_quoted() {
-            return Err(ScalarConversionError::QuotedValue);
-        }
-
-        let value = scalar.as_string();
-
-        // YAML 1.2 Core Schema boolean values
-        match value.as_str() {
-            "true" | "True" | "TRUE" => Ok(true),
-            "false" | "False" | "FALSE" => Ok(false),
-            // YAML 1.1 compatibility (commonly used)
-            "yes" | "Yes" | "YES" | "on" | "On" | "ON" => Ok(true),
-            "no" | "No" | "NO" | "off" | "Off" | "OFF" => Ok(false),
-            _ => Err(ScalarConversionError::ParseError(format!(
-                "'{value}' is not a recognized boolean value"
-            ))),
-        }
+        let value = typed_value(scalar)?;
+        value.to_bool().ok_or_else(|| {
+            ScalarConversionError::ParseError(format!(
+                "'{}' is not a recognized boolean value",
+                value.value()
+            ))
+        })
     }
 }
 

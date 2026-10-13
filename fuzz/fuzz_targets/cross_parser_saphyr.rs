@@ -184,9 +184,8 @@ fn walk(node: YamlNode, input: &str) {
             }
             // Only assert when the raw text strictly matches a YAML 1.2
             // core-schema pattern. Non-matching text sits in a leniency
-            // zone where both parsers can legitimately disagree (e.g.
-            // yaml-edit accepts YAML 1.1 legacy octal, saphyr accepts
-            // decimals with leading zeros); flagging those buries real
+            // zone where both parsers can legitimately disagree;
+            // flagging those buries real
             // bugs. When we do have a strict-spec answer, use it as the
             // ground truth and require both parsers to agree.
             let Some(strict) = strict_core_schema_kind(trimmed) else {

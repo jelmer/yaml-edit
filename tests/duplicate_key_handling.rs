@@ -87,7 +87,7 @@ Reference: Third
     assert_eq!(value, "First");
 
     let result = doc.to_string();
-    let expected = "Reference: First\n";
+    let expected = "\nReference: First\n";
     assert_eq!(result, expected);
 }
 
@@ -135,7 +135,7 @@ Reference: Third
     assert_eq!(values, vec!["First", "Third"]);
 
     let result = doc.to_string();
-    let expected = "Reference: First\nReference: Third\n";
+    let expected = "\nReference: First\nReference: Third\n";
     assert_eq!(result, expected);
 }
 
@@ -287,6 +287,6 @@ Reference: Third
     assert_cst_ok(&doc);
 
     let result = doc.to_string();
-    let expected = "Name: Slugify\nReference: First\nArchive: GitHub\nVersion: 1.0\n";
+    let expected = "\nName: Slugify\nReference: First\nArchive: GitHub\nVersion: 1.0\n";
     assert_eq!(result, expected);
 }

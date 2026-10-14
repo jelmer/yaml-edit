@@ -160,13 +160,24 @@ impl Parser {
     fn parse(mut self) -> ParsedYaml {
         self.builder.start_node(SyntaxKind::ROOT.into());
 
-        // Handle BOM (Byte Order Mark) at the start of file
-        // BOM is allowed per YAML spec and should be processed transparently
-        if self.current() == Some(SyntaxKind::BOM) {
-            self.bump(); // Add BOM to tree but continue parsing
+        // A BOM and blank lines in front of the first document's content
+        // belong to that document, so a Document round-trips them. A comment
+        // or directive makes them part of the stream prefix instead.
+        let prefix_in_document = !matches!(
+            self.next_kind_past(&[
+                SyntaxKind::BOM,
+                SyntaxKind::WHITESPACE,
+                SyntaxKind::NEWLINE,
+                SyntaxKind::INDENT,
+            ]),
+            None | Some(
+                SyntaxKind::COMMENT | SyntaxKind::DIRECTIVE | SyntaxKind::EOF | SyntaxKind::DOC_END
+            )
+        );
+        if !prefix_in_document {
+            self.skip_tokens(&[SyntaxKind::BOM]);
+            self.skip_ws_and_newlines();
         }
-
-        self.skip_ws_and_newlines();
 
         // Parse any directives at the beginning
         while self.current() == Some(SyntaxKind::DIRECTIVE) {
@@ -284,6 +295,14 @@ impl Parser {
     fn parse_document(&mut self) {
         self.builder.start_node(SyntaxKind::DOCUMENT.into());
 
+        // Only the first document can start with these; see parse().
+        self.skip_tokens(&[
+            SyntaxKind::BOM,
+            SyntaxKind::WHITESPACE,
+            SyntaxKind::NEWLINE,
+            SyntaxKind::INDENT,
+        ]);
+
         // Handle document start marker
         if self.current() == Some(SyntaxKind::DOC_START) {
             self.bump();
@@ -325,6 +344,22 @@ impl Parser {
             self.equal_indent_continues_scalar = false;
         }
 
+        // The line break, comments and blank lines after the root node belong
+        // to the document. A block collection takes them itself; a scalar or
+        // flow collection root stops at its last character.
+        // TODO: also take them when a `...` follows. parse() only looks for a
+        // bare document after a `...` it finds at the root, so the marker
+        // has to stay there for now.
+        let before_doc_end = self.next_kind_past(&[
+            SyntaxKind::WHITESPACE,
+            SyntaxKind::NEWLINE,
+            SyntaxKind::INDENT,
+            SyntaxKind::COMMENT,
+        ]) == Some(SyntaxKind::DOC_END);
+        if !before_doc_end {
+            self.skip_ws_and_newlines();
+        }
+
         // Handle document end marker
         if self.current() == Some(SyntaxKind::DOC_END) {
             self.bump();
@@ -359,6 +394,14 @@ impl Parser {
                     self.bump();
                 }
                 self.builder.finish_node();
+            }
+
+            // The rest of the marker's line ends the document with it.
+            if self.current() == Some(SyntaxKind::COMMENT) {
+                self.bump();
+            }
+            if self.current() == Some(SyntaxKind::NEWLINE) {
+                self.bump();
             }
         }
 
@@ -858,6 +901,15 @@ impl Parser {
 
     pub(super) fn current_text(&self) -> Option<&str> {
         self.tokens.last().map(|(_, text)| text.as_str())
+    }
+
+    /// The kind of the first token from the current one on that is not in
+    /// `skip`.
+    fn next_kind_past(&self, skip: &[SyntaxKind]) -> Option<SyntaxKind> {
+        self.current()
+            .into_iter()
+            .chain(self.upcoming_tokens())
+            .find(|kind| !skip.contains(kind))
     }
 
     /// Iterator over upcoming tokens starting from the next token (not current)

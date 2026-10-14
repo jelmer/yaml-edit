@@ -187,6 +187,6 @@ config:
     let yaml_tree = parsed.tree();
     let doc = yaml_tree.document().unwrap();
     let content = doc.to_string();
-    let expected = "name: John\nage: 30\nitems:\n  - apple\n  - banana\nconfig:\n  host: localhost\n  port: 8080\n";
+    let expected = "\nname: John\nage: 30\nitems:\n  - apple\n  - banana\nconfig:\n  host: localhost\n  port: 8080\n";
     assert_eq!(content, expected);
 }

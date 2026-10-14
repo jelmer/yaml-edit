@@ -4067,3 +4067,92 @@ fn test_non_breaking_space_is_not_yaml_whitespace() {
         ]
     );
 }
+
+/// Key/value pairs of the `!!set`-tagged mapping at `outer.k`.
+fn nested_set_entries(yaml: &str) -> Vec<(String, String)> {
+    let parsed = YamlFile::from_str(yaml).expect("Failed to parse YAML");
+    assert_eq!(parsed.to_string(), yaml);
+    let doc = parsed.document().expect("Should have a document");
+    let outer = doc
+        .as_mapping()
+        .expect("Root should be a mapping")
+        .get("outer")
+        .expect("Should have outer");
+    let k = outer
+        .as_mapping()
+        .expect("outer should be a mapping")
+        .get("k")
+        .expect("Should have k");
+    let tagged = k.as_tagged().expect("k should be tagged");
+    assert_eq!(tagged.tag().as_deref(), Some("!!set"));
+    tagged
+        .as_mapping()
+        .expect("k should be a mapping")
+        .iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
+// A `?` line in a `!!set` nested inside another mapping was read as a
+// continuation of the previous key's plain scalar, giving the single key
+// `a ? b`. The set's mapping is parsed by parse_mapping_with_base_indent,
+// whose `?` branch kept the enclosing value's continuation context.
+#[test]
+fn test_nested_tagged_set_explicit_keys() {
+    assert_eq!(
+        nested_set_entries("outer:\n  k: !!set\n    ? a\n    ? b\n"),
+        [
+            ("a".to_string(), "".to_string()),
+            ("b".to_string(), "".to_string())
+        ]
+    );
+}
+
+#[test]
+fn test_nested_tagged_set_explicit_key_after_value() {
+    assert_eq!(
+        nested_set_entries("outer:\n  k: !!set\n    ? a\n    : 1\n    ? b\n    : 2\n"),
+        [
+            ("a".to_string(), "1".to_string()),
+            ("b".to_string(), "2".to_string())
+        ]
+    );
+}
+
+#[test]
+fn test_nested_tagged_set_followed_by_sibling() {
+    let yaml = "outer:\n  k: !!set\n    ? a\n    ? b\n  z: 1\n";
+    assert_eq!(
+        nested_set_entries(yaml),
+        [
+            ("a".to_string(), "".to_string()),
+            ("b".to_string(), "".to_string())
+        ]
+    );
+    let parsed = YamlFile::from_str(yaml).unwrap();
+    let outer = parsed
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("outer")
+        .unwrap();
+    let keys: Vec<String> = outer
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert_eq!(keys, ["k", "z"]);
+}
+
+#[test]
+fn test_nested_tagged_set_annotated_explicit_key() {
+    assert_eq!(
+        nested_set_entries("outer:\n  k: !!set\n    ? !t\n    : v\n    ? b\n"),
+        [
+            ("!t".to_string(), "v".to_string()),
+            ("b".to_string(), "".to_string())
+        ]
+    );
+}

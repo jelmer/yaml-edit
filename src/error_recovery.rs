@@ -108,6 +108,9 @@ impl ErrorRecoveryContext {
                     self.line += 1;
                     self.column = 1;
                 }
+                // A BOM opening a line is a document prefix, not content, so
+                // it takes no column: in `\u{FEFF}- x` the dash is at column 1.
+                '\u{FEFF}' if self.column == 1 => {}
                 _ => self.column += 1,
             }
         }

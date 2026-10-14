@@ -675,7 +675,7 @@ fn resolve_for_read(
 
     let registry = registry_for(&current);
     let target = registry
-        .resolve(&name)
+        .resolve_alias(&name, current.syntax())
         .cloned()
         .ok_or_else(|| PathError::UndefinedAlias {
             at: segment_display(segment),
@@ -931,7 +931,7 @@ fn resolve_alias_for_write(
         .last()
         .unwrap_or_else(|| alias.syntax().clone());
     let target = crate::anchor_resolution::AnchorRegistry::from_tree(&root)
-        .resolve(&name)
+        .resolve_alias(&name, alias.syntax())
         .cloned()
         .ok_or_else(undefined)?;
 
@@ -2335,6 +2335,47 @@ config:
             Err(PathError::UndefinedAlias {
                 at: "timeout".to_string(),
                 alias: "missing".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn test_path_alias_uses_preceding_anchor_definition() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let original = "a: &x {k: 1}\nb: *x\nc: &x {k: 2}\n";
+        let doc = Document::from_str(original).unwrap();
+        assert_eq!(
+            doc.try_get_path("b.k")
+                .unwrap()
+                .as_scalar()
+                .map(|s| s.as_string()),
+            Some("1".to_string())
+        );
+        doc.try_set_path_with("b.k", 9, AliasPolicy::Follow)
+            .unwrap();
+        assert_eq!(doc.to_string(), "a: &x {k: 9}\nb: *x\nc: &x {k: 2}\n");
+    }
+
+    #[test]
+    fn test_path_alias_before_anchor_is_undefined() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("b: *x\na: &x {k: 1}\n").unwrap();
+        assert_eq!(
+            doc.try_get_path("b.k"),
+            Err(PathError::UndefinedAlias {
+                at: "k".to_string(),
+                alias: "x".to_string()
+            })
+        );
+        assert_eq!(
+            doc.try_set_path_with("b.k", 9, AliasPolicy::Follow),
+            Err(PathError::UndefinedAlias {
+                at: "b".to_string(),
+                alias: "x".to_string()
             })
         );
     }

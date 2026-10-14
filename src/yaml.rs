@@ -240,10 +240,9 @@ pub(crate) fn convert_placeholder_to_block(collection: &SyntaxNode) {
 /// (` {}` or ` []`) so the entry renders as `key: {}` / `key: []`
 /// instead of an unterminated `key:\n    ` shape.
 ///
-/// Node properties and a trailing comment on the key line are kept.
-/// Skips flow collections (`{}` / `[]` already render correctly) and
-/// VALUEs carrying anything else, such as sibling nodes or comment
-/// lines.
+/// Node properties, a trailing comment on the key line and comment
+/// lines before or inside the collection are kept. Skips flow
+/// collections, which already render correctly when empty.
 pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode) {
     let (open_kind, close_kind, open_txt, close_txt) = match collection.kind() {
         SyntaxKind::MAPPING => (SyntaxKind::LEFT_BRACE, SyntaxKind::RIGHT_BRACE, "{", "}"),
@@ -295,7 +294,9 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
     for el in host.children_with_tokens() {
         let token = match el {
             rowan::NodeOrToken::Node(n) if &n == collection => continue,
-            rowan::NodeOrToken::Node(_) => return,
+            rowan::NodeOrToken::Node(n) => {
+                panic!("unexpected {:?} next to a block collection", n.kind())
+            }
             rowan::NodeOrToken::Token(t) => t,
         };
         match token.kind() {
@@ -304,8 +305,37 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
             SyntaxKind::COMMENT => comment = Some(token),
             SyntaxKind::NEWLINE => seen_newline = true,
             SyntaxKind::INDENT | SyntaxKind::WHITESPACE => {}
-            _ => return,
+            kind => panic!("unexpected {kind:?} next to a block collection"),
         }
+    }
+
+    // Comment lines left inside the drained collection are kept too,
+    // minus the indentation and line ends around them.
+    let mut inner: Vec<_> = collection
+        .children_with_tokens()
+        .map(|el| match el {
+            rowan::NodeOrToken::Token(t) => t,
+            rowan::NodeOrToken::Node(n) => {
+                panic!("unexpected {:?} left in an empty collection", n.kind())
+            }
+        })
+        .skip_while(|t| matches!(t.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE))
+        .collect();
+    while inner.last().is_some_and(|t| {
+        matches!(
+            t.kind(),
+            SyntaxKind::INDENT | SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE
+        )
+    }) {
+        inner.pop();
+    }
+    if let Some(t) = inner.iter().find(|t| {
+        !matches!(
+            t.kind(),
+            SyntaxKind::COMMENT | SyntaxKind::INDENT | SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE
+        )
+    }) {
+        panic!("unexpected {:?} left in an empty collection", t.kind());
     }
 
     let mut inner_builder = rowan::GreenNodeBuilder::new();
@@ -315,9 +345,23 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
     inner_builder.finish_node();
     let new_collection = SyntaxNode::new_root_mut(inner_builder.finish());
 
-    if comment_lines {
+    if comment_lines || !inner.is_empty() {
+        let mut replacement: Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>> = inner
+            .iter()
+            .map(|t| crate::nodes::fresh_token(t.kind(), t.text()).into())
+            .collect();
+        if !inner.is_empty() {
+            let indent = collection
+                .prev_sibling_or_token()
+                .and_then(|el| el.into_token())
+                .filter(|t| t.kind() == SyntaxKind::INDENT)
+                .expect("block collection under a comment line is indented");
+            replacement.push(crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into());
+            replacement.push(crate::nodes::fresh_token(SyntaxKind::INDENT, indent.text()).into());
+        }
+        replacement.push(new_collection.into());
         let index = collection.index();
-        host.splice_children(index..index + 1, vec![new_collection.into()]);
+        host.splice_children(index..index + 1, replacement);
         crate::nodes::ensure_trailing_newline(&entry_node);
         return;
     }

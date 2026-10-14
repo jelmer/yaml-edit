@@ -371,6 +371,36 @@ fn mapping_remove_only_nested_entry_keeps_comment_lines() {
 }
 
 #[test]
+fn mapping_drain_keeps_inner_comment_lines() {
+    let doc = Document::from_str("a:\n  x: 1\n  # d\n  y: 2\nb: 2\n").unwrap();
+    let inner = doc.as_mapping().unwrap().get_mapping("a").unwrap();
+    inner.remove("x");
+    inner.remove("y");
+    check(&doc);
+    assert_eq!(doc.to_string(), "a:\n  # d\n  {}\nb: 2\n");
+}
+
+#[test]
+fn mapping_drain_keeps_inner_comment_lines_after_anchor() {
+    let doc = Document::from_str("a: &a\n  x: 1\n  # d\n\n  # e\n  y: 2\nb: 2\n").unwrap();
+    let inner = doc.as_mapping().unwrap().get_mapping("a").unwrap();
+    inner.remove("y");
+    inner.remove("x");
+    check(&doc);
+    assert_eq!(doc.to_string(), "a: &a\n  # d\n\n  # e\n  {}\nb: 2\n");
+}
+
+#[test]
+fn sequence_drain_keeps_inner_comment_lines() {
+    let doc = Document::from_str("s:\n  - 1\n  # d\n  - 2\nb: 2\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.remove(0);
+    seq.remove(0);
+    check(&doc);
+    assert_eq!(doc.to_string(), "s:\n  # d\n  []\nb: 2\n");
+}
+
+#[test]
 fn sequence_remove_only_item_keeps_anchor() {
     let doc = Document::from_str("s: &s\n  - a\nb: 2\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();

@@ -3501,3 +3501,29 @@ fn test_legacy_yaml_1_1_warnings() {
         assert_eq!(warn(clean), vec![], "{clean:?}");
     }
 }
+
+/// An explicit key may be a compact mapping whose own key is empty. The YAML
+/// test suite's M2N8 keys the entry in `- ? : x` with `{null: x}` and gives
+/// it a null value; the `:` on the `?` line was taken as the outer entry's
+/// value, leaving an empty mapping as the key and `x` as the value.
+#[test]
+fn test_explicit_key_is_a_mapping_with_an_empty_key() {
+    for yaml in ["- ? : x\n", "? : x\n", "- ? []: x\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let doc = file.document().unwrap();
+        let outer = match doc.as_sequence() {
+            Some(seq) => seq.get(0).unwrap().as_mapping().unwrap().clone(),
+            None => doc.as_mapping().unwrap(),
+        };
+        assert_eq!(outer.len(), 1, "{yaml:?}");
+        let entry = outer.entries().next().unwrap();
+        let key = entry.key_node().unwrap();
+        let key = key.as_mapping().unwrap();
+        assert_eq!(key.len(), 1, "{yaml:?}");
+        let inner = key.entries().next().unwrap();
+        assert_eq!(inner.value_node().unwrap().to_string(), "x", "{yaml:?}");
+        let value = entry.value_node().unwrap();
+        assert!(value.as_scalar().unwrap().is_null(), "{yaml:?}");
+    }
+}

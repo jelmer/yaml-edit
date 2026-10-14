@@ -18,7 +18,9 @@ impl YamlBuilder {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::ROOT.into());
         builder.start_node(SyntaxKind::DOCUMENT.into());
-        value.build_content(&mut builder, 0, false);
+        if !value.build_content(&mut builder, 0, false) {
+            builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        }
         builder.finish_node();
         builder.finish_node();
         let green = builder.finish();
@@ -37,7 +39,7 @@ impl YamlBuilder {
     /// use yaml_edit::YamlBuilder;
     ///
     /// let yaml = YamlBuilder::alias("shared").build();
-    /// assert_eq!(yaml.to_string(), "*shared");
+    /// assert_eq!(yaml.to_string(), "*shared\n");
     /// ```
     pub fn alias(name: impl AsRef<str>) -> Self {
         Self::scalar(crate::yaml::Alias::new(name))
@@ -70,59 +72,81 @@ pub struct SequenceBuilder {
     builder: GreenNodeBuilder<'static>,
     indent: usize,
     count: usize,
-    /// Whether the last item ended with a newline
-    last_item_ended_with_newline: bool,
+    /// Whether the output so far ends with a newline
+    ends_with_newline: bool,
+    /// Whether the first item has to start on a new line
+    break_first: bool,
 }
 
-/// Emit the `\n`, indent and `- ` that introduce a block sequence item.
-/// `trailing_newline` additionally starts a nested collection on its own line.
-fn emit_dash(
-    builder: &mut GreenNodeBuilder<'static>,
-    newline_first: bool,
-    indent: usize,
-    trailing_newline: bool,
-) {
+/// Emit the `\n` and indent that start a block collection item, if needed.
+fn emit_line_start(builder: &mut GreenNodeBuilder<'static>, newline_first: bool, indent: usize) {
     if newline_first {
         builder.token(SyntaxKind::NEWLINE.into(), "\n");
     }
     if indent > 0 {
         builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
     }
-    builder.token(SyntaxKind::DASH.into(), "-");
-    builder.token(SyntaxKind::WHITESPACE.into(), " ");
-    if trailing_newline {
-        builder.token(SyntaxKind::NEWLINE.into(), "\n");
-    }
 }
 
-/// Emit the `\n`, indent and `key: ` that introduce a block mapping entry.
-/// `trailing_newline` additionally starts a nested collection on its own line.
+/// Emit the `\n`, indent and `-` that introduce a block sequence item.
+fn emit_dash(builder: &mut GreenNodeBuilder<'static>, newline_first: bool, indent: usize) {
+    emit_line_start(builder, newline_first, indent);
+    builder.token(SyntaxKind::DASH.into(), "-");
+}
+
+/// Emit the `\n`, indent and `key:` that introduce a block mapping entry.
 fn emit_key(
     builder: &mut GreenNodeBuilder<'static>,
     newline_first: bool,
     indent: usize,
     key: &str,
-    trailing_newline: bool,
 ) {
-    if newline_first {
-        builder.token(SyntaxKind::NEWLINE.into(), "\n");
-    }
-    if indent > 0 {
-        builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-    }
+    emit_line_start(builder, newline_first, indent);
     builder.start_node(SyntaxKind::SCALAR.into());
     builder.token(SyntaxKind::VALUE.into(), key);
     builder.finish_node();
     builder.token(SyntaxKind::COLON.into(), ":");
+}
+
+/// Emit an empty flow collection (` []` or ` {}`) after a `-` or `key:`.
+fn emit_empty_flow(builder: &mut GreenNodeBuilder<'static>, kind: SyntaxKind) {
     builder.token(SyntaxKind::WHITESPACE.into(), " ");
-    if trailing_newline {
-        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+    builder.start_node(kind.into());
+    emit_empty_flow_brackets(builder, kind);
+    builder.finish_node();
+}
+
+/// An empty collection without `[]`/`{}` serializes as nothing and reparses
+/// as null when placed under a key (issue #37).
+fn emit_empty_flow_brackets(builder: &mut GreenNodeBuilder<'static>, kind: SyntaxKind) {
+    if kind == SyntaxKind::SEQUENCE {
+        builder.token(SyntaxKind::LEFT_BRACKET.into(), "[");
+        builder.token(SyntaxKind::RIGHT_BRACKET.into(), "]");
+    } else {
+        builder.token(SyntaxKind::LEFT_BRACE.into(), "{");
+        builder.token(SyntaxKind::RIGHT_BRACE.into(), "}");
     }
+}
+
+/// Emit a pre-built collection after a `-` or `key:`, on the following lines
+/// at `indent + 2`, or as `[]`/`{}` when it is empty. Returns whether the
+/// output now ends with a newline.
+fn emit_inserted(
+    builder: &mut GreenNodeBuilder<'static>,
+    node: &rowan::SyntaxNode<crate::yaml::Lang>,
+    indent: usize,
+) -> bool {
+    if node.children_with_tokens().next().is_none() {
+        emit_empty_flow(builder, node.kind());
+        return false;
+    }
+    builder.token(SyntaxKind::NEWLINE.into(), "\n");
+    copy_nested_at(builder, node, indent)
 }
 
 /// Copy a detached collection's content in at `indent + 2`.
 ///
-/// The caller has just emitted the newline that ends the `- ` or `key: `
+/// The caller has just emitted the newline that ends the `-` or `key:`
 /// introducer, so the copy starts at the beginning of a line: the first
 /// entry needs its indent written out here, and
 /// [`copy_node_content_reindent`](crate::as_yaml::copy_node_content_reindent)
@@ -148,10 +172,10 @@ fn copy_nested_at(
     builder: &mut GreenNodeBuilder<'static>,
     node: &rowan::SyntaxNode<crate::yaml::Lang>,
     indent: usize,
-) {
+) -> bool {
     let nested = indent + 2;
     builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(nested));
-    crate::as_yaml::copy_node_content_reindent(builder, node, nested as isize);
+    crate::as_yaml::copy_node_content_reindent(builder, node, nested as isize)
 }
 
 /// Close out a detached builder's SEQUENCE/MAPPING, DOCUMENT and ROOT nodes
@@ -172,6 +196,49 @@ fn finish_into_inner_node(
     doc.syntax().children().next()
 }
 
+/// Close a nested collection whose content was emitted after `checkpoint`,
+/// writing `[]`/`{}` instead when it got no entries. Returns whether the
+/// output now ends with a newline.
+fn finish_nested(
+    builder: &mut GreenNodeBuilder<'static>,
+    checkpoint: rowan::Checkpoint,
+    kind: SyntaxKind,
+    count: usize,
+    ends_with_newline: bool,
+) -> bool {
+    if count == 0 {
+        emit_empty_flow(builder, kind);
+        return false;
+    }
+    builder.start_node_at(checkpoint, kind.into());
+    builder.finish_node();
+    ends_with_newline
+}
+
+/// Finish a top-level collection and its document. The output always ends
+/// with a newline, which a trailing block scalar needs to keep its last
+/// line break. The newline goes after the collection node, so the
+/// collection can still be inserted elsewhere as is.
+fn finish_top_level(
+    mut builder: GreenNodeBuilder<'static>,
+    kind: SyntaxKind,
+    count: usize,
+    ends_with_newline: bool,
+) -> YamlBuilder {
+    if count == 0 {
+        emit_empty_flow_brackets(&mut builder, kind);
+    }
+    builder.finish_node(); // SEQUENCE or MAPPING
+    if !ends_with_newline {
+        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+    }
+    builder.finish_node(); // DOCUMENT
+    builder.finish_node(); // ROOT
+    YamlBuilder {
+        file: YamlFile(rowan::SyntaxNode::new_root_mut(builder.finish())),
+    }
+}
+
 impl SequenceBuilder {
     /// Create a new empty sequence builder.
     pub fn new() -> Self {
@@ -183,23 +250,28 @@ impl SequenceBuilder {
             builder,
             indent: 0,
             count: 0,
-            last_item_ended_with_newline: false,
+            ends_with_newline: false,
+            break_first: false,
         }
     }
 
-    fn at_indent(builder: GreenNodeBuilder<'static>, indent: usize) -> Self {
+    fn nested(builder: GreenNodeBuilder<'static>, indent: usize) -> Self {
         SequenceBuilder {
             builder,
             indent,
             count: 0,
-            last_item_ended_with_newline: false,
+            ends_with_newline: false,
+            break_first: true,
         }
     }
 
     fn emit_item_preamble(&mut self) {
-        // Only add newline if previous item didn't already end with one
-        let newline_first = self.count > 0 && !self.last_item_ended_with_newline;
-        emit_dash(&mut self.builder, newline_first, self.indent, false);
+        let newline_first = if self.count == 0 {
+            self.break_first
+        } else {
+            !self.ends_with_newline
+        };
+        emit_dash(&mut self.builder, newline_first, self.indent);
     }
 
     /// Add a value to the sequence. Accepts any type implementing [`AsYaml`]:
@@ -210,10 +282,14 @@ impl SequenceBuilder {
         // Check the kind of value to determine formatting
         let ends_with_newline = match (value.is_inline(), value.kind()) {
             // Inline values (scalars, flow collections) go on same line
-            (true, _) => value.build_content(&mut self.builder, self.indent, false),
+            (true, _) => {
+                self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                value.build_content(&mut self.builder, self.indent, false)
+            }
             // Block mappings and sequences start on same line as dash
             // Their content will handle indentation via copy_node_content_with_indent
             (false, YamlKind::Mapping | YamlKind::Sequence) => {
+                self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
                 value.build_content(&mut self.builder, self.indent + 2, false)
             }
             // Block scalars (literal/folded) need newline before them
@@ -224,135 +300,92 @@ impl SequenceBuilder {
         };
 
         self.count += 1;
-        self.last_item_ended_with_newline = ends_with_newline;
+        self.ends_with_newline = ends_with_newline;
         self
     }
 
     /// Add a nested sequence to this sequence.
-    pub fn sequence<F>(self, f: F) -> Self
+    pub fn sequence<F>(mut self, f: F) -> Self
     where
         F: FnOnce(SequenceBuilder) -> SequenceBuilder,
     {
+        self.emit_item_preamble();
+        let checkpoint = self.builder.checkpoint();
+        let filled = f(SequenceBuilder::nested(self.builder, self.indent + 2));
         let SequenceBuilder {
             mut builder,
-            indent,
             count,
+            ends_with_newline,
             ..
-        } = self;
-
-        emit_dash(&mut builder, count > 0, indent, true);
-
-        builder.start_node(SyntaxKind::SEQUENCE.into());
-        let nested = SequenceBuilder::at_indent(builder, indent + 2);
-        let filled = f(nested);
-        let SequenceBuilder { mut builder, .. } = filled;
-        builder.finish_node(); // SEQUENCE
-
-        SequenceBuilder {
-            builder,
-            indent,
-            count: count + 1,
-            last_item_ended_with_newline: true,
-        }
+        } = filled;
+        self.ends_with_newline = finish_nested(
+            &mut builder,
+            checkpoint,
+            SyntaxKind::SEQUENCE,
+            count,
+            ends_with_newline,
+        );
+        self.builder = builder;
+        self.count += 1;
+        self
     }
 
     /// Add a nested mapping to this sequence.
-    pub fn mapping<F>(self, f: F) -> Self
+    pub fn mapping<F>(mut self, f: F) -> Self
     where
         F: FnOnce(MappingBuilder) -> MappingBuilder,
     {
-        let SequenceBuilder {
+        self.emit_item_preamble();
+        let checkpoint = self.builder.checkpoint();
+        let filled = f(MappingBuilder::nested(self.builder, self.indent + 2));
+        let MappingBuilder {
             mut builder,
-            indent,
             count,
+            ends_with_newline,
             ..
-        } = self;
-
-        emit_dash(&mut builder, count > 0, indent, true);
-
-        builder.start_node(SyntaxKind::MAPPING.into());
-        let nested = MappingBuilder::at_indent(builder, indent + 2);
-        let filled = f(nested);
-        let MappingBuilder { mut builder, .. } = filled;
-        builder.finish_node(); // MAPPING
-
-        SequenceBuilder {
-            builder,
-            indent,
-            count: count + 1,
-            last_item_ended_with_newline: true,
-        }
+        } = filled;
+        self.ends_with_newline = finish_nested(
+            &mut builder,
+            checkpoint,
+            SyntaxKind::MAPPING,
+            count,
+            ends_with_newline,
+        );
+        self.builder = builder;
+        self.count += 1;
+        self
     }
 
     /// Insert a pre-built SequenceBuilder into this sequence.
     pub fn insert_sequence(self, other: SequenceBuilder) -> Self {
-        let SequenceBuilder {
-            builder: other_builder,
-            ..
-        } = other;
-        let Some(seq_node) = finish_into_inner_node(other_builder) else {
-            return self;
-        };
-        let SequenceBuilder {
-            mut builder,
-            indent,
-            count,
-            ..
-        } = self;
-
-        emit_dash(&mut builder, count > 0, indent, true);
-        copy_nested_at(&mut builder, &seq_node, indent);
-
-        SequenceBuilder {
-            builder,
-            indent,
-            count: count + 1,
-            last_item_ended_with_newline: true,
-        }
+        let node = finish_into_inner_node(other.builder);
+        self.insert_node(node)
     }
 
     /// Insert a pre-built MappingBuilder into this sequence.
     pub fn insert_mapping(self, other: MappingBuilder) -> Self {
-        let MappingBuilder {
-            builder: other_builder,
-            ..
-        } = other;
-        let Some(map_node) = finish_into_inner_node(other_builder) else {
+        let node = finish_into_inner_node(other.builder);
+        self.insert_node(node)
+    }
+
+    fn insert_node(mut self, node: Option<rowan::SyntaxNode<crate::yaml::Lang>>) -> Self {
+        let Some(node) = node else {
             return self;
         };
-        let SequenceBuilder {
-            mut builder,
-            indent,
-            count,
-            ..
-        } = self;
-
-        emit_dash(&mut builder, count > 0, indent, true);
-        copy_nested_at(&mut builder, &map_node, indent);
-
-        SequenceBuilder {
-            builder,
-            indent,
-            count: count + 1,
-            last_item_ended_with_newline: true,
-        }
+        self.emit_item_preamble();
+        self.ends_with_newline = emit_inserted(&mut self.builder, &node, self.indent);
+        self.count += 1;
+        self
     }
 
     /// Build the sequence into a YamlBuilder.
-    pub fn build(mut self) -> YamlBuilder {
-        // An empty collection without `[]`/`{}` serializes as nothing and
-        // reparses as null when placed under a key (issue #37).
-        if self.count == 0 {
-            self.builder.token(SyntaxKind::LEFT_BRACKET.into(), "[");
-            self.builder.token(SyntaxKind::RIGHT_BRACKET.into(), "]");
-        }
-        self.builder.finish_node(); // SEQUENCE
-        self.builder.finish_node(); // DOCUMENT
-        self.builder.finish_node(); // ROOT
-        let green = self.builder.finish();
-        YamlBuilder {
-            file: YamlFile(rowan::SyntaxNode::new_root_mut(green)),
-        }
+    pub fn build(self) -> YamlBuilder {
+        finish_top_level(
+            self.builder,
+            SyntaxKind::SEQUENCE,
+            self.count,
+            self.ends_with_newline,
+        )
     }
 
     /// Build the sequence directly into a Document.
@@ -375,6 +408,10 @@ pub struct MappingBuilder {
     builder: GreenNodeBuilder<'static>,
     indent: usize,
     count: usize,
+    /// Whether the output so far ends with a newline
+    ends_with_newline: bool,
+    /// Whether the first entry has to start on a new line
+    break_first: bool,
 }
 
 impl MappingBuilder {
@@ -388,151 +425,131 @@ impl MappingBuilder {
             builder,
             indent: 0,
             count: 0,
+            ends_with_newline: false,
+            break_first: false,
         }
     }
 
-    fn at_indent(builder: GreenNodeBuilder<'static>, indent: usize) -> Self {
+    fn nested(builder: GreenNodeBuilder<'static>, indent: usize) -> Self {
         MappingBuilder {
             builder,
             indent,
             count: 0,
+            ends_with_newline: false,
+            break_first: true,
         }
     }
 
     fn emit_key_preamble(&mut self, key: &str) {
-        emit_key(&mut self.builder, self.count > 0, self.indent, key, false);
+        let newline_first = if self.count == 0 {
+            self.break_first
+        } else {
+            !self.ends_with_newline
+        };
+        emit_key(&mut self.builder, newline_first, self.indent, key);
     }
 
     /// Add a key-value pair. The value can be any type implementing [`AsYaml`]:
     /// `&str`, `String`, `i64`, `bool`, `f64`, CST nodes, etc.
     pub fn pair(mut self, key: impl Into<String>, value: impl AsYaml) -> Self {
         self.emit_key_preamble(&key.into());
-        if value.is_inline() {
-            value.build_content(&mut self.builder, self.indent, false);
+        self.ends_with_newline = if value.is_inline() {
+            self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
+            value.build_content(&mut self.builder, self.indent, false)
         } else {
             self.builder.token(SyntaxKind::NEWLINE.into(), "\n");
-            value.build_content(&mut self.builder, self.indent + 2, false);
-        }
+            value.build_content(&mut self.builder, self.indent + 2, false)
+        };
         self.count += 1;
         self
     }
 
     /// Add a key-value pair with a sequence value.
-    pub fn sequence<F>(self, key: impl Into<String>, f: F) -> Self
+    pub fn sequence<F>(mut self, key: impl Into<String>, f: F) -> Self
     where
         F: FnOnce(SequenceBuilder) -> SequenceBuilder,
     {
-        let MappingBuilder {
+        self.emit_key_preamble(&key.into());
+        let checkpoint = self.builder.checkpoint();
+        let filled = f(SequenceBuilder::nested(self.builder, self.indent + 2));
+        let SequenceBuilder {
             mut builder,
-            indent,
             count,
-        } = self;
-
-        emit_key(&mut builder, count > 0, indent, &key.into(), true);
-
-        builder.start_node(SyntaxKind::SEQUENCE.into());
-        let nested = SequenceBuilder::at_indent(builder, indent + 2);
-        let filled = f(nested);
-        let SequenceBuilder { mut builder, .. } = filled;
-        builder.finish_node(); // SEQUENCE
-
-        MappingBuilder {
-            builder,
-            indent,
-            count: count + 1,
-        }
+            ends_with_newline,
+            ..
+        } = filled;
+        self.ends_with_newline = finish_nested(
+            &mut builder,
+            checkpoint,
+            SyntaxKind::SEQUENCE,
+            count,
+            ends_with_newline,
+        );
+        self.builder = builder;
+        self.count += 1;
+        self
     }
 
     /// Add a key-value pair with a mapping value.
-    pub fn mapping<F>(self, key: impl Into<String>, f: F) -> Self
+    pub fn mapping<F>(mut self, key: impl Into<String>, f: F) -> Self
     where
         F: FnOnce(MappingBuilder) -> MappingBuilder,
     {
+        self.emit_key_preamble(&key.into());
+        let checkpoint = self.builder.checkpoint();
+        let filled = f(MappingBuilder::nested(self.builder, self.indent + 2));
         let MappingBuilder {
             mut builder,
-            indent,
             count,
-        } = self;
-
-        emit_key(&mut builder, count > 0, indent, &key.into(), true);
-
-        builder.start_node(SyntaxKind::MAPPING.into());
-        let nested = MappingBuilder::at_indent(builder, indent + 2);
-        let filled = f(nested);
-        let MappingBuilder { mut builder, .. } = filled;
-        builder.finish_node(); // MAPPING
-
-        MappingBuilder {
-            builder,
-            indent,
-            count: count + 1,
-        }
+            ends_with_newline,
+            ..
+        } = filled;
+        self.ends_with_newline = finish_nested(
+            &mut builder,
+            checkpoint,
+            SyntaxKind::MAPPING,
+            count,
+            ends_with_newline,
+        );
+        self.builder = builder;
+        self.count += 1;
+        self
     }
 
     /// Insert a key-value pair with a pre-built SequenceBuilder.
     pub fn insert_sequence(self, key: impl Into<String>, other: SequenceBuilder) -> Self {
-        let SequenceBuilder {
-            builder: other_builder,
-            ..
-        } = other;
-        let Some(seq_node) = finish_into_inner_node(other_builder) else {
-            return self;
-        };
-        let MappingBuilder {
-            mut builder,
-            indent,
-            count,
-        } = self;
-
-        emit_key(&mut builder, count > 0, indent, &key.into(), true);
-        copy_nested_at(&mut builder, &seq_node, indent);
-
-        MappingBuilder {
-            builder,
-            indent,
-            count: count + 1,
-        }
+        let node = finish_into_inner_node(other.builder);
+        self.insert_node(key.into(), node)
     }
 
     /// Insert a key-value pair with a pre-built MappingBuilder.
     pub fn insert_mapping(self, key: impl Into<String>, other: MappingBuilder) -> Self {
-        let MappingBuilder {
-            builder: other_builder,
-            ..
-        } = other;
-        let Some(map_node) = finish_into_inner_node(other_builder) else {
+        let node = finish_into_inner_node(other.builder);
+        self.insert_node(key.into(), node)
+    }
+
+    fn insert_node(
+        mut self,
+        key: String,
+        node: Option<rowan::SyntaxNode<crate::yaml::Lang>>,
+    ) -> Self {
+        let Some(node) = node else {
             return self;
         };
-        let MappingBuilder {
-            mut builder,
-            indent,
-            count,
-        } = self;
-
-        emit_key(&mut builder, count > 0, indent, &key.into(), true);
-        copy_nested_at(&mut builder, &map_node, indent);
-
-        MappingBuilder {
-            builder,
-            indent,
-            count: count + 1,
-        }
+        self.emit_key_preamble(&key);
+        self.ends_with_newline = emit_inserted(&mut self.builder, &node, self.indent);
+        self.count += 1;
+        self
     }
 
     /// Build the mapping into a YamlBuilder.
-    pub fn build(mut self) -> YamlBuilder {
-        // See SequenceBuilder::build - same round-trip concern (issue #37).
-        if self.count == 0 {
-            self.builder.token(SyntaxKind::LEFT_BRACE.into(), "{");
-            self.builder.token(SyntaxKind::RIGHT_BRACE.into(), "}");
-        }
-        self.builder.finish_node(); // MAPPING
-        self.builder.finish_node(); // DOCUMENT
-        self.builder.finish_node(); // ROOT
-        let green = self.builder.finish();
-        YamlBuilder {
-            file: YamlFile(rowan::SyntaxNode::new_root_mut(green)),
-        }
+    pub fn build(self) -> YamlBuilder {
+        finish_top_level(
+            self.builder,
+            SyntaxKind::MAPPING,
+            self.count,
+            self.ends_with_newline,
+        )
     }
 
     /// Build the mapping directly into a Document.
@@ -553,17 +570,18 @@ impl Default for MappingBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn test_scalar_builder() {
         let yaml = YamlBuilder::scalar("hello world").build();
-        assert_eq!(yaml.to_string(), "hello world");
+        assert_eq!(yaml.to_string(), "hello world\n");
     }
 
     #[test]
     fn test_alias_builder() {
         let yaml = YamlBuilder::alias("shared").build();
-        assert_eq!(yaml.to_string(), "*shared");
+        assert_eq!(yaml.to_string(), "*shared\n");
     }
 
     #[test]
@@ -572,7 +590,7 @@ mod tests {
             .pair("ref", crate::yaml::Alias::new("shared"))
             .build()
             .build();
-        assert_eq!(yaml.to_string(), "ref: *shared");
+        assert_eq!(yaml.to_string(), "ref: *shared\n");
     }
 
     #[test]
@@ -583,7 +601,7 @@ mod tests {
             .item("third")
             .build()
             .build();
-        assert_eq!(yaml.to_string(), "- first\n- second\n- third");
+        assert_eq!(yaml.to_string(), "- first\n- second\n- third\n");
     }
 
     #[test]
@@ -596,7 +614,7 @@ mod tests {
             .build();
         assert_eq!(
             yaml.to_string(),
-            "name: John Doe\nage: '30'\ncity: New York"
+            "name: John Doe\nage: '30'\ncity: New York\n"
         );
     }
 
@@ -616,7 +634,7 @@ mod tests {
             .build();
         assert_eq!(
             yaml.to_string(),
-            "version: '1.0'\ndependencies: \n  - serde\n  - tokio\n  - reqwest\ndatabase: \n  host: localhost\n  port: '5432'\n  name: myapp"
+            "version: '1.0'\ndependencies:\n  - serde\n  - tokio\n  - reqwest\ndatabase:\n  host: localhost\n  port: '5432'\n  name: myapp\n"
         );
     }
 
@@ -632,7 +650,7 @@ mod tests {
             .build();
         assert_eq!(
             yaml.to_string(),
-            "level1: \n  level2: \n    level3: \n      deep: value"
+            "level1:\n  level2:\n    level3:\n      deep: value\n"
         );
     }
 
@@ -658,7 +676,7 @@ mod tests {
             .build();
         assert_eq!(
             yaml.to_string(),
-            "url: https://example.com:8080/path?query=value\nemail: user@example.com\npath: /usr/local/bin\nspecial: 'value: with: colons'"
+            "url: https://example.com:8080/path?query=value\nemail: user@example.com\npath: /usr/local/bin\nspecial: 'value: with: colons'\n"
         );
     }
 
@@ -674,7 +692,7 @@ mod tests {
             .build();
         assert_eq!(
             yaml.to_string(),
-            "int_string: '42'\nfloat_string: '3.14'\nhex_string: '0xFF'\noctal_string: '0o755'\nbinary_string: '0b1010'"
+            "int_string: '42'\nfloat_string: '3.14'\nhex_string: '0xFF'\noctal_string: '0o755'\nbinary_string: '0b1010'\n"
         );
     }
 
@@ -688,7 +706,7 @@ mod tests {
             .build();
         assert_eq!(
             yaml.to_string(),
-            "- \n  id: '1'\n  name: Alice\n- \n  id: '2'\n  name: Bob\n- \n  id: '3'\n  name: Charlie"
+            "-\n  id: '1'\n  name: Alice\n-\n  id: '2'\n  name: Bob\n-\n  id: '3'\n  name: Charlie\n"
         );
     }
 
@@ -702,7 +720,7 @@ mod tests {
             .build();
         assert_eq!(
             yaml.to_string(),
-            "- \n  - '1'\n  - '2'\n  - '3'\n- \n  - a\n  - b\n  - c\n- \n  - x\n  - y\n  - z"
+            "-\n  - '1'\n  - '2'\n  - '3'\n-\n  - a\n  - b\n  - c\n-\n  - x\n  - y\n  - z\n"
         );
     }
 
@@ -723,7 +741,7 @@ mod tests {
             .build();
         assert_eq!(
             yaml.to_string(),
-            "list: \n  - simple\n  - \n    key: value\n  - \n    - nested1\n    - nested2\nobject: \n  simple: value\n  list: \n    - item1\n    - item2\n  nested: \n    deep: value"
+            "list:\n  - simple\n  -\n    key: value\n  -\n    - nested1\n    - nested2\nobject:\n  simple: value\n  list:\n    - item1\n    - item2\n  nested:\n    deep: value\n"
         );
     }
 
@@ -740,7 +758,7 @@ mod tests {
             .build();
         assert_eq!(
             yaml.to_string(),
-            "bool_true: 'true'\nbool_false: 'false'\nyes: 'yes'\nno: 'no'\nnull_value: 'null'\ntilde: '~'"
+            "bool_true: 'true'\nbool_false: 'false'\nyes: 'yes'\nno: 'no'\nnull_value: 'null'\ntilde: '~'\n"
         );
     }
 
@@ -753,7 +771,7 @@ mod tests {
             .build();
         assert_eq!(
             yaml.to_string(),
-            format!("short: test\nlong: {}", "a".repeat(100))
+            format!("short: test\nlong: {}\n", "a".repeat(100))
         );
     }
 
@@ -768,7 +786,7 @@ mod tests {
             .build();
         assert_eq!(
             yaml.to_string(),
-            "emoji: 🎉🚀💻\nchinese: 你好世界\narabic: مرحبا بالعالم\nmixed: Hello 世界 🌍"
+            "emoji: 🎉🚀💻\nchinese: 你好世界\narabic: مرحبا بالعالم\nmixed: Hello 世界 🌍\n"
         );
     }
 
@@ -804,7 +822,7 @@ mod tests {
         let text = doc.to_string();
         assert_eq!(
             text.trim(),
-            "name: my-app\ndependencies: \n  - serde\n  - tokio"
+            "name: my-app\ndependencies:\n  - serde\n  - tokio"
         );
     }
 
@@ -820,7 +838,7 @@ mod tests {
         let text = doc.to_string();
         assert_eq!(
             text.trim(),
-            "name: my-app\ndatabase: \n  host: localhost\n  port: 5432"
+            "name: my-app\ndatabase:\n  host: localhost\n  port: 5432"
         );
     }
 
@@ -833,7 +851,7 @@ mod tests {
             .build_document();
 
         let text = doc.to_string();
-        assert_eq!(text.trim(), "- first\n- \n  - a\n  - b\n- \n  key: value");
+        assert_eq!(text.trim(), "- first\n-\n  - a\n  - b\n-\n  key: value");
     }
 
     #[test]
@@ -854,7 +872,7 @@ mod tests {
 
         assert_eq!(
             inserted.trim(),
-            "name: my-app\ndependencies: \n  - serde\n  - tokio"
+            "name: my-app\ndependencies:\n  - serde\n  - tokio"
         );
         assert_eq!(inserted, closure);
     }
@@ -881,7 +899,7 @@ mod tests {
 
         assert_eq!(
             inserted.trim(),
-            "name: my-app\ndatabase: \n  host: localhost\n  port: 5432"
+            "name: my-app\ndatabase:\n  host: localhost\n  port: 5432"
         );
         assert_eq!(inserted, closure);
     }
@@ -901,10 +919,7 @@ mod tests {
             .build_document()
             .to_string();
 
-        assert_eq!(
-            inserted.trim(),
-            "- first\n- \n  - a\n  - b\n- \n  key: value"
-        );
+        assert_eq!(inserted.trim(), "- first\n-\n  - a\n  - b\n-\n  key: value");
         assert_eq!(inserted, closure);
     }
 
@@ -923,7 +938,7 @@ mod tests {
 
         assert_eq!(
             doc.to_string().trim(),
-            "outer: \n  x: '1'\n  deep: \n    p: '9'"
+            "outer:\n  x: '1'\n  deep:\n    p: '9'"
         );
     }
 
@@ -945,7 +960,7 @@ mod tests {
         let text = doc.to_string();
         assert_eq!(
             text.trim(),
-            "version: '1.0'\nname: my-application\ndatabase: \n  host: localhost\n  port: 5432\n  name: myapp\ndependencies: \n  - serde\n  - tokio\n  - reqwest"
+            "version: '1.0'\nname: my-application\ndatabase:\n  host: localhost\n  port: 5432\n  name: myapp\ndependencies:\n  - serde\n  - tokio\n  - reqwest"
         );
     }
 
@@ -957,7 +972,7 @@ mod tests {
             .pair("ratio", 1.5_f64)
             .build()
             .build();
-        assert_eq!(yaml.to_string(), "port: 5432\ndebug: true\nratio: 1.5");
+        assert_eq!(yaml.to_string(), "port: 5432\ndebug: true\nratio: 1.5\n");
     }
 
     // Tests from sequence_builder_mapping_formatting.rs
@@ -1053,5 +1068,69 @@ item:
         //   foo: bar
         let expected = "- key: value\n  foo: bar";
         assert_eq!(result.trim(), expected);
+    }
+
+    #[test]
+    fn test_nested_empty_collections() {
+        let yaml = YamlBuilder::mapping()
+            .mapping("empty", |m| m)
+            .sequence("es", |s| s)
+            .build()
+            .build();
+        assert_eq!(yaml.to_string(), "empty: {}\nes: []\n");
+
+        let yaml = YamlBuilder::sequence()
+            .sequence(|s| s)
+            .mapping(|m| m)
+            .build()
+            .build();
+        assert_eq!(yaml.to_string(), "- []\n- {}\n");
+    }
+
+    #[test]
+    fn test_insert_empty_collections() {
+        let yaml = YamlBuilder::mapping()
+            .insert_mapping("m", MappingBuilder::new())
+            .insert_sequence("s", SequenceBuilder::new())
+            .build()
+            .build();
+        assert_eq!(yaml.to_string(), "m: {}\ns: []\n");
+
+        let yaml = YamlBuilder::sequence()
+            .insert_sequence(SequenceBuilder::new())
+            .insert_mapping(MappingBuilder::new())
+            .build()
+            .build();
+        assert_eq!(yaml.to_string(), "- []\n- {}\n");
+    }
+
+    #[test]
+    fn test_trailing_block_scalar_keeps_line_break() {
+        let yaml = YamlBuilder::mapping().pair("k", "a\n").build().build();
+        assert_eq!(yaml.to_string(), "k: |\n  a\n");
+        let doc = Document::from_str(&yaml.to_string()).unwrap();
+        assert_eq!(
+            doc.get("k").unwrap().as_scalar().unwrap().as_string(),
+            "a\n"
+        );
+
+        let yaml = YamlBuilder::sequence().item("a\n\n").build().build();
+        assert_eq!(yaml.to_string(), "- |+\n  a\n\n");
+        let doc = Document::from_str(&yaml.to_string()).unwrap();
+        let seq = doc.as_sequence().unwrap();
+        assert_eq!(
+            seq.get(0).unwrap().as_scalar().unwrap().as_string(),
+            "a\n\n"
+        );
+    }
+
+    #[test]
+    fn test_item_after_nested_collection() {
+        let yaml = YamlBuilder::sequence()
+            .sequence(|s| s.item(1))
+            .item("x")
+            .build()
+            .build();
+        assert_eq!(yaml.to_string(), "-\n  - 1\n- x\n");
     }
 }

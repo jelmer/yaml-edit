@@ -68,11 +68,14 @@ impl Parser {
             // A `:` at or left of the `?` we sit inside opens that entry's
             // value, not another entry of ours: `? a: 1\n: b: 2\n` keys the
             // outer mapping with `{a: 1}` and values it `{b: 2}`, as the
-            // YAML test suite's V9D5 expects.
+            // YAML test suite's V9D5 expects. Compare the colon's own
+            // column, not its line's indent: in `- ? : x` the line starts
+            // left of the `?`, but the colon opens the key's null-key entry
+            // (M2N8).
             if self.current() == Some(SyntaxKind::COLON)
-                && self
-                    .explicit_key_column
-                    .is_some_and(|column| self.current_line_indent <= column)
+                && self.explicit_key_column.is_some_and(|column| {
+                    self.error_context.current_location().1.saturating_sub(1) <= column
+                })
             {
                 break;
             }

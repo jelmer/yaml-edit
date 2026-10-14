@@ -4310,6 +4310,12 @@ fn test_tagged_empty_flow_node() {
     assert!(key.value().unwrap().is_null());
     assert_eq!(key.as_string().unwrap(), "");
     assert_eq!(key.to_string(), "!!str");
+
+    let value = yaml_edit::YamlValue::from_document(&file.document().unwrap());
+    let value = value.as_mapping().unwrap();
+    assert_eq!(value.keys().collect::<Vec<_>>(), vec!["", "foo"]);
+    assert_eq!(value[""].as_str(), Some("bar"));
+    assert_eq!(value["foo"].as_str(), Some(""));
 }
 
 /// The same holds for an anchor and in flow sequences: the annotation is

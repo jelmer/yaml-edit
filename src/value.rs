@@ -61,11 +61,15 @@ impl YamlValue {
                         // extract_scalar to reach the scalar inside it.
                         // Casting the wrapper directly fails and falls back to
                         // raw text, which keeps the quotes on `'0'` and makes
-                        // the entry unreachable by its actual key.
-                        let key_str = match crate::yaml::extract_scalar(&key_node) {
-                            Some(key_scalar) => key_scalar.as_string(),
-                            None => key_node.text().to_string(),
-                        };
+                        // the entry unreachable by its actual key. A tagged
+                        // key (`!!str a: b`) reads as its content likewise.
+                        let key_str = crate::yaml::extract_scalar(&key_node)
+                            .map(|key_scalar| key_scalar.as_string())
+                            .or_else(|| {
+                                crate::yaml::extract_tagged_node(&key_node)
+                                    .and_then(|tagged| tagged.as_string())
+                            })
+                            .unwrap_or_else(|| key_node.text().to_string());
 
                         // Convert value node to YamlValue
                         if let Some(value_yaml) = YamlValue::cast(value_node) {

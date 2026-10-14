@@ -317,6 +317,30 @@ impl Parser {
             self.equal_indent_continues_scalar = false;
         }
 
+        // The line break, comments and blank lines after the root node belong
+        // to the document. A block collection takes them itself; a scalar or
+        // flow collection root stops at its last character.
+        // TODO: also take them when a `...` follows. parse() only looks for a
+        // bare document after a `...` it finds at the root, so the marker
+        // has to stay there for now.
+        let before_doc_end = self
+            .current()
+            .into_iter()
+            .chain(self.upcoming_tokens())
+            .find(|kind| {
+                !matches!(
+                    kind,
+                    SyntaxKind::WHITESPACE
+                        | SyntaxKind::NEWLINE
+                        | SyntaxKind::INDENT
+                        | SyntaxKind::COMMENT
+                )
+            })
+            == Some(SyntaxKind::DOC_END);
+        if !before_doc_end {
+            self.skip_ws_and_newlines();
+        }
+
         // Handle document end marker
         if self.current() == Some(SyntaxKind::DOC_END) {
             self.bump();

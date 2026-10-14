@@ -1610,6 +1610,31 @@ Repository: https://github.com/example/example.git
     }
 
     #[test]
+    fn test_document_from_str_round_trips_trailing_trivia() {
+        // Whatever follows the root node up to the end of the document is
+        // part of it, whatever kind of node the root is.
+        for yaml in [
+            "{a: 1, b: 2}\n",
+            "[1, 2]\n",
+            "foo\n",
+            "\"foo\"\n",
+            "'foo'\n",
+            "&x {a: 1}\n",
+            "a: 1\n",
+            "- 1\n",
+            "|\n  x\n",
+            "{a: 1}\n\n",
+            "foo # c\n",
+            "[1]\n# c\n",
+            "--- foo\n",
+            "{a: 1}",
+        ] {
+            let doc = Document::from_str(yaml).unwrap();
+            assert_eq!(doc.to_string(), yaml);
+        }
+    }
+
+    #[test]
     fn test_document_from_str_ignoring_comments_drops_prefix() {
         let yaml = "# leading\n%YAML 1.2\n---\nkey: value\n";
         let doc = Document::from_str_ignoring_comments(yaml).unwrap();

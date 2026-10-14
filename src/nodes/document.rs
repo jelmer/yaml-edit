@@ -464,24 +464,25 @@ impl Document {
     ///
     /// If the document already contains a mapping, delegates to
     /// [`Mapping::insert_at_index`]. If the document has no root node, creates
-    /// a mapping and uses [`Mapping::insert_at_index_preserving`]. A sequence
-    /// or other non-mapping root is left unchanged.
+    /// a mapping and uses [`Mapping::insert_at_index_preserving`].
+    ///
+    /// Returns `true` if the key was inserted. Returns `false` if the root is
+    /// a sequence or another non-mapping node (the document is left
+    /// unchanged), as [`set`](Self::set) does.
     pub fn insert_at_index(
         &self,
         index: usize,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) {
+    ) -> bool {
         // Delegate to Mapping::insert_at_index if we have a mapping
         if let Some(mapping) = self.as_mapping() {
             mapping.insert_at_index(index, key, value);
-            return;
+            return true;
         }
 
-        // Sequence or scalar root: leave the document unchanged (same
-        // as Document::set).
         if self.root_node().is_some() {
-            return;
+            return false;
         }
 
         // No mapping exists yet: create one and replace document contents
@@ -491,6 +492,7 @@ impl Document {
         let new_children: Vec<_> = new_doc.0.children_with_tokens().collect();
         let child_count = self.0.children_with_tokens().count();
         self.0.splice_children(0..child_count, new_children);
+        true
     }
 
     /// Get the scalar value for `key` as a decoded `String`.
@@ -551,15 +553,18 @@ impl Document {
     /// Reorder fields in the document's root mapping according to the specified order.
     ///
     /// Fields not in the order list will appear after the ordered fields, in their
-    /// original relative order. Has no effect if the document is not a mapping.
-    pub fn reorder_fields<I, K>(&self, order: I)
+    /// original relative order.
+    ///
+    /// Returns `false`, leaving the document unchanged, if it is not a
+    /// mapping.
+    pub fn reorder_fields<I, K>(&self, order: I) -> bool
     where
         I: IntoIterator<Item = K>,
         K: crate::AsYaml,
     {
-        if let Some(mapping) = self.as_mapping() {
-            mapping.reorder_fields(order);
-        }
+        self.as_mapping()
+            .map(|mapping| mapping.reorder_fields(order))
+            .is_some()
     }
 
     /// Validate this document against a YAML schema
@@ -1208,9 +1213,16 @@ active: true
         let doc = Document::from_str("- a\n- b\n").unwrap();
         assert!(!doc.set("k", "v"));
         assert_eq!(doc.to_string(), "- a\n- b\n");
-        doc.insert_at_index(0, "k", "v");
+        assert!(!doc.insert_at_index(0, "k", "v"));
+        assert_eq!(doc.to_string(), "- a\n- b\n");
+        assert!(!doc.reorder_fields(["k"]));
         assert_eq!(doc.to_string(), "- a\n- b\n");
         assert!(doc.as_sequence().is_some());
+
+        let doc = Document::from_str("b: 1\na: 2\n").unwrap();
+        assert!(doc.insert_at_index(0, "k", "v"));
+        assert!(doc.reorder_fields(["a"]));
+        assert_eq!(doc.to_string(), "a: 2\nk: v\nb: 1\n");
     }
 
     #[test]

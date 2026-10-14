@@ -240,9 +240,10 @@ pub(crate) fn convert_placeholder_to_block(collection: &SyntaxNode) {
 /// (` {}` or ` []`) so the entry renders as `key: {}` / `key: []`
 /// instead of an unterminated `key:\n    ` shape.
 ///
+/// Node properties and a trailing comment on the key line are kept.
 /// Skips flow collections (`{}` / `[]` already render correctly) and
-/// VALUEs carrying anything beyond decoration around the collection
-/// (comments, sibling scalars, anchors, tags).
+/// VALUEs carrying anything else, such as sibling nodes or comment
+/// lines.
 pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode) {
     let (open_kind, close_kind, open_txt, close_txt) = match collection.kind() {
         SyntaxKind::MAPPING => (SyntaxKind::LEFT_BRACE, SyntaxKind::RIGHT_BRACE, "{", "}"),
@@ -284,46 +285,63 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
         return;
     };
 
-    // Bail if the host carries anything beyond decoration (and, for a
-    // tagged node, the tag itself).
-    let has_other = host.children_with_tokens().any(|el| match el {
-        rowan::NodeOrToken::Node(n) => &n != collection,
-        rowan::NodeOrToken::Token(t) => !matches!(
-            t.kind(),
-            SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE | SyntaxKind::TAG
-        ),
-    });
-    if has_other {
-        return;
+    // Node properties and a comment ending the key line move onto the
+    // flow-empty line. Comment lines cannot share that line, so with
+    // those the flow-empty takes the collection's place instead.
+    let mut properties = Vec::new();
+    let mut comment = None;
+    let mut comment_lines = false;
+    let mut seen_newline = false;
+    for el in host.children_with_tokens() {
+        let token = match el {
+            rowan::NodeOrToken::Node(n) if &n == collection => continue,
+            rowan::NodeOrToken::Node(_) => return,
+            rowan::NodeOrToken::Token(t) => t,
+        };
+        match token.kind() {
+            SyntaxKind::TAG | SyntaxKind::ANCHOR => properties.push(token),
+            SyntaxKind::COMMENT if seen_newline => comment_lines = true,
+            SyntaxKind::COMMENT => comment = Some(token),
+            SyntaxKind::NEWLINE => seen_newline = true,
+            SyntaxKind::INDENT | SyntaxKind::WHITESPACE => {}
+            _ => return,
+        }
     }
 
-    // Targeted edit: keep the host node, drop the block-empty
-    // collection plus its NEWLINE/INDENT/WHITESPACE decoration in
-    // place, and splice a WHITESPACE + fresh flow-empty collection
-    // in its place. Leaves the wrapper (and anything the has_other
-    // check let through) intact; a leading TAG token is re-attached
-    // so `key: !tag` keeps its tag.
-    let tag_token = host
-        .children_with_tokens()
-        .find_map(|el| el.into_token().filter(|t| t.kind() == SyntaxKind::TAG));
-    let host_children: Vec<_> = host.children_with_tokens().collect();
-    for c in &host_children {
-        c.detach();
-    }
-    let ws = crate::nodes::fresh_token(SyntaxKind::WHITESPACE, " ");
     let mut inner_builder = rowan::GreenNodeBuilder::new();
     inner_builder.start_node(collection.kind().into());
     inner_builder.token(open_kind.into(), open_txt);
     inner_builder.token(close_kind.into(), close_txt);
     inner_builder.finish_node();
     let new_collection = SyntaxNode::new_root_mut(inner_builder.finish());
+
+    if comment_lines {
+        let index = collection.index();
+        host.splice_children(index..index + 1, vec![new_collection.into()]);
+        crate::nodes::ensure_trailing_newline(&entry_node);
+        return;
+    }
+
+    // Targeted edit: keep the host node, drop the block-empty
+    // collection plus its NEWLINE/INDENT/WHITESPACE decoration, and
+    // rebuild its content as `<properties> {} <comment>`.
+    for c in host.children_with_tokens().collect::<Vec<_>>() {
+        c.detach();
+    }
+    // Each separator must be its own token: rowan cannot attach one
+    // mutable token in two places.
+    let ws = || crate::nodes::fresh_token(SyntaxKind::WHITESPACE, " ");
     let mut replacement: Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>> = Vec::new();
-    let tagged = tag_token.is_some();
-    if let Some(tag) = tag_token {
-        replacement.push(crate::nodes::fresh_token(SyntaxKind::TAG, tag.text()).into());
-        replacement.push(ws.clone().into());
+    let has_properties = !properties.is_empty();
+    for property in properties {
+        replacement.push(crate::nodes::fresh_token(property.kind(), property.text()).into());
+        replacement.push(ws().into());
     }
     replacement.push(new_collection.into());
+    if let Some(comment) = comment {
+        replacement.push(ws().into());
+        replacement.push(crate::nodes::fresh_token(SyntaxKind::COMMENT, comment.text()).into());
+    }
     host.splice_children(0..0, replacement);
 
     // The space separating the colon from its value belongs to the
@@ -331,7 +349,7 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
     // and VALUE. Left inside, a later edit that replaces the whole
     // VALUE took the space with it and wrote `key:value`, which is a
     // plain scalar rather than an entry.
-    if !tagged {
+    if !has_properties {
         let value_index = entry_node
             .children_with_tokens()
             .position(|el| el.as_node() == Some(&value_node));
@@ -344,7 +362,7 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
                         .is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE)
                 });
             if !separated {
-                entry_node.splice_children(index..index, vec![ws.into()]);
+                entry_node.splice_children(index..index, vec![ws().into()]);
             }
         }
     }

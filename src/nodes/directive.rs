@@ -149,7 +149,7 @@ mod tests {
         yaml.push_document(doc);
 
         let output = yaml.to_string();
-        assert_eq!(output, "%YAML 1.2name: test\n");
+        assert_eq!(output, "%YAML 1.2\n---\nname: test\n");
 
         // Should have both directive and document
         let directives: Vec<_> = yaml.directives().collect();

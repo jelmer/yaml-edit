@@ -735,7 +735,34 @@ impl YamlFile {
     }
 
     /// Add a new document to the end of this YAML file
+    ///
+    /// If the file already has documents or directives, the new document is
+    /// started with a `---` marker (unless it has one) on a line of its own.
     pub fn push_document(&self, document: Document) {
+        let needs_start = self
+            .0
+            .children()
+            .any(|n| matches!(n.kind(), SyntaxKind::DOCUMENT | SyntaxKind::DIRECTIVE));
+        if needs_start {
+            if !crate::nodes::trailing_newline_reachable(&self.0) {
+                let newline = crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n");
+                match self.0.last_child_or_token() {
+                    Some(rowan::NodeOrToken::Node(last)) if last.kind() == SyntaxKind::DOCUMENT => {
+                        crate::nodes::append_children(&last, vec![newline.into()])
+                    }
+                    _ => crate::nodes::append_children(&self.0, vec![newline.into()]),
+                }
+            }
+            if !has_child_token(document.syntax(), |k| k == SyntaxKind::DOC_START) {
+                document.syntax().splice_children(
+                    0..0,
+                    vec![
+                        crate::nodes::fresh_token(SyntaxKind::DOC_START, "---").into(),
+                        crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into(),
+                    ],
+                );
+            }
+        }
         crate::nodes::append_children(&self.0, vec![document.0.into()]);
     }
 
@@ -893,6 +920,73 @@ mod tests {
     use crate::builder::{MappingBuilder, SequenceBuilder};
     use crate::scalar::ScalarValue;
     use crate::value::YamlValue; // For special collections tests
+
+    fn doc_values(yaml: &str) -> Vec<Option<i64>> {
+        YamlFile::from_str(yaml)
+            .unwrap()
+            .documents()
+            .map(|d| {
+                let m = d.as_mapping().unwrap();
+                let key = m.keys().next().unwrap();
+                m.get(key).and_then(|v| v.to_i64())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_push_document_adds_separator() {
+        let yaml = YamlFile::from_str("a: 1\n").unwrap();
+        let doc = Document::new_mapping();
+        doc.set("b", 2);
+        yaml.push_document(doc);
+        assert_eq!(yaml.to_string(), "a: 1\n---\nb: 2\n");
+        assert_eq!(doc_values(&yaml.to_string()), vec![Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn test_push_built_document_adds_separator() {
+        let yaml = YamlFile::from_str("a: 1\n").unwrap();
+        yaml.push_document(MappingBuilder::new().pair("b", 2).build_document());
+        assert_eq!(doc_values(&yaml.to_string()), vec![Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn test_push_document_without_trailing_newline() {
+        let yaml = YamlFile::from_str("a: 1").unwrap();
+        yaml.push_document(Document::from_str("b: 2").unwrap());
+        assert_eq!(yaml.to_string(), "a: 1\n---\nb: 2");
+        assert_eq!(doc_values(&yaml.to_string()), vec![Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn test_push_document_keeps_existing_start_marker() {
+        let yaml = YamlFile::from_str("a: 1\n").unwrap();
+        yaml.push_document(Document::from_str("---\nb: 2\n").unwrap());
+        assert_eq!(yaml.to_string(), "a: 1\n---\nb: 2\n");
+    }
+
+    #[test]
+    fn test_push_document_after_trailing_comment() {
+        let yaml = YamlFile::from_str("a: 1\n# end").unwrap();
+        yaml.push_document(Document::from_str("b: 2\n").unwrap());
+        assert_eq!(yaml.to_string(), "a: 1\n# end\n---\nb: 2\n");
+        assert_eq!(doc_values(&yaml.to_string()), vec![Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn test_push_document_after_implicit_null() {
+        let yaml = YamlFile::from_str("a:\n").unwrap();
+        yaml.push_document(Document::from_str("b: 2\n").unwrap());
+        assert_eq!(yaml.to_string(), "a:\n---\nb: 2\n");
+        assert_eq!(doc_values(&yaml.to_string()), vec![None, Some(2)]);
+    }
+
+    #[test]
+    fn test_push_document_into_empty_file() {
+        let yaml = YamlFile::new();
+        yaml.push_document(Document::from_str("b: 2\n").unwrap());
+        assert_eq!(yaml.to_string(), "b: 2\n");
+    }
 
     #[test]
     fn test_set_reports_whether_the_key_was_set() {

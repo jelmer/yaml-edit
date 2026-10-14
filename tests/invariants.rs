@@ -323,6 +323,93 @@ fn sequence_remove_last_entry_preserves_following_mapping_entry() {
 }
 
 #[test]
+fn mapping_remove_only_nested_entry_keeps_anchor() {
+    let doc = Document::from_str("a: &a\n  x: 1\nb: &b\n  x: 2\nm:\n  <<: [*a, *b]\n").unwrap();
+    let removed = doc
+        .as_mapping()
+        .unwrap()
+        .get_mapping("a")
+        .unwrap()
+        .remove("x");
+    assert!(removed.is_some());
+    check(&doc);
+    assert_eq!(
+        doc.to_string(),
+        "a: &a {}\nb: &b\n  x: 2\nm:\n  <<: [*a, *b]\n"
+    );
+}
+
+#[test]
+fn mapping_remove_only_nested_entry_keeps_comment() {
+    let doc = Document::from_str("a: &a # c\n  x: 1\nb: 2\n").unwrap();
+    doc.as_mapping()
+        .unwrap()
+        .get_mapping("a")
+        .unwrap()
+        .remove("x");
+    check(&doc);
+    assert_eq!(doc.to_string(), "a: &a {} # c\nb: 2\n");
+}
+
+#[test]
+fn mapping_remove_only_nested_entry_keeps_comment_lines() {
+    let doc = Document::from_str("a: # c\n  # d\n  x: 1\nb: 2\n").unwrap();
+    doc.as_mapping()
+        .unwrap()
+        .get_mapping("a")
+        .unwrap()
+        .remove("x");
+    check(&doc);
+    assert_eq!(doc.to_string(), "a: # c\n  # d\n  {}\nb: 2\n");
+    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+    assert!(reparsed
+        .as_mapping()
+        .unwrap()
+        .get_mapping("a")
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn mapping_drain_keeps_inner_comment_lines() {
+    let doc = Document::from_str("a:\n  x: 1\n  # d\n  y: 2\nb: 2\n").unwrap();
+    let inner = doc.as_mapping().unwrap().get_mapping("a").unwrap();
+    inner.remove("x");
+    inner.remove("y");
+    check(&doc);
+    assert_eq!(doc.to_string(), "a:\n  # d\n  {}\nb: 2\n");
+}
+
+#[test]
+fn mapping_drain_keeps_inner_comment_lines_after_anchor() {
+    let doc = Document::from_str("a: &a\n  x: 1\n  # d\n\n  # e\n  y: 2\nb: 2\n").unwrap();
+    let inner = doc.as_mapping().unwrap().get_mapping("a").unwrap();
+    inner.remove("y");
+    inner.remove("x");
+    check(&doc);
+    assert_eq!(doc.to_string(), "a: &a\n  # d\n\n  # e\n  {}\nb: 2\n");
+}
+
+#[test]
+fn sequence_drain_keeps_inner_comment_lines() {
+    let doc = Document::from_str("s:\n  - 1\n  # d\n  - 2\nb: 2\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.remove(0);
+    seq.remove(0);
+    check(&doc);
+    assert_eq!(doc.to_string(), "s:\n  # d\n  []\nb: 2\n");
+}
+
+#[test]
+fn sequence_remove_only_item_keeps_anchor() {
+    let doc = Document::from_str("s: &s\n  - a\nb: 2\n").unwrap();
+    let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+    seq.remove(0);
+    check(&doc);
+    assert_eq!(doc.to_string(), "s: &s []\nb: 2\n");
+}
+
+#[test]
 fn set_path_nested_sequence_indices() {
     // Nested index paths on fresh intermediates render as `outer
     // block, inner flow` (`s:\n  - [hi]\n`) rather than a compact

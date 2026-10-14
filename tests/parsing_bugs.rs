@@ -4260,3 +4260,29 @@ fn test_nested_tagged_set_annotated_explicit_key() {
         ]
     );
 }
+
+/// YAML test suite FRK4: a plain flow key followed by a space and the
+/// separating colon used to keep the space as part of the key.
+#[test]
+fn test_flow_plain_key_before_spaced_colon() {
+    let yaml = "{\n  ? foo :,\n  : bar,\n}\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let foo = mapping.get("foo").expect("Should have a key 'foo'");
+    assert!(foo.as_scalar().unwrap().is_null());
+    let null_key = mapping
+        .get(yaml_edit::ScalarValue::null())
+        .expect("Should have a null key");
+    assert_eq!(null_key.as_scalar().unwrap().as_string(), "bar");
+
+    let yaml = "{ foo : bar, a b : c }";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["foo".to_string(), "a b".to_string()]);
+}

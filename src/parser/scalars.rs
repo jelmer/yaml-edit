@@ -155,7 +155,7 @@ impl Parser {
             // outside it: `a: b \n` has the value `b`. Whitespace before a
             // line break the scalar continues past is folded into it.
             if kind == SyntaxKind::WHITESPACE {
-                let ends_scalar = match self.peek_after_current() {
+                let ends_scalar = match self.peek_kind(1) {
                     Some(SyntaxKind::COMMENT) | None => true,
                     Some(SyntaxKind::NEWLINE) => {
                         quoted || !self.is_plain_scalar_continuation(1, scalar_indent)
@@ -208,11 +208,12 @@ impl Parser {
                 continue;
             }
 
-            // Whitespace before a delimiter ends the scalar (`[ a , b ]`);
-            // whitespace between words is part of it (`{omitted value:,}`).
+            // Whitespace before a delimiter ends the scalar (`[ a , b ]`,
+            // `{ a : b }`); whitespace between words is part of it
+            // (`{omitted value:,}`).
             if kind == SyntaxKind::WHITESPACE
-                && matches!(
-                    self.peek_after_current(),
+                && (matches!(
+                    self.peek_kind(1),
                     Some(
                         SyntaxKind::COMMA
                             | SyntaxKind::RIGHT_BRACE
@@ -220,30 +221,12 @@ impl Parser {
                             | SyntaxKind::NEWLINE
                             | SyntaxKind::COMMENT
                     )
-                )
+                ) || self.flow_key_separator_at(1))
             {
                 break;
             }
 
-            if kind == SyntaxKind::COLON && self.colon_is_flow_key_separator() {
-                break;
-            }
-
-            // Whitespace before a key separator is not part of the key:
-            // `{foo : bar}` is keyed by `foo`.
-            if kind == SyntaxKind::WHITESPACE
-                && self.peek_after_current() == Some(SyntaxKind::COLON)
-                && matches!(
-                    self.peek_nth(2),
-                    Some(
-                        SyntaxKind::COMMA
-                            | SyntaxKind::RIGHT_BRACE
-                            | SyntaxKind::RIGHT_BRACKET
-                            | SyntaxKind::WHITESPACE
-                            | SyntaxKind::NEWLINE
-                    )
-                )
-            {
+            if self.flow_key_separator_at(0) {
                 break;
             }
 
@@ -282,7 +265,7 @@ impl Parser {
                 if !self.in_flow_context {
                     break;
                 }
-                if self.colon_is_flow_key_separator() {
+                if self.flow_key_separator_at(0) {
                     break;
                 }
             }
@@ -304,33 +287,29 @@ impl Parser {
         }
     }
 
-    /// The kind of the token after the current one, if any.
-    ///
-    /// `self.tokens` is a stack popped from the end, so the next-but-one
-    /// token sits two from the top.
-    fn peek_after_current(&self) -> Option<SyntaxKind> {
-        self.peek_nth(1)
-    }
-
     /// The kind of the token `n` places after the current one, if any.
-    fn peek_nth(&self, n: usize) -> Option<SyntaxKind> {
-        let idx = self.tokens.len().checked_sub(n + 1)?;
-        Some(self.tokens[idx].0)
+    ///
+    /// `self.tokens` is a stack popped from the end, so the current token
+    /// sits on top.
+    pub(super) fn peek_kind(&self, n: usize) -> Option<SyntaxKind> {
+        let index = self.tokens.len().checked_sub(n + 1)?;
+        Some(self.tokens[index].0)
     }
 
-    /// Is the COLON at the cursor separating a flow mapping key from its
-    /// value, rather than sitting inside a scalar?
-    fn colon_is_flow_key_separator(&self) -> bool {
-        matches!(
-            self.peek_after_current(),
-            Some(
-                SyntaxKind::COMMA
-                    | SyntaxKind::RIGHT_BRACE
-                    | SyntaxKind::RIGHT_BRACKET
-                    | SyntaxKind::WHITESPACE
-                    | SyntaxKind::NEWLINE
+    /// Is the token `n` places after the cursor a COLON separating a flow
+    /// mapping key from its value, rather than sitting inside a scalar?
+    pub(super) fn flow_key_separator_at(&self, n: usize) -> bool {
+        self.peek_kind(n) == Some(SyntaxKind::COLON)
+            && matches!(
+                self.peek_kind(n + 1),
+                Some(
+                    SyntaxKind::COMMA
+                        | SyntaxKind::RIGHT_BRACE
+                        | SyntaxKind::RIGHT_BRACKET
+                        | SyntaxKind::WHITESPACE
+                        | SyntaxKind::NEWLINE
+                )
             )
-        )
     }
 
     pub(super) fn parse_tagged_value(&mut self, base_indent: usize) {

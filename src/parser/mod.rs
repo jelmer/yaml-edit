@@ -690,6 +690,8 @@ impl Parser {
 
     pub(super) fn skip_ws_and_newlines(&mut self) {
         self.skip_tokens(&[
+            // The lexer only emits a BOM where it prefixes a document.
+            SyntaxKind::BOM,
             SyntaxKind::WHITESPACE,
             SyntaxKind::NEWLINE,
             SyntaxKind::INDENT,

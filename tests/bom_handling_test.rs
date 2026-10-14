@@ -142,3 +142,54 @@ fn test_bom_between_lines() {
     let output = parsed.to_string();
     assert_eq!(output, bom_in_middle);
 }
+
+#[test]
+fn test_bom_before_comment() {
+    // A comment may follow the BOM directly (l-document-prefix).
+    let yaml = "\u{FEFF}# c\na: 1\n";
+    let parsed = YamlFile::from_str(yaml).unwrap();
+    let doc = parsed.documents().next().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(mapping.get("a").unwrap().to_string(), "1");
+    assert_eq!(parsed.to_string(), yaml);
+}
+
+#[test]
+fn test_bom_before_node_properties() {
+    // The BOM is not content, so a node may start right after it.
+    let parsed = YamlFile::from_str("\u{FEFF}? a\n: 1\n").unwrap();
+    let doc = parsed.documents().next().unwrap();
+    assert_eq!(doc.as_mapping().unwrap().get("a").unwrap().to_string(), "1");
+
+    let parsed = YamlFile::from_str("\u{FEFF}&x [a]\n").unwrap();
+    let doc = parsed.documents().next().unwrap();
+    assert_eq!(doc.as_sequence().unwrap().len(), 1);
+
+    let parsed = YamlFile::from_str("\u{FEFF}!!map {k: v}\n").unwrap();
+    let doc = parsed.documents().next().unwrap();
+    let keys: Vec<String> = doc
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert_eq!(keys, vec!["k"]);
+}
+
+#[test]
+fn test_bom_at_start_of_later_document() {
+    // A BOM may open any document in the stream, not just the first.
+    for yaml in ["a: 1\n---\n\u{FEFF}b: 2\n", "a: 1\n\u{FEFF}---\nb: 2\n"] {
+        let parsed = YamlFile::from_str(yaml).unwrap();
+        let docs: Vec<_> = parsed.documents().collect();
+        assert_eq!(docs.len(), 2, "{yaml:?}");
+        let keys: Vec<String> = docs[1]
+            .as_mapping()
+            .unwrap()
+            .keys()
+            .map(|k| k.to_string())
+            .collect();
+        assert_eq!(keys, vec!["b"], "{yaml:?}");
+        assert_eq!(parsed.to_string(), yaml);
+    }
+}

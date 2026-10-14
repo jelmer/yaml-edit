@@ -239,7 +239,7 @@ pub enum SyntaxKind {
     COMMENT,
 
     // Special
-    /// UTF-8 Byte Order Mark (BOM) - U+FEFF at start of file
+    /// UTF-8 Byte Order Mark (BOM) - U+FEFF at start of a document
     BOM,
     /// End of file marker
     EOF,
@@ -613,18 +613,20 @@ pub fn lex_with_validation_config<'a>(
     // than continuing it.
     let mut block_scalar_body_indent: Option<usize> = None;
 
-    // Handle UTF-8 BOM (U+FEFF) at the start of the file
-    // Per YAML spec, BOM is allowed and should be processed transparently
-    if let Some((0, '\u{FEFF}')) = chars.peek() {
-        chars.next(); // Consume the BOM
-        tokens.push((BOM, "\u{FEFF}"));
-        current_line_start = '\u{FEFF}'.len_utf8();
-    }
-
     while let Some((start_idx, ch)) = chars.next() {
         let token_start = start_idx;
 
         match ch {
+            // A BOM is not content and takes no column, so the line starts
+            // after it.
+            '\u{FEFF}'
+                if flow_depth == 0
+                    && start_idx == current_line_start
+                    && bom_starts_document(&tokens, input, start_idx) =>
+            {
+                tokens.push((BOM, &input[token_start..start_idx + ch.len_utf8()]));
+                current_line_start = start_idx + ch.len_utf8();
+            }
             // Context-aware hyphen handling
             '-' => {
                 if flow_depth == 0
@@ -1024,6 +1026,8 @@ pub fn lex_with_validation_config<'a>(
             // one really is the 6.6 violation the validator reports
             // (`key: "value"# c`).
             '#' if !is_hash_a_comment_start(input, start_idx)
+                // A BOM is a document prefix, which a comment may follow.
+                && !matches!(tokens.last(), Some((BOM, _)))
                 && {
                     // The character before decides, but it has to belong to
                     // scalar content: glued to a flow delimiter (`c,#x`) the
@@ -1432,6 +1436,24 @@ fn ends_document_marker(ch: char) -> bool {
     matches!(ch, ' ' | '\t' | '\n' | '\r')
 }
 
+/// Whether a BOM at the start of a line is a document prefix.
+///
+/// YAML 1.2 allows a BOM at the start of any document in a stream, not only
+/// the first, so one may follow a `---` or `...` line or precede a `---`.
+/// Anywhere else it is ordinary content.
+fn bom_starts_document(tokens: &[(SyntaxKind, &str)], input: &str, bom_idx: usize) -> bool {
+    use SyntaxKind::*;
+    let after_marker = tokens
+        .iter()
+        .rev()
+        .find(|(kind, _)| !matches!(kind, WHITESPACE | INDENT | NEWLINE | COMMENT))
+        .map_or(true, |(kind, _)| matches!(kind, DOC_START | DOC_END));
+    let rest = &input[bom_idx + '\u{FEFF}'.len_utf8()..];
+    let before_marker =
+        rest.starts_with("---") && rest[3..].chars().next().map_or(true, ends_document_marker);
+    after_marker || before_marker
+}
+
 fn node_property_can_start(tokens: &[(SyntaxKind, &str)]) -> bool {
     for (kind, _) in tokens.iter().rev() {
         match kind {
@@ -1446,6 +1468,7 @@ fn node_property_can_start(tokens: &[(SyntaxKind, &str)]) -> bool {
             | SyntaxKind::LEFT_BRACKET
             | SyntaxKind::LEFT_BRACE
             | SyntaxKind::DOC_START
+            | SyntaxKind::BOM
             | SyntaxKind::TAG
             | SyntaxKind::ANCHOR
             // A bare `&` or `*` is punctuation rather than content, so a

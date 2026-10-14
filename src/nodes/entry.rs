@@ -169,14 +169,16 @@ impl<'a> OccupiedEntry<'a> {
         self.entry.value_node()
     }
 
-    /// Return the value as a nested [`Mapping`], if it is one.
+    /// Return the value as a nested [`Mapping`], if it is one, looking
+    /// through a tag on it.
     pub fn get_mapping(&self) -> Option<Mapping> {
-        self.get().and_then(|n| n.as_mapping().cloned())
+        self.get()?.mapping_content()
     }
 
-    /// Return the value as a nested [`Sequence`], if it is one.
+    /// Return the value as a nested [`Sequence`], if it is one, looking
+    /// through a tag on it.
     pub fn get_sequence(&self) -> Option<Sequence> {
-        self.get().and_then(|n| n.as_sequence().cloned())
+        self.get()?.sequence_content()
     }
 
     /// Replace the value of this entry with `value`.

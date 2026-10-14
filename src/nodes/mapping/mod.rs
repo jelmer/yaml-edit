@@ -115,8 +115,10 @@ impl Mapping {
     /// Get the value for `key` as a nested [`Mapping`].
     ///
     /// Returns `None` if the key does not exist or its value is not a mapping.
+    /// A tag on the value is looked through: `key: !custom` over a block
+    /// mapping still gives that mapping.
     pub fn get_mapping(&self, key: impl crate::AsYaml) -> Option<Mapping> {
-        self.get(key).and_then(|n| n.as_mapping().cloned())
+        self.get(key)?.mapping_content()
     }
 
     /// Modify a nested mapping in place by applying a closure to it.
@@ -134,30 +136,20 @@ impl Mapping {
     {
         // The closure mutates through rowan's interior mutability, so the
         // node found here is the one in the tree - nothing to splice back.
-        let nested = self.0.children().find_map(|node| {
-            if node.kind() != SyntaxKind::MAPPING_ENTRY {
-                return None;
-            }
-            let key_node = entry_key(&node)?;
-            if !key_content_matches(&key_node, &key) {
-                return None;
-            }
-            entry_value(&node)?
-                .children()
-                .find(|n| n.kind() == SyntaxKind::MAPPING)
-        });
-        let Some(mapping_node) = nested else {
+        let Some(nested) = self.get_mapping(key) else {
             return false;
         };
-        f(&Mapping(mapping_node));
+        f(&nested);
         true
     }
 
     /// Get the value for `key` as a nested [`Sequence`].
     ///
     /// Returns `None` if the key does not exist or its value is not a sequence.
+    /// A tag on the value is looked through, as for
+    /// [`get_mapping`](Self::get_mapping).
     pub fn get_sequence(&self, key: impl crate::AsYaml) -> Option<Sequence> {
-        self.get(key).and_then(|n| n.as_sequence().cloned())
+        self.get(key)?.sequence_content()
     }
 
     /// Returns `true` if this mapping contains an entry with the given key.

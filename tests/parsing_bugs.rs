@@ -2166,6 +2166,40 @@ fn test_document_as_tagged_exposes_the_tag() {
     assert_eq!(doc.as_mapping().unwrap().len(), 1);
 }
 
+fn occupied<'a>(mapping: &'a yaml_edit::Mapping, key: &str) -> yaml_edit::OccupiedEntry<'a> {
+    match mapping.entry(key) {
+        yaml_edit::Entry::Occupied(o) => o,
+        yaml_edit::Entry::Vacant(_) => panic!("{key} missing"),
+    }
+}
+
+/// A tag does not change what kind of node it annotates, so the typed
+/// getters see through it the way Document::as_mapping and get_string do.
+#[test]
+fn test_typed_getters_see_through_tags() {
+    let yaml = "a: !!map\n  x: 1\nb: &b !!map\n  y: 2\nc: !custom\n  z: 3\ns: !!seq\n  - 1\nt: !custom [1, 2]\n";
+    let doc = YamlFile::from_str(yaml).unwrap().document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    for (key, inner) in [("a", "x"), ("b", "y"), ("c", "z")] {
+        let nested = mapping.get_mapping(key).unwrap();
+        assert!(nested.contains_key(inner), "{key}");
+        assert!(doc.get_mapping(key).unwrap().contains_key(inner), "{key}");
+        assert_eq!(occupied(&mapping, key).get_mapping().unwrap().len(), 1);
+        assert!(mapping.modify_mapping(key, |m| assert!(m.contains_key(inner))));
+    }
+    assert_eq!(mapping.get_sequence("s").unwrap().len(), 1);
+    assert_eq!(doc.get_sequence("t").unwrap().len(), 2);
+    assert_eq!(occupied(&mapping, "t").get_sequence().unwrap().len(), 2);
+
+    // The tag stays put when editing through the getter.
+    mapping.get_mapping("c").unwrap().set("w", 4);
+    assert!(doc.to_string().contains("c: !custom\n  z: 3\n  w: 4\n"));
+
+    // A tagged node of another kind is still not a mapping.
+    assert!(mapping.get_mapping("s").is_none());
+    assert!(mapping.get_sequence("a").is_none());
+}
+
 /// A `---` or `...` marker ends at a space, a tab or a line break, which is
 /// all YAML 1.2 counts as whitespace there.
 ///

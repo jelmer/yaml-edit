@@ -444,6 +444,24 @@ impl YamlNode {
         }
     }
 
+    /// The mapping this node is, looking through a tag on it.
+    pub(crate) fn mapping_content(&self) -> Option<Mapping> {
+        match self {
+            YamlNode::Mapping(m) => Some(m.clone()),
+            YamlNode::TaggedNode(t) => t.as_mapping(),
+            _ => None,
+        }
+    }
+
+    /// The sequence this node is, looking through a tag on it.
+    pub(crate) fn sequence_content(&self) -> Option<Sequence> {
+        match self {
+            YamlNode::Sequence(s) => Some(s.clone()),
+            YamlNode::TaggedNode(t) => t.as_sequence(),
+            _ => None,
+        }
+    }
+
     /// If this node is a tagged node, return a reference to it.
     pub fn as_tagged(&self) -> Option<&TaggedNode> {
         if let YamlNode::TaggedNode(t) = self {

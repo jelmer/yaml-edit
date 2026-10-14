@@ -167,7 +167,7 @@
 //! 4. **Tag Naming**: Tag names must start with `!` and contain only alphanumeric characters,
 //!    hyphens, underscores, dots, colons, and forward slashes.
 
-use crate::scalar::ScalarValue;
+use crate::scalar::{ScalarType, ScalarValue};
 use crate::value::YamlValue;
 use crate::yaml::{Document, TaggedNode};
 use std::collections::HashMap;
@@ -484,7 +484,7 @@ impl CustomTagHandler for JsonHandler {
     fn serialize(&self, value: &YamlValue) -> Result<String, CustomTagError> {
         // Convert YamlValue to JSON string
         match value {
-            YamlValue::Scalar(s) => Ok(format!("\"{}\"", s.value())),
+            YamlValue::Scalar(s) => json_scalar(s),
             YamlValue::Sequence(seq) => {
                 let items: Result<Vec<_>, _> = seq.iter().map(|v| self.serialize(v)).collect();
                 let items = items?;
@@ -493,7 +493,7 @@ impl CustomTagHandler for JsonHandler {
             YamlValue::Mapping(map) => {
                 let pairs: Result<Vec<_>, _> = map
                     .iter()
-                    .map(|(k, v)| Ok(format!("\"{}\":{}", k, self.serialize(v)?)))
+                    .map(|(k, v)| Ok(format!("{}:{}", json_quote(k), self.serialize(v)?)))
                     .collect();
                 let pairs = pairs?;
                 Ok(format!("{{{}}}", pairs.join(",")))
@@ -505,38 +505,190 @@ impl CustomTagHandler for JsonHandler {
         }
     }
 
+    /// Content that is not strictly valid JSON is accepted as the raw
+    /// string, as with any other scalar; [`validate`](Self::validate)
+    /// reports it instead.
     fn deserialize(&self, content: &str) -> Result<YamlValue, CustomTagError> {
-        // TODO: implement a proper JSON parser here
-        let content = content.trim();
-        if content.len() >= 2 && content.starts_with('"') && content.ends_with('"') {
-            let inner = &content[1..content.len() - 1];
-            Ok(YamlValue::scalar(inner))
-        } else if content.starts_with('[') && content.ends_with(']') {
-            Err(CustomTagError::with_content(
-                "!json",
-                "JSON arrays are not supported",
-                content,
-            ))
-        } else if content.starts_with('{') && content.ends_with('}') {
-            Err(CustomTagError::with_content(
-                "!json",
-                "JSON objects are not supported",
-                content,
-            ))
-        } else if content == "\"" || content == "'" {
-            Err(CustomTagError::with_content(
-                "!json",
-                "Unterminated quoted string",
-                content,
-            ))
-        } else {
-            Ok(YamlValue::scalar(content))
-        }
+        parse_json(content, false)
+    }
+
+    fn validate(&self, content: &str) -> Result<(), CustomTagError> {
+        parse_json(content, true).map(|_| ())
     }
 
     fn description(&self) -> &str {
         "JSON data embedded in YAML"
     }
+}
+
+/// Parse `content` as a JSON scalar. Unless `strict`, content that is not
+/// valid JSON is returned as the raw string.
+fn parse_json(content: &str, strict: bool) -> Result<YamlValue, CustomTagError> {
+    // TODO: implement a proper JSON parser here
+    let content = content.trim();
+    if content.len() >= 2 && content.starts_with('"') && content.ends_with('"') {
+        let inner = &content[1..content.len() - 1];
+        match json_unescape(inner) {
+            Ok(unescaped) => Ok(YamlValue::scalar(unescaped)),
+            Err(msg) if strict => Err(CustomTagError::with_content("!json", msg, content)),
+            Err(_) => Ok(YamlValue::scalar(inner)),
+        }
+    } else if content.starts_with('[') && content.ends_with(']') {
+        Err(CustomTagError::with_content(
+            "!json",
+            "JSON arrays are not supported",
+            content,
+        ))
+    } else if content.starts_with('{') && content.ends_with('}') {
+        Err(CustomTagError::with_content(
+            "!json",
+            "JSON objects are not supported",
+            content,
+        ))
+    } else if content == "\"" || content == "'" {
+        Err(CustomTagError::with_content(
+            "!json",
+            "Unterminated quoted string",
+            content,
+        ))
+    } else if let Some(literal) = json_literal(content) {
+        Ok(YamlValue::Scalar(literal))
+    } else if strict {
+        Err(CustomTagError::with_content(
+            "!json",
+            "Invalid JSON value",
+            content,
+        ))
+    } else {
+        Ok(YamlValue::scalar(content))
+    }
+}
+
+fn json_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            c if c < '\u{20}' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn json_scalar(s: &ScalarValue) -> Result<String, CustomTagError> {
+    let unrepresentable =
+        || CustomTagError::with_content("!json", "Value cannot be represented in JSON", s.value());
+    match s.scalar_type() {
+        ScalarType::Null => Ok("null".to_string()),
+        ScalarType::Boolean => s
+            .to_bool()
+            .map(|b| b.to_string())
+            .ok_or_else(unrepresentable),
+        ScalarType::Integer => s
+            .to_i64()
+            .map(|i| i.to_string())
+            .ok_or_else(unrepresentable),
+        ScalarType::Float => s
+            .to_f64()
+            .filter(|f| f.is_finite())
+            .map(|f| f.to_string())
+            .ok_or_else(unrepresentable),
+        _ => Ok(json_quote(s.value())),
+    }
+}
+
+/// Decode the body of a JSON string literal (without the surrounding quotes).
+fn json_unescape(inner: &str) -> Result<String, &'static str> {
+    fn hex4(chars: &mut std::str::Chars) -> Result<u32, &'static str> {
+        let digits: String = chars.take(4).collect();
+        if digits.len() != 4 {
+            return Err("Truncated \\u escape");
+        }
+        u32::from_str_radix(&digits, 16).map_err(|_| "Invalid \\u escape")
+    }
+
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Err("Unescaped quote in string"),
+            c if c < '\u{20}' => return Err("Unescaped control character in string"),
+            '\\' => {
+                let decoded = match chars.next().ok_or("Unterminated escape sequence")? {
+                    '"' => '"',
+                    '\\' => '\\',
+                    '/' => '/',
+                    'b' => '\u{8}',
+                    'f' => '\u{c}',
+                    'n' => '\n',
+                    'r' => '\r',
+                    't' => '\t',
+                    'u' => {
+                        let hi = hex4(&mut chars)?;
+                        let code = if (0xD800..0xDC00).contains(&hi) {
+                            if chars.next() != Some('\\') || chars.next() != Some('u') {
+                                return Err("Unpaired surrogate in \\u escape");
+                            }
+                            let lo = hex4(&mut chars)?;
+                            if !(0xDC00..0xE000).contains(&lo) {
+                                return Err("Unpaired surrogate in \\u escape");
+                            }
+                            0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00)
+                        } else {
+                            hi
+                        };
+                        char::from_u32(code).ok_or("Unpaired surrogate in \\u escape")?
+                    }
+                    _ => return Err("Invalid escape sequence"),
+                };
+                out.push(decoded);
+            }
+            c => out.push(c),
+        }
+    }
+    Ok(out)
+}
+
+/// Parse a JSON number, `true`, `false` or `null`.
+fn json_literal(content: &str) -> Option<ScalarValue> {
+    match content {
+        "true" => return Some(ScalarValue::from(true)),
+        "false" => return Some(ScalarValue::from(false)),
+        "null" => return Some(ScalarValue::null()),
+        _ => {}
+    }
+    let digits = |s: &str| s.len() - s.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let rest = content.strip_prefix('-').unwrap_or(content);
+    let int_len = digits(rest);
+    if int_len == 0 || (int_len > 1 && rest.starts_with('0')) {
+        return None;
+    }
+    let mut rest = &rest[int_len..];
+    if let Some(frac) = rest.strip_prefix('.') {
+        let n = digits(frac);
+        if n == 0 {
+            return None;
+        }
+        rest = &frac[n..];
+    }
+    if let Some(exp) = rest.strip_prefix(['e', 'E']) {
+        let exp = exp.strip_prefix(['+', '-']).unwrap_or(exp);
+        let n = digits(exp);
+        if n == 0 {
+            return None;
+        }
+        rest = &exp[n..];
+    }
+    rest.is_empty().then(|| ScalarValue::parse(content))
 }
 
 /// A custom tag handler for base64-encoded binary data with compression
@@ -741,6 +893,107 @@ mod tests {
                 .value(),
             "hello"
         );
+    }
+
+    #[test]
+    fn test_json_handler_serialize_escapes_strings() {
+        let handler = JsonHandler;
+        assert_eq!(
+            handler.serialize(&YamlValue::scalar("a\"b\\c")).unwrap(),
+            r#""a\"b\\c""#
+        );
+        assert_eq!(
+            handler
+                .serialize(&YamlValue::scalar("l1\nl2\t\u{1}"))
+                .unwrap(),
+            r#""l1\nl2\t\u0001""#
+        );
+        assert_eq!(
+            handler.serialize(&YamlValue::scalar("42")).unwrap(),
+            "\"42\""
+        );
+
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("k\"".to_string(), YamlValue::scalar("v"));
+        assert_eq!(
+            handler.serialize(&YamlValue::Mapping(map)).unwrap(),
+            r#"{"k\"":"v"}"#
+        );
+    }
+
+    #[test]
+    fn test_json_handler_serialize_non_strings() {
+        let handler = JsonHandler;
+        assert_eq!(handler.serialize(&YamlValue::scalar(42i64)).unwrap(), "42");
+        assert_eq!(handler.serialize(&YamlValue::scalar(-7i32)).unwrap(), "-7");
+        assert_eq!(
+            handler.serialize(&YamlValue::scalar(1.5f64)).unwrap(),
+            "1.5"
+        );
+        assert_eq!(handler.serialize(&YamlValue::scalar(true)).unwrap(), "true");
+        assert_eq!(
+            handler
+                .serialize(&YamlValue::Scalar(ScalarValue::null()))
+                .unwrap(),
+            "null"
+        );
+        assert_eq!(
+            handler
+                .serialize(&YamlValue::Scalar(ScalarValue::parse("0x1F")))
+                .unwrap(),
+            "31"
+        );
+        let err = handler
+            .serialize(&YamlValue::scalar(f64::INFINITY))
+            .unwrap_err();
+        assert_eq!(err.message, "Value cannot be represented in JSON");
+    }
+
+    #[test]
+    fn test_json_handler_deserialize_unescapes_strings() {
+        let handler = JsonHandler;
+        let value = |s: &str| handler.deserialize(s).unwrap().as_scalar().unwrap().clone();
+        assert_eq!(value(r#""a\"bA""#).value(), "a\"bA");
+        assert_eq!(value(r#""\\\/\b\f\n\r\t""#).value(), "\\/\u{8}\u{c}\n\r\t");
+        assert_eq!(value(r#""😀""#).value(), "\u{1F600}");
+        assert_eq!(
+            value(r#""42""#).scalar_type(),
+            crate::scalar::ScalarType::String
+        );
+
+        for bad in [
+            r#""a"b""#,
+            r#""a\x""#,
+            r#""\u12""#,
+            r#""\ud83d""#,
+            "\"a\u{1}\"",
+            r#""a\""#,
+        ] {
+            // Invalid JSON is read as the raw string, but does not validate.
+            assert_eq!(value(bad).value(), &bad[1..bad.len() - 1], "{}", bad);
+            let err = handler.validate(bad).unwrap_err();
+            assert_eq!(err.tag, "!json", "{}", bad);
+            assert_eq!(err.content.as_deref(), Some(bad), "{}", bad);
+        }
+    }
+
+    #[test]
+    fn test_json_handler_deserialize_non_strings() {
+        let handler = JsonHandler;
+        let value = |s: &str| handler.deserialize(s).unwrap().as_scalar().unwrap().clone();
+        assert_eq!(value("42").to_i64(), Some(42));
+        assert_eq!(value("-0").to_i64(), Some(0));
+        assert_eq!(value("1.5e3").to_f64(), Some(1500.0));
+        assert_eq!(value("true").to_bool(), Some(true));
+        assert_eq!(value("null").scalar_type(), crate::scalar::ScalarType::Null);
+
+        for bad in ["plain", "0x1F", "01", "1.", ".5", "+1", "True", "~"] {
+            assert_eq!(value(bad).value(), bad);
+            let err = handler.validate(bad).unwrap_err();
+            assert_eq!(err.message, "Invalid JSON value", "{}", bad);
+        }
+        assert_eq!(handler.validate("42"), Ok(()));
+        assert_eq!(handler.validate(r#""a\"b""#), Ok(()));
     }
 
     #[test]

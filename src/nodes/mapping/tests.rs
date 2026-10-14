@@ -1370,3 +1370,58 @@ fn set_path_builds_block_intermediates() {
         "name: test\nserver:\n  database:\n    host: localhost\n"
     );
 }
+
+/// Inserting by index into an empty mapping follows the same style rules
+/// as `set`: a pending-block placeholder becomes block, a `{}` from the
+/// source or from `new_flow` stays flow.
+#[test]
+fn insert_at_index_into_empty_mapping() {
+    use crate::nodes::Mapping;
+    use crate::Document;
+
+    for preserving in [false, true] {
+        let insert = |m: &Mapping| {
+            if preserving {
+                m.insert_at_index_preserving(0, "k", "v");
+            } else {
+                m.insert_at_index(0, "k", "v");
+            }
+        };
+
+        let m = Mapping::new();
+        insert(&m);
+        assert_eq!(m.to_string(), "k: v\n", "preserving={preserving}");
+
+        let m = Mapping::new_flow();
+        insert(&m);
+        assert_eq!(m.to_string(), "{k: \"v\"}", "preserving={preserving}");
+
+        let doc = Document::from_str("m: {}\n").unwrap();
+        insert(&doc.as_mapping().unwrap().get_mapping("m").unwrap());
+        assert_eq!(
+            doc.to_string(),
+            "m: {k: \"v\"}\n",
+            "preserving={preserving}"
+        );
+    }
+}
+
+/// A new key goes in with the mapping's own style and indentation.
+#[test]
+fn insert_at_index_preserving_new_key_matches_mapping_style() {
+    use crate::Document;
+
+    for (yaml, index, expected) in [
+        ("m: {a: 1}\n", 0, "m: {k: \"v\", a: 1}\n"),
+        ("m: {a: 1}\n", 5, "m: {a: 1, k: \"v\"}\n"),
+        ("m:\n  a: 1\n", 0, "m:\n  k: v\n  a: 1\n"),
+        ("m:\n  a: 1\n", 5, "m:\n  a: 1\n  k: v\n"),
+        ("a: 1\nb: 2\n", 1, "a: 1\nk: v\nb: 2\n"),
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        let root = doc.as_mapping().unwrap();
+        let m = root.get_mapping("m").unwrap_or(root);
+        m.insert_at_index_preserving(index, "k", "v");
+        assert_eq!(doc.to_string(), expected, "{yaml:?} at {index}");
+    }
+}

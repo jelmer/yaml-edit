@@ -16,7 +16,7 @@ use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::yaml::{
     collapse_empty_child_collection_in_parent as collapse_empty_child_mapping_in_parent,
-    dump_cst_to_string, ends_with_newline, ValueNode,
+    dump_cst_to_string, ValueNode,
 };
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
@@ -940,7 +940,7 @@ impl Mapping {
         new_value: impl crate::AsYaml,
     ) {
         // Create the new entry using create_mapping_entry
-        let (new_entry, _has_trailing_newline) = self.create_mapping_entry(new_key, new_value);
+        let (new_entry, _has_trailing_newline) = self.create_mapping_entry(&new_key, &new_value);
 
         // An existing entry with this key is replaced where it stands, so the
         // index is only consulted for a key that is not there yet. New
@@ -951,67 +951,7 @@ impl Mapping {
             return;
         }
 
-        // Key doesn't exist, insert at the specified index
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        // Count existing MAPPING_ENTRY nodes to find insertion point
-        let mut entry_indices = Vec::new();
-        for (i, child) in children.iter().enumerate() {
-            if child
-                .as_node()
-                .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-            {
-                entry_indices.push(i);
-            }
-        }
-
-        let mut new_elements = Vec::new();
-
-        // Determine insertion position in children_with_tokens space
-        let insert_pos = if entry_indices.is_empty() {
-            // Empty mapping - insert at beginning
-            0
-        } else if index >= entry_indices.len() {
-            // Index beyond end - insert after last entry
-            let last_entry_idx = entry_indices[entry_indices.len() - 1];
-            // Find the end of the last entry (including its newline if present)
-            let mut pos = last_entry_idx + 1;
-            while pos < children.len() {
-                if let Some(token) = children[pos].as_token() {
-                    if token.kind() == SyntaxKind::NEWLINE {
-                        pos += 1;
-                        break;
-                    }
-                }
-                pos += 1;
-            }
-            pos
-        } else {
-            // Insert before the entry at the specified index
-            entry_indices[index]
-        };
-
-        // Add newline before entry if inserting after existing content
-        // Check if previous element ends with newline (either as token or inside node)
-        if insert_pos > 0 && !entry_indices.is_empty() {
-            let has_newline_before = if let Some(child) = children.get(insert_pos - 1) {
-                match child {
-                    rowan::NodeOrToken::Token(t) => t.kind() == SyntaxKind::NEWLINE,
-                    rowan::NodeOrToken::Node(n) => ends_with_newline(n),
-                }
-            } else {
-                false
-            };
-
-            if !has_newline_before {
-                new_elements.push(fresh_token(SyntaxKind::NEWLINE, "\n").into());
-            }
-        }
-
-        // Use the already-created MAPPING_ENTRY node (already ends with newline)
-        new_elements.push(new_entry.into());
-
-        // Insert at the calculated position
-        self.0.splice_children(insert_pos..insert_pos, new_elements);
+        self.insert_new_entry_at(index, new_key, new_value);
     }
 
     /// Remove a key-value pair, returning the removed entry.
@@ -1396,6 +1336,22 @@ impl Mapping {
         if self.find_entry_by_key(&key).is_some() {
             self.set_as_yaml(&key, &value);
             return;
+        }
+        self.insert_new_entry_at(index, key, value);
+    }
+
+    /// Insert an entry for a key that is not in the mapping yet before the
+    /// `index`th entry, or at the end if there are fewer.
+    fn insert_new_entry_at(
+        &self,
+        index: usize,
+        key: impl crate::AsYaml,
+        value: impl crate::AsYaml,
+    ) {
+        // As in `set_as_yaml`: a pending-block placeholder becomes a real
+        // block mapping before its first entry is laid out.
+        if self.is_block_placeholder() && !crate::nodes::sequence::must_render_flow(&self.0) {
+            crate::yaml::convert_placeholder_to_block(&self.0);
         }
 
         // Create the new mapping entry

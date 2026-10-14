@@ -898,3 +898,30 @@ fn test_mixed_indentation_handling() {
     let output = parsed.to_string();
     assert_eq!(output, yaml);
 }
+
+#[test]
+fn test_whitespace_only_line_does_not_swallow_next_entry() {
+    // The second is the YAML test suite's Y79Y/001.
+    for yaml in ["foo: |\n  \nbar: 1\n", "foo: |\n \t\nbar: 1\n"] {
+        let doc = YamlFile::parse(yaml).to_result().unwrap();
+        let document = doc.document().unwrap();
+        let mapping = document.as_mapping().unwrap();
+        let foo = mapping.get("foo").unwrap();
+        assert_eq!(foo.to_string(), yaml[5..yaml.len() - 7], "{yaml:?}");
+        let bar = mapping.get("bar").unwrap();
+        assert_eq!(bar.as_scalar().unwrap().as_string(), "1", "{yaml:?}");
+        assert_eq!(doc.to_string(), yaml);
+    }
+
+    let yaml = "- foo: >+\n      \n- baz\n";
+    let doc = YamlFile::parse(yaml).to_result().unwrap();
+    let document = doc.document().unwrap();
+    let sequence = document.as_sequence().unwrap();
+    assert_eq!(sequence.len(), 2);
+    let first = sequence.get(0).unwrap();
+    let foo = first.as_mapping().unwrap().get("foo").unwrap();
+    assert_eq!(foo.as_scalar().unwrap().as_string(), "\n");
+    let baz = sequence.get(1).unwrap();
+    assert_eq!(baz.as_scalar().unwrap().as_string(), "baz");
+    assert_eq!(doc.to_string(), yaml);
+}

@@ -731,6 +731,7 @@ impl Parser {
                     // (`- >\n \t\n detected\n`), so it must not set the base.
                     SyntaxKind::INDENT if self.indent_is_blank_line() => {
                         self.bump();
+                        continue;
                     }
                     SyntaxKind::INDENT
                         if enclosing_column.is_some_and(|column| {

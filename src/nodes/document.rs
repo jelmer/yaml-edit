@@ -1635,6 +1635,28 @@ Repository: https://github.com/example/example.git
     }
 
     #[test]
+    fn test_document_from_str_round_trips_end_marker_line() {
+        // The rest of the `...` line ends the document along with the marker.
+        for yaml in [
+            "a: 1\n...\n",
+            "a: 1\n... # c\n",
+            "a: 1\n...  \n",
+            "- 1\n...\n",
+            "---\na: 1\n...\n",
+        ] {
+            let doc = Document::from_str(yaml).unwrap();
+            assert_eq!(doc.to_string(), yaml);
+        }
+    }
+
+    #[test]
+    fn test_document_set_before_end_marker_line() {
+        let doc = Document::from_str("a: 1\n... # c\n").unwrap();
+        doc.set("b", 2);
+        assert_eq!(doc.to_string(), "a: 1\nb: 2\n... # c\n");
+    }
+
+    #[test]
     fn test_document_from_str_ignoring_comments_drops_prefix() {
         let yaml = "# leading\n%YAML 1.2\n---\nkey: value\n";
         let doc = Document::from_str_ignoring_comments(yaml).unwrap();

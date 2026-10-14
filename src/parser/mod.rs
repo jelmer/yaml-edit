@@ -376,6 +376,14 @@ impl Parser {
                 }
                 self.builder.finish_node();
             }
+
+            // The rest of the marker's line ends the document with it.
+            if self.current() == Some(SyntaxKind::COMMENT) {
+                self.bump();
+            }
+            if self.current() == Some(SyntaxKind::NEWLINE) {
+                self.bump();
+            }
         }
 
         self.builder.finish_node();

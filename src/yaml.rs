@@ -680,15 +680,15 @@ impl YamlFile {
     /// Set a key-value pair in the first document's mapping.
     ///
     /// If the key exists its value is replaced; if not, a new entry is appended.
-    /// Does nothing if the `YamlFile` contains no documents or the first document is
-    /// not a mapping. Use [`ensure_document`](Self::ensure_document) first if you
-    /// need to guarantee a document exists.
+    ///
+    /// Returns `false`, leaving the file unchanged, if the `YamlFile` contains
+    /// no documents or the first document's root is not a mapping (see
+    /// [`Document::set`]). Use [`ensure_document`](Self::ensure_document)
+    /// first if you need to guarantee a document exists.
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
-    pub fn set(&self, key: impl crate::AsYaml, value: impl crate::AsYaml) {
-        if let Some(doc) = self.document() {
-            doc.set(key, value);
-        }
+    pub fn set(&self, key: impl crate::AsYaml, value: impl crate::AsYaml) -> bool {
+        self.document().is_some_and(|doc| doc.set(key, value))
     }
 
     /// Insert a key-value pair immediately after `after_key` in the first document.
@@ -772,8 +772,10 @@ impl YamlFile {
     /// Delegates to [`Document::insert_at_index`]. If `key` already exists it
     /// is updated in-place rather than moved. If `index` is out of bounds the
     /// entry is appended at the end. If the first document has no root node,
-    /// a mapping is created. A sequence or other non-mapping root is left
-    /// unchanged.
+    /// a mapping is created, as is a document if the file has none.
+    ///
+    /// Returns `false`, leaving the file unchanged, if the first document's
+    /// root is a sequence or another non-mapping node.
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn insert_at_index(
@@ -781,10 +783,9 @@ impl YamlFile {
         index: usize,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) {
+    ) -> bool {
         if let Some(doc) = self.document() {
-            doc.insert_at_index(index, key, value);
-            // Mutations happen directly on the document, no need to replace
+            doc.insert_at_index(index, key, value)
         } else {
             // If no document exists, create one without the --- marker for consistency
             // with normal parsed YAML
@@ -796,12 +797,8 @@ impl YamlFile {
             let doc = Document(SyntaxNode::new_root_mut(builder.finish()));
 
             // Add the document to the ROOT
-            self.0.splice_children(0..0, vec![doc.0.into()]);
-
-            // Now get the document again and insert
-            if let Some(doc) = self.document() {
-                doc.insert_at_index(index, key, value);
-            }
+            self.0.splice_children(0..0, vec![doc.0.clone().into()]);
+            doc.insert_at_index(index, key, value)
         }
     }
 }
@@ -834,6 +831,30 @@ mod tests {
     use crate::builder::{MappingBuilder, SequenceBuilder};
     use crate::scalar::ScalarValue;
     use crate::value::YamlValue; // For special collections tests
+
+    #[test]
+    fn test_set_reports_whether_the_key_was_set() {
+        let file = YamlFile::from_str("a: 1\n").unwrap();
+        assert!(file.set("b", 2));
+        assert_eq!(file.to_string(), "a: 1\nb: 2\n");
+
+        for yaml in ["scalar\n", "- a\n", "", "# c\n"] {
+            let file = YamlFile::from_str(yaml).unwrap();
+            assert!(!file.set("b", 2), "{yaml:?}");
+            assert_eq!(file.to_string(), yaml);
+        }
+    }
+
+    #[test]
+    fn test_insert_at_index_reports_a_non_mapping_root() {
+        let file = YamlFile::from_str("- a\n").unwrap();
+        assert!(!file.insert_at_index(0, "k", "v"));
+        assert_eq!(file.to_string(), "- a\n");
+
+        let file = YamlFile::new();
+        assert!(file.insert_at_index(0, "k", "v"));
+        assert_eq!(file.to_string(), "k: v\n");
+    }
 
     #[test]
     fn test_simple_mapping() {

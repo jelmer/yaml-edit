@@ -76,8 +76,7 @@ impl Scalar {
             } else {
                 unescaped
             }
-        } else if text.starts_with('|') || text.starts_with('>') {
-            // Block scalar (literal or folded)
+        } else if self.is_block() {
             Self::parse_block_scalar(&text)
         } else {
             // Plain scalar - fold lines if multi-line
@@ -338,11 +337,18 @@ impl Scalar {
         TryInto::<bool>::try_into(self).ok()
     }
 
+    /// Check if this scalar is a literal (`|`) or folded (`>`) block scalar
+    pub fn is_block(&self) -> bool {
+        let text = self.value();
+        text.starts_with('|') || text.starts_with('>')
+    }
+
     /// Check if this scalar represents a null value.
     ///
-    /// Returns `true` if the unquoted value is null, Null, NULL, ~, or empty.
+    /// Returns `true` if the plain value is null, Null, NULL, ~, or empty.
+    /// Quoted and block scalars are always strings, never null.
     pub fn is_null(&self) -> bool {
-        if self.is_quoted() {
+        if self.is_quoted() || self.is_block() {
             return false;
         }
         let val = self.as_string();
@@ -585,6 +591,39 @@ items: ["first", "second"]
         assert_eq!(values[1].value(), r#""second""#);
         assert_eq!(values[0].as_string(), "first");
         assert_eq!(values[1].as_string(), "second");
+    }
+
+    #[test]
+    fn test_block_scalar_is_not_null() {
+        // A block scalar is always a string, even when empty or when its
+        // content spells a null keyword.
+        for yaml in [
+            "a: |\n",
+            "a: >-\n",
+            "a: |+\n",
+            "a: |-\n  null\n",
+            "a: >-\n  ~\n",
+        ] {
+            let doc = Document::from_str(yaml).unwrap();
+            let scalar = doc
+                .as_mapping()
+                .unwrap()
+                .get("a")
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .clone();
+            assert!(!scalar.is_null(), "{:?} parsed as null", yaml);
+            assert_eq!(
+                crate::scalar::ScalarValue::from_scalar(&scalar).scalar_type(),
+                crate::scalar::ScalarType::String
+            );
+            assert!(
+                !crate::yaml_eq(&scalar, &crate::scalar::ScalarValue::null()),
+                "{:?}",
+                yaml
+            );
+        }
     }
 
     #[test]

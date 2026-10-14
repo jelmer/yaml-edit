@@ -1026,9 +1026,7 @@ fn set_path_on_mapping<V: crate::AsYaml>(
     // as "vacant" and get replaced by the appropriate container.
     if let Some(existing) = mapping.get(first_key) {
         if let Some(sc) = existing.as_scalar() {
-            let s = sc.as_string();
-            let is_null_placeholder = s.is_empty() || s.eq_ignore_ascii_case("null") || s == "~";
-            if !is_null_placeholder {
+            if !sc.is_null() {
                 return Err(PathError::TypeMismatch {
                     at: segment_display(&segments[0]),
                 });
@@ -1172,9 +1170,7 @@ fn set_path_on_sequence<V: crate::AsYaml>(
     // we'd have to overwrite a non-null user value.
     if let Some(existing) = sequence.get(index) {
         if let Some(sc) = existing.as_scalar() {
-            let s = sc.as_string();
-            let is_null_placeholder = s.is_empty() || s.eq_ignore_ascii_case("null") || s == "~";
-            if !is_null_placeholder {
+            if !sc.is_null() {
                 return Err(PathError::TypeMismatch {
                     at: segment_display(&segments[0]),
                 });
@@ -2057,6 +2053,46 @@ config:
             doc.to_string(),
             "items:\n  - a\n  - null\n  - null\n  - z\n"
         );
+    }
+
+    #[test]
+    fn test_set_path_does_not_replace_block_scalar() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+        // Block scalars are strings, never null placeholders.
+        for (yaml, path) in [
+            ("a: |\n", "a.b"),
+            ("a: >-\n  null\n", "a.b"),
+            ("items:\n  - |-\n    ~\n", "items[0].b"),
+        ] {
+            let doc = Document::from_str(yaml).unwrap();
+            let err = doc.try_set_path(path, "x").unwrap_err();
+            assert!(
+                matches!(err, PathError::TypeMismatch { .. }),
+                "{:?}: {:?}",
+                yaml,
+                err
+            );
+            assert_eq!(doc.to_string(), yaml);
+        }
+    }
+
+    #[test]
+    fn test_set_path_replaces_null_placeholder() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+        for yaml in ["a:\n", "a: null\n", "a: ~\n"] {
+            let doc = Document::from_str(yaml).unwrap();
+            doc.try_set_path("a.b", "x").expect("set_path");
+            assert_eq!(
+                doc.try_get_path("a.b")
+                    .unwrap()
+                    .as_scalar()
+                    .unwrap()
+                    .as_string(),
+                "x"
+            );
+        }
     }
 
     #[test]

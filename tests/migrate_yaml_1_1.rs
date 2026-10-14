@@ -20,9 +20,72 @@ fn a_bare_octal_keeps_its_value() {
 }
 
 #[test]
-fn a_negative_bare_octal_keeps_its_sign() {
-    assert_eq!(migrated("n: -0755\n"), "n: -0o755\n");
-    assert_eq!(ScalarValue::parse("-0o755").to_i64(), Some(-493));
+fn a_negative_bare_octal_becomes_decimal() {
+    // 1.2 has no signed `0o` form: `-0o755` is a string there.
+    assert_eq!(migrated("n: -0755\n"), "n: -493\n");
+    assert_eq!(migrated("n: +0755\n"), "n: 0o755\n");
+}
+
+#[test]
+fn an_all_zero_octal_stays_zero() {
+    assert_eq!(
+        migrated("a: 00\nb: 000\nc: -00\n"),
+        "a: 0o0\nb: 0o0\nc: 0\n"
+    );
+}
+
+#[test]
+fn the_single_letter_booleans_are_left_alone() {
+    let input = "a: y\nb: Y\nc: n\nd: N\ny: 1\n";
+    assert_eq!(migrated(input), input);
+}
+
+#[test]
+fn underscores_are_dropped_from_numbers() {
+    assert_eq!(migrated("a: 1_000\n"), "a: 1000\n");
+    assert_eq!(migrated("a: -1_000\n"), "a: -1000\n");
+    assert_eq!(migrated("a: 0x_1F\n"), "a: 0x1F\n");
+    assert_eq!(migrated("a: 0_755\n"), "a: 0o755\n");
+    assert_eq!(migrated("a: 1_000.5_0\n"), "a: 1000.50\n");
+    assert_eq!(migrated("a: 1_0.5e+5\n"), "a: 10.5e+5\n");
+    assert_eq!(migrated("a: 0_5.5\n"), "a: 05.5\n");
+}
+
+#[test]
+fn binary_and_signed_hex_become_decimal() {
+    assert_eq!(migrated("a: 0b1010\n"), "a: 10\n");
+    assert_eq!(migrated("a: -0b1_0\n"), "a: -2\n");
+    assert_eq!(migrated("a: -0x1F\n"), "a: -31\n");
+    assert_eq!(migrated("a: +0x1F\n"), "a: 31\n");
+}
+
+#[test]
+fn sexagesimal_numbers_become_decimal() {
+    assert_eq!(migrated("t: 1:30\n"), "t: 90\n");
+    assert_eq!(migrated("t: -1:30\n"), "t: -90\n");
+    assert_eq!(migrated("t: 190:20:30\n"), "t: 685230\n");
+    assert_eq!(migrated("t: 1:30.5\n"), "t: 90.5\n");
+    assert_eq!(migrated("t: 0:30.\n"), "t: 30.0\n");
+    assert_eq!(migrated("t: 190:20:30.15\n"), "t: 685230.15\n");
+}
+
+#[test]
+fn near_misses_of_the_1_1_forms_are_left_alone() {
+    for src in [
+        "a: 1:60\n",
+        "a: 01:30\n",
+        "a: 1:30:\n",
+        "a: 0b102\n",
+        "a: 0x_\n",
+        "a: _1\n",
+        "a: 0_8\n",
+        "a: 1_000a\n",
+        "a: yy\n",
+        // 1.1 floats need a signed exponent.
+        "a: 1_0.5e5\n",
+    ] {
+        assert_eq!(migrated(src), src, "{src:?}");
+    }
 }
 
 #[test]

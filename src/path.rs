@@ -902,9 +902,8 @@ impl YamlPath for Mapping {
 /// Under [`AliasPolicy::Refuse`] this is an error. Under
 /// [`AliasPolicy::Follow`] it returns the anchored node itself, so
 /// writes land on the shared value. Under [`AliasPolicy::Expand`] it
-/// returns a detached copy of the anchored node, which the caller
-/// substitutes for the alias; the copy is rebuilt as its own tree root
-/// so it does not carry the original `&anchor` along.
+/// returns a detached, anchor-free copy of the anchored node (see
+/// [`expanded_copy`]), which the caller substitutes for the alias.
 fn resolve_alias_for_write(
     alias: &crate::yaml::Alias,
     segment: &PathSegment,
@@ -936,14 +935,53 @@ fn resolve_alias_for_write(
         .ok_or_else(undefined)?;
 
     let target = if policy == AliasPolicy::Expand {
-        // Detaching drops the `&anchor` that sits beside the original in
-        // its parent VALUE, so the copy is a plain value.
-        crate::yaml::SyntaxNode::new_root_mut(target.green().into_owned())
+        expanded_copy(&target)
     } else {
         target
     };
 
     crate::as_yaml::YamlNode::from_syntax_peeled(target).ok_or_else(undefined)
+}
+
+/// Build a detached copy of an anchored node to substitute for an alias.
+///
+/// The copy is dedented to column 0, as a detached root has no context to
+/// measure its indentation from. It carries no anchors: the `&anchor` beside
+/// the original stays behind in its parent VALUE, and anchors nested inside
+/// are dropped so that later aliases keep referring to the original nodes.
+fn expanded_copy(target: &crate::yaml::SyntaxNode) -> crate::yaml::SyntaxNode {
+    use crate::lex::SyntaxKind;
+
+    let mut builder = rowan::GreenNodeBuilder::new();
+    builder.start_node(target.kind().into());
+    let base = crate::as_yaml::source_base_indent(target) as isize;
+    crate::as_yaml::copy_node_content_reindent(&mut builder, target, -base);
+    builder.finish_node();
+    let copy = crate::yaml::SyntaxNode::new_root_mut(builder.finish());
+
+    let anchors: Vec<_> = copy
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| t.kind() == SyntaxKind::ANCHOR)
+        .collect();
+    for anchor in anchors {
+        // Drop the whitespace separating the anchor from what follows it on
+        // the same line, or else the space before it, so `k: &a 1` becomes
+        // `k: 1` and `k: &a` followed by a block becomes `k:`.
+        let separator = anchor
+            .next_token()
+            .filter(|t| t.kind() == SyntaxKind::WHITESPACE)
+            .or_else(|| {
+                anchor
+                    .prev_token()
+                    .filter(|t| t.kind() == SyntaxKind::WHITESPACE)
+            });
+        if let Some(separator) = separator {
+            separator.detach();
+        }
+        anchor.detach();
+    }
+    copy
 }
 
 /// Continue a write into `node`, dispatching on whether it is a mapping
@@ -2439,6 +2477,48 @@ config:
         assert_eq!(
             doc.to_string(),
             "shared: &shared\n  timeout: 30\na:\n  timeout: 60\nb: *shared\n".to_string()
+        );
+    }
+
+    #[test]
+    fn test_set_path_expand_multi_entry_indentation() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("a: &x\n  k: 1\n  j: 2\nb: *x\n").unwrap();
+        doc.try_set_path_with("b.j", 3, AliasPolicy::Expand)
+            .unwrap();
+        assert_eq!(
+            doc.to_string(),
+            "a: &x\n  k: 1\n  j: 2\nb:\n  k: 1\n  j: 3\n"
+        );
+
+        let doc = Document::from_str("a: &x\n  - 1\n  - 2\nb: *x\n").unwrap();
+        doc.try_set_path_with("b[1]", 3, AliasPolicy::Expand)
+            .unwrap();
+        assert_eq!(doc.to_string(), "a: &x\n  - 1\n  - 2\nb:\n  - 1\n  - 3\n");
+    }
+
+    #[test]
+    fn test_set_path_expand_drops_nested_anchors() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc =
+            Document::from_str("a: &x\n  k: &y 1\n  m: &z\n    n: 2\nb: *x\nc: *y\n").unwrap();
+        doc.try_set_path_with("b.j", 3, AliasPolicy::Expand)
+            .unwrap();
+        assert_eq!(
+            doc.to_string(),
+            "a: &x\n  k: &y 1\n  m: &z\n    n: 2\nb:\n  k: 1\n  m:\n    n: 2\n  j: 3\nc: *y\n"
+        );
+
+        let doc = Document::from_str("a: &x\n  - &y [&z 1, 2]\n  - 3\nb: *x\n").unwrap();
+        doc.try_set_path_with("b[1]", 4, AliasPolicy::Expand)
+            .unwrap();
+        assert_eq!(
+            doc.to_string(),
+            "a: &x\n  - &y [&z 1, 2]\n  - 3\nb:\n  - [1, 2]\n  - 4\n"
         );
     }
 

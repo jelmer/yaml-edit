@@ -4286,3 +4286,70 @@ fn test_flow_plain_key_before_spaced_colon() {
         .collect();
     assert_eq!(keys, vec!["foo".to_string(), "a b".to_string()]);
 }
+
+/// YAML test suite WZ62: a tag with no content after it in a flow
+/// collection annotates an empty scalar. The key used to keep the text
+/// `!!str ` (tag and the space before the colon) as its value.
+#[test]
+fn test_tagged_empty_flow_node() {
+    let yaml = "{\n  foo : !!str,\n  !!str : bar,\n}\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+
+    let value = mapping.get("foo").expect("Should have a key 'foo'");
+    let value = value.as_tagged().expect("Should be a tagged node");
+    assert_eq!(value.tag().unwrap(), "!!str");
+    assert!(value.value().unwrap().is_null());
+    assert_eq!(value.to_string(), "!!str");
+
+    let keys: Vec<_> = mapping.keys().collect();
+    assert_eq!(keys.len(), 2);
+    let key = keys[1].as_tagged().expect("Should be a tagged node");
+    assert_eq!(key.tag().unwrap(), "!!str");
+    assert!(key.value().unwrap().is_null());
+    assert_eq!(key.as_string().unwrap(), "");
+    assert_eq!(key.to_string(), "!!str");
+}
+
+/// The same holds for an anchor and in flow sequences: the annotation is
+/// followed directly by a zero-width null, and the space after it stays
+/// outside the annotated node.
+#[test]
+fn test_annotated_empty_flow_node() {
+    use rowan::ast::AstNode;
+    use yaml_edit::SyntaxKind;
+
+    for (yaml, annotation) in [
+        ("{ !!null : bar }", "!!null"),
+        ("[ !!str , a ]", "!!str"),
+        ("[ !!str ]", "!!str"),
+        ("[ !!str\n]", "!!str"),
+        ("[ !!str # c\n]", "!!str"),
+        ("{ !!str\n  : bar }", "!!str"),
+        ("{ a: !!str }", "!!str"),
+        ("{ &x : bar }", "&x"),
+        ("[ &x , a ]", "&x"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let token = file
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find(|t| t.text() == annotation)
+            .unwrap();
+        let next = token.next_sibling_or_token().unwrap();
+        assert_eq!(next.kind(), SyntaxKind::SCALAR, "{yaml}");
+        let null: Vec<_> = next
+            .as_node()
+            .unwrap()
+            .children_with_tokens()
+            .map(|e| (e.kind(), e.into_token().unwrap().text().to_string()))
+            .collect();
+        assert_eq!(null, vec![(SyntaxKind::NULL, String::new())], "{yaml}");
+        if token.kind() == SyntaxKind::TAG {
+            assert_eq!(token.parent().unwrap().text().to_string(), annotation);
+        }
+    }
+}

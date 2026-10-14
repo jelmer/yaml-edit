@@ -339,12 +339,17 @@ impl Parser {
                 self.builder.start_node(SyntaxKind::TAGGED_NODE.into());
                 self.bump(); // TAG token
 
-                // Skip any whitespace after the tag
-                while matches!(self.current(), Some(SyntaxKind::WHITESPACE)) {
-                    self.bump();
+                // An empty node leaves the whitespace after the tag to the
+                // enclosing flow collection, like any other flow node.
+                let empty_flow_node = self.annotates_empty_flow_node();
+                if !empty_flow_node {
+                    while matches!(self.current(), Some(SyntaxKind::WHITESPACE)) {
+                        self.bump();
+                    }
                 }
 
                 match self.tagged_block_node_indent(base_indent, as_mapping_value) {
+                    _ if empty_flow_node => self.emit_implicit_null(),
                     Some(indent) => {
                         // The tag is alone on its line and annotates a block
                         // node starting on a later line. parse_value's NEWLINE

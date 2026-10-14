@@ -16,7 +16,7 @@ impl Document {
         builder.start_node(SyntaxKind::DOCUMENT.into());
         // Add the document start marker "---"
         builder.token(SyntaxKind::DOC_START.into(), "---");
-        builder.token(SyntaxKind::WHITESPACE.into(), "\n");
+        builder.token(SyntaxKind::NEWLINE.into(), "\n");
         builder.finish_node();
         Document(SyntaxNode::new_root_mut(builder.finish()))
     }
@@ -323,7 +323,7 @@ impl Document {
         builder.start_node(SyntaxKind::DOCUMENT.into());
         // Add the document start marker "---"
         builder.token(SyntaxKind::DOC_START.into(), "---");
-        builder.token(SyntaxKind::WHITESPACE.into(), "\n");
+        builder.token(SyntaxKind::NEWLINE.into(), "\n");
 
         // Add the mapping with all its children, except trailing newline
         builder.start_node(SyntaxKind::MAPPING.into());
@@ -1688,5 +1688,21 @@ Repository: https://github.com/example/example.git
         let empty = Document::new();
         assert!(empty.set("k", "v"));
         assert_eq!(empty.get_string("k"), Some("v".to_string()));
+    }
+
+    /// A built document has the same CST as the parser gives its text.
+    #[test]
+    fn test_built_documents_are_parser_shaped() {
+        let mapping = Mapping::new();
+        mapping.set("a", 1);
+        for doc in [Document::new(), Document::from_mapping(mapping)] {
+            let text = doc.to_string();
+            let parsed = YamlFile::from_str(&text).unwrap().document().unwrap();
+            assert_eq!(
+                crate::debug::tree_to_string(doc.syntax()),
+                crate::debug::tree_to_string(parsed.syntax()),
+                "{text:?}"
+            );
+        }
     }
 }

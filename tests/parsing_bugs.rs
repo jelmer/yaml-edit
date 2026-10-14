@@ -3713,3 +3713,124 @@ fn test_quote_opening_a_plain_continuation_line_is_content() {
         "1"
     );
 }
+
+/// A document's root block scalar may put its body at column 0, since the
+/// root sits at indentation -1. Such a body is literal text up to the next
+/// document marker.
+///
+/// The lexer took the column-0 lines as having left the body, so
+/// `%!PS-Adobe-2.0` became a DIRECTIVE (making the validator reject the
+/// valid suite case W4TN) and `{` opened a flow collection that swallowed the
+/// following document.
+#[test]
+fn test_root_block_scalar_body_at_column_zero() {
+    use yaml_edit::validator::Validator;
+    for (yaml, values) in [
+        ("--- |\n%!PS-Adobe-2.0\n", vec!["%!PS-Adobe-2.0\n"]),
+        ("|\n%a\n%b\n", vec!["%a\n%b\n"]),
+        ("--- |\n# x\n", vec!["# x\n"]),
+        ("--- !!str |\n%a\n", vec!["%a\n"]),
+        ("--- |\n{x\n--- [y]\n", vec!["{x\n"]),
+        (
+            "--- |\n%!PS-Adobe-2.0\n...\n%YAML 1.2\n---\n# Empty\n...\n",
+            vec!["%!PS-Adobe-2.0\n"],
+        ),
+    ] {
+        assert!(
+            !yaml_edit::lex(yaml)
+                .iter()
+                .skip(1)
+                .any(|(kind, text)| *kind == yaml_edit::SyntaxKind::DIRECTIVE
+                    && *text != "%YAML 1.2"),
+            "{yaml:?}: {:?}",
+            yaml_edit::lex(yaml)
+        );
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let scalars: Vec<String> = file
+            .documents()
+            .filter_map(|d| d.as_scalar().map(|s| s.as_string()))
+            .collect();
+        assert_eq!(scalars, values, "{yaml:?}");
+        let violations =
+            Validator::new().validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        assert!(violations.is_empty(), "{yaml:?}: {violations:?}");
+    }
+
+    let yaml = "--- |\n{x\n---\na: b,c\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let docs: Vec<_> = file.documents().collect();
+    assert_eq!(docs.len(), 2);
+    assert_eq!(docs[0].as_scalar().unwrap().as_string(), "{x\n");
+    assert_eq!(
+        docs[1]
+            .as_mapping()
+            .unwrap()
+            .get("a")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "b,c"
+    );
+}
+
+/// Every line of a block scalar's body at the body's column is body, not
+/// just the first: a `{` on the second line must not open a flow
+/// collection whose depth then leaks into the rest of the file.
+#[test]
+fn test_block_scalar_later_body_lines_stay_literal() {
+    let tokens = yaml_edit::lex("a: |\n  x\n  {y\nb: c,d\n");
+    assert!(
+        !tokens.iter().any(|(kind, _)| matches!(
+            kind,
+            yaml_edit::SyntaxKind::LEFT_BRACE | yaml_edit::SyntaxKind::COMMA
+        )),
+        "{tokens:?}"
+    );
+    let tokens = yaml_edit::lex("a: |\n  x\n  # y\n");
+    assert!(
+        !tokens
+            .iter()
+            .any(|(kind, _)| *kind == yaml_edit::SyntaxKind::COMMENT),
+        "{tokens:?}"
+    );
+}
+
+/// A quote opening a block scalar's body line is literal text, not the
+/// start of a quoted scalar: read as one, an unbalanced quote ran across
+/// line breaks and swallowed the rest of the file, later documents
+/// included.
+#[test]
+fn test_block_scalar_body_quote_is_literal() {
+    let yaml = "a: |\n  \"x\n  y\nb: [1, 2]\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let doc = file.document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "\"x\ny\n"
+    );
+    assert_eq!(mapping.get("b").unwrap().as_sequence().unwrap().len(), 2);
+
+    let yaml = "--- |\n\"open\n---\nx\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let docs: Vec<String> = file
+        .documents()
+        .map(|d| d.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(docs, vec!["\"open\n", "x"]);
+
+    let yaml = "- >\n  'x\n- y\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let seq = file.document().unwrap().as_sequence().unwrap();
+    let items: Vec<String> = seq
+        .values()
+        .map(|v| v.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(items, vec!["'x\n", "y"]);
+}

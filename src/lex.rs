@@ -643,17 +643,11 @@ pub fn lex_with_validation_config<'a>(
     // Track flow collection depth for context-aware tokenization
     let mut flow_depth: u32 = 0;
 
-    // Indentation of the line carrying a block-scalar header, while its body
-    // is still running. Everything indented past that column is literal
-    // text, so a `{` or `[` there must not open a flow collection: the
-    // depth would never come back down and every later `,` in the file
+    // The block scalar whose body is still running. All of the body is
+    // literal text, so a `{` or `[` there must not open a flow collection:
+    // the depth would never come back down and every later `,` in the file
     // would lex as a delimiter.
-    let mut block_scalar_header_indent: Option<usize> = None;
-    // Column of the block scalar's body, set by its first content line. The
-    // body is every later line reaching that column; the header's own indent
-    // is only a lower bound, so a line between the two ends the body rather
-    // than continuing it.
-    let mut block_scalar_body_indent: Option<usize> = None;
+    let mut block_scalar: Option<BlockScalarBody> = None;
 
     while let Some((start_idx, ch)) = chars.next() {
         let token_start = start_idx;
@@ -885,17 +879,7 @@ pub fn lex_with_validation_config<'a>(
             // text, so it neither opens nor closes a collection. Read the
             // rest of the line as the scalar content it is.
             '[' | ']' | '{' | '}' | ','
-                if at_block_scalar_body_indent(
-                    block_scalar_body_indent,
-                    input,
-                    current_line_start,
-                    start_idx,
-                ) || in_block_scalar_body(
-                    block_scalar_header_indent,
-                    input,
-                    current_line_start,
-                    start_idx,
-                ) =>
+                if in_block_scalar_body(block_scalar, current_line_start) =>
             {
                 let rest =
                     read_plain_scalar_body_from(&mut chars, input, start_idx + 1, flow_depth, true);
@@ -933,13 +917,11 @@ pub fn lex_with_validation_config<'a>(
             // collection a `|` is plain content and `[|, x]` has two
             // entries, as saphyr reads it.
             '|' if flow_depth == 0 && node_property_can_start(&tokens) => {
-                block_scalar_header_indent = Some(line_indent(input, current_line_start));
-                block_scalar_body_indent = None;
+                block_scalar = Some(BlockScalarBody::new(&tokens, input, current_line_start));
                 tokens.push((PIPE, &input[token_start..start_idx + 1]))
             }
             '>' if flow_depth == 0 && node_property_can_start(&tokens) => {
-                block_scalar_header_indent = Some(line_indent(input, current_line_start));
-                block_scalar_body_indent = None;
+                block_scalar = Some(BlockScalarBody::new(&tokens, input, current_line_start));
                 tokens.push((GREATER, &input[token_start..start_idx + 1]))
             }
             // `<<` is a merge key only when the key is exactly `<<`, i.e. the
@@ -973,22 +955,13 @@ pub fn lex_with_validation_config<'a>(
             // A quote is literal text in a block scalar's body, and content on
             // a line continuing a plain scalar, as the flow indicators above.
             '"' | '\''
-                if at_block_scalar_body_indent(
-                    block_scalar_body_indent,
-                    input,
-                    current_line_start,
-                    start_idx,
-                ) || in_block_scalar_body(
-                    block_scalar_header_indent,
-                    input,
-                    current_line_start,
-                    start_idx,
-                ) || quote_continues_plain_scalar(
-                    &tokens,
-                    input,
-                    current_line_start,
-                    start_idx,
-                ) =>
+                if in_block_scalar_body(block_scalar, current_line_start)
+                    || quote_continues_plain_scalar(
+                        &tokens,
+                        input,
+                        current_line_start,
+                        start_idx,
+                    ) =>
             {
                 let rest =
                     read_plain_scalar_body_from(&mut chars, input, start_idx + 1, flow_depth, true);
@@ -1073,13 +1046,7 @@ pub fn lex_with_validation_config<'a>(
             // `# detected` rather than a comment (test suite 4QFQ). A line
             // that does not reach the body's column has left it, where a
             // comment is a comment again (T26H).
-            '#' if at_block_scalar_body_indent(
-                block_scalar_body_indent,
-                input,
-                current_line_start,
-                start_idx,
-            ) =>
-            {
+            '#' if in_block_scalar_body(block_scalar, current_line_start) => {
                 let rest =
                     read_plain_scalar_body_from(&mut chars, input, start_idx + 1, flow_depth, true);
                 let text = &input[token_start..start_idx + 1 + rest.len()];
@@ -1178,9 +1145,12 @@ pub fn lex_with_validation_config<'a>(
 
             '%' => {
                 // A directive is only a `%` that opens a line. Anywhere else,
-                // and anywhere inside a flow collection, it is ordinary plain
-                // scalar content (`a: b%c`).
-                if flow_depth > 0 || start_idx != current_line_start {
+                // inside a flow collection, or in a block scalar's body
+                // (`--- |\n%!PS-Adobe-2.0\n`), it is ordinary scalar content.
+                if flow_depth > 0
+                    || start_idx != current_line_start
+                    || in_block_scalar_body(block_scalar, current_line_start)
+                {
                     // Treat as part of a plain scalar. The shared body reader
                     // knows the rules this needs: flow indicators are content
                     // in block context, and an internal whitespace run stays
@@ -1227,12 +1197,7 @@ pub fn lex_with_validation_config<'a>(
 
                 tokens.push((NEWLINE, &input[token_start..start_idx + 1]));
                 current_line_start = start_idx + 1;
-                track_block_scalar_body(
-                    input,
-                    current_line_start,
-                    &mut block_scalar_header_indent,
-                    &mut block_scalar_body_indent,
-                );
+                track_block_scalar_body(input, current_line_start, &mut block_scalar);
             }
             '\r' => {
                 check_line_length(
@@ -1259,12 +1224,7 @@ pub fn lex_with_validation_config<'a>(
 
                 tokens.push((NEWLINE, &input[token_start..end_pos]));
                 current_line_start = end_pos;
-                track_block_scalar_body(
-                    input,
-                    current_line_start,
-                    &mut block_scalar_header_indent,
-                    &mut block_scalar_body_indent,
-                );
+                track_block_scalar_body(input, current_line_start, &mut block_scalar);
             }
 
             // Whitespace (spaces and tabs)
@@ -1566,86 +1526,94 @@ fn line_indent(input: &str, line_start: usize) -> usize {
     line.len() - line.trim_start_matches([' ', '\t']).len()
 }
 
-/// Whether the line starting at `line_start` carries content at or left of
-/// `indent`, which is what ends a block scalar's body.
-///
-/// A blank line says nothing about the body's indentation, so it stays in.
-fn line_starts_content_at_or_before(input: &str, line_start: usize, indent: usize) -> bool {
-    let line = input[line_start..]
-        .split(['\n', '\r'])
-        .next()
-        .unwrap_or_default();
-    if line.trim().is_empty() {
-        return false;
+/// A block scalar whose body the lexer is reading.
+#[derive(Clone, Copy)]
+struct BlockScalarBody {
+    /// Start of the line carrying the header; the body begins on the next.
+    header_line_start: usize,
+    /// Leftmost column a body line may start at. A document's root block
+    /// scalar sits at indentation -1, so its body may start at column 0;
+    /// any other body has to be indented past its header's line.
+    min_indent: usize,
+    /// The body's own column, set by its first content line.
+    indent: Option<usize>,
+}
+
+impl BlockScalarBody {
+    /// Start tracking for a header found on the line at `line_start`, with
+    /// `tokens` holding everything lexed before it.
+    fn new(tokens: &[(SyntaxKind, &str)], input: &str, line_start: usize) -> Self {
+        // Only `---` and node properties before the header, with nothing
+        // indenting the line, make it the document's root node.
+        let is_root = tokens
+            .iter()
+            .rev()
+            .take_while(|(kind, _)| !matches!(kind, SyntaxKind::NEWLINE | SyntaxKind::BOM))
+            .all(|(kind, _)| {
+                matches!(
+                    kind,
+                    SyntaxKind::DOC_START
+                        | SyntaxKind::WHITESPACE
+                        | SyntaxKind::TAG
+                        | SyntaxKind::ANCHOR
+                )
+            });
+        let min_indent = if is_root {
+            0
+        } else {
+            line_indent(input, line_start) + 1
+        };
+        Self {
+            header_line_start: line_start,
+            min_indent,
+            indent: None,
+        }
     }
-    line.len() - line.trim_start_matches([' ', '\t']).len() <= indent
+}
+
+/// Whether the line starting at `line_start` is a `---` or `...` marker.
+fn line_is_document_marker(input: &str, line_start: usize) -> bool {
+    let line = &input[line_start..];
+    (line.starts_with("---") || line.starts_with("..."))
+        && line[3..].chars().next().map_or(true, ends_document_marker)
 }
 
 /// Update the lexer's block-scalar tracking at the start of a new line.
 ///
-/// A block scalar's body ends at the first following line that is not
-/// indented past its header and not blank. This runs for every line ending,
-/// CRLF and lone CR included: left to the `\n` arm alone, a CRLF file kept
-/// the tracking set and read a later `[` as literal body text rather than a
-/// flow collection.
-fn track_block_scalar_body(
-    input: &str,
-    line_start: usize,
-    header_indent: &mut Option<usize>,
-    body_indent: &mut Option<usize>,
-) {
-    let Some(header) = *header_indent else {
+/// A block scalar's body ends at the first following line that is not blank
+/// and starts left of the body's column (or, before a content line has set
+/// that, left of the leftmost column allowed), or at a document marker,
+/// which is the only thing that ends a root body at column 0. This runs for
+/// every line ending, CRLF and lone CR included: left to the `\n` arm
+/// alone, a CRLF file kept the tracking set and read a later `[` as literal
+/// body text rather than a flow collection.
+fn track_block_scalar_body(input: &str, line_start: usize, body: &mut Option<BlockScalarBody>) {
+    let Some(current) = body else {
         return;
     };
-    // The body's own column, once a content line has set it, is what later
-    // lines must reach; before that the header's indent is the only bound we
-    // have.
-    let bound = body_indent.unwrap_or(header);
-    if line_starts_content_at_or_before(input, line_start, bound) {
-        *header_indent = None;
-        *body_indent = None;
-    } else if body_indent.is_none() && !line_is_blank(input, line_start) {
-        *body_indent = Some(line_indent(input, line_start));
+    if line_is_blank(input, line_start) {
+        return;
+    }
+    let indent = line_indent(input, line_start);
+    if indent < current.indent.unwrap_or(current.min_indent)
+        || line_is_document_marker(input, line_start)
+    {
+        *body = None;
+    } else if current.indent.is_none() {
+        current.indent = Some(indent);
     }
 }
 
-/// Whether `idx` is inside the body of a block scalar whose header sat on a
-/// line indented `header_indent`.
+/// Whether the line starting at `line_start` is part of a block scalar's
+/// body, all of which is literal text: `a: |\n  {\nb,c: 1\n` holds the
+/// scalar `{`, `- >\n  # detected\n` the text `# detected` (test suite
+/// 4QFQ), and `--- |\n%!PS-Adobe-2.0\n` a line that is not a directive
+/// (W4TN).
 ///
-/// A block scalar's body is every following line indented past its header,
-/// and all of it is literal text: `a: |\n  {\nb,c: 1\n` holds the scalar
-/// `{`, and the `,` on the next line belongs to the key `b,c`. The caller
-/// clears `header_indent` once a line ends the body, so this only has to
-/// rule out the header's own line, which `idx > line_start` does not cover
-/// on its own.
-fn in_block_scalar_body(
-    header_indent: Option<usize>,
-    input: &str,
-    line_start: usize,
-    idx: usize,
-) -> bool {
-    let Some(header_indent) = header_indent else {
-        return false;
-    };
-    idx > line_start && line_indent(input, line_start) > header_indent
-}
-
-/// As [`in_block_scalar_body`], for a body whose own column is known.
-///
-/// A body line sits *at* that column rather than past it, so `>` followed by
-/// `  # detected` at the body's indent holds the literal text `# detected`
-/// (test suite 4QFQ), while a line left of it has ended the body and a `#`
-/// there is a comment again (T26H).
-fn at_block_scalar_body_indent(
-    body_indent: Option<usize>,
-    input: &str,
-    line_start: usize,
-    idx: usize,
-) -> bool {
-    let Some(body_indent) = body_indent else {
-        return false;
-    };
-    idx > line_start && line_indent(input, line_start) >= body_indent
+/// [`track_block_scalar_body`] drops the tracking once a line ends the body,
+/// so this only has to rule out the header's own line.
+fn in_block_scalar_body(body: Option<BlockScalarBody>, line_start: usize) -> bool {
+    body.is_some_and(|body| body.header_line_start != line_start)
 }
 
 fn is_tag_char(ch: char) -> bool {

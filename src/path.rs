@@ -678,16 +678,19 @@ fn navigate_path(
     Ok(current)
 }
 
-/// Build an anchor registry covering the whole tree `node` belongs to,
+/// Build an anchor registry covering the document `node` belongs to,
 /// so aliases anywhere in the document resolve even when traversal
 /// started from a nested `Mapping`.
-fn registry_for(node: &crate::as_yaml::YamlNode) -> crate::anchor_resolution::AnchorRegistry {
-    let root = node
-        .syntax()
+///
+/// Anchors are scoped to a single document, so the scan stops at the
+/// enclosing DOCUMENT rather than the whole stream. A node outside any
+/// document (e.g. a detached `Mapping`) uses its own tree root.
+fn registry_for(node: &crate::yaml::SyntaxNode) -> crate::anchor_resolution::AnchorRegistry {
+    let scope = node
         .ancestors()
-        .last()
-        .unwrap_or_else(|| node.syntax().clone());
-    crate::anchor_resolution::AnchorRegistry::from_tree(&root)
+        .find(|n| n.kind() == crate::SyntaxKind::DOCUMENT || n.parent().is_none())
+        .unwrap_or_else(|| node.clone());
+    crate::anchor_resolution::AnchorRegistry::from_tree(&scope)
 }
 
 /// Resolve `current` if it is an alias, according to `policy`.
@@ -712,8 +715,7 @@ fn resolve_for_read(
         });
     }
 
-    let registry = registry_for(&current);
-    let target = registry
+    let target = registry_for(current.syntax())
         .resolve_alias(&name, current.syntax())
         .cloned()
         .ok_or_else(|| PathError::UndefinedAlias {
@@ -756,7 +758,7 @@ fn lookup_merged(mapping: &Mapping, key: &str) -> Option<crate::as_yaml::YamlNod
         return Some(found);
     }
     use crate::anchor_resolution::MappingMergedExt;
-    let registry = registry_for(&crate::as_yaml::YamlNode::Mapping(mapping.clone()));
+    let registry = registry_for(rowan::ast::AstNode::syntax(mapping));
     let merged = mapping.merged(&registry);
     merged
         .get(key)
@@ -987,12 +989,7 @@ fn resolve_alias_for_write(
         alias: name.clone(),
     };
 
-    let root = alias
-        .syntax()
-        .ancestors()
-        .last()
-        .unwrap_or_else(|| alias.syntax().clone());
-    let target = crate::anchor_resolution::AnchorRegistry::from_tree(&root)
+    let target = registry_for(alias.syntax())
         .resolve_alias(&name, alias.syntax())
         .cloned()
         .ok_or_else(undefined)?;
@@ -2590,6 +2587,70 @@ config:
                 alias: "x".to_string()
             })
         );
+    }
+
+    #[test]
+    fn test_get_path_alias_to_anchor_in_earlier_document() {
+        use crate::yaml::YamlFile;
+        use std::str::FromStr;
+
+        // Anchors are scoped to their document (YAML 1.2 section 3.2.2.2).
+        let file = YamlFile::from_str("a: &x\n  k: 1\n---\nb: *x\n").unwrap();
+        let second = file.documents().nth(1).unwrap();
+        assert_eq!(
+            second.try_get_path("b.k"),
+            Err(PathError::UndefinedAlias {
+                at: "k".to_string(),
+                alias: "x".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn test_set_path_alias_to_anchor_in_earlier_document() {
+        use crate::yaml::YamlFile;
+        use std::str::FromStr;
+
+        let src = "a: &x\n  k: 1\n---\nb: *x\n";
+        let file = YamlFile::from_str(src).unwrap();
+        let second = file.documents().nth(1).unwrap();
+        for policy in [AliasPolicy::Follow, AliasPolicy::Expand] {
+            assert_eq!(
+                second.try_set_path_with("b.k", 2, policy),
+                Err(PathError::UndefinedAlias {
+                    at: "b".to_string(),
+                    alias: "x".to_string()
+                })
+            );
+        }
+        assert_eq!(file.to_string(), src.to_string());
+    }
+
+    #[test]
+    fn test_get_path_merge_key_from_earlier_document() {
+        use crate::yaml::YamlFile;
+        use std::str::FromStr;
+
+        let file = YamlFile::from_str("a: &x\n  k: 1\n---\nb:\n  <<: *x\n").unwrap();
+        let second = file.documents().nth(1).unwrap();
+        assert_eq!(
+            second.try_get_path("b.k"),
+            Err(PathError::NotFound {
+                at: "k".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn test_get_path_alias_resolves_within_later_document() {
+        use crate::yaml::YamlFile;
+        use std::str::FromStr;
+
+        // The same anchor name in two documents: each alias sees its own.
+        let file = YamlFile::from_str("a: &x\n  k: 1\nb: *x\n---\na: &x\n  k: 2\nb: *x\n").unwrap();
+        let docs: Vec<_> = file.documents().collect();
+        assert_eq!(docs[0].try_get_path("b.k").unwrap().to_i64(), Some(1));
+        assert_eq!(docs[1].try_get_path("b.k").unwrap().to_i64(), Some(2));
     }
 
     #[test]

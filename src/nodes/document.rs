@@ -692,6 +692,10 @@ impl std::str::FromStr for Document {
     /// [`YamlFile::from_str`] if you need to preserve them, or
     /// [`Document::from_str_ignoring_comments`] if you're happy to drop them.
     ///
+    /// A byte order mark and blank lines before the document are kept in it,
+    /// and input with no document at all gives an empty document holding
+    /// them, so the result always renders back to `s`.
+    ///
     /// # Example
     /// ```
     /// use yaml_edit::Document;
@@ -715,7 +719,7 @@ impl std::str::FromStr for Document {
 
         let tree = parsed.tree();
         let mut docs = tree.documents();
-        let first = docs.next().unwrap_or_default();
+        let first = docs.next();
 
         if docs.next().is_some() {
             return Err(crate::error::YamlError::InvalidOperation {
@@ -773,7 +777,39 @@ impl std::str::FromStr for Document {
             }
         }
 
-        Ok(first)
+        first.map_or_else(|| Self::from_blank_stream(&tree), Ok)
+    }
+}
+
+impl Document {
+    /// An empty document holding the BOM and blank lines of a stream with
+    /// no document in it, so that it renders back to the same text.
+    fn from_blank_stream(tree: &YamlFile) -> YamlResult<Document> {
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::DOCUMENT.into());
+        for child in tree.0.children_with_tokens() {
+            let token = child.as_token().filter(|t| {
+                matches!(
+                    t.kind(),
+                    SyntaxKind::BOM
+                        | SyntaxKind::WHITESPACE
+                        | SyntaxKind::NEWLINE
+                        | SyntaxKind::INDENT
+                )
+            });
+            let Some(token) = token else {
+                return Err(crate::error::YamlError::InvalidOperation {
+                    operation: "Document::from_str".to_string(),
+                    reason: format!(
+                        "Input contains stream-level content outside a document: {:?}. Use YamlFile::from_str() to preserve it.",
+                        child.to_string()
+                    ),
+                });
+            };
+            builder.token(token.kind().into(), token.text());
+        }
+        builder.finish_node();
+        Ok(Document(SyntaxNode::new_root_mut(builder.finish())))
     }
 }
 
@@ -1581,6 +1617,51 @@ Repository: https://github.com/example/example.git
                 );
             }
             other => panic!("expected InvalidOperation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_document_from_str_round_trips_leading_whitespace() {
+        for yaml in [
+            "\nfoo\n",
+            "\n\na: 1\n",
+            "  \na: 1\n",
+            "  a: 1\n",
+            "\n  a: 1\n  b: 2\n",
+            "\n---\na: 1\n",
+            "\n[1]\n",
+            "\u{feff}a: 1\n",
+            "\u{feff}\n--- a\n",
+            "",
+            "\n",
+            "\u{feff}",
+        ] {
+            let doc = Document::from_str(yaml).unwrap();
+            assert_eq!(doc.to_string(), yaml, "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn test_document_set_after_leading_blank_lines() {
+        let doc = Document::from_str("\na: 1\n").unwrap();
+        doc.set("b", 2);
+        assert_eq!(doc.to_string(), "\na: 1\nb: 2\n");
+
+        let doc = Document::from_str("").unwrap();
+        doc.set("a", 1);
+        assert_eq!(doc.to_string(), "a: 1\n");
+    }
+
+    #[test]
+    fn test_document_from_str_comment_after_blank_lines_errors() {
+        for yaml in ["\n# c\na: 1\n", "\n# c\n"] {
+            assert!(
+                matches!(
+                    Document::from_str(yaml),
+                    Err(crate::error::YamlError::InvalidOperation { .. })
+                ),
+                "{yaml:?}"
+            );
         }
     }
 

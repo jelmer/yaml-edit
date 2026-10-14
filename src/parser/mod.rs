@@ -193,9 +193,13 @@ impl Parser {
             self.skip_ws_and_newlines();
         }
 
-        // Parse documents
-        // Always parse at least one document
-        if self.current().is_some() && self.current() != Some(SyntaxKind::EOF) {
+        // A `...` with nothing before it closes no document; leave it to the
+        // loop below so it stays at the root rather than opening an empty
+        // document (YAML test suite HWV9, QT73).
+        if self.current().is_some()
+            && self.current() != Some(SyntaxKind::EOF)
+            && self.current() != Some(SyntaxKind::DOC_END)
+        {
             self.parse_document();
             self.skip_ws_and_newlines();
 
@@ -259,7 +263,7 @@ impl Parser {
             // fresh document with no `---` of its own (`a\n...\nb: 1\n` is
             // two documents), so parse one rather than sweeping it away.
             if self.current() == Some(SyntaxKind::DOC_END) {
-                self.bump();
+                self.parse_doc_end();
                 self.skip_ws_and_newlines();
                 if self.current().is_some()
                     && self.current() != Some(SyntaxKind::EOF)
@@ -368,41 +372,8 @@ impl Parser {
             self.skip_ws_and_newlines();
         }
 
-        // Handle document end marker
         if self.current() == Some(SyntaxKind::DOC_END) {
-            self.bump();
-
-            // Check for content after document end marker (spec violation).
-            // A comment is not content: `... # done` is as valid as the
-            // `...\n# done` spelling, which already kept it in the tree.
-            self.skip_whitespace();
-            let is_stray = |kind: Option<SyntaxKind>| {
-                kind.is_some_and(|kind| {
-                    !matches!(
-                        kind,
-                        SyntaxKind::NEWLINE
-                            | SyntaxKind::EOF
-                            | SyntaxKind::DOC_START
-                            | SyntaxKind::DIRECTIVE
-                            | SyntaxKind::COMMENT
-                    )
-                })
-            };
-            if is_stray(self.current()) {
-                // Found content after DOC_END. Both saphyr and PyYAML reject
-                // this; say so rather than returning a document the content
-                // has quietly been dropped from.
-                let stray = self.current_text().unwrap_or("").to_string();
-                self.add_error(
-                    format!("Content after the document end marker: {stray:?}"),
-                    ParseErrorKind::Other,
-                );
-                self.builder.start_node(SyntaxKind::ERROR.into());
-                while is_stray(self.current()) {
-                    self.bump();
-                }
-                self.builder.finish_node();
-            }
+            self.parse_doc_end();
 
             // The rest of the marker's line ends the document with it.
             if self.current() == Some(SyntaxKind::COMMENT) {
@@ -414,6 +385,43 @@ impl Parser {
         }
 
         self.builder.finish_node();
+    }
+
+    /// Consume a `...` and report any content after it on the same line.
+    fn parse_doc_end(&mut self) {
+        self.bump();
+
+        // Check for content after document end marker (spec violation).
+        // A comment is not content: `... # done` is as valid as the
+        // `...\n# done` spelling, which already kept it in the tree.
+        self.skip_whitespace();
+        let is_stray = |kind: Option<SyntaxKind>| {
+            kind.is_some_and(|kind| {
+                !matches!(
+                    kind,
+                    SyntaxKind::NEWLINE
+                        | SyntaxKind::EOF
+                        | SyntaxKind::DOC_START
+                        | SyntaxKind::DIRECTIVE
+                        | SyntaxKind::COMMENT
+                )
+            })
+        };
+        if is_stray(self.current()) {
+            // Found content after DOC_END. Both saphyr and PyYAML reject
+            // this; say so rather than returning a document the content
+            // has quietly been dropped from.
+            let stray = self.current_text().unwrap_or("").to_string();
+            self.add_error(
+                format!("Content after the document end marker: {stray:?}"),
+                ParseErrorKind::Other,
+            );
+            self.builder.start_node(SyntaxKind::ERROR.into());
+            while is_stray(self.current()) {
+                self.bump();
+            }
+            self.builder.finish_node();
+        }
     }
 
     pub(super) fn parse_value(&mut self) {

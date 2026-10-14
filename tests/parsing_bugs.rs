@@ -2377,11 +2377,13 @@ fn test_comment_after_a_document_end_marker() {
 /// Real content after the marker is still a violation.
 #[test]
 fn test_content_after_a_document_end_marker_is_reported() {
-    let err = YamlFile::from_str("... x\n").unwrap_err();
-    assert!(
-        err.to_string().contains("after the document end marker"),
-        "{err}"
-    );
+    for yaml in ["... x\n", "a\n... x\n"] {
+        let err = YamlFile::from_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("after the document end marker"),
+            "{yaml:?}: {err}"
+        );
+    }
 }
 
 /// A sequence entry's value on a later line has to clear the entry's own
@@ -3958,4 +3960,32 @@ fn test_comment_line_before_sequence_entry_value() {
     let entry = inner.as_sequence().unwrap().first().unwrap();
     let x = entry.as_mapping().unwrap().get("x").unwrap();
     assert_eq!(x.as_scalar().unwrap().as_string(), "1");
+}
+
+#[test]
+fn test_stream_with_only_document_end_markers_has_no_documents() {
+    // YAML test suite HWV9 and QT73: a `...` with no content before it ends
+    // no document, so the stream is empty.
+    for input in ["...\n", "# comment\n...\n", "...\n...\n"] {
+        let parsed = YamlFile::from_str(input).unwrap();
+        assert_eq!(parsed.documents().count(), 0, "{input:?}");
+        assert_eq!(parsed.to_string(), input);
+    }
+}
+
+#[test]
+fn test_document_end_marker_before_document() {
+    let input = "...\n---\na\n";
+    let parsed = YamlFile::from_str(input).unwrap();
+    assert_eq!(parsed.documents().count(), 1);
+    assert_eq!(parsed.to_string(), input);
+}
+
+#[test]
+fn test_ensure_document_after_lone_document_end_marker() {
+    let parsed = YamlFile::from_str("# comment\n...\n").unwrap();
+    parsed.ensure_document().set("key", "value");
+    assert_eq!(parsed.to_string(), "# comment\n...\nkey: value\n");
+    let reparsed = YamlFile::from_str(&parsed.to_string()).unwrap();
+    assert_eq!(reparsed.documents().count(), 1);
 }

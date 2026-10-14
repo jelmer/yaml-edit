@@ -522,15 +522,17 @@ impl Document {
     /// Get a nested mapping value for a key.
     ///
     /// Returns `None` if the key doesn't exist or its value is not a mapping.
+    /// A tag on the value is looked through.
     pub fn get_mapping(&self, key: impl crate::AsYaml) -> Option<Mapping> {
-        self.get(key).and_then(|n| n.as_mapping().cloned())
+        self.get(key)?.mapping_content()
     }
 
     /// Get a nested sequence value for a key.
     ///
     /// Returns `None` if the key doesn't exist or its value is not a sequence.
+    /// A tag on the value is looked through.
     pub fn get_sequence(&self, key: impl crate::AsYaml) -> Option<Sequence> {
-        self.get(key).and_then(|n| n.as_sequence().cloned())
+        self.get(key)?.sequence_content()
     }
 
     /// Rename a top-level key while preserving its value and formatting.

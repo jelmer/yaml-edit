@@ -835,7 +835,7 @@ fn graphviz_node(
                     .replace('"', "\\\"")
                     .replace('\n', "\\\\n")
                     .replace('\r', "\\\\r");
-                let label = format!("{:?}\\n{:?}", t.kind(), text);
+                let label = format!("{:?}\\n\\\"{}\\\"", t.kind(), text);
                 result.push_str(&format!(
                     "  n{token_id} [label=\"{label}\", shape=ellipse, style=filled, fillcolor=lightgray];\n"
                 ));
@@ -899,6 +899,27 @@ mod new_debug_tests {
 
         assert_eq!(dot.lines().next(), Some("digraph CST {"));
         assert_eq!(dot.lines().last(), Some("}"));
+    }
+
+    #[test]
+    fn test_graphviz_dot_escapes_token_text() {
+        let yaml = YamlFile::from_str("k: \"a\\\"b\\\\c\"\n").unwrap();
+        let dot = graphviz_dot(yaml.syntax());
+        let token_labels: Vec<&str> = dot
+            .lines()
+            .filter(|l| l.contains("shape=ellipse"))
+            .map(|l| l.split(", shape=").next().unwrap().trim())
+            .collect();
+        assert_eq!(
+            token_labels,
+            vec![
+                r#"n6 [label="STRING\n\"k\"""#,
+                r#"n7 [label="COLON\n\":\"""#,
+                r#"n8 [label="WHITESPACE\n\" \"""#,
+                r#"n11 [label="STRING\n\"\"a\\\"b\\\\c\"\"""#,
+                r#"n12 [label="NEWLINE\n\"\\n\"""#,
+            ]
+        );
     }
 
     #[test]

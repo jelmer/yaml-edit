@@ -29,6 +29,7 @@ use crate::{
     ParseErrorKind, PositionedParseError,
 };
 use rowan::GreenNodeBuilder;
+use std::cell::Cell;
 
 /// Maximum nesting depth for collections and stacked node properties.
 /// Beyond this, the parser returns an error rather than risking stack
@@ -112,6 +113,12 @@ pub(super) struct Parser {
     pub(super) flow_depth: usize,
     /// Depth of `parse_value_with_base_indent` recursion (block and flow).
     pub(super) nesting_depth: usize,
+    /// The last [`indent_after_comment_lines`](Self::indent_after_comment_lines)
+    /// scan, as the `tokens.len()` it started and stopped at and its result.
+    ///
+    /// Every comment of a run gets asked about in turn, and each would
+    /// otherwise rescan the rest of the run.
+    comment_run_scan: Cell<Option<(usize, usize, Option<usize>)>>,
 }
 
 impl Parser {
@@ -146,6 +153,7 @@ impl Parser {
             current_line_indent: 0,
             flow_depth: 0,
             nesting_depth: 0,
+            comment_run_scan: Cell::new(None),
         }
     }
 
@@ -916,9 +924,35 @@ impl Parser {
     /// the sequence is the next content line, not the comment. The caller is
     /// positioned on the COMMENT token.
     pub(super) fn indent_after_comment_lines(&self) -> Option<usize> {
+        if self.current() != Some(SyntaxKind::COMMENT) {
+            return None;
+        }
+        // A comment inside a run already scanned sees the same lines after
+        // it, so reuse that answer.
+        let len = self.tokens.len();
+        if let Some((start, end, result)) = self.comment_run_scan.get() {
+            if end < len && len <= start {
+                return result;
+            }
+        }
+        let mut consumed = 0;
+        let result = self.scan_lines_after_comment(&mut consumed);
+        self.comment_run_scan
+            .set(Some((len, len - consumed, result)));
+        result
+    }
+
+    /// The scan behind [`indent_after_comment_lines`](Self::indent_after_comment_lines),
+    /// counting the tokens it reads in `consumed`.
+    fn scan_lines_after_comment(&self, consumed: &mut usize) -> Option<usize> {
         // `tokens` is in reverse order, so walk it backwards from the current
         // token to read the lines that follow.
-        let mut rest = self.tokens.iter().rev().map(|(kind, text)| (*kind, text));
+        let mut rest = self
+            .tokens
+            .iter()
+            .rev()
+            .map(|(kind, text)| (*kind, text))
+            .inspect(|_| *consumed += 1);
         // The COMMENT we are standing on, and its line break.
         if !matches!(rest.next(), Some((SyntaxKind::COMMENT, _))) {
             return None;

@@ -39,6 +39,24 @@ fn test_comment_between_entries_parsing() {
 }
 
 #[test]
+fn test_long_comment_run_between_entries() {
+    // Each comment of a run used to rescan the rest of it, so this took
+    // quadratic time and ran for minutes.
+    for comment in ["  # c\n", "# c\n"] {
+        let yaml = format!("a:\n  b: 1\n{}  d: 2\n", comment.repeat(50_000));
+        let parsed = YamlFile::from_str(&yaml).expect("Failed to parse YAML");
+        let mapping = parsed.document().unwrap().as_mapping().unwrap();
+        let a = mapping.get("a").unwrap();
+        let a = a.as_mapping().unwrap();
+        let keys: Vec<String> = a
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, ["b", "d"]);
+    }
+}
+
+#[test]
 fn test_valueless_tag_parsing() {
     let yaml = r#"
 - a: 1

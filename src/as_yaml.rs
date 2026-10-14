@@ -547,20 +547,8 @@ impl AsYaml for YamlNode {
             YamlNode::Scalar(s) => s.build_content(builder, indent, flow_context),
             YamlNode::Mapping(m) => m.build_content(builder, indent, flow_context),
             YamlNode::Sequence(s) => s.build_content(builder, indent, flow_context),
-            YamlNode::Alias(a) => {
-                let node = a.syntax();
-                builder.start_node(node.kind().into());
-                let inner = a.build_content(builder, indent, flow_context);
-                builder.finish_node();
-                inner
-            }
-            YamlNode::TaggedNode(t) => {
-                let node = t.syntax();
-                builder.start_node(node.kind().into());
-                let inner = t.build_content(builder, indent, flow_context);
-                builder.finish_node();
-                inner
-            }
+            YamlNode::Alias(a) => a.build_content(builder, indent, flow_context),
+            YamlNode::TaggedNode(t) => t.build_content(builder, indent, flow_context),
         }
     }
 

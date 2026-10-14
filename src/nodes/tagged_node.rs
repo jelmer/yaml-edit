@@ -147,7 +147,7 @@ impl AsYaml for TaggedNode {
         _indent: usize,
         _flow_context: bool,
     ) -> bool {
-        crate::as_yaml::copy_node_content(builder, &self.0);
+        crate::yaml::copy_node_to_builder(builder, &self.0);
         false
     }
 

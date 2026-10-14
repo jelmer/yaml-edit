@@ -1053,6 +1053,7 @@ impl Parser {
             self.parse_alias();
         } else if self.current().is_some_and(is_plain_scalar_kind) {
             self.builder.start_node(SyntaxKind::SCALAR.into());
+            self.check_plain_scalar_start();
             self.bump();
             // Plain scalars can contain spaces, so absorb any following
             // whitespace + scalar tokens until we reach the terminating colon

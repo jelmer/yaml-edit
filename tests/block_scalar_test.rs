@@ -925,3 +925,32 @@ fn test_whitespace_only_line_does_not_swallow_next_entry() {
     assert_eq!(baz.as_scalar().unwrap().as_string(), "baz");
     assert_eq!(doc.to_string(), yaml);
 }
+
+#[test]
+fn test_empty_block_scalar_in_mapping_in_sequence() {
+    let yaml = "- a: |\n  b: 1\n";
+    let doc = YamlFile::parse(yaml).to_result().unwrap();
+    let document = doc.document().unwrap();
+    let sequence = document.as_sequence().unwrap();
+    assert_eq!(sequence.len(), 1);
+    let entry = sequence.get(0).unwrap();
+    let mapping = entry.as_mapping().unwrap();
+    assert_eq!(mapping.len(), 2);
+    let a = mapping.get("a").unwrap();
+    assert_eq!(a.as_scalar().unwrap().as_string(), "");
+    let b = mapping.get("b").unwrap();
+    assert_eq!(b.as_scalar().unwrap().as_string(), "1");
+    assert_eq!(doc.to_string(), yaml);
+
+    let yaml = "- k:\n    a: |\n\n    b: 1\n";
+    let doc = YamlFile::parse(yaml).to_result().unwrap();
+    let document = doc.document().unwrap();
+    let sequence = document.as_sequence().unwrap();
+    let entry = sequence.get(0).unwrap();
+    let k = entry.as_mapping().unwrap().get("k").unwrap();
+    let mapping = k.as_mapping().unwrap();
+    assert_eq!(mapping.len(), 2);
+    let b = mapping.get("b").unwrap();
+    assert_eq!(b.as_scalar().unwrap().as_string(), "1");
+    assert_eq!(doc.to_string(), yaml);
+}

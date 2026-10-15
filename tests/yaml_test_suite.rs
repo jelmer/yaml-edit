@@ -137,8 +137,6 @@ const KNOWN_VALIDATOR_FALSE_POSITIVES: &[&str] = &[
     // Duplicate null keys, which the validator reports deliberately; the
     // suite only checks syntax.
     "2JQS",
-    // TODO: remove once #185 (validator-tabs) lands.
-    "6HB6", "DK95/00", "DK95/04", "DK95/05", "Y79Y/002",
     // TODO: remove once #183 (validator-quoted-markers) lands.
     "9MQT/00",
     // TODO: remove once #186 (validator-tagged-mapping-indent) lands.

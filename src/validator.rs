@@ -1202,7 +1202,29 @@ impl Validator {
                 if token.kind() != crate::SyntaxKind::INDENT {
                     continue;
                 }
-                // Check the token text directly - this is a cheap slice operation
+                // A blank or comment-only line indents nothing, so tabs
+                // there are fine (DK95/04, Y79Y/002).
+                if token.next_token().map_or(true, |t| {
+                    matches!(
+                        t.kind(),
+                        crate::SyntaxKind::NEWLINE | crate::SyntaxKind::COMMENT
+                    )
+                }) {
+                    continue;
+                }
+                // After leading spaces a tab is separation rather than
+                // indentation (DK95/00's `foo:\n \tbar`, 6HB6), unless a
+                // block collection entry follows, whose column it would move
+                // (DK95/06).
+                let starts_block_entry = token.next_sibling_or_token().is_some_and(|n| {
+                    matches!(
+                        n.kind(),
+                        crate::SyntaxKind::MAPPING_ENTRY | crate::SyntaxKind::SEQUENCE_ENTRY
+                    ) && !is_flow
+                });
+                if token.text().starts_with(' ') && !starts_block_entry {
+                    continue;
+                }
                 if token.text().contains('\t') {
                     violations.push(Violation::error_at(
                         Rule::InvalidTabUsage,
@@ -3036,6 +3058,47 @@ mod tests {
             ),
         ] {
             assert_eq!(messages(yaml), vec![expected.to_string()], "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn test_tabs_that_are_not_indentation() {
+        for yaml in [
+            "foo: 1\n\t\nbar: 2\n",
+            "k: v\n \t\nj: w\n",
+            "- a\n- b\n\t\n- c\n",
+            "a: [\n  b,\n\t\n  c]\n",
+            "a: 1 # c\n# d\n\t# e\nb: 2\n",
+            "foo:\n \tbar\n",
+            "k: [a,\n  \tb]\n",
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tab_indentation_rejected() {
+        // DK95/06: the tab moves the entry's column, which the parser
+        // already rejects.
+        assert!(crate::YamlFile::from_str("foo:\n  a: 1\n  \tb: 2\n").is_err());
+        for yaml in ["a:\n\tb: 1\n", "- [\n\tfoo,\n foo\n ]\n"] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let tab_errors: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .filter(|v| v.rule == Rule::InvalidTabUsage)
+                .map(|v| v.message)
+                .collect();
+            assert_eq!(
+                tab_errors,
+                vec!["Tabs are not allowed for indentation in YAML".to_string()],
+                "{yaml:?}"
+            );
         }
     }
 

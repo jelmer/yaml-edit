@@ -137,7 +137,40 @@ mod tests {
 
         let directives: Vec<_> = yaml.directives().collect();
         assert_eq!(directives.len(), 1);
-        assert_eq!(yaml.to_string(), "%YAML 1.2");
+        assert_eq!(yaml.to_string(), "%YAML 1.2\n");
+    }
+    #[test]
+    fn test_add_directive_to_existing_document() {
+        let yaml = YamlFile::from_str("a: 1\n").unwrap();
+        yaml.add_directive("%YAML 1.2");
+        assert_eq!(yaml.to_string(), "%YAML 1.2\n---\na: 1\n");
+
+        let reparsed = YamlFile::from_str(&yaml.to_string()).unwrap();
+        assert_eq!(reparsed.directives().count(), 1);
+        let docs: Vec<_> = reparsed.documents().collect();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].get("a").and_then(|v| v.to_i64()), Some(1));
+    }
+    #[test]
+    fn test_add_directive_keeps_existing_document_start() {
+        let yaml = YamlFile::from_str("---\na: 1\n").unwrap();
+        yaml.add_directive("%YAML 1.2");
+        assert_eq!(yaml.to_string(), "%YAML 1.2\n---\na: 1\n");
+    }
+    #[test]
+    fn test_add_directive_without_trailing_newline() {
+        let yaml = YamlFile::from_str("a: 1").unwrap();
+        yaml.add_directive("%YAML 1.2");
+        assert_eq!(yaml.to_string(), "%YAML 1.2\n---\na: 1");
+    }
+    #[test]
+    fn test_add_second_directive() {
+        let yaml = YamlFile::from_str("%YAML 1.2\n---\na: 1\n").unwrap();
+        yaml.add_directive("%TAG ! tag:example.com,2000:app/");
+        assert_eq!(
+            yaml.to_string(),
+            "%TAG ! tag:example.com,2000:app/\n%YAML 1.2\n---\na: 1\n"
+        );
     }
     #[test]
     fn test_yaml_with_directive_and_content() {

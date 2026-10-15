@@ -718,20 +718,38 @@ impl YamlFile {
     ///
     /// `directive_text` should be the full directive line without a trailing
     /// newline, e.g. `"%YAML 1.2"` or `"%TAG ! tag:example.com,2000:app/"`.
-    /// The directive is inserted before all existing content.
+    /// The directive is inserted before all existing content, and a `---`
+    /// marker is added to the first document if it does not have one, since
+    /// a document following directives must start explicitly.
     ///
     /// Note: the parser does not currently enforce that directives appear
     /// before any document node; callers are responsible for ordering.
     pub fn add_directive(&self, directive_text: &str) {
-        // Create directive node
+        if let Some(doc) = self.documents().next() {
+            if !has_child_token(doc.syntax(), |k| k == SyntaxKind::DOC_START) {
+                doc.syntax().splice_children(
+                    0..0,
+                    vec![
+                        crate::nodes::fresh_token(SyntaxKind::DOC_START, "---").into(),
+                        crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into(),
+                    ],
+                );
+            }
+        }
+
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::DIRECTIVE.into());
         builder.token(SyntaxKind::DIRECTIVE.into(), directive_text);
         builder.finish_node();
         let directive_node = SyntaxNode::new_root_mut(builder.finish());
 
-        // Insert at the beginning using splice_children with interior mutability
-        self.0.splice_children(0..0, vec![directive_node.into()]);
+        self.0.splice_children(
+            0..0,
+            vec![
+                directive_node.into(),
+                crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into(),
+            ],
+        );
     }
 
     /// Add a new document to the end of this YAML file

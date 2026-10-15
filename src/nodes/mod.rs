@@ -215,6 +215,39 @@ pub(crate) fn has_child_token(parent: &SyntaxNode, pred: impl Fn(SyntaxKind) -> 
         .any(|el| el.as_token().is_some_and(|t| pred(t.kind())))
 }
 
+/// Drop the `,` separator at the end of a flow collection entry that has
+/// become the last one. Whitespace and line breaks after the comma go too,
+/// unless a comment follows it.
+pub(crate) fn strip_flow_separator(entry: &SyntaxNode) {
+    let Some(comma) = entry
+        .children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .filter(|t| t.kind() == SyntaxKind::COMMA)
+        .last()
+    else {
+        return;
+    };
+    let mut tail = vec![comma.clone()];
+    let mut next = comma.next_sibling_or_token();
+    while let Some(c) = next {
+        let Some(t) = c.into_token() else { break };
+        next = t.next_sibling_or_token();
+        tail.push(t);
+    }
+    let only_whitespace = tail[1..].iter().all(|t| {
+        matches!(
+            t.kind(),
+            SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
+        )
+    });
+    if !only_whitespace {
+        tail.truncate(1);
+    }
+    for t in tail {
+        t.detach();
+    }
+}
+
 /// Append `children` at the end of `parent`'s child list.
 pub(crate) fn append_children(
     parent: &SyntaxNode,

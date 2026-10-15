@@ -1,6 +1,6 @@
 use super::{
     append_children, ensure_trailing_newline, entry_indices, fresh_token, has_child_token,
-    nth_entry_index, Lang, SyntaxNode,
+    nth_entry_index, strip_flow_separator, Lang, SyntaxNode,
 };
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
@@ -869,6 +869,19 @@ impl Sequence {
         // one we leave alone.
         self.0.splice_children(i..(i + 1), vec![]);
         self.detach_orphaned_indent(&children, i);
+
+        let removed = children[i].as_node().expect("SEQUENCE_ENTRY");
+        if is_last && self.is_flow_style() && !has_child_token(removed, |k| k == SyntaxKind::COMMA)
+        {
+            if let Some(prev) = self
+                .0
+                .children()
+                .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+                .last()
+            {
+                strip_flow_separator(&prev);
+            }
+        }
 
         if !self.is_flow_style() && is_last && i > 0 && mapping_entry_is_last_in_mapping(&self.0) {
             // Removed the last entry of a block sequence

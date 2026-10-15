@@ -36,15 +36,7 @@ impl Mapping {
         }
         // Contract: move, not duplicate. Drop any prior entry with the
         // same key first.
-        if let Some(existing) = self.find_entry_by_key(new_key) {
-            if let Some(idx) = self
-                .0
-                .children_with_tokens()
-                .position(|c| c.as_node() == Some(existing.syntax()))
-            {
-                self.0.splice_children(idx..idx + 1, vec![]);
-            }
-        }
+        self.remove(new_key);
         let entry = MappingEntry::new_at_indent(
             new_key,
             new_value,

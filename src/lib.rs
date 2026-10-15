@@ -356,12 +356,19 @@ pub fn byte_offset_to_line_column(text: &str, byte_offset: usize) -> LineColumn 
     let mut line = 1;
     let mut column = 1;
 
-    for (i, ch) in text.char_indices() {
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, ch)) = chars.next() {
         if i >= byte_offset {
             break;
         }
 
-        if ch == '\n' {
+        // A lone `\r` is a line break too; in `\r\n` only the `\n` counts.
+        let is_break = match ch {
+            '\n' => true,
+            '\r' => !matches!(chars.peek(), Some((_, '\n'))),
+            _ => false,
+        };
+        if is_break {
             line += 1;
             column = 1;
         } else {
@@ -522,6 +529,23 @@ mod tests {
         let pos = byte_offset_to_line_column(text, 9);
         assert_eq!(pos.line, 2);
         assert_eq!(pos.column, 2);
+    }
+
+    #[test]
+    fn test_byte_offset_to_line_column_cr_line_endings() {
+        let text = "a: 1\rb: 2\r\nc: 3";
+        assert_eq!(byte_offset_to_line_column(text, 5), LineColumn::new(2, 1));
+        assert_eq!(byte_offset_to_line_column(text, 10), LineColumn::new(2, 6));
+        assert_eq!(byte_offset_to_line_column(text, 11), LineColumn::new(3, 1));
+    }
+
+    #[test]
+    fn test_parse_error_position_with_cr_line_endings() {
+        let err = YamlFile::from_str("a: 1\rb: [a, }\r").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Parse error at line 2, column 8: Unexpected token in flow sequence: \"}\""
+        );
     }
 
     #[test]

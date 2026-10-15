@@ -627,6 +627,24 @@ items: ["first", "second"]
     }
 
     #[test]
+    fn test_double_quoted_line_folding() {
+        let value = |yaml: &str| {
+            let doc = Document::from_str(yaml).unwrap();
+            let node = doc.as_mapping().unwrap().get("k").unwrap();
+            node.as_scalar().unwrap().as_string()
+        };
+        assert_eq!(value("k: \"a\n  b\"\n"), "a b");
+        assert_eq!(value("k: \"a\n\n  b\"\n"), "a\nb");
+        assert_eq!(value("k: \"a\n \t\n\n  b\"\n"), "a\n\nb");
+        assert_eq!(value("k: \"a   \n  b\"\n"), "a b");
+        assert_eq!(value("k: \"a\\t\n  b\"\n"), "a\t b");
+        assert_eq!(value("k: \" a\n  b \"\n"), " a b ");
+        assert_eq!(value("k: \"a\r\n  b\"\r\n"), "a b");
+        assert_eq!(value("k: \"a \\\n  b\"\n"), "a b");
+        assert_eq!(value("k: \"a\\\n\n  b\"\n"), "a\nb");
+    }
+
+    #[test]
     fn test_parse_block_scalar_multibyte_after_dedent() {
         // Regression: `base_indent` is a char count but we sliced bytes,
         // which panicked when a continuation line started with a multi-byte

@@ -1094,6 +1094,7 @@ double: "value"
         let yaml = r#"
 newline1: "line1\nline2"
 newline2: "line1
+
 line2"
 tab1: "a\tb"
 tab2: "a	b"
@@ -1115,7 +1116,7 @@ quote2: 'say "hi"'
         let quote1 = mapping.get("quote1").unwrap();
         let quote2 = mapping.get("quote2").unwrap();
 
-        // Escaped newlines should equal actual newlines
+        // Escaped newlines should equal empty lines, which fold to newlines
         assert!(yaml_eq(&newline1, &newline2));
 
         // Escaped tabs should equal actual tabs
@@ -1426,8 +1427,8 @@ mapping:
     #[test]
     fn test_yaml_eq_line_folding_escapes() {
         let yaml = r#"
-folded1: "line1\
- line2"
+folded1: "line1 \
+  line2"
 folded2: "line1 line2"
 "#;
 
@@ -1437,7 +1438,8 @@ folded2: "line1 line2"
         let folded1 = mapping.get("folded1").unwrap();
         let folded2 = mapping.get("folded2").unwrap();
 
-        // Per YAML spec, backslash at end of line folds to a space
+        // An escaped line break is dropped along with the next line's
+        // indentation, but white space before it is kept
         assert!(yaml_eq(&folded1, &folded2));
         assert!(yaml_eq(&folded1, &"line1 line2"));
     }

@@ -1002,7 +1002,11 @@ impl ScalarValue {
         // breaks into spaces, so `"x\ny\n"` written as `'x\ny\n'` reads back
         // as `x y`, while a literal block keeps them. A literal also answers
         // every reason needs_quoting gives, so nothing multi-line needs
-        // quotes.
+        // quotes. Only double quotes can escape a carriage return or a
+        // non-printable character, so those come first.
+        if Self::needs_double_quotes(value) {
+            return ScalarStyle::DoubleQuoted;
+        }
         if value.contains('\n') {
             return ScalarStyle::Literal;
         }
@@ -1019,18 +1023,39 @@ impl ScalarValue {
         }
     }
 
+    /// Whether `value` can only be written as a double-quoted scalar.
+    ///
+    /// Characters outside the YAML c-printable set (spec 5.1), and the byte
+    /// order mark, may only appear escaped. A carriage return is a line
+    /// break, which plain, single-quoted and block scalars all normalise,
+    /// and NEL, LS and PS are line breaks to YAML 1.1 readers.
+    fn needs_double_quotes(value: &str) -> bool {
+        value.chars().any(|c| {
+            !matches!(c, '\t' | '\n' | '\x20'..='\x7E' | '\u{A0}'..='\u{FFFD}' | '\u{10000}'..)
+                || matches!(c, '\u{2028}' | '\u{2029}' | '\u{FEFF}')
+        })
+    }
+
     /// Check if a value needs quoting when treated as a string
     fn needs_quoting(value: &str) -> bool {
         // Empty string needs quotes
         if value.is_empty() {
             return true;
         }
-        Self::resolves_to_non_string(value) || Self::needs_quoting_as_tagged(value)
+        Self::needs_double_quotes(value)
+            || Self::resolves_to_non_string(value)
+            || Self::needs_quoting_as_tagged(value)
     }
 
     /// Whether a plain scalar spelling `value` would be read back as
     /// something other than a string when it carries no tag.
     fn resolves_to_non_string(value: &str) -> bool {
+        // Anything the core schema resolves to a non-string, such as
+        // `.inf` or `.NaN`, has to be quoted to stay a string.
+        if Self::classify_plain(value) != CoreScalarType::String {
+            return true;
+        }
+
         // Check for YAML keywords that would be misinterpreted
         // These need quotes when we want them as strings
         if value.eq_ignore_ascii_case("true")
@@ -1113,13 +1138,6 @@ impl ScalarValue {
             return true;
         }
 
-        // A lone carriage return is a YAML line break, so a plain scalar
-        // containing one would be read back as two lines. (A `\n` is handled
-        // earlier, by rendering the value as a literal block.)
-        if value.contains('\r') {
-            return true;
-        }
-
         false
     }
 
@@ -1161,7 +1179,9 @@ impl ScalarValue {
                     // With an explicit tag, the content can stay plain even
                     // where it would otherwise resolve to another type.
                     ScalarType::String if self.tag.is_some() => {
-                        if Self::needs_quoting_as_tagged(&self.value) {
+                        if Self::needs_double_quotes(&self.value) {
+                            self.to_double_quoted()
+                        } else if Self::needs_quoting_as_tagged(&self.value) {
                             self.to_single_quoted()
                         } else {
                             self.value.clone()
@@ -1169,7 +1189,9 @@ impl ScalarValue {
                     }
                     ScalarType::String => {
                         // For strings, quote if the content looks like a special value
-                        if Self::needs_quoting(&self.value) {
+                        if Self::needs_double_quotes(&self.value) {
+                            self.to_double_quoted()
+                        } else if Self::needs_quoting(&self.value) {
                             self.to_single_quoted()
                         } else {
                             self.value.clone()
@@ -2643,6 +2665,16 @@ mod tests {
         }
         // A plain word that needs no quoting round-trips unchanged.
         assert_eq!(ScalarValue::string("plain").to_yaml_string(), "plain");
+    }
+
+    #[test]
+    fn test_plain_string_with_control_character_is_double_quoted() {
+        assert_eq!(ScalarValue::plain("\u{7}").to_yaml_string(), "\"\\a\"");
+        assert_eq!(ScalarValue::plain("a\rb").to_yaml_string(), "\"a\\rb\"");
+        assert_eq!(
+            ScalarValue::plain("a\rb").with_tag("!x").to_yaml_string(),
+            "!x \"a\\rb\""
+        );
     }
 
     #[test]

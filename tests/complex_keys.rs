@@ -623,3 +623,49 @@ fn test_complex_key_in_flow_mapping() {
     let output = doc.to_string();
     assert_eq!(output, yaml);
 }
+
+/// A mapping's scalar entries as `(key, value)` strings.
+fn entries(yaml: &str) -> Vec<(String, String)> {
+    let doc = yaml.parse::<YamlFile>().unwrap();
+    assert_eq!(doc.to_string(), yaml);
+    let document = doc.document().unwrap();
+    let mapping = document.as_mapping().unwrap();
+    mapping
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.as_scalar().unwrap().as_string(),
+                v.as_scalar().unwrap().as_string(),
+            )
+        })
+        .collect()
+}
+
+fn pairs(expected: &[(&str, &str)]) -> Vec<(String, String)> {
+    expected
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+#[test]
+fn test_block_scalar_in_explicit_entry_does_not_swallow_next_entry() {
+    assert_eq!(entries("? a\n: |\nb: 1\n"), pairs(&[("a", ""), ("b", "1")]));
+    assert_eq!(entries("? a\n: >\n? b\n"), pairs(&[("a", ""), ("b", "")]));
+    assert_eq!(entries("? |\nb: 1\n"), pairs(&[("", ""), ("b", "1")]));
+}
+
+#[test]
+fn test_block_scalar_in_nested_explicit_entry_does_not_swallow_next_entry() {
+    let yaml = "x:\n  ? a\n  : |\n  b: 1\n";
+    let doc = yaml.parse::<YamlFile>().unwrap();
+    assert_eq!(doc.to_string(), yaml);
+    let document = doc.document().unwrap();
+    let x = document.as_mapping().unwrap().get("x").unwrap();
+    let mapping = x.as_mapping().unwrap();
+    assert_eq!(mapping.len(), 2);
+    let a = mapping.get("a").unwrap();
+    assert_eq!(a.as_scalar().unwrap().as_string(), "");
+    let b = mapping.get("b").unwrap();
+    assert_eq!(b.as_scalar().unwrap().as_string(), "1");
+}

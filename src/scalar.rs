@@ -383,7 +383,7 @@ impl ScalarValue {
     ///
     /// let scalar = ScalarValue::from(1.0).with_tag("!!float");
     /// assert_eq!(scalar.tag(), Some("!!float"));
-    /// assert_eq!(scalar.to_yaml_string(), "!!float 1");
+    /// assert_eq!(scalar.to_yaml_string(), "!!float 1.0");
     /// ```
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
         self.tag = Some(tag.into());
@@ -451,7 +451,7 @@ impl ScalarValue {
     /// Returns `None` if the scalar type is not `Float`.
     pub fn to_f64(&self) -> Option<f64> {
         if self.scalar_type == ScalarType::Float {
-            self.value.trim().parse::<f64>().ok()
+            Self::parse_float(self.value.trim())
         } else {
             None
         }
@@ -710,6 +710,39 @@ impl ScalarValue {
         }
 
         CoreScalarType::String
+    }
+
+    /// Parse a plain YAML 1.2 core schema float.
+    ///
+    /// Accepts the dotted `.inf`/`.nan` spellings and rejects bare `inf`,
+    /// `nan` and `infinity`, which `f64::from_str` takes but YAML reads as
+    /// strings.
+    pub(crate) fn parse_float(value: &str) -> Option<f64> {
+        match value {
+            ".inf" | ".Inf" | ".INF" | "+.inf" | "+.Inf" | "+.INF" => return Some(f64::INFINITY),
+            "-.inf" | "-.Inf" | "-.INF" => return Some(f64::NEG_INFINITY),
+            ".nan" | ".NaN" | ".NAN" => return Some(f64::NAN),
+            _ => {}
+        }
+        let body = value.strip_prefix(['+', '-']).unwrap_or(value);
+        if body.starts_with(|c: char| c.is_ascii_alphabetic()) {
+            return None;
+        }
+        value.parse().ok()
+    }
+
+    /// Turn the `Display` output of an `f32`/`f64` into a YAML float.
+    ///
+    /// Maps `NaN`/`inf`/`-inf` to `.nan`/`.inf`/`-.inf` and adds `.0` to
+    /// integral values so they don't read back as integers.
+    pub(crate) fn format_float(display: String) -> String {
+        match display.as_str() {
+            "NaN" => ".nan".to_string(),
+            "inf" => ".inf".to_string(),
+            "-inf" => "-.inf".to_string(),
+            _ if display.contains(['.', 'e', 'E']) => display,
+            _ => format!("{display}.0"),
+        }
     }
 
     /// Auto-detect the most appropriate scalar type from a string value
@@ -1402,9 +1435,26 @@ macro_rules! impl_from_number {
 impl_from_number! {
     i32 => ScalarType::Integer,
     i64 => ScalarType::Integer,
-    f32 => ScalarType::Float,
-    f64 => ScalarType::Float,
 }
+
+macro_rules! impl_from_float {
+    ($($t:ty),* $(,)?) => {
+        $(
+            impl From<$t> for ScalarValue {
+                fn from(value: $t) -> Self {
+                    Self {
+                        value: Self::format_float(value.to_string()),
+                        style: ScalarStyle::Plain,
+                        scalar_type: ScalarType::Float,
+                        tag: None,
+                    }
+                }
+            }
+        )*
+    };
+}
+
+impl_from_float!(f32, f64);
 
 impl From<bool> for ScalarValue {
     fn from(value: bool) -> Self {
@@ -2762,5 +2812,40 @@ mod tests {
         // try_as_regex ignores the type and compiles the value directly.
         assert!(not_re.try_as_regex().is_ok());
         assert!(ScalarValue::string("(").try_as_regex().is_err());
+    }
+
+    #[test]
+    fn test_from_f64_renders_yaml_float() {
+        let cases: [(f64, &str); 6] = [
+            (f64::NAN, ".nan"),
+            (f64::INFINITY, ".inf"),
+            (f64::NEG_INFINITY, "-.inf"),
+            (1.0, "1.0"),
+            (-0.0, "-0.0"),
+            (2.5, "2.5"),
+        ];
+        for (value, expected) in cases {
+            let sv = ScalarValue::from(value);
+            assert_eq!(sv.to_yaml_string(), expected);
+            assert_eq!(ScalarValue::classify_plain(expected), CoreScalarType::Float);
+        }
+        assert_eq!(ScalarValue::from(1.0f32).to_yaml_string(), "1.0");
+        assert_eq!(ScalarValue::from(f32::NAN).to_yaml_string(), ".nan");
+    }
+
+    #[test]
+    fn test_to_f64_special_values() {
+        let float = |s: &str| ScalarValue {
+            value: s.to_string(),
+            style: ScalarStyle::Plain,
+            scalar_type: ScalarType::Float,
+            tag: None,
+        };
+        assert_eq!(float(".inf").to_f64(), Some(f64::INFINITY));
+        assert_eq!(float("+.INF").to_f64(), Some(f64::INFINITY));
+        assert_eq!(float("-.Inf").to_f64(), Some(f64::NEG_INFINITY));
+        assert!(float(".NaN").to_f64().unwrap().is_nan());
+        assert_eq!(float("inf").to_f64(), None);
+        assert_eq!(float("1.5").to_f64(), Some(1.5));
     }
 }

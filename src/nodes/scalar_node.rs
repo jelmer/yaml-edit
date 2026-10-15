@@ -428,16 +428,8 @@ impl TryFrom<&Scalar> for f64 {
         }
 
         let value = scalar.as_string();
-
-        // Handle special float values
-        match value.as_str() {
-            ".inf" | ".Inf" | ".INF" | "+.inf" | "+.Inf" | "+.INF" => Ok(f64::INFINITY),
-            "-.inf" | "-.Inf" | "-.INF" => Ok(f64::NEG_INFINITY),
-            ".nan" | ".NaN" | ".NAN" => Ok(f64::NAN),
-            _ => value
-                .parse::<f64>()
-                .map_err(|e| ScalarConversionError::ParseError(e.to_string())),
-        }
+        crate::scalar::ScalarValue::parse_float(&value)
+            .ok_or_else(|| ScalarConversionError::ParseError(format!("invalid float: {value}")))
     }
 }
 
@@ -652,5 +644,20 @@ items: ["first", "second"]
         let yaml = ">\n  a\n\u{4f1}b\n";
         // We only care that it does not panic.
         let _ = super::Scalar::parse_block_scalar(yaml);
+    }
+
+    #[test]
+    fn test_as_f64_bare_inf_nan_is_none() {
+        let doc = Document::from_str("[inf, nan, infinity, -Inf, .inf, -.Inf, .NaN, 1.5]").unwrap();
+        let seq = doc.as_sequence().unwrap();
+        let got: Vec<Option<f64>> = seq
+            .values()
+            .map(|n| n.as_scalar().unwrap().as_f64())
+            .collect();
+        assert_eq!(&got[..4], &[None, None, None, None]);
+        assert_eq!(got[4], Some(f64::INFINITY));
+        assert_eq!(got[5], Some(f64::NEG_INFINITY));
+        assert!(got[6].unwrap().is_nan());
+        assert_eq!(got[7], Some(1.5));
     }
 }

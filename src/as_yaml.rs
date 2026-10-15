@@ -188,8 +188,7 @@ pub(crate) fn scalar_semantic_value(scalar: &Scalar) -> Option<(crate::lex::Synt
         }
         SyntaxKind::FLOAT => {
             // Normalize float representations
-            text.parse::<f64>()
-                .map_or_else(|_| text.to_string(), |v| v.to_string())
+            ScalarValue::parse_float(text).map_or_else(|| text.to_string(), |v| v.to_string())
         }
         SyntaxKind::BOOL => {
             // Normalize booleans to lowercase
@@ -885,13 +884,7 @@ macro_rules! impl_as_yaml_float {
             fn build_content(&self, builder: &mut rowan::GreenNodeBuilder, _indent: usize, _flow_context: bool) -> bool {
                 use crate::lex::SyntaxKind;
                 builder.start_node(SyntaxKind::SCALAR.into());
-                let s = self.to_string();
-                // Ensure floats always have a decimal point for YAML clarity
-                let float_str = if s.contains('.') || s.contains('e') || s.contains('E') {
-                    s
-                } else {
-                    format!("{}.0", s)
-                };
+                let float_str = crate::scalar::ScalarValue::format_float(self.to_string());
                 builder.token(SyntaxKind::FLOAT.into(), &float_str);
                 builder.finish_node();
                 false
@@ -1631,5 +1624,49 @@ block_map:
         let doc = Document::from_str("key: value\n").unwrap();
         doc.as_mapping().unwrap().set("key", Some(42i64));
         assert_eq!(doc.to_string(), "key: 42\n");
+    }
+
+    #[test]
+    fn test_set_float_special_values() {
+        let cases: [(f64, &str); 6] = [
+            (f64::NAN, "k: .nan\n"),
+            (f64::INFINITY, "k: .inf\n"),
+            (f64::NEG_INFINITY, "k: -.inf\n"),
+            (1.0, "k: 1.0\n"),
+            (-0.0, "k: -0.0\n"),
+            (1.5, "k: 1.5\n"),
+        ];
+        for (value, expected) in cases {
+            let doc = Document::from_str("k: 0\n").unwrap();
+            doc.as_mapping().unwrap().set("k", value);
+            assert_eq!(doc.to_string(), expected);
+            let reparsed = Document::from_str(&doc.to_string()).unwrap();
+            let got = reparsed
+                .as_mapping()
+                .unwrap()
+                .get("k")
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .as_f64()
+                .unwrap();
+            assert_eq!(got.to_bits(), value.to_bits());
+        }
+
+        let doc = Document::from_str("k: 0\n").unwrap();
+        doc.as_mapping().unwrap().set("k", f32::INFINITY);
+        assert_eq!(doc.to_string(), "k: .inf\n");
+    }
+
+    #[test]
+    fn test_yaml_eq_special_float_spellings() {
+        let doc =
+            Document::from_str("a: .inf\nb: .Inf\nc: .nan\nd: .NaN\ne: -.inf\nf: -.INF\n").unwrap();
+        let m = doc.as_mapping().unwrap();
+        assert!(yaml_eq(&m.get("a").unwrap(), &m.get("b").unwrap()));
+        assert!(yaml_eq(&m.get("c").unwrap(), &m.get("d").unwrap()));
+        assert!(yaml_eq(&m.get("e").unwrap(), &m.get("f").unwrap()));
+        assert!(!yaml_eq(&m.get("a").unwrap(), &m.get("e").unwrap()));
+        assert!(yaml_eq(&m.get("b").unwrap(), &f64::INFINITY));
     }
 }

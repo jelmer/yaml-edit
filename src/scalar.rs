@@ -1186,6 +1186,11 @@ impl ScalarValue {
 
     /// Convert to single-quoted string
     fn to_single_quoted(&self) -> String {
+        // A single-quoted scalar folds a raw line break into a space, so a
+        // lone `\r` can only be written escaped.
+        if self.value.contains('\r') {
+            return self.to_double_quoted();
+        }
         // Escape single quotes by doubling them
         let escaped = self.value.replace('\'', "''");
         format!("'{escaped}'")
@@ -1530,6 +1535,15 @@ mod tests {
 
         let scalar = ScalarValue::double_quoted("line1\nline2\ttab");
         assert_eq!(scalar.to_yaml_string(), "\"line1\\nline2\\ttab\"");
+    }
+
+    #[test]
+    fn test_carriage_return_is_escaped() {
+        assert_eq!(ScalarValue::plain("a\rb").to_yaml_string(), "\"a\\rb\"");
+        assert_eq!(
+            ScalarValue::single_quoted("a\rb").to_yaml_string(),
+            "\"a\\rb\""
+        );
     }
 
     #[test]

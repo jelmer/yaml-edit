@@ -71,6 +71,7 @@ Reference: Third
     // Remove all but the first occurrence
     for entry in refs.into_iter().skip(1) {
         entry.remove();
+        assert_cst_ok(&doc);
     }
     assert_cst_ok(&doc);
 
@@ -283,6 +284,7 @@ Reference: Third
     let refs: Vec<_> = mapping.find_all_entries_by_key("Reference").collect();
     for entry in refs.into_iter().skip(1) {
         entry.remove();
+        assert_cst_ok(&doc);
     }
     assert_cst_ok(&doc);
 

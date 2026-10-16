@@ -1,5 +1,5 @@
 mod common;
-use common::assert_file_cst_ok;
+use common::{assert_cst_ok, assert_file_cst_ok};
 
 #[test]
 fn test_explicit_key_mutations() {
@@ -105,6 +105,7 @@ fn test_explicit_key_set_nested_keeps_indent() {
         .get_mapping("outer")
         .unwrap();
     outer.set("b", "9");
+    assert_file_cst_ok(&doc);
     assert_eq!(doc.to_string(), "outer:\n  ? a\n  : 1\n  ? b\n  : '9'\n");
 }
 
@@ -122,6 +123,7 @@ fn test_explicit_key_insert_at_index_middle_keeps_indent() {
         .get_mapping("outer")
         .unwrap();
     outer.insert_at_index(1, "b", "9");
+    assert_file_cst_ok(&doc);
     assert_eq!(
         doc.to_string(),
         "outer:\n  ? a\n  : 1\n  ? b\n  : '9'\n  ? c\n  : 2\n"
@@ -142,6 +144,7 @@ fn test_explicit_key_insert_at_index_first_keeps_indent() {
         .get_mapping("outer")
         .unwrap();
     outer.insert_at_index(0, "a", "9");
+    assert_file_cst_ok(&doc);
     assert_eq!(
         doc.to_string(),
         "outer:\n  ? a\n  : '9'\n  ? b\n  : 1\n  ? c\n  : 2\n"
@@ -155,6 +158,7 @@ fn test_explicit_key_reorder_fields_keeps_line_breaks() {
 
     let doc = Document::from_str("? a\n: 1\n? b\n: 2\n").unwrap();
     doc.as_mapping().unwrap().reorder_fields(["b"]);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "? b\n: 2\n? a\n: 1\n");
 }
 
@@ -176,7 +180,9 @@ fn set_then_rename_keeps_an_explicit_key_on_its_own_line() {
         };
 
         mapping.set("u", "0");
+        assert_cst_ok(&doc);
         assert!(mapping.rename_key("u", "z"), "{source:?}");
+        assert_cst_ok(&doc);
 
         let text = doc.to_string();
         let reparsed = YamlFile::from_str(&text).unwrap_or_else(|e| {
@@ -212,5 +218,6 @@ fn renaming_a_plain_key_stays_inline() {
     let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
     let mapping = doc.as_mapping().unwrap();
     assert!(mapping.rename_key("a", "z"));
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "z: 1\nb: 2\n");
 }

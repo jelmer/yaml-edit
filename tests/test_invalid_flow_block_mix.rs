@@ -1,5 +1,6 @@
+use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::YamlFile;
+use yaml_edit::{debug, YamlFile};
 
 #[test]
 fn test_preserve_invalid_flow_block_mix() {
@@ -32,6 +33,9 @@ key1: value1"#;
             // Add a new key - since the mapping is {}, the new key is added there
             // The invalid content after {} is preserved in ERROR nodes
             mapping.set("key2", "value2");
+            // The input already fails to parse cleanly, so only the tree
+            // invariants apply here, not roundtrip_ok.
+            debug::validate_tree(yaml.syntax()).unwrap();
         }
     }
 
@@ -63,6 +67,9 @@ version: 1.0"#;
 
             // Add a key to the empty mapping
             mapping.set("author", "John");
+            // The input already fails to parse cleanly, so only the tree
+            // invariants apply here, not roundtrip_ok.
+            debug::validate_tree(yaml.syntax()).unwrap();
 
             // The new key is added inside the `{}`; invalid trailing block
             // content stays in ERROR nodes.

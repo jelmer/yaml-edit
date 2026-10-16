@@ -15,6 +15,9 @@
 //! 2. No regression - continues to pass
 //! 3. Round-trip validity maintained
 
+mod common;
+
+use common::{assert_cst_ok, assert_file_cst_ok};
 use std::str::FromStr;
 use yaml_edit::YamlFile;
 
@@ -875,6 +878,7 @@ toplevel2: value3
 
     // Check the mapping in the sequence has a single item
     let nested_mapping = items.pop().expect("1 item");
+    assert_file_cst_ok(&parsed);
     let nested_mapping = nested_mapping.as_mapping().expect("nested mapping");
     assert_eq!(
         nested_mapping.keys().count(),
@@ -2259,7 +2263,11 @@ fn test_typed_getters_see_through_tags() {
 
     // The tag stays put when editing through the getter.
     mapping.get_mapping("c").unwrap().set("w", 4);
-    assert!(doc.to_string().contains("c: !custom\n  z: 3\n  w: 4\n"));
+    assert_cst_ok(&doc);
+    assert_eq!(
+        doc.to_string(),
+        "a: !!map\n  x: 1\nb: &b !!map\n  y: 2\nc: !custom\n  z: 3\n  w: 4\ns: !!seq\n  - 1\nt: !custom [1, 2]\n"
+    );
 
     // A tagged node of another kind is still not a mapping.
     assert!(mapping.get_mapping("s").is_none());
@@ -3380,9 +3388,12 @@ fn test_collapsed_empty_mapping_keeps_its_separator_in_the_entry() {
     use yaml_edit::path::YamlPath;
     let doc = yaml_edit::Document::from_str("a: 1\n").unwrap();
     doc.try_set_path("t.t", "9").unwrap();
+    assert_cst_ok(&doc);
     doc.try_remove_path("t.t").unwrap();
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a: 1\nt: {}\n");
     doc.try_set_path("t", "b").unwrap();
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a: 1\nt: b\n");
     yaml_edit::Document::from_str(&doc.to_string()).unwrap();
 }
@@ -3460,6 +3471,7 @@ fn test_rejected_set_path_leaves_the_document_untouched() {
     use yaml_edit::path::YamlPath;
     let doc = yaml_edit::Document::from_str("a: 1\n").unwrap();
     assert!(doc.try_set_path("nn.9487", "xx").is_err());
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a: 1\n");
 }
 
@@ -3498,6 +3510,7 @@ fn test_multiline_value_indents_its_block_body_past_the_entry() {
         .and_then(|x| x.as_mapping().cloned())
         .unwrap();
     inner.set("b", "x\ny");
+    assert_file_cst_ok(&file);
     assert_eq!(file.to_string(), "a:\n  b: |-\n    x\n    y\n");
     yaml_edit::YamlFile::from_str(&file.to_string()).unwrap();
 }
@@ -3542,6 +3555,11 @@ fn test_compact_nested_sequence_ends_at_its_own_column() {
     ] {
         let doc = yaml_edit::Document::from_str(yaml).unwrap();
         assert_eq!(sequence_items(&doc.as_sequence().unwrap()), expected);
+        // TODO: enable for the `- - -` inputs once the stray INDENT ending
+        // their outer SEQUENCE_ENTRY is fixed
+        if !yaml.starts_with("- - -") {
+            assert_cst_ok(&doc);
+        }
     }
 
     // A dash or key between the enclosing column and the compact
@@ -3580,6 +3598,7 @@ fn test_remove_path_takes_one_duplicate_occurrence() {
     use yaml_edit::path::YamlPath;
     let doc = yaml_edit::Document::from_str("b: 1\na: 2\nb: 3\n").unwrap();
     assert!(doc.try_remove_path("b").is_ok());
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a: 2\nb: 3\n");
     assert!(doc.try_get_path("b").is_ok());
 }

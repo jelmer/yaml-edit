@@ -4,23 +4,18 @@
 //! Failures here indicate bugs in the mutation logic that would otherwise
 //! only surface as odd rendering.
 
+mod common;
+
+use common::{assert_cst_ok, assert_file_cst_ok};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::{debug, Document, Mapping, YamlFile};
 
-fn check(doc: &Document) {
-    let syntax = doc.syntax();
-    if let Err(e) = debug::validate_tree(syntax) {
-        panic!("invariant violated: {e}\n---\n{}\n---", doc);
-    }
-    if let Err(e) = debug::roundtrip_ok(syntax) {
-        panic!("roundtrip failed: {e}\n---\n{}\n---", doc);
-    }
-}
-
-/// Like `check`, and also require the tree to match a re-parse of its text.
+/// Like `assert_cst_ok`, and also require the tree to match a re-parse of
+/// its text.
+#[track_caller]
 fn check_shape(doc: &Document) {
-    check(doc);
+    assert_cst_ok(doc);
     let reparsed = Document::from_str(&doc.to_string()).unwrap();
     assert_eq!(
         debug::tree_to_string(doc.syntax()),
@@ -42,7 +37,7 @@ fn parsed_document_is_valid() {
     for input in inputs {
         let file = YamlFile::from_str(input).unwrap();
         let doc = file.document().unwrap();
-        check(&doc);
+        assert_cst_ok(&doc);
     }
 }
 
@@ -50,21 +45,21 @@ fn parsed_document_is_valid() {
 fn mapping_set_new_key() {
     let doc = Document::from_str("a: 1\n").unwrap();
     doc.as_mapping().unwrap().set("b", 2);
-    check(&doc);
+    assert_cst_ok(&doc);
 }
 
 #[test]
 fn mapping_set_replace_key() {
     let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
     doc.as_mapping().unwrap().set("a", 99);
-    check(&doc);
+    assert_cst_ok(&doc);
 }
 
 #[test]
 fn mapping_remove_key() {
     let doc = Document::from_str("a: 1\nb: 2\nc: 3\n").unwrap();
     doc.as_mapping().unwrap().remove("b");
-    check(&doc);
+    assert_cst_ok(&doc);
 }
 
 #[test]
@@ -72,7 +67,7 @@ fn nested_mapping_set() {
     let doc = Document::from_str("root:\n  a: 1\n").unwrap();
     let nested = doc.as_mapping().unwrap().get_mapping("root").unwrap();
     nested.set("b", 2);
-    check(&doc);
+    assert_cst_ok(&doc);
 }
 
 #[test]
@@ -80,7 +75,7 @@ fn sequence_push_existing() {
     let doc = Document::from_str("items:\n  - a\n  - b\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
     seq.push("c");
-    check(&doc);
+    assert_cst_ok(&doc);
 }
 
 /// Building a sequence a push at a time stays usable at scale.
@@ -102,7 +97,7 @@ fn sequence_push_scales() {
     let elapsed = start.elapsed();
 
     assert_eq!(seq.len(), 1501);
-    check(&doc);
+    assert_cst_ok(&doc);
 
     // Re-parsing the result must give the same sequence back.
     let reparsed = Document::from_str(&doc.to_string()).unwrap();
@@ -133,10 +128,12 @@ fn set_empty_mapping_then_populate() {
     let doc = Document::from_str("existing: v\n").unwrap();
     let mapping = doc.as_mapping().unwrap();
     mapping.set("nested", Mapping::new());
+    assert_cst_ok(&doc);
     let nested = mapping.get_mapping("nested").unwrap();
     nested.set("a", 1);
+    assert_cst_ok(&doc);
     nested.set("b", 2);
-    check(&doc);
+    assert_cst_ok(&doc);
 }
 
 #[test]
@@ -146,7 +143,7 @@ fn parse_empty_sequence_under_key_then_push() {
     let doc = Document::from_str("items: []\nother: v\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
     seq.push("a");
-    check(&doc);
+    assert_cst_ok(&doc);
 }
 
 #[test]
@@ -159,7 +156,7 @@ fn sequence_insert_past_end_without_trailing_newline() {
     let doc = Document::from_str("items:\n  - a\n  - b").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
     seq.insert(2, "c");
-    check(&doc);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "items:\n  - a\n  - b\n  - c\n");
 }
 
@@ -168,7 +165,7 @@ fn sequence_insert_into_existing() {
     let doc = Document::from_str("items:\n  - a\n  - c\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
     seq.insert(1, "b");
-    check(&doc);
+    assert_cst_ok(&doc);
 }
 
 #[test]
@@ -176,28 +173,28 @@ fn sequence_remove_middle() {
     let doc = Document::from_str("items:\n  - a\n  - b\n  - c\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
     seq.remove(1);
-    check(&doc);
+    assert_cst_ok(&doc);
 }
 
 #[test]
 fn rename_key() {
     let doc = Document::from_str("old: 1\nkeep: 2\n").unwrap();
     doc.as_mapping().unwrap().rename_key("old", "new");
-    check(&doc);
+    assert_cst_ok(&doc);
 }
 
 #[test]
 fn mapping_clear() {
     let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
     doc.as_mapping().unwrap().clear();
-    check(&doc);
+    assert_cst_ok(&doc);
 }
 
 #[test]
 fn set_key_with_dot_and_dash_parses_back() {
     let doc = Document::from_str("existing: value\n").unwrap();
     doc.as_mapping().unwrap().set(".ar-aa", 0);
-    check(&doc);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "existing: value\n.ar-aa: 0\n");
 }
 
@@ -242,7 +239,7 @@ fn set_key_with_embedded_colon_parses_back() {
     // Surfaced by libfuzzer.
     let doc = Document::from_str("a: null\n").unwrap();
     doc.as_mapping().unwrap().set(".d:5-a", "");
-    check(&doc);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a: null\n.d:5-a: ''\n");
 }
 
@@ -253,10 +250,10 @@ fn set_with_document_terminator_key() {
     // quoted or the resulting text re-parses as a broken document.
     let doc = Document::from_str("existing: value\n").unwrap();
     doc.as_mapping().unwrap().set("...", "value");
-    check(&doc);
+    assert_cst_ok(&doc);
     let doc = Document::from_str("existing: value\n").unwrap();
     doc.as_mapping().unwrap().set("---", "value");
-    check(&doc);
+    assert_cst_ok(&doc);
 }
 
 #[test]
@@ -264,8 +261,9 @@ fn set_path_then_remove_path_collapses_empty_scaffold() {
     use yaml_edit::path::YamlPath;
     let doc = Document::from_str("a: 1\nb: 2\nc: 3\n").unwrap();
     doc.try_set_path("vvv.vvv.x", "").expect("set_path");
+    assert_cst_ok(&doc);
     doc.try_remove_path("vvv.vvv.x").expect("remove_path");
-    check(&doc);
+    assert_cst_ok(&doc);
     // The emptied-out innermost mapping collapses into flow-empty `{}`
     // so path lookups still work (get_path("vvv.vvv") returns the empty
     // mapping) and the tree is well-formed.
@@ -277,7 +275,7 @@ fn set_path_after_explicit_key_does_not_leave_blank_line() {
     use yaml_edit::path::YamlPath;
     let doc = Document::from_str("keys: !!set\n  ? a\n  ? b\n").unwrap();
     doc.try_set_path("a", "").expect("set_path");
-    check(&doc);
+    assert_cst_ok(&doc);
     assert!(
         !doc.to_string().contains("\n\n"),
         "unexpected blank line: {:?}",
@@ -293,8 +291,8 @@ fn sequence_pop_last_item_collapses_to_flow_empty() {
     let doc = Document::from_str("s:\n  - a\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.pop();
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "s: []\n");
-    check(&doc);
     let reparsed = Document::from_str(&doc.to_string()).unwrap();
     assert!(reparsed
         .as_mapping()
@@ -307,8 +305,8 @@ fn sequence_remove_last_item_collapses_to_flow_empty() {
     let doc = Document::from_str("s:\n  - a\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.remove(0);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "s: []\n");
-    check(&doc);
 }
 
 #[test]
@@ -316,8 +314,8 @@ fn sequence_clear_block_collapses_to_flow_empty() {
     let doc = Document::from_str("s:\n  - a\n  - b\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.clear();
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "s: []\n");
-    check(&doc);
 }
 
 #[test]
@@ -328,7 +326,7 @@ fn sequence_remove_last_entry_preserves_following_mapping_entry() {
     let doc = Document::from_str("s:\n  - a\n  - b\n  - c\na: ''\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.pop();
-    check(&doc);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "s:\n  - a\n  - b\na: ''\n");
 }
 
@@ -341,8 +339,8 @@ fn mapping_remove_only_nested_entry_keeps_anchor() {
         .get_mapping("a")
         .unwrap()
         .remove("x");
+    assert_cst_ok(&doc);
     assert!(removed.is_some());
-    check(&doc);
     assert_eq!(
         doc.to_string(),
         "a: &a {}\nb: &b\n  x: 2\nm:\n  <<: [*a, *b]\n"
@@ -402,7 +400,7 @@ fn mapping_remove_only_nested_entry_keeps_comment_lines() {
         .get_mapping("a")
         .unwrap()
         .remove("x");
-    check(&doc);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a: # c\n  # d\n  {}\nb: 2\n");
     let reparsed = Document::from_str(&doc.to_string()).unwrap();
     assert!(reparsed
@@ -418,8 +416,9 @@ fn mapping_drain_keeps_inner_comment_lines() {
     let doc = Document::from_str("a:\n  x: 1\n  # d\n  y: 2\nb: 2\n").unwrap();
     let inner = doc.as_mapping().unwrap().get_mapping("a").unwrap();
     inner.remove("x");
+    assert_cst_ok(&doc);
     inner.remove("y");
-    check(&doc);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a:\n  # d\n  {}\nb: 2\n");
 }
 
@@ -428,8 +427,9 @@ fn mapping_drain_keeps_inner_comment_lines_after_anchor() {
     let doc = Document::from_str("a: &a\n  x: 1\n  # d\n\n  # e\n  y: 2\nb: 2\n").unwrap();
     let inner = doc.as_mapping().unwrap().get_mapping("a").unwrap();
     inner.remove("y");
+    assert_cst_ok(&doc);
     inner.remove("x");
-    check(&doc);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a: &a\n  # d\n\n  # e\n  {}\nb: 2\n");
 }
 
@@ -438,8 +438,9 @@ fn sequence_drain_keeps_inner_comment_lines() {
     let doc = Document::from_str("s:\n  - 1\n  # d\n  - 2\nb: 2\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.remove(0);
+    assert_cst_ok(&doc);
     seq.remove(0);
-    check(&doc);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "s:\n  # d\n  []\nb: 2\n");
 }
 
@@ -448,7 +449,7 @@ fn sequence_remove_only_item_keeps_anchor() {
     let doc = Document::from_str("s: &s\n  - a\nb: 2\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.remove(0);
-    check(&doc);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "s: &s []\nb: 2\n");
 }
 
@@ -460,7 +461,7 @@ fn set_path_nested_sequence_indices() {
     use yaml_edit::path::YamlPath;
     let doc = Document::from_str("a: 1\n").unwrap();
     doc.try_set_path("s[0][0]", "hi").expect("set_path");
-    check(&doc);
+    assert_cst_ok(&doc);
     let reparsed = Document::from_str(&doc.to_string()).unwrap();
     let got = reparsed
         .try_get_path("s[0][0]")
@@ -486,7 +487,7 @@ fn parser_terminates_tagged_block_at_column_zero() {
         .filter_map(|k| k.as_scalar().map(|s| s.as_string()))
         .collect();
     assert_eq!(keys, vec!["keys".to_string(), "a".to_string()]);
-    check(&doc);
+    assert_cst_ok(&doc);
 }
 
 #[test]
@@ -497,16 +498,16 @@ fn insert_before_in_flow_mapping_stays_flow() {
     // re-parses with `a` as the multi-line scalar `"a f"`.
     let doc = Document::from_str("{f: 0}").unwrap();
     doc.as_mapping().unwrap().insert_before("f", "a", "hi");
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "{a: \"hi\", f: 0}");
-    check(&doc);
 }
 
 #[test]
 fn insert_after_in_flow_mapping_stays_flow() {
     let doc = Document::from_str("{f: 0}").unwrap();
     doc.as_mapping().unwrap().insert_after("f", "a", "hi");
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "{f: 0, a: \"hi\"}");
-    check(&doc);
 }
 
 #[test]
@@ -516,8 +517,8 @@ fn top_level_mapping_clear_renders_flow_empty() {
     // the doc renders as empty text and re-parses to no-mapping.
     let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
     doc.as_mapping().unwrap().clear();
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "{}");
-    check(&doc);
     let reparsed = Document::from_str(&doc.to_string()).unwrap();
     assert!(reparsed.as_mapping().is_some());
     assert!(reparsed.as_mapping().unwrap().is_empty());
@@ -530,7 +531,7 @@ fn reorder_keeps_between_entry_comment_attached_to_predecessor() {
     // (`a`) rather than being lifted to the end of the mapping.
     let doc = Document::from_str("a: 1\n# note\nb: 2\n").unwrap();
     doc.as_mapping().unwrap().reorder_fields(["b", "a"]);
-    check(&doc);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "b: 2\na: 1\n# note\n");
 }
 
@@ -540,7 +541,7 @@ fn reorder_noop_preserves_between_entry_comment() {
     doc.as_mapping()
         .unwrap()
         .reorder_fields(std::iter::empty::<&str>());
-    check(&doc);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a: 1\n# note\nb: 2\n");
 }
 
@@ -553,11 +554,13 @@ fn reorder_after_add_preserves_entry_separator() {
     // Fix: the previous entry gets its NEWLINE appended inside itself.
     let doc = Document::from_str("s:\n  - a\n  - b\n  - c\n").unwrap();
     doc.as_mapping().unwrap().get_sequence("s").unwrap().pop();
+    assert_cst_ok(&doc);
     doc.as_mapping().unwrap().insert_at_index(1, "a", "");
+    assert_cst_ok(&doc);
     doc.as_mapping()
         .unwrap()
         .reorder_fields(std::iter::empty::<&str>());
-    check(&doc);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "s:\n  - a\n  - b\na: ''\n");
 }
 
@@ -569,8 +572,8 @@ fn sequence_remove_first_entry_preserves_new_first_indent() {
     let doc = Document::from_str("s:\n  - a\n  - b\n  - c\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.remove(0);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "s:\n  - b\n  - c\n");
-    check(&doc);
 }
 
 #[test]
@@ -578,10 +581,10 @@ fn sequence_insert_into_empty_flow_reshapes_to_block() {
     let doc = Document::from_str("s: []\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.insert(0, "x");
+    assert_cst_ok(&doc);
     let reparsed = Document::from_str(&doc.to_string()).unwrap();
     let seq2 = reparsed.as_mapping().unwrap().get_sequence("s").unwrap();
     assert_eq!(seq2.len(), 1);
-    check(&doc);
 }
 
 #[test]
@@ -589,8 +592,8 @@ fn sequence_push_into_nonempty_flow_stays_flow() {
     let doc = Document::from_str("s: [x]\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.push("y");
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "s: [x, y]\n");
-    check(&doc);
 }
 
 #[test]
@@ -598,8 +601,8 @@ fn sequence_insert_into_nonempty_flow_stays_flow() {
     let doc = Document::from_str("s: [x]\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.insert(0, "y");
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "s: [y, x]\n");
-    check(&doc);
 }
 
 #[test]
@@ -607,8 +610,8 @@ fn sequence_insert_at_head_into_single_entry_block() {
     let doc = Document::from_str("s:\n  - a\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.insert(0, "b");
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "s:\n  - b\n  - a\n");
-    check(&doc);
 }
 
 /// A sequence that is the document's own node starts at column 0, so a
@@ -627,6 +630,7 @@ fn root_sequence_push_appends_a_sibling() {
         let file = YamlFile::from_str(yaml).unwrap();
         let seq = file.document().unwrap().as_sequence().unwrap();
         seq.push("new");
+        assert_file_cst_ok(&file);
         assert_eq!(file.to_string(), want, "{yaml:?}");
 
         let reparsed = YamlFile::from_str(&file.to_string()).unwrap();
@@ -658,5 +662,6 @@ fn nested_sequence_push_keeps_its_indent() {
         .cloned()
         .unwrap();
     seq.push("new");
+    assert_file_cst_ok(&file);
     assert_eq!(file.to_string(), "a:\n  - x\n  - new\n");
 }

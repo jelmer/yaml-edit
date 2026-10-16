@@ -7,6 +7,9 @@
 //! - Mutating tags on tagged nodes
 //! - Modifying empty collections
 
+mod common;
+
+use common::{assert_cst_ok, assert_file_cst_ok};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::{debug, YamlFile};
@@ -32,6 +35,7 @@ ref: *x"#;
 
     // Mutate the anchored value
     mapping.set("anchor", "modified");
+    assert_file_cst_ok(&parsed);
 
     // Verify the anchor value changed
     let new_anchor_val = mapping.get("anchor").expect("Should have anchor");
@@ -71,7 +75,9 @@ server: *defaults"#;
 
     // Mutate the anchored mapping
     config.set("timeout", 60);
+    assert_file_cst_ok(&parsed);
     config.set("max_connections", 100);
+    assert_file_cst_ok(&parsed);
 
     // Verify the config mapping changed
     assert_eq!(
@@ -109,6 +115,7 @@ ref: *x"#;
 
     // Remove the anchored key
     mapping.remove("orig");
+    assert_file_cst_ok(&parsed);
 
     // Verify orig is removed
     assert_eq!(mapping.keys().count(), 1);
@@ -147,6 +154,7 @@ fn test_edit_block_scalar_content() {
 
     // Replace the block scalar with new content
     mapping.set("text", "New single line");
+    assert_file_cst_ok(&parsed);
 
     // Verify the content changed
     let new_text_val = mapping.get("text").expect("Should have text");
@@ -178,6 +186,7 @@ fn test_replace_block_scalar_with_multiline() {
     // depending on the implementation's formatting choices
     let new_content = "New line 1\nNew line 2\nNew line 3";
     mapping.set("description", new_content);
+    assert_file_cst_ok(&parsed);
 
     // Verify the content changed
     let new_val = mapping.get("description").expect("Should have description");
@@ -216,7 +225,9 @@ count: !!int 42"#;
     // Mutate the tagged values
     // Note: This replaces the tagged node with a plain scalar
     mapping.set("date", "2024-12-31");
+    assert_file_cst_ok(&parsed);
     mapping.set("count", 100);
+    assert_file_cst_ok(&parsed);
 
     // Verify the values changed
     let new_date = mapping.get("date").expect("Should have date");
@@ -248,7 +259,9 @@ fn test_add_to_empty_flow_mapping() {
 
     // Add keys to the empty mapping
     empty_map.set("a", 1);
+    assert_file_cst_ok(&parsed);
     empty_map.set("b", 2);
+    assert_file_cst_ok(&parsed);
 
     // Verify keys were added
     assert_eq!(empty_map.keys().count(), 2, "Should have 2 keys");
@@ -284,8 +297,11 @@ fn test_add_to_empty_flow_sequence() {
 
     // Add items to the empty sequence
     empty_seq.push("first");
+    assert_file_cst_ok(&parsed);
     empty_seq.push("second");
+    assert_file_cst_ok(&parsed);
     empty_seq.push("third");
+    assert_file_cst_ok(&parsed);
 
     // Verify items were added
     assert_eq!(empty_seq.len(), 3, "Should have 3 items");
@@ -325,8 +341,11 @@ fn test_empty_mapping_by_removal() {
 
     // Remove all keys
     config.remove("a");
+    assert_file_cst_ok(&parsed);
     config.remove("b");
+    assert_file_cst_ok(&parsed);
     config.remove("c");
+    assert_file_cst_ok(&parsed);
 
     // Verify empty
     assert_eq!(config.keys().count(), 0, "Should be empty after removal");
@@ -355,6 +374,7 @@ fn test_replace_multiline_flow_sequence_value_with_scalar() {
         "Repository",
         "cvs+ssh://_anoncvs@anoncvs.example.org/cvs#yep",
     );
+    assert_file_cst_ok(&yaml);
 
     let expected = "{\n  \"Name\": \"yep\",\n  \"Repository\": \"cvs+ssh://_anoncvs@anoncvs.example.org/cvs#yep\",\n  \"Repository-Browse\": \"http://www.example.org/cvs.cgi/contrib/code/yep/\"\n}";
 
@@ -404,6 +424,7 @@ fn test_replace_multiline_flow_value_with_scalar_variants() {
             .as_mapping()
             .unwrap()
             .set(target_key, "replaced");
+        assert_file_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), expected, "variant: {name}");
         debug::validate_tree(yaml.syntax())
             .unwrap_or_else(|e| panic!("variant {name} invariant violated: {e}"));
@@ -422,6 +443,7 @@ fn test_set_key_starting_with_hash_reparses() {
     let mapping = doc.as_mapping().expect("root mapping");
 
     mapping.set("#aaaaa", "");
+    assert_cst_ok(&doc);
 
     // After the mutation, the mapping itself sees the key.
     assert!(mapping.contains_key("#aaaaa"), "in-memory: key missing");
@@ -450,6 +472,7 @@ fn test_set_key_starting_with_dot_and_digits_reparses() {
     let mapping = doc.as_mapping().expect("root mapping");
 
     mapping.set(".999 a", "");
+    assert_cst_ok(&doc);
 
     let text = doc.to_string();
     let reparsed = yaml_edit::Document::from_str(&text)
@@ -476,6 +499,7 @@ fn test_set_path_new_numeric_key() {
     let doc = yaml_edit::Document::from_str(seed).expect("parse seed");
 
     doc.try_set_path("997", "").expect("set_path");
+    assert_cst_ok(&doc);
 
     let got = doc
         .try_get_path("997")
@@ -511,6 +535,7 @@ fn test_set_empty_path_is_a_noop() {
     #[allow(deprecated)]
     {
         doc.set_path("", "anything");
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             before,
@@ -524,6 +549,7 @@ fn test_set_empty_path_is_a_noop() {
             !doc.remove_path(""),
             "remove_path(\"\") should return false"
         );
+        assert_cst_ok(&doc);
     }
 
     // try_ variants distinguish the reason.
@@ -537,10 +563,12 @@ fn test_set_empty_path_is_a_noop() {
         Err(PathError::EmptyPath),
         "try_set_path reports the specific reason"
     );
+    assert_cst_ok(&doc);
     assert!(
         matches!(doc.try_remove_path(""), Err(PathError::EmptyPath)),
         "try_remove_path reports the specific reason"
     );
+    assert_cst_ok(&doc);
 }
 
 /// The try_ variants surface the specific failure modes the silent
@@ -556,6 +584,7 @@ fn test_try_path_reports_specific_errors() {
         doc.try_set_path("foo", "bar"),
         Err(PathError::NoRoot)
     ));
+    assert_cst_ok(&doc);
 
     // Parse error: unclosed bracket.
     let doc = yaml_edit::Document::from_str("a: 1\n").expect("parse");
@@ -563,6 +592,7 @@ fn test_try_path_reports_specific_errors() {
         doc.try_set_path("a[0", "x"),
         Err(PathError::Parse(_))
     ));
+    assert_cst_ok(&doc);
 
     // NotFound: intermediate key present but leaf is missing.
     let doc = yaml_edit::Document::from_str("a:\n  b: 1\n").expect("parse");
@@ -584,6 +614,7 @@ fn test_try_path_reports_specific_errors() {
         doc.try_set_path("a.b", "x"),
         Err(PathError::TypeMismatch { .. })
     ));
+    assert_cst_ok(&doc);
 }
 
 /// New content in a document closed by `...` goes before the marker.

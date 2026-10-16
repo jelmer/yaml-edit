@@ -386,10 +386,9 @@ impl Validator {
                 // Parser has marked this as erroneous content
                 // Report it as a validation error
                 let content = node.text().to_string();
-                let preview = if content.len() > 50 {
-                    format!("{}...", &content[..50])
-                } else {
-                    content
+                let preview = match content.char_indices().nth(50) {
+                    Some((end, _)) => format!("{}...", &content[..end]),
+                    None => content,
                 };
                 violations.push(Violation::error_at(
                     Rule::Other,
@@ -3175,6 +3174,23 @@ mod tests {
                 "{yaml:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_error_preview_truncates_on_char_boundary() {
+        // The preview used to be cut at byte 50, which panicked when that
+        // fell inside a multi-byte character.
+        let yaml = format!("a: b\n{}\u{e9}yz\n", "x".repeat(49));
+        let (file, _) = crate::YamlFile::from_str_relaxed(&yaml);
+        let violations = Validator::new().validate_syntax(file.syntax());
+        let messages: Vec<_> = violations.iter().map(|v| v.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            vec![format!(
+                "Invalid content in document: \"{}\u{e9}...\"",
+                "x".repeat(49)
+            )]
+        );
     }
 
     #[test]

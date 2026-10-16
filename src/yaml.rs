@@ -366,27 +366,38 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
         return;
     }
 
-    // Targeted edit: keep the host node, drop the block-empty
-    // collection plus its NEWLINE/INDENT/WHITESPACE decoration, and
-    // rebuild its content as `<properties> {} <comment>`.
-    for c in host.children_with_tokens().collect::<Vec<_>>() {
-        c.detach();
-    }
+    // Targeted edit: keep the host node and its properties, and replace
+    // everything after them (comment, line break, indent and the block
+    // collection) with the flow-empty collection.
+    let start = properties.last().map_or(0, |p| p.index() + 1);
+    let end = host.children_with_tokens().count();
     // Each separator must be its own token: rowan cannot attach one
     // mutable token in two places.
     let ws = || crate::nodes::fresh_token(SyntaxKind::WHITESPACE, " ");
-    let mut replacement: Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>> = Vec::new();
     let has_properties = !properties.is_empty();
-    for property in properties {
-        replacement.push(crate::nodes::fresh_token(property.kind(), property.text()).into());
+    let mut replacement: Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>> = Vec::new();
+    if has_properties {
         replacement.push(ws().into());
     }
     replacement.push(new_collection.into());
-    if let Some(comment) = comment {
-        replacement.push(ws().into());
-        replacement.push(crate::nodes::fresh_token(SyntaxKind::COMMENT, comment.text()).into());
+    let mut comment: Vec<_> = comment
+        .into_iter()
+        .flat_map(|c| {
+            [
+                ws().into(),
+                crate::nodes::fresh_token(SyntaxKind::COMMENT, c.text()).into(),
+            ]
+        })
+        .collect();
+    // A comment after a TAGGED_NODE belongs to the VALUE around it.
+    if host.kind() != SyntaxKind::TAGGED_NODE {
+        replacement.append(&mut comment);
     }
-    host.splice_children(0..0, replacement);
+    crate::nodes::replace_children(&host, start..end, replacement);
+    if !comment.is_empty() {
+        let after_host = host.index() + 1;
+        value_node.splice_children(after_host..after_host, comment);
+    }
 
     // The space separating the colon from its value belongs to the
     // entry, not the value: a parsed `key: {}` puts it between COLON

@@ -248,6 +248,29 @@ pub(crate) fn strip_flow_separator(entry: &SyntaxNode) {
     }
 }
 
+/// Replace the children of `parent` in `range` with `children`.
+///
+/// rowan 0.16's `SyntaxNode::splice_children` detaches the range while
+/// iterating over it, so it stops after the first element and leaves the
+/// rest in place. Use this whenever the range can hold more than one child.
+pub(crate) fn replace_children(
+    parent: &SyntaxNode,
+    range: std::ops::Range<usize>,
+    children: Vec<rowan::NodeOrToken<SyntaxNode, SyntaxToken>>,
+) {
+    for i in range.clone().rev() {
+        match parent
+            .children_with_tokens()
+            .nth(i)
+            .expect("range within the parent's children")
+        {
+            rowan::NodeOrToken::Node(n) => n.detach(),
+            rowan::NodeOrToken::Token(t) => t.detach(),
+        }
+    }
+    parent.splice_children(range.start..range.start, children);
+}
+
 /// Append `children` at the end of `parent`'s child list.
 pub(crate) fn append_children(
     parent: &SyntaxNode,
@@ -502,3 +525,26 @@ pub use mapping::{Mapping, MappingEntry};
 pub use scalar_node::{Scalar, ScalarConversionError};
 pub use sequence::Sequence;
 pub use tagged_node::TaggedNode;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_replace_children_removes_whole_range() {
+        let mut builder = rowan::GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::ROOT.into());
+        for text in ["a", "b", "c", "d", "e"] {
+            builder.token(SyntaxKind::STRING.into(), text);
+        }
+        builder.finish_node();
+        let root = SyntaxNode::new_root_mut(builder.finish());
+
+        replace_children(
+            &root,
+            1..4,
+            vec![fresh_token(SyntaxKind::STRING, "X").into()],
+        );
+        assert_eq!(root.to_string(), "aXe");
+    }
+}

@@ -116,7 +116,7 @@ impl Mapping {
                                 }
                             }
 
-                            self.0.splice_children(remove_range, vec![]);
+                            crate::nodes::replace_children(&self.0, remove_range, vec![]);
                             removed_existing = true;
                             break;
                         }
@@ -377,7 +377,7 @@ impl Mapping {
                                 }
                             }
 
-                            self.0.splice_children(remove_range, vec![]);
+                            crate::nodes::replace_children(&self.0, remove_range, vec![]);
                             removed_existing = true;
                             break;
                         }

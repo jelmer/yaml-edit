@@ -72,7 +72,8 @@ fn rewrite_in(node: &SyntaxNode, rewrites: &mut Vec<Rewrite>) {
             if let Some((after, kind)) = replacement_for(&child) {
                 let before = child.text().to_string();
                 let count = child.children_with_tokens().count();
-                child.splice_children(
+                crate::nodes::replace_children(
+                    &child,
                     0..count,
                     vec![crate::nodes::fresh_token(kind, &after).into()],
                 );

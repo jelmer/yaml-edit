@@ -1707,9 +1707,14 @@ impl Validator {
     /// anchor that precedes it, so `a: *x` and `a: *x\nb: &x 1` are errors.
     fn check_undefined_aliases(&self, document: &SyntaxNode, violations: &mut Vec<Violation>) {
         let mut anchors = std::collections::HashSet::new();
+        // The lexer gives `*x` and `&x` opening a line of a block scalar body
+        // or a plain scalar continuation as REFERENCE and ANCHOR too. The
+        // parser keeps those inside the SCALAR as text, and wraps real
+        // aliases in an ALIAS node.
         for token in document
             .descendants_with_tokens()
             .filter_map(|e| e.into_token())
+            .filter(|t| t.parent().map(|p| p.kind()) != Some(crate::SyntaxKind::SCALAR))
         {
             match token.kind() {
                 crate::SyntaxKind::ANCHOR => {
@@ -2723,6 +2728,18 @@ mod tests {
             vec![("Undefined alias *x".to_string(), at(23, 25))]
         );
         assert_eq!(undefined("[&x a, *x, {*x : b}]\n"), vec![]);
+        // `*x` and `&x` in scalar text are content, not node properties.
+        assert_eq!(undefined("a: |\n  *x\n"), vec![]);
+        assert_eq!(undefined("a: >\n  text\n  *x\n"), vec![]);
+        assert_eq!(undefined("a: b\n  *x\n"), vec![]);
+        assert_eq!(
+            undefined("a: |\n  &x\nb: *x\n"),
+            vec![("Undefined alias *x".to_string(), at(13, 15))]
+        );
+        assert_eq!(
+            undefined("a: b\n  &x\nc: *x\n"),
+            vec![("Undefined alias *x".to_string(), at(13, 15))]
+        );
     }
 
     #[test]

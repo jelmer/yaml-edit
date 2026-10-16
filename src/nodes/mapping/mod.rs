@@ -605,7 +605,8 @@ impl Mapping {
                 matches.then_some((i, entry))
             });
         if let Some((i, entry)) = existing {
-            match flow_context.then(|| flow_form(&value)).flatten() {
+            let indent = self.detect_indentation_level() + 2;
+            match flow_context.then(|| flow_form(&value, indent)).flatten() {
                 Some(flow) => entry.set_value(flow, flow_context),
                 None => entry.set_value(value, flow_context),
             }
@@ -1548,7 +1549,8 @@ impl AsYaml for Mapping {
         indent: usize,
         _flow_context: bool,
     ) -> bool {
-        let delta = indent as isize - crate::as_yaml::source_base_indent(&self.0) as isize;
+        let delta = indent as isize
+            - crate::as_yaml::source_reindent_base(&self.0, self.is_flow_style()) as isize;
         builder.start_node(SyntaxKind::MAPPING.into());
         crate::as_yaml::copy_node_content_reindent(builder, &self.0, delta);
         builder.finish_node();

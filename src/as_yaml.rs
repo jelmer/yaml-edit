@@ -774,6 +774,36 @@ pub(crate) fn source_base_indent(node: &SyntaxNode) -> usize {
     }
 }
 
+/// Indentation of the line on which `node` starts.
+pub(crate) fn source_line_indent(node: &SyntaxNode) -> usize {
+    let mut prefix = Vec::new();
+    let mut cursor = node.first_token().and_then(|t| t.prev_token());
+    while let Some(token) = cursor {
+        match token.text().rfind('\n') {
+            Some(nl) => {
+                prefix.push(token.text()[nl + 1..].to_string());
+                break;
+            }
+            None => prefix.push(token.text().to_string()),
+        }
+        cursor = token.prev_token();
+    }
+    prefix.reverse();
+    prefix.concat().chars().take_while(|&c| c == ' ').count()
+}
+
+/// Base column to measure a copied collection's indentation from: for a
+/// flow collection, whose continuation lines are only bound to the
+/// indentation of the line it starts on, that line's indentation;
+/// otherwise the column of its first entry.
+pub(crate) fn source_reindent_base(node: &SyntaxNode, is_flow: bool) -> usize {
+    if is_flow {
+        source_line_indent(node)
+    } else {
+        source_base_indent(node)
+    }
+}
+
 // AsYaml trait implementations for primitive types
 //
 // Uses macros to reduce boilerplate for the 12 numeric primitive types.

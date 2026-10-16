@@ -36,8 +36,8 @@
 //! assert_eq!(count_keys(&root), 2);
 //!
 //! // …and on a MergedMapping.
-//! let registry = doc.merged().unwrap();
-//! let prod = registry.as_mapping().get_merged("prod").unwrap();
+//! let registry = doc.merged().unwrap().unwrap();
+//! let prod = registry.as_mapping().get_merged("prod").unwrap().unwrap();
 //! assert_eq!(count_keys(&prod), 2); // timeout + host
 //! ```
 //!
@@ -170,7 +170,7 @@ m:
         let d = doc(yaml);
         let reg = d.build_anchor_registry();
         let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
-        let merged = m.merged(&reg);
+        let merged = m.merged(&reg).unwrap();
 
         // Direct + merged keys, in insertion-then-merge-source order.
         assert_eq!(collect_keys(&merged), vec!["c", "a", "b"]);
@@ -189,7 +189,7 @@ m:
         let d = doc(yaml);
         let reg = d.build_anchor_registry();
         let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
-        let merged = m.merged(&reg);
+        let merged = m.merged(&reg).unwrap();
 
         let view: &dyn MappingView = &merged;
         assert!(view.contains_key(&"x"));
@@ -234,8 +234,8 @@ m:
   <<: *d
 ";
         let d = doc(yaml);
-        let owned = d.merged().unwrap();
-        let m = owned.as_mapping().get_merged("m").unwrap();
+        let owned = d.merged().unwrap().unwrap();
+        let m = owned.as_mapping().get_merged("m").unwrap().unwrap();
         // Use the trait method so the `&dyn AsYaml` signature is exercised.
         let view: &dyn MappingView = &m;
         assert_eq!(view.get(&"k").unwrap().to_i64(), Some(42));

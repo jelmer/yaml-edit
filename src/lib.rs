@@ -177,7 +177,7 @@ pub mod anchor_resolution;
 #[doc(inline)]
 pub use anchor_resolution::{
     AnchorRegistry, DocumentMergedExt, DocumentResolvedExt, MappingMergedExt, MergedMapping,
-    MergedView,
+    MergedView, ResolveError,
 };
 pub mod mapping_view;
 #[doc(inline)]

@@ -223,16 +223,27 @@ fn check_resolution_agrees(doc: &Document, context: &str) -> Result<(), TestCase
             continue;
         };
 
-        let mut view_keys: Vec<String> = mapping
-            .merged(&registry)
-            .keys()
-            .map(|k| decoded_key(&k))
-            .collect();
+        // get_resolved works from the document root by key. It also
+        // expands aliases in values, so it may fail where the view does not.
+        let (view, resolved) = match (
+            mapping.merged(&registry),
+            doc.get_resolved(key_text.as_str()),
+        ) {
+            (Ok(view), Ok(resolved)) => (view, resolved),
+            (Ok(_), Err(_)) | (Err(_), Err(_)) => continue,
+            (Err(e), Ok(_)) => {
+                return Err(TestCaseError::fail(format!(
+                    "after {context}: MergedMapping failed on {key_text:?} with {e} but \
+                     get_resolved succeeded\ntext: {:?}",
+                    doc.to_string()
+                )));
+            }
+        };
+        let mut view_keys: Vec<String> = view.keys().map(|k| decoded_key(&k)).collect();
         view_keys.sort();
         view_keys.dedup();
 
-        // get_resolved works from the document root by key.
-        let Some(resolved) = doc.get_resolved(key_text.as_str()) else {
+        let Some(resolved) = resolved else {
             // MergedMapping always yields a view; if it found keys while
             // get_resolved found no value at all, they disagree.
             if view_keys.is_empty() {
@@ -291,7 +302,7 @@ fn anchor_seed_strat() -> impl Strategy<Value = &'static str> {
         Just("a: &a\n  x: 1\nm: *a\n"),
         // Nested anchors.
         Just("a: &a\n  inner: &i\n    deep: 1\nm:\n  <<: *a\n  other: *i\n"),
-        // A dangling alias must not panic or invent keys.
+        // A dangling alias must be reported by both paths.
         Just("m:\n  <<: *missing\n  z: 3\n"),
         Just("m:\n  <<: [*missing, *alsomissing]\n  z: 3\n"),
         // Merge chains: the source itself merges from another anchor.

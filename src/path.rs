@@ -98,6 +98,9 @@ pub trait YamlPath {
     ///   value of the wrong container type.
     /// - [`PathError::NotFound`] when a segment addresses a key/index that
     ///   does not exist.
+    /// - [`PathError::UndefinedAlias`] or [`PathError::InvalidMergeOperand`]
+    ///   when a key is not found directly and a `<<` merge operand of the
+    ///   mapping is an undefined alias or not a mapping.
     fn try_get_path(&self, path: &str) -> Result<crate::as_yaml::YamlNode, PathError> {
         self.try_get_path_with(path, AliasPolicy::Follow)
     }
@@ -386,12 +389,21 @@ pub enum PathError {
         index: usize,
     },
     /// A segment landed on an alias whose anchor is not defined anywhere
-    /// in the document, so it could not be resolved.
+    /// in the document, so it could not be resolved. Also reported when a
+    /// `<<` merge operand consulted for the segment is such an alias.
     UndefinedAlias {
         /// The segment whose value is a dangling alias.
         at: String,
         /// The anchor name the alias references, without the `*`.
         alias: String,
+    },
+    /// Looking up a segment needed the mapping's merge keys, and a `<<`
+    /// operand was neither a mapping nor an alias to one.
+    InvalidMergeOperand {
+        /// The segment being looked up.
+        at: String,
+        /// The source text of the offending operand.
+        operand: String,
     },
 }
 
@@ -449,6 +461,10 @@ impl std::fmt::Display for PathError {
             PathError::UndefinedAlias { at, alias } => write!(
                 f,
                 "path segment {at:?} is an alias to undefined anchor {alias:?}"
+            ),
+            PathError::InvalidMergeOperand { at, operand } => write!(
+                f,
+                "looking up path segment {at:?}: merge key operand {operand:?} is not a mapping"
             ),
         }
     }
@@ -752,17 +768,36 @@ fn lookup_own(mapping: &Mapping, key: &str) -> Option<crate::as_yaml::YamlNode> 
 /// through `<<:` merge keys.
 ///
 /// A direct entry always wins: YAML 1.1 says a mapping's own key
-/// shadows one merged in from an anchor.
-fn lookup_merged(mapping: &Mapping, key: &str) -> Option<crate::as_yaml::YamlNode> {
+/// shadows one merged in from an anchor, so the merge keys are only
+/// checked when there is no direct entry.
+fn lookup_merged(
+    mapping: &Mapping,
+    key: &str,
+    segment: &PathSegment,
+) -> Result<crate::as_yaml::YamlNode, PathError> {
+    use crate::anchor_resolution::{MappingMergedExt, ResolveError};
     if let Some(found) = lookup_own(mapping, key) {
-        return Some(found);
+        return Ok(found);
     }
-    use crate::anchor_resolution::MappingMergedExt;
+    let at = segment_display(segment);
     let registry = registry_for(rowan::ast::AstNode::syntax(mapping));
-    let merged = mapping.merged(&registry);
+    let merged = mapping.merged(&registry).map_err(|e| match e {
+        ResolveError::UndefinedAlias { alias } => PathError::UndefinedAlias {
+            at: at.clone(),
+            alias,
+        },
+        ResolveError::InvalidMergeOperand { operand } => PathError::InvalidMergeOperand {
+            at: at.clone(),
+            operand,
+        },
+        ResolveError::RecursiveAlias { .. } => {
+            unreachable!("collecting merge sources does not expand aliases")
+        }
+    })?;
     merged
         .get(key)
         .or_else(|| merged.get(spelled_key(merged.keys(), key)?))
+        .ok_or(PathError::NotFound { at })
 }
 
 fn descend_one(
@@ -776,9 +811,7 @@ fn descend_one(
             let mapping = node_as_mapping(&current).ok_or_else(|| PathError::TypeMismatch {
                 at: segment_display(segment),
             })?;
-            lookup_merged(&mapping, key).ok_or_else(|| PathError::NotFound {
-                at: segment_display(segment),
-            })
+            lookup_merged(&mapping, key, segment)
         }
         PathSegment::Index(index) => {
             if let Some(seq) = node_as_sequence(&current) {
@@ -787,9 +820,7 @@ fn descend_one(
                 })
             } else if let Some(map) = node_as_mapping(&current) {
                 // Fallback: numeric segment used as a mapping key.
-                lookup_merged(&map, &index.to_string()).ok_or_else(|| PathError::NotFound {
-                    at: segment_display(segment),
-                })
+                lookup_merged(&map, &index.to_string(), segment)
             } else {
                 Err(PathError::TypeMismatch {
                     at: segment_display(segment),
@@ -2675,10 +2706,27 @@ config:
         let second = file.documents().nth(1).unwrap();
         assert_eq!(
             second.try_get_path("b.k"),
-            Err(PathError::NotFound {
-                at: "k".to_string()
+            Err(PathError::UndefinedAlias {
+                at: "k".to_string(),
+                alias: "x".to_string()
             })
         );
+    }
+
+    #[test]
+    fn test_get_path_merge_key_not_a_mapping() {
+        use std::str::FromStr;
+
+        let doc = crate::Document::from_str("a: &a 5\nm: {<<: *a, j: 1}\n").unwrap();
+        assert_eq!(
+            doc.try_get_path("m.k"),
+            Err(PathError::InvalidMergeOperand {
+                at: "k".to_string(),
+                operand: "*a".to_string()
+            })
+        );
+        // A direct key does not need the merge.
+        assert_eq!(doc.try_get_path("m.j").unwrap().to_string(), "1");
     }
 
     #[test]

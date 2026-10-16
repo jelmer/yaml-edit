@@ -1146,6 +1146,12 @@ impl ScalarValue {
     /// For a block scalar, if `indent` is 0, or above 9 when the value
     /// needs an indentation indicator (its lines all start with spaces).
     pub fn to_yaml_string_with_indent(&self, parent_column: usize, indent: usize) -> String {
+        self.render(parent_column, indent, false)
+    }
+
+    /// Render the scalar with its tag; inside a flow collection when
+    /// `flow_context` is set.
+    fn render(&self, parent_column: usize, indent: usize, flow_context: bool) -> String {
         // Special data types carry their tag unless an explicit one is set
         let tag = self.tag.as_deref().or(match self.scalar_type {
             #[cfg(feature = "base64")]
@@ -1154,11 +1160,25 @@ impl ScalarValue {
             ScalarType::Regex => Some("!!regex"),
             _ => None,
         });
-        let content = self.render_content(parent_column, indent);
+        let content = self.render_content_in(parent_column, indent, flow_context);
         match tag {
             Some(tag) if content.is_empty() => tag.to_string(),
             Some(tag) => format!("{tag} {content}"),
             None => content,
+        }
+    }
+
+    /// Render the scalar without any tag; inside a flow collection when
+    /// `flow_context` is set, where block scalars and plain scalars
+    /// holding flow indicators can't appear.
+    fn render_content_in(&self, parent_column: usize, indent: usize, flow_context: bool) -> String {
+        let content = self.render_content(parent_column, indent);
+        let breaks_flow = content.starts_with(['|', '>'])
+            || (!content.starts_with(['"', '\'']) && content.contains([',', '[', ']', '{', '}']));
+        if flow_context && breaks_flow {
+            self.to_double_quoted()
+        } else {
+            content
         }
     }
 
@@ -1437,13 +1457,13 @@ impl crate::AsYaml for ScalarValue {
         &self,
         builder: &mut rowan::GreenNodeBuilder,
         indent: usize,
-        _flow_context: bool,
+        flow_context: bool,
     ) -> bool {
         use crate::lex::SyntaxKind;
         if let Some(tag) = &self.tag {
             builder.start_node(SyntaxKind::TAGGED_NODE.into());
             builder.token(SyntaxKind::TAG.into(), tag);
-            let content = self.render_content(indent, 2);
+            let content = self.render_content_in(indent, 2, flow_context);
             // Like the parser, give a tag with no content an empty scalar.
             let kind = if content.is_empty() {
                 SyntaxKind::NULL
@@ -1464,7 +1484,7 @@ impl crate::AsYaml for ScalarValue {
         // A block scalar's body has to clear the column its entry sits at,
         // or the text it renders to is not the value it stood for:
         // `a:\n  b: |-\n  x\n` has an empty scalar and a stray `x`.
-        let text = self.to_yaml_string_with_indent(indent, 2);
+        let text = self.render(indent, 2, flow_context);
         builder.start_node(SyntaxKind::SCALAR.into());
         builder.token(self.token_kind(&text).into(), &text);
         builder.finish_node();

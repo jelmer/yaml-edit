@@ -1415,10 +1415,10 @@ impl From<bool> for ScalarValue {
     }
 }
 
+/// Same as [`ScalarValue::from_scalar`].
 impl From<crate::yaml::Scalar> for ScalarValue {
     fn from(scalar: crate::yaml::Scalar) -> Self {
-        let value = scalar.as_string();
-        ScalarValue::parse(&value)
+        Self::from_scalar(&scalar)
     }
 }
 
@@ -2512,6 +2512,31 @@ mod tests {
         let scalar = crate::yaml::Scalar::cast(node.syntax().clone()).unwrap();
         let sv = ScalarValue::from_scalar(&scalar);
         assert_eq!(sv.style, ScalarStyle::SingleQuoted);
+    }
+
+    #[test]
+    fn test_from_scalar_impl_matches_from_scalar() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("a: \"123\"\nb: 'true'\nc: |\n  1\nd: 0x1F\ne: x\n").unwrap();
+        let m = doc.as_mapping().unwrap();
+        for (key, value, style, scalar_type) in [
+            ("a", "123", ScalarStyle::DoubleQuoted, ScalarType::String),
+            ("b", "true", ScalarStyle::SingleQuoted, ScalarType::String),
+            ("c", "1\n", ScalarStyle::Literal, ScalarType::String),
+            ("d", "0x1F", ScalarStyle::Plain, ScalarType::Integer),
+            ("e", "x", ScalarStyle::Plain, ScalarType::String),
+        ] {
+            let scalar = m.get(key).unwrap().as_scalar().unwrap().clone();
+            let sv = ScalarValue::from(scalar.clone());
+            assert_eq!(sv, ScalarValue::from_scalar(&scalar));
+            assert_eq!(
+                (sv.value(), sv.style(), sv.scalar_type()),
+                (value, style, scalar_type),
+                "{key}"
+            );
+        }
     }
 
     #[test]

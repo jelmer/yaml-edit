@@ -89,6 +89,53 @@ fn near_misses_of_the_1_1_forms_are_left_alone() {
 }
 
 #[test]
+fn strings_that_1_2_reads_as_numbers_are_quoted() {
+    // Neither 1.1 octal (it has an 8 or 9) nor 1.1 decimal (which has no
+    // leading zero), so a 1.1 string; a 1.2 integer.
+    assert_eq!(migrated("a: 09\n"), "a: '09'\n");
+    assert_eq!(migrated("a: -0789\n"), "a: '-0789'\n");
+    assert_eq!(migrated("a: +08\n"), "a: '+08'\n");
+    // 1.1 had no `0o` octal.
+    assert_eq!(migrated("a: 0o17\n"), "a: '0o17'\n");
+    // 1.1 floats need a `.` and a signed exponent.
+    assert_eq!(migrated("a: 1e3\n"), "a: '1e3'\n");
+    assert_eq!(migrated("a: -1E+3\n"), "a: '-1E+3'\n");
+    assert_eq!(migrated("a: 1.0e3\n"), "a: '1.0e3'\n");
+    assert_eq!(migrated("a: .5E3\n"), "a: '.5E3'\n");
+    // Keys too.
+    assert_eq!(migrated("09: a\n1e3: b\n"), "'09': a\n'1e3': b\n");
+    assert_eq!(
+        migrated("f: [09, {1e3: 0o7}]\n"),
+        "f: ['09', {'1e3': '0o7'}]\n"
+    );
+}
+
+#[test]
+fn numbers_in_both_versions_are_left_alone() {
+    for src in [
+        "a: 0\n",
+        "a: -12\n",
+        "a: 0x1F\n",
+        "a: 1.5\n",
+        "a: .5\n",
+        "a: 1.\n",
+        "a: 1.0e+3\n",
+        "a: .5E-3\n",
+        "a: 1.e-3\n",
+        "a: -.inf\n",
+        "a: .NaN\n",
+        "a: ~\n",
+        "a: TRUE\n",
+        "a: !!int 0o17\n",
+        "a: !!float 1e3\n",
+        "a: '09'\n",
+        "a: \"1e3\"\n",
+    ] {
+        assert_eq!(migrated(src), src, "{src:?}");
+    }
+}
+
+#[test]
 fn the_legacy_booleans_become_real_ones() {
     assert_eq!(migrated("a: yes\nb: no\n"), "a: true\nb: false\n");
     assert_eq!(migrated("a: ON\nb: Off\n"), "a: true\nb: false\n");
@@ -100,11 +147,8 @@ fn an_unambiguous_scalar_is_left_alone() {
         "keep: 'yes'\n",
         "keep: \"0755\"\n",
         "keep: !!str yes\n",
-        "fine: 0o644\n",
         "fine: 42\n",
         "fine: true\n",
-        // `08` is no octal at all, so there is no 1.1 reading to preserve.
-        "bad: 08\n",
         // A block scalar's body is literal text, not a plain scalar.
         "block: |\n  yes\n",
     ] {
@@ -132,20 +176,31 @@ fn formatting_and_comments_survive() {
 
 #[test]
 fn the_rewrites_are_reported() {
-    let doc = Document::from_str("mode: 0755\nflag: yes\nkeep: 1\n").unwrap();
+    let doc = Document::from_str("mode: 0755\nflag: yes\nkeep: 1\nid: 09\n").unwrap();
     let rewrites = to_yaml_1_2(&doc);
-    assert_eq!(rewrites.len(), 2);
+    assert_eq!(rewrites.len(), 3);
     assert_eq!(rewrites[0].before, "0755");
     assert_eq!(rewrites[0].after, "0o755");
     assert_eq!(rewrites[1].before, "yes");
     assert_eq!(rewrites[1].after, "true");
+    assert_eq!(rewrites[2].before, "09");
+    assert_eq!(rewrites[2].after, "'09'");
 }
 
 #[test]
 fn a_migrated_document_still_parses_and_is_stable() {
-    let src = "mode: 0755\nflag: yes\nnested:\n  - no\n  - 010\n";
+    let src = "flag: yes\nnested:\n  - no\n  - 1_000\n  - 09\n  - 1e3\n";
     let once = migrated(src);
     Document::from_str(&once).unwrap();
     // Migrating again finds nothing left to do.
     assert_eq!(migrated(&once), once);
+}
+
+#[test]
+fn migrating_twice_quotes_the_octal_it_wrote() {
+    // `0o755` is a string to a 1.1 reader, so the output of a migration is
+    // not itself a 1.1 document.
+    let once = migrated("mode: 0755\n");
+    assert_eq!(once, "mode: 0o755\n");
+    assert_eq!(migrated(&once), "mode: '0o755'\n");
 }

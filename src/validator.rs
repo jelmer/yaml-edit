@@ -3185,12 +3185,11 @@ mod tests {
 
     #[test]
     fn test_tab_indentation_rejected() {
-        // DK95/06: the tab moves the entry's column, which the parser
-        // already rejects.
-        assert!(crate::YamlFile::from_str("foo:\n  a: 1\n  \tb: 2\n").is_err());
+        // DK95/06 is the third: the tab moves the entry's column.
         for yaml in [
             "a:\n\tb: 1\n",
             "- [\n\tfoo,\n foo\n ]\n",
+            "foo:\n  a: 1\n  \tb: 2\n",
             "a:\n \t- x\n",
             "a:\n \tb: 1\n",
         ] {

@@ -316,8 +316,11 @@ Every test that mutates a tree checks the result after each mutation:
 - `debug::roundtrip_ok` re-parses the text and checks that it parses without
   errors and renders back to the same text.
 - In integration tests, `assert_cst_ok(&doc)` and `assert_file_cst_ok(&file)`
-  from `tests/common/mod.rs` run both. The fuzz and property tests use the
-  helpers in `tests/common/mutation_checks.rs`.
+  from `tests/common/mod.rs` run both. Unit tests under `src/` use the
+  test-only `debug::assert_cst_ok`, which takes any AST node. The fuzz and
+  property tests use the helpers in `tests/common/mutation_checks.rs`.
+- Tests of operations that fail on purpose check the CST too, to show the
+  failed operation left the tree intact.
 
 These checks don't catch everything. A mutation can put a token in a
 different node than the parser would (a NEWLINE under `DOCUMENT` rather than

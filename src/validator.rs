@@ -1799,9 +1799,14 @@ impl Validator {
         let Some(prev) = token.prev_token() else {
             return;
         };
+        // A BOM leaves the comment at the start of its line, which is
+        // separation enough (l-document-prefix).
         if !matches!(
             prev.kind(),
-            crate::SyntaxKind::WHITESPACE | crate::SyntaxKind::NEWLINE | crate::SyntaxKind::INDENT
+            crate::SyntaxKind::WHITESPACE
+                | crate::SyntaxKind::NEWLINE
+                | crate::SyntaxKind::INDENT
+                | crate::SyntaxKind::BOM
         ) {
             violations.push(Violation::error_at(
                 Rule::Other,
@@ -3052,6 +3057,10 @@ mod tests {
             violations[0].message,
             "Comment without whitespace separation"
         );
+
+        // A byte order mark may directly precede a comment line.
+        let parsed = YamlFile::from_str("\u{FEFF}# c\na: 1\n").unwrap();
+        assert_eq!(validator.validate_syntax(parsed.syntax()), vec![]);
     }
 
     #[test]

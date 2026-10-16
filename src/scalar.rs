@@ -1484,6 +1484,8 @@ impl crate::AsYaml for ScalarValue {
         // A block scalar's body has to clear the column its entry sits at,
         // or the text it renders to is not the value it stood for:
         // `a:\n  b: |-\n  x\n` has an empty scalar and a stray `x`.
+        // TODO: emit a block scalar as the parser tokenizes it (PIPE, NEWLINE,
+        // INDENT, ...) rather than as a single STRING token.
         let text = self.render(indent, 2, flow_context);
         builder.start_node(SyntaxKind::SCALAR.into());
         builder.token(self.token_kind(&text).into(), &text);

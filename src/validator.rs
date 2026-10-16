@@ -1217,13 +1217,25 @@ impl Validator {
                 // After leading spaces a tab is separation rather than
                 // indentation (DK95/00's `foo:\n \tbar`, 6HB6), unless a
                 // block collection entry follows, whose column it would move
-                // (DK95/06).
-                let starts_block_entry = token.next_sibling_or_token().is_some_and(|n| {
-                    matches!(
-                        n.kind(),
-                        crate::SyntaxKind::MAPPING_ENTRY | crate::SyntaxKind::SEQUENCE_ENTRY
-                    ) && !is_flow
-                });
+                // (DK95/06). In a VALUE the next sibling is the whole nested
+                // collection rather than its first entry (`a:\n \t- x`).
+                let starts_block_entry = !is_flow
+                    && token
+                        .next_sibling_or_token()
+                        .is_some_and(|n| match n.kind() {
+                            crate::SyntaxKind::MAPPING_ENTRY
+                            | crate::SyntaxKind::SEQUENCE_ENTRY => true,
+                            crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE => {
+                                !n.as_node().and_then(|n| n.first_token()).is_some_and(|t| {
+                                    matches!(
+                                        t.kind(),
+                                        crate::SyntaxKind::LEFT_BRACKET
+                                            | crate::SyntaxKind::LEFT_BRACE
+                                    )
+                                })
+                            }
+                            _ => false,
+                        });
                 if token.text().starts_with(' ') && !starts_block_entry {
                     continue;
                 }
@@ -3145,6 +3157,8 @@ mod tests {
             "a: 1 # c\n# d\n\t# e\nb: 2\n",
             "foo:\n \tbar\n",
             "k: [a,\n  \tb]\n",
+            "a:\n \t[x]\n",
+            "a:\n \t{x: y}\n",
         ] {
             let file = crate::YamlFile::from_str(yaml).unwrap();
             assert_eq!(
@@ -3160,7 +3174,12 @@ mod tests {
         // DK95/06: the tab moves the entry's column, which the parser
         // already rejects.
         assert!(crate::YamlFile::from_str("foo:\n  a: 1\n  \tb: 2\n").is_err());
-        for yaml in ["a:\n\tb: 1\n", "- [\n\tfoo,\n foo\n ]\n"] {
+        for yaml in [
+            "a:\n\tb: 1\n",
+            "- [\n\tfoo,\n foo\n ]\n",
+            "a:\n \t- x\n",
+            "a:\n \tb: 1\n",
+        ] {
             let file = crate::YamlFile::from_str(yaml).unwrap();
             let tab_errors: Vec<_> = Validator::new()
                 .validate_syntax(file.syntax())

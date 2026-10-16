@@ -2910,4 +2910,18 @@ config:
         let doc = Document::from_str("base: &b\n  1: one\nm:\n  <<: *b\n").unwrap();
         assert_eq!(doc.try_get_path("m.1").unwrap().to_string(), "one");
     }
+
+    #[test]
+    fn test_set_path_expand_block_mapping_in_sequence() {
+        use crate::yaml::Document;
+        use rowan::ast::AstNode;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("s:\n  - &x\n    k: 1\n  - *x\n").unwrap();
+        doc.try_set_path_with("s[1].k", 9, AliasPolicy::Expand)
+            .unwrap();
+        crate::debug::validate_tree(doc.syntax()).unwrap();
+        crate::debug::roundtrip_ok(doc.syntax()).unwrap();
+        assert_eq!(doc.to_string(), "s:\n  - &x\n    k: 1\n  - k: 9\n");
+    }
 }

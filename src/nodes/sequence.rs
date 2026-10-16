@@ -113,11 +113,18 @@ fn rebuild_entry_with_value(entry: &SyntaxNode, value: &impl crate::AsYaml) -> S
     builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
 
     let mut value_inserted = false;
+    let mut value_ends_with_newline = false;
     let mut trailing_text: Option<String> = None;
     let mut after_dash = false;
+    // A value ending in NEWLINE terminates the entry itself, so the old
+    // terminator after it, up to this index, is dropped.
+    let mut skip_until = 0;
 
-    for entry_child in entry_children {
-        match &entry_child {
+    for (i, entry_child) in entry_children.iter().enumerate() {
+        if i < skip_until {
+            continue;
+        }
+        match entry_child {
             rowan::NodeOrToken::Node(n)
                 if matches!(
                     n.kind(),
@@ -139,8 +146,11 @@ fn rebuild_entry_with_value(entry: &SyntaxNode, value: &impl crate::AsYaml) -> S
                     if after_dash {
                         builder.token(SyntaxKind::WHITESPACE.into(), " ");
                     }
-                    value.build_content(&mut builder, 0, false);
+                    value_ends_with_newline = value.build_content(&mut builder, 0, false);
                     value_inserted = true;
+                    if value_ends_with_newline {
+                        skip_until = terminator_end(&entry_children, i + 1);
+                    }
                 }
                 after_dash = false;
             }
@@ -160,7 +170,9 @@ fn rebuild_entry_with_value(entry: &SyntaxNode, value: &impl crate::AsYaml) -> S
     // Restore trailing whitespace extracted from the old value
     if let Some(trailing) = trailing_text {
         if let Some(indent_part) = trailing.strip_prefix('\n') {
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
+            if !value_ends_with_newline {
+                builder.token(SyntaxKind::NEWLINE.into(), "\n");
+            }
             if !indent_part.is_empty() {
                 builder.token(SyntaxKind::INDENT.into(), indent_part);
             }
@@ -169,6 +181,21 @@ fn rebuild_entry_with_value(entry: &SyntaxNode, value: &impl crate::AsYaml) -> S
 
     builder.finish_node();
     SyntaxNode::new_root_mut(builder.finish())
+}
+
+/// The index just past the NEWLINE that ends `children[start..]`, if only
+/// whitespace precedes it, else `start`.
+fn terminator_end(children: &[rowan::SyntaxElement<Lang>], start: usize) -> usize {
+    let blank_or_newline = |c: &rowan::SyntaxElement<Lang>| {
+        c.as_token()
+            .map(|t| t.kind())
+            .filter(|k| matches!(k, SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE))
+    };
+    children[start..]
+        .iter()
+        .map_while(blank_or_newline)
+        .position(|k| k == SyntaxKind::NEWLINE)
+        .map_or(start, |offset| start + offset + 1)
 }
 
 /// Drop the run of blank tokens (newline, indent, whitespace) that ends
@@ -1323,6 +1350,33 @@ mod tests {
             values[1].as_scalar().map(|s| s.as_string()),
             Some("bar".to_string())
         );
+    }
+
+    #[test]
+    fn test_sequence_set_block_mapping_adds_no_blank_line() {
+        use crate::debug::{roundtrip_ok, validate_tree};
+        use crate::{AsYaml, Document};
+
+        let value = Document::from_str("k: 1\n").unwrap();
+        let value = value.as_mapping().unwrap();
+        for (src, index, expected) in [
+            ("- a\n- b\n", 1, "- a\n- k: 1\n"),
+            ("- a\n- b\n- c\n", 1, "- a\n- k: 1\n- c\n"),
+            ("- a\n- b  \n- c\n", 1, "- a\n- k: 1\n- c\n"),
+            ("- a\n- b", 1, "- a\n- k: 1\n"),
+            ("- j: 2\n- b\n", 0, "- k: 1\n- b\n"),
+            ("s:\n  - a\n  - b\nt: 1\n", 0, "s:\n  - k: 1\n  - b\nt: 1\n"),
+        ] {
+            let doc = Document::from_str(src).unwrap();
+            let seq = doc
+                .as_sequence()
+                .or_else(|| doc.as_mapping()?.get_sequence("s"))
+                .unwrap();
+            assert!(seq.set(index, value.clone()));
+            validate_tree(doc.as_node().unwrap()).unwrap();
+            roundtrip_ok(doc.as_node().unwrap()).unwrap();
+            assert_eq!(doc.to_string(), expected, "{src:?}");
+        }
     }
 
     #[test]

@@ -185,13 +185,12 @@ fn root_node(built: YamlBuilder) -> YamlNode {
         .expect("builders always produce a document holding a collection")
 }
 
-/// Start a MAPPING_ENTRY and emit its `key:`.
+/// Start a MAPPING_ENTRY and emit its `key:`, quoting the key as needed to
+/// keep it a string.
 fn start_mapping_entry(builder: &mut GreenNodeBuilder<'static>, key: &str) {
     builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
     builder.start_node(SyntaxKind::KEY.into());
-    builder.start_node(SyntaxKind::SCALAR.into());
-    builder.token(SyntaxKind::STRING.into(), key);
-    builder.finish_node();
+    crate::nodes::build_key_content(builder, &key);
     builder.finish_node();
     builder.token(SyntaxKind::COLON.into(), ":");
 }
@@ -390,6 +389,9 @@ impl MappingBuilder {
 
     /// Add a key-value pair. The value can be any type implementing [`AsYaml`]:
     /// `&str`, `String`, `i64`, `bool`, `f64`, CST nodes, etc.
+    ///
+    /// The key is always a string: it is quoted if it would otherwise read
+    /// as another type or not parse as a key at all.
     pub fn pair(mut self, key: impl Into<String>, value: impl AsYaml) -> Self {
         self.start_entry(&key.into());
         let nested = self.indent + 2;
@@ -557,6 +559,46 @@ mod tests {
         );
         debug::validate_tree(doc.syntax()).unwrap();
         debug::roundtrip_ok(doc.syntax()).unwrap();
+    }
+
+    #[test]
+    fn test_string_keys_are_quoted_when_needed() {
+        let yaml = MappingBuilder::new()
+            .pair("a: b", 1)
+            .pair("true", 2)
+            .pair("", 3)
+            .pair("multi\nline", 4)
+            .build()
+            .build();
+        assert_eq!(
+            yaml.to_string(),
+            "'a: b': 1\n'true': 2\n'': 3\n\"multi\\nline\": 4\n"
+        );
+        assert_parser_shaped(&yaml);
+        let doc = yaml.document().unwrap();
+        let keys: Vec<String> = doc
+            .as_mapping()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec!["a: b", "true", "", "multi\nline"]);
+        assert_eq!(doc.get("true").unwrap().to_i64(), Some(2));
+    }
+
+    #[test]
+    fn test_nested_keys_are_quoted_when_needed() {
+        let yaml = MappingBuilder::new()
+            .mapping("1", |m| m.pair("null", "x"))
+            .sequence("- a", |s| s.item(1))
+            .insert_mapping("#c", MappingBuilder::new().pair("k", "v"))
+            .build()
+            .build();
+        assert_eq!(
+            yaml.to_string(),
+            "'1':\n  'null': x\n'- a':\n  - 1\n'#c':\n  k: v\n"
+        );
+        assert_parser_shaped(&yaml);
     }
 
     #[test]
@@ -849,7 +891,7 @@ mod tests {
             .build();
         assert_eq!(
             yaml.to_string(),
-            "bool_true: 'true'\nbool_false: 'false'\nyes: 'yes'\nno: 'no'\nnull_value: 'null'\ntilde: '~'\n"
+            "bool_true: 'true'\nbool_false: 'false'\n'yes': 'yes'\n'no': 'no'\nnull_value: 'null'\ntilde: '~'\n"
         );
     }
 

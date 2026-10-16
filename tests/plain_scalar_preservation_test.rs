@@ -442,9 +442,13 @@ fn a_comma_in_block_context_is_scalar_content() {
     // `,` separates entries only inside a flow collection. In block context
     // it is ordinary plain-scalar text, including at the start of a
     // continuation line, which used to strand the rest of the document.
-    // Only a scalar's first character cannot be one, as for any indicator.
-    assert!(YamlFile::from_str("a: ,y\nb: z\n").is_err());
-    for (yaml, value) in [("a: x,y\nb: z\n", "x,y"), ("a: x\n  ,y\nb: z\n", "x ,y")] {
+    // A leading `,` is a spec violation the validator reports, but the
+    // parser still keeps it as the scalar's text.
+    for (yaml, value) in [
+        ("a: x,y\nb: z\n", "x,y"),
+        ("a: x\n  ,y\nb: z\n", "x ,y"),
+        ("a: ,y\nb: z\n", ",y"),
+    ] {
         let file = YamlFile::from_str(yaml).unwrap();
         assert_eq!(file.to_string(), yaml);
         common::assert_file_cst_ok(&file);

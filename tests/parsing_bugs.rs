@@ -2175,26 +2175,29 @@ fn test_hyphen_in_content_is_not_a_sequence_marker() {
     }
 }
 
-/// A flow indicator cannot start a plain scalar outside a flow collection,
-/// and inside one a `-` starts a plain scalar only when a safe character
-/// follows it.
+/// A plain scalar opening with an indicator is a spec violation that the
+/// validator reports; the parser keeps the text as the scalar.
 #[test]
-fn test_plain_scalar_cannot_start_with_an_indicator() {
-    for (yaml, error) in [
-        ("]}]}", "1:1: Plain scalar cannot start with ']'"),
-        ("a: ,b\n", "1:4: Plain scalar cannot start with ','"),
-        ("- a\n- }\n", "2:3: Plain scalar cannot start with '}'"),
-        ("[-1, - 2]", "1:6: Plain scalar cannot start with '-'"),
-        ("[a, -]", "1:5: Plain scalar cannot start with '-'"),
+fn test_plain_scalar_starting_with_an_indicator_parses() {
+    use rowan::ast::AstNode;
+    for (yaml, scalars) in [
+        ("]}]}", vec!["]}]}"]),
+        ("a: ,b\n", vec!["a", ",b"]),
+        ("- ]\n", vec!["]"]),
+        ("[a, - b]", vec!["a", "- b"]),
+        ("[a, -]", vec!["a", "-"]),
     ] {
-        assert_eq!(YamlFile::parse(yaml).errors(), [error], "{yaml:?}");
-    }
-    for yaml in ["[-1, -a]", "{-: 1}", "a: x]\n", "[a\n -]"] {
-        assert_eq!(
-            YamlFile::parse(yaml).errors(),
-            Vec::<String>::new(),
-            "{yaml:?}"
-        );
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        yaml_edit::debug::validate_tree(file.syntax()).unwrap();
+        yaml_edit::debug::roundtrip_ok(file.syntax()).unwrap();
+        let found: Vec<String> = file
+            .syntax()
+            .descendants()
+            .filter_map(yaml_edit::Scalar::cast)
+            .map(|s| s.as_string())
+            .collect();
+        assert_eq!(found, scalars, "{yaml:?}");
     }
 }
 
@@ -2296,27 +2299,18 @@ fn test_document_markers_still_parse() {
     }
 }
 
-/// A document marker at the start of a line is one even inside a quoted
-/// scalar, which makes the scalar invalid (test suite 5TRB, RXY3).
+/// A document marker inside a quoted scalar is a spec violation (test
+/// suite 5TRB, RXY3) that the validator reports; the parser keeps it as
+/// part of the scalar.
 #[test]
-fn test_document_marker_inside_a_quoted_scalar() {
-    for (yaml, error) in [
-        (
-            "a: \"x\n---\ny\"\n",
-            "1:4: Document marker inside a quoted scalar",
-        ),
-        (
-            "'x\n... y'\n",
-            "1:1: Document marker inside a quoted scalar",
-        ),
-    ] {
-        assert_eq!(YamlFile::parse(yaml).errors(), [error], "{yaml:?}");
+fn test_document_marker_inside_a_quoted_scalar_parses() {
+    use rowan::ast::AstNode;
+    for yaml in ["a: \"x\n---\ny\"\n", "'x\n... y'\n", "\"x\n---y\"\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        yaml_edit::debug::validate_tree(file.syntax()).unwrap();
+        yaml_edit::debug::roundtrip_ok(file.syntax()).unwrap();
     }
-    // Without whitespace after it the marker is plain text.
-    assert_eq!(
-        YamlFile::parse("\"x\n---y\"\n").errors(),
-        Vec::<String>::new()
-    );
 }
 
 /// A block-scalar header's indicators are ASCII, so it must be matched by
@@ -3192,8 +3186,7 @@ fn test_comment_whitespace_seen_across_node_boundaries() {
 fn test_validator_accepts_more_well_formed_yaml() {
     use yaml_edit::validator::Validator;
     let messages = |yaml: &str| {
-        // The parser itself rejects `!!str, x`; validate what it recovers.
-        let file = YamlFile::parse(yaml).tree();
+        let file = YamlFile::from_str(yaml).unwrap();
         Validator::new()
             .validate_syntax(<YamlFile as rowan::ast::AstNode>::syntax(&file))
             .iter()
@@ -3212,9 +3205,10 @@ fn test_validator_accepts_more_well_formed_yaml() {
     assert!(messages("k: |2-\n  x\n").is_empty());
 
     // The genuine faults are still reported.
-    assert!(messages("!!str, x\n")
-        .iter()
-        .any(|m| m.contains("comma after tag")));
+    assert_eq!(
+        messages("!!str, x\n"),
+        vec!["Plain scalar cannot start with ','".to_string()]
+    );
     assert!(messages("k: \"a\\qb\"\n")
         .iter()
         .any(|m| m.contains("Invalid escape")));

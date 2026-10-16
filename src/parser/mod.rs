@@ -808,14 +808,6 @@ impl Parser {
     }
 
     pub(super) fn bump(&mut self) {
-        // The lexer keeps a quoted scalar's whole body in one token, so this
-        // is the one place every quoted scalar passes through.
-        if self.current_quoted_scalar_has_document_marker() {
-            self.add_error(
-                "Document marker inside a quoted scalar".to_string(),
-                ParseErrorKind::Other,
-            );
-        }
         if let Some((kind, text)) = self.tokens.pop() {
             // Track line indentation for plain scalar continuation
             match kind {
@@ -842,29 +834,6 @@ impl Parser {
             // Update error context position
             self.error_context.advance(text.len());
         }
-    }
-
-    /// Whether the current token is a quoted scalar with a line that starts
-    /// with a document marker.
-    ///
-    /// A `---` or `...` at the start of a line followed by whitespace, a line
-    /// break or the end of input marks a document boundary wherever it is,
-    /// so it cannot sit inside a quoted scalar: the YAML test suite's 5TRB
-    /// and RXY3 are errors.
-    fn current_quoted_scalar_has_document_marker(&self) -> bool {
-        let Some((SyntaxKind::STRING | SyntaxKind::UNTERMINATED_STRING, text)) = self.tokens.last()
-        else {
-            return false;
-        };
-        if !text.starts_with(['"', '\'']) {
-            return false;
-        }
-        text.split('\n').skip(1).any(|line| {
-            ["---", "..."].iter().any(|marker| {
-                line.strip_prefix(marker)
-                    .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t', '\r']))
-            })
-        })
     }
 
     pub(super) fn current(&self) -> Option<SyntaxKind> {

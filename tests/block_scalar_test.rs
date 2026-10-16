@@ -954,3 +954,20 @@ fn test_empty_block_scalar_in_mapping_in_sequence() {
     assert_eq!(b.as_scalar().unwrap().as_string(), "1");
     assert_eq!(doc.to_string(), yaml);
 }
+
+#[test]
+fn test_header_comment_does_not_set_indicators() {
+    for (yaml, expected) in [
+        ("k: > # a-b\n  x\n", "x\n"),
+        ("k: | # a+b\n  x\n\n", "x\n"),
+        ("k: | # 1\n   x\n", "x\n"),
+        ("k: |-2 # a+\n    x\n", "  x"),
+    ] {
+        let doc = YamlFile::parse(yaml).to_result().unwrap();
+        let document = doc.document().unwrap();
+        let mapping = document.as_mapping().unwrap();
+        let k = mapping.get("k").unwrap();
+        assert_eq!(k.as_scalar().unwrap().as_string(), expected, "{yaml:?}");
+        assert_eq!(doc.to_string(), yaml);
+    }
+}

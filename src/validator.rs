@@ -443,6 +443,9 @@ impl Validator {
             }
             SyntaxKind::DOCUMENT => {
                 self.check_document_level_anchors(node, violations);
+                if self.config.check_anchors {
+                    self.check_undefined_aliases(node, violations);
+                }
             }
             _ => {}
         }
@@ -1699,6 +1702,32 @@ impl Validator {
         }
     }
 
+    /// Check that every alias refers to an anchor earlier in the same document
+    ///
+    /// Anchors are scoped to a document and an alias can only refer to an
+    /// anchor that precedes it, so `a: *x` and `a: *x\nb: &x 1` are errors.
+    fn check_undefined_aliases(&self, document: &SyntaxNode, violations: &mut Vec<Violation>) {
+        let mut anchors = std::collections::HashSet::new();
+        for token in document
+            .descendants_with_tokens()
+            .filter_map(|e| e.into_token())
+        {
+            match token.kind() {
+                crate::SyntaxKind::ANCHOR => {
+                    anchors.insert(token.text()[1..].to_string());
+                }
+                crate::SyntaxKind::REFERENCE if !anchors.contains(&token.text()[1..]) => {
+                    violations.push(Violation::error_at(
+                        Rule::InvalidAnchor,
+                        token.text_range(),
+                        format!("Undefined alias {}", token.text()),
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Check for both anchor and alias on the same value
     ///
     /// Per YAML spec, a node can have an anchor (defining a reusable node) OR
@@ -2660,6 +2689,41 @@ mod tests {
         // the first, `&node1` anchors the nested mapping and `&k1` its key,
         // which is why the test suite calls the same shape valid in 7BMT.
         assert_eq!(violations2.len(), 1, "{violations2:?}");
+    }
+
+    #[test]
+    fn test_validator_undefined_alias() {
+        let undefined = |src: &str| -> Vec<(String, crate::TextPosition)> {
+            let yaml = crate::YamlFile::from_str(src).unwrap();
+            Validator::new()
+                .validate_syntax(yaml.syntax())
+                .into_iter()
+                .filter(|v| v.rule == Rule::InvalidAnchor)
+                .map(|v| (v.message, v.text_range.unwrap()))
+                .collect()
+        };
+        let at = |start: u32, end: u32| crate::TextPosition::new(start, end);
+
+        assert_eq!(
+            undefined("a: *x\n"),
+            vec![("Undefined alias *x".to_string(), at(3, 5))]
+        );
+        // The anchor must precede the alias.
+        assert_eq!(
+            undefined("a: *x\nb: &x 1\n"),
+            vec![("Undefined alias *x".to_string(), at(3, 5))]
+        );
+        // Anchors do not carry over into the next document.
+        assert_eq!(
+            undefined("a: &x 1\n---\nb: *x\n"),
+            vec![("Undefined alias *x".to_string(), at(15, 17))]
+        );
+        assert_eq!(undefined("a: &x 1\nb: *x\n"), vec![]);
+        assert_eq!(
+            undefined("--- &x 1\n--- &x 2\n--- [*x]\n"),
+            vec![("Undefined alias *x".to_string(), at(23, 25))]
+        );
+        assert_eq!(undefined("[&x a, *x, {*x : b}]\n"), vec![]);
     }
 
     #[test]

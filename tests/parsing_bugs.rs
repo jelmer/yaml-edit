@@ -3210,7 +3210,7 @@ fn test_validator_anchor_alias_and_block_scalar_bodies() {
 
     // `&node3` anchors the value's mapping, `*alias1` is that mapping's key
     // -- different nodes (26DV).
-    assert!(messages("top3: &node3\n  *alias1 : v\n").is_empty());
+    assert!(messages("top1: &alias1 k\ntop3: &node3\n  *alias1 : v\n").is_empty());
     // A block scalar's body is literal text, colons included (4WA9).
     assert!(messages("- aaa: |2\n    xxx\n  bbb: |\n    xxx\n").is_empty());
 

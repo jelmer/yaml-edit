@@ -22,7 +22,7 @@ pub(crate) struct ParsedYaml {
 }
 
 // Import Lang, SyntaxNode, and ast_node! macro from nodes module
-use crate::nodes::{ast_node, has_child_token};
+use crate::nodes::{ast_node, has_child_token, SyntaxToken};
 pub use crate::nodes::{Lang, SyntaxNode};
 
 // Re-export extracted AST nodes from nodes module
@@ -417,6 +417,13 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
     crate::nodes::ensure_trailing_newline(&entry_node);
 }
 
+/// The byte order mark `node` starts with, if any.
+fn leading_bom(node: &SyntaxNode) -> Option<SyntaxToken> {
+    node.first_child_or_token()?
+        .into_token()
+        .filter(|t| t.kind() == SyntaxKind::BOM)
+}
+
 /// A virtual AST node for YAML sets (!!set tagged scalars)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Set(SyntaxNode);
@@ -726,6 +733,12 @@ impl YamlFile {
     /// before any document node; callers are responsible for ordering.
     pub fn add_directive(&self, directive_text: &str) {
         if let Some(doc) = self.documents().next() {
+            // A byte order mark must stay first in the stream, so one opening
+            // the first document moves up to the stream ahead of the directive.
+            if let Some(bom) = leading_bom(doc.syntax()) {
+                bom.detach();
+                self.0.splice_children(0..0, vec![bom.into()]);
+            }
             if !has_child_token(doc.syntax(), |k| k == SyntaxKind::DOC_START) {
                 doc.syntax().splice_children(
                     0..0,
@@ -743,8 +756,9 @@ impl YamlFile {
         builder.finish_node();
         let directive_node = SyntaxNode::new_root_mut(builder.finish());
 
+        let index = usize::from(leading_bom(&self.0).is_some());
         self.0.splice_children(
-            0..0,
+            index..index,
             vec![
                 directive_node.into(),
                 crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into(),
@@ -756,7 +770,14 @@ impl YamlFile {
     ///
     /// If the file already has documents or directives, the new document is
     /// started with a `---` marker (unless it has one) on a line of its own.
+    ///
+    /// A byte order mark is only allowed at the start of the stream or in
+    /// front of a document's `---`, so a byte order mark opening `document`
+    /// is kept in front of its `---`. With no earlier document to follow, it
+    /// moves to the start of the stream, or is dropped if the stream already
+    /// starts with one.
     pub fn push_document(&self, document: Document) {
+        let bom = leading_bom(document.syntax());
         let needs_start = self
             .0
             .children()
@@ -772,8 +793,9 @@ impl YamlFile {
                 }
             }
             if !has_child_token(document.syntax(), |k| k == SyntaxKind::DOC_START) {
+                let index = usize::from(bom.is_some());
                 document.syntax().splice_children(
-                    0..0,
+                    index..index,
                     vec![
                         crate::nodes::fresh_token(SyntaxKind::DOC_START, "---").into(),
                         crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into(),
@@ -781,7 +803,33 @@ impl YamlFile {
                 );
             }
         }
+        if let Some(bom) = bom.filter(|_| !self.0.text_range().is_empty()) {
+            bom.detach();
+            self.place_bom(bom);
+        }
         crate::nodes::append_children(&self.0, vec![document.0.into()]);
+    }
+
+    /// Put the byte order mark of a document about to be appended where the
+    /// parser reads it.
+    fn place_bom(&self, bom: SyntaxToken) {
+        match self.0.last_child_or_token() {
+            // A marker in front of `---` ends the document before it, unless
+            // that one was closed with `...`.
+            Some(rowan::NodeOrToken::Node(last))
+                if last.kind() == SyntaxKind::DOCUMENT
+                    && !has_child_token(&last, |k| k == SyntaxKind::DOC_END) =>
+            {
+                crate::nodes::append_children(&last, vec![bom.into()]);
+            }
+            _ if self.documents().next().is_some() => {
+                crate::nodes::append_children(&self.0, vec![bom.into()]);
+            }
+            // Directives or comments only: the marker belongs at the start of
+            // the stream, which needs only one.
+            _ if leading_bom(&self.0).is_some() => {}
+            _ => self.0.splice_children(0..0, vec![bom.into()]),
+        }
     }
 
     /// Set a key-value pair in the first document's mapping.
@@ -997,6 +1045,67 @@ mod tests {
         yaml.push_document(Document::from_str("b: 2\n").unwrap());
         assert_eq!(yaml.to_string(), "a:\n---\nb: 2\n");
         assert_eq!(doc_values(&yaml.to_string()), vec![None, Some(2)]);
+    }
+
+    #[track_caller]
+    fn assert_parser_shape(yaml: &YamlFile) {
+        crate::debug::validate_tree(yaml.syntax()).unwrap();
+        crate::debug::roundtrip_ok(yaml.syntax()).unwrap();
+        let reparsed = YamlFile::from_str(&yaml.to_string()).unwrap();
+        assert_eq!(
+            crate::debug::tree_to_string(yaml.syntax()),
+            crate::debug::tree_to_string(reparsed.syntax())
+        );
+    }
+
+    #[test]
+    fn test_add_directive_keeps_bom_first() {
+        for (src, expected) in [
+            ("\u{feff}a: 1\n", "\u{feff}%YAML 1.2\n---\na: 1\n"),
+            ("\u{feff}--- a\n", "\u{feff}%YAML 1.2\n--- a\n"),
+            ("\u{feff}# c\na: 1\n", "\u{feff}%YAML 1.2\n# c\n---\na: 1\n"),
+            ("\u{feff}", "\u{feff}%YAML 1.2\n"),
+        ] {
+            let yaml = YamlFile::from_str(src).unwrap();
+            yaml.add_directive("%YAML 1.2");
+            assert_eq!(yaml.to_string(), expected);
+            assert_parser_shape(&yaml);
+        }
+    }
+
+    #[test]
+    fn test_push_document_keeps_bom_before_start_marker() {
+        for (src, pushed, expected) in [
+            ("a: 1\n", "\u{feff}b: 2\n", "a: 1\n\u{feff}---\nb: 2\n"),
+            ("a: 1\n", "\u{feff}--- b\n", "a: 1\n\u{feff}--- b\n"),
+            (
+                "a: 1\n...\n",
+                "\u{feff}b: 2\n",
+                "a: 1\n...\n\u{feff}---\nb: 2\n",
+            ),
+            (
+                "foo\n...\n",
+                "\u{feff}b: 2\n",
+                "foo\n...\n\u{feff}---\nb: 2\n",
+            ),
+            ("", "\u{feff}b: 2\n", "\u{feff}b: 2\n"),
+            (
+                "%YAML 1.2\n",
+                "\u{feff}b: 2\n",
+                "\u{feff}%YAML 1.2\n---\nb: 2\n",
+            ),
+            (
+                "\u{feff}%YAML 1.2\n",
+                "\u{feff}b: 2\n",
+                "\u{feff}%YAML 1.2\n---\nb: 2\n",
+            ),
+            ("# c\n", "\u{feff}b: 2\n", "\u{feff}# c\nb: 2\n"),
+        ] {
+            let yaml = YamlFile::from_str(src).unwrap();
+            yaml.push_document(Document::from_str(pushed).unwrap());
+            assert_eq!(yaml.to_string(), expected, "{src:?} + {pushed:?}");
+            assert_parser_shape(&yaml);
+        }
     }
 
     #[test]

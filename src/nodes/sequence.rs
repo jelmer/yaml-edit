@@ -105,8 +105,16 @@ fn trailing_newline_indent(node: &SyntaxNode) -> Option<String> {
 /// the sequence isn't under a MAPPING_ENTRY at all.
 /// Rebuild `entry` with `value` in place of the node it currently holds,
 /// keeping everything else the entry carried.
-fn rebuild_entry_with_value(entry: &SyntaxNode, value: &impl crate::AsYaml) -> SyntaxNode {
+fn rebuild_entry_with_value(
+    entry: &SyntaxNode,
+    value: &impl crate::AsYaml,
+    flow: bool,
+) -> SyntaxNode {
     let entry_children: Vec<_> = entry.children_with_tokens().collect();
+    // Track the column while copying the entry, so the new value's later
+    // lines line up under its first.
+    let dash_column = crate::as_yaml::source_base_indent(entry);
+    let mut column = dash_column;
 
     // Build a new SEQUENCE_ENTRY with the new value using AsYaml
     let mut builder = GreenNodeBuilder::new();
@@ -145,8 +153,10 @@ fn rebuild_entry_with_value(entry: &SyntaxNode, value: &impl crate::AsYaml) -> S
                     // was never there: without it `set` gives `-x`.
                     if after_dash {
                         builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                        column += 1;
                     }
-                    value_ends_with_newline = value.build_content(&mut builder, 0, false);
+                    value_ends_with_newline =
+                        build_entry_value(&mut builder, value, dash_column, column, flow);
                     value_inserted = true;
                     if value_ends_with_newline {
                         skip_until = terminator_end(&entry_children, i + 1);
@@ -157,11 +167,13 @@ fn rebuild_entry_with_value(entry: &SyntaxNode, value: &impl crate::AsYaml) -> S
             rowan::NodeOrToken::Node(n) => {
                 // Copy other nodes as-is (like VALUE wrappers, etc.)
                 crate::yaml::copy_node_to_builder(&mut builder, n);
+                column = column_after(column, &n.text().to_string());
                 after_dash = false;
             }
             rowan::NodeOrToken::Token(t) => {
                 // Copy tokens as-is
                 builder.token(t.kind().into(), t.text());
+                column = column_after(column, t.text());
                 after_dash = t.kind() == SyntaxKind::DASH;
             }
         }
@@ -181,6 +193,46 @@ fn rebuild_entry_with_value(entry: &SyntaxNode, value: &impl crate::AsYaml) -> S
 
     builder.finish_node();
     SyntaxNode::new_root_mut(builder.finish())
+}
+
+/// An INDENT token for `indentation`, or none at column 0, where the
+/// parser emits none.
+fn indent_token(indentation: &str) -> Option<rowan::SyntaxElement<Lang>> {
+    (!indentation.is_empty()).then(|| fresh_token(SyntaxKind::INDENT, indentation).into())
+}
+
+/// The column after writing `text` starting at `column`.
+fn column_after(column: usize, text: &str) -> usize {
+    match text.rfind('\n') {
+        Some(nl) => text[nl + 1..].chars().count(),
+        None => column + text.chars().count(),
+    }
+}
+
+/// Emit `value` as the item of an entry whose dash is at `dash_column`,
+/// the value itself starting at `column`. A flow sequence can't hold a
+/// block collection, so one is written in flow form there. Returns
+/// whether the content ends with a NEWLINE.
+fn build_entry_value(
+    builder: &mut GreenNodeBuilder,
+    value: &impl crate::AsYaml,
+    dash_column: usize,
+    column: usize,
+    flow: bool,
+) -> bool {
+    // An inline value (a block scalar, say) takes the column of the entry
+    // and indents its body past it; a block collection takes the column its
+    // later lines align to, as in MappingEntry. flow_context stays false
+    // even in a flow sequence: YAML flow permits plain scalars; only
+    // JSON-flavored callers want the aggressive quoting.
+    let indent = |v: &dyn crate::AsYaml| if v.is_inline() { dash_column } else { column };
+    match flow
+        .then(|| crate::nodes::mapping::flow_form(value))
+        .flatten()
+    {
+        Some(flow_value) => flow_value.build_content(builder, indent(&flow_value), false),
+        None => value.build_content(builder, indent(value), false),
+    }
 }
 
 /// The index just past the NEWLINE that ends `children[start..]`, if only
@@ -488,12 +540,18 @@ impl Sequence {
             builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
             builder.token(SyntaxKind::DASH.into(), "-");
             builder.token(SyntaxKind::WHITESPACE.into(), " ");
-            let ends_with_newline = value.clone().build_content(&mut builder, 0, false);
+            let ends_with_newline = build_entry_value(
+                &mut builder,
+                &value,
+                indentation.len(),
+                indentation.len() + 2,
+                false,
+            );
             if !ends_with_newline {
                 builder.token(SyntaxKind::NEWLINE.into(), "\n");
             }
             builder.finish_node();
-            inserts.push(fresh_token(SyntaxKind::INDENT, &indentation).into());
+            inserts.extend(indent_token(&indentation));
             inserts.push(SyntaxNode::new_root_mut(builder.finish()).into());
         }
 
@@ -535,9 +593,6 @@ impl Sequence {
         }
 
         let indentation = self.detect_indentation();
-
-        // Build the INDENT token (separate from the SEQUENCE_ENTRY)
-        let indent_token = fresh_token(SyntaxKind::INDENT, &indentation);
 
         // Locate the last SEQUENCE_ENTRY and the insert position by walking
         // back from the end of the child list.
@@ -596,7 +651,13 @@ impl Sequence {
         builder.token(SyntaxKind::WHITESPACE.into(), " ");
 
         // Build the value content directly using AsYaml
-        let value_ends_with_newline = value.build_content(&mut builder, 0, false);
+        let value_ends_with_newline = build_entry_value(
+            &mut builder,
+            &value,
+            indentation.len(),
+            indentation.len() + 2,
+            false,
+        );
 
         // Add trailing newline only if the value doesn't already end with one
         // and if the last entry had one (preserves document style)
@@ -630,7 +691,7 @@ impl Sequence {
 
         let mut inserts: Vec<rowan::NodeOrToken<SyntaxNode, _>> = Vec::new();
         if !parent_supplies_indent {
-            inserts.push(indent_token.into());
+            inserts.extend(indent_token(&indentation));
         }
         inserts.push(new_entry.clone().into());
 
@@ -651,9 +712,7 @@ impl Sequence {
     fn insert_flow(&self, index: usize, value: impl crate::AsYaml) {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
-        // flow_context=false: YAML flow permits plain scalars; only
-        // JSON-flavored callers want the aggressive quoting.
-        value.build_content(&mut builder, 0, false);
+        build_entry_value(&mut builder, &value, 0, 0, true);
         builder.finish_node();
         let new_entry = SyntaxNode::new_root_mut(builder.finish());
 
@@ -724,15 +783,18 @@ impl Sequence {
         builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
         builder.token(SyntaxKind::DASH.into(), "-");
         builder.token(SyntaxKind::WHITESPACE.into(), " ");
-        let value_ends_with_newline = value.build_content(&mut builder, 0, false);
+        let value_ends_with_newline = build_entry_value(
+            &mut builder,
+            &value,
+            indentation.len(),
+            indentation.len() + 2,
+            false,
+        );
         if !value_ends_with_newline {
             builder.token(SyntaxKind::NEWLINE.into(), "\n");
         }
         builder.finish_node();
         let new_entry = SyntaxNode::new_root_mut(builder.finish());
-
-        // Build a standalone INDENT to sit before the new entry.
-        let indent_token = fresh_token(SyntaxKind::INDENT, &indentation);
 
         // Locate the target position. If we're inserting before an
         // existing entry, we want to land right at the INDENT that
@@ -793,18 +855,15 @@ impl Sequence {
                     .map_or(true, |n| n.kind() != SyntaxKind::SEQUENCE_ENTRY)
             });
         if inserting_at_head && parent_value_has_leading_indent(&self.0) {
-            let old_first_indent = fresh_token(SyntaxKind::INDENT, &indentation);
-            self.0.splice_children(
-                insert_at..insert_at,
-                vec![new_entry.into(), old_first_indent.into()],
-            );
+            let mut inserts = vec![new_entry.into()];
+            inserts.extend(indent_token(&indentation));
+            self.0.splice_children(insert_at..insert_at, inserts);
             return;
         }
 
-        self.0.splice_children(
-            insert_at..insert_at,
-            vec![indent_token.into(), new_entry.into()],
-        );
+        let mut inserts: Vec<_> = indent_token(&indentation).into_iter().collect();
+        inserts.push(new_entry.into());
+        self.0.splice_children(insert_at..insert_at, inserts);
     }
 
     /// Replace the item at `index` with a new value.
@@ -820,7 +879,7 @@ impl Sequence {
             return false;
         };
         let node = children[i].as_node().expect("entry index names a node");
-        let new_entry = rebuild_entry_with_value(node, &value);
+        let new_entry = rebuild_entry_with_value(node, &value, self.is_flow_style());
 
         // Replace the old SEQUENCE_ENTRY with the new one
         self.0.splice_children(i..i + 1, vec![new_entry.into()]);
@@ -1376,6 +1435,120 @@ mod tests {
             validate_tree(doc.as_node().unwrap()).unwrap();
             roundtrip_ok(doc.as_node().unwrap()).unwrap();
             assert_eq!(doc.to_string(), expected, "{src:?}");
+        }
+    }
+
+    #[test]
+    fn test_block_collection_values_take_the_entry_indent() {
+        use crate::debug::{roundtrip_ok, tree_to_string, validate_tree};
+        use crate::{AsYaml, Document, Sequence, YamlNode};
+
+        let map_doc = Document::from_str("k: 1\nj: 2\n").unwrap();
+        let map = YamlNode::Mapping(map_doc.as_mapping().unwrap());
+        let nested_doc = Document::from_str("m:\n    k: 1\n    j: 2\n").unwrap();
+        let nested = YamlNode::Mapping(nested_doc.as_mapping().unwrap().get_mapping("m").unwrap());
+        let seq_doc = Document::from_str("- x\n- y\n").unwrap();
+        let seq = YamlNode::Sequence(seq_doc.as_sequence().unwrap());
+
+        let push = |s: &Sequence, v: &dyn AsYaml| s.push(v);
+        let insert0 = |s: &Sequence, v: &dyn AsYaml| s.insert(0, v);
+        let set0 = |s: &Sequence, v: &dyn AsYaml| assert!(s.set(0, v));
+        type Op<'a> = &'a dyn Fn(&Sequence, &dyn AsYaml);
+        let cases: Vec<(&str, Op, &dyn AsYaml, &str)> = vec![
+            (
+                "s:\n  - a\n",
+                &push,
+                &map,
+                "s:\n  - a\n  - k: 1\n    j: 2\n",
+            ),
+            ("- a\n", &push, &map, "- a\n- k: 1\n  j: 2\n"),
+            ("- a\n", &push, &nested, "- a\n- k: 1\n  j: 2\n"),
+            (
+                "a:\n  s:\n    - a\n",
+                &push,
+                &map,
+                "a:\n  s:\n    - a\n    - k: 1\n      j: 2\n",
+            ),
+            ("s: [a]\n", &push, &map, "s: [a, {k: 1, j: 2}]\n"),
+            ("s:\n  - a\n", &push, &seq, "s:\n  - a\n  - - x\n    - y\n"),
+            ("- a\n", &push, &seq, "- a\n- - x\n  - y\n"),
+            ("s: [a]\n", &push, &seq, "s: [a, [x, y]]\n"),
+            (
+                "s:\n  - a\n",
+                &insert0,
+                &map,
+                "s:\n  - k: 1\n    j: 2\n  - a\n",
+            ),
+            ("- a\n", &insert0, &map, "- k: 1\n  j: 2\n- a\n"),
+            ("s: [a]\n", &insert0, &map, "s: [{k: 1, j: 2}, a]\n"),
+            (
+                "s:\n  - a\n  - b\n",
+                &set0,
+                &map,
+                "s:\n  - k: 1\n    j: 2\n  - b\n",
+            ),
+            ("- a\n", &set0, &map, "- k: 1\n  j: 2\n"),
+            (
+                "a:\n  s:\n    - a\n",
+                &set0,
+                &map,
+                "a:\n  s:\n    - k: 1\n      j: 2\n",
+            ),
+            (
+                "s:\n  - &x\n    k: 0\n",
+                &set0,
+                &map,
+                "s:\n  - &x\n    k: 1\n    j: 2\n",
+            ),
+            ("s: [a, b]\n", &set0, &map, "s: [{k: 1, j: 2}, b]\n"),
+        ];
+        for (src, op, value, expected) in cases {
+            let doc = Document::from_str(src).unwrap();
+            let target = doc
+                .as_sequence()
+                .or_else(|| doc.as_mapping()?.get_sequence("s"))
+                .or_else(|| doc.as_mapping()?.get_mapping("a")?.get_sequence("s"))
+                .unwrap();
+            op(&target, value);
+            let node = doc.as_node().unwrap();
+            assert_eq!(doc.to_string(), expected, "{src:?}");
+            validate_tree(node).unwrap();
+            roundtrip_ok(node).unwrap();
+            let reparsed = Document::from_str(&doc.to_string()).unwrap();
+            assert_eq!(
+                tree_to_string(node),
+                tree_to_string(reparsed.as_node().unwrap()),
+                "{src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_block_scalar_items_clear_the_dash() {
+        use crate::debug::{roundtrip_ok, validate_tree};
+        use crate::{AsYaml, Document};
+
+        // No tree comparison with a re-parse: ScalarValue writes a block
+        // scalar as a single STRING token, not the parser's PIPE/INDENT shape.
+        let literal = crate::ScalarValue::literal("x\ny\n");
+        for (src, set, expected) in [
+            ("- a\n", false, "- a\n- |\n  x\n  y\n"),
+            ("s:\n  - a\n", false, "s:\n  - a\n  - |\n    x\n    y\n"),
+            ("s:\n  - a\n", true, "s:\n  - |\n    x\n    y\n"),
+        ] {
+            let doc = Document::from_str(src).unwrap();
+            let seq = doc
+                .as_sequence()
+                .or_else(|| doc.as_mapping()?.get_sequence("s"))
+                .unwrap();
+            if set {
+                assert!(seq.set(0, literal.clone()));
+            } else {
+                seq.push(literal.clone());
+            }
+            assert_eq!(doc.to_string(), expected, "{src:?}");
+            validate_tree(doc.as_node().unwrap()).unwrap();
+            roundtrip_ok(doc.as_node().unwrap()).unwrap();
         }
     }
 

@@ -3,9 +3,10 @@ mod entry;
 mod helpers;
 mod movements;
 
+pub(crate) use helpers::flow_form;
 use helpers::{
-    append_comma_space_to_entry, ensure_top_level_empty_renders_as_flow, flow_form,
-    index_after_entry_line, FlowInsertPos,
+    append_comma_space_to_entry, ensure_top_level_empty_renders_as_flow, index_after_entry_line,
+    FlowInsertPos,
 };
 
 use super::{

@@ -368,25 +368,15 @@ fn resolved_value(
     }
 }
 
-/// The anchor a merge-key operand refers to.
-///
-/// `*name` parses as an ALIAS node, but a merge value can also reach here as
-/// a plain scalar whose text starts with `*`, so accept both.
-fn alias_target(node: &crate::as_yaml::YamlNode) -> Option<String> {
-    match node {
-        crate::as_yaml::YamlNode::Alias(alias) => Some(alias.name()),
-        _ => node_as_string(node)?.strip_prefix('*').map(str::to_string),
-    }
-}
-
 /// A view over a [`Mapping`](crate::yaml::Mapping) that transparently expands
 /// alias references (`*name`) and merge keys (`<<:`).
 ///
-/// `MergedMapping` is a lightweight view: it borrows an [`AnchorRegistry`]
-/// and holds the underlying mapping and its merge sources, which are
-/// collected (and checked) when the view is created. The underlying syntax
-/// tree is not modified; values are read from the CST on demand, but
-/// `<<` entries added or changed after the view was created are not seen.
+/// `MergedMapping` borrows an [`AnchorRegistry`] and collects its entries
+/// when it is created: the merge sources are followed and alias values are
+/// resolved then, so an undefined alias or invalid merge key is reported
+/// by [`new`](Self::new). The underlying syntax tree is not modified and
+/// the returned nodes are live CST nodes, but entries added, removed or
+/// replaced after the view was created are not seen.
 ///
 /// Direct keys in the base mapping always shadow keys contributed by merge
 /// sources, matching the YAML 1.1 merge-key semantics. When a merge value is
@@ -436,23 +426,24 @@ fn alias_target(node: &crate::as_yaml::YamlNode) -> Option<String> {
 pub struct MergedMapping<'a> {
     base: crate::yaml::Mapping,
     registry: &'a AnchorRegistry,
-    sources: Vec<crate::yaml::Mapping>,
+    entries: Vec<(crate::as_yaml::YamlNode, crate::as_yaml::YamlNode)>,
 }
 
 impl<'a> MergedMapping<'a> {
     /// Create a new merged view over `base`, resolving aliases against `registry`.
     ///
     /// Fails if a `<<` operand in `base`, or in a mapping merged into it,
-    /// is an undefined alias or not a mapping.
+    /// is an undefined alias or not a mapping, or if a value visible
+    /// through the view is an undefined alias.
     pub fn new(
         base: crate::yaml::Mapping,
         registry: &'a AnchorRegistry,
     ) -> Result<Self, ResolveError> {
-        let sources = merge_sources(&base, registry)?;
+        let entries = merged_entries(&base, registry)?;
         Ok(Self {
             base,
             registry,
-            sources,
+            entries,
         })
     }
 
@@ -477,17 +468,12 @@ impl<'a> MergedMapping<'a> {
     /// string.
     ///
     /// If the matched value is an alias (`*name`), the resolved target node
-    /// is returned. If no such anchor is defined, the alias is left
-    /// unresolved and returned as-is.
+    /// is returned.
     pub fn get(&self, key: impl crate::AsYaml) -> Option<crate::as_yaml::YamlNode> {
-        let find = |mapping: &crate::yaml::Mapping| {
-            mapping
-                .entries()
-                .find(|e| e.key_matches(&key) && !e.key_node().is_some_and(|k| is_merge_key(&k)))
-                .and_then(|e| e.value_node())
-        };
-        let node = find(&self.base).or_else(|| self.sources.iter().find_map(find))?;
-        Some(resolve_alias_node(node, self.registry))
+        self.entries
+            .iter()
+            .find(|(k, _)| k.yaml_eq(&key))
+            .map(|(_, v)| v.clone())
     }
 
     /// Returns `true` if a value would be returned by [`get`](Self::get) for
@@ -506,17 +492,7 @@ impl<'a> MergedMapping<'a> {
     pub fn iter(
         &self,
     ) -> impl Iterator<Item = (crate::as_yaml::YamlNode, crate::as_yaml::YamlNode)> + '_ {
-        let mut out: Vec<_> = self.base.iter().filter(|(k, _)| !is_merge_key(k)).collect();
-        for source in &self.sources {
-            for (key, value) in source.iter() {
-                if is_merge_key(&key) || out.iter().any(|(k, _)| k.yaml_eq(&key)) {
-                    continue;
-                }
-                out.push((key, value));
-            }
-        }
-        out.into_iter()
-            .map(|(k, v)| (k, resolve_alias_node(v, self.registry)))
+        self.entries.iter().cloned()
     }
 
     /// Iterate over the keys of the merged view.
@@ -543,7 +519,7 @@ impl<'a> MergedMapping<'a> {
     /// that shares the same registry.
     ///
     /// Returns `Ok(None)` if the key does not exist or the value is not a
-    /// mapping, and an error if the nested mapping has an invalid merge key.
+    /// mapping, and fails as [`new`](Self::new) does on the nested mapping.
     pub fn get_merged(
         &self,
         key: impl crate::AsYaml,
@@ -589,28 +565,24 @@ fn collect_merge_sources(
         if !is_merge_key(&key) {
             continue;
         }
-        let operands = match value {
-            YamlNode::Sequence(seq) => seq.values().collect(),
-            other => vec![other],
+        let sequence = match &value {
+            YamlNode::Sequence(seq) => Some(seq.clone()),
+            YamlNode::TaggedNode(tagged) => tagged.as_sequence(),
+            _ => None,
+        };
+        let operands = match sequence {
+            Some(seq) => seq.values().collect(),
+            None => vec![value],
         };
         for operand in operands {
-            let invalid = || ResolveError::InvalidMergeOperand {
+            let source = match resolve_alias_node(operand.clone(), registry)? {
+                YamlNode::Mapping(m) => Some(m),
+                YamlNode::TaggedNode(tagged) => tagged.as_mapping(),
+                _ => None,
+            }
+            .ok_or_else(|| ResolveError::InvalidMergeOperand {
                 operand: operand.to_string(),
-            };
-            // TODO: accept tagged mappings such as `!!map {k: 1}`.
-            let source = match &operand {
-                YamlNode::Mapping(m) => m.clone(),
-                other => {
-                    let name = alias_target(other).ok_or_else(invalid)?;
-                    let target = registry
-                        .resolve_alias(&name, other.syntax())
-                        .ok_or(ResolveError::UndefinedAlias { alias: name })?;
-                    let tagged = || crate::yaml::TaggedNode::cast(target.clone())?.as_mapping();
-                    crate::yaml::Mapping::cast(target.clone())
-                        .or_else(tagged)
-                        .ok_or_else(invalid)?
-                }
-            };
+            })?;
             if sources.iter().any(|s| s.syntax() == source.syntax()) {
                 continue;
             }
@@ -621,21 +593,43 @@ fn collect_merge_sources(
     Ok(())
 }
 
+/// The entries visible through a merged view of `base`: its own entries,
+/// then those of its merge sources that are not shadowed, with alias
+/// values resolved.
+fn merged_entries(
+    base: &crate::yaml::Mapping,
+    registry: &AnchorRegistry,
+) -> Result<Vec<(crate::as_yaml::YamlNode, crate::as_yaml::YamlNode)>, ResolveError> {
+    let mut entries: Vec<_> = base.iter().filter(|(k, _)| !is_merge_key(k)).collect();
+    for source in merge_sources(base, registry)? {
+        for (key, value) in source.iter() {
+            if is_merge_key(&key) || entries.iter().any(|(k, _)| k.yaml_eq(&key)) {
+                continue;
+            }
+            entries.push((key, value));
+        }
+    }
+    entries
+        .into_iter()
+        .map(|(k, v)| Ok((k, resolve_alias_node(v, registry)?)))
+        .collect()
+}
+
 /// If `node` is an alias, resolve it via `registry`; otherwise return it as-is.
 fn resolve_alias_node(
     node: crate::as_yaml::YamlNode,
     registry: &AnchorRegistry,
-) -> crate::as_yaml::YamlNode {
+) -> Result<crate::as_yaml::YamlNode, ResolveError> {
     use crate::as_yaml::YamlNode;
 
-    if let YamlNode::Alias(alias) = &node {
-        if let Some(target) = registry.resolve_alias(&alias.name(), node.syntax()) {
-            if let Some(resolved) = YamlNode::from_syntax_peeled(target.clone()) {
-                return resolved;
-            }
-        }
-    }
-    node
+    let YamlNode::Alias(alias) = &node else {
+        return Ok(node);
+    };
+    let name = alias.name();
+    registry
+        .resolve_alias(&name, alias.syntax())
+        .and_then(|target| YamlNode::from_syntax_peeled(target.clone()))
+        .ok_or(ResolveError::UndefinedAlias { alias: name })
 }
 
 /// Extension trait that adds [`merged`](Self::merged) to [`Mapping`](crate::yaml::Mapping).
@@ -645,7 +639,7 @@ pub trait MappingMergedExt {
     ///
     /// The view is read-only and does not modify the underlying CST.
     ///
-    /// Fails if a `<<` operand is an undefined alias or not a mapping.
+    /// Fails as [`MergedMapping::new`] does.
     fn merged<'a>(&self, registry: &'a AnchorRegistry) -> Result<MergedMapping<'a>, ResolveError>;
 }
 
@@ -660,8 +654,8 @@ pub trait DocumentMergedExt {
     /// Return a [`MergedMapping`] view over the document's root mapping.
     ///
     /// The anchor registry is built from this document automatically.
-    /// Returns `Ok(None)` if the document's root is not a mapping, and an
-    /// error if a `<<` operand in it is an undefined alias or not a mapping.
+    /// Returns `Ok(None)` if the document's root is not a mapping, and fails
+    /// as [`MergedMapping::new`] does.
     ///
     /// Because the registry is owned by the returned view, this method
     /// returns an owned [`MergedView`] container rather than a borrowing
@@ -676,11 +670,11 @@ impl DocumentMergedExt for crate::yaml::Document {
             return Ok(None);
         };
         let registry = self.build_anchor_registry();
-        let sources = merge_sources(&mapping, &registry)?;
+        let entries = merged_entries(&mapping, &registry)?;
         Ok(Some(MergedView {
             mapping,
             registry,
-            sources,
+            entries,
         }))
     }
 }
@@ -695,7 +689,7 @@ impl DocumentMergedExt for crate::yaml::Document {
 pub struct MergedView {
     mapping: crate::yaml::Mapping,
     registry: AnchorRegistry,
-    sources: Vec<crate::yaml::Mapping>,
+    entries: Vec<(crate::as_yaml::YamlNode, crate::as_yaml::YamlNode)>,
 }
 
 impl MergedView {
@@ -704,7 +698,7 @@ impl MergedView {
         MergedMapping {
             base: self.mapping.clone(),
             registry: &self.registry,
-            sources: self.sources.clone(),
+            entries: self.entries.clone(),
         }
     }
 
@@ -1145,6 +1139,43 @@ m:
     }
 
     #[test]
+    fn tagged_merge_operands_are_mappings() {
+        use crate::path::YamlPath;
+        for yaml in [
+            "a: &a !!map {k: 1}\nm: {<<: *a}\n",
+            "m: {<<: !!map {k: 1}}\n",
+            "a: &a !!map {k: 1}\nm: {<<: [*a]}\n",
+            "m: {<<: [!!map {k: 1}]}\n",
+        ] {
+            assert_eq!(resolved_pairs(yaml, "m"), pairs(&[("k", "1")]), "{yaml:?}");
+            assert_eq!(merged_pairs(yaml, "m"), pairs(&[("k", "1")]), "{yaml:?}");
+            assert_eq!(
+                doc(yaml).try_get_path("m.k").unwrap().to_string(),
+                "1",
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn merged_undefined_alias_value_is_error() {
+        let undefined = ResolveError::UndefinedAlias {
+            alias: "nope".to_string(),
+        };
+        for yaml in ["m: {a: *nope}\n", "s: &s {a: *nope}\nm: {<<: *s}\n"] {
+            let d = doc(yaml);
+            let reg = d.build_anchor_registry();
+            let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+            assert_eq!(m.merged(&reg).unwrap_err(), undefined, "{yaml:?}");
+        }
+        // A shadowed alias is never looked at.
+        let d = doc("s: &s {a: *nope}\nm: {<<: *s, a: 1}\n");
+        let reg = d.build_anchor_registry();
+        let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+        assert_eq!(m.merged(&reg).unwrap().get("a").unwrap().to_i64(), Some(1));
+    }
+
+    #[test]
     fn merged_invalid_merge_operand_is_error() {
         let d = doc("a: &a 5\nm:\n  <<: *nope\n  a: 1\nn:\n  <<: [*a]\n");
         let reg = d.build_anchor_registry();
@@ -1311,9 +1342,12 @@ m:
 
     #[test]
     fn merged_alias_ignores_later_anchor() {
-        let d = doc("b: *x\na: &x 1\n");
-        let view = d.merged().unwrap().unwrap();
-        assert!(view.get("b").unwrap().is_alias());
+        assert_eq!(
+            doc("b: *x\na: &x 1\n").merged().unwrap_err(),
+            ResolveError::UndefinedAlias {
+                alias: "x".to_string()
+            }
+        );
     }
 
     #[test]

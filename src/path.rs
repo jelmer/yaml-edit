@@ -2924,4 +2924,24 @@ config:
         crate::debug::roundtrip_ok(doc.syntax()).unwrap();
         assert_eq!(doc.to_string(), "s:\n  - &x\n    k: 1\n  - k: 9\n");
     }
+
+    #[test]
+    fn test_expand_copy_keeps_tag_after_anchor() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        for src in [
+            "a: !!map &x\n  k: 1\nb: *x\n",
+            "a: &x !!map\n  k: 1\nb: *x\n",
+        ] {
+            let doc = Document::from_str(src).unwrap();
+            let Some(crate::as_yaml::YamlNode::Alias(alias)) = doc.as_mapping().unwrap().get("b")
+            else {
+                panic!("b is not an alias in {src:?}");
+            };
+            let segment = PathSegment::Key("b".to_string());
+            let copy = resolve_alias_for_write(&alias, &segment, AliasPolicy::Expand).unwrap();
+            assert_eq!(copy.to_string(), "!!map\nk: 1\n", "{src:?}");
+        }
+    }
 }

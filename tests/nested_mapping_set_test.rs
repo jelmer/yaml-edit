@@ -2,7 +2,7 @@
 //! when setting block sequences in nested mappings.
 
 use std::str::FromStr;
-use yaml_edit::{Mapping, MappingBuilder, Sequence, SequenceBuilder, YamlFile};
+use yaml_edit::{Mapping, MappingBuilder, Sequence, SequenceBuilder, YamlFile, YamlValue};
 
 mod common;
 use common::{assert_cst_ok, assert_file_cst_ok};
@@ -290,4 +290,65 @@ fn round_trip_scalar_block_preserves_comment() {
     root.set("key", map(&[("a", "1"), ("b", "2")]));
     assert_file_cst_ok(&tf);
     assert_eq!(tf.to_string(), "key:  # sticky\n  a: '1'\n  b: '2'\n");
+}
+
+/// Block YamlValues set as `k` (existing) and `n` (new) in a root mapping
+/// and in a nested one, with the expected output for each.
+#[test]
+fn block_yaml_values_in_mappings() {
+    let cases = [
+        (
+            YamlValue::parse_raw("!local\n  a: 1\n  b: 2"),
+            "k: !local\n  a: 1\n  b: 2\nj: 1\n",
+            "k: 1\nj: 1\nn: !local\n  a: 1\n  b: 2\n",
+            "p:\n  k: !local\n    a: 1\n    b: 2\n  j: 1\n",
+            "p:\n  k: 1\n  j: 1\n  n: !local\n    a: 1\n    b: 2\n",
+        ),
+        (
+            YamlValue::parse_raw("a: 1\nb: [x]\n"),
+            "k:\n  a: 1\n  b:\n    - x\nj: 1\n",
+            "k: 1\nj: 1\nn:\n  a: 1\n  b:\n    - x\n",
+            "p:\n  k:\n    a: 1\n    b:\n      - x\n  j: 1\n",
+            "p:\n  k: 1\n  j: 1\n  n:\n    a: 1\n    b:\n      - x\n",
+        ),
+        (
+            YamlValue::parse_raw("- a\n- b\n"),
+            "k:\n  - a\n  - b\nj: 1\n",
+            "k: 1\nj: 1\nn:\n- a\n- b\n",
+            "p:\n  k:\n    - a\n    - b\n  j: 1\n",
+            "p:\n  k: 1\n  j: 1\n  n:\n    - a\n    - b\n",
+        ),
+        (
+            YamlValue::parse_raw("!!set\n  a: ~\n"),
+            "k: !!set\n  a: null\nj: 1\n",
+            "k: 1\nj: 1\nn: !!set\n  a: null\n",
+            "p:\n  k: !!set\n    a: null\n  j: 1\n",
+            "p:\n  k: 1\n  j: 1\n  n: !!set\n    a: null\n",
+        ),
+    ];
+    for (value, root_k, root_n, nested_k, nested_n) in cases {
+        for (src, path, key, expected) in [
+            ("k: 1\nj: 1\n", &[][..], "k", root_k),
+            ("k: 1\nj: 1\n", &[][..], "n", root_n),
+            ("p:\n  k: 1\n  j: 1\n", &["p"][..], "k", nested_k),
+            ("p:\n  k: 1\n  j: 1\n", &["p"][..], "n", nested_n),
+        ] {
+            let (file, root) = parse(src);
+            dig(&root, path).set(key, value.clone());
+            // TODO: also compare the tree with a re-parse once the YamlValue
+            // mapping builder and build_block_value_node put WHITESPACE and
+            // INDENT where the parser does.
+            assert_file_cst_ok(&file);
+            assert_eq!(file.to_string(), expected);
+        }
+    }
+}
+
+#[test]
+fn parsed_block_mapping_as_new_root_key() {
+    let (_, source) = parse("a: 1\nb: 2\n");
+    let (file, root) = parse("k: 1\n");
+    root.set("n", &source);
+    assert_file_cst_ok(&file);
+    assert_eq!(file.to_string(), "k: 1\nn:\n  a: 1\n  b: 2\n");
 }

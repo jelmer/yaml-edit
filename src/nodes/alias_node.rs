@@ -110,6 +110,7 @@ impl AsYaml for Alias {
 
 #[cfg(test)]
 mod tests {
+    use crate::debug::assert_cst_ok;
     use crate::{Document, YamlNode};
     use std::str::FromStr;
 
@@ -333,6 +334,7 @@ items:
         let doc = Document::from_str("shared: &shared value\nservice_a: old\n").unwrap();
         let mapping = doc.as_mapping().unwrap();
         mapping.set("service_a", Alias::new("shared"));
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "shared: &shared value\nservice_a: *shared\n"
@@ -357,6 +359,7 @@ items:
         let colors_node = mapping.get("colors").unwrap();
         let colors = colors_node.as_sequence().unwrap();
         colors.set(1, Alias::new("red"));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "colors:\n  - &red '#FF0000'\n  - *red\n");
     }
 

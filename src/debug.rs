@@ -224,6 +224,22 @@ pub fn roundtrip_ok(node: &SyntaxNode) -> Result<(), String> {
     Ok(())
 }
 
+/// Panic unless `node` passes [`validate_tree`] and [`roundtrip_ok`].
+///
+/// Unit-test counterpart of the `assert_cst_ok` helper in `tests/common`;
+/// call it on the root after every mutation.
+#[cfg(test)]
+#[track_caller]
+pub(crate) fn assert_cst_ok(node: &impl rowan::ast::AstNode<Language = crate::yaml::Lang>) {
+    let syntax = node.syntax();
+    if let Err(e) = validate_tree(syntax) {
+        panic!("CST invariant violated: {e}\n---\n{syntax}\n---");
+    }
+    if let Err(e) = roundtrip_ok(syntax) {
+        panic!("roundtrip failed: {e}\n---\n{syntax}\n---");
+    }
+}
+
 fn validate_node(node: &SyntaxNode) -> Result<(), String> {
     match node.kind() {
         SyntaxKind::MAPPING_ENTRY => {

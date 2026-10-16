@@ -984,6 +984,7 @@ impl<T: AsYaml> AsYaml for Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug::assert_cst_ok;
     use crate::yaml::{Document, YamlFile};
     use std::str::FromStr;
 
@@ -992,6 +993,7 @@ mod tests {
         let doc = Document::from_str("shared: &shared value\na: *shared\nb: old\n").unwrap();
         let mapping = doc.as_mapping().unwrap();
         mapping.set("b", mapping.get("a").unwrap());
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "shared: &shared value\na: *shared\nb: *shared\n"
@@ -1562,6 +1564,7 @@ block_map:
     fn test_option_none_emits_null() {
         let doc = Document::from_str("key: value\n").unwrap();
         doc.as_mapping().unwrap().set("key", None::<&str>);
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "key: null\n");
     }
 
@@ -1569,10 +1572,12 @@ block_map:
     fn test_option_some_delegates() {
         let doc = Document::from_str("key: value\n").unwrap();
         doc.as_mapping().unwrap().set("key", Some("hello"));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "key: hello\n");
 
         let doc = Document::from_str("key: value\n").unwrap();
         doc.as_mapping().unwrap().set("key", Some(42i64));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "key: 42\n");
     }
 
@@ -1589,6 +1594,7 @@ block_map:
         for (value, expected) in cases {
             let doc = Document::from_str("k: 0\n").unwrap();
             doc.as_mapping().unwrap().set("k", value);
+            assert_cst_ok(&doc);
             assert_eq!(doc.to_string(), expected);
             let reparsed = Document::from_str(&doc.to_string()).unwrap();
             let got = reparsed
@@ -1605,6 +1611,7 @@ block_map:
 
         let doc = Document::from_str("k: 0\n").unwrap();
         doc.as_mapping().unwrap().set("k", f32::INFINITY);
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "k: .inf\n");
     }
 

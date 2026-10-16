@@ -655,6 +655,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug::assert_cst_ok;
 
     fn render_as_yaml<T: crate::AsYaml>(v: &T) -> String {
         let mut builder = rowan::GreenNodeBuilder::new();
@@ -1151,9 +1152,13 @@ mod tests {
     fn test_tagged_values_build_content() {
         let doc = crate::Document::new();
         doc.set("a", YamlValue::parse_raw("!!float 1"));
+        assert_cst_ok(&doc);
         doc.set("b", YamlValue::parse_raw("!local 'x'"));
+        assert_cst_ok(&doc);
         doc.set("c", YamlValue::parse_raw("!local [x]"));
+        assert_cst_ok(&doc);
         doc.set("d", YamlValue::parse_raw("!!str"));
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "---\na: !!float 1\nb: !local 'x'\nc: !local\n  - x\nd: !!str\n"

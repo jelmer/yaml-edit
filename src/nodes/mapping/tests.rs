@@ -1,6 +1,7 @@
 //! Tests for `Mapping` and `MappingEntry`. Split out of
 //! `nodes/mapping/mod.rs` unchanged.
 
+use crate::debug::assert_cst_ok;
 use crate::scalar::ScalarValue;
 use crate::yaml::YamlFile;
 use std::str::FromStr;
@@ -21,6 +22,7 @@ fn test_set_empty_collection_serializes_as_flow_empty() {
         .unwrap();
     let doc = Document::from_str("name: Alice").unwrap();
     doc.as_mapping().unwrap().set("foo", seq);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string().trim(), "name: Alice\nfoo: []");
     let reparsed = Document::from_str(&doc.to_string()).unwrap();
     assert_eq!(
@@ -31,6 +33,7 @@ fn test_set_empty_collection_serializes_as_flow_empty() {
     let map = MappingBuilder::new().build_document().as_mapping().unwrap();
     let doc = Document::from_str("name: Alice").unwrap();
     doc.as_mapping().unwrap().set("foo", map);
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string().trim(), "name: Alice\nfoo: {}");
     let reparsed = Document::from_str(&doc.to_string()).unwrap();
     assert_eq!(
@@ -45,11 +48,13 @@ fn test_insert_after_existing_key_missing_ref_returns_false() {
     let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
     let mapping = doc.as_mapping().unwrap();
     assert!(!mapping.insert_after("missing", "a", "99"));
+    assert_cst_ok(&doc);
     assert_eq!(
         mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
         "99"
     );
     assert!(!mapping.insert_before("missing", "b", "88"));
+    assert_cst_ok(&doc);
     assert_eq!(
         mapping.get("b").unwrap().as_scalar().unwrap().as_string(),
         "88"
@@ -62,15 +67,19 @@ fn test_move_after_missing_ref_leaves_mapping_unchanged() {
     let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
     let mapping = doc.as_mapping().unwrap();
     assert!(!mapping.move_after("missing", "a", "3"));
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a: 1\nb: 2\n");
     assert!(!mapping.move_before("missing", "a", "3"));
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a: 1\nb: 2\n");
     assert!(mapping.move_after("a", "a", "3"));
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a: '3'\nb: 2\n");
 
     let doc = Document::from_str("{a: 1, b: 2}").unwrap();
     let mapping = doc.as_mapping().unwrap();
     assert!(!mapping.move_after("missing", "a", "3"));
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "{a: 1, b: 2}");
 }
 
@@ -96,6 +105,7 @@ fn test_set_into_flow_mapping_inserts_inside_braces() {
         let inner_val = doc.as_mapping().unwrap().get("outer").unwrap();
         let inner = inner_val.as_mapping().unwrap();
         inner.set(key, "X");
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string().trim(), expected, "input was {input:?}");
     }
 }
@@ -108,6 +118,7 @@ fn test_mapping_set_new_key() {
     // Get the document and set on it
     let doc = parsed.document().expect("Should have a document");
     doc.set("new_key", "new_value");
+    assert_cst_ok(&doc);
 
     let output = doc.to_string();
 
@@ -123,6 +134,7 @@ fn test_mapping_rename_key() {
     let doc = parsed.document().expect("expected a document");
     let mapping = doc.as_mapping().expect("expected a mapping");
     let renamed = mapping.rename_key("old_name", "new_name");
+    assert_cst_ok(&parsed);
     assert!(renamed);
     assert!(doc.contains_key("new_name"));
     assert!(!doc.contains_key("old_name"));
@@ -136,6 +148,7 @@ fn test_mapping_remove_key() {
     let doc = parsed.document().expect("expected a document");
     let mapping = doc.as_mapping().expect("expected a mapping");
     let removed = mapping.remove("key1");
+    assert_cst_ok(&parsed);
     assert!(removed.is_some());
     assert!(!doc.contains_key("key1"));
     assert!(doc.contains_key("key2"));
@@ -148,6 +161,7 @@ fn test_mapping_simple_set() {
     // Get document and add a new key
     let doc = parsed.document().expect("Should have a document");
     doc.set("key2", "value2");
+    assert_cst_ok(&doc);
 
     let output = doc.to_string();
 
@@ -167,6 +181,7 @@ Repository: https://github.com/example/repo.git
 
     // Update Contact - it should stay in position 2, not move to the end
     doc.set("Contact", "updated_contact");
+    assert_cst_ok(&doc);
 
     let output = doc.to_string();
     let expected = r#"Name: original_name
@@ -189,8 +204,10 @@ Repository: https://github.com/jdonaldson/rtsne.git
     if let Some(mapping) = doc.as_mapping() {
         // Update Contact - should stay in position 2
         mapping.set("Contact", "New Contact <new@example.com>");
+        assert_cst_ok(&parsed);
         // Update Archive - should stay in position 3
         mapping.set("Archive", "PyPI");
+        assert_cst_ok(&parsed);
     }
 
     let output = doc.to_string();
@@ -213,6 +230,7 @@ fourth: 4"#;
 
     // Insert after "second"
     let success = doc.insert_after("second", "third", 3);
+    assert_cst_ok(&doc);
     assert!(
         success,
         "insert_after should succeed when reference key exists"
@@ -229,6 +247,7 @@ fourth: 4"#;
 
     // Test inserting after non-existent key
     let failed = doc.insert_after("nonexistent", "new_key", "new_value");
+    assert_cst_ok(&doc);
     assert!(
         !failed,
         "insert_after should fail when reference key doesn't exist"
@@ -236,6 +255,7 @@ fourth: 4"#;
 
     // Test updating existing key through insert_after
     let updated = doc.insert_after("first", "second", "2_updated");
+    assert_cst_ok(&doc);
     assert!(updated, "insert_after should update existing key");
     let updated_output = doc.to_string();
     let expected_updated = r#"first: 1
@@ -255,6 +275,7 @@ fourth: 4"#;
 
     // Insert before "third"
     let success = doc.insert_before("third", "second", 2);
+    assert_cst_ok(&doc);
     assert!(
         success,
         "insert_before should succeed when reference key exists"
@@ -271,6 +292,7 @@ fourth: 4"#;
 
     // Test inserting before non-existent key
     let failed = doc.insert_before("nonexistent", "new_key", "new_value");
+    assert_cst_ok(&doc);
     assert!(
         !failed,
         "insert_before should fail when reference key doesn't exist"
@@ -278,6 +300,7 @@ fourth: 4"#;
 
     // Test updating existing key through insert_before
     let updated = doc.insert_before("fourth", "third", "3_updated");
+    assert_cst_ok(&doc);
     assert!(updated, "insert_before should update existing key");
     let output = doc.to_string();
     let expected_updated = r#"first: 1
@@ -296,6 +319,7 @@ third: 3"#;
 
     // Insert at index 1 (between first and third)
     doc.insert_at_index(1, "second", 2);
+    assert_cst_ok(&doc);
 
     let output = doc.to_string();
 
@@ -307,6 +331,7 @@ third: 3"#;
 
     // Insert at index 0 (beginning)
     doc.insert_at_index(0, "zero", 0);
+    assert_cst_ok(&doc);
     let output2 = doc.to_string();
     let expected2 = r#"zero: 0
 first: 1
@@ -316,6 +341,7 @@ third: 3"#;
 
     // Insert at out-of-bounds index (should append at end)
     doc.insert_at_index(100, "last", "999");
+    assert_cst_ok(&doc);
     let output3 = doc.to_string();
     let expected3 = r#"zero: 0
 first: 1
@@ -326,6 +352,7 @@ last: '999'"#;
 
     // Test updating existing key through insert_at_index
     doc.insert_at_index(2, "first", "1_updated");
+    assert_cst_ok(&doc);
     let final_output = doc.to_string();
     let expected_final = r#"zero: 0
 first: 1_updated
@@ -343,8 +370,11 @@ fn test_mapping_insert_special_characters() {
 
     // Test with special characters that need escaping
     doc.insert_after("key1", "special:key", "value:with:colons");
+    assert_cst_ok(&doc);
     doc.insert_before("key1", "key with spaces", "value with spaces");
+    assert_cst_ok(&doc);
     doc.insert_at_index(1, "key@symbol", "value#hash");
+    assert_cst_ok(&doc);
 
     // Verify all keys are present
     assert!(doc.contains_key("special:key"));
@@ -365,7 +395,9 @@ fn test_mapping_insert_empty_values() {
 
     // Test with empty values
     doc.insert_after("key1", "empty", "");
+    assert_cst_ok(&doc);
     doc.insert_before("key1", "null_key", ScalarValue::null());
+    assert_cst_ok(&doc);
 
     assert!(doc.contains_key("empty"));
     assert!(doc.contains_key("null_key"));
@@ -538,6 +570,7 @@ fn test_mapping_ops_set_new_key() {
     let mapping = doc.as_mapping().unwrap();
 
     mapping.set("age", 30);
+    assert_cst_ok(&yaml);
 
     let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
     assert_eq!(keys, vec!["name", "age"]);
@@ -551,6 +584,7 @@ fn test_mapping_set_existing_key() {
     let mapping = doc.as_mapping().unwrap();
 
     mapping.set("age", 31);
+    assert_cst_ok(&yaml);
 
     assert_eq!(mapping.get("age").and_then(|v| v.to_i64()), Some(31));
     let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
@@ -564,6 +598,7 @@ fn test_mapping_remove_existing_key() {
     let mapping = doc.as_mapping().unwrap();
 
     let removed = mapping.remove("age");
+    assert_cst_ok(&yaml);
     assert!(removed.is_some());
 
     let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
@@ -578,6 +613,7 @@ fn test_mapping_remove_nonexistent_key() {
     let mapping = doc.as_mapping().unwrap();
 
     let removed = mapping.remove("age");
+    assert_cst_ok(&yaml);
     assert!(removed.is_none());
 
     let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
@@ -591,7 +627,9 @@ fn test_mapping_remove_all_keys() {
     let mapping = doc.as_mapping().unwrap();
 
     assert!(mapping.remove("a").is_some());
+    assert_cst_ok(&yaml);
     assert!(mapping.remove("b").is_some());
+    assert_cst_ok(&yaml);
     assert!(mapping.is_empty());
 }
 
@@ -606,6 +644,7 @@ author: Alice"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let success = mapping.rename_key("version", "app_version");
+            assert_cst_ok(&yaml);
             assert!(success);
         }
     }
@@ -626,6 +665,7 @@ enabled: true"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             mapping.rename_key("count", "total");
+            assert_cst_ok(&yaml);
         }
     }
 
@@ -645,6 +685,7 @@ author: Alice"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             let removed = mapping.remove("author");
+            assert_cst_ok(&yaml);
             assert!(removed.is_some());
         }
     }
@@ -671,17 +712,23 @@ features:
         if let Some(mapping) = doc.as_mapping() {
             // Add new fields
             mapping.set("license", "MIT");
+            assert_cst_ok(&yaml);
             mapping.set("published", true);
+            assert_cst_ok(&yaml);
             mapping.set("downloads", 1000);
+            assert_cst_ok(&yaml);
 
             // Remove a field
             mapping.remove("author");
+            assert_cst_ok(&yaml);
 
             // Rename a field
             mapping.rename_key("version", "app_version");
+            assert_cst_ok(&yaml);
 
             // Update existing field
             mapping.set("year", 2024);
+            assert_cst_ok(&yaml);
         }
     }
 
@@ -750,6 +797,7 @@ fn test_rename_key_nonexistent() {
     let mapping = doc.as_mapping().unwrap();
 
     let success = mapping.rename_key("age", "years");
+    assert_cst_ok(&yaml);
     assert!(!success);
 
     let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
@@ -763,6 +811,7 @@ fn test_rename_key_first_entry() {
     let mapping = doc.as_mapping().unwrap();
 
     let success = mapping.rename_key("name", "username");
+    assert_cst_ok(&yaml);
     assert!(success);
 
     let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
@@ -776,6 +825,7 @@ fn test_rename_key_middle_entry() {
     let mapping = doc.as_mapping().unwrap();
 
     let success = mapping.rename_key("age", "years");
+    assert_cst_ok(&yaml);
     assert!(success);
 
     let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
@@ -789,6 +839,7 @@ fn test_rename_key_last_entry() {
     let mapping = doc.as_mapping().unwrap();
 
     let success = mapping.rename_key("city", "location");
+    assert_cst_ok(&yaml);
     assert!(success);
 
     let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
@@ -818,8 +869,11 @@ fn test_mapping_set_different_value_types() {
     let mapping = doc.as_mapping().unwrap();
 
     mapping.set("number", 123);
+    assert_cst_ok(&yaml);
     mapping.set("bool", false);
+    assert_cst_ok(&yaml);
     mapping.set("text", "hello");
+    assert_cst_ok(&yaml);
 
     assert_eq!(mapping.get("number").and_then(|v| v.to_i64()), Some(123));
     assert_eq!(mapping.get("bool").and_then(|v| v.to_bool()), Some(false));
@@ -841,10 +895,13 @@ fn test_empty_mapping_operations() {
     assert!(!mapping.contains_key("any"));
     assert_eq!(mapping.get("any"), None);
     assert!(mapping.remove("any").is_none());
+    assert_cst_ok(&yaml);
     assert!(!mapping.rename_key("old", "new"));
+    assert_cst_ok(&yaml);
 
     // Can still add to empty mapping
     mapping.set("first", "value");
+    assert_cst_ok(&yaml);
     assert!(!mapping.is_empty());
     // In flow-style (JSON) context, strings are quoted
     assert_eq!(
@@ -860,6 +917,7 @@ fn test_mapping_remove_first_of_three() {
     let mapping = doc.as_mapping().unwrap();
 
     assert!(mapping.remove("a").is_some());
+    assert_cst_ok(&yaml);
 
     let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
     assert_eq!(keys, vec!["b", "c"]);
@@ -872,6 +930,7 @@ fn test_mapping_remove_middle_of_three() {
     let mapping = doc.as_mapping().unwrap();
 
     assert!(mapping.remove("b").is_some());
+    assert_cst_ok(&yaml);
 
     let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
     assert_eq!(keys, vec!["a", "c"]);
@@ -884,6 +943,7 @@ fn test_mapping_remove_last_of_three() {
     let mapping = doc.as_mapping().unwrap();
 
     assert!(mapping.remove("c").is_some());
+    assert_cst_ok(&yaml);
 
     let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
     assert_eq!(keys, vec!["a", "b"]);
@@ -928,9 +988,11 @@ fn test_mapping_len_after_adding() {
     assert_eq!(mapping.len(), 1);
 
     mapping.set("age", 30);
+    assert_cst_ok(&yaml);
     assert_eq!(mapping.len(), 2);
 
     mapping.set("city", "NYC");
+    assert_cst_ok(&yaml);
     assert_eq!(mapping.len(), 3);
 }
 
@@ -943,12 +1005,15 @@ fn test_mapping_len_after_removing() {
     assert_eq!(mapping.len(), 3);
 
     mapping.remove("age");
+    assert_cst_ok(&yaml);
     assert_eq!(mapping.len(), 2);
 
     mapping.remove("city");
+    assert_cst_ok(&yaml);
     assert_eq!(mapping.len(), 1);
 
     mapping.remove("name");
+    assert_cst_ok(&yaml);
     assert_eq!(mapping.len(), 0);
     assert!(mapping.is_empty());
 }
@@ -1132,6 +1197,7 @@ fn test_mapping_clear_empty() {
 
     assert_eq!(mapping.len(), 0);
     mapping.clear();
+    assert_cst_ok(&yaml);
     assert_eq!(mapping.len(), 0);
 }
 
@@ -1143,6 +1209,7 @@ fn test_mapping_clear_single() {
 
     assert_eq!(mapping.len(), 1);
     mapping.clear();
+    assert_cst_ok(&yaml);
     assert_eq!(mapping.len(), 0);
     assert!(mapping.is_empty());
 
@@ -1158,6 +1225,7 @@ fn test_mapping_clear_multiple() {
 
     assert_eq!(mapping.len(), 3);
     mapping.clear();
+    assert_cst_ok(&yaml);
     assert_eq!(mapping.len(), 0);
     assert!(mapping.is_empty());
 
@@ -1173,10 +1241,12 @@ fn test_mapping_clear_and_add() {
 
     assert_eq!(mapping.len(), 2);
     mapping.clear();
+    assert_cst_ok(&yaml);
     assert_eq!(mapping.len(), 0);
 
     // Add new entries after clearing
     mapping.set("new_key", "new_value");
+    assert_cst_ok(&yaml);
     assert_eq!(mapping.len(), 1);
     let value = mapping.get("new_key").unwrap();
     assert_eq!(
@@ -1198,6 +1268,7 @@ fn test_mapping_clear_large() {
 
     assert_eq!(mapping.len(), 100);
     mapping.clear();
+    assert_cst_ok(&yaml);
     assert_eq!(mapping.len(), 0);
     assert!(mapping.is_empty());
 }
@@ -1253,6 +1324,7 @@ fn test_mapping_set_preserves_newline_context() {
 
     // Modify a value
     mapping.set("key1", "new_value");
+    assert_cst_ok(&yaml);
 
     // Should still end with newline
     let output = yaml.to_string();
@@ -1299,6 +1371,7 @@ fn pending_block_mapping_round_trips_and_becomes_block() {
     doc.as_mapping()
         .unwrap()
         .set("k", Mapping::new_pending_block());
+    assert_cst_ok(&doc);
     let text = doc.to_string();
     assert_eq!(text, "a: 1\nk: {}\n");
 
@@ -1312,8 +1385,10 @@ fn pending_block_mapping_round_trips_and_becomes_block() {
     let doc = Document::from_str("a: 1\n").unwrap();
     let root = doc.as_mapping().unwrap();
     root.set("k", Mapping::new_pending_block());
+    assert_cst_ok(&doc);
     let nested = root.get("k").unwrap();
     nested.as_mapping().unwrap().set("x", "1");
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a: 1\nk:\n  x: '1'\n");
 }
 
@@ -1327,13 +1402,16 @@ fn parsed_flow_mapping_stays_flow_when_filled() {
     let doc = Document::from_str("m: {}\n").unwrap();
     let nested = doc.as_mapping().unwrap().get("m").unwrap();
     nested.as_mapping().unwrap().set("x", "1");
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "m: {x: \"1\"}\n");
 
     let doc = Document::from_str("a: 1\n").unwrap();
     let root = doc.as_mapping().unwrap();
     root.set("k", Mapping::new_flow());
+    assert_cst_ok(&doc);
     let nested = root.get("k").unwrap();
     nested.as_mapping().unwrap().set("x", "1");
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a: 1\nk: {x: \"1\"}\n");
 }
 
@@ -1349,9 +1427,11 @@ fn pending_block_marker_does_not_survive_reparse() {
     doc.as_mapping()
         .unwrap()
         .set("k", Mapping::new_pending_block());
+    assert_cst_ok(&doc);
     let reparsed = Document::from_str(&doc.to_string()).unwrap();
     let nested = reparsed.as_mapping().unwrap().get("k").unwrap();
     nested.as_mapping().unwrap().set("x", "1");
+    assert_cst_ok(&reparsed);
     assert_eq!(reparsed.to_string(), "a: 1\nk: {x: \"1\"}\n");
 }
 
@@ -1365,6 +1445,7 @@ fn set_path_builds_block_intermediates() {
     let doc = Document::from_str("name: test\n").unwrap();
     doc.try_set_path("server.database.host", "localhost")
         .unwrap();
+    assert_cst_ok(&doc);
     assert_eq!(
         doc.to_string(),
         "name: test\nserver:\n  database:\n    host: localhost\n"
@@ -1390,14 +1471,17 @@ fn insert_at_index_into_empty_mapping() {
 
         let m = Mapping::new();
         insert(&m);
+        assert_cst_ok(&m);
         assert_eq!(m.to_string(), "k: v\n", "preserving={preserving}");
 
         let m = Mapping::new_flow();
         insert(&m);
+        assert_cst_ok(&m);
         assert_eq!(m.to_string(), "{k: \"v\"}", "preserving={preserving}");
 
         let doc = Document::from_str("m: {}\n").unwrap();
         insert(&doc.as_mapping().unwrap().get_mapping("m").unwrap());
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "m: {k: \"v\"}\n",
@@ -1422,6 +1506,7 @@ fn insert_at_index_preserving_new_key_matches_mapping_style() {
         let root = doc.as_mapping().unwrap();
         let m = root.get_mapping("m").unwrap_or(root);
         m.insert_at_index_preserving(index, "k", "v");
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), expected, "{yaml:?} at {index}");
     }
 }

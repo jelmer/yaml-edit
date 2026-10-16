@@ -244,6 +244,7 @@ fn key_as_yaml_node<K: AsYaml>(key: &K) -> Option<YamlNode> {
 
 #[cfg(test)]
 mod tests {
+    use crate::debug::assert_cst_ok;
     use crate::{Document, Entry};
     use std::str::FromStr;
 
@@ -294,6 +295,7 @@ mod tests {
         let mapping = doc.as_mapping().unwrap();
 
         mapping.entry("count").and_modify(|e| e.set_value(42));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "count: 42\n");
     }
 
@@ -319,12 +321,14 @@ mod tests {
             .entry("count")
             .and_modify(|e| e.set_value(2))
             .or_insert(0);
+        assert_cst_ok(&doc);
         assert_eq!(mapping.get("count").unwrap().to_string().trim(), "2");
 
         mapping
             .entry("new")
             .and_modify(|e| e.set_value("never"))
             .or_insert("first");
+        assert_cst_ok(&doc);
         assert_eq!(mapping.get("new").unwrap().to_string().trim(), "first");
     }
 
@@ -370,6 +374,7 @@ mod tests {
             panic!("expected vacant");
         };
         let node = v.insert(2_i64);
+        assert_cst_ok(&doc);
         assert_eq!(node.to_string().trim(), "2");
         assert_eq!(doc.to_string(), "a: 1\nb: 2\n");
     }
@@ -383,6 +388,7 @@ mod tests {
             panic!("expected occupied");
         };
         let removed = o.remove_entry();
+        assert_cst_ok(&doc);
         assert_eq!(removed.key_node().unwrap().to_string().trim(), "a");
         assert!(!mapping.contains_key("a"));
         assert_eq!(doc.to_string(), "b: 2\n");
@@ -394,7 +400,9 @@ mod tests {
         let mapping = doc.as_mapping().unwrap();
 
         let nested = mapping.entry("nested").or_insert_mapping();
+        assert_cst_ok(&doc);
         nested.set("inner", "value");
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "existing: value\nnested:\n  inner: value\n"
@@ -407,7 +415,9 @@ mod tests {
         let mapping = doc.as_mapping().unwrap();
 
         let nested = mapping.entry("root").or_insert_mapping();
+        assert_cst_ok(&doc);
         nested.set("b", 2);
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "root:\n  a: 1\n  b: 2\n");
     }
 
@@ -417,8 +427,11 @@ mod tests {
         let mapping = doc.as_mapping().unwrap();
 
         let list = mapping.entry("items").or_insert_sequence();
+        assert_cst_ok(&doc);
         list.push("apple");
+        assert_cst_ok(&doc);
         list.push("banana");
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "existing: value\nitems:\n  - apple\n  - banana\n"
@@ -431,7 +444,9 @@ mod tests {
         let mapping = doc.as_mapping().unwrap();
 
         let list = mapping.entry("items").or_insert_sequence();
+        assert_cst_ok(&doc);
         list.push("banana");
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "items:\n  - apple\n  - banana\n");
     }
 
@@ -476,7 +491,9 @@ mod tests {
         let mapping = doc.as_mapping().unwrap();
 
         let nested = mapping.entry("k").or_insert_mapping();
+        assert_cst_ok(&doc);
         nested.set("inner", "v");
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "k:\n  inner: v\n");
     }
 }

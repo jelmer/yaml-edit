@@ -1516,6 +1516,7 @@ impl crate::AsYaml for ScalarValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug::assert_cst_ok;
 
     #[test]
     fn test_plain_scalars() {
@@ -1609,6 +1610,7 @@ mod tests {
         ] {
             let doc = Document::from_str("z: 1\n").unwrap();
             doc.as_mapping().unwrap().set(key, "v");
+            assert_cst_ok(&doc);
             let text = doc.to_string();
 
             let reparsed = Document::from_str(&text)
@@ -2773,6 +2775,7 @@ mod tests {
         doc.as_mapping()
             .unwrap()
             .set("key", ScalarValue::string("null"));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "key: 'null'\n");
 
         // A string containing ": " must be quoted or it produces invalid YAML.
@@ -2780,11 +2783,13 @@ mod tests {
         doc.as_mapping()
             .unwrap()
             .set("key", ScalarValue::string("has: colon"));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "key: 'has: colon'\n");
 
         // An actual null scalar stays bare.
         let doc = crate::yaml::Document::from_str("key: x\n").unwrap();
         doc.as_mapping().unwrap().set("key", ScalarValue::null());
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "key: null\n");
     }
 
@@ -2909,6 +2914,7 @@ mod tests {
 
         let doc: crate::yaml::Document = "x: 1\n".parse().unwrap();
         doc.as_mapping().unwrap().set("k", ScalarValue::parse(""));
+        assert_cst_ok(&doc);
         let reparsed: crate::yaml::Document = doc.to_string().parse().unwrap();
         let node = reparsed.as_mapping().unwrap().get("k").unwrap();
         let value = ScalarValue::from_scalar(node.as_scalar().unwrap());

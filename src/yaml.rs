@@ -787,15 +787,15 @@ impl YamlFile {
     /// Set a key-value pair in the first document's mapping.
     ///
     /// If the key exists its value is replaced; if not, a new entry is appended.
+    /// If the file has no document yet, one is added (see
+    /// [`ensure_document`](Self::ensure_document)).
     ///
-    /// Returns `false`, leaving the file unchanged, if the `YamlFile` contains
-    /// no documents or the first document's root is not a mapping (see
-    /// [`Document::set`]). Use [`ensure_document`](Self::ensure_document)
-    /// first if you need to guarantee a document exists.
+    /// Returns `false`, leaving the file unchanged, if the first document's
+    /// root is a sequence or another non-mapping node (see [`Document::set`]).
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn set(&self, key: impl crate::AsYaml, value: impl crate::AsYaml) -> bool {
-        self.document().is_some_and(|doc| doc.set(key, value))
+        self.ensure_document().set(key, value)
     }
 
     /// Insert a key-value pair immediately after `after_key` in the first document.
@@ -879,7 +879,8 @@ impl YamlFile {
     /// Delegates to [`Document::insert_at_index`]. If `key` already exists it
     /// is updated in-place rather than moved. If `index` is out of bounds the
     /// entry is appended at the end. If the first document has no root node,
-    /// a mapping is created, as is a document if the file has none.
+    /// a mapping is created, as is a document if the file has none (see
+    /// [`ensure_document`](Self::ensure_document)).
     ///
     /// Returns `false`, leaving the file unchanged, if the first document's
     /// root is a sequence or another non-mapping node.
@@ -891,22 +892,7 @@ impl YamlFile {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        if let Some(doc) = self.document() {
-            doc.insert_at_index(index, key, value)
-        } else {
-            // If no document exists, create one without the --- marker for consistency
-            // with normal parsed YAML
-            let mut builder = GreenNodeBuilder::new();
-            builder.start_node(SyntaxKind::DOCUMENT.into());
-            builder.start_node(SyntaxKind::MAPPING.into());
-            builder.finish_node(); // End MAPPING
-            builder.finish_node(); // End DOCUMENT
-            let doc = Document(SyntaxNode::new_root_mut(builder.finish()));
-
-            // Add the document to the ROOT
-            self.0.splice_children(0..0, vec![doc.0.clone().into()]);
-            doc.insert_at_index(index, key, value)
-        }
+        self.ensure_document().insert_at_index(index, key, value)
     }
 }
 
@@ -1012,7 +998,7 @@ mod tests {
         assert!(file.set("b", 2));
         assert_eq!(file.to_string(), "a: 1\nb: 2\n");
 
-        for yaml in ["scalar\n", "- a\n", "", "# c\n"] {
+        for yaml in ["scalar\n", "- a\n"] {
             let file = YamlFile::from_str(yaml).unwrap();
             assert!(!file.set("b", 2), "{yaml:?}");
             assert_eq!(file.to_string(), yaml);
@@ -1024,10 +1010,31 @@ mod tests {
         let file = YamlFile::from_str("- a\n").unwrap();
         assert!(!file.insert_at_index(0, "k", "v"));
         assert_eq!(file.to_string(), "- a\n");
+    }
 
-        let file = YamlFile::new();
-        assert!(file.insert_at_index(0, "k", "v"));
-        assert_eq!(file.to_string(), "k: v\n");
+    #[test]
+    fn test_set_and_insert_add_a_missing_document() {
+        for (src, expected) in [
+            ("", "k: v\n"),
+            ("# c\n", "# c\nk: v\n"),
+            ("%YAML 1.2\n", "%YAML 1.2\n---\nk: v\n"),
+        ] {
+            let set = |file: &YamlFile| file.set("k", "v");
+            let insert = |file: &YamlFile| file.insert_at_index(0, "k", "v");
+            for add in [&set as &dyn Fn(&YamlFile) -> bool, &insert] {
+                let file = YamlFile::from_str(src).unwrap();
+                assert!(add(&file), "{src:?}");
+                assert_eq!(file.to_string(), expected);
+                crate::debug::validate_tree(file.syntax()).unwrap();
+                crate::debug::roundtrip_ok(file.syntax()).unwrap();
+                let reparsed = YamlFile::from_str(expected).unwrap();
+                assert_eq!(
+                    crate::debug::tree_to_string(file.syntax()),
+                    crate::debug::tree_to_string(reparsed.syntax()),
+                    "{src:?}"
+                );
+            }
+        }
     }
 
     #[test]

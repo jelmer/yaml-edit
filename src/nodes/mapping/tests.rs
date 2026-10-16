@@ -1425,3 +1425,59 @@ fn insert_at_index_preserving_new_key_matches_mapping_style() {
         assert_eq!(doc.to_string(), expected, "{yaml:?} at {index}");
     }
 }
+
+/// A root-level collection parsed from another document sits at column 0
+/// and has to be shifted under the new key, including the INDENTs the
+/// parser puts between its entries.
+#[test]
+fn test_insert_root_level_collection_from_other_document() {
+    use crate::debug;
+    use rowan::ast::AstNode;
+
+    let src = YamlFile::from_str("host: localhost\nport: 5432\n").unwrap();
+    let db = src.document().unwrap().as_mapping().unwrap();
+    let src = YamlFile::from_str("- a\n- b\n").unwrap();
+    let features = src.document().unwrap().as_sequence().unwrap();
+
+    let doc = YamlFile::from_str("name: project\nversion: 1\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    doc.set("database", &db);
+    assert_eq!(
+        doc.to_string(),
+        "name: project\nversion: 1\ndatabase:\n  host: localhost\n  port: 5432\n"
+    );
+    debug::validate_tree(doc.syntax()).unwrap();
+    debug::roundtrip_ok(doc.syntax()).unwrap();
+
+    let doc = YamlFile::from_str("name: project\nversion: 1\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    assert!(doc.insert_before("version", "database", &db));
+    assert!(doc.insert_after("name", "features", &features));
+    assert_eq!(
+        doc.to_string(),
+        "name: project\nfeatures:\n  - a\n  - b\ndatabase:\n  host: localhost\n  port: 5432\nversion: 1\n"
+    );
+    debug::validate_tree(doc.syntax()).unwrap();
+    debug::roundtrip_ok(doc.syntax()).unwrap();
+}
+
+#[test]
+fn test_set_block_value_keeps_implicit_null() {
+    use crate::debug;
+    use rowan::ast::AstNode;
+
+    let src = YamlFile::from_str("s:\n    ? q\n").unwrap();
+    let value = src.document().unwrap().get("s").unwrap();
+    let doc = YamlFile::from_str("a: 1\n").unwrap();
+    doc.document().unwrap().set("s", &value);
+    assert_eq!(doc.to_string(), "a: 1\ns:\n  ? q\n");
+    let reparsed = YamlFile::from_str(&doc.to_string()).unwrap();
+    assert_eq!(
+        debug::tree_to_string(doc.syntax()),
+        debug::tree_to_string(reparsed.syntax())
+    );
+}

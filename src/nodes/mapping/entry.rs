@@ -137,9 +137,10 @@ impl MappingEntry {
         // its interior indentation to line up under this entry.
         //
         // When key_indent == 0 (root-level insertion), col-0 dashes render
-        // as valid compact-style block content, so we leave sources with
+        // as valid compact-style block content, so we leave sequences with
         // source_base == 0 alone to preserve existing formatting choices.
-        // For nested insertion (key_indent > 0), col-0 content would be
+        // A col-0 mapping there would read as siblings of the key, and for
+        // nested insertion (key_indent > 0) any col-0 content would be
         // parsed as escaping the parent's scope, so we must re-indent.
         let block_source = (!flow_context && !value.is_inline())
             .then(|| value.as_node())
@@ -159,6 +160,7 @@ impl MappingEntry {
             // landing at column 0).
             .filter(|src| {
                 key_indent > 0
+                    || src.kind() == SyntaxKind::MAPPING
                     || crate::as_yaml::source_base_indent(src) > 0
                     || src.children().next().is_none()
             });
@@ -188,7 +190,7 @@ impl MappingEntry {
                     value.build_content(&mut builder, 0, flow_context)
                 }
                 // Block mappings and sequences start on new line but don't get pre-indented
-                // They handle their own indentation via copy_node_content_with_indent
+                // They handle their own indentation via build_content
                 (false, crate::as_yaml::YamlKind::Mapping | crate::as_yaml::YamlKind::Sequence) => {
                     builder.token(SyntaxKind::NEWLINE.into(), "\n");
                     value.build_content(&mut builder, 0, flow_context)

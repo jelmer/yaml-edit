@@ -2,12 +2,35 @@
 
 This document covers the architecture and key patterns in `yaml-edit`.
 
-## Lossless editing
+## Principles
 
-The primary goal is lossless editing - modifying YAML files while preserving
-formatting, comments, whitespace, quote styles, key ordering, and
+The primary goal is lossless editing: modifying YAML files while preserving
+formatting, comments, whitespace, quote styles, key ordering, tags and
 anchors/aliases. This distinguishes `yaml-edit` from libraries that parse into
 a data model and re-serialize, losing formatting.
+
+A few rules follow from that, and take precedence over convenience:
+
+- **Byte-identical round trips.** Loading a file and writing it back without
+  edits must reproduce it byte for byte. Nothing is rewritten implicitly; an
+  edit only touches the text it was asked to change. Formatting information
+  such as tags and quoting styles is carried through value types rather than
+  dropped.
+- **Follow the YAML 1.2 spec.** Typing follows the core schema, keys compare
+  by tag and canonical value, and implicit keys obey the spec's length and
+  line limits. The crate is tested against the YAML test suite.
+- **The parser is lenient, the validator is strict.** The parser accepts
+  anything it can turn into a sensible tree, so that slightly broken files can
+  still be loaded and fixed. Spec violations are reported by the validator
+  (`validator.rs`), not by refusing to parse. Handlers such as the JSON
+  deserializer follow the same split.
+- **Build trees, not text.** Builders and mutations construct CST nodes
+  directly, in exactly the shape the parser would produce for the same text.
+  They never render a string and re-parse it.
+- **Never drop content or errors silently.** If an operation cannot be done
+  without losing something (comments, entries, a tag), it reports that rather
+  than quietly doing something else. A failed operation leaves the document
+  unchanged.
 
 ## Rowan foundation
 
@@ -31,6 +54,26 @@ or more `Document`s, each of which holds a tree of these wrappers.
 `YamlNode` is a type-erased enum (`Scalar | Mapping | Sequence | TaggedNode |
 Alias`) returned by navigation methods like `Mapping::get()`.
 
+`MergedMapping` is a read-only view of a mapping with aliases and `<<` merge
+keys resolved. It and `Mapping` both implement `MappingView`, so read-only code
+can work against either.
+
+## Parsing and validation
+
+The parser (`parser/`) produces a tree for anything it can represent: a
+document with inconsistent indentation, a plain scalar starting with an
+indicator, or a tab used for indentation still parses, and the tree
+round-trips byte-identically. Parse errors are reserved for input that cannot
+be turned into a sensible tree.
+
+`Validator` walks the tree and reports spec violations with positions. A new
+spec check goes into the validator, with a test, and not into the parser. The
+YAML test suite harness (`tests/yaml_test_suite.rs`) counts an invalid case as
+handled when either the parser or the validator rejects it, and requires the
+validator to accept every valid case. Valid cases the validator still rejects
+are listed in `KNOWN_VALIDATOR_FALSE_POSITIVES`; a listed case that starts
+validating cleanly fails the run, so the list can only shrink.
+
 ## `splice_children` for mutation
 
 Never rebuild entire nodes. Use rowan's `splice_children` to replace only the
@@ -48,6 +91,16 @@ self.0.splice_children(range, children);
 
 Also note that `splice_children` uses `children_with_tokens()` indices, not
 `children()` indices.
+
+## Builders
+
+`MappingBuilder`, `SequenceBuilder` and `YamlBuilder` emit green nodes with
+the same structure the parser produces: `MAPPING_ENTRY` with `KEY`, `COLON`
+and `VALUE`, `SEQUENCE_ENTRY` with `DASH`, entries owning their trailing
+`NEWLINE`, and so on. A built document must be indistinguishable from parsing
+its own text: `len`, `get`, `set` and the other accessors behave the same,
+and `debug::tree_to_string` gives the same output for both. String keys and
+values are quoted where a plain scalar would be read back as something else.
 
 ## `AsYaml` trait
 
@@ -77,14 +130,31 @@ structure in `build_content()`. Primitive types return `None` and emit fresh
 tokens. `is_inline()` controls whether the value goes on the same line as the
 key (scalars, empties) or on a new indented line (block collections).
 
-## `ScalarValue`: `string()` vs `parse()`
+`build_content` must respect `flow_context`: inside a flow collection, block
+content has to be emitted in flow form, since block syntax is not allowed
+there.
 
-Two factory methods with explicit intent:
+## `ScalarValue` and scalar typing
+
+Constructors with explicit intent:
 
 ```rust
 ScalarValue::string("123")  // always a string, no type detection
 ScalarValue::parse("123")   // detects type -> integer
 ```
+
+`ScalarValue::from_scalar` reads a parsed scalar and respects its style and
+tag: a quoted or block scalar is a string, whatever its text.
+
+`ScalarValue::classify_plain` (returning `CoreScalarType`) is the single
+implementation of YAML 1.2 core schema typing for plain scalars. The lexer and
+`ScalarValue` both use it, so the two cannot disagree. `parse()` additionally
+recognises timestamps, which are outside the core schema.
+
+`migrate::to_yaml_1_2` rewrites plain scalars whose meaning changed between
+YAML 1.1 and 1.2 so that a 1.2 reader sees the value a 1.1 reader saw. It is
+explicit and opt-in, the only place where the crate changes the spelling of
+existing content.
 
 ## Newline ownership
 
@@ -97,7 +167,7 @@ editing mutation code; the summary here is a quick reference.
 YAML newlines are terminators, not separators. Every block-style
 `MAPPING_ENTRY` and `SEQUENCE_ENTRY` owns its trailing `NEWLINE` token as a
 direct child. The parent `MAPPING`/`SEQUENCE` node does not own any newlines
-itself.
+itself, except for blank lines and comment lines between entries.
 
 ```
 MAPPING_ENTRY
@@ -111,6 +181,12 @@ MAPPING_ENTRY
 When inserting or replacing entries, check whether the entry already ends with
 a newline (nested collections do, scalars don't) before adding separators.
 
+Trivia outside the root collection lives at the document level: a leading BOM
+and blank lines before the root, and the newline and blank lines after a
+scalar or flow root, are children of `DOCUMENT`. Comments and directives
+before the first document are children of the file root instead. Mutations
+that add documents or directives must keep a BOM first in the stream.
+
 ## Implicit-null values
 
 Every `MAPPING_ENTRY` and `SEQUENCE_ENTRY` in the CST holds a value node,
@@ -123,6 +199,7 @@ even when the source omits it. The parser emits a zero-width
 - Explicit-key mapping: `? key\n`, `? \n: v`, `? key\n:\n`
 - Block sequence entry: `- \n`, `-\n`
 - Flow sequence entry: `[a, , c]`, `[,]`, `[,,]`
+- Tag without content: `- !e\n` gives `TAGGED_NODE { TAG, SCALAR { NULL "" } }`
 
 Every KEY and VALUE always contains exactly one scalar or collection
 node. Mappings wrap the value in a `VALUE` node; sequences hold the
@@ -132,9 +209,11 @@ as nothing, so round-trips are lossless.
 
 **Parsed nulls vs written nulls.** Programmatically-constructed nulls
 (`YamlValue::Scalar(ScalarValue::null())`) build `SCALAR { NULL "null" }`
--- textual, three characters. On read, keep the parser's zero-width form
+-- textual, four characters. On read, keep the parser's zero-width form
 so unchanged nulls stay implicit; use the textual form only when writing
-a new null.
+a new null. When copying a collection into a form where an empty value is
+not allowed (such as a block sequence written out as a flow sequence),
+write the textual form so the entry is not lost.
 
 **Consequences for accessors and mutators:**
 
@@ -193,46 +272,104 @@ DOCUMENT
       NEWLINE
 ```
 
+## Paths, anchors and aliases
+
+`path.rs` implements path access (`server.hosts[0].name`), with `\` escapes
+for keys that contain `.` or `[`, and falls back to non-string keys (`1`,
+`true`) when no string key matches. Malformed paths are a `PathParseError`,
+not a best guess.
+
+Reads resolve aliases. Writes through an alias are refused by default,
+because they would change every other alias of the same anchor;
+`AliasPolicy::Follow` writes to the anchored node and `AliasPolicy::Expand`
+replaces the alias with an independent copy, built as CST.
+
+`anchor_resolution.rs` resolves an alias to the closest preceding definition
+of its anchor in the same document, as the spec requires, and implements `<<`
+merge keys. Only alias nodes are merge operands; a quoted `'*a'` is a string.
+
 ## Error handling
 
 The primary error type is `YamlError` (in `src/error.rs`), with variants for
-I/O, parse errors (with optional line/column), key-not-found (with available
+I/O, parse errors (with line and column), key-not-found (with available
 keys), type mismatch, invalid index, and invalid operation.
 
-Domain-specific error types (`CustomTagError`, `ValidationError`, etc.) are
-kept separate intentionally.
+Domain-specific error types are kept separate intentionally: `PathError` and
+`PathParseError` for path access, `ValidationError` for schema validation,
+`CustomTagError` for custom tags.
+
+Some `YamlFile` convenience methods (`set`, `insert_at_index`,
+`reorder_fields`) return `bool`, `false` meaning there was no suitable
+document to act on and the file is unchanged.
+
+Accessors that can hit a broken reference (an undefined alias, a merge
+operand that is not a mapping) report it as an error rather than returning
+the alias text or skipping it.
+
+## Testing
+
+Every test that mutates a tree checks the result after each mutation:
+
+- `debug::validate_tree` checks the structural invariants from
+  `src/nodes/mod.rs`: entries terminated by a NEWLINE, no stacked INDENTs,
+  no doubled trailing NEWLINEs, one value node per KEY/VALUE/entry.
+- `debug::roundtrip_ok` re-parses the text and checks that it parses without
+  errors and renders back to the same text.
+- In integration tests, `assert_cst_ok(&doc)` and `assert_file_cst_ok(&file)`
+  from `tests/common/mod.rs` run both. The fuzz and property tests use the
+  helpers in `tests/common/mutation_checks.rs`.
+
+These checks don't catch everything. A mutation can put a token in a
+different node than the parser would (a NEWLINE under `DOCUMENT` rather than
+in the last entry, a comment inside a `TAGGED_NODE`) and still pass both. For
+mutations that touch document structure or move trivia around, also compare
+`debug::tree_to_string` of the edited tree with that of a re-parse of its
+text, and assert the exact output text with `assert_eq!`.
+
+Tests compare with `assert_eq!` against exact expected values, not
+`contains` or `matches!`.
 
 ## Code organization
 
 - `lib.rs` - public API re-exports
-- `yaml.rs` - core types, `YamlFile`, parser
+- `yaml.rs` - `YamlFile` and core types
 - `lex.rs` - lexer, token types (`SyntaxKind`)
+- `parser/` - parser (block and flow collections, scalars)
 - `parse.rs` - parse result types
-- `nodes/` - AST node wrappers (`Document`, `Mapping`, `Sequence`, …)
-- `as_yaml.rs` - `AsYaml` trait, `YamlNode` enum, tagged collection types
-- `value.rs` - `YamlValue` (deprecated)
-- `scalar.rs` - `ScalarValue` and type detection
+- `nodes/` - AST node wrappers (`Document`, `Mapping`, `Sequence`, ...) and
+  the CST invariants
+- `as_yaml.rs` - `AsYaml` trait, `YamlNode` enum, `yaml_eq`, tagged
+  collection types
+- `value.rs` - `YamlValue`, an owned value tree not backed by the CST
+- `scalar.rs` - `ScalarValue` and core schema typing
 - `builder.rs` - fluent builder API
-- `path.rs` - dot-separated path access
+- `path.rs` - path access and alias policies
+- `anchor_resolution.rs` - anchor/alias resolution, merge keys,
+  `MergedMapping`
+- `mapping_view.rs` - `MappingView` trait shared by `Mapping` and
+  `MergedMapping`
+- `migrate.rs` - YAML 1.1 to 1.2 migration
 - `error.rs` - error types
 - `schema.rs` - schema validation (Failsafe, JSON, Core)
 - `custom_tags.rs` - custom tag registry
 - `visitor.rs` - visitor pattern traversal
-- `anchor_resolution.rs` - anchor/alias resolution
 - `error_recovery.rs` - parse error recovery
 - `validator.rs` - YAML spec validation
-- `debug.rs` - tree visualization
+- `debug.rs` - tree visualization and CST checks
 
 ## Checklist
 
 - Read the CST-invariants doc at the top of `src/nodes/mod.rs` before
   editing mutation code
 - Use `splice_children` for mutations - don't rebuild nodes
+- Build CST nodes directly - never render text and re-parse it
+- Put new spec checks in the validator, not the parser
 - Methods take `&self`, not `&mut self` (interior mutability)
 - Test that formatting is preserved (lossless round-trip)
 - Call `debug::validate_tree` + `debug::roundtrip_ok` (or the
   `assert_cst_ok` / `assert_file_cst_ok` test helpers) after every
-  mutation in new tests
+  mutation in new tests, and compare the tree with a re-parse when the
+  mutation moves trivia or touches document structure
 - Use `debug::print_tree()` to understand the CST structure
 - Use `assert_eq!` with exact expected values in tests
 

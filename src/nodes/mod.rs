@@ -70,9 +70,41 @@
 //!   in the tree (inside the KEY subtree for `? key\n`, inside the VALUE
 //!   between COLON and SCALAR for `key:\n`).
 //!
+//! When a comment line is indented deeper than the collection it
+//! follows, the parser lifts the COMMENT and its NEWLINE into the parent
+//! collection but leaves the comment line's INDENT as the last child of
+//! the inner collection:
+//!
+//! ```text
+//! # m:\n  a: 1\n    # c\nz: 1\n
+//! MAPPING
+//!   MAPPING_ENTRY ("m")
+//!     VALUE
+//!       ...
+//!       MAPPING
+//!         MAPPING_ENTRY ("a: 1\n")
+//!         INDENT "    "
+//!   COMMENT "# c"
+//!   NEWLINE "\n"
+//!   MAPPING_ENTRY ("z") ...
+//! ```
+//!
+//! So a trailing INDENT in a collection is not necessarily at that
+//! collection's indentation; don't reuse it for a new entry without
+//! checking its width.
+//!
 //! When inserting a new sibling entry after an existing one, mutation
 //! helpers must first ensure the predecessor is terminated
 //! (`ensure_trailing_newline` in this module).
+//!
+//! ## Document-level trivia
+//!
+//! Trivia outside the root node lives in DOCUMENT: a leading BOM and
+//! blank lines before the root, and the NEWLINE and blank lines after a
+//! scalar or flow-collection root. When a comment or directive comes
+//! first in the stream, the trivia before it is a child of the file root
+//! instead, ahead of the first DOCUMENT. A BOM must stay first in the
+//! stream, so `---` and directives are inserted after it.
 //!
 //! ## Implicit-null values
 //!
@@ -99,6 +131,7 @@
 //! - \n       (block sequence)     SEQUENCE_ENTRY { DASH, WHITESPACE,
 //!                                                  SCALAR { NULL "" }, NEWLINE }
 //! [a, , c]   (flow sequence)      SEQUENCE_ENTRY { SCALAR { NULL "" }, COMMA, ... }
+//! - !e\n     (tag, no content)    TAGGED_NODE { TAG, SCALAR { NULL "" } }
 //! ```
 //!
 //! The invariant: **every KEY, every VALUE, every SEQUENCE_ENTRY holds
@@ -109,7 +142,7 @@
 //!
 //! The zero-width `NULL ""` token renders as nothing, so round-trips are
 //! lossless. This is distinct from a programmatically-written null,
-//! which uses `SCALAR { NULL "null" }` (textual, three characters) so
+//! which uses `SCALAR { NULL "null" }` (textual, four characters) so
 //! the value is visible in the output.
 //!
 //! Consequences for mutation helpers:

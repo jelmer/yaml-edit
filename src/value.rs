@@ -400,7 +400,7 @@ impl YamlValue {
     /// Try to convert this value to an i64
     ///
     /// Returns the integer value if this is a scalar with Integer type.
-    /// Supports various formats (decimal, hexadecimal 0x, binary 0b, octal 0o).
+    /// Reads the YAML 1.2 forms: decimal, hexadecimal `0x` and octal `0o`.
     /// Returns None if this is not a scalar or not an integer type.
     ///
     /// Note: This respects YAML's type system - `42` (unquoted) is an integer,
@@ -423,11 +423,11 @@ impl YamlValue {
     /// Try to convert this value to a bool
     ///
     /// Returns the boolean value if this is a scalar with Boolean type.
-    /// Recognizes: true, false, yes, no, on, off (case-insensitive).
+    /// Recognizes: true, True, TRUE, false, False, FALSE.
     /// Returns None if this is not a scalar or not a boolean type.
     ///
-    /// Note: This respects YAML's type system - `no` (unquoted) is boolean,
-    /// but `"no"` (quoted) is a string and will return None.
+    /// Note: This respects YAML's type system - `false` (unquoted) is boolean,
+    /// but `"false"` (quoted) is a string and will return None.
     pub fn to_bool(&self) -> Option<bool> {
         self.as_scalar().and_then(ScalarValue::to_bool)
     }
@@ -1372,9 +1372,9 @@ mod tests {
         let hex_val = YamlValue::Scalar(ScalarValue::parse("0x2A"));
         assert_eq!(hex_val.to_i64(), Some(42));
 
-        // Binary
+        // Binary is not a YAML 1.2 integer form
         let bin_val = YamlValue::Scalar(ScalarValue::parse("0b101010"));
-        assert_eq!(bin_val.to_i64(), Some(42));
+        assert_eq!(bin_val.to_i64(), None);
 
         // Octal
         let oct_val = YamlValue::Scalar(ScalarValue::parse("0o52"));
@@ -1475,24 +1475,17 @@ mod tests {
         let false_val = YamlValue::Scalar(ScalarValue::parse("false"));
         assert_eq!(false_val.to_bool(), Some(false));
 
-        let yes_val = YamlValue::Scalar(ScalarValue::parse("yes"));
-        assert_eq!(yes_val.to_bool(), Some(true));
+        // YAML 1.1 spellings are strings in YAML 1.2
+        for text in ["yes", "no", "on", "off", "Yes", "tRUE"] {
+            let value = YamlValue::Scalar(ScalarValue::parse(text));
+            assert_eq!(value.to_bool(), None, "{text}");
+        }
 
-        let no_val = YamlValue::Scalar(ScalarValue::parse("no"));
-        assert_eq!(no_val.to_bool(), Some(false));
-
-        let on_val = YamlValue::Scalar(ScalarValue::parse("on"));
-        assert_eq!(on_val.to_bool(), Some(true));
-
-        let off_val = YamlValue::Scalar(ScalarValue::parse("off"));
-        assert_eq!(off_val.to_bool(), Some(false));
-
-        // Case insensitivity
         let true_upper = YamlValue::Scalar(ScalarValue::parse("TRUE"));
         assert_eq!(true_upper.to_bool(), Some(true));
 
-        let yes_mixed = YamlValue::Scalar(ScalarValue::parse("Yes"));
-        assert_eq!(yes_mixed.to_bool(), Some(true));
+        let false_title = YamlValue::Scalar(ScalarValue::parse("False"));
+        assert_eq!(false_title.to_bool(), Some(false));
 
         // Quoted strings are NOT booleans
         let quoted_true = YamlValue::from("true");

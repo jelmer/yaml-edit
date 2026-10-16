@@ -5,8 +5,8 @@
 //!
 //! Tests cover:
 //! - Null values (null, ~, empty)
-//! - Boolean values (true, false, yes, no, on, off)
-//! - Integer values (decimal, octal, hex, binary)
+//! - Boolean values (true, false and their capitalised forms)
+//! - Integer values (decimal, octal, hex)
 //! - Float values (standard, scientific notation, special values)
 //! - String values (plain, quoted, escaped)
 //! - Collections (sequences, mappings)
@@ -1742,10 +1742,12 @@ binary: 0b1010"#;
     assert!(!hex.is_quoted(), "Hex integer should not be quoted");
     assert_eq!(hex.as_i64(), Some(0xFF));
 
+    // The core schema has no binary form, so `0b1010` is a plain string.
     let binary_node = mapping.get("binary").unwrap();
     let binary = binary_node.as_scalar().unwrap();
-    assert!(!binary.is_quoted(), "Binary integer should not be quoted");
-    assert_eq!(binary.as_i64(), Some(0b1010));
+    assert!(!binary.is_quoted());
+    assert_eq!(binary.as_i64(), None);
+    assert_eq!(binary.as_string(), "0b1010");
 }
 
 #[test]

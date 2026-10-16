@@ -174,6 +174,10 @@ fn skip_line_prefixes(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> u
     }
 }
 
+fn all_digits(s: &str, radix: u32) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_digit(radix))
+}
+
 impl ScalarValue {
     /// Create a scalar value explicitly treating it as a string (no type auto-detection)
     ///
@@ -412,38 +416,22 @@ impl ScalarValue {
 
     /// Try to parse this scalar as an `i64`.
     ///
-    /// Returns `None` if the scalar type is not `Integer`.
-    ///
-    /// A bare leading zero is read as YAML 1.1 octal, so `0755` gives 493.
-    /// Use [`to_i64_yaml_1_2`](Self::to_i64_yaml_1_2) for the 1.2 reading,
-    /// where the same text is 755.
+    /// Returns `None` if the scalar type is not `Integer` or the value does
+    /// not fit in an `i64`. Integers are read as the YAML 1.2 core schema
+    /// defines them, so `0755` is seven hundred and fifty five; only
+    /// `0o755` is octal.
     pub fn to_i64(&self) -> Option<i64> {
         if self.scalar_type == ScalarType::Integer {
-            Self::parse_integer(&self.value)
+            Self::parse_integer(self.value.trim())
         } else {
             None
         }
     }
 
-    /// As [`to_i64`](Self::to_i64), under YAML 1.2's `!!int` rules.
-    ///
-    /// YAML 1.2 dropped 1.1's bare-octal form, so `0755` is seven hundred
-    /// and fifty five here where [`to_i64`](Self::to_i64) gives 493. Every
-    /// other spelling, `0o755` included, reads the same both ways.
+    /// Same as [`to_i64`](Self::to_i64), which now follows YAML 1.2.
+    #[deprecated(since = "0.3.3", note = "to_i64 follows YAML 1.2; use it instead")]
     pub fn to_i64_yaml_1_2(&self) -> Option<i64> {
-        if self.scalar_type != ScalarType::Integer {
-            return None;
-        }
-        if Self::is_legacy_octal(&self.value) {
-            let body = self.value.strip_prefix(['+', '-']).unwrap_or(&self.value);
-            let magnitude = body.parse::<i64>().ok()?;
-            return Some(if self.value.starts_with('-') {
-                -magnitude
-            } else {
-                magnitude
-            });
-        }
-        Self::parse_integer(&self.value)
+        self.to_i64()
     }
 
     /// Try to parse this scalar as an `f64`.
@@ -460,14 +448,11 @@ impl ScalarValue {
     /// Try to parse this scalar as a `bool`.
     ///
     /// Returns `None` if the scalar type is not `Boolean`.
-    /// Recognizes: `true`, `false`, `yes`, `no`, `on`, `off` (case-insensitive).
+    /// Recognizes the YAML 1.2 core schema spellings: `true`, `True`,
+    /// `TRUE`, `false`, `False` and `FALSE`.
     pub fn to_bool(&self) -> Option<bool> {
         if self.scalar_type == ScalarType::Boolean {
-            match self.value.to_lowercase().as_str() {
-                "true" | "yes" | "on" => Some(true),
-                "false" | "no" | "off" => Some(false),
-                _ => None,
-            }
+            Self::parse_bool(self.value.trim())
         } else {
             None
         }
@@ -558,8 +543,8 @@ impl ScalarValue {
                 scalar_type: ScalarType::String,
                 tag: None,
             }),
-            ScalarType::Integer => Self::parse_integer(&self.value).map(ScalarValue::from),
-            ScalarType::Float => self.value.parse::<f64>().ok().map(ScalarValue::from),
+            ScalarType::Integer => Self::parse_integer(self.value.trim()).map(ScalarValue::from),
+            ScalarType::Float => Self::parse_float(self.value.trim()).map(ScalarValue::from),
             ScalarType::Boolean => match self.value.to_lowercase().as_str() {
                 "true" | "yes" | "on" | "1" => Some(ScalarValue::from(true)),
                 "false" | "no" | "off" | "0" => Some(ScalarValue::from(false)),
@@ -598,50 +583,80 @@ impl ScalarValue {
         }
     }
 
-    /// Parse an integer with support for various formats
-    /// Supports: decimal, hexadecimal (0x), binary (0b), octal (0o and legacy 0)
+    /// Parse a YAML 1.2 core schema integer: `[-+]?[0-9]+` (decimal, even
+    /// with leading zeros), `0o[0-7]+` or `0x[0-9a-fA-F]+`.
     pub(crate) fn parse_integer(value: &str) -> Option<i64> {
-        let value = value.trim();
-
-        // Handle negative numbers
-        let (is_negative, value) = if let Some(stripped) = value.strip_prefix('-') {
-            (true, stripped)
-        } else if let Some(stripped) = value.strip_prefix('+') {
-            (false, stripped)
+        if !Self::is_core_int(value) {
+            return None;
+        }
+        let (radix, digits, is_negative) = if let Some(hex) = value.strip_prefix("0x") {
+            (16, hex, false)
+        } else if let Some(oct) = value.strip_prefix("0o") {
+            (8, oct, false)
+        } else if let Some(dec) = value.strip_prefix('-') {
+            (10, dec, true)
         } else {
-            (false, value)
+            (10, value.strip_prefix('+').unwrap_or(value), false)
         };
+        // Parse the magnitude wider than i64 so that i64::MIN fits.
+        let magnitude = i128::from_str_radix(digits, radix).ok()?;
+        i64::try_from(if is_negative { -magnitude } else { magnitude }).ok()
+    }
 
-        let parsed = if let Some(hex_part) = value
-            .strip_prefix("0x")
-            .or_else(|| value.strip_prefix("0X"))
-        {
-            // Hexadecimal
-            i64::from_str_radix(hex_part, 16).ok()
-        } else if let Some(bin_part) = value
-            .strip_prefix("0b")
-            .or_else(|| value.strip_prefix("0B"))
-        {
-            // Binary
-            i64::from_str_radix(bin_part, 2).ok()
-        } else if let Some(oct_part) = value
-            .strip_prefix("0o")
-            .or_else(|| value.strip_prefix("0O"))
-        {
-            // Modern octal
-            i64::from_str_radix(oct_part, 8).ok()
-        } else if value.starts_with('0')
-            && value.len() > 1
-            && value.chars().all(|c| c.is_ascii_digit())
-        {
-            // Legacy octal (starts with 0 but not 0x, 0b, 0o)
-            i64::from_str_radix(value, 8).ok()
-        } else {
-            // Decimal
-            value.parse::<i64>().ok()
+    /// Parse a YAML 1.2 core schema float, including `.inf` and `.nan`.
+    pub(crate) fn parse_float(value: &str) -> Option<f64> {
+        match value {
+            ".inf" | ".Inf" | ".INF" | "+.inf" | "+.Inf" | "+.INF" => Some(f64::INFINITY),
+            "-.inf" | "-.Inf" | "-.INF" => Some(f64::NEG_INFINITY),
+            ".nan" | ".NaN" | ".NAN" => Some(f64::NAN),
+            _ if Self::is_core_float(value) => value.parse::<f64>().ok(),
+            _ => None,
+        }
+    }
+
+    /// Parse a YAML 1.2 core schema boolean.
+    pub(crate) fn parse_bool(value: &str) -> Option<bool> {
+        match value {
+            "true" | "True" | "TRUE" => Some(true),
+            "false" | "False" | "FALSE" => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Whether `value` matches the YAML 1.2 core schema `!!int` regex:
+    /// `[-+]?[0-9]+`, `0o[0-7]+` or `0x[0-9a-fA-F]+`.
+    ///
+    /// This is a syntactic check, so it also holds for integers that do
+    /// not fit in an `i64`.
+    fn is_core_int(value: &str) -> bool {
+        if let Some(hex) = value.strip_prefix("0x") {
+            return all_digits(hex, 16);
+        }
+        if let Some(oct) = value.strip_prefix("0o") {
+            return all_digits(oct, 8);
+        }
+        all_digits(value.strip_prefix(['+', '-']).unwrap_or(value), 10)
+    }
+
+    /// Whether `value` matches the finite part of the YAML 1.2 core schema
+    /// `!!float` regex:
+    /// `[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?`.
+    fn is_core_float(value: &str) -> bool {
+        let body = value.strip_prefix(['+', '-']).unwrap_or(value);
+        let (mantissa, exponent) = match body.find(['e', 'E']) {
+            Some(i) => (&body[..i], Some(&body[i + 1..])),
+            None => (body, None),
         };
-
-        parsed.map(|n| if is_negative { -n } else { n })
+        let mantissa_ok = match mantissa.split_once('.') {
+            Some(("", frac)) => all_digits(frac, 10),
+            Some((int, frac)) => all_digits(int, 10) && frac.chars().all(|c| c.is_ascii_digit()),
+            None => all_digits(mantissa, 10),
+        };
+        let exponent_ok = match exponent {
+            Some(e) => all_digits(e.strip_prefix(['+', '-']).unwrap_or(e), 10),
+            None => true,
+        };
+        mantissa_ok && exponent_ok
     }
 
     /// Whether `value` is written in YAML 1.1's bare-octal form (a leading
@@ -662,73 +677,28 @@ impl ScalarValue {
     /// both delegate here so token-emit-time and CST-inspection-time
     /// classification cannot drift.
     ///
-    /// Note that [`auto_detect_type`](Self::auto_detect_type) is
-    /// deliberately more permissive (recognises YAML 1.1 `yes`/`no`
-    /// booleans, timestamps, base64) and is meant for constructing new
-    /// values from arbitrary strings, not for reading spec-conformant
-    /// YAML back out.
+    /// [`auto_detect_type`](Self::auto_detect_type) builds on this and
+    /// additionally recognises timestamps.
     pub fn classify_plain(value: &str) -> CoreScalarType {
         match value {
             "true" | "false" | "True" | "False" | "TRUE" | "FALSE" => {
                 return CoreScalarType::Boolean
             }
-            "null" | "Null" | "NULL" | "~" => return CoreScalarType::Null,
+            "null" | "Null" | "NULL" | "~" | "" => return CoreScalarType::Null,
             _ => {}
         }
 
-        // A bare leading zero is YAML 1.1 octal, which 1.2 dropped: the
-        // value is still an integer, just a decimal one, so the text
-        // classifies the same way either side of the change. A digit
-        // outside 0-7 makes it no octal at all, and `parse_integer` gives
-        // up there by contract, so recognise the run of digits here rather
-        // than letting `08` fall through to the float parser below: no
-        // YAML version reads it as a float.
-        if Self::parse_integer(value).is_some() || Self::is_legacy_octal(value) {
+        if Self::is_core_int(value) {
             return CoreScalarType::Integer;
         }
 
-        // YAML 1.2 spells infinity/NaN with a leading dot: `.inf`, `.Inf`,
-        // `.INF` (plus optional `+`/`-`), and `.nan`, `.NaN`, `.NAN`.
-        // Rust's `f64::from_str` also accepts bare `inf`, `nan`,
-        // `infinity`, etc. in any casing, but per the spec those are
-        // strings when written without the leading dot.
-        match value {
-            ".inf" | ".Inf" | ".INF" | "+.inf" | "+.Inf" | "+.INF" | "-.inf" | "-.Inf"
-            | "-.INF" | ".nan" | ".NaN" | ".NAN" => return CoreScalarType::Float,
-            _ => {}
-        }
-        let body = value.strip_prefix(['+', '-']).unwrap_or(value);
-        if body.eq_ignore_ascii_case("inf")
-            || body.eq_ignore_ascii_case("infinity")
-            || body.eq_ignore_ascii_case("nan")
-        {
-            return CoreScalarType::String;
-        }
-
-        if value.parse::<f64>().is_ok() {
+        // Unlike Rust's f64 parser, the core schema spells infinity and NaN
+        // only with a leading dot, and has no `inf`, `nan` or `infinity`.
+        if Self::parse_float(value).is_some() {
             return CoreScalarType::Float;
         }
 
         CoreScalarType::String
-    }
-
-    /// Parse a plain YAML 1.2 core schema float.
-    ///
-    /// Accepts the dotted `.inf`/`.nan` spellings and rejects bare `inf`,
-    /// `nan` and `infinity`, which `f64::from_str` takes but YAML reads as
-    /// strings.
-    pub(crate) fn parse_float(value: &str) -> Option<f64> {
-        match value {
-            ".inf" | ".Inf" | ".INF" | "+.inf" | "+.Inf" | "+.INF" => return Some(f64::INFINITY),
-            "-.inf" | "-.Inf" | "-.INF" => return Some(f64::NEG_INFINITY),
-            ".nan" | ".NaN" | ".NAN" => return Some(f64::NAN),
-            _ => {}
-        }
-        let body = value.strip_prefix(['+', '-']).unwrap_or(value);
-        if body.starts_with(|c: char| c.is_ascii_alphabetic()) {
-            return None;
-        }
-        value.parse().ok()
     }
 
     /// Turn the `Display` output of an `f32`/`f64` into a YAML float.
@@ -746,40 +716,16 @@ impl ScalarValue {
     }
 
     /// Auto-detect the most appropriate scalar type from a string value
+    ///
+    /// This follows [`classify_plain`](Self::classify_plain), except that
+    /// text the core schema reads as a string is checked for a timestamp.
     pub fn auto_detect_type(value: &str) -> ScalarType {
-        // Check for null values first
-        match value.to_lowercase().as_str() {
-            "null" | "~" | "" => return ScalarType::Null,
-            _ => {}
+        match Self::classify_plain(value) {
+            CoreScalarType::String if Self::is_valid_timestamp_static(value) => {
+                ScalarType::Timestamp
+            }
+            other => other.into(),
         }
-
-        // Check for boolean values
-        match value.to_lowercase().as_str() {
-            "true" | "false" | "yes" | "no" | "on" | "off" => return ScalarType::Boolean,
-            _ => {}
-        }
-
-        // Check for numbers with various formats
-        if Self::parse_integer(value).is_some() {
-            return ScalarType::Integer;
-        }
-        if value.parse::<f64>().is_ok() {
-            return ScalarType::Float;
-        }
-
-        // Check for timestamps (basic patterns)
-        if Self::is_valid_timestamp_static(value) {
-            return ScalarType::Timestamp;
-        }
-
-        // Check for binary data (base64)
-        #[cfg(feature = "base64")]
-        if Self::looks_like_base64(value) && base64_decode(value).is_ok() {
-            return ScalarType::Binary;
-        }
-
-        // Default to string
-        ScalarType::String
     }
 
     /// Parse a YAML scalar value with automatic type detection
@@ -894,49 +840,6 @@ impl ScalarValue {
         Some(scalar)
     }
 
-    /// Check if a string looks like base64 encoded data
-    #[cfg(feature = "base64")]
-    fn looks_like_base64(value: &str) -> bool {
-        if value.is_empty() {
-            return false;
-        }
-
-        // Must be reasonable length and contain only base64 characters
-        // Also need to check that padding is only at the end
-        if value.len() < 4 || value.len() % 4 != 0 {
-            return false;
-        }
-
-        let padding_count = value.chars().filter(|&c| c == '=').count();
-        if padding_count > 2 {
-            return false;
-        }
-
-        // Check all characters are valid base64
-        if !value
-            .chars()
-            .all(|c| matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '+' | '/' | '='))
-        {
-            return false;
-        }
-
-        // Check that padding is only at the end
-        if padding_count > 0 {
-            let padding_start = value.len() - padding_count;
-            if !value[padding_start..].chars().all(|c| c == '=') {
-                return false;
-            }
-            // Check that non-padding part doesn't contain '='
-            if value[..padding_start].contains('=') {
-                return false;
-            }
-        }
-
-        // Final validation: try to decode it to ensure it's actually valid base64
-        // This will catch cases like "SGVs" which looks valid but isn't proper base64
-        base64_decode(value).is_ok()
-    }
-
     /// Basic timestamp format validation
     fn is_valid_timestamp(&self, value: &str) -> bool {
         Self::is_valid_timestamp_static(value)
@@ -982,8 +885,20 @@ impl ScalarValue {
         let month_str: String = chars[5..7].iter().collect();
         let day_str: String = chars[8..10].iter().collect();
 
-        if let (Ok(month), Ok(day)) = (month_str.parse::<u8>(), day_str.parse::<u8>()) {
-            if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        let year_str: String = chars[0..4].iter().collect();
+        if let (Ok(year), Ok(month), Ok(day)) = (
+            year_str.parse::<u16>(),
+            month_str.parse::<u8>(),
+            day_str.parse::<u8>(),
+        ) {
+            let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+            let days_in_month = match month {
+                2 if leap => 29,
+                2 => 28,
+                4 | 6 | 9 | 11 => 30,
+                _ => 31,
+            };
+            if !(1..=12).contains(&month) || !(1..=days_in_month).contains(&day) {
                 return false;
             }
         } else {
@@ -1022,11 +937,36 @@ impl ScalarValue {
                     return false;
                 }
 
-                return true;
+                return Self::is_timestamp_tail(&chars[19..]);
             }
         }
 
         false
+    }
+
+    /// Whether `tail` is a valid fraction and time zone following the
+    /// seconds of a timestamp: `(\.[0-9]*)?([ \t]*(Z|[-+][0-9][0-9]?(:[0-9][0-9])?))?`.
+    fn is_timestamp_tail(tail: &[char]) -> bool {
+        let digits = |s: &[char]| s.iter().all(|c| c.is_ascii_digit());
+        let mut rest = tail;
+        if let Some(('.', fraction)) = rest.split_first() {
+            rest = &fraction[fraction.iter().take_while(|c| c.is_ascii_digit()).count()..];
+        }
+        if rest.is_empty() {
+            return true;
+        }
+        let zone = &rest[rest.iter().take_while(|c| matches!(c, ' ' | '\t')).count()..];
+        match zone {
+            ['Z'] => true,
+            ['+' | '-', offset @ ..] => {
+                let (hour, minute) = match offset.iter().position(|&c| c == ':') {
+                    Some(i) => (&offset[..i], &offset[i + 1..]),
+                    None => (offset, &['0', '0'][..]),
+                };
+                matches!(hour.len(), 1 | 2) && digits(hour) && minute.len() == 2 && digits(minute)
+            }
+            _ => false,
+        }
     }
 
     /// Detect the appropriate style for a value
@@ -1104,7 +1044,15 @@ impl ScalarValue {
         }
 
         // Also quote things that look like numbers to preserve them as strings
-        value.parse::<f64>().is_ok() || Self::parse_integer(value).is_some()
+        // Radix forms outside the core schema, such as `0b101` or `-0x1F`,
+        // are quoted too, as YAML 1.1 readers take them for integers.
+        let unsigned = value.strip_prefix(['+', '-']).unwrap_or(value);
+        let radix_like = ["0b", "0B", "0o", "0O", "0x", "0X"]
+            .iter()
+            .any(|p| unsigned.strip_prefix(p).is_some_and(|d| all_digits(d, 16)));
+        value.parse::<f64>().is_ok()
+            || radix_like
+            || Self::classify_plain(value) != CoreScalarType::String
     }
 
     /// Whether `value` needs quoting even with an explicit tag deciding its
@@ -2235,7 +2183,8 @@ mod tests {
         assert_eq!(ScalarValue::auto_detect_type("3.14"), ScalarType::Float);
         assert_eq!(ScalarValue::auto_detect_type("true"), ScalarType::Boolean);
         assert_eq!(ScalarValue::auto_detect_type("false"), ScalarType::Boolean);
-        assert_eq!(ScalarValue::auto_detect_type("yes"), ScalarType::Boolean);
+        assert_eq!(ScalarValue::auto_detect_type("yes"), ScalarType::String);
+        assert_eq!(ScalarValue::auto_detect_type("NuLl"), ScalarType::String);
         assert_eq!(ScalarValue::auto_detect_type("null"), ScalarType::Null);
         assert_eq!(ScalarValue::auto_detect_type("~"), ScalarType::Null);
         assert_eq!(ScalarValue::auto_detect_type(""), ScalarType::Null);
@@ -2247,12 +2196,7 @@ mod tests {
             ScalarValue::auto_detect_type("2023-12-25T10:30:45"),
             ScalarType::Timestamp
         );
-        #[cfg(feature = "base64")]
-        assert_eq!(
-            ScalarValue::auto_detect_type("SGVsbG8gV29ybGQ="),
-            ScalarType::Binary
-        );
-        #[cfg(not(feature = "base64"))]
+        // Base64-looking text is still a string unless tagged !!binary.
         assert_eq!(
             ScalarValue::auto_detect_type("SGVsbG8gV29ybGQ="),
             ScalarType::String
@@ -2296,23 +2240,6 @@ mod tests {
         assert!(!ScalarValue::matches_iso8601_pattern("2023/12/25")); // Wrong separator
         assert!(!ScalarValue::matches_iso8601_pattern("not-a-date"));
         assert!(!ScalarValue::matches_iso8601_pattern("2023"));
-    }
-
-    #[test]
-    #[cfg(feature = "base64")]
-    fn test_base64_detection() {
-        // Valid base64 strings
-        assert!(ScalarValue::looks_like_base64("SGVsbG8=")); // "Hello"
-        assert!(ScalarValue::looks_like_base64("V29ybGQ=")); // "World"
-        assert!(ScalarValue::looks_like_base64("SGVsbG8gV29ybGQ=")); // "Hello World"
-        assert!(ScalarValue::looks_like_base64("AAAA")); // All A's
-
-        // Invalid base64 strings
-        assert!(!ScalarValue::looks_like_base64("Hello")); // No padding, wrong chars
-        assert!(!ScalarValue::looks_like_base64("SGVsbG8")); // Missing padding (7 chars, should be 8 with padding)
-        assert!(!ScalarValue::looks_like_base64("")); // Empty
-        assert!(!ScalarValue::looks_like_base64("SGV@")); // Invalid character
-        assert!(!ScalarValue::looks_like_base64("SGVsbG8g===")); // Too much padding
     }
 
     #[test]
@@ -2378,24 +2305,12 @@ mod tests {
     }
 
     #[test]
-    fn test_binary_number_parsing() {
-        // Test binary number parsing (0b prefix)
-        assert_eq!(ScalarValue::parse_integer("0b1010"), Some(10));
-        assert_eq!(ScalarValue::parse_integer("0b11111111"), Some(255));
-        assert_eq!(ScalarValue::parse_integer("0B101"), Some(5)); // Uppercase B
-        assert_eq!(ScalarValue::parse_integer("-0b1010"), Some(-10));
-        assert_eq!(ScalarValue::parse_integer("+0b101"), Some(5));
-
-        // Test auto-detection
-        assert_eq!(ScalarValue::auto_detect_type("0b1010"), ScalarType::Integer);
-        assert_eq!(
-            ScalarValue::auto_detect_type("0B11111111"),
-            ScalarType::Integer
-        );
-
-        // Test invalid binary
-        assert_eq!(ScalarValue::parse_integer("0b1012"), None); // Contains invalid digit
-        assert_eq!(ScalarValue::parse_integer("0b"), None); // Empty after prefix
+    fn test_binary_is_not_an_integer() {
+        // YAML 1.2 has no binary integer form.
+        for text in ["0b1010", "0B101", "-0b1010", "+0b101"] {
+            assert_eq!(ScalarValue::parse_integer(text), None, "{text}");
+            assert_eq!(ScalarValue::auto_detect_type(text), ScalarType::String);
+        }
     }
 
     #[test]
@@ -2403,13 +2318,13 @@ mod tests {
         // Test modern octal number parsing (0o prefix)
         assert_eq!(ScalarValue::parse_integer("0o755"), Some(493)); // 7*64 + 5*8 + 5
         assert_eq!(ScalarValue::parse_integer("0o644"), Some(420)); // 6*64 + 4*8 + 4
-        assert_eq!(ScalarValue::parse_integer("0O777"), Some(511)); // Uppercase O
-        assert_eq!(ScalarValue::parse_integer("-0o755"), Some(-493));
-        assert_eq!(ScalarValue::parse_integer("+0o644"), Some(420));
-
-        // Test auto-detection
         assert_eq!(ScalarValue::auto_detect_type("0o755"), ScalarType::Integer);
-        assert_eq!(ScalarValue::auto_detect_type("0O644"), ScalarType::Integer);
+
+        // The core schema allows neither a sign nor an uppercase prefix.
+        for text in ["0O777", "-0o755", "+0o644"] {
+            assert_eq!(ScalarValue::parse_integer(text), None, "{text}");
+            assert_eq!(ScalarValue::auto_detect_type(text), ScalarType::String);
+        }
 
         // Test invalid octal
         assert_eq!(ScalarValue::parse_integer("0o789"), None); // Contains invalid digit
@@ -2417,11 +2332,11 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_octal_number_parsing() {
-        // Test legacy octal number parsing (0 prefix)
-        assert_eq!(ScalarValue::parse_integer("0755"), Some(493));
-        assert_eq!(ScalarValue::parse_integer("0644"), Some(420));
-        assert_eq!(ScalarValue::parse_integer("0777"), Some(511));
+    fn test_leading_zero_is_decimal() {
+        // YAML 1.2 dropped 1.1's bare-octal form.
+        assert_eq!(ScalarValue::parse_integer("0755"), Some(755));
+        assert_eq!(ScalarValue::parse_integer("0644"), Some(644));
+        assert_eq!(ScalarValue::parse_integer("-0777"), Some(-777));
 
         // Test auto-detection
         assert_eq!(ScalarValue::auto_detect_type("0755"), ScalarType::Integer);
@@ -2431,9 +2346,8 @@ mod tests {
         assert_eq!(ScalarValue::parse_integer("0"), Some(0)); // Single zero
         assert_eq!(ScalarValue::parse_integer("00"), Some(0)); // Double zero
 
-        // Numbers starting with 0 but containing 8 or 9 should fail as octal
-        assert_eq!(ScalarValue::parse_integer("0789"), None);
-        assert_eq!(ScalarValue::parse_integer("0128"), None);
+        assert_eq!(ScalarValue::parse_integer("0789"), Some(789));
+        assert_eq!(ScalarValue::parse_integer("08"), Some(8));
     }
 
     #[test]
@@ -2441,13 +2355,19 @@ mod tests {
         // Test hexadecimal number parsing (0x prefix) - should still work
         assert_eq!(ScalarValue::parse_integer("0xFF"), Some(255));
         assert_eq!(ScalarValue::parse_integer("0x1A"), Some(26));
-        assert_eq!(ScalarValue::parse_integer("0XFF"), Some(255)); // Uppercase X
-        assert_eq!(ScalarValue::parse_integer("-0xFF"), Some(-255));
-        assert_eq!(ScalarValue::parse_integer("+0x1A"), Some(26));
-
-        // Test auto-detection
+        assert_eq!(ScalarValue::parse_integer("0xff"), Some(255));
         assert_eq!(ScalarValue::auto_detect_type("0xFF"), ScalarType::Integer);
-        assert_eq!(ScalarValue::auto_detect_type("0X1A"), ScalarType::Integer);
+
+        // The core schema allows neither a sign nor an uppercase prefix.
+        for text in ["0XFF", "-0xFF", "+0x1A", "+0x1F", "-0o7", "0X1F", "0O7"] {
+            assert_eq!(ScalarValue::parse_integer(text), None, "{text}");
+            assert_eq!(ScalarValue::auto_detect_type(text), ScalarType::String);
+            assert_eq!(
+                ScalarValue::classify_plain(text),
+                CoreScalarType::String,
+                "{text}"
+            );
+        }
     }
 
     #[test]
@@ -2467,8 +2387,8 @@ mod tests {
     fn test_number_format_yaml_output() {
         // Test that different number formats are properly detected and output
         let binary_scalar = ScalarValue::parse("0b1010");
-        assert_eq!(binary_scalar.scalar_type(), ScalarType::Integer);
-        assert_eq!(binary_scalar.value(), "0b1010");
+        assert_eq!(binary_scalar.scalar_type(), ScalarType::String);
+        assert_eq!(binary_scalar.to_yaml_string(), "'0b1010'");
 
         let octal_scalar = ScalarValue::parse("0o755");
         assert_eq!(octal_scalar.scalar_type(), ScalarType::Integer);
@@ -2481,6 +2401,7 @@ mod tests {
         let legacy_octal_scalar = ScalarValue::parse("0755");
         assert_eq!(legacy_octal_scalar.scalar_type(), ScalarType::Integer);
         assert_eq!(legacy_octal_scalar.value(), "0755");
+        assert_eq!(legacy_octal_scalar.to_i64(), Some(755));
     }
 
     #[test]
@@ -2521,19 +2442,6 @@ mod tests {
         // month/day. This pins the separator conjuncts in the format check.
         assert!(!ScalarValue::matches_iso8601_pattern("2023X12-25"));
         assert!(!ScalarValue::matches_iso8601_pattern("2023-12X25"));
-    }
-
-    #[test]
-    #[cfg(feature = "base64")]
-    fn test_base64_padding_bounds() {
-        // Exactly two padding characters is the maximum allowed and must pass.
-        assert!(ScalarValue::looks_like_base64("QQ==")); // "A"
-                                                         // One padding character.
-        assert!(ScalarValue::looks_like_base64("SGVsbG8=")); // "Hello"
-                                                             // Padding in the middle is rejected even with a valid count.
-        assert!(!ScalarValue::looks_like_base64("QQ=Q"));
-        // Length not a multiple of 4.
-        assert!(!ScalarValue::looks_like_base64("QQQ"));
     }
 
     #[test]
@@ -2847,5 +2755,114 @@ mod tests {
         assert!(float(".NaN").to_f64().unwrap().is_nan());
         assert_eq!(float("inf").to_f64(), None);
         assert_eq!(float("1.5").to_f64(), Some(1.5));
+    }
+
+    #[test]
+    fn test_parse_does_not_infer_binary() {
+        for text in ["test", "abcd", "noon", "SGVsbG8="] {
+            let scalar = ScalarValue::parse(text);
+            assert_eq!(scalar.scalar_type(), ScalarType::String, "{text}");
+            assert_eq!(scalar.to_yaml_string(), text);
+        }
+    }
+
+    #[test]
+    fn test_sign_after_radix_prefix_is_not_integer() {
+        for text in ["0x-5", "0x+5", "0o-7", "0o+7", "0b-1", "+-5", "-+5"] {
+            assert_eq!(ScalarValue::parse_integer(text), None, "{text}");
+            assert_eq!(
+                ScalarValue::classify_plain(text),
+                CoreScalarType::String,
+                "{text}"
+            );
+            assert_eq!(
+                ScalarValue::auto_detect_type(text),
+                ScalarType::String,
+                "{text}"
+            );
+            let doc: crate::yaml::Document = format!("k: {text}\n").parse().unwrap();
+            let node = doc.as_mapping().unwrap().get("k").unwrap();
+            assert_eq!(node.as_scalar().unwrap().as_i64(), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn test_integers_outside_i64() {
+        assert_eq!(
+            ScalarValue::parse_integer("-9223372036854775808"),
+            Some(i64::MIN)
+        );
+        assert_eq!(ScalarValue::parse_integer("9223372036854775808"), None);
+        for text in [
+            "9223372036854775808",
+            "-9223372036854775808",
+            "0xFFFFFFFFFFFFFFFF",
+            "123456789012345678901234567890",
+        ] {
+            assert_eq!(
+                ScalarValue::classify_plain(text),
+                CoreScalarType::Integer,
+                "{text}"
+            );
+            assert_eq!(
+                ScalarValue::auto_detect_type(text),
+                ScalarType::Integer,
+                "{text}"
+            );
+        }
+        assert_eq!(
+            ScalarValue::parse("-9223372036854775808").to_i64(),
+            Some(i64::MIN)
+        );
+        assert_eq!(ScalarValue::parse("9223372036854775808").to_i64(), None);
+    }
+
+    #[test]
+    fn test_empty_plain_scalar_is_null() {
+        assert_eq!(ScalarValue::classify_plain(""), CoreScalarType::Null);
+
+        let doc: crate::yaml::Document = "a:\nb: 1\n".parse().unwrap();
+        let node = doc.as_mapping().unwrap().get("a").unwrap();
+        let value = ScalarValue::from_scalar(node.as_scalar().unwrap());
+        assert_eq!(value.scalar_type(), ScalarType::Null);
+
+        let doc: crate::yaml::Document = "x: 1\n".parse().unwrap();
+        doc.as_mapping().unwrap().set("k", ScalarValue::parse(""));
+        let reparsed: crate::yaml::Document = doc.to_string().parse().unwrap();
+        let node = reparsed.as_mapping().unwrap().get("k").unwrap();
+        let value = ScalarValue::from_scalar(node.as_scalar().unwrap());
+        assert_eq!(value.scalar_type(), ScalarType::Null);
+    }
+
+    #[test]
+    fn test_timestamp_rejects_impossible_dates_and_trailing_text() {
+        for text in [
+            "2023-02-30",
+            "2023-02-29",
+            "2023-04-31",
+            "2100-02-29",
+            "2023-01-01T10:00:00garbage",
+            "2023-01-01T10:00:00Zx",
+            "2023-01-01T10:00:00+",
+            "2023-01-01T10:00:00+01:0",
+        ] {
+            assert!(!ScalarValue::matches_iso8601_pattern(text), "{text}");
+            assert_eq!(
+                ScalarValue::auto_detect_type(text),
+                ScalarType::String,
+                "{text}"
+            );
+        }
+        for text in [
+            "2024-02-29",
+            "2000-02-29",
+            "2023-01-01T10:00:00Z",
+            "2023-01-01T10:00:00.123456Z",
+            "2023-01-01T10:00:00.5+01:00",
+            "2001-12-14 21:59:43.10 -5",
+            "2001-12-14t21:59:43.10-05:00",
+        ] {
+            assert!(ScalarValue::matches_iso8601_pattern(text), "{text}");
+        }
     }
 }

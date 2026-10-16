@@ -455,7 +455,8 @@ scientific: 6.02e23
     assert_eq!(mapping.get("boolean_false").unwrap().to_bool(), Some(false));
     assert_eq!(mapping.get("hex").unwrap().to_i64(), Some(0xFF));
     assert_eq!(mapping.get("octal").unwrap().to_i64(), Some(0o755));
-    assert_eq!(mapping.get("binary").unwrap().to_i64(), Some(0b1010));
+    // YAML 1.2 has no binary integers.
+    assert_eq!(mapping.get("binary").unwrap().to_i64(), None);
     assert_eq!(mapping.get("scientific").unwrap().to_f64(), Some(6.02e23));
 
     // Verify exact round-trip

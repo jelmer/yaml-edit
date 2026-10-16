@@ -2338,8 +2338,6 @@ impl Validator {
     /// - `null`, `~`, and empty key are all duplicates (all null)
     /// - Works with complex keys (sequences, mappings) as well
     fn check_duplicate_keys(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        use crate::nodes::{Mapping, Scalar, Sequence};
-        use crate::yaml_eq;
         use crate::SyntaxKind;
         use std::collections::HashMap;
 
@@ -2384,19 +2382,12 @@ impl Validator {
             ));
         };
 
-        // (normalized scalar key) -> index of the first key that produced it
-        let mut seen_scalars: HashMap<(SyntaxKind, String), usize> = HashMap::new();
+        // (resolved tag, canonical value) -> index of the first key with it
+        let mut seen_scalars: HashMap<(String, String), usize> = HashMap::new();
         let mut collection_keys: Vec<usize> = Vec::new();
 
         for i in 0..keys.len() {
-            let Some(inner) = keys[i].0.children().next() else {
-                continue;
-            };
-            let normalized = Scalar::cast(inner.clone())
-                .filter(|_| inner.kind() == SyntaxKind::SCALAR)
-                .and_then(|s| crate::as_yaml::scalar_semantic_value(&s));
-
-            match normalized {
+            match crate::as_yaml::scalar_canonical(&keys[i].0) {
                 Some(norm) => match seen_scalars.entry(norm) {
                     std::collections::hash_map::Entry::Occupied(first) => {
                         let first_idx = *first.get();
@@ -2407,29 +2398,13 @@ impl Validator {
                     }
                 },
                 None => {
-                    // A collection key, or a scalar with no normal form.
-                    for &j in &collection_keys {
-                        let (Some(v1), Some(v2)) =
-                            (keys[j].0.children().next(), keys[i].0.children().next())
-                        else {
-                            continue;
-                        };
-                        let are_equal = match (v1.kind(), v2.kind()) {
-                            (SyntaxKind::SCALAR, SyntaxKind::SCALAR) => Scalar::cast(v1)
-                                .zip(Scalar::cast(v2))
-                                .is_some_and(|(s1, s2)| yaml_eq(&s1, &s2)),
-                            (SyntaxKind::SEQUENCE, SyntaxKind::SEQUENCE) => Sequence::cast(v1)
-                                .zip(Sequence::cast(v2))
-                                .is_some_and(|(s1, s2)| yaml_eq(&s1, &s2)),
-                            (SyntaxKind::MAPPING, SyntaxKind::MAPPING) => Mapping::cast(v1)
-                                .zip(Mapping::cast(v2))
-                                .is_some_and(|(m1, m2)| yaml_eq(&m1, &m2)),
-                            _ => false,
-                        };
-                        if are_equal {
-                            report(&keys[j].1, &keys[i].1, keys[i].2);
-                            break;
-                        }
+                    // A collection key (or an alias, which equals nothing).
+                    let dup = collection_keys
+                        .iter()
+                        .copied()
+                        .find(|&j| crate::as_yaml::node_eq(&keys[j].0, &keys[i].0));
+                    if let Some(j) = dup {
+                        report(&keys[j].1, &keys[i].1, keys[i].2);
                     }
                     collection_keys.push(i);
                 }
@@ -2487,6 +2462,11 @@ mod tests {
             ("1: a\n0x1: b\n", 1),
             ("n: 1\nnull: 2\n~: 3\n", 1),
             ("[1,2]: a\n[1, 2]: b\n", 1),
+            ("a: 1\n!!str a: 2\n", 1),
+            ("1: a\n!!int 0x1: b\n", 1),
+            ("1: a\n'1': b\n", 0),
+            ("1: a\n!!str 1: b\n", 0),
+            ("? [1]\n: a\n? !!seq [1]\n: b\n", 1),
             ("a: 1\nb: 2\n", 0),
         ] {
             let doc = Document::from_str(src).unwrap();

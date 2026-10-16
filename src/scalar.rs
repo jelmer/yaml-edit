@@ -826,18 +826,33 @@ impl ScalarValue {
     /// the type when the content is a valid spelling of it; any other tag, or
     /// content the tag cannot resolve, gives a string.
     pub(crate) fn from_tagged(tagged: &crate::yaml::TaggedNode) -> Option<Self> {
-        let tag = tagged.tag();
-        let mut scalar = match tagged.value() {
+        let scalar = match tagged.value() {
             Some(inner) => Self::from_scalar(&inner),
             // A tag with no content, as in `k: !!null`
             None => Self::plain(tagged.as_string()?),
         };
-        scalar.scalar_type = match tag.as_deref().and_then(core_tag_type) {
-            Some(t) if core_tag_accepts(t, &scalar.value) => t.into(),
+        Some(match tagged.tag() {
+            Some(tag) => scalar.with_resolved_tag(tag),
+            None => Self {
+                scalar_type: ScalarType::String,
+                ..scalar
+            },
+        })
+    }
+
+    /// Attach the tag written on this scalar's node, taking the type it
+    /// names when the content is a valid spelling of it and a string
+    /// otherwise.
+    pub(crate) fn with_resolved_tag(self, tag: String) -> Self {
+        let scalar_type = match core_tag_type(&tag) {
+            Some(t) if core_tag_accepts(t, &self.value) => t.into(),
             _ => ScalarType::String,
         };
-        scalar.tag = tag;
-        Some(scalar)
+        Self {
+            scalar_type,
+            tag: Some(tag),
+            ..self
+        }
     }
 
     /// Basic timestamp format validation

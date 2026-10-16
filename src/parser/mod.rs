@@ -759,7 +759,16 @@ impl Parser {
     /// `track_indent` selects how a nested value is bounded. When set, the
     /// column of the INDENT just consumed becomes the value's base indent,
     /// so content at or left of it belongs to an enclosing collection.
-    pub(super) fn parse_value_after_colon(&mut self, track_indent: bool) {
+    ///
+    /// `mapping_column` is the column of the mapping the entry belongs to,
+    /// when known. A value on a later line has to be indented past it, bar
+    /// an indentless sequence: in `k:\n  ? a\n  :\n  b: c\n` the value of
+    /// `a` is null and `b` is its sibling.
+    pub(super) fn parse_value_after_colon(
+        &mut self,
+        track_indent: bool,
+        mapping_column: Option<usize>,
+    ) {
         self.builder.start_node(SyntaxKind::VALUE.into());
         if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
             self.parse_value();
@@ -782,7 +791,14 @@ impl Parser {
                     self.bump();
                 }
             }
-            if self.current() == Some(SyntaxKind::INDENT) {
+            let opens_value = self.current() == Some(SyntaxKind::INDENT)
+                && mapping_column.map_or(true, |column| {
+                    let indent = self.current_text().map_or(0, str::len);
+                    indent > column
+                        || (indent == column
+                            && self.upcoming_tokens().next() == Some(SyntaxKind::DASH))
+                });
+            if opens_value {
                 self.bump(); // consume indent
                 if track_indent {
                     let value_indent = self.current_line_indent;
@@ -791,7 +807,8 @@ impl Parser {
                     self.parse_value();
                 }
             } else {
-                // Colon-then-dedent: implicit-null value.
+                // Colon-then-dedent, or a line that is a sibling entry:
+                // implicit-null value.
                 self.emit_implicit_null();
             }
         } else {

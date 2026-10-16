@@ -139,8 +139,6 @@ const KNOWN_VALIDATOR_FALSE_POSITIVES: &[&str] = &[
     "2JQS",
     // TODO: remove once #183 (validator-quoted-markers) lands.
     "9MQT/00",
-    // TODO: remove once #186 (validator-tagged-mapping-indent) lands.
-    "C4HZ",
 ];
 
 #[derive(Debug, Default)]

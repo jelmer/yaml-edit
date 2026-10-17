@@ -512,3 +512,29 @@ fn entry_replaced_at_index_keeps_mapping_layout() {
         assert_eq!(file.to_string(), expected, "{source:?}");
     }
 }
+
+#[test]
+fn explicit_key_commented_block_value_replaced_by_scalar() {
+    assert_eq!(
+        edit_root("? a\n:  # c\n  x: 1\n", |m| m.set("a", 5)),
+        "? a\n: 5  # c\n"
+    );
+    assert_eq!(
+        edit_root("? a\n:  # c\n  x: 1\nb: 2\n", |m| m.set("a", 5)),
+        "? a\n: 5  # c\nb: 2\n"
+    );
+    assert_eq!(
+        edit_root("m:\n  ? a\n  :  # c\n    - 1\n  b: 2\n", |m| {
+            m.get_mapping("m").unwrap().set("a", 5)
+        }),
+        "m:\n  ? a\n  : 5  # c\n  b: 2\n"
+    );
+}
+
+#[test]
+fn explicit_key_commented_scalar_value_replaced() {
+    assert_eq!(
+        edit_root("? a\n: 1  # c\n? b\n: 2\n", |m| m.set("a", 5)),
+        "? a\n: 5  # c\n? b\n: 2\n"
+    );
+}

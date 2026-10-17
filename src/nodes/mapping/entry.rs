@@ -520,9 +520,6 @@ impl MappingEntry {
 
         // Inline values don't own a trailing NEWLINE; ensure the entry has
         // one.
-        // TODO: for an explicit-key entry the parser keeps the line break,
-        // and a key-line comment with the whitespace before it, in the
-        // MAPPING after the entry rather than in it.
         if !self.ends_with_newline() {
             self.append(vec![fresh_token(SyntaxKind::NEWLINE, "\n")]);
             crate::nodes::hand_line_break_to_mapping(&self.0);

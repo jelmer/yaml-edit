@@ -373,8 +373,9 @@ pub(crate) fn ensure_trailing_newline(entry: &SyntaxNode) {
 
 /// Move the NEWLINE that `entry` ends with out to follow it in its mapping,
 /// if `entry` is an explicit-key entry: the parser leaves the break after
-/// such an entry's value line to the mapping. Entries built standalone
-/// carry the break themselves, so call this once one is attached.
+/// such an entry's value line to the mapping, along with a comment on that
+/// line and the whitespace before it. Entries built standalone carry the
+/// break themselves, so call this once one is attached.
 pub(crate) fn hand_line_break_to_mapping(entry: &SyntaxNode) {
     if entry.kind() != SyntaxKind::MAPPING_ENTRY
         || !has_child_token(entry, |k| k == SyntaxKind::QUESTION)
@@ -391,10 +392,29 @@ pub(crate) fn hand_line_break_to_mapping(entry: &SyntaxNode) {
     else {
         return;
     };
-    let text = newline.text().to_string();
-    newline.detach();
+    let value = entry_value(entry);
+    let mut line_end: Vec<SyntaxToken> =
+        std::iter::successors(newline.prev_token(), |t| t.prev_token())
+            .take_while(|t| {
+                matches!(t.kind(), SyntaxKind::WHITESPACE | SyntaxKind::COMMENT)
+                    && t.parent()
+                        .is_some_and(|p| p == *entry || Some(&p) == value.as_ref())
+            })
+            .collect();
+    if !line_end.iter().any(|t| t.kind() == SyntaxKind::COMMENT) {
+        line_end.clear();
+    }
+    line_end.reverse();
+    line_end.push(newline);
+    let moved: Vec<_> = line_end
+        .into_iter()
+        .map(|t| {
+            t.detach();
+            fresh_token(t.kind(), t.text()).into()
+        })
+        .collect();
     let at = entry.index() + 1;
-    parent.splice_children(at..at, vec![fresh_token(SyntaxKind::NEWLINE, &text).into()]);
+    parent.splice_children(at..at, moved);
 }
 
 /// Add the line break that ends the last line of `node`, where the parser

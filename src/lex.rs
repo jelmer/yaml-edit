@@ -295,7 +295,7 @@ fn read_anchor_name_from<'a>(
 ) -> &'a str {
     let mut end_idx = start_idx;
     while let Some((idx, ch)) = chars.peek().copied() {
-        if ch.is_whitespace() || matches!(ch, ',' | '[' | ']' | '{' | '}') {
+        if is_white_or_break(ch) || matches!(ch, ',' | '[' | ']' | '{' | '}') {
             break;
         }
         end_idx = idx + ch.len_utf8();
@@ -335,7 +335,7 @@ fn is_colon_a_mapping_indicator(input: &str, colon_idx: usize, flow_depth: u32) 
     let after = input[colon_idx + 1..].chars().next();
     match after {
         None => true,
-        Some(ch) if ch.is_whitespace() => true,
+        Some(ch) if is_white_or_break(ch) => true,
         Some(ch) if flow_depth > 0 && matches!(ch, ',' | ']' | '}') => true,
         _ => false,
     }
@@ -353,7 +353,7 @@ fn is_hash_a_comment_start(input: &str, hash_idx: usize) -> bool {
         || input[..hash_idx]
             .chars()
             .next_back()
-            .is_some_and(|c| c.is_whitespace())
+            .is_some_and(is_white_or_break)
 }
 
 /// Read a plain-scalar body, treating `:` as scalar content when it's not
@@ -526,7 +526,7 @@ fn read_plain_scalar_body_from<'a>(
             }
             continue;
         }
-        if ch.is_whitespace() {
+        if is_white_or_break(ch) {
             break;
         }
         if ch == ':' && is_colon_a_mapping_indicator(input, idx, flow_depth) {
@@ -703,7 +703,7 @@ pub fn lex_with_validation_config<'a>(
                     // Check if followed by whitespace or end of input
                     let followed_by_whitespace_or_end = chars
                         .peek()
-                        .map_or(true, |(_, next_ch)| next_ch.is_whitespace());
+                        .map_or(true, |(_, next_ch)| is_white_or_break(*next_ch));
 
                     let is_sequence_marker = (only_whitespace_before || after_value_indicator)
                         && followed_by_whitespace_or_end;
@@ -764,12 +764,12 @@ pub fn lex_with_validation_config<'a>(
                     // content follows on the same line: `+ x: v` is keyed
                     // `+ x`, exactly as `a x: v` is keyed `a x`. The body
                     // reader makes the same test before absorbing a run.
-                    if c.is_whitespace() {
+                    if is_white_or_break(*c) {
                         return *c != '\n'
                             && *c != '\r'
                             && plain_scalar_continues_past_whitespace(input, *idx, flow_depth);
                     }
-                    !c.is_whitespace()
+                    !is_white_or_break(*c)
                         && (!is_yaml_special(*c)
                             // Everything the body reader keeps as content
                             // starts a body: quotes, signs, and the node
@@ -871,7 +871,9 @@ pub fn lex_with_validation_config<'a>(
             // `!!r` as a tag, which stranded the rest of the line; PyYAML
             // reads the value as the plain scalar `?!!r{2}x`.
             '?' if node_property_can_start(&tokens)
-                && chars.peek().map_or(true, |(_, next)| next.is_whitespace()) =>
+                && chars
+                    .peek()
+                    .map_or(true, |(_, next)| is_white_or_break(*next)) =>
             {
                 tokens.push((QUESTION, &input[token_start..start_idx + 1]))
             }
@@ -1337,7 +1339,7 @@ pub fn lex_with_validation_config<'a>(
                             // scalar content, so the `+` is content too and the
                             // key is `/|+`.
                             Some(before) => {
-                                let before = before.trim_end();
+                                let before = before.trim_end_matches([' ', '\t']);
                                 before.is_empty() || before.ends_with(':') || before.ends_with('-')
                             }
                             None => false,
@@ -1434,7 +1436,7 @@ fn is_merge_key_at(input: &str, idx: usize) -> bool {
     }
     match rest[2..].chars().next() {
         None => true,
-        Some(ch) => ch.is_whitespace() || matches!(ch, ':' | ',' | ']' | '}' | '#'),
+        Some(ch) => is_white_or_break(ch) || matches!(ch, ':' | ',' | ']' | '}' | '#'),
     }
 }
 
@@ -1516,7 +1518,7 @@ fn line_is_blank(input: &str, line_start: usize) -> bool {
         .split(['\n', '\r'])
         .next()
         .unwrap_or_default()
-        .trim()
+        .trim_matches([' ', '\t'])
         .is_empty()
 }
 
@@ -1621,6 +1623,13 @@ fn is_tag_char(ch: char) -> bool {
         return false;
     }
     !matches!(ch, ',' | '[' | ']' | '{' | '}' | '!' | '#')
+}
+
+/// Whether the character is YAML whitespace (`s-white`, space and tab
+/// only) or a line break. Unlike `char::is_whitespace` this leaves U+00A0
+/// and friends as content, as [`ends_document_marker`] does.
+fn is_white_or_break(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\n' | '\r')
 }
 
 fn is_yaml_special(ch: char) -> bool {

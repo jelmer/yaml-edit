@@ -4043,3 +4043,27 @@ fn test_directive_after_scalar_document_ended_by_marker() {
         assert_eq!(violations, vec![], "{yaml:?}");
     }
 }
+
+#[test]
+fn test_non_breaking_space_is_not_yaml_whitespace() {
+    // YAML whitespace is space and tab only; U+00A0 is ordinary content.
+    use yaml_edit::SyntaxKind::*;
+    let doc = yaml_edit::Document::from_str("a:\u{a0}b\n").unwrap();
+    assert_eq!(doc.as_scalar().unwrap().as_string(), "a:\u{a0}b");
+
+    let doc = yaml_edit::Document::from_str("a\u{a0}#b\n").unwrap();
+    assert_eq!(doc.as_scalar().unwrap().as_string(), "a\u{a0}#b");
+
+    let doc = yaml_edit::Document::from_str("-\u{a0}x\n").unwrap();
+    assert_eq!(doc.as_scalar().unwrap().as_string(), "-\u{a0}x");
+
+    assert_eq!(
+        yaml_edit::lex("&a\u{a0}b c\n"),
+        vec![
+            (ANCHOR, "&a\u{a0}b"),
+            (WHITESPACE, " "),
+            (STRING, "c"),
+            (NEWLINE, "\n"),
+        ]
+    );
+}

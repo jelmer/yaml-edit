@@ -1,6 +1,9 @@
 use rowan::ast::AstNode;
 use yaml_edit::YamlFile;
 
+mod common;
+use common::assert_file_cst_ok;
+
 #[test]
 fn test_explicit_key_indicator() {
     let yaml = r#"
@@ -859,5 +862,29 @@ fn test_comment_after_explicit_indicator_keeps_next_line_node() {
         let value = value.as_sequence().unwrap();
         assert_eq!(value.len(), 1, "{yaml:?}");
         assert_eq!(value.get(0).unwrap().as_scalar().unwrap().as_string(), "b");
+    }
+}
+
+/// A string key that would be written as a block scalar is written
+/// double-quoted instead, tagged or not: a block scalar cannot be an
+/// implicit key.
+#[test]
+fn test_set_multiline_string_key_is_quoted() {
+    use yaml_edit::{ScalarValue, YamlValue};
+    let plain = ScalarValue::string("x\ny\n");
+    let tagged = ScalarValue::string("x\ny\n").with_tag("!t");
+    let tagged_value = YamlValue::tagged("!t", YamlValue::Scalar(ScalarValue::string("x\ny\n")));
+    for (key, expected) in [
+        (YamlValue::Scalar(plain), "a: 1\n\"x\\ny\\n\": 2\n"),
+        (YamlValue::Scalar(tagged), "a: 1\n!t \"x\\ny\\n\": 2\n"),
+        (tagged_value, "a: 1\n!t \"x\\ny\\n\": 2\n"),
+    ] {
+        let file: YamlFile = "a: 1\n".parse().unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        mapping.set(&key, 2);
+        assert_eq!(file.to_string(), expected);
+        assert_file_cst_ok(&file);
+        assert_eq!(mapping.len(), 2);
+        assert_eq!(mapping.get(&key).unwrap().to_string(), "2");
     }
 }

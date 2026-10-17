@@ -492,3 +492,50 @@ fn test_set_tagged_node_value_keeps_properties_and_comments() {
         }
     }
 }
+
+/// A timestamp, binary or regex scalar carries its tag even when none was
+/// given, and the tag is built as the parser reads it.
+#[test]
+fn test_set_implicitly_tagged_scalar_value() {
+    use yaml_edit::{ScalarValue, YamlValue};
+    let mut cases = vec![
+        (
+            ScalarValue::timestamp("2001-12-14"),
+            "a: 1\nb: !!timestamp 2001-12-14\n",
+        ),
+        (ScalarValue::regex("^a+$"), "a: 1\nb: !!regex ^a+$\n"),
+    ];
+    #[cfg(feature = "base64")]
+    cases.push((ScalarValue::binary(b"hi"), "a: 1\nb: !!binary aGk=\n"));
+    for (value, expected) in cases {
+        let file = YamlFile::from_str("a: 1\n").unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        mapping.set("b", &value);
+        assert_parser_shaped(&file, expected);
+
+        let file = YamlFile::from_str("a: 1\n").unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        mapping.set("b", YamlValue::Scalar(value));
+        assert_parser_shaped(&file, expected);
+    }
+}
+
+#[test]
+fn test_set_implicitly_tagged_scalar_key_matches_tagged_key() {
+    use yaml_edit::ScalarValue;
+    for (src, expected) in [
+        (
+            "? !!timestamp 2001-12-14\n: 1\n",
+            "? !!timestamp 2001-12-14\n: 2\n",
+        ),
+        (
+            "{!!timestamp 2001-12-14: 1}\n",
+            "{!!timestamp 2001-12-14: 2}\n",
+        ),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        mapping.set(ScalarValue::timestamp("2001-12-14"), 2);
+        assert_parser_shaped(&file, expected);
+    }
+}

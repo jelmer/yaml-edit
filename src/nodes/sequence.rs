@@ -1,7 +1,7 @@
 use super::replaced_value;
 use super::{
-    append_children, ensure_trailing_newline, entry_indices, fresh_token, has_child_token,
-    nth_entry_index, strip_flow_separator, Lang, SyntaxNode,
+    append_children, ensure_trailing_newline, entry_indices, entry_line_terminated, fresh_token,
+    has_child_token, nth_entry_index, strip_flow_separator, Lang, SyntaxNode,
 };
 use crate::as_yaml::{build_in, AsYaml, FlowQuoting, YamlKind};
 use crate::lex::SyntaxKind;
@@ -730,7 +730,6 @@ impl Sequence {
         // enclosing mapping, so the new entry goes before it; an INDENT is a
         // separator, so the new entry goes after it.
         let mut last_entry_index = None;
-        let mut last_entry_has_newline = true; // Default for an empty sequence
         let mut insert_pos = child_count;
         let mut idx = child_count;
         while idx > 0 {
@@ -739,11 +738,6 @@ impl Sequence {
                 Some(rowan::NodeOrToken::Node(n))
                     if n.kind() == SyntaxKind::SEQUENCE_ENTRY.into() =>
                 {
-                    last_entry_has_newline = n
-                        .children()
-                        .next_back()
-                        .and_then(|c| c.into_token())
-                        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE.into());
                     last_entry_index = Some(idx);
                     if insert_pos == child_count {
                         insert_pos = idx + 1;
@@ -759,6 +753,20 @@ impl Sequence {
                     insert_pos = idx;
                 }
                 _ => break,
+            }
+        }
+
+        // Ensure the previous last entry has a trailing newline (it won't be
+        // last anymore). `last_child` reaches it without walking the list.
+        let mut last_entry_has_newline = true;
+        if last_entry_index.is_some() {
+            if let Some(node) = self
+                .0
+                .last_child()
+                .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            {
+                last_entry_has_newline = entry_line_terminated(&node);
+                ensure_trailing_newline(&node);
             }
         }
 
@@ -784,20 +792,6 @@ impl Sequence {
         }
         builder.finish_node(); // SEQUENCE_ENTRY
         let new_entry = SyntaxNode::new_root_mut(builder.finish());
-
-        // Ensure the previous last entry has a trailing newline (it won't be
-        // last anymore). `last_child` reaches it without walking the list.
-        if last_entry_index.is_some() && !last_entry_has_newline {
-            if let Some(node) = self
-                .0
-                .last_child()
-                .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-            {
-                let entry_children_count = node.green().children().len();
-                let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
-                node.splice_children(entry_children_count..entry_children_count, vec![nl.into()]);
-            }
-        }
 
         // Parser convention: the first entry in a SEQUENCE has no leading
         // INDENT inside the SEQUENCE; its indentation comes from the parent
@@ -2713,6 +2707,45 @@ scores:
             let outer = yaml.document().unwrap().as_sequence().unwrap();
             let seq = outer.get(0).unwrap().as_sequence().cloned().unwrap();
             edit(&seq);
+            crate::debug::assert_edited(&yaml, expected);
+        }
+    }
+
+    /// The last item's line break may sit inside a nested collection or
+    /// block scalar rather than directly in its entry.
+    #[test]
+    fn test_append_after_nested_last_item() {
+        let cases = [
+            ("- - 1\n  - 2\n", "- - 1\n  - 2\n- x\n"),
+            ("- - 1", "- - 1\n- x"),
+            ("- a: 1\n  b: 2\n", "- a: 1\n  b: 2\n- x\n"),
+            ("- a: 1", "- a: 1\n- x"),
+            ("- a:\n", "- a:\n- x\n"),
+            ("- ? a\n", "- ? a\n- x\n"),
+            ("- |\n  x\n", "- |\n  x\n- x\n"),
+            ("- - |\n    x", "- - |\n    x\n- x"),
+            ("k:\n  - - 1\n", "k:\n  - - 1\n  - x\n"),
+            ("k:\n  - - 1\nj: 2\n", "k:\n  - - 1\n  - x\nj: 2\n"),
+        ];
+        for (source, expected) in cases {
+            let yaml = YamlFile::from_str(source).unwrap();
+            let doc = yaml.document().unwrap();
+            let seq = doc
+                .as_sequence()
+                .or_else(|| doc.as_mapping()?.get_sequence("k"))
+                .unwrap();
+            seq.push("x");
+            crate::debug::assert_edited(&yaml, expected);
+        }
+        let cases = [
+            ("- - 1", "- - 1\n- x\n"),
+            ("- a: 1", "- a: 1\n- x\n"),
+            ("- - |\n    x", "- - |\n    x\n- x\n"),
+        ];
+        for (source, expected) in cases {
+            let yaml = YamlFile::from_str(source).unwrap();
+            let seq = yaml.document().unwrap().as_sequence().unwrap();
+            seq.insert(1, "x");
             crate::debug::assert_edited(&yaml, expected);
         }
     }

@@ -521,15 +521,24 @@ impl Sequence {
 
         // For a block sequence under a key, the parser stores the entry
         // column as an INDENT in the parent VALUE (right before the SEQUENCE).
+        // A line break with no INDENT after it puts the entries at column 0,
+        // the key's own column (`a:\n- 1`).
         if let Some(parent) = self.0.parent().filter(|p| p.kind() == SyntaxKind::VALUE) {
+            let mut line_indent = None;
             for child in parent.children_with_tokens() {
                 match &child {
                     rowan::NodeOrToken::Node(n) if n == &self.0 => break,
                     rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INDENT => {
-                        return t.text().to_string();
+                        line_indent = Some(t.text().to_string());
+                    }
+                    rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::NEWLINE => {
+                        line_indent = Some(String::new());
                     }
                     _ => {}
                 }
+            }
+            if let Some(indent) = line_indent {
+                return indent;
             }
         }
 
@@ -2504,5 +2513,44 @@ scores:
             doc.to_string(),
             "items:\n  - replaced\n  - name: second\n    value: 2\n"
         );
+    }
+
+    /// A block sequence may sit at its key's column (`a:\n- 1`); new items
+    /// go in that column too, not two spaces in.
+    #[test]
+    fn test_add_to_sequence_at_key_column() {
+        let cases: &[(&str, &dyn Fn(&crate::Sequence), &str)] = &[
+            ("a:\n- 1\n", &|s| s.push("x"), "a:\n- 1\n- x\n"),
+            ("a:\n- 1", &|s| s.push("x"), "a:\n- 1\n- x"),
+            ("a:\n- 1\n", &|s| s.insert(0, "x"), "a:\n- x\n- 1\n"),
+            ("a:\n- 1\n", &|s| s.insert(1, "x"), "a:\n- 1\n- x\n"),
+            (
+                "a:\n- 1\n- 2\n",
+                &|s| s.insert(0, "x"),
+                "a:\n- x\n- 1\n- 2\n",
+            ),
+            (
+                "a:\n- 1\n- 2\n",
+                &|s| s.insert(1, "x"),
+                "a:\n- 1\n- x\n- 2\n",
+            ),
+            ("a:\n- 1\nb: 2\n", &|s| s.push("x"), "a:\n- 1\n- x\nb: 2\n"),
+            (
+                "b:\n  a:\n  - 1\n",
+                &|s| s.push("x"),
+                "b:\n  a:\n  - 1\n  - x\n",
+            ),
+        ];
+        for (source, edit, expected) in cases {
+            let yaml = YamlFile::from_str(source).unwrap();
+            let doc = yaml.document().unwrap();
+            let root = doc.as_mapping().unwrap();
+            let seq = match root.get_sequence("a") {
+                Some(seq) => seq,
+                None => root.get_mapping("b").unwrap().get_sequence("a").unwrap(),
+            };
+            edit(&seq);
+            crate::debug::assert_edited(&yaml, expected);
+        }
     }
 }

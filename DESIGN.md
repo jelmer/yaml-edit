@@ -202,6 +202,13 @@ scalar or flow root, are children of `DOCUMENT`. Comments and directives
 before the first document are children of the file root instead. Mutations
 that add documents or directives must keep a BOM first in the stream.
 
+A kept (`|+`, `>+`) block scalar takes every blank line after it into its
+value. A new entry whose value ends in one therefore goes after any blank
+lines at the place it is inserted rather than before them:
+`insert_after("a", "k", "text\n\n")` on `a: 1\n\nb: 2\n` gives
+`a: 1\n\nk: |+\n  text\n\nb: 2\n`. The text around the new entry stays as
+it was, and the value keeps its style.
+
 ## Implicit-null values
 
 Every `MAPPING_ENTRY` and `SEQUENCE_ENTRY` in the CST holds a value node,

@@ -417,6 +417,120 @@ pub(crate) fn hand_line_break_to_mapping(entry: &SyntaxNode) {
     parent.splice_children(at..at, moved);
 }
 
+/// Move the blank lines straight after `entry`, a block collection entry
+/// just inserted, to in front of its line, if its value ends in a kept
+/// (`|+`, `>+`) block scalar.
+///
+/// Such a scalar takes every blank line after it into its value, so the
+/// new entry goes after the blank lines rather than before them, leaving
+/// the text around it as it was.
+pub(crate) fn move_blank_lines_ahead_of_kept_scalar(entry: &SyntaxNode) {
+    if !ends_with_kept_block_scalar(entry) {
+        return;
+    }
+    // An explicit-key entry leaves the break ending its line to the mapping.
+    let Some(line_end) = entry
+        .last_token()
+        .filter(|t| t.kind() == SyntaxKind::NEWLINE)
+        .or_else(|| {
+            entry
+                .next_sibling_or_token()
+                .and_then(|c| c.into_token())
+                .filter(|t| t.kind() == SyntaxKind::NEWLINE)
+        })
+    else {
+        return;
+    };
+    let mut lines = Vec::new();
+    let mut next = line_end.next_token();
+    loop {
+        let space = next
+            .clone()
+            .filter(|t| matches!(t.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE));
+        let Some(line_break) = space
+            .as_ref()
+            .map_or(next.clone(), |t| t.next_token())
+            .filter(|t| t.kind() == SyntaxKind::NEWLINE)
+        else {
+            break;
+        };
+        next = line_break.next_token();
+        lines.extend(space);
+        lines.push(line_break);
+    }
+    if lines.is_empty() {
+        return;
+    }
+    let moved: Vec<_> = lines
+        .into_iter()
+        .map(|t| {
+            t.detach();
+            fresh_token(t.kind(), t.text()).into()
+        })
+        .collect();
+
+    // The lines go in front of the outermost element that starts the
+    // entry's line, within the document.
+    let first = entry.first_token().expect("an inserted entry has tokens");
+    let line_start = std::iter::successors(Some(first), |t| {
+        t.prev_token()
+            .filter(|p| !matches!(p.kind(), SyntaxKind::NEWLINE | SyntaxKind::BOM))
+    })
+    .last()
+    .expect("successors yields its first item");
+    let mut at = rowan::NodeOrToken::Token(line_start.clone());
+    while let Some(parent) = at
+        .parent()
+        .filter(|p| p.kind() != SyntaxKind::DOCUMENT && p.first_token() == Some(line_start.clone()))
+    {
+        at = rowan::NodeOrToken::Node(parent);
+    }
+    let parent = at.parent().expect("an inserted entry is in a document");
+    let index = at.index();
+    parent.splice_children(index..index, moved);
+}
+
+/// Whether the last node `entry` holds is a kept (`|+`, `>+`) block scalar.
+fn ends_with_kept_block_scalar(entry: &SyntaxNode) -> bool {
+    let tokens: Vec<_> = entry
+        .descendants_with_tokens()
+        .filter_map(|c| c.into_token())
+        .collect();
+    let Some(scalar) = tokens
+        .iter()
+        .rev()
+        .filter(|t| !t.text().is_empty())
+        .find_map(|t| {
+            let parent = t.parent()?;
+            let layout = matches!(
+                t.kind(),
+                SyntaxKind::NEWLINE | SyntaxKind::WHITESPACE | SyntaxKind::INDENT
+            );
+            match parent.kind() {
+                SyntaxKind::SCALAR => Some(Some(parent)),
+                _ if layout => None,
+                _ => Some(None),
+            }
+        })
+        .flatten()
+    else {
+        return false;
+    };
+    // The indicators follow `|` or `>` straight away. A scalar built from a
+    // value is a single token, so stop at the end of the header line.
+    let header: String = scalar
+        .children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .take_while(|t| t.kind() != SyntaxKind::NEWLINE)
+        .map(|t| t.text().to_string())
+        .collect();
+    let mut chars = header.chars();
+    matches!(chars.next(), Some('|' | '>'))
+        && chars
+            .take_while(|c| c.is_ascii_digit() || matches!(c, '+' | '-'))
+            .any(|c| c == '+')
+}
+
 /// Add the line break that ends the last line of `node`, where the parser
 /// puts it when another document follows.
 ///

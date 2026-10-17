@@ -12,8 +12,8 @@ pub(crate) use helpers::{block_scalar_body_shift, block_scalar_content_indent, i
 
 use super::{
     ensure_trailing_newline, entry_key, entry_line_terminated, entry_value, fresh_token,
-    hand_line_break_to_mapping, has_child_token, strip_flow_separator, trailing_newline_reachable,
-    Lang, Sequence, SyntaxNode,
+    hand_line_break_to_mapping, has_child_token, move_blank_lines_ahead_of_kept_scalar,
+    strip_flow_separator, trailing_newline_reachable, Lang, Sequence, SyntaxNode,
 };
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
@@ -744,6 +744,7 @@ impl Mapping {
             .iter()
             .chain([new_entry])
             .for_each(hand_line_break_to_mapping);
+        move_blank_lines_ahead_of_kept_scalar(new_entry);
     }
 
     /// Set a key-value pair with field ordering support
@@ -861,6 +862,7 @@ impl Mapping {
         self.0.splice_children(at..at, elements);
         hand_line_break_to_mapping(after);
         hand_line_break_to_mapping(new_entry);
+        move_blank_lines_ahead_of_kept_scalar(new_entry);
     }
 
     /// Splice `new_entry` into this block mapping ahead of `before`.
@@ -891,6 +893,7 @@ impl Mapping {
         prev.into_iter()
             .chain([new_entry])
             .for_each(hand_line_break_to_mapping);
+        move_blank_lines_ahead_of_kept_scalar(new_entry);
     }
 
     /// Detect the indentation level (in spaces) used by entries in this mapping.
@@ -1554,6 +1557,7 @@ impl Mapping {
             .iter()
             .chain([&new_entry.0])
             .for_each(hand_line_break_to_mapping);
+        move_blank_lines_ahead_of_kept_scalar(&new_entry.0);
     }
 
     crate::nodes::ast_node_spans!("mapping");

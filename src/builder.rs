@@ -197,20 +197,25 @@ fn start_mapping_entry(builder: &mut GreenNodeBuilder<'static>, key: &str) {
 
 /// Emit the children of a VALUE built by
 /// [`build_block_value_node`](crate::nodes::mapping::build_block_value_node),
-/// wrapped in VALUE again if `wrap`. Returns whether they end with a newline.
+/// wrapped in VALUE again if `wrap`, after the space that separates them
+/// from the `:` or `-` if they start on that line. Returns whether they end
+/// with a newline.
 fn emit_block_value(
     builder: &mut GreenNodeBuilder<'static>,
     source: &SyntaxNode,
     target: usize,
     wrap: bool,
 ) -> bool {
-    let (value, ends_with_newline) = crate::nodes::mapping::build_block_value_node(source, target);
-    if wrap {
-        crate::yaml::copy_node_to_builder(builder, &value);
-    } else {
-        crate::yaml::add_node_children_to(builder, &value);
+    let block = crate::nodes::mapping::build_block_value_node(source, target);
+    if block.on_key_line {
+        builder.token(SyntaxKind::WHITESPACE.into(), " ");
     }
-    ends_with_newline
+    if wrap {
+        crate::yaml::copy_node_to_builder(builder, &block.node);
+    } else {
+        crate::yaml::add_node_children_to(builder, &block.node);
+    }
+    block.ends_with_newline
 }
 
 impl SequenceBuilder {

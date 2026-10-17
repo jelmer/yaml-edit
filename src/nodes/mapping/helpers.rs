@@ -177,6 +177,16 @@ pub(super) fn is_block_scalar(source: &SyntaxNode) -> bool {
             .is_some_and(|t| matches!(t.kind(), SyntaxKind::PIPE | SyntaxKind::GREATER))
 }
 
+/// A VALUE node built by [`build_block_value_node`].
+pub(crate) struct BlockValue {
+    pub(crate) node: SyntaxNode,
+    /// The value starts on the key line (with an anchor, tag or block
+    /// scalar indicator) and needs a space after the `:`. The parser keeps
+    /// that space in MAPPING_ENTRY, before VALUE.
+    pub(crate) on_key_line: bool,
+    pub(crate) ends_with_newline: bool,
+}
+
 /// Build a VALUE node wrapping `source` (a block sequence, mapping, scalar,
 /// or tagged node from another CST) so it renders correctly under a key
 /// whose content column is `target`. Block collections go on the line
@@ -186,9 +196,8 @@ pub(super) fn is_block_scalar(source: &SyntaxNode) -> bool {
 /// content on the next line. The source's interior indentation is shifted
 /// so nested lines line up. If the source is preceded by an `&anchor`
 /// inside its parent VALUE, the anchor is preserved on the key line so
-/// aliases still resolve. Returns the new VALUE node plus whether it ends
-/// with a NEWLINE.
-pub(crate) fn build_block_value_node(source: &SyntaxNode, target: usize) -> (SyntaxNode, bool) {
+/// aliases still resolve.
+pub(crate) fn build_block_value_node(source: &SyntaxNode, target: usize) -> BlockValue {
     if source.kind() == SyntaxKind::TAGGED_NODE {
         return build_tagged_value_node(source, target);
     }
@@ -206,31 +215,57 @@ pub(crate) fn build_block_value_node(source: &SyntaxNode, target: usize) -> (Syn
 
     let mut value_builder = GreenNodeBuilder::new();
     value_builder.start_node(SyntaxKind::VALUE.into());
-    // "key: &anchor" - a leading space then the anchor sits on the key line.
-    // TODO: the parser keeps the space before an anchor, block scalar or tag
-    // at MAPPING_ENTRY level, not inside VALUE.
     if let Some(a) = anchor.as_deref() {
-        value_builder.token(SyntaxKind::WHITESPACE.into(), " ");
         value_builder.token(SyntaxKind::ANCHOR.into(), a);
     }
-    // Block scalars keep the `|`/`>` indicator on the key line (one space
-    // after the anchor or the colon); block collections drop to the next
-    // line indented to `target`.
-    if is_scalar {
-        value_builder.token(SyntaxKind::WHITESPACE.into(), " ");
-    } else {
+    // Block scalars keep the `|`/`>` indicator on the key line; block
+    // collections drop to the next line indented to `target`.
+    if !is_scalar {
         value_builder.token(SyntaxKind::NEWLINE.into(), "\n");
         value_builder.token(SyntaxKind::INDENT.into(), &" ".repeat(target));
+    } else if anchor.is_some() {
+        value_builder.token(SyntaxKind::WHITESPACE.into(), " ");
     }
     value_builder.start_node(source.kind().into());
     let ends_with_newline =
         crate::as_yaml::copy_node_content_reindent(&mut value_builder, source, delta);
     value_builder.finish_node();
     value_builder.finish_node();
-    (
-        SyntaxNode::new_root_mut(value_builder.finish()),
+    BlockValue {
+        node: SyntaxNode::new_root_mut(value_builder.finish()),
+        on_key_line: is_scalar || anchor.is_some(),
         ends_with_newline,
-    )
+    }
+}
+
+/// Put `comment` (the whitespace before it, then its text) at the end of
+/// the first line of `value`, a VALUE built by [`build_block_value_node`]
+/// that starts on the key line. The parser keeps such a comment beside the
+/// anchor, tag or block scalar header it follows.
+// TODO: if that line already has a comment (a block scalar's header
+// comment), the value's own is kept and `comment` is silently dropped, as
+// a line holds only one.
+pub(super) fn add_key_line_comment(value: &SyntaxNode, comment: (String, String)) {
+    let first_line: Vec<_> = value
+        .descendants_with_tokens()
+        .filter_map(|c| c.into_token())
+        .take_while(|t| t.kind() != SyntaxKind::NEWLINE)
+        .collect();
+    if first_line.iter().any(|t| t.kind() == SyntaxKind::COMMENT) {
+        return;
+    }
+    let last = first_line
+        .last()
+        .expect("a value on the key line starts with a token");
+    let parent = last.parent().expect("a token has a parent");
+    let at = last.index() + 1;
+    parent.splice_children(
+        at..at,
+        vec![
+            fresh_token(SyntaxKind::WHITESPACE, &comment.0).into(),
+            fresh_token(SyntaxKind::COMMENT, &comment.1).into(),
+        ],
+    );
 }
 
 /// `value` built as a standalone node, if it has no node of its own but
@@ -265,11 +300,11 @@ pub(super) fn node_is_inline(node: &SyntaxNode) -> bool {
 }
 
 /// Build a VALUE node wrapping a TAGGED_NODE source. The tag stays on the
-/// key line; the wrapped inner value (mapping/sequence/scalar) goes on the
-/// next line at `target` for block content, or stays inline with a leading
-/// space for inline content, with interior indentation re-shifted so
-/// nested lines line up.
-pub(super) fn build_tagged_value_node(source: &SyntaxNode, target: usize) -> (SyntaxNode, bool) {
+/// key line; the wrapped inner value (mapping/sequence) goes on the next
+/// line at `target` for block content, or stays inline with a leading
+/// space for inline content and block scalars, with interior indentation
+/// re-shifted so nested lines line up.
+pub(super) fn build_tagged_value_node(source: &SyntaxNode, target: usize) -> BlockValue {
     // A TAGGED_NODE holds the TAG token followed by the wrapped value node.
     let tag_text = source
         .children_with_tokens()
@@ -281,7 +316,6 @@ pub(super) fn build_tagged_value_node(source: &SyntaxNode, target: usize) -> (Sy
 
     let mut value_builder = GreenNodeBuilder::new();
     value_builder.start_node(SyntaxKind::VALUE.into());
-    value_builder.token(SyntaxKind::WHITESPACE.into(), " ");
     if let Some(a) = anchor.as_deref() {
         value_builder.token(SyntaxKind::ANCHOR.into(), a);
         value_builder.token(SyntaxKind::WHITESPACE.into(), " ");
@@ -292,11 +326,16 @@ pub(super) fn build_tagged_value_node(source: &SyntaxNode, target: usize) -> (Sy
     }
     let ends_with_newline = match inner {
         None => false,
-        Some(inner) if node_is_inline(&inner) => {
-            // e.g. `!!str value` - content on same line, verbatim copy.
+        Some(inner) if node_is_inline(&inner) || is_block_scalar(&inner) => {
+            // `!!str value` or `!!str |`: content on the tag line, with a
+            // block scalar's content lines shifted to `target`.
+            let delta = match block_scalar_content_indent(&inner) {
+                Some(base) if is_block_scalar(&inner) => target as isize - base as isize,
+                _ => 0,
+            };
             value_builder.token(SyntaxKind::WHITESPACE.into(), " ");
             value_builder.start_node(inner.kind().into());
-            let n = crate::as_yaml::copy_node_content_reindent(&mut value_builder, &inner, 0);
+            let n = crate::as_yaml::copy_node_content_reindent(&mut value_builder, &inner, delta);
             value_builder.finish_node();
             n
         }
@@ -313,10 +352,11 @@ pub(super) fn build_tagged_value_node(source: &SyntaxNode, target: usize) -> (Sy
     };
     value_builder.finish_node(); // TAGGED_NODE
     value_builder.finish_node(); // VALUE
-    (
-        SyntaxNode::new_root_mut(value_builder.finish()),
+    BlockValue {
+        node: SyntaxNode::new_root_mut(value_builder.finish()),
+        on_key_line: true,
         ends_with_newline,
-    )
+    }
 }
 
 /// If `source` is preceded by an `&anchor` token in its parent VALUE, return

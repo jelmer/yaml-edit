@@ -40,6 +40,10 @@
 //! NEWLINE child. `value_is_block` in `mapping.rs` distinguishes the two
 //! by looking for a NEWLINE token as a direct child of VALUE.
 //!
+//! The space after the colon belongs to MAPPING_ENTRY, before VALUE,
+//! including for block values that start on the key line with an anchor,
+//! tag or block scalar indicator (`key: &a\n  - a`, `key: |\n  text`).
+//!
 //! ## Entry termination
 //!
 //! Block-style MAPPING_ENTRY and SEQUENCE_ENTRY nodes are terminated by

@@ -1,8 +1,9 @@
 //! Regression tests for issue #16: `Mapping::set` produces malformed YAML
 //! when setting block sequences in nested mappings.
 
+use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{Mapping, MappingBuilder, Sequence, SequenceBuilder, YamlFile, YamlValue};
+use yaml_edit::{debug, Mapping, MappingBuilder, Sequence, SequenceBuilder, YamlFile, YamlValue};
 
 mod common;
 use common::{assert_cst_ok, assert_file_cst_ok};
@@ -253,7 +254,7 @@ fn scalar_over_block_preserves_key_line_comment() {
     let (tf, root) = parse("k:  # sticky\n  - old\n");
     root.set("k", "new");
     assert_file_cst_ok(&tf);
-    assert_eq!(tf.to_string(), "k:  new  # sticky\n");
+    assert_eq!(tf.to_string(), "k: new  # sticky\n");
 }
 
 #[test]
@@ -335,11 +336,14 @@ fn block_yaml_values_in_mappings() {
         ] {
             let (file, root) = parse(src);
             dig(&root, path).set(key, value.clone());
-            // TODO: also compare the tree with a re-parse once the YamlValue
-            // mapping builder and build_block_value_node put WHITESPACE and
-            // INDENT where the parser does.
             assert_file_cst_ok(&file);
             assert_eq!(file.to_string(), expected);
+            let reparsed = YamlFile::from_str(expected).unwrap();
+            assert_eq!(
+                debug::tree_to_string(file.syntax()),
+                debug::tree_to_string(reparsed.syntax()),
+                "{expected:?}"
+            );
         }
     }
 }

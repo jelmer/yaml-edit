@@ -273,18 +273,19 @@ mod tests {
             );
         }
 
-        // TODO: no tree comparison for mapping values yet: a block-form
-        // tagged value gets the space after the colon inside VALUE, where
-        // the parser has it before VALUE.
         let doc = Document::from_str("o:\n  b: 1\n").unwrap();
         let inner = doc.as_mapping().unwrap().get_mapping("o").unwrap();
         inner.set("b", &map);
         inner.set("c", &map);
+        let expected = "o:\n  b: !!map\n    k: 1\n    j: 2\n  c: !!map\n    k: 1\n    j: 2\n";
+        assert_eq!(doc.to_string(), expected);
+        let node = doc.as_node().unwrap();
+        validate_tree(node).unwrap();
+        roundtrip_ok(node).unwrap();
+        let reparsed = Document::from_str(expected).unwrap();
         assert_eq!(
-            doc.to_string(),
-            "o:\n  b: !!map\n    k: 1\n    j: 2\n  c: !!map\n    k: 1\n    j: 2\n"
+            tree_to_string(node),
+            tree_to_string(reparsed.as_node().unwrap())
         );
-        validate_tree(doc.as_node().unwrap()).unwrap();
-        roundtrip_ok(doc.as_node().unwrap()).unwrap();
     }
 }

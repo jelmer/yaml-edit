@@ -1747,7 +1747,7 @@ impl AsYaml for BTreeMap<String, YamlValue> {
                 let entries: Vec<_> = self.iter().collect();
 
                 for (i, (key, value)) in entries.iter().enumerate() {
-                    if i > 0 {
+                    if i > 0 && indent > 0 {
                         // Previous entry's newline serves as separator, just add indent
                         builder.token(SyntaxKind::INDENT.into(), &indent_str);
                     }
@@ -1760,17 +1760,17 @@ impl AsYaml for BTreeMap<String, YamlValue> {
 
                     builder.token(SyntaxKind::COLON.into(), ":");
 
-                    builder.start_node(SyntaxKind::VALUE.into());
-
                     let is_complex =
                         value.kind() == YamlKind::Mapping || value.kind() == YamlKind::Sequence;
 
                     let value_ends_with_newline = if is_complex {
+                        builder.start_node(SyntaxKind::VALUE.into());
                         builder.token(SyntaxKind::NEWLINE.into(), "\n");
                         builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent + 2));
                         value.build_content(builder, indent + 2, flow_context)
                     } else {
                         builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                        builder.start_node(SyntaxKind::VALUE.into());
                         value.build_content(builder, 0, flow_context)
                     };
 
@@ -1863,7 +1863,7 @@ impl AsYaml for &[YamlValue] {
                 let indent_str = " ".repeat(indent);
 
                 for (i, item) in self.iter().enumerate() {
-                    if i > 0 {
+                    if i > 0 && indent > 0 {
                         // Previous entry's newline serves as separator, just add indent
                         builder.token(SyntaxKind::INDENT.into(), &indent_str);
                     }

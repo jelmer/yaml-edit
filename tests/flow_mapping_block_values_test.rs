@@ -1,8 +1,9 @@
 //! Collections written into flow mappings, or used as keys, are rendered in
 //! flow style, since block syntax is not allowed there.
 
+use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{Mapping, Sequence, YamlFile, YamlValue};
+use yaml_edit::{debug, Mapping, ScalarValue, Sequence, YamlFile, YamlValue};
 
 mod common;
 use common::assert_file_cst_ok;
@@ -14,6 +15,17 @@ fn parse_seq(yaml: &str) -> Sequence {
         .unwrap()
         .as_sequence()
         .unwrap()
+}
+
+/// Check that `file` has the same tree shape as a re-parse of its text.
+#[track_caller]
+fn assert_parser_shaped(file: &YamlFile) {
+    assert_file_cst_ok(file);
+    let reparsed = YamlFile::from_str(&file.to_string()).unwrap();
+    assert_eq!(
+        debug::tree_to_string(file.syntax()),
+        debug::tree_to_string(reparsed.syntax())
+    );
 }
 
 fn parse_map(yaml: &str) -> Mapping {
@@ -97,4 +109,75 @@ fn test_sequence_key_in_block_mapping() {
     let reparsed = parse_map(&file.to_string());
     assert_eq!(reparsed.len(), 2);
     assert!(reparsed.contains_key(&key));
+}
+
+/// YamlValues with block content, and how each is written in flow style.
+fn block_yaml_values() -> Vec<(YamlValue, &'static str)> {
+    vec![
+        (
+            YamlValue::parse_raw("!local\n  a: 1\n  b: 2"),
+            "!local {a: 1, b: 2}",
+        ),
+        (YamlValue::parse_raw("a: 1\nb: [x]\n"), "{a: 1, b: [x]}"),
+        (YamlValue::parse_raw("- a\n- b, c\n"), "[a, \"b, c\"]"),
+        (YamlValue::parse_raw("!!set\n  a: ~\n"), "!!set {a: null}"),
+        (
+            YamlValue::parse_raw("!!omap\n  - a: 1\n"),
+            "!!omap [{a: 1}]",
+        ),
+        (YamlValue::parse_raw("!t\n  - a\n"), "!t [a]"),
+        (
+            YamlValue::Sequence(vec![YamlValue::Scalar(ScalarValue::literal("a\nb\n"))]),
+            "[\"a\\nb\\n\"]",
+        ),
+    ]
+}
+
+#[test]
+fn test_push_block_yaml_value_into_flow_sequence() {
+    for (value, flow) in block_yaml_values() {
+        let file = YamlFile::from_str("k: [1]\n").unwrap();
+        let k = file
+            .document()
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get_sequence("k")
+            .unwrap();
+        k.push(value);
+        assert_parser_shaped(&file);
+        assert_eq!(file.to_string(), format!("k: [1, {flow}]\n"));
+    }
+}
+
+#[test]
+fn test_set_block_yaml_value_in_flow_mapping() {
+    for (value, flow) in block_yaml_values() {
+        let file = YamlFile::from_str("k: {x: 1}\n").unwrap();
+        let k = file
+            .document()
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get_mapping("k")
+            .unwrap();
+        k.set("y", value);
+        assert_parser_shaped(&file);
+        assert_eq!(file.to_string(), format!("k: {{x: 1, y: {flow}}}\n"));
+    }
+}
+
+#[test]
+fn test_set_scalar_with_flow_indicators_in_flow_mapping() {
+    for (value, flow) in [
+        (ScalarValue::string("a, b"), "\"a, b\""),
+        (ScalarValue::literal("x\ny\n"), "\"x\\ny\\n\""),
+        (ScalarValue::string("plain"), "plain"),
+    ] {
+        let file = YamlFile::from_str("{x: 1}\n").unwrap();
+        let root = file.document().unwrap().as_mapping().unwrap();
+        root.set("y", YamlValue::Scalar(value));
+        assert_parser_shaped(&file);
+        assert_eq!(file.to_string(), format!("{{x: 1, y: {flow}}}\n"));
+    }
 }

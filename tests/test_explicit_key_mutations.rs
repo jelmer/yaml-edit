@@ -473,3 +473,42 @@ fn nested_explicit_key_entry_inserted_and_moved() {
         "outer:\n  ? c\n  : 9\n  ? a\n  : 1\nz: 0\n"
     );
 }
+
+#[test]
+fn explicit_key_entry_replaced_at_index() {
+    let source = "? a\n: 1\n? b\n: 2\n";
+    assert_eq!(
+        edit_root(source, |m| m.insert_at_index_preserving(0, "a", 5)),
+        "? a\n: 5\n? b\n: 2\n"
+    );
+    assert_eq!(
+        edit_root(source, |m| m.insert_at_index_preserving(0, "b", 5)),
+        "? a\n: 1\n? b\n: 5\n"
+    );
+    assert_eq!(
+        edit_root("? a\n: 1\n? b\n: 2", |m| m
+            .insert_at_index_preserving(0, "b", 5)),
+        "? a\n: 1\n? b\n: 5"
+    );
+}
+
+#[test]
+fn entry_replaced_at_index_keeps_mapping_layout() {
+    for (source, key, expected) in [
+        ("a: 1\nb: 2\n", "a", "a: 5\nb: 2\n"),
+        ("a: 1\nb: 2", "b", "a: 1\nb: 5"),
+        ("m:\n  a: 1\n  b: 2\n", "a", "m:\n  a: 5\n  b: 2\n"),
+        ("m:\n  a: 1\n  b: 2\n", "b", "m:\n  a: 1\n  b: 5\n"),
+        ("m:\n  a: 1\nz: 0\n", "a", "m:\n  a: 5\nz: 0\n"),
+        ("{k: v, m: 2}\n", "k", "{k: 5, m: 2}\n"),
+        ("{k: v, m: 2}\n", "m", "{k: v, m: 5}\n"),
+        ("{k: v,\n  m: 2}\n", "k", "{k: 5,\n  m: 2}\n"),
+    ] {
+        let file = YamlFile::from_str(source).unwrap();
+        let root = file.document().unwrap().as_mapping().unwrap();
+        let m = root.get_mapping("m").unwrap_or(root);
+        m.insert_at_index_preserving(1, key, 5);
+        assert_parser_shaped(&file);
+        assert_eq!(file.to_string(), expected, "{source:?}");
+    }
+}

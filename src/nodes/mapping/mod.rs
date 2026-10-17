@@ -1,4 +1,3 @@
-mod compare;
 mod entry;
 mod helpers;
 mod movements;
@@ -939,21 +938,6 @@ impl Mapping {
             .is_some_and(|c| c.kind() == SyntaxKind::INDENT)
     }
 
-    /// The child position of the entry whose key matches `entry`'s, if any.
-    ///
-    /// The position is in `children_with_tokens` space, which is what
-    /// `splice_children` indexes, so it is not the entry's ordinal.
-    fn child_index_of_matching_entry(&self, entry: &SyntaxNode) -> Option<usize> {
-        let key_node = MappingEntry::cast(entry.clone())?.key()?;
-        let existing = self.entries().find(|e| {
-            e.key()
-                .is_some_and(|k| self.compare_key_nodes(&k, &key_node))
-        })?;
-        self.0
-            .children_with_tokens()
-            .position(|c| c.as_node() == Some(existing.syntax()))
-    }
-
     /// Insert a key-value pair at a specific index (0-based), preserving formatting.
     ///
     /// If `new_key` already exists in the mapping, the existing entry is replaced
@@ -967,19 +951,53 @@ impl Mapping {
         new_key: impl crate::AsYaml,
         new_value: impl crate::AsYaml,
     ) {
-        // Create the new entry using create_mapping_entry
-        let (new_entry, _has_trailing_newline) = self.create_mapping_entry(&new_key, &new_value);
-
-        // An existing entry with this key is replaced where it stands, so the
-        // index is only consulted for a key that is not there yet. New
-        // entries always end with a newline (DESIGN.md), so the old entry's
-        // own terminator goes with it.
-        if let Some(i) = self.child_index_of_matching_entry(&new_entry) {
-            self.0.splice_children(i..i + 1, vec![new_entry.into()]);
-            return;
+        match self.find_entry_by_key(&new_key) {
+            Some(old) => self.replace_entry(&old.0, new_key, new_value),
+            None => self.insert_new_entry_at(index, new_key, new_value),
         }
+    }
 
-        self.insert_new_entry_at(index, new_key, new_value);
+    /// Replace `old`, an entry of this mapping, with a new entry built the
+    /// way `set` builds one, in the same place.
+    fn replace_entry(&self, old: &SyntaxNode, key: impl crate::AsYaml, value: impl crate::AsYaml) {
+        let flow_context = self.is_flow_style();
+        let new_entry = MappingEntry::new_at_indent(
+            key,
+            value,
+            flow_context,
+            self.uses_explicit_keys(),
+            self.detect_indentation_level(),
+        )
+        .0;
+        if flow_context {
+            // The separator to the next entry lives in the entry before it.
+            let separator: Vec<_> = old
+                .children_with_tokens()
+                .skip_while(|c| c.kind() != SyntaxKind::COMMA)
+                .collect();
+            for c in &separator {
+                c.detach();
+            }
+            crate::nodes::append_children(&new_entry, separator);
+        } else if !trailing_newline_reachable(old) {
+            // The old line break goes, whether beside the entry or missing
+            // at the end of the input, and the new entry brings its own.
+            match old.next_sibling_or_token() {
+                Some(newline) if newline.kind() == SyntaxKind::NEWLINE => newline.detach(),
+                _ => {
+                    let last = new_entry
+                        .last_child_or_token()
+                        .filter(|c| c.kind() == SyntaxKind::NEWLINE);
+                    if let Some(last) = last {
+                        last.detach();
+                    }
+                }
+            }
+        }
+        let i = old.index();
+        self.0
+            .splice_children(i..i + 1, vec![new_entry.clone().into()]);
+        hand_line_break_to_mapping(&new_entry);
     }
 
     /// Remove a key-value pair, returning the removed entry.
@@ -1306,58 +1324,6 @@ impl Mapping {
             builder.token(trailing.kind().into(), trailing.text());
         }
         builder.finish_node();
-    }
-
-    /// Helper to create a MAPPING_ENTRY node from key and value strings
-    fn create_mapping_entry(
-        &self,
-        key: impl crate::AsYaml,
-        value: impl crate::AsYaml,
-    ) -> (SyntaxNode, bool) {
-        let mut builder = GreenNodeBuilder::new();
-        builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
-
-        // Add KEY node
-        builder.start_node(SyntaxKind::KEY.into());
-        super::build_key_content(&mut builder, &key, self.detect_indentation_level());
-        builder.finish_node(); // KEY
-
-        // Add colon
-        builder.token(SyntaxKind::COLON.into(), ":");
-
-        // Check if value is inline - if not, add newline + indent before VALUE
-        if !value.is_inline() {
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-            builder.token(SyntaxKind::INDENT.into(), "  "); // 2-space indent
-        } else {
-            builder.token(SyntaxKind::WHITESPACE.into(), " ");
-        }
-        // An inline node keeps its continuation lines' offset from the line
-        // it starts on, which here is the key's.
-        let value_indent = match value.as_node() {
-            Some(_) if value.is_inline() => self.detect_indentation_level(),
-            _ => 2,
-        };
-
-        // Add VALUE node
-        builder.start_node(SyntaxKind::VALUE.into());
-        let value_ends_with_newline = value.build_content(&mut builder, value_indent, false);
-        builder.finish_node(); // VALUE
-
-        // Every block-style MAPPING_ENTRY ends with NEWLINE
-        // Only add if the value content didn't already end with one
-        let added_newline = if !value_ends_with_newline {
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-            true
-        } else {
-            false
-        };
-
-        builder.finish_node(); // MAPPING_ENTRY
-        (
-            SyntaxNode::new_root_mut(builder.finish()),
-            added_newline || value_ends_with_newline,
-        )
     }
 
     /// Insert a key-value pair immediately after an existing key.

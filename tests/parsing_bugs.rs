@@ -217,9 +217,16 @@ fn test_annotated_key_after_nested_plain_value() {
 fn test_annotated_key_after_nested_quoted_value() {
     let parsed = YamlFile::from_str("k:\n  a: \"b\"\n  !t c: d\n").unwrap();
     let k = parsed.document().unwrap().as_mapping().unwrap().get("k");
+    let entries: Vec<(String, String)> = k
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.as_scalar().unwrap().as_string()))
+        .collect();
     assert_eq!(
-        scalar_entries(k.unwrap().as_mapping().unwrap()),
-        [("a".into(), "b".into()), ("c".into(), "d".into())]
+        entries,
+        [("a".into(), "b".into()), ("!t c".into(), "d".into())]
     );
 }
 

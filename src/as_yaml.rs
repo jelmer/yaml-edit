@@ -242,20 +242,7 @@ fn resolve(node: &SyntaxNode) -> Option<Resolved> {
                 None => crate::scalar::ScalarValue::from_tagged(&tagged).map(resolve_scalar),
             }
         }
-        // A tag on an implicit block mapping key is a TAG token in the KEY
-        // itself rather than a TAGGED_NODE.
-        SyntaxKind::KEY | SyntaxKind::VALUE => {
-            let tag = node
-                .children_with_tokens()
-                .filter_map(|c| c.into_token())
-                .find(|t| t.kind() == SyntaxKind::TAG)
-                .map(|t| t.text().to_string());
-            let content = node.first_child()?;
-            match tag {
-                Some(_) => resolve_content(&content, tag),
-                None => resolve(&content),
-            }
-        }
+        SyntaxKind::KEY | SyntaxKind::VALUE => resolve(&node.first_child()?),
         _ => resolve_content(node, None),
     }
 }

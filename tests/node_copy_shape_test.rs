@@ -532,6 +532,7 @@ fn test_set_implicitly_tagged_scalar_key_matches_tagged_key() {
             "{!!timestamp 2001-12-14: 1}\n",
             "{!!timestamp 2001-12-14: 2}\n",
         ),
+        ("!!timestamp 2001-12-14: 1\n", "!!timestamp 2001-12-14: 2\n"),
     ] {
         let file = YamlFile::from_str(src).unwrap();
         let mapping = file.document().unwrap().as_mapping().unwrap();
@@ -571,4 +572,14 @@ fn test_set_dedented_multiline_flow_value_keeps_tabs() {
         .unwrap()
         .set("n", source);
     assert_valid_copy(&file, "k: 1\nn: [a,\n \tb]\n");
+}
+
+#[test]
+fn test_set_tagged_scalar_key_in_block_mapping() {
+    use yaml_edit::ScalarValue;
+    let file = YamlFile::from_str("a: 1\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    mapping.set(ScalarValue::timestamp("2001-12-14"), 2);
+    mapping.set(ScalarValue::regex("^a+$"), 3);
+    assert_parser_shaped(&file, "a: 1\n!!timestamp 2001-12-14: 2\n!!regex ^a+$: 3\n");
 }

@@ -93,6 +93,14 @@ pub enum ResolveError {
         /// The source text of the member.
         member: String,
     },
+    /// A `!!set` member has a value other than null, which a
+    /// [`YamlValue::Set`] cannot keep.
+    NonNullSetValue {
+        /// The source text of the member.
+        member: String,
+        /// The source text of its value.
+        value: String,
+    },
     /// An item of a `!!omap` or `!!pairs` sequence is not a mapping with a
     /// single entry.
     InvalidPairsItem {
@@ -130,6 +138,9 @@ impl std::fmt::Display for ResolveError {
             }
             ResolveError::InvalidSetMember { member } => {
                 write!(f, "!!set member {member:?} is not a scalar")
+            }
+            ResolveError::NonNullSetValue { member, value } => {
+                write!(f, "!!set member {member:?} has non-null value {value:?}")
             }
             ResolveError::InvalidPairsItem { tag, item } => {
                 write!(
@@ -474,6 +485,23 @@ fn resolved_tagged(
     use crate::as_yaml::YamlNode;
 
     if let Some(set) = tagged.as_set() {
+        for entry in tagged.as_mapping().iter().flat_map(|m| m.entries()) {
+            let Some(value) = entry.value_node() else {
+                continue;
+            };
+            let is_null = matches!(
+                resolved_value(value.clone(), registry, expanding)?,
+                Some(YamlValue::Scalar(s)) if s.scalar_type() == crate::scalar::ScalarType::Null
+            );
+            if !is_null {
+                return Err(ResolveError::NonNullSetValue {
+                    member: entry
+                        .key_node()
+                        .map_or_else(String::new, |key| key.to_string()),
+                    value: value.to_string(),
+                });
+            }
+        }
         let mut members = std::collections::BTreeSet::new();
         for member in set.members() {
             let Some(YamlValue::Scalar(s)) = resolved_value(member.clone(), registry, expanding)?
@@ -1712,6 +1740,48 @@ m:
                 "{yaml:?}"
             );
         }
+    }
+
+    #[test]
+    fn get_resolved_set_value_must_be_null() {
+        for (yaml, member, value) in [
+            ("m: !!set {a: 1}\n", "a", "1"),
+            ("m: !!set\n  ? a\n  b: x\n", "b", "x"),
+            ("m: !!set\n  ? b\n  ? a\n  : x\n", "a", "x"),
+            ("m: !!set {a: ~, b: 'null'}\n", "b", "'null'"),
+            ("m: !!set {a: [~]}\n", "a", "[~]"),
+            ("x: &x 1\nm: !!set {a: *x}\n", "a", "*x"),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Err(ResolveError::NonNullSetValue {
+                    member: member.to_string(),
+                    value: value.to_string()
+                }),
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "m: !!set {a: ~, b: null, c: , ? d, e: !!null ''}\n",
+            "m: !!set\n  ? a\n  b:\n  c: ~\n  ? d\n  e: !!null ''\n",
+            "n: &n ~\nm: !!set {a: *n, b: , c: *n, ? d, e: *n}\n",
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Ok(Some(YamlValue::Set(
+                    ["a", "b", "c", "d", "e"].map(String::from).into()
+                ))),
+                "{yaml:?}"
+            );
+        }
+        assert_eq!(
+            ResolveError::NonNullSetValue {
+                member: "a".to_string(),
+                value: "1".to_string()
+            }
+            .to_string(),
+            "!!set member \"a\" has non-null value \"1\""
+        );
     }
 
     #[test]

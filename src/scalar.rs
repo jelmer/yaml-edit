@@ -699,7 +699,7 @@ impl ScalarValue {
     /// Whether `value` matches the finite part of the YAML 1.2 core schema
     /// `!!float` regex:
     /// `[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?`.
-    fn is_core_float(value: &str) -> bool {
+    pub(crate) fn is_core_float(value: &str) -> bool {
         let body = value.strip_prefix(['+', '-']).unwrap_or(value);
         let (mantissa, exponent) = match body.find(['e', 'E']) {
             Some(i) => (&body[..i], Some(&body[i + 1..])),

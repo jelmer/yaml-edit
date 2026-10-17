@@ -757,13 +757,34 @@ fn json_scalar(s: &ScalarValue) -> Result<String, CustomTagError> {
         ScalarType::Integer => {
             ScalarValue::canonical_integer(s.value().trim()).ok_or_else(unrepresentable)
         }
-        ScalarType::Float => s
-            .to_f64()
-            .filter(|f| f.is_finite())
-            .map(|f| f.to_string())
-            .ok_or_else(unrepresentable),
+        ScalarType::Float => json_float(s.value().trim()).ok_or_else(unrepresentable),
         _ => Ok(json_quote(s.value())),
     }
+}
+
+/// Respell a YAML core schema float as a JSON number, keeping its digits,
+/// or `None` for `.inf`, `.nan` and anything else JSON cannot spell.
+///
+/// The text is kept rather than going through `f64`, which would round it
+/// and turn values beyond its range into infinity.
+fn json_float(text: &str) -> Option<String> {
+    if !ScalarValue::is_core_float(text) {
+        return None;
+    }
+    let minus = if text.starts_with('-') { "-" } else { "" };
+    let body = text.strip_prefix(['+', '-']).unwrap_or(text);
+    let (mantissa, exponent) = body.split_at(body.find(['e', 'E']).unwrap_or(body.len()));
+    let (int, frac) = match mantissa.split_once('.') {
+        // `1.` keeps its point, so the value still reads as a float.
+        Some((int, frac)) => (int, Some(if frac.is_empty() { "0" } else { frac })),
+        None => (mantissa, None),
+    };
+    let int = match int.trim_start_matches('0') {
+        "" => "0",
+        int => int,
+    };
+    let frac = frac.map(|f| format!(".{f}")).unwrap_or_default();
+    Some(format!("{minus}{int}{frac}{exponent}"))
 }
 
 /// Decode the body of a JSON string literal (without the surrounding quotes).
@@ -1212,6 +1233,41 @@ mod tests {
             .serialize(&YamlValue::scalar(f64::INFINITY))
             .unwrap_err();
         assert_eq!(err.message, "Value cannot be represented in JSON");
+    }
+
+    #[test]
+    fn test_json_handler_serialize_floats_as_written() {
+        let handler = JsonHandler;
+        let json = |text: &str| handler.serialize(&YamlValue::Scalar(ScalarValue::parse(text)));
+        // JSON numbers have no range limit, so a float beyond f64 is kept.
+        assert_eq!(json("1e400").unwrap(), "1e400");
+        assert_eq!(json("-1.5E+400").unwrap(), "-1.5E+400");
+        assert_eq!(json("1.0").unwrap(), "1.0");
+        assert_eq!(
+            json("0.10000000000000000000001").unwrap(),
+            "0.10000000000000000000001"
+        );
+        // YAML spellings that JSON lacks.
+        assert_eq!(json("+1.5").unwrap(), "1.5");
+        assert_eq!(json(".5").unwrap(), "0.5");
+        assert_eq!(json("-.5e3").unwrap(), "-0.5e3");
+        assert_eq!(json("1.").unwrap(), "1.0");
+        assert_eq!(json("1.e3").unwrap(), "1.0e3");
+        assert_eq!(json("007.5").unwrap(), "7.5");
+        assert_eq!(json("00.5").unwrap(), "0.5");
+        assert_eq!(json("1e3").unwrap(), "1e3");
+
+        for text in [".inf", "-.inf", "+.INF", ".nan", ".NaN"] {
+            let err = json(text).unwrap_err();
+            assert_eq!(err.message, "Value cannot be represented in JSON", "{text}");
+        }
+        let err = handler.serialize(&YamlValue::scalar(f64::NAN)).unwrap_err();
+        assert_eq!(err.message, "Value cannot be represented in JSON");
+
+        for text in ["1e400", "-2.5e-400", "1.0", "0.1"] {
+            let value = handler.deserialize(text).unwrap();
+            assert_eq!(handler.serialize(&value).unwrap(), text);
+        }
     }
 
     #[test]

@@ -343,8 +343,6 @@ const KNOWN_VALUE_FAILURES: &[(&str, &str)] = &[
     ("3GZX", "redefined anchor"),
     ("4Q9F", "block scalar blank lines"),
     ("4QFQ", "block scalar indent indicator"),
-    ("4WA9", "block scalar indent indicator"),
-    ("5C5M", "trailing whitespace in scalar"),
     ("5TYM", "tag handles"),
     ("6CK3", "tag handles"),
     ("6FWR", "block scalar blank lines"),
@@ -352,27 +350,18 @@ const KNOWN_VALUE_FAILURES: &[(&str, &str)] = &[
     ("7T8X", "block scalar blank lines, trailing comment"),
     ("93WF", "block scalar blank lines"),
     ("CC74", "tag handles"),
-    ("DC7X", "trailing whitespace in scalar"),
     ("DWX9", "block scalar blank lines"),
     ("F6MC", "block scalar indent indicator"),
     ("H2RW", "block scalar blank lines"),
-    ("HWV9", "document end marker without document"),
     ("K527", "block scalar blank lines"),
     ("K858", "block scalar blank lines"),
     ("L24T/00", "block scalar blank lines"),
     ("L24T/01", "block scalar blank lines"),
-    ("L9U5", "trailing whitespace in scalar"),
-    ("LP6E", "trailing whitespace in scalar"),
     ("MJS9", "block scalar blank lines"),
-    ("NAT4", "quoted folding"),
-    ("PRH3", "single-quoted folding"),
-    ("QT73", "document end marker without document"),
     ("R4YG", "block scalar indent indicator"),
     ("T26H", "block scalar blank lines"),
-    ("T4YY", "single-quoted folding"),
     ("TS54", "block scalar blank lines"),
     ("U3C3", "tag handles"),
-    ("WZ62", "trailing whitespace in scalar"),
     ("Y79Y/001", "block scalar indentation"),
     ("Z9M4", "tag handles"),
 ];
@@ -473,10 +462,7 @@ impl JsonConverter {
         match scalar_type {
             ScalarType::Null => Ok(Value::Null),
             ScalarType::Boolean => coerced.to_bool().map(Value::Bool).ok_or_else(invalid),
-            ScalarType::Integer => coerced
-                .to_i64_yaml_1_2()
-                .map(Value::from)
-                .ok_or_else(invalid),
+            ScalarType::Integer => coerced.to_i64().map(Value::from).ok_or_else(invalid),
             ScalarType::Float => {
                 let float = coerced.to_f64().ok_or_else(invalid)?;
                 serde_json::Number::from_f64(float)

@@ -3810,6 +3810,22 @@ fn test_legacy_yaml_1_1_warnings() {
          Write `0o777777777777777777777777` to keep the octal meaning"
     );
 
+    // 1.2 has no signed `0o` form, so a negative one is kept as decimal.
+    assert_eq!(
+        yaml_edit::ScalarValue::parse("-0o777").scalar_type(),
+        yaml_edit::ScalarType::String
+    );
+    assert_eq!(
+        warn("mode: -00777\n")[0].2,
+        "`-00777` is YAML 1.1 octal, read as -511; YAML 1.2 reads it as -777. \
+         Write `-511` to keep the octal meaning"
+    );
+    assert_eq!(
+        warn("mode: 000\n")[0].2,
+        "`000` is YAML 1.1 octal, read as 0; YAML 1.2 reads it as 0. \
+         Write `0o0` to keep the octal meaning"
+    );
+
     // The 1.1 booleans are already strings here, but a 1.1 reader differs.
     assert_eq!(warn("a: yes\n").len(), 1);
     assert_eq!(warn("a: OFF\n").len(), 1);

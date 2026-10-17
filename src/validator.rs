@@ -961,12 +961,20 @@ impl Validator {
             let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
             let as_octal = crate::scalar::digits_to_decimal(digits, 8);
             let as_decimal = crate::scalar::digits_to_decimal(digits, 10);
+            // 1.2 has no signed `0o` form.
+            let suggestion = if sign.is_empty() {
+                match digits.trim_start_matches('0') {
+                    "" => "0o0".to_string(),
+                    octal => format!("0o{octal}"),
+                }
+            } else {
+                format!("-{as_octal}")
+            };
             violations.push(Violation::warning_at(
                 Rule::LegacyYaml11,
                 token.text_range(),
                 format!(
-                    "`{text}` is YAML 1.1 octal, read as {sign}{as_octal}; YAML 1.2 reads it as {sign}{as_decimal}. Write `{sign}0o{}` to keep the octal meaning",
-                    digits.trim_start_matches('0')
+                    "`{text}` is YAML 1.1 octal, read as {sign}{as_octal}; YAML 1.2 reads it as {sign}{as_decimal}. Write `{suggestion}` to keep the octal meaning",
                 ),
             ));
             return;

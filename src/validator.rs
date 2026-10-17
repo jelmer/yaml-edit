@@ -455,6 +455,7 @@ impl Validator {
                 // Check for colons in plain scalar values
                 self.check_colon_in_plain_scalar(node, violations);
                 self.check_plain_scalar_start(node, violations);
+                self.check_block_scalar_in_flow(node, violations);
                 // Check for directives inside document content (e.g. %YAML after ---)
                 self.check_directive_in_content(node, violations);
                 // Warn about constructs YAML 1.1 read differently
@@ -1219,6 +1220,31 @@ impl Validator {
                 Rule::Other,
                 first.text_range(),
                 format!("Plain scalar cannot start with {start:?}"),
+            ));
+        }
+    }
+
+    /// Check that a block scalar does not appear inside a flow collection.
+    ///
+    /// Flow content may only hold flow nodes. The parser reads `[k: |\n  x\n]`
+    /// as a plain scalar starting with `|`, while an edit can leave a real
+    /// block scalar there, so both shapes are checked.
+    fn check_block_scalar_in_flow(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        use crate::SyntaxKind;
+
+        let Some(first) = node.first_token() else {
+            return;
+        };
+        let is_block_header = match first.kind() {
+            SyntaxKind::PIPE | SyntaxKind::GREATER => true,
+            SyntaxKind::STRING => first.text().starts_with(['|', '>']),
+            _ => false,
+        };
+        if is_block_header && in_flow_collection(node) {
+            violations.push(Violation::error_at(
+                Rule::Other,
+                first.text_range(),
+                "Block scalar cannot appear inside a flow collection",
             ));
         }
     }
@@ -2573,16 +2599,16 @@ fn starts_a_flow_collection(node: &SyntaxNode) -> bool {
 }
 
 /// Whether `node` sits inside a flow collection.
+///
+/// The nearest collection is not enough: the single pair in `[k: v]` is a
+/// mapping without braces.
 fn in_flow_collection(node: &SyntaxNode) -> bool {
-    node.ancestors()
-        .skip(1)
-        .find(|a| {
-            matches!(
-                a.kind(),
-                crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-            )
-        })
-        .is_some_and(|c| starts_a_flow_collection(&c))
+    node.ancestors().skip(1).any(|a| {
+        matches!(
+            a.kind(),
+            crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
+        ) && starts_a_flow_collection(&a)
+    })
 }
 
 #[cfg(test)]
@@ -3288,6 +3314,38 @@ mod tests {
             .into_iter()
             .map(|v| v.message)
             .collect()
+    }
+
+    fn located(yaml: &str) -> Vec<(String, String)> {
+        let file = crate::YamlFile::from_str(yaml).unwrap();
+        Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| (v.message, v.location.unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn test_block_scalar_in_flow_collection() {
+        for (yaml, location) in [
+            ("[|\n  x\n]\n", "1:2"),
+            ("[k: |\n  x\n]\n", "1:5"),
+            ("{k: >\n  x\n}\n", "1:5"),
+            ("- [a, !!str >-\n    x\n  ]\n", "1:13"),
+            ("{|: x}\n", "1:2"),
+        ] {
+            assert_eq!(
+                located(yaml),
+                vec![(
+                    "Block scalar cannot appear inside a flow collection".to_string(),
+                    location.to_string()
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in ["[a|b, c>d]\n", "k: |\n  [x]\n", "{k: '|'}\n", "[\"> x\"]\n"] {
+            assert_eq!(located(yaml), vec![], "{yaml:?}");
+        }
     }
 
     #[test]

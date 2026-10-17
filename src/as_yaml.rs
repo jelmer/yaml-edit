@@ -654,78 +654,12 @@ pub(crate) fn copy_node_content(builder: &mut rowan::GreenNodeBuilder, node: &Sy
     }
 }
 
-/// Recursively copy the children of `node` into `builder`, adjusting indentation.
-///
-/// When copying WHITESPACE or INDENT tokens that appear after a NEWLINE,
-/// replaces them with the specified `indent` amount. This is useful when
-/// inserting pre-built sequences/mappings into a different nesting context.
-pub(crate) fn copy_node_content_with_indent(
-    builder: &mut rowan::GreenNodeBuilder,
-    node: &SyntaxNode,
-    indent: usize,
-) {
-    use crate::lex::SyntaxKind;
-    let mut after_newline = false;
-
-    for child in node.children_with_tokens() {
-        match child {
-            rowan::NodeOrToken::Node(n) => {
-                // If this node follows a newline, add indent before starting the node
-                if after_newline && indent > 0 {
-                    builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-                }
-                builder.start_node(n.kind().into());
-                copy_node_content_with_indent(builder, &n, indent);
-                builder.finish_node();
-                after_newline = false;
-            }
-            rowan::NodeOrToken::Token(t) => {
-                match t.kind() {
-                    SyntaxKind::NEWLINE => {
-                        builder.token(t.kind().into(), t.text());
-                        after_newline = true;
-                    }
-                    SyntaxKind::WHITESPACE | SyntaxKind::INDENT => {
-                        // If this whitespace follows a newline, add our indent to the existing indent
-                        if after_newline && indent > 0 {
-                            let existing_indent = t.text().len();
-                            let total_indent = indent + existing_indent;
-                            builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(total_indent));
-                        } else if after_newline {
-                            // indent == 0, skip the whitespace entirely
-                        } else {
-                            // Not after newline, keep as-is (e.g., space after dash)
-                            builder.token(t.kind().into(), t.text());
-                        }
-                        after_newline = false;
-                    }
-                    SyntaxKind::DASH => {
-                        // For sequence items: if DASH follows NEWLINE, add indent first
-                        if after_newline && indent > 0 {
-                            builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-                        }
-                        builder.token(t.kind().into(), t.text());
-                        after_newline = false;
-                    }
-                    _ => {
-                        // For any other token after a newline, add indent if needed
-                        if after_newline && indent > 0 {
-                            builder.token(SyntaxKind::WHITESPACE.into(), &" ".repeat(indent));
-                        }
-                        builder.token(t.kind().into(), t.text());
-                        after_newline = false;
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Copy the children of `node` into `builder`, shifting every post-newline
-/// whitespace by `delta` columns (may be negative to dedent).
+/// whitespace by `delta` columns (may be negative to dedent). Line-leading
+/// whitespace is written as INDENT, as the parser does.
 ///
-/// Unlike [`copy_node_content_with_indent`], newline state is tracked
-/// across node boundaries: a NEWLINE inside a child node correctly marks
+/// Newline state is tracked across node boundaries: a NEWLINE inside a
+/// child node correctly marks
 /// the next sibling token as being at the start of a line, so
 /// sibling INDENT tokens between entries (which is where the parser
 /// places them for block sequences and mappings) are shifted too.
@@ -744,14 +678,16 @@ pub(crate) fn copy_node_content_reindent(
             rowan::NodeOrToken::Node(n) => {
                 // Empty nodes (e.g. an implicit `null` value after `? key`
                 // in a set) emit nothing, so they must not affect the
-                // `after_newline` state or trigger a pre-node indent.
+                // `after_newline` state or trigger a pre-node indent. Their
+                // zero-width content still has to come along.
                 if n.text_range().is_empty() {
                     builder.start_node(n.kind().into());
+                    copy_node_content(builder, &n);
                     builder.finish_node();
                     continue;
                 }
                 if after_newline && delta > 0 {
-                    builder.token(SyntaxKind::WHITESPACE.into(), &pad(delta));
+                    builder.token(SyntaxKind::INDENT.into(), &pad(delta));
                 }
                 builder.start_node(n.kind().into());
                 after_newline = copy_node_content_reindent(builder, &n, delta);
@@ -766,7 +702,7 @@ pub(crate) fn copy_node_content_reindent(
                     if after_newline {
                         let total = t.text().len() as isize + delta;
                         if total > 0 {
-                            builder.token(SyntaxKind::WHITESPACE.into(), &pad(total));
+                            builder.token(SyntaxKind::INDENT.into(), &pad(total));
                         }
                     } else {
                         builder.token(t.kind().into(), t.text());
@@ -775,7 +711,7 @@ pub(crate) fn copy_node_content_reindent(
                 }
                 _ => {
                     if after_newline && delta > 0 {
-                        builder.token(SyntaxKind::WHITESPACE.into(), &pad(delta));
+                        builder.token(SyntaxKind::INDENT.into(), &pad(delta));
                     }
                     builder.token(t.kind().into(), t.text());
                     after_newline = false;

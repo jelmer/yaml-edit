@@ -130,6 +130,22 @@ impl TaggedNode {
     }
 }
 
+/// The indentation of the first non-blank line after `node`'s first line
+/// break, or `None` if it fits on one line.
+fn continuation_indent(node: &SyntaxNode) -> Option<usize> {
+    let mut tokens = node
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .skip_while(|t| t.kind() != SyntaxKind::NEWLINE);
+    tokens.next()?;
+    let first = tokens.find(|t| t.kind() != SyntaxKind::NEWLINE);
+    Some(
+        first
+            .filter(|t| matches!(t.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE))
+            .map_or(0, |t| t.text().len()),
+    )
+}
+
 impl AsYaml for TaggedNode {
     fn as_node(&self) -> Option<&SyntaxNode> {
         Some(&self.0)
@@ -141,19 +157,23 @@ impl AsYaml for TaggedNode {
         })
     }
 
+    /// Content on lines after the tag (a block collection, say) is shifted
+    /// to start at column `indent`, as for an untagged collection.
     fn build_content(
         &self,
         builder: &mut rowan::GreenNodeBuilder,
-        _indent: usize,
+        indent: usize,
         _flow_context: bool,
     ) -> bool {
-        crate::yaml::copy_node_to_builder(builder, &self.0);
-        false
+        let delta = continuation_indent(&self.0).map_or(0, |base| indent as isize - base as isize);
+        builder.start_node(SyntaxKind::TAGGED_NODE.into());
+        let ends_with_newline = crate::as_yaml::copy_node_content_reindent(builder, &self.0, delta);
+        builder.finish_node();
+        ends_with_newline
     }
 
     fn is_inline(&self) -> bool {
-        // Tagged scalars are always inline (they appear on the same line as their key)
-        true
+        crate::yaml::ValueNode::is_inline(self)
     }
 }
 
@@ -184,5 +204,87 @@ mod tests {
         let val = mapping.get_node("key").unwrap();
         let tagged = crate::yaml::TaggedNode::cast(val).unwrap();
         assert_eq!(tagged.as_string(), Some("hello world".to_string()));
+    }
+
+    #[test]
+    fn test_tagged_block_value_is_reindented() {
+        use crate::debug::{roundtrip_ok, tree_to_string, validate_tree};
+        use crate::{AsYaml, Document, Sequence};
+
+        let src = Document::from_str(
+            "a: !!map\n  k: 1\n  j: 2\nx:\n  b: !!seq\n      - 1\n      - 2\nc: !!str foo\n",
+        )
+        .unwrap();
+        let root = src.as_mapping().unwrap();
+        let map = root.get("a").unwrap();
+        let seq = root.get_mapping("x").unwrap().get("b").unwrap();
+        let scalar = root.get("c").unwrap();
+
+        let target = |doc: &Document| -> Sequence {
+            doc.as_sequence()
+                .or_else(|| doc.as_mapping()?.get_sequence("s"))
+                .unwrap()
+        };
+        type Op<'a> = Box<dyn Fn(&Document) + 'a>;
+        let cases: Vec<(&str, Op, &str)> = vec![
+            (
+                "s:\n  - a\n",
+                Box::new(|d: &Document| target(d).push(&map)),
+                "s:\n  - a\n  - !!map\n    k: 1\n    j: 2\n",
+            ),
+            (
+                "- a\n",
+                Box::new(|d: &Document| target(d).push(&map)),
+                "- a\n- !!map\n  k: 1\n  j: 2\n",
+            ),
+            (
+                "s:\n  - a\n",
+                Box::new(|d: &Document| target(d).insert(0, &map)),
+                "s:\n  - !!map\n    k: 1\n    j: 2\n  - a\n",
+            ),
+            (
+                "s:\n  - a\n  - b\n",
+                Box::new(|d: &Document| assert!(target(d).set(0, &map))),
+                "s:\n  - !!map\n    k: 1\n    j: 2\n  - b\n",
+            ),
+            (
+                "- a\n",
+                Box::new(|d: &Document| target(d).push(&seq)),
+                "- a\n- !!seq\n  - 1\n  - 2\n",
+            ),
+            (
+                "- a\n",
+                Box::new(|d: &Document| target(d).push(&scalar)),
+                "- a\n- !!str foo\n",
+            ),
+        ];
+        for (input, op, expected) in cases {
+            let doc = Document::from_str(input).unwrap();
+            op(&doc);
+            let node = doc.as_node().unwrap();
+            assert_eq!(doc.to_string(), expected, "{input:?}");
+            validate_tree(node).unwrap();
+            roundtrip_ok(node).unwrap();
+            let reparsed = Document::from_str(&doc.to_string()).unwrap();
+            assert_eq!(
+                tree_to_string(node),
+                tree_to_string(reparsed.as_node().unwrap()),
+                "{input:?}"
+            );
+        }
+
+        // TODO: no tree comparison for mapping values yet: a block-form
+        // tagged value gets the space after the colon inside VALUE, where
+        // the parser has it before VALUE.
+        let doc = Document::from_str("o:\n  b: 1\n").unwrap();
+        let inner = doc.as_mapping().unwrap().get_mapping("o").unwrap();
+        inner.set("b", &map);
+        inner.set("c", &map);
+        assert_eq!(
+            doc.to_string(),
+            "o:\n  b: !!map\n    k: 1\n    j: 2\n  c: !!map\n    k: 1\n    j: 2\n"
+        );
+        validate_tree(doc.as_node().unwrap()).unwrap();
+        roundtrip_ok(doc.as_node().unwrap()).unwrap();
     }
 }

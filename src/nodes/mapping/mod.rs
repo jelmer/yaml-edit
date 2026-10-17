@@ -3,9 +3,10 @@ mod entry;
 mod helpers;
 mod movements;
 
+pub(crate) use helpers::flow_form;
 use helpers::{
-    append_comma_space_to_entry, ensure_top_level_empty_renders_as_flow, flow_form,
-    index_after_entry_line, FlowInsertPos,
+    append_comma_space_to_entry, ensure_top_level_empty_renders_as_flow, index_after_entry_line,
+    FlowInsertPos,
 };
 
 use super::{
@@ -1547,8 +1548,9 @@ impl AsYaml for Mapping {
         indent: usize,
         _flow_context: bool,
     ) -> bool {
+        let delta = indent as isize - crate::as_yaml::source_base_indent(&self.0) as isize;
         builder.start_node(SyntaxKind::MAPPING.into());
-        crate::as_yaml::copy_node_content_with_indent(builder, &self.0, indent);
+        crate::as_yaml::copy_node_content_reindent(builder, &self.0, delta);
         builder.finish_node();
         self.0
             .last_token()

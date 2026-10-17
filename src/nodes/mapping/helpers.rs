@@ -341,7 +341,7 @@ pub(super) fn block_scalar_content_indent(scalar: &SyntaxNode) -> Option<usize> 
 /// Block collections and block scalars can't appear inside a flow
 /// collection or as an implicit key. Anchors, tags and aliases carry over;
 /// comments are dropped, since a single-line flow node has no room for them.
-pub(super) fn flow_form(value: &impl crate::AsYaml) -> Option<crate::as_yaml::YamlNode> {
+pub(crate) fn flow_form(value: &impl crate::AsYaml) -> Option<crate::as_yaml::YamlNode> {
     if value.is_inline() {
         return None;
     }

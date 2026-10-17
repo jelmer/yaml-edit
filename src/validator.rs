@@ -1485,11 +1485,6 @@ impl Validator {
         // `[a, , b]` and `[a, b, ,]` are entries with an empty value rather
         // than adjacent COMMA tokens.
         let entries: Vec<_> = node.children().filter(|n| n.kind() == entry_kind).collect();
-        let entry_count = entries.len();
-        let comma_count = entries
-            .iter()
-            .filter(|e| crate::nodes::has_child_token(e, |k| k == crate::SyntaxKind::COMMA))
-            .count();
 
         for entry in &entries {
             if entry_is_empty(entry) {
@@ -1502,9 +1497,16 @@ impl Validator {
             }
         }
 
-        // Flow collections need n-1 commas for n entries (except when trailing comma)
-        if entry_count > 1 && comma_count < entry_count - 1 {
-            violations.push(Violation::error_at(Rule::MissingSyntax, node.text_range(), format!( "Flow collection missing commas: {entry_count} entries but only {comma_count} commas" )));
+        // Every entry but the last needs a separator; counting them instead
+        // let a trailing comma stand in for a missing one.
+        for pair in entries.windows(2) {
+            if !crate::nodes::has_child_token(&pair[0], |k| k == crate::SyntaxKind::COMMA) {
+                violations.push(Violation::error_at(
+                    Rule::MissingSyntax,
+                    pair[1].text_range(),
+                    "Missing comma between flow collection entries",
+                ));
+            }
         }
     }
 
@@ -3344,6 +3346,33 @@ mod tests {
             );
         }
         for yaml in ["[a|b, c>d]\n", "k: |\n  [x]\n", "{k: '|'}\n", "[\"> x\"]\n"] {
+            assert_eq!(located(yaml), vec![], "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn test_flow_entries_need_commas() {
+        // A trailing comma used to make up for one missing between entries.
+        for (yaml, locations) in [
+            ("[k:\n  x: 1,\n]\n", vec!["2:4"]),
+            ("{a: 1 b: 2, }\n", vec!["1:8"]),
+            ("{foo: 1 bar: 2}\n", vec!["1:12"]),
+            ("[a: b: c, d: e: f]\n", vec!["1:6", "1:15"]),
+            ("{\n foo: 1\n bar: 2 }\n", vec!["3:5"]),
+        ] {
+            assert_eq!(
+                located(yaml),
+                locations
+                    .into_iter()
+                    .map(|l| (
+                        "Missing comma between flow collection entries".to_string(),
+                        l.to_string()
+                    ))
+                    .collect::<Vec<_>>(),
+                "{yaml:?}"
+            );
+        }
+        for yaml in ["[a, b c, ]\n", "{a: 1, b: 2,}\n", "[a,\n b]\n", "[a b]\n"] {
             assert_eq!(located(yaml), vec![], "{yaml:?}");
         }
     }

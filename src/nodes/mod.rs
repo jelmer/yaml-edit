@@ -475,8 +475,13 @@ pub(crate) fn nth_entry_index(
 /// a block scalar (`|` / `>`) is emitted as one double-quoted scalar
 /// instead. A block scalar is a valid *value* but cannot be a key: it does
 /// not read back as the same key, and the entry's `:` lands inside the
-/// block.
-pub(crate) fn build_key_content(builder: &mut rowan::GreenNodeBuilder, key: &impl crate::AsYaml) {
+/// block. `indent` is the column of the entry, which a multi-line key's
+/// continuation lines are shifted to clear.
+pub(crate) fn build_key_content(
+    builder: &mut rowan::GreenNodeBuilder,
+    key: &impl crate::AsYaml,
+    indent: usize,
+) {
     if key.as_node().is_none() {
         // A raw value (&str, String, ...). Render it once on its own: the
         // block form is emitted as a single STRING token whose text starts
@@ -502,7 +507,7 @@ pub(crate) fn build_key_content(builder: &mut rowan::GreenNodeBuilder, key: &imp
             return;
         }
     }
-    key.build_content(builder, 0, false);
+    key.build_content(builder, indent, false);
 }
 
 /// The `KEY` child of a `MAPPING_ENTRY`.

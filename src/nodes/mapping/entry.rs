@@ -92,7 +92,9 @@ impl MappingEntry {
         use_explicit_key: bool,
         key_indent: usize,
     ) -> Self {
-        if let Some(key) = flow_form(&key, key_indent + 2) {
+        // build_key_content shifts the flow form by key_indent, so its
+        // continuation lines are given relative to the key.
+        if let Some(key) = flow_form(&key, 2) {
             // Comments make the key span several lines, which only an
             // explicit key may do.
             let multiline = has_comment(key.syntax());
@@ -121,7 +123,7 @@ impl MappingEntry {
         if use_explicit_key && flow_context {
             question(&mut builder);
         }
-        crate::nodes::build_key_content(&mut builder, &key);
+        crate::nodes::build_key_content(&mut builder, &key, key_indent);
         let key_has_newline = false;
         debug_assert!(!key_has_newline, "Keys should not end with newlines");
         // The `:` goes on its own line at the entry's own column. Where that

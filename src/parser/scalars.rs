@@ -481,16 +481,16 @@ impl Parser {
                         _ => return None,
                     }
                 }
-                // Inside an explicit key, a `-` at or left of the `?` is an
-                // entry of the sequence that key sits in, not a node for us
-                // to annotate: `-\n  ? &d\n-\n  ? e\n` is one sequence, as
-                // the YAML test suite's PW8X expects. An explicit value's
-                // sequence may sit at the `:`'s own column, but not left of
-                // it.
+                // Inside an explicit key, a `-` left of the `?` is an entry
+                // of the sequence that key sits in, not a node for us to
+                // annotate: `-\n  ? &d\n-\n  ? e\n` is one sequence, as the
+                // YAML test suite's PW8X expects. The key's own sequence may
+                // sit at the `?`'s column, as `seq-spaces` allows, and an
+                // explicit value's at the `:`'s.
                 SyntaxKind::DASH
                     if self
                         .explicit_key_column
-                        .is_some_and(|column| indent <= column)
+                        .is_some_and(|column| indent < column)
                         || self
                             .explicit_value_column
                             .is_some_and(|column| indent < column) =>

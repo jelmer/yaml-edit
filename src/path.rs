@@ -621,7 +621,7 @@ fn dotted_segment(text: &str, has_escape: bool) -> PathSegment {
 ///
 /// Invalid bracket indexes used to return an empty `Vec`, which callers
 /// could not tell from a real empty path. Prefer [`try_parse_path`].
-#[deprecated(note = "use try_parse_path; a bad [index] used to return an empty Vec")]
+#[deprecated(note = "use try_parse_path; a bad `[index]` used to return an empty Vec")]
 pub fn parse_path(path: &str) -> Vec<PathSegment> {
     try_parse_path(path).unwrap_or_default()
 }

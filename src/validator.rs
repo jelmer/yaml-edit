@@ -455,6 +455,7 @@ impl Validator {
                 // Check for colons in plain scalar values
                 self.check_colon_in_plain_scalar(node, violations);
                 self.check_plain_scalar_start(node, violations);
+                self.check_block_scalar_in_flow(node, violations);
                 // Check for directives inside document content (e.g. %YAML after ---)
                 self.check_directive_in_content(node, violations);
                 // Warn about constructs YAML 1.1 read differently
@@ -465,6 +466,7 @@ impl Validator {
             }
             SyntaxKind::MAPPING => {
                 self.check_flow_collection_commas(node, violations);
+                self.check_flow_pair_placement(node, violations);
                 self.check_flow_continuation_indent(node, violations);
                 self.check_block_mapping_entries_on_same_line(node, violations);
                 self.check_mapping_entry_indentation(node, violations);
@@ -476,8 +478,12 @@ impl Validator {
                 self.check_flow_collection_commas(node, violations);
                 self.check_flow_continuation_indent(node, violations);
             }
+            SyntaxKind::KEY => {
+                self.check_single_content_node(node, violations);
+            }
             SyntaxKind::VALUE => {
                 self.check_anchor_and_alias(node, violations);
+                self.check_single_content_node(node, violations);
             }
             SyntaxKind::TAGGED_NODE => {
                 self.check_set_content(node, violations);
@@ -1193,7 +1199,8 @@ impl Validator {
     /// Check that a plain scalar does not open with an indicator.
     ///
     /// The parser reads `a: ,b`, `- ]` and `[a, - b]` as plain scalars, but
-    /// none can start one: `,`, `]` and `}` never can, and a `-` can only
+    /// none can start one: `,`, `]`, `}`, `%` and the reserved `@` and `` ` ``
+    /// never can, and a `-` can only
     /// when a safe character follows it, as in `-1`. Outside a flow
     /// collection a following space makes it a block sequence entry
     /// instead, so only flow context needs checking (G5U8 is `[-, -]`).
@@ -1204,7 +1211,10 @@ impl Validator {
             return;
         };
         let text = first.text();
+        // A `%` line is lexed as a DIRECTIVE, which
+        // `check_directive_in_content` reports.
         let invalid = text.starts_with([',', ']', '}'])
+            || (first.kind() == SyntaxKind::STRING && text.starts_with(['%', '@', '`']))
             || (in_flow_collection(node)
                 && text.strip_prefix('-').is_some_and(|rest| {
                     // `{-: 1}` is fine: the colon is safe, and the lexer
@@ -1219,6 +1229,31 @@ impl Validator {
                 Rule::Other,
                 first.text_range(),
                 format!("Plain scalar cannot start with {start:?}"),
+            ));
+        }
+    }
+
+    /// Check that a block scalar does not appear inside a flow collection.
+    ///
+    /// Flow content may only hold flow nodes. The parser reads `[k: |\n  x\n]`
+    /// as a plain scalar starting with `|`, while an edit can leave a real
+    /// block scalar there, so both shapes are checked.
+    fn check_block_scalar_in_flow(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        use crate::SyntaxKind;
+
+        let Some(first) = node.first_token() else {
+            return;
+        };
+        let is_block_header = match first.kind() {
+            SyntaxKind::PIPE | SyntaxKind::GREATER => true,
+            SyntaxKind::STRING => first.text().starts_with(['|', '>']),
+            _ => false,
+        };
+        if is_block_header && in_flow_collection(node) {
+            violations.push(Violation::error_at(
+                Rule::Other,
+                first.text_range(),
+                "Block scalar cannot appear inside a flow collection",
             ));
         }
     }
@@ -1459,11 +1494,6 @@ impl Validator {
         // `[a, , b]` and `[a, b, ,]` are entries with an empty value rather
         // than adjacent COMMA tokens.
         let entries: Vec<_> = node.children().filter(|n| n.kind() == entry_kind).collect();
-        let entry_count = entries.len();
-        let comma_count = entries
-            .iter()
-            .filter(|e| crate::nodes::has_child_token(e, |k| k == crate::SyntaxKind::COMMA))
-            .count();
 
         for entry in &entries {
             if entry_is_empty(entry) {
@@ -1476,10 +1506,76 @@ impl Validator {
             }
         }
 
-        // Flow collections need n-1 commas for n entries (except when trailing comma)
-        if entry_count > 1 && comma_count < entry_count - 1 {
-            violations.push(Violation::error_at(Rule::MissingSyntax, node.text_range(), format!( "Flow collection missing commas: {entry_count} entries but only {comma_count} commas" )));
+        // Every entry but the last needs a separator; counting them instead
+        // let a trailing comma stand in for a missing one.
+        for pair in entries.windows(2) {
+            if !crate::nodes::has_child_token(&pair[0], |k| k == crate::SyntaxKind::COMMA) {
+                violations.push(Violation::error_at(
+                    Rule::MissingSyntax,
+                    pair[1].text_range(),
+                    "Missing comma between flow collection entries",
+                ));
+            }
         }
+    }
+
+    /// Check that a mapping without braces inside a flow collection is a
+    /// flow sequence entry.
+    ///
+    /// `[k: v]` holds a single-pair mapping, but a flow node cannot be one,
+    /// so the parser's reading of `{k: ? a}` is invalid.
+    fn check_flow_pair_placement(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        if starts_a_flow_collection(node) || !in_flow_collection(node) {
+            return;
+        }
+        let is_sequence_entry = node
+            .parent()
+            .filter(|p| p.kind() == crate::SyntaxKind::SEQUENCE_ENTRY)
+            .and_then(|p| p.parent())
+            .is_some_and(|s| starts_a_flow_collection(&s));
+        if !is_sequence_entry {
+            violations.push(Violation::error_at(
+                Rule::Other,
+                node.text_range(),
+                "Mapping without braces can only be a flow sequence entry",
+            ));
+        }
+    }
+
+    /// Check that a KEY or VALUE holds exactly one node.
+    ///
+    /// In `? a\n 5b: 1\n` the more indented line would continue the plain
+    /// scalar `a`, which then could not be an implicit key spanning lines;
+    /// the parser keeps the mapping as a second node of the key instead.
+    fn check_single_content_node(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        use crate::SyntaxKind;
+
+        let Some(extra) = node
+            .children()
+            .filter(|c| {
+                matches!(
+                    c.kind(),
+                    SyntaxKind::SCALAR
+                        | SyntaxKind::MAPPING
+                        | SyntaxKind::SEQUENCE
+                        | SyntaxKind::TAGGED_NODE
+                        | SyntaxKind::ALIAS
+                )
+            })
+            .nth(1)
+        else {
+            return;
+        };
+        let what = if node.kind() == SyntaxKind::KEY {
+            "Key"
+        } else {
+            "Value"
+        };
+        violations.push(Violation::error_at(
+            Rule::Other,
+            extra.text_range(),
+            format!("{what} holds more than one node"),
+        ));
     }
 
     /// Check for multiple mapping entries on the same line in block mappings
@@ -1640,10 +1736,16 @@ impl Validator {
             .or_else(|| {
                 // A compact mapping on a sequence entry's own line has no
                 // INDENT of its own (`- key: value\n  key2: value2\n`); its
-                // entries line up under the dash's gap. Take the column from
-                // the node's offset within its line.
+                // entries line up under the dash's gap. The same goes for one
+                // after an explicit `?` or `:`. Take the column from the
+                // node's offset within its line.
                 let parent = node.parent()?;
-                if parent.kind() != crate::SyntaxKind::SEQUENCE_ENTRY {
+                if !matches!(
+                    parent.kind(),
+                    crate::SyntaxKind::SEQUENCE_ENTRY
+                        | crate::SyntaxKind::KEY
+                        | crate::SyntaxKind::VALUE
+                ) {
                     return None;
                 }
                 Some(" ".repeat(token_column(&node.first_token()?)))
@@ -2573,16 +2675,16 @@ fn starts_a_flow_collection(node: &SyntaxNode) -> bool {
 }
 
 /// Whether `node` sits inside a flow collection.
+///
+/// The nearest collection is not enough: the single pair in `[k: v]` is a
+/// mapping without braces.
 fn in_flow_collection(node: &SyntaxNode) -> bool {
-    node.ancestors()
-        .skip(1)
-        .find(|a| {
-            matches!(
-                a.kind(),
-                crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-            )
-        })
-        .is_some_and(|c| starts_a_flow_collection(&c))
+    node.ancestors().skip(1).any(|a| {
+        matches!(
+            a.kind(),
+            crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
+        ) && starts_a_flow_collection(&a)
+    })
 }
 
 #[cfg(test)]
@@ -3189,6 +3291,9 @@ mod tests {
             ("[-1, - 2]", "Plain scalar cannot start with '-'", 5),
             ("[a, -]", "Plain scalar cannot start with '-'", 4),
             ("{- : 1}", "Plain scalar cannot start with '-'", 1),
+            ("a: @x\n", "Plain scalar cannot start with '@'", 3),
+            ("- `x\n", "Plain scalar cannot start with '`'", 2),
+            ("[%x]", "Plain scalar cannot start with '%'", 1),
         ] {
             assert_eq!(
                 messages(yaml),
@@ -3196,7 +3301,15 @@ mod tests {
                 "{yaml:?}"
             );
         }
-        for yaml in ["[-1, -a]", "{-: 1}", "a: x]\n", "a: x,y\n", "[a\n -]"] {
+        for yaml in [
+            "[-1, -a]",
+            "{-: 1}",
+            "a: x]\n",
+            "a: x,y\n",
+            "[a\n -]",
+            "a: x%y@z`\n",
+            "a: '@x'\n",
+        ] {
             assert_eq!(messages(yaml), vec![], "{yaml:?}");
         }
     }
@@ -3288,6 +3401,146 @@ mod tests {
             .into_iter()
             .map(|v| v.message)
             .collect()
+    }
+
+    fn located(yaml: &str) -> Vec<(String, String)> {
+        let file = crate::YamlFile::from_str(yaml).unwrap();
+        Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| (v.message, v.location.unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn test_block_scalar_in_flow_collection() {
+        for (yaml, location) in [
+            ("[|\n  x\n]\n", "1:2"),
+            ("[k: |\n  x\n]\n", "1:5"),
+            ("{k: >\n  x\n}\n", "1:5"),
+            ("- [a, !!str >-\n    x\n  ]\n", "1:13"),
+            ("{|: x}\n", "1:2"),
+        ] {
+            assert_eq!(
+                located(yaml),
+                vec![(
+                    "Block scalar cannot appear inside a flow collection".to_string(),
+                    location.to_string()
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in ["[a|b, c>d]\n", "k: |\n  [x]\n", "{k: '|'}\n", "[\"> x\"]\n"] {
+            assert_eq!(located(yaml), vec![], "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn test_flow_entries_need_commas() {
+        // A trailing comma used to make up for one missing between entries.
+        for (yaml, locations) in [
+            ("[k:\n  x: 1,\n]\n", vec!["2:4"]),
+            ("{a: 1 b: 2, }\n", vec!["1:8"]),
+            ("{foo: 1 bar: 2}\n", vec!["1:12"]),
+            ("[a: b: c, d: e: f]\n", vec!["1:6", "1:15"]),
+            ("{\n foo: 1\n bar: 2 }\n", vec!["3:5"]),
+        ] {
+            assert_eq!(
+                located(yaml),
+                locations
+                    .into_iter()
+                    .map(|l| (
+                        "Missing comma between flow collection entries".to_string(),
+                        l.to_string()
+                    ))
+                    .collect::<Vec<_>>(),
+                "{yaml:?}"
+            );
+        }
+        for yaml in ["[a, b c, ]\n", "{a: 1, b: 2,}\n", "[a,\n b]\n", "[a b]\n"] {
+            assert_eq!(located(yaml), vec![], "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn test_flow_pair_only_as_sequence_entry() {
+        for (yaml, location) in [
+            ("[k: ? a]\n", "1:5"),
+            ("{k: ? a}\n", "1:5"),
+            ("[k: ? a: b]\n", "1:5"),
+            ("- {x: [y, k: ? a]}\n", "1:14"),
+        ] {
+            assert_eq!(
+                located(yaml),
+                vec![(
+                    "Mapping without braces can only be a flow sequence entry".to_string(),
+                    location.to_string()
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "[? a]\n",
+            "[k: v]\n",
+            "[[? a: b]]\n",
+            "{? a}\n",
+            "[? a\n? b]\n",
+        ] {
+            assert_eq!(located(yaml), vec![], "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn test_key_holds_one_node() {
+        for (yaml, location) in [
+            ("? a\n 5b: 1\n", "2:2"),
+            ("? a\n  5b: 1\n", "2:3"),
+            ("? !t a\n 5b: 1\n", "2:2"),
+            ("? [a]\n 5b: 1\n", "2:2"),
+            ("- ? a\n   5b: 1\n", "2:4"),
+        ] {
+            assert_eq!(
+                located(yaml),
+                vec![(
+                    "Key holds more than one node".to_string(),
+                    location.to_string()
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "? a5\n",
+            "? a\n5b: 1\n",
+            "? a\n:5b: 1\n",
+            "? a\n  b\n",
+            "? &x\n  5b: 1\n",
+            "? !t\n  5b: 1\n",
+            "x:\n  ? a\n  5b: 1\n",
+            "- ? a\n  5b: 1\n",
+        ] {
+            assert_eq!(located(yaml), vec![], "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn test_compact_mapping_in_explicit_entry() {
+        for yaml in [
+            "? a: 1\n  b: 2\n",
+            "?   a: 1\n    b: 2\n",
+            "? x\n: a: 1\n  b: 2\n",
+            "- ? a: 1\n    b: 2\n  : c: 3\n    d: 4\n",
+        ] {
+            assert_eq!(located(yaml), vec![], "{yaml:?}");
+        }
+        assert_eq!(
+            located("? a: 1\n b: 2\n"),
+            vec![(
+                "Sibling block mapping entries have inconsistent indentation \
+                 (expected \"  \", found \" \")"
+                    .to_string(),
+                "2:1".to_string()
+            )]
+        );
     }
 
     #[test]

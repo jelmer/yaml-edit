@@ -347,13 +347,16 @@ pub(crate) fn source_anchor_text(source: &SyntaxNode) -> Option<String> {
 /// SEQUENCE_ENTRY) holds: before the node, or after the tag of a tagged
 /// node.
 pub(crate) fn held_anchor(holder: &SyntaxNode) -> Option<String> {
+    held_anchor_token(holder).map(|t| t.text().to_string())
+}
+
+/// The token of [`held_anchor`].
+pub(crate) fn held_anchor_token(holder: &SyntaxNode) -> Option<crate::nodes::SyntaxToken> {
     let tagged = holder
         .children()
         .next()
         .filter(|n| n.kind() == SyntaxKind::TAGGED_NODE);
-    own_anchor(holder)
-        .or_else(|| tagged.and_then(|n| own_anchor(&n)))
-        .map(|t| t.text().to_string())
+    own_anchor(holder).or_else(|| tagged.and_then(|n| own_anchor(&n)))
 }
 
 /// The ANCHOR token among the children of `node` before its first node.

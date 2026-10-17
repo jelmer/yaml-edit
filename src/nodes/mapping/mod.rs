@@ -9,7 +9,8 @@ use helpers::{
     FlowInsertPos,
 };
 pub(crate) use helpers::{
-    block_scalar_body_shift, drop_tagged_anchor, held_anchor, is_block_scalar, source_anchor_text,
+    block_scalar_body_shift, drop_tagged_anchor, held_anchor, held_anchor_token, is_block_scalar,
+    source_anchor_text,
 };
 
 use super::{
@@ -655,7 +656,9 @@ impl Mapping {
     /// An anchor on the replaced value stays, on the new value, so aliases
     /// to it still resolve: `b: &x 2` set to `6` gives `b: &x 6`. A node
     /// value that has an anchor of its own keeps it only if the old value
-    /// had none.
+    /// had none. The first alias to an anchor deeper in the old value
+    /// becomes a copy of the anchored node: `b: {c: &y 1}` and `d: *y` give
+    /// `b: 6` and `d: &y 1`.
     ///
     /// ```
     /// use std::str::FromStr;
@@ -1067,6 +1070,19 @@ impl Mapping {
     /// Replace `old`, an entry of this mapping, with a new entry built the
     /// way `set` builds one, in the same place.
     fn replace_entry(&self, old: &SyntaxNode, key: impl crate::AsYaml, value: impl crate::AsYaml) {
+        crate::nodes::kept_aliases::keeping_aliases(old, None, || {
+            self.splice_in_entry(old, key, value);
+            None
+        });
+    }
+
+    /// The edit of [`replace_entry`](Self::replace_entry).
+    fn splice_in_entry(
+        &self,
+        old: &SyntaxNode,
+        key: impl crate::AsYaml,
+        value: impl crate::AsYaml,
+    ) {
         let flow_context = self.is_flow_style();
         let new_entry = MappingEntry::new_at_indent(
             key,
@@ -1114,6 +1130,9 @@ impl Mapping {
     /// the tree; callers can inspect its key and value or re-insert it
     /// elsewhere.
     ///
+    /// The first alias to an anchor in the removed entry becomes a copy of
+    /// the anchored node, so it and later aliases keep their value.
+    ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn remove(&self, key: impl crate::AsYaml) -> Option<MappingEntry> {
         let children: Vec<_> = self.0.children_with_tokens().collect();
@@ -1158,6 +1177,19 @@ impl Mapping {
             let children: Vec<_> = self.0.children_with_tokens().collect();
             return self.remove_entry_at(&children, removed.index(), removed);
         }
+        crate::nodes::kept_aliases::keeping_aliases(removed, None, || {
+            self.splice_out_entry(children, i, removed);
+            None
+        });
+    }
+
+    /// The edit of [`remove_entry_at`](Self::remove_entry_at).
+    fn splice_out_entry(
+        &self,
+        children: &[rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>],
+        i: usize,
+        removed: &SyntaxNode,
+    ) {
         let is_last = !children.iter().skip(i + 1).any(|c| {
             c.as_node()
                 .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
@@ -1339,9 +1371,22 @@ impl Mapping {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn clear(&self) {
-        let keys: Vec<crate::as_yaml::YamlNode> = self.keys().collect();
-        for key in keys {
-            self.remove(key);
+        // Entries are removed one by one, as keeping aliases resolving may
+        // rewrite a later key.
+        while let Some((i, entry)) = self
+            .0
+            .children_with_tokens()
+            .enumerate()
+            .find_map(|(i, c)| {
+                Some((
+                    i,
+                    c.into_node()
+                        .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)?,
+                ))
+            })
+        {
+            let children: Vec<_> = self.0.children_with_tokens().collect();
+            self.remove_entry_at(&children, i, &entry);
         }
         ensure_top_level_empty_renders_as_flow(&self.0);
     }
@@ -1363,7 +1408,8 @@ impl Mapping {
     /// on a `new_key` node is used only if the old key had none. The key's
     /// tag is kept if `new_key` has no tag of its own and still means the
     /// same with it: `!!str a` renamed to `"b"` gives `!!str b`, but renamed
-    /// to `1` gives `1`, as `!!str 1` would be a string.
+    /// to `1` gives `1`, as `!!str 1` would be a string. The first alias to
+    /// an anchor deeper in the old key becomes a copy of the anchored node.
     ///
     /// ```
     /// # use std::str::FromStr;
@@ -1375,10 +1421,6 @@ impl Mapping {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn rename_key(&self, old_key: impl crate::AsYaml, new_key: impl crate::AsYaml) -> bool {
-        let indent = self.detect_indentation_level();
-        if let Some(key) = flow_form(&new_key, 2, crate::nodes::flow_quoting(&self.0)) {
-            return self.rename_key(old_key, key);
-        }
         let Some(node) = self.find_entry_by_key(&old_key).map(|e| e.0) else {
             return false;
         };
@@ -1387,56 +1429,79 @@ impl Mapping {
         if !renames_to_itself {
             self.remove_other_entries(&node, &new_key);
         }
+        let old = entry_key(&node).expect("a mapping entry has a key");
+        let kept = held_anchor_token(&old);
+        crate::nodes::kept_aliases::keeping_aliases(&old, kept, || {
+            Some(self.replace_key(&node, new_key, None))
+        });
+        true
+    }
 
+    /// Replace the key of `node`, an entry of this mapping, with `new_key`
+    /// under `anchor`, and return the new KEY.
+    pub(crate) fn replace_key(
+        &self,
+        node: &SyntaxNode,
+        new_key: impl crate::AsYaml,
+        anchor: Option<&str>,
+    ) -> SyntaxNode {
+        if let Some(key) = flow_form(&new_key, 2, crate::nodes::flow_quoting(&self.0)) {
+            return self.replace_key(node, key, anchor);
+        }
+        let indent = self.detect_indentation_level();
         // A key spanning lines has to be explicit, with the `:` on a line
         // of its own.
         let make_explicit = !self.is_flow_style()
-            && !has_child_token(&node, |k| k == SyntaxKind::QUESTION)
+            && !has_child_token(node, |k| k == SyntaxKind::QUESTION)
             && super::key_spans_lines(&new_key);
+        let old_key = entry_key(node).expect("a mapping entry has a key");
         let mut builder = GreenNodeBuilder::new();
-        builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
-        let mut after_key = false;
-        for entry_child in node.children_with_tokens() {
-            match entry_child {
-                rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::KEY => {
-                    if make_explicit {
-                        builder.token(SyntaxKind::QUESTION.into(), "?");
-                        builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                    }
-                    let flow = self
-                        .is_flow_style()
-                        .then(|| crate::nodes::flow_quoting(&self.0));
-                    Self::rebuild_key(&mut builder, &n, &new_key, flow);
-                    if make_explicit {
-                        builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                        if indent > 0 {
-                            builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent));
-                        }
-                    }
-                    after_key = true;
-                }
-                // Whitespace between the key and the `:` would now start
-                // the `:` line.
-                rowan::NodeOrToken::Token(t)
-                    if make_explicit && after_key && t.kind() == SyntaxKind::WHITESPACE => {}
-                rowan::NodeOrToken::Node(n) => {
-                    crate::yaml::copy_node_to_builder(&mut builder, &n);
-                }
-                rowan::NodeOrToken::Token(t) => {
-                    after_key &= t.kind() != SyntaxKind::COLON;
-                    builder.token(t.kind().into(), t.text());
-                }
+        builder.start_node(SyntaxKind::ROOT.into());
+        if make_explicit {
+            builder.token(SyntaxKind::QUESTION.into(), "?");
+            builder.token(SyntaxKind::WHITESPACE.into(), " ");
+        }
+        let flow = self
+            .is_flow_style()
+            .then(|| crate::nodes::flow_quoting(&self.0));
+        Self::rebuild_key(&mut builder, &old_key, &new_key, anchor, flow);
+        if make_explicit {
+            builder.token(SyntaxKind::NEWLINE.into(), "\n");
+            if indent > 0 {
+                builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent));
             }
         }
         builder.finish_node();
-        let new_entry = SyntaxNode::new_root_mut(builder.finish());
-        let i = node.index();
-        self.0
-            .splice_children(i..i + 1, vec![new_entry.clone().into()]);
-        if make_explicit {
-            hand_line_break_to_mapping(&new_entry);
+        let built = SyntaxNode::new_root_mut(builder.finish());
+        let new_key = built
+            .children()
+            .find(|n| n.kind() == SyntaxKind::KEY)
+            .expect("a KEY was just built");
+        if anchor.is_some() {
+            drop_tagged_anchor(&new_key);
         }
-        true
+
+        // Whitespace between the key and the `:` would now start the `:`
+        // line. Detached one by one, as a multi-child splice can skip some.
+        if make_explicit {
+            let stale: Vec<_> = old_key
+                .siblings_with_tokens(rowan::Direction::Next)
+                .skip(1)
+                .map_while(|c| {
+                    c.into_token()
+                        .filter(|t| t.kind() == SyntaxKind::WHITESPACE)
+                })
+                .collect();
+            for token in stale {
+                token.detach();
+            }
+        }
+        let i = old_key.index();
+        node.splice_children(i..i + 1, built.children_with_tokens().collect::<Vec<_>>());
+        if make_explicit {
+            hand_line_break_to_mapping(node);
+        }
+        new_key
     }
 
     /// Remove every entry other than `keep` whose key matches `key`.
@@ -1463,10 +1528,14 @@ impl Mapping {
     /// entry's layout rather than the key, so they carry over; dropped, the
     /// entry collapses onto one line and reparses as one node. In a flow
     /// mapping the `?` itself sits inside KEY, so it carries over too.
+    ///
+    /// The old key's anchor stays; failing that the key takes `anchor`, or
+    /// the anchor before a `new_key` node where it was copied from.
     fn rebuild_key(
         builder: &mut GreenNodeBuilder,
         old: &SyntaxNode,
         new_key: &impl crate::AsYaml,
+        anchor: Option<&str>,
         flow: Option<crate::as_yaml::FlowQuoting>,
     ) {
         builder.start_node(SyntaxKind::KEY.into());
@@ -1480,8 +1549,11 @@ impl Mapping {
                 builder.token(ws.kind().into(), ws.text());
             }
         }
-        let (anchor, tag) = key_annotations(old);
-        if let Some(anchor) = anchor.or_else(|| new_key.as_node().and_then(source_anchor_text)) {
+        let (old_anchor, tag) = key_annotations(old);
+        let anchor = old_anchor
+            .or_else(|| anchor.map(str::to_string))
+            .or_else(|| new_key.as_node().and_then(source_anchor_text));
+        if let Some(anchor) = anchor {
             builder.token(SyntaxKind::ANCHOR.into(), &anchor);
             builder.token(SyntaxKind::WHITESPACE.into(), " ");
         }

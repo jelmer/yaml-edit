@@ -866,6 +866,7 @@ pub mod comment;
 pub mod directive;
 pub mod document;
 pub mod entry;
+mod kept_aliases;
 pub mod mapping;
 mod replaced_value;
 pub mod scalar_node;

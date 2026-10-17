@@ -97,8 +97,8 @@ server: *defaults"#;
     assert!(reparsed.document().is_some());
 }
 
-/// Test removing a key that has an anchor
-/// The alias should remain in the structure (as a dangling reference)
+/// Removing a key with an anchor moves the anchored value to the first
+/// alias to it.
 #[test]
 fn test_remove_anchored_key() {
     let yaml = r#"orig: &x value
@@ -108,29 +108,14 @@ ref: *x"#;
     let doc = parsed.document().expect("Should have document");
     let mapping = doc.as_mapping().expect("Should be mapping");
 
-    // Verify initial state
-    assert_eq!(mapping.keys().count(), 2);
-    assert!(mapping.contains_key("orig"));
-    assert!(mapping.contains_key("ref"));
-
-    // Remove the anchored key
     mapping.remove("orig");
     assert_file_cst_ok(&parsed);
 
-    // Verify orig is removed
-    assert_eq!(mapping.keys().count(), 1);
-    assert!(!mapping.contains_key("orig"));
-    assert!(mapping.contains_key("ref"));
-
-    // The alias should still exist (as a dangling reference)
-    let ref_val = mapping.get("ref").expect("Should have ref");
-    assert!(ref_val.is_alias(), "ref should still be an alias");
-    assert_eq!(ref_val.as_alias().unwrap().name(), "x");
-
-    // Verify output is valid YAML (with dangling reference)
-    let output = doc.to_string();
-    let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
-    assert!(reparsed.document().is_some());
+    assert_eq!(doc.to_string(), "ref: &x value");
+    assert_eq!(
+        mapping.get("ref").unwrap().as_scalar().unwrap().as_string(),
+        "value"
+    );
 }
 
 /// Test editing block scalar content

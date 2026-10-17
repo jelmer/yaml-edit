@@ -4180,13 +4180,8 @@ fifth: 5"#;
         let doc = parsed.document().expect("Should have a document");
 
         // Insert a YAML set
-        let mut tags = std::collections::BTreeSet::new();
-        tags.insert("production".to_string());
-        tags.insert("database".to_string());
-        tags.insert("web".to_string());
-
-        let yaml_set = YamlValue::from_set(tags);
-        doc.insert_after("name", "tags", yaml_set);
+        let tags = std::collections::BTreeSet::from(["production", "database", "web"]);
+        doc.insert_after("name", "tags", tags);
         assert_cst_ok(&doc);
 
         let output = doc.to_string();
@@ -4442,7 +4437,11 @@ fifth: 5"#;
         let yaml3 = "name: project";
         let parsed3 = YamlFile::from_str(yaml3).unwrap();
         let doc3 = parsed3.document().expect("Should have a document");
-        doc3.insert_after("name", "empty_set", YamlValue::set());
+        doc3.insert_after(
+            "name",
+            "empty_set",
+            std::collections::BTreeSet::<&str>::new(),
+        );
         assert_cst_ok(&doc3);
         let output3 = doc3.to_string();
         assert_eq!(output3, "name: project\nempty_set: !!set {}\n");

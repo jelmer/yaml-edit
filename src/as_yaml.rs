@@ -981,12 +981,190 @@ impl<T: AsYaml> AsYaml for Option<T> {
     }
 }
 
+/// Emit a `!!set`: a tagged mapping with each member as a key and a null
+/// value. Returns whether the content ends with a newline.
+pub(crate) fn build_set_content<T: AsYaml>(
+    builder: &mut rowan::GreenNodeBuilder,
+    members: impl ExactSizeIterator<Item = T>,
+    indent: usize,
+    flow_context: bool,
+) -> bool {
+    use crate::lex::SyntaxKind;
+    use crate::scalar::ScalarValue;
+
+    let len = members.len();
+    // An empty mapping is written as `{}` in either context.
+    let flow = flow_context || len == 0;
+
+    builder.start_node(SyntaxKind::TAGGED_NODE.into());
+    builder.token(SyntaxKind::TAG.into(), "!!set");
+    if flow {
+        builder.token(SyntaxKind::WHITESPACE.into(), " ");
+    } else {
+        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent + 2));
+    }
+
+    builder.start_node(SyntaxKind::MAPPING.into());
+    if flow {
+        builder.token(SyntaxKind::LEFT_BRACE.into(), "{");
+    }
+    let indent_str = " ".repeat(indent + 2);
+    for (i, member) in members.enumerate() {
+        if i > 0 && !flow {
+            builder.token(SyntaxKind::INDENT.into(), &indent_str);
+        }
+        builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
+        builder.start_node(SyntaxKind::KEY.into());
+        if flow {
+            member.build_content(builder, 0, true);
+        } else {
+            crate::nodes::build_key_content(builder, &member);
+        }
+        builder.finish_node(); // KEY
+        builder.token(SyntaxKind::COLON.into(), ":");
+        builder.token(SyntaxKind::WHITESPACE.into(), " ");
+        builder.start_node(SyntaxKind::VALUE.into());
+        ScalarValue::null().build_content(builder, 0, flow);
+        builder.finish_node(); // VALUE
+        if !flow {
+            builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        } else if i + 1 < len {
+            builder.token(SyntaxKind::COMMA.into(), ",");
+            builder.token(SyntaxKind::WHITESPACE.into(), " ");
+        }
+        builder.finish_node(); // MAPPING_ENTRY
+    }
+    if flow {
+        builder.token(SyntaxKind::RIGHT_BRACE.into(), "}");
+    }
+    builder.finish_node(); // MAPPING
+
+    builder.finish_node(); // TAGGED_NODE
+    !flow
+}
+
+/// A `!!set` with the members as its keys, in sorted order.
+///
+/// There is no impl for `HashSet`, whose iteration order would make the
+/// output change from run to run.
+impl<T: AsYaml> AsYaml for std::collections::BTreeSet<T> {
+    fn as_node(&self) -> Option<&crate::yaml::SyntaxNode> {
+        None
+    }
+
+    fn kind(&self) -> YamlKind {
+        YamlKind::Tagged(Cow::Borrowed("!!set"))
+    }
+
+    fn build_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        flow_context: bool,
+    ) -> bool {
+        build_set_content(builder, self.iter(), indent, flow_context)
+    }
+
+    fn is_inline(&self) -> bool {
+        // The tag goes on the key's line, as in `tags: !!set`.
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::debug::assert_cst_ok;
     use crate::yaml::{Document, YamlFile};
+    use std::collections::BTreeSet;
     use std::str::FromStr;
+
+    /// Check that the `!!set` in `doc` is laid out as the parser would lay
+    /// out its text.
+    ///
+    /// Only the set itself is compared: `Mapping::set` puts the space before
+    /// a block tagged value inside VALUE, where the parser has it before
+    /// VALUE (see the TODO in `build_block_value_node`).
+    #[track_caller]
+    fn assert_set_matches_reparse(doc: &Document) {
+        assert_cst_ok(doc);
+        let reparsed = Document::from_str(&doc.to_string()).unwrap();
+        let tagged = |d: &Document| {
+            d.syntax()
+                .descendants()
+                .find(|n| n.kind() == crate::lex::SyntaxKind::TAGGED_NODE)
+                .map(|n| crate::debug::tree_to_string(&n))
+                .unwrap()
+        };
+        assert_eq!(tagged(doc), tagged(&reparsed));
+    }
+
+    #[test]
+    fn test_btreeset_block() {
+        let doc = Document::from_str("name: project\n").unwrap();
+        doc.set("tags", BTreeSet::from(["web", "db"]));
+        assert_set_matches_reparse(&doc);
+        assert_eq!(
+            doc.to_string(),
+            "name: project\ntags: !!set\n  db: null\n  web: null\n"
+        );
+    }
+
+    #[test]
+    fn test_btreeset_nested_block() {
+        let doc = Document::from_str("a:\n  b: 1\n").unwrap();
+        let inner = doc.as_mapping().unwrap().get_mapping("a").unwrap();
+        inner.set("s", BTreeSet::from([1_i64, 2]));
+        assert_set_matches_reparse(&doc);
+        assert_eq!(
+            doc.to_string(),
+            "a:\n  b: 1\n  s: !!set\n    1: null\n    2: null\n"
+        );
+    }
+
+    #[test]
+    fn test_btreeset_empty() {
+        let doc = Document::from_str("name: project\n").unwrap();
+        doc.set("tags", BTreeSet::<String>::new());
+        assert_set_matches_reparse(&doc);
+        assert_eq!(doc.to_string(), "name: project\ntags: !!set {}\n");
+    }
+
+    #[test]
+    fn test_btreeset_flow() {
+        let doc = Document::from_str("m: {a: 1}\n").unwrap();
+        let inner = doc.as_mapping().unwrap().get_mapping("m").unwrap();
+        inner.set("s", BTreeSet::from(["y", "x"]));
+        assert_set_matches_reparse(&doc);
+        assert_eq!(
+            doc.to_string(),
+            "m: {a: 1, s: !!set {\"x\": null, \"y\": null}}\n"
+        );
+    }
+
+    #[test]
+    fn test_btreeset_quotes_members() {
+        let doc = Document::from_str("name: project\n").unwrap();
+        doc.set("tags", BTreeSet::from(["true", "a: b", "x\ny"]));
+        assert_set_matches_reparse(&doc);
+        assert_eq!(
+            doc.to_string(),
+            "name: project\ntags: !!set\n  'a: b': null\n  'true': null\n  \"x\\ny\": null\n"
+        );
+    }
+
+    #[test]
+    fn test_btreeset_reads_back_as_set() {
+        let doc = Document::from_str("name: project\n").unwrap();
+        doc.set("tags", BTreeSet::from(["web", "db"]));
+        let tags = doc.as_mapping().unwrap().get("tags").unwrap();
+        let set = tags.as_tagged().unwrap().as_set().unwrap();
+        assert_eq!(set.len(), 2);
+        assert!(set.contains("db"));
+        assert!(set.contains("web"));
+        assert!(!set.contains("null"));
+    }
 
     #[test]
     fn test_mapping_set_preserves_alias_kind() {

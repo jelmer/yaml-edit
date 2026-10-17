@@ -1629,29 +1629,12 @@ impl AsYaml for YamlValue {
             YamlValue::Scalar(s) => s.build_content(builder, indent, flow_context),
             YamlValue::Mapping(map) => map.build_content(builder, indent, flow_context),
             YamlValue::Sequence(seq) => seq.as_slice().build_content(builder, indent, flow_context),
-            YamlValue::Set(set) => {
-                builder.start_node(SyntaxKind::TAGGED_NODE.into());
-                builder.token(SyntaxKind::TAG.into(), "!!set");
-                // An empty mapping is written as `{}` in either context.
-                let flow = flow_context || set.is_empty();
-                if flow {
-                    builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                } else {
-                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                    builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent + 2));
-                }
-
-                // Build as a mapping where each key maps to null (set semantics)
-                let map: BTreeMap<String, YamlValue> = set
-                    .iter()
-                    .map(|k| (k.clone(), YamlValue::Scalar(ScalarValue::null())))
-                    .collect();
-                let ends_with_newline = map.build_content(builder, indent + 2, flow);
-
-                builder.finish_node(); // TAGGED_NODE
-                                       // Return whether the inner content ended with newline
-                ends_with_newline
-            }
+            YamlValue::Set(set) => crate::as_yaml::build_set_content(
+                builder,
+                set.iter().map(|m| ScalarValue::string(m.as_str())),
+                indent,
+                flow_context,
+            ),
             YamlValue::OrderedMapping(pairs) => {
                 build_tagged_pair_seq(builder, "!!omap", pairs, indent, flow_context)
             }

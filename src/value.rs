@@ -790,6 +790,34 @@ mod tests {
     }
 
     #[test]
+    fn test_block_mapping_multiline_key() {
+        // A multi-line key is written double-quoted: a block scalar cannot be
+        // a key.
+        let mut map = BTreeMap::new();
+        map.insert("a\nb".to_string(), YamlValue::from("1"));
+        map.insert("c".to_string(), YamlValue::from("2"));
+        let text = render_as_yaml(&map);
+        assert_eq!(text, "\"a\\nb\": '1'\nc: '2'\n");
+
+        let parsed: crate::YamlFile = text.parse().unwrap();
+        let mapping = parsed.document().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            mapping
+                .get("a\nb")
+                .unwrap()
+                .as_scalar()
+                .unwrap()
+                .as_string(),
+            "1"
+        );
+
+        // Nested, so the key sits at a non-zero column.
+        let mut outer = BTreeMap::new();
+        outer.insert("o".to_string(), YamlValue::Mapping(map));
+        assert_eq!(render_as_yaml(&outer), "o:\n  \"a\\nb\": '1'\n  c: '2'\n");
+    }
+
+    #[test]
     fn test_as_yaml_build_content() {
         use crate::AsYaml;
 
@@ -1743,7 +1771,7 @@ impl AsYaml for BTreeMap<String, YamlValue> {
                     builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
                     builder.start_node(SyntaxKind::KEY.into());
-                    key.as_str().build_content(builder, 0, false);
+                    crate::nodes::build_key_content(builder, &key.as_str(), indent);
                     builder.finish_node(); // KEY
 
                     builder.token(SyntaxKind::COLON.into(), ":");

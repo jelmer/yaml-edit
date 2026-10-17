@@ -1238,15 +1238,7 @@ active: true
         let doc3 = Document::new();
         doc3.set("name", "project");
         assert_cst_ok(&doc3);
-        // TODO: migrate away from YamlValue once !!set has a non-YamlValue AsYaml impl
-        #[allow(clippy::disallowed_types)]
-        let tag_set = {
-            use crate::value::YamlValue;
-            let mut tags = std::collections::BTreeSet::new();
-            tags.insert("production".to_string());
-            tags.insert("database".to_string());
-            YamlValue::from_set(tags)
-        };
+        let tag_set = std::collections::BTreeSet::from(["production", "database"]);
         doc3.insert_at_index(1, "tags", tag_set);
         assert_cst_ok(&doc3);
         let output3 = doc3.to_string();

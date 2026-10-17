@@ -147,33 +147,7 @@ impl Parser {
             }
             // Check for explicit key indicator
             else if self.current() == Some(SyntaxKind::QUESTION) {
-                // Start a MAPPING_ENTRY to wrap this key-value pair
-                self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
-
-                // Parse explicit key
-                let question_column = self.error_context.current_location().1.saturating_sub(1);
-                self.bump(); // consume '?'
-                self.skip_whitespace();
-
-                self.builder.start_node(SyntaxKind::KEY.into());
-                self.parse_explicit_key_node(question_column, question_column);
-                self.builder.finish_node();
-
-                self.skip_ws_and_newlines();
-
-                // Parse value if there's a colon
-                if self.current() == Some(SyntaxKind::COLON) {
-                    self.bump(); // consume ':'
-                    self.skip_whitespace();
-
-                    self.parse_value_after_colon(false, Some(question_column));
-                } else {
-                    // No value, just a key - create explicit null value
-                    self.emit_implicit_null_value();
-                }
-
-                // Finish the MAPPING_ENTRY node
-                self.builder.finish_node();
+                self.parse_explicit_key_entry();
             } else {
                 self.parse_mapping_key_value_pair(base_indent);
             }
@@ -698,34 +672,48 @@ impl Parser {
     fn parse_explicit_key_entries(&mut self) {
         // Helper to continue parsing explicit key entries within a mapping
         while self.current() == Some(SyntaxKind::QUESTION) {
-            // Start a MAPPING_ENTRY to wrap this key-value pair
-            self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
-
-            let question_column = self.error_context.current_location().1.saturating_sub(1);
-            self.bump(); // consume '?'
-            self.skip_whitespace();
-
-            self.builder.start_node(SyntaxKind::KEY.into());
-            self.parse_explicit_key_node(question_column, question_column);
-            self.builder.finish_node();
-
-            self.skip_ws_and_newlines();
-
-            if self.current() == Some(SyntaxKind::COLON) {
-                self.bump();
-                self.skip_whitespace();
-
-                self.parse_value_after_colon(false, Some(question_column));
-            } else {
-                // No value, just a key - create explicit null value
-                self.emit_implicit_null_value();
-            }
-
-            // Finish the MAPPING_ENTRY node
-            self.builder.finish_node();
-
+            self.parse_explicit_key_entry();
             self.skip_ws_and_newlines();
         }
+    }
+
+    /// Parse one `? key` entry, with its `: value` if there is one.
+    fn parse_explicit_key_entry(&mut self) {
+        self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
+
+        let question_column = self.error_context.current_location().1.saturating_sub(1);
+        self.bump(); // consume '?'
+        self.skip_whitespace();
+
+        // A `?` line at this entry's column opens the next entry, so a
+        // scalar in the key or value must not continue onto it. Whatever
+        // the enclosing value left behind does not apply: in
+        // `o:\n  k: !!set\n    ? a\n    ? b\n` it let `? b` continue `a`.
+        let outer_floor = self.scalar_continuation_floor;
+        let outer_value_column = self.mapping_value_column;
+        self.scalar_continuation_floor = None;
+        self.mapping_value_column = Some(question_column);
+
+        self.builder.start_node(SyntaxKind::KEY.into());
+        let outer_explicit_key = self.explicit_key_column;
+        self.explicit_key_column = Some(question_column);
+        self.parse_explicit_key_node(question_column, question_column);
+        self.explicit_key_column = outer_explicit_key;
+        self.builder.finish_node();
+
+        self.skip_ws_and_newlines();
+
+        if self.current() == Some(SyntaxKind::COLON) {
+            self.bump(); // consume ':'
+            self.skip_whitespace();
+            self.parse_value_after_colon(false, Some(question_column));
+        } else {
+            self.emit_implicit_null_value();
+        }
+
+        self.scalar_continuation_floor = outer_floor;
+        self.mapping_value_column = outer_value_column;
+        self.builder.finish_node();
     }
 
     /// As [`is_complex_mapping_key`](Self::is_complex_mapping_key), reading

@@ -1218,9 +1218,9 @@ mod tests {
     fn test_json_handler_deserialize_unescapes_strings() {
         let handler = JsonHandler;
         let value = |s: &str| handler.deserialize(s).unwrap().as_scalar().unwrap().clone();
-        assert_eq!(value(r#""a\"bA""#).value(), "a\"bA");
+        assert_eq!(value(r#""a\"b\u0041""#).value(), "a\"bA");
         assert_eq!(value(r#""\\\/\b\f\n\r\t""#).value(), "\\/\u{8}\u{c}\n\r\t");
-        assert_eq!(value(r#""😀""#).value(), "\u{1F600}");
+        assert_eq!(value(r#""\ud83d\ude00""#).value(), "\u{1F600}");
         assert_eq!(
             value(r#""42""#).scalar_type(),
             crate::scalar::ScalarType::String

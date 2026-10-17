@@ -375,3 +375,206 @@ fn lone_anchor_adopts_an_indentless_sequence() {
         assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
     }
 }
+
+/// A comment after a lone tag or anchor ends its line just as a line break
+/// does: the next line is only the annotated node when it is indented
+/// enough to be, and otherwise the annotation covers an implicit null.
+///
+/// The COMMENT arm of parse_value stepped over the comment and every line
+/// break after it and parsed whatever came next as the annotated node, so
+/// `b: 1` became the value of `a` and `- 1` an empty nested sequence.
+#[test]
+fn comment_after_annotation_leaves_the_next_entry_alone() {
+    let yaml = "a: !!str # c\nb: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    assert_eq!(
+        debug::tree_to_string(file.syntax()),
+        r##"DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: "a"
+      COLON: ":"
+      WHITESPACE: " "
+      VALUE
+        TAGGED_NODE
+          TAG: "!!str"
+          WHITESPACE: " "
+          COMMENT: "# c"
+          SCALAR
+            NULL: ""
+      NEWLINE: "\\n"
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: "b"
+      COLON: ":"
+      WHITESPACE: " "
+      VALUE
+        SCALAR
+          INT: "1"
+      NEWLINE: "\\n"
+"##
+    );
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["a".to_string(), "b".to_string()]);
+
+    let yaml = "- !!str # c\n- 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    assert_eq!(
+        debug::tree_to_string(file.syntax()),
+        r##"DOCUMENT
+  SEQUENCE
+    SEQUENCE_ENTRY
+      DASH: "-"
+      WHITESPACE: " "
+      TAGGED_NODE
+        TAG: "!!str"
+        WHITESPACE: " "
+        COMMENT: "# c"
+        SCALAR
+          NULL: ""
+      NEWLINE: "\\n"
+    SEQUENCE_ENTRY
+      DASH: "-"
+      WHITESPACE: " "
+      SCALAR
+        INT: "1"
+      NEWLINE: "\\n"
+"##
+    );
+    assert_eq!(file.document().unwrap().as_sequence().unwrap().len(), 2);
+
+    let yaml = "- &x # c\n- 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    assert_eq!(
+        debug::tree_to_string(file.syntax()),
+        r##"DOCUMENT
+  SEQUENCE
+    SEQUENCE_ENTRY
+      DASH: "-"
+      WHITESPACE: " "
+      ANCHOR: "&x"
+      WHITESPACE: " "
+      COMMENT: "# c"
+      SCALAR
+        NULL: ""
+      NEWLINE: "\\n"
+    SEQUENCE_ENTRY
+      DASH: "-"
+      WHITESPACE: " "
+      SCALAR
+        INT: "1"
+      NEWLINE: "\\n"
+"##
+    );
+}
+
+/// An annotation with nothing after it covers the zero-width implicit null,
+/// whether the document ends right after the tag or after a comment.
+#[test]
+fn annotation_at_end_of_input_covers_an_implicit_null() {
+    for (yaml, expected) in [
+        (
+            "!!str",
+            "DOCUMENT\n  TAGGED_NODE\n    TAG: \"!!str\"\n    SCALAR\n      NULL: \"\"\n",
+        ),
+        (
+            "!!str # c",
+            "DOCUMENT\n  TAGGED_NODE\n    TAG: \"!!str\"\n    WHITESPACE: \" \"\n    COMMENT: \"# c\"\n    SCALAR\n      NULL: \"\"\n",
+        ),
+        (
+            "&x # c",
+            "DOCUMENT\n  ANCHOR: \"&x\"\n  WHITESPACE: \" \"\n  COMMENT: \"# c\"\n  SCALAR\n    NULL: \"\"\n",
+        ),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        assert_eq!(debug::tree_to_string(file.syntax()), expected, "{yaml:?}");
+    }
+
+    // A document marker on the next line ends the document, and is no node
+    // for the annotation to adopt.
+    for (yaml, expected) in [
+        (
+            "!!str\n---\n",
+            "DOCUMENT\n  TAGGED_NODE\n    TAG: \"!!str\"\n    SCALAR\n      NULL: \"\"\n  NEWLINE: \"\\\\n\"\nDOCUMENT\n  DOC_START: \"---\"\n  NEWLINE: \"\\\\n\"\n",
+        ),
+        (
+            "&x # c\n...\n",
+            "DOCUMENT\n  ANCHOR: \"&x\"\n  WHITESPACE: \" \"\n  COMMENT: \"# c\"\n  SCALAR\n    NULL: \"\"\n  NEWLINE: \"\\\\n\"\n  DOC_END: \"...\"\n  NEWLINE: \"\\\\n\"\n",
+        ),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        assert_eq!(debug::tree_to_string(file.syntax()), expected, "{yaml:?}");
+    }
+
+    for yaml in ["a: !!str", "a: !!str # c"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let tagged = match mapping.get("a").unwrap() {
+            yaml_edit::YamlNode::TaggedNode(t) => t,
+            other => panic!("{yaml:?}: expected a tagged node, got {other:?}"),
+        };
+        assert_eq!(tagged.tag(), Some("!!str".to_string()));
+        assert!(tagged.value().unwrap().is_null(), "{yaml:?}");
+        assert_eq!(debug::validate_tree(file.syntax()), Ok(()), "{yaml:?}");
+    }
+}
+
+/// A node indented under the annotation on a later line is still the
+/// annotated node when a comment ends the annotation's line.
+#[test]
+fn comment_after_annotation_keeps_an_indented_node() {
+    let yaml = "a: !!map # c\n  k: v\nb: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let keys: Vec<String> = mapping
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["a".to_string(), "b".to_string()]);
+    let tagged = match mapping.get("a").unwrap() {
+        yaml_edit::YamlNode::TaggedNode(t) => t,
+        other => panic!("expected a tagged node, got {other:?}"),
+    };
+    let inner = tagged.as_mapping().unwrap();
+    assert_eq!(
+        inner.get("k").unwrap().as_scalar().unwrap().as_string(),
+        "v"
+    );
+
+    let yaml = "- !!str # c\n  x\n- 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let seq = file.document().unwrap().as_sequence().unwrap();
+    assert_eq!(seq.len(), 2);
+    let tagged = match seq.get(0).unwrap() {
+        yaml_edit::YamlNode::TaggedNode(t) => t,
+        other => panic!("expected a tagged node, got {other:?}"),
+    };
+    assert_eq!(tagged.as_string(), Some("x".to_string()));
+
+    // As in the YAML test suite's M5C3, a block scalar header on the next
+    // line belongs to the tag even when it is less indented than the tag.
+    let yaml = "folded:\n   !foo # c\n  >1\n value\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let tagged = match mapping.get("folded").unwrap() {
+        yaml_edit::YamlNode::TaggedNode(t) => t,
+        other => panic!("expected a tagged node, got {other:?}"),
+    };
+    assert_eq!(tagged.as_string(), Some("value\n".to_string()));
+}

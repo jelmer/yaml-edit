@@ -480,18 +480,26 @@ impl Validator {
                 self.check_flow_continuation_indent(node, violations);
             }
             SyntaxKind::KEY => {
+                self.check_anchor_and_alias(node, violations);
                 self.check_single_content_node(node, violations);
+            }
+            SyntaxKind::SEQUENCE_ENTRY => {
+                self.check_anchor_and_alias(node, violations);
             }
             SyntaxKind::VALUE => {
                 self.check_anchor_and_alias(node, violations);
                 self.check_single_content_node(node, violations);
             }
             SyntaxKind::TAGGED_NODE => {
+                self.check_anchor_and_alias(node, violations);
+                self.check_tag_on_alias(node, violations);
                 self.check_collection_tag_content(node, violations);
+                self.check_pairs_items(node, violations);
                 self.check_omap_keys(node, violations);
                 self.check_set_values(node, violations);
             }
             SyntaxKind::DOCUMENT => {
+                self.check_anchor_and_alias(node, violations);
                 self.check_document_level_anchors(node, violations);
                 if self.config.check_anchors {
                     self.check_undefined_aliases(node, violations);
@@ -1204,9 +1212,10 @@ impl Validator {
     /// The parser reads `a: ,b`, `- ]` and `[a, - b]` as plain scalars, but
     /// none can start one: `,`, `]`, `}`, `%` and the reserved `@` and `` ` ``
     /// never can, and a `-` can only
-    /// when a safe character follows it, as in `-1`. Outside a flow
-    /// collection a following space makes it a block sequence entry
-    /// instead, so only flow context needs checking (G5U8 is `[-, -]`).
+    /// when a safe character follows it, as in `-1` (G5U8 is `[-, -]`).
+    /// Outside a flow collection a `- ` usually opens a block sequence
+    /// entry, but after a tag or anchor on the same line the parser reads
+    /// it as a plain scalar (SY6V is `&anchor - sequence entry`).
     fn check_plain_scalar_start(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         use crate::SyntaxKind;
 
@@ -1214,18 +1223,21 @@ impl Validator {
             return;
         };
         let text = first.text();
+        let unsafe_after_dash: &[char] = if in_flow_collection(node) {
+            &[' ', '\t', '\r', '\n', ',', '[', ']', '{', '}']
+        } else {
+            &[' ', '\t', '\r', '\n']
+        };
         // A `%` line is lexed as a DIRECTIVE, which
         // `check_directive_in_content` reports.
         let invalid = text.starts_with([',', ']', '}'])
             || (first.kind() == SyntaxKind::STRING && text.starts_with(['%', '@', '`']))
-            || (in_flow_collection(node)
-                && text.strip_prefix('-').is_some_and(|rest| {
-                    // `{-: 1}` is fine: the colon is safe, and the lexer
-                    // splits it off as its own token.
-                    (rest.is_empty()
-                        && first.next_token().map(|t| t.kind()) != Some(SyntaxKind::COLON))
-                        || rest.starts_with([' ', '\t', '\r', '\n', ',', '[', ']', '{', '}'])
-                }));
+            || text.strip_prefix('-').is_some_and(|rest| {
+                // `{-: 1}` is fine: the colon is safe, and the lexer
+                // splits it off as its own token.
+                (rest.is_empty() && first.next_token().map(|t| t.kind()) != Some(SyntaxKind::COLON))
+                    || rest.starts_with(unsafe_after_dash)
+            });
         if invalid {
             let start = text.chars().next().unwrap_or_default();
             violations.push(Violation::error_at(
@@ -1881,7 +1893,6 @@ impl Validator {
     /// Check for anchors at document level without proper node attachment
     ///
     /// Anchors should be attached to nodes (values), not floating at document level.
-    /// This is often the result of syntax errors like `&anchor - item`.
     fn check_document_level_anchors(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // Check for ANCHOR tokens that are direct children of DOCUMENT
         for child in node.children_with_tokens() {
@@ -1890,40 +1901,20 @@ impl Validator {
                     // An anchor at document level annotates the document's
                     // own node, which is the ordinary spelling of
                     // `&sequence\n- a\n` and `&flowseq [ ... ]`. It is
-                    // stranded only when nothing follows it, or when what
-                    // follows on its own line is a sequence entry, which
-                    // cannot sit there: `&anchor - sequence entry` is the
-                    // test suite's SY6V error.
-                    let mut annotates_a_node = false;
-                    let mut same_line = true;
-                    for sibling in token.siblings_with_tokens(rowan::Direction::Next).skip(1) {
-                        match sibling {
-                            rowan::NodeOrToken::Token(ref t)
-                                if t.kind() == crate::SyntaxKind::NEWLINE =>
-                            {
-                                same_line = false;
-                            }
-                            rowan::NodeOrToken::Node(ref n) => {
-                                let opens_an_entry = same_line
-                                    && n.kind() == crate::SyntaxKind::SCALAR
-                                    && n.text().to_string().starts_with("- ");
-                                if !opens_an_entry
-                                    && matches!(
-                                        n.kind(),
-                                        crate::SyntaxKind::MAPPING
-                                            | crate::SyntaxKind::SEQUENCE
-                                            | crate::SyntaxKind::SCALAR
-                                            | crate::SyntaxKind::TAGGED_NODE
-                                            | crate::SyntaxKind::ALIAS
-                                    )
-                                {
-                                    annotates_a_node = true;
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+                    // stranded only when nothing follows it.
+                    let annotates_a_node = token
+                        .siblings_with_tokens(rowan::Direction::Next)
+                        .filter_map(|sibling| sibling.into_node())
+                        .any(|n| {
+                            matches!(
+                                n.kind(),
+                                crate::SyntaxKind::MAPPING
+                                    | crate::SyntaxKind::SEQUENCE
+                                    | crate::SyntaxKind::SCALAR
+                                    | crate::SyntaxKind::TAGGED_NODE
+                                    | crate::SyntaxKind::ALIAS
+                            )
+                        });
                     if !annotates_a_node {
                         violations.push(Violation::error_at(
                             Rule::Other,
@@ -1967,60 +1958,61 @@ impl Validator {
         }
     }
 
-    /// Check for both anchor and alias on the same value
+    /// Check for both anchor and alias on the same node
     ///
-    /// Per YAML spec, a node can have an anchor (defining a reusable node) OR
-    /// be an alias (referencing another node), but not both.
+    /// An alias node cannot have properties (spec production c-ns-alias-node),
+    /// so `&b *a` is invalid. The parser leaves the anchor as a sibling of the
+    /// ALIAS node, possibly with a tag around the alias (`&b !t *a`). An alias
+    /// further down, such as in `&b !t [*a]` or `&n\n  *a : v` (test suite
+    /// 26DV), belongs to a different node.
     fn check_anchor_and_alias(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        let mut has_anchor = false;
-        let mut has_alias = false;
+        use crate::SyntaxKind;
 
-        // Check for ANCHOR tokens at this level
-        for child in node.children_with_tokens() {
-            if let rowan::NodeOrToken::Token(token) = child {
-                if token.kind() == crate::SyntaxKind::ANCHOR {
-                    has_anchor = true;
-                }
-            }
-        }
-
-        // Check for REFERENCE tokens (used inside SCALAR-shaped values
-        // and inside dedicated ALIAS nodes) anywhere among descendants.
-        // We can't restrict to SCALAR-only because the parser emits
-        // `&b *a` with the ALIAS node as a sibling of the ANCHOR token,
-        // not wrapped in a SCALAR.
-        // Not past a nested collection, though: `top3: &node3\n  *alias1 : v`
-        // anchors the value's mapping while the alias is that mapping's key,
-        // which are different nodes (test suite 26DV).
-        for child in node.children_with_tokens() {
-            match child {
-                rowan::NodeOrToken::Token(t) if t.kind() == crate::SyntaxKind::REFERENCE => {
-                    has_alias = true;
-                    break;
-                }
-                rowan::NodeOrToken::Node(ref n)
-                    if !matches!(
-                        n.kind(),
-                        crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-                    ) && n
-                        .descendants_with_tokens()
-                        .filter_map(|el| el.into_token())
-                        .any(|t| t.kind() == crate::SyntaxKind::REFERENCE) =>
-                {
-                    has_alias = true;
-                    break;
-                }
-                _ => {}
-            }
-        }
-
-        if has_anchor && has_alias {
+        let Some(anchor) = node
+            .children_with_tokens()
+            .filter_map(|c| c.into_token())
+            .find(|t| t.kind() == SyntaxKind::ANCHOR)
+        else {
+            return;
+        };
+        let is_alias = |n: &SyntaxNode| n.kind() == SyntaxKind::ALIAS;
+        let has_alias = node.children().any(|child| {
+            is_alias(&child)
+                || (child.kind() == SyntaxKind::TAGGED_NODE
+                    && child.children().any(|c| is_alias(&c)))
+        });
+        if has_alias {
             violations.push(Violation::error_at(
                 Rule::Other,
-                node.text_range(),
+                anchor.text_range(),
                 "Node cannot have both an anchor and be an alias",
             ));
         }
+    }
+
+    /// Check that an alias has no tag
+    ///
+    /// An alias node cannot have properties (spec production c-ns-alias-node),
+    /// so `!t *a` is invalid.
+    fn check_tag_on_alias(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        if !node
+            .children()
+            .any(|child| child.kind() == crate::SyntaxKind::ALIAS)
+        {
+            return;
+        }
+        let Some(tag) = node
+            .children_with_tokens()
+            .filter_map(|c| c.into_token())
+            .find(|t| t.kind() == crate::SyntaxKind::TAG)
+        else {
+            return;
+        };
+        violations.push(Violation::error_at(
+            Rule::InvalidTag,
+            tag.text_range(),
+            "An alias cannot have a tag",
+        ));
     }
 
     /// Check that comment tokens have whitespace separation
@@ -2301,6 +2293,51 @@ impl Validator {
                 format!(
                     "!!set member {member:?} has non-null value {:?}",
                     value.to_string()
+                ),
+            ));
+        }
+    }
+
+    /// Check that each item of a `!!omap` or `!!pairs` is a mapping,
+    /// untagged or tagged `!!map`, with a single entry.
+    ///
+    /// Like other content that does not suit a YAML 1.1 type, a bad item is
+    /// only a warning. An alias is not resolved here; the conversion to
+    /// `YamlValue` checks the node it refers to.
+    // TODO: resolve merge keys, which can change the number of entries.
+    fn check_pairs_items(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        use crate::as_yaml::YamlNode;
+
+        let Some(tagged) = crate::yaml::TaggedNode::cast(node.clone()) else {
+            return;
+        };
+        let Some(tag) = tagged
+            .tag()
+            .filter(|tag| matches!(tag.as_str(), "!!omap" | "!!pairs"))
+        else {
+            return;
+        };
+        let Some(sequence) = tagged.as_sequence() else {
+            return;
+        };
+        for item in sequence.values() {
+            let mapping = match &item {
+                YamlNode::Alias(_) => continue,
+                YamlNode::Mapping(mapping) => Some(mapping.clone()),
+                YamlNode::TaggedNode(tagged) if tagged.tag().as_deref() == Some("!!map") => {
+                    tagged.as_mapping()
+                }
+                _ => None,
+            };
+            if mapping.is_some_and(|mapping| mapping.entries().count() == 1) {
+                continue;
+            }
+            violations.push(Violation::warning_at(
+                Rule::InvalidTag,
+                item.syntax().text_range(),
+                format!(
+                    "{tag} item {:?} is not a mapping with a single entry",
+                    item.to_string()
                 ),
             ));
         }
@@ -3429,6 +3466,15 @@ mod tests {
             ("a: @x\n", "Plain scalar cannot start with '@'", 3),
             ("- `x\n", "Plain scalar cannot start with '`'", 2),
             ("[%x]", "Plain scalar cannot start with '%'", 1),
+            ("!x - a\n", "Plain scalar cannot start with '-'", 3),
+            ("k: !x - a\n", "Plain scalar cannot start with '-'", 6),
+            ("- &a - a\n", "Plain scalar cannot start with '-'", 5),
+            ("- !x -\n", "Plain scalar cannot start with '-'", 5),
+            (
+                "&anchor - sequence entry\n",
+                "Plain scalar cannot start with '-'",
+                8,
+            ),
         ] {
             assert_eq!(
                 messages(yaml),
@@ -3444,6 +3490,10 @@ mod tests {
             "[a\n -]",
             "a: x%y@z`\n",
             "a: '@x'\n",
+            "a: b\n  - c\n",
+            "k: !x -1\n",
+            "- &a -a\n",
+            "!x -[a]\n",
         ] {
             assert_eq!(messages(yaml), vec![], "{yaml:?}");
         }
@@ -3922,6 +3972,139 @@ mod tests {
     }
 
     #[test]
+    fn test_anchor_on_alias() {
+        let both = "Node cannot have both an anchor and be an alias";
+        for (yaml, expected) in [
+            ("a: &a 1\nb:\n- &b *a\n", vec![(both, "3:3", Rule::Other)]),
+            ("- &a 1\n- &b *a\n", vec![(both, "2:3", Rule::Other)]),
+            (
+                "--- &b *a\n",
+                vec![
+                    (both, "1:5", Rule::Other),
+                    ("Undefined alias *a", "1:8", Rule::InvalidAnchor),
+                ],
+            ),
+            ("a: &a 1\nb: [&b *a]\n", vec![(both, "2:5", Rule::Other)]),
+            (
+                "a: &a 1\nb: [&b *a : v]\n",
+                vec![(both, "2:5", Rule::Other)],
+            ),
+            (
+                "a: &a 1\nb: {&b *a : v}\n",
+                vec![(both, "2:5", Rule::Other)],
+            ),
+            ("a: &a 1\n? &b *a\n: v\n", vec![(both, "2:3", Rule::Other)]),
+            ("a: &a 1\n? x\n: &b *a\n", vec![(both, "3:3", Rule::Other)]),
+            ("a: &a 1\nk: &b\n  *a\n", vec![(both, "2:4", Rule::Other)]),
+            (
+                "a: &a 1\nk: &b !t *a\n",
+                vec![
+                    (both, "2:4", Rule::Other),
+                    ("An alias cannot have a tag", "2:7", Rule::InvalidTag),
+                ],
+            ),
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.severity, v.rule))
+                .collect();
+            let expected: Vec<_> = expected
+                .into_iter()
+                .map(|(message, location, rule)| {
+                    (
+                        message.to_string(),
+                        Some(location.to_string()),
+                        Severity::Error,
+                        rule,
+                    )
+                })
+                .collect();
+            assert_eq!(violations, expected, "{yaml:?}");
+        }
+        for yaml in [
+            "a: &a 1\nk: &c !t\n  x: *a\n",
+            "a: &a 1\nk: &c !t [*a]\n",
+            "a: &a 1\nk: &c [*a]\n",
+            "a: &a 1\nk: &c x *a\n",
+            "a: &a 1\nt: &n\n  *a : v\n",
+            "a: &a 1\nb: &n\n- *a\n",
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tag_on_alias() {
+        for (yaml, expected) in [
+            (
+                "a: &a 1\nk: !t *a\n",
+                vec![("An alias cannot have a tag", "2:4", Rule::InvalidTag)],
+            ),
+            (
+                "- &a 1\n- !t *a\n",
+                vec![("An alias cannot have a tag", "2:3", Rule::InvalidTag)],
+            ),
+            (
+                "[&a 1, !t *a]\n",
+                vec![("An alias cannot have a tag", "1:8", Rule::InvalidTag)],
+            ),
+            (
+                "a: &a 1\nb: {!!str *a : v}\n",
+                vec![("An alias cannot have a tag", "2:5", Rule::InvalidTag)],
+            ),
+            (
+                "a: &a 1\nk: !t\n  *a\n",
+                vec![("An alias cannot have a tag", "2:4", Rule::InvalidTag)],
+            ),
+            (
+                "a: &a 1\nk: !t &b *a\n",
+                vec![
+                    (
+                        "Node cannot have both an anchor and be an alias",
+                        "2:7",
+                        Rule::Other,
+                    ),
+                    ("An alias cannot have a tag", "2:4", Rule::InvalidTag),
+                ],
+            ),
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.severity, v.rule))
+                .collect();
+            let expected: Vec<_> = expected
+                .into_iter()
+                .map(|(message, location, rule)| {
+                    (
+                        message.to_string(),
+                        Some(location.to_string()),
+                        Severity::Error,
+                        rule,
+                    )
+                })
+                .collect();
+            assert_eq!(violations, expected, "{yaml:?}");
+        }
+        for yaml in ["a: &a 1\nk: !t &b x\nl: *a\n", "a: &a 1\nk: !t\n  *a : v\n"] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_pairs_content_must_be_sequence() {
         for (yaml, location, message) in [
             (
@@ -3977,6 +4160,74 @@ mod tests {
     }
 
     #[test]
+    fn test_pairs_items_must_be_single_entry_mappings() {
+        for (yaml, message, location) in [
+            (
+                "o: !!omap [a]\n",
+                "!!omap item \"a\" is not a mapping with a single entry",
+                "1:12",
+            ),
+            (
+                "o: !!omap [{a: 1, b: 2}]\n",
+                "!!omap item \"{a: 1, b: 2}\" is not a mapping with a single entry",
+                "1:12",
+            ),
+            (
+                "o: !!pairs\n- !x {a: 1}\n",
+                "!!pairs item \"!x {a: 1}\" is not a mapping with a single entry",
+                "2:3",
+            ),
+            (
+                "o: !!pairs [!!map [a]]\n",
+                "!!pairs item \"!!map [a]\" is not a mapping with a single entry",
+                "1:13",
+            ),
+            (
+                "o: !!omap\n- [a: 1]\n",
+                "!!omap item \"[a: 1]\" is not a mapping with a single entry",
+                "2:3",
+            ),
+            (
+                "o: !!omap\n- {}\n",
+                "!!omap item \"{}\" is not a mapping with a single entry",
+                "2:3",
+            ),
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.severity, v.rule))
+                .collect();
+            assert_eq!(
+                violations,
+                vec![(
+                    message.to_string(),
+                    Some(location.to_string()),
+                    Severity::Warning,
+                    Rule::InvalidTag
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "o: !!omap [a: 1, b: 2]\n",
+            "o: !!pairs [!!map {a: 1}, a: 2]\n",
+            "o: !!omap\n- a: 1\n- b:\n",
+            "m: &m {a: 1}\no: !!omap [*m]\n",
+            "o: [a, {b: 1, c: 2}]\n",
+            "o: !x [a]\n",
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_repeated_omap_key() {
         for (yaml, message, location) in [
             (
@@ -4017,7 +4268,6 @@ mod tests {
             "o: !!omap [1: a, '1': b]\n",
             "o: !!pairs [a: 1, a: 2]\n",
             "o: [a: 1, a: 2]\n",
-            "o: !!omap [!x {a: 1}, a: 2]\n",
         ] {
             let file = crate::YamlFile::from_str(yaml).unwrap();
             assert_eq!(
@@ -4026,6 +4276,14 @@ mod tests {
                 "{yaml:?}"
             );
         }
+        // An item that is not a mapping has no key to repeat.
+        let file = crate::YamlFile::from_str("o: !!omap [!x {a: 1}, a: 2]\n").unwrap();
+        let rules: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| v.rule)
+            .collect();
+        assert_eq!(rules, vec![Rule::InvalidTag]);
         // A repeated !!set member is a repeated mapping key.
         let file = crate::YamlFile::from_str("s: !!set {? a, ? a}\n").unwrap();
         let violations: Vec<_> = Validator::new()

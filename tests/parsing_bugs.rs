@@ -3052,8 +3052,7 @@ fn test_sibling_indentation_in_a_sequence_entry() {
 /// the ordinary spelling of `&sequence\n- a\n` and `&flowseq [ ... ]`.
 ///
 /// Flagging every such anchor hit 7 files the test suite marks valid. It is
-/// stranded only when nothing follows it, or when what follows on its own
-/// line is a sequence entry, which cannot sit there (SY6V).
+/// stranded only when nothing follows it.
 #[test]
 fn test_document_level_anchor_annotating_a_node() {
     use yaml_edit::validator::Validator;
@@ -3069,12 +3068,12 @@ fn test_document_level_anchor_annotating_a_node() {
         );
     }
 
-    // A sequence entry cannot follow the anchor on its own line.
-    let v = violations("&anchor - sequence entry\n");
-    assert!(
-        v.iter().any(|x| x.message.contains("document level")),
-        "{v:?}"
-    );
+    // The anchor annotates a plain scalar, which cannot start with "- ".
+    let v: Vec<_> = violations("&anchor - sequence entry\n")
+        .into_iter()
+        .map(|v| v.message)
+        .collect();
+    assert_eq!(v, vec!["Plain scalar cannot start with '-'".to_string()]);
 }
 
 /// An explicit key's entry ends with the zero-width implicit-null scalar of

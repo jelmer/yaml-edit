@@ -168,10 +168,13 @@
 //! 4. **Tag Naming**: Tag names must start with `!` and contain only alphanumeric characters,
 //!    hyphens, underscores, dots, colons, and forward slashes.
 
+use crate::lex::SyntaxKind;
+use crate::nodes::SyntaxToken;
 use crate::scalar::{ScalarType, ScalarValue};
 use crate::value::YamlValue;
-use crate::yaml::{Document, TaggedNode};
+use crate::yaml::{Document, SyntaxNode, TaggedNode};
 use rowan::ast::AstNode;
+use rowan::NodeOrToken;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -542,47 +545,183 @@ impl CustomTagHandler for JsonHandler {
     }
 }
 
-/// Parse `content` as a JSON scalar. Unless `strict`, content that is not
-/// valid JSON is returned as the raw string.
+/// Parse `content` as JSON. Unless `strict`, content that is not valid JSON
+/// is returned as the raw string.
 fn parse_json(content: &str, strict: bool) -> Result<YamlValue, CustomTagError> {
-    // TODO: implement a proper JSON parser here
     let content = content.trim();
-    if content.len() >= 2 && content.starts_with('"') && content.ends_with('"') {
-        let inner = &content[1..content.len() - 1];
-        match json_unescape(inner) {
-            Ok(unescaped) => Ok(YamlValue::scalar(unescaped)),
-            Err(msg) if strict => Err(CustomTagError::with_content("!json", msg, content)),
-            Err(_) => Ok(YamlValue::scalar(inner)),
-        }
-    } else if content.starts_with('[') && content.ends_with(']') {
-        Err(CustomTagError::with_content(
-            "!json",
-            "JSON arrays are not supported",
-            content,
-        ))
-    } else if content.starts_with('{') && content.ends_with('}') {
-        Err(CustomTagError::with_content(
-            "!json",
-            "JSON objects are not supported",
-            content,
-        ))
-    } else if content == "\"" || content == "'" {
-        Err(CustomTagError::with_content(
+    if content == "\"" || content == "'" {
+        return Err(CustomTagError::with_content(
             "!json",
             "Unterminated quoted string",
             content,
-        ))
-    } else if let Some(literal) = json_literal(content) {
-        Ok(YamlValue::Scalar(literal))
-    } else if strict {
-        Err(CustomTagError::with_content(
-            "!json",
-            "Invalid JSON value",
-            content,
-        ))
-    } else {
-        Ok(YamlValue::scalar(content))
+        ));
     }
+    let message = match json_document(content) {
+        Ok(value) => return Ok(value),
+        Err(message) => message,
+    };
+    if strict {
+        return Err(CustomTagError::with_content("!json", message, content));
+    }
+    let inner = content.strip_prefix('"').and_then(|c| c.strip_suffix('"'));
+    Ok(YamlValue::scalar(inner.unwrap_or(content)))
+}
+
+const INVALID_JSON: &str = "Invalid JSON value";
+
+/// Parse `content` with the YAML parser, accepting only the JSON subset of
+/// flow syntax.
+fn json_document(content: &str) -> Result<YamlValue, String> {
+    let parsed = crate::YamlFile::parse(content);
+    if let Some(error) = parsed.errors().into_iter().next() {
+        return Err(format!("Invalid JSON: {error}"));
+    }
+    let root = parsed.tree();
+    let document = json_only_node(root.syntax())?;
+    if document.kind() != SyntaxKind::DOCUMENT {
+        return Err(INVALID_JSON.to_string());
+    }
+    let value = json_value(&json_only_node(&document)?)?;
+    if let Some(violation) = crate::validator::Validator::new()
+        .validate_syntax(root.syntax())
+        .into_iter()
+        .find(|v| v.severity == crate::validator::Severity::Error)
+    {
+        return Err(format!("Invalid JSON: {}", violation.message));
+    }
+    Ok(value)
+}
+
+/// The children of `node` other than whitespace, rejecting YAML-only
+/// trivia and node properties.
+fn json_significant(
+    node: &SyntaxNode,
+) -> Result<Vec<NodeOrToken<SyntaxNode, SyntaxToken>>, String> {
+    let mut significant = Vec::new();
+    for child in node.children_with_tokens() {
+        match child.kind() {
+            SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT => {}
+            SyntaxKind::COMMENT => return Err("Comments are not allowed in JSON".to_string()),
+            SyntaxKind::TAG | SyntaxKind::TAGGED_NODE => {
+                return Err("Tags are not allowed in JSON".to_string())
+            }
+            SyntaxKind::ANCHOR => return Err("Anchors are not allowed in JSON".to_string()),
+            SyntaxKind::ALIAS | SyntaxKind::REFERENCE => {
+                return Err("Aliases are not allowed in JSON".to_string())
+            }
+            _ => significant.push(child),
+        }
+    }
+    Ok(significant)
+}
+
+fn json_value(node: &SyntaxNode) -> Result<YamlValue, String> {
+    match node.kind() {
+        SyntaxKind::SCALAR => {
+            let text = json_scalar_text(node)?;
+            match json_string(&text) {
+                Some(string) => string.map(YamlValue::scalar),
+                None => json_literal(&text)
+                    .map(YamlValue::Scalar)
+                    .ok_or_else(|| INVALID_JSON.to_string()),
+            }
+        }
+        SyntaxKind::SEQUENCE => {
+            let entries = json_entries(node, SyntaxKind::LEFT_BRACKET, SyntaxKind::RIGHT_BRACKET)?;
+            let items = entries.iter().map(|entry| match entry.as_slice() {
+                [NodeOrToken::Node(item)] => json_value(item),
+                _ => Err(INVALID_JSON.to_string()),
+            });
+            items.collect::<Result<_, _>>().map(YamlValue::Sequence)
+        }
+        SyntaxKind::MAPPING => {
+            let entries = json_entries(node, SyntaxKind::LEFT_BRACE, SyntaxKind::RIGHT_BRACE)?;
+            let mut map = std::collections::BTreeMap::new();
+            for entry in entries {
+                let [NodeOrToken::Node(key), NodeOrToken::Token(colon), NodeOrToken::Node(value)] =
+                    entry.as_slice()
+                else {
+                    return Err(INVALID_JSON.to_string());
+                };
+                if colon.kind() != SyntaxKind::COLON {
+                    return Err(INVALID_JSON.to_string());
+                }
+                let key = json_key(key)?;
+                let value = json_value(&json_only_node(value)?)?;
+                if map.insert(key, value).is_some() {
+                    return Err("Duplicate key".to_string());
+                }
+            }
+            Ok(YamlValue::Mapping(map))
+        }
+        _ => Err(INVALID_JSON.to_string()),
+    }
+}
+
+/// The single node among the significant children of `node`.
+fn json_only_node(node: &SyntaxNode) -> Result<SyntaxNode, String> {
+    match json_significant(node)?.as_slice() {
+        [NodeOrToken::Node(inner)] => Ok(inner.clone()),
+        _ => Err(INVALID_JSON.to_string()),
+    }
+}
+
+fn json_key(node: &SyntaxNode) -> Result<String, String> {
+    let not_string = || "Object keys must be strings".to_string();
+    let scalar = json_only_node(node)?;
+    if scalar.kind() != SyntaxKind::SCALAR {
+        return Err(not_string());
+    }
+    json_string(&json_scalar_text(&scalar)?).ok_or_else(not_string)?
+}
+
+/// The text of the single token making up a scalar.
+fn json_scalar_text(node: &SyntaxNode) -> Result<String, String> {
+    match json_significant(node)?.as_slice() {
+        [NodeOrToken::Token(token)] => Ok(token.text().to_string()),
+        _ => Err(INVALID_JSON.to_string()),
+    }
+}
+
+/// Decode a JSON string literal, or `None` if `text` is not one.
+fn json_string(text: &str) -> Option<Result<String, String>> {
+    let inner = text.strip_prefix('"')?.strip_suffix('"')?;
+    Some(json_unescape(inner).map_err(String::from))
+}
+
+/// The significant children of each entry of the flow collection `node`,
+/// without the separating commas.
+fn json_entries(
+    node: &SyntaxNode,
+    open: SyntaxKind,
+    close: SyntaxKind,
+) -> Result<Vec<Vec<NodeOrToken<SyntaxNode, SyntaxToken>>>, String> {
+    let children = json_significant(node)?;
+    let [first, entries @ .., last] = children.as_slice() else {
+        return Err(INVALID_JSON.to_string());
+    };
+    if first.kind() != open || last.kind() != close {
+        return Err(INVALID_JSON.to_string());
+    }
+    let mut result = Vec::with_capacity(entries.len());
+    for (i, entry) in entries.iter().enumerate() {
+        let NodeOrToken::Node(entry) = entry else {
+            return Err(INVALID_JSON.to_string());
+        };
+        let mut children = json_significant(entry)?;
+        let has_comma = children
+            .last()
+            .is_some_and(|c| c.kind() == SyntaxKind::COMMA);
+        if has_comma {
+            children.pop();
+        }
+        match (has_comma, i + 1 == entries.len()) {
+            (true, true) => return Err("Trailing comma".to_string()),
+            (false, false) => return Err(INVALID_JSON.to_string()),
+            _ => result.push(children),
+        }
+    }
+    Ok(result)
 }
 
 fn json_quote(s: &str) -> String {
@@ -894,14 +1033,119 @@ mod tests {
     }
 
     #[test]
+    fn test_json_handler_deserialize_collections() {
+        let handler = JsonHandler;
+        let num = |s: &str| YamlValue::Scalar(ScalarValue::parse(s));
+        let map = |pairs: Vec<(&str, YamlValue)>| {
+            YamlValue::Mapping(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+        };
+
+        assert_eq!(
+            handler.deserialize("[1,2]"),
+            Ok(YamlValue::Sequence(vec![num("1"), num("2")]))
+        );
+        assert_eq!(handler.deserialize("[]"), Ok(YamlValue::Sequence(vec![])));
+        assert_eq!(handler.deserialize(" { } "), Ok(map(vec![])));
+        assert_eq!(
+            handler.deserialize(
+                r#"{"a": [1, "x", true, null], "b":{"c":-1.5e2, "d\n\u00e9": "\"y\""}}"#
+            ),
+            Ok(map(vec![
+                (
+                    "a",
+                    YamlValue::Sequence(vec![
+                        num("1"),
+                        YamlValue::scalar("x"),
+                        YamlValue::scalar(true),
+                        YamlValue::Scalar(ScalarValue::null()),
+                    ])
+                ),
+                (
+                    "b",
+                    map(vec![
+                        ("c", num("-1.5e2")),
+                        ("d\n\u{e9}", YamlValue::scalar("\"y\"")),
+                    ])
+                ),
+            ]))
+        );
+        assert_eq!(
+            handler.deserialize("{\r\n\t\"a\" : [\n  1 ,\n  [ ]\n ]\n}\n"),
+            Ok(map(vec![(
+                "a",
+                YamlValue::Sequence(vec![num("1"), YamlValue::Sequence(vec![])])
+            )]))
+        );
+        assert_eq!(handler.validate(r#"{"a": [{"b": []}]}"#), Ok(()));
+    }
+
+    #[test]
+    fn test_json_handler_rejects_yaml_only_syntax() {
+        let handler = JsonHandler;
+        for (content, message) in [
+            ("{a: 1}", "Object keys must be strings"),
+            ("{1: 2}", "Object keys must be strings"),
+            (r#"{"a": x}"#, "Invalid JSON value"),
+            ("['a']", "Invalid JSON value"),
+            ("[1, , 2]", "Invalid JSON value"),
+            (r#"{"a"}"#, "Invalid JSON value"),
+            (r#"["a": 1]"#, "Invalid JSON value"),
+            ("- 1", "Invalid JSON value"),
+            ("a: 1", "Invalid JSON value"),
+            ("--- [1]", "Invalid JSON value"),
+            (
+                "[1] [2]",
+                "Invalid JSON: 1:5: Content after the document could not be parsed: \"[\"",
+            ),
+            ("[1, 2,]", "Trailing comma"),
+            (r#"{"a": 1,}"#, "Trailing comma"),
+            (r#"{"a": 1, "a": 2}"#, "Duplicate key"),
+            ("[1, # c\n 2]", "Comments are not allowed in JSON"),
+            ("[!t 1]", "Tags are not allowed in JSON"),
+            ("!t [1]", "Tags are not allowed in JSON"),
+            ("[&a 1]", "Anchors are not allowed in JSON"),
+            ("[*a]", "Aliases are not allowed in JSON"),
+            (r#"["a\x41"]"#, "Invalid escape sequence"),
+            ("[\"a\n b\"]", "Unescaped control character in string"),
+        ] {
+            assert_eq!(
+                handler.validate(content),
+                Err(CustomTagError::with_content("!json", message, content)),
+                "{}",
+                content
+            );
+            // Lenient deserialization reads it as the raw string.
+            assert_eq!(
+                handler.deserialize(content),
+                Ok(YamlValue::scalar(content)),
+                "{}",
+                content
+            );
+        }
+    }
+
+    #[test]
+    fn test_json_handler_reports_parse_errors() {
+        let handler = JsonHandler;
+        let err = handler.validate("[1, 2").unwrap_err();
+        assert_eq!(
+            err,
+            CustomTagError::with_content(
+                "!json",
+                concat!(
+                    "Invalid JSON: 1:6: Unclosed flow sequence. Expected: ']' to close sequence. ",
+                    "Found: end of input. Context: in flow sequence. Suggestion: Add ']' to close ",
+                    "the array, or check for missing commas between elements"
+                ),
+                "[1, 2"
+            )
+        );
+        assert_eq!(handler.deserialize("[1, 2"), Ok(YamlValue::scalar("[1, 2")));
+    }
+
+    #[test]
     fn test_json_handler_deserialize_returns_err_not_panic() {
         let handler = JsonHandler;
-        let array = handler.deserialize("[1,2]").unwrap_err();
-        assert_eq!(array.tag, "!json");
-        assert_eq!(array.message, "JSON arrays are not supported");
-        let object = handler.deserialize("{\"a\":1}").unwrap_err();
-        assert_eq!(object.tag, "!json");
-        assert_eq!(object.message, "JSON objects are not supported");
         let quote = handler.deserialize("\"").unwrap_err();
         assert_eq!(quote.tag, "!json");
         assert_eq!(quote.message, "Unterminated quoted string");
@@ -1174,6 +1418,24 @@ mod tests {
             ))
         );
         assert_eq!(*seen.lock().unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_process_tagged_json_object() {
+        let mut registry = CustomTagRegistry::new();
+        registry.register("!json", JsonHandler).unwrap();
+        let parser = CustomTagParser::new(registry);
+        let document = doc("data: !json {\"status\": \"active\"}\n");
+        let mapping = document.as_mapping().unwrap();
+        let data = mapping.get("data").unwrap();
+        let tagged = data.as_tagged().unwrap();
+        let mut expected = std::collections::BTreeMap::new();
+        expected.insert("status".to_string(), YamlValue::scalar("active"));
+        assert_eq!(
+            parser.process_tagged_node(tagged),
+            Ok(YamlValue::Mapping(expected))
+        );
+        assert_eq!(parser.parse_with_custom_tags(&document), Ok(()));
     }
 
     #[test]

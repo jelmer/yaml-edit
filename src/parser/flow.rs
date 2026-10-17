@@ -42,9 +42,14 @@ impl Parser {
         self.builder.start_node(SyntaxKind::MAPPING.into());
         self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
-        // Parse key
+        // Parse key; a missing one (`[: v]`) is an implicit null, as in a
+        // flow mapping.
         self.builder.start_node(SyntaxKind::KEY.into());
-        self.parse_value();
+        if self.current() == Some(SyntaxKind::COLON) {
+            self.emit_implicit_null();
+        } else {
+            self.parse_value();
+        }
         self.builder.finish_node();
 
         self.skip_ws_and_newlines();

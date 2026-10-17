@@ -92,13 +92,11 @@ impl Parser {
     /// newline is folded into the scalar. Comments and flow delimiters end
     /// it.
     fn parse_block_plain_scalar(&mut self) {
-        // A quoted scalar arrives as one complete STRING token, and the line
-        // after it is never a continuation: `a: "b"\n  c\n` is an error, not
-        // the scalar `"b" c`.
-        if self.current_is_quoted_string() {
-            self.bump();
-            return;
-        }
+        // A quoted scalar arrives as one complete STRING token. Text after it
+        // on the same line is kept in the scalar for the validator to report,
+        // but the next line never continues it: `a: "b"\n  c\n` is an error,
+        // not the scalar `"b" c`.
+        let quoted = self.current_is_quoted_string();
 
         // current_line_indent tracks the actual line indentation. For inline
         // scalars in sequence items (indent == 0 because the INDENT token was
@@ -119,7 +117,7 @@ impl Parser {
             }
 
             if kind == SyntaxKind::NEWLINE {
-                if self.is_plain_scalar_continuation(0, scalar_indent) {
+                if !quoted && self.is_plain_scalar_continuation(0, scalar_indent) {
                     self.bump(); // consume NEWLINE
                     while matches!(
                         self.current(),
@@ -160,7 +158,7 @@ impl Parser {
                 let ends_scalar = match self.peek_after_current() {
                     Some(SyntaxKind::COMMENT) | None => true,
                     Some(SyntaxKind::NEWLINE) => {
-                        !self.is_plain_scalar_continuation(1, scalar_indent)
+                        quoted || !self.is_plain_scalar_continuation(1, scalar_indent)
                     }
                     Some(_) => false,
                 };

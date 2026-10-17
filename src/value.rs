@@ -71,7 +71,9 @@ impl YamlValue {
                             })
                             .unwrap_or_else(|| key_node.text().to_string());
 
-                        // Convert value node to YamlValue
+                        // TODO: distinct keys with the same string form,
+                        // such as `1` and `'1'`, collide here and the later
+                        // one silently wins; cast cannot report an error.
                         if let Some(value_yaml) = YamlValue::cast(value_node) {
                             map.insert(key_str, value_yaml);
                         }

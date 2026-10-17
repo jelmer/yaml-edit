@@ -793,6 +793,9 @@ fn lookup_merged(
         ResolveError::RecursiveAlias { .. } => {
             unreachable!("collecting merge sources does not expand aliases")
         }
+        ResolveError::KeyCollision { .. } => {
+            unreachable!("a merged view keeps keys as YAML nodes, not strings")
+        }
     })?;
     merged
         .get(key)

@@ -9,8 +9,9 @@
 //! - **Opt-in**: Resolution is explicit via `get_resolved()` methods
 //! - **Preserves structure**: Original syntax tree remains unchanged
 //! - **Lazy evaluation**: Anchors are resolved on-demand, not eagerly
-//! - **Error handling**: An undefined or recursive alias, or a merge key
-//!   whose operand is not a mapping, is reported as a [`ResolveError`]
+//! - **Error handling**: An undefined or recursive alias, a merge key
+//!   whose operand is not a mapping, or distinct keys that would collide
+//!   in a resolved mapping are reported as a [`ResolveError`]
 //!
 //! # Examples
 //!
@@ -75,6 +76,15 @@ pub enum ResolveError {
         /// The source text of the offending operand.
         operand: String,
     },
+    /// Two distinct keys of a mapping have the same string form, such as
+    /// the int `1` and the string `'1'`, so they cannot both be kept in a
+    /// [`YamlValue::Mapping`].
+    KeyCollision {
+        /// The source text of the key that was seen first.
+        first: String,
+        /// The source text of the key that collides with it.
+        second: String,
+    },
 }
 
 impl std::fmt::Display for ResolveError {
@@ -88,6 +98,12 @@ impl std::fmt::Display for ResolveError {
             }
             ResolveError::InvalidMergeOperand { operand } => {
                 write!(f, "merge key operand {operand:?} is not a mapping")
+            }
+            ResolveError::KeyCollision { first, second } => {
+                write!(
+                    f,
+                    "distinct keys {first:?} and {second:?} have the same string form"
+                )
             }
         }
     }
@@ -225,7 +241,8 @@ pub trait DocumentResolvedExt {
     ///
     /// Returns `Ok(None)` if the document root is not a mapping or has no
     /// such key, and an error if the value contains an undefined or
-    /// recursive alias or an invalid merge key.
+    /// recursive alias, an invalid merge key, or distinct keys that have the
+    /// same string form, such as `1` and `'1'`.
     ///
     /// Resolution is read-only. To write a merge or alias back, pass a mapping
     /// that already contains `<<: *name` (or an alias node) to
@@ -290,31 +307,32 @@ fn node_as_string(node: &crate::as_yaml::YamlNode) -> Option<String> {
 ///
 /// Direct keys win over merged ones, and merge sources are taken in the
 /// precedence order [`merge_sources`] returns them. Keys are compared as
-/// YAML values, so a direct `16` shadows a merged `0x10`.
+/// YAML values, so a direct `16` shadows a merged `0x10`. Distinct keys
+/// with the same string form, such as `1` and `'1'`, are a
+/// [`ResolveError::KeyCollision`].
 fn apply_merge_keys(
     mapping: &crate::yaml::Mapping,
     registry: &AnchorRegistry,
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<std::collections::BTreeMap<String, YamlValue>, ResolveError> {
     let mut merged_pairs = std::collections::BTreeMap::new();
-    let mut seen: Vec<crate::as_yaml::YamlNode> = Vec::new();
+    let mut seen: Vec<(crate::as_yaml::YamlNode, String)> = Vec::new();
     let sources = merge_sources(mapping, registry)?;
     for source in std::iter::once(mapping).chain(&sources) {
         for (key, value) in source.iter() {
-            if is_merge_key(&key) || seen.iter().any(|k| k.yaml_eq(&key)) {
+            if is_merge_key(&key) || seen.iter().any(|(k, _)| k.yaml_eq(&key)) {
                 continue;
             }
             // A non-scalar key has no string form, so use its text as
             // YamlValue::cast does.
             let key_str = node_as_string(&key).unwrap_or_else(|| key.to_string());
-            seen.push(key);
-            // TODO: distinct keys with the same text, such as `1` and `'1'`,
-            // collide in the String-keyed map and the later one is dropped.
-            // This should be reported as an error once get_resolved can
-            // return one.
-            if merged_pairs.contains_key(&key_str) {
-                continue;
+            if let Some((first, _)) = seen.iter().find(|(_, s)| *s == key_str) {
+                return Err(ResolveError::KeyCollision {
+                    first: first.to_string(),
+                    second: key.to_string(),
+                });
             }
+            seen.push((key, key_str.clone()));
             if let Some(yaml_value) = resolved_value(value, registry, expanding)? {
                 merged_pairs.insert(key_str, yaml_value);
             }
@@ -364,6 +382,9 @@ fn resolved_value(
             }
             Ok(Some(YamlValue::Sequence(items)))
         }
+        // TODO: a tagged collection such as `!!map {<<: *a, k: *b}` is cast
+        // as-is, so its aliases and merge keys are not resolved and entries
+        // whose value is an alias are dropped.
         other => Ok(YamlValue::cast(other.syntax().clone())),
     }
 }
@@ -1381,5 +1402,57 @@ m:
             let b = view.as_mapping().get_merged("b").unwrap().unwrap();
             assert_eq!(b.get("k").unwrap().to_i64(), Some(1), "{src:?}");
         }
+    }
+
+    #[test]
+    fn get_resolved_key_collision_is_error() {
+        let cases = [
+            ("m: {1: int, '1': str}\n", "1", "'1'"),
+            ("m: {a: {'true': str, true: bool}}\n", "'true'", "true"),
+            (
+                "s: &s {1: from_src}\nm:\n  <<: *s\n  '1': base\n",
+                "'1'",
+                "1",
+            ),
+            (
+                "s: &s {1: a}\nt: &t {'1': b}\nm: {<<: [*s, *t]}\n",
+                "1",
+                "'1'",
+            ),
+            ("s: &s {1: a}\nm: [{<<: *s, '1': b}]\n", "'1'", "1"),
+        ];
+        for (yaml, first, second) in cases {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Err(ResolveError::KeyCollision {
+                    first: first.to_string(),
+                    second: second.to_string(),
+                }),
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn get_resolved_equal_keys_are_not_a_collision() {
+        // A key overriding an equal merged key, however it is spelled, is
+        // the normal merge semantics.
+        let yaml = "s: &s {1: a, 0x10: b, x: c}\nm: {<<: *s, 1: d, 16: e, 'x': f}\n";
+        assert_eq!(
+            resolved_pairs(yaml, "m"),
+            pairs(&[("1", "d"), ("16", "e"), ("x", "f")])
+        );
+    }
+
+    #[test]
+    fn key_collision_display() {
+        let e = ResolveError::KeyCollision {
+            first: "1".to_string(),
+            second: "'1'".to_string(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "distinct keys \"1\" and \"'1'\" have the same string form"
+        );
     }
 }

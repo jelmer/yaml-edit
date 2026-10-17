@@ -480,7 +480,11 @@ impl Validator {
                 self.check_flow_continuation_indent(node, violations);
             }
             SyntaxKind::KEY => {
+                self.check_anchor_and_alias(node, violations);
                 self.check_single_content_node(node, violations);
+            }
+            SyntaxKind::SEQUENCE_ENTRY => {
+                self.check_anchor_and_alias(node, violations);
             }
             SyntaxKind::VALUE => {
                 self.check_anchor_and_alias(node, violations);
@@ -495,6 +499,7 @@ impl Validator {
                 self.check_set_values(node, violations);
             }
             SyntaxKind::DOCUMENT => {
+                self.check_anchor_and_alias(node, violations);
                 self.check_document_level_anchors(node, violations);
                 if self.config.check_anchors {
                     self.check_undefined_aliases(node, violations);
@@ -1953,57 +1958,33 @@ impl Validator {
         }
     }
 
-    /// Check for both anchor and alias on the same value
+    /// Check for both anchor and alias on the same node
     ///
-    /// Per YAML spec, a node can have an anchor (defining a reusable node) OR
-    /// be an alias (referencing another node), but not both.
+    /// An alias node cannot have properties (spec production c-ns-alias-node),
+    /// so `&b *a` is invalid. The parser leaves the anchor as a sibling of the
+    /// ALIAS node, possibly with a tag around the alias (`&b !t *a`). An alias
+    /// further down, such as in `&b !t [*a]` or `&n\n  *a : v` (test suite
+    /// 26DV), belongs to a different node.
     fn check_anchor_and_alias(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        let mut has_anchor = false;
-        let mut has_alias = false;
+        use crate::SyntaxKind;
 
-        // Check for ANCHOR tokens at this level
-        for child in node.children_with_tokens() {
-            if let rowan::NodeOrToken::Token(token) = child {
-                if token.kind() == crate::SyntaxKind::ANCHOR {
-                    has_anchor = true;
-                }
-            }
-        }
-
-        // Check for REFERENCE tokens (used inside SCALAR-shaped values
-        // and inside dedicated ALIAS nodes) anywhere among descendants.
-        // We can't restrict to SCALAR-only because the parser emits
-        // `&b *a` with the ALIAS node as a sibling of the ANCHOR token,
-        // not wrapped in a SCALAR.
-        // Not past a nested collection, though: `top3: &node3\n  *alias1 : v`
-        // anchors the value's mapping while the alias is that mapping's key,
-        // which are different nodes (test suite 26DV).
-        for child in node.children_with_tokens() {
-            match child {
-                rowan::NodeOrToken::Token(t) if t.kind() == crate::SyntaxKind::REFERENCE => {
-                    has_alias = true;
-                    break;
-                }
-                rowan::NodeOrToken::Node(ref n)
-                    if !matches!(
-                        n.kind(),
-                        crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-                    ) && n
-                        .descendants_with_tokens()
-                        .filter_map(|el| el.into_token())
-                        .any(|t| t.kind() == crate::SyntaxKind::REFERENCE) =>
-                {
-                    has_alias = true;
-                    break;
-                }
-                _ => {}
-            }
-        }
-
-        if has_anchor && has_alias {
+        let Some(anchor) = node
+            .children_with_tokens()
+            .filter_map(|c| c.into_token())
+            .find(|t| t.kind() == SyntaxKind::ANCHOR)
+        else {
+            return;
+        };
+        let is_alias = |n: &SyntaxNode| n.kind() == SyntaxKind::ALIAS;
+        let has_alias = node.children().any(|child| {
+            is_alias(&child)
+                || (child.kind() == SyntaxKind::TAGGED_NODE
+                    && child.children().any(|c| is_alias(&c)))
+        });
+        if has_alias {
             violations.push(Violation::error_at(
                 Rule::Other,
-                node.text_range(),
+                anchor.text_range(),
                 "Node cannot have both an anchor and be an alias",
             ));
         }
@@ -3991,6 +3972,75 @@ mod tests {
     }
 
     #[test]
+    fn test_anchor_on_alias() {
+        let both = "Node cannot have both an anchor and be an alias";
+        for (yaml, expected) in [
+            ("a: &a 1\nb:\n- &b *a\n", vec![(both, "3:3", Rule::Other)]),
+            ("- &a 1\n- &b *a\n", vec![(both, "2:3", Rule::Other)]),
+            (
+                "--- &b *a\n",
+                vec![
+                    (both, "1:5", Rule::Other),
+                    ("Undefined alias *a", "1:8", Rule::InvalidAnchor),
+                ],
+            ),
+            ("a: &a 1\nb: [&b *a]\n", vec![(both, "2:5", Rule::Other)]),
+            (
+                "a: &a 1\nb: [&b *a : v]\n",
+                vec![(both, "2:5", Rule::Other)],
+            ),
+            (
+                "a: &a 1\nb: {&b *a : v}\n",
+                vec![(both, "2:5", Rule::Other)],
+            ),
+            ("a: &a 1\n? &b *a\n: v\n", vec![(both, "2:3", Rule::Other)]),
+            ("a: &a 1\n? x\n: &b *a\n", vec![(both, "3:3", Rule::Other)]),
+            ("a: &a 1\nk: &b\n  *a\n", vec![(both, "2:4", Rule::Other)]),
+            (
+                "a: &a 1\nk: &b !t *a\n",
+                vec![
+                    (both, "2:4", Rule::Other),
+                    ("An alias cannot have a tag", "2:7", Rule::InvalidTag),
+                ],
+            ),
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.severity, v.rule))
+                .collect();
+            let expected: Vec<_> = expected
+                .into_iter()
+                .map(|(message, location, rule)| {
+                    (
+                        message.to_string(),
+                        Some(location.to_string()),
+                        Severity::Error,
+                        rule,
+                    )
+                })
+                .collect();
+            assert_eq!(violations, expected, "{yaml:?}");
+        }
+        for yaml in [
+            "a: &a 1\nk: &c !t\n  x: *a\n",
+            "a: &a 1\nk: &c !t [*a]\n",
+            "a: &a 1\nk: &c [*a]\n",
+            "a: &a 1\nk: &c x *a\n",
+            "a: &a 1\nt: &n\n  *a : v\n",
+            "a: &a 1\nb: &n\n- *a\n",
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_tag_on_alias() {
         for (yaml, expected) in [
             (
@@ -4018,7 +4068,7 @@ mod tests {
                 vec![
                     (
                         "Node cannot have both an anchor and be an alias",
-                        "2:4",
+                        "2:7",
                         Rule::Other,
                     ),
                     ("An alias cannot have a tag", "2:4", Rule::InvalidTag),

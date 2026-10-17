@@ -2061,7 +2061,7 @@ config:
         // Parent was flow-style, so the whole nested chain stays flow.
         assert_eq!(
             yaml.to_string().trim(),
-            r#"app: {database: {primary: {host: "db.example.com", port: 5432}}}"#
+            "app: {database: {primary: {host: db.example.com, port: 5432}}}"
         );
 
         let host = yaml.try_get_path("app.database.primary.host").ok();
@@ -2339,10 +2339,7 @@ config:
         let doc = Document::from_str("base: true\n").unwrap();
         doc.try_set_path("a.b[0].c", "value").expect("set_path");
         assert_cst_ok(&doc);
-        assert_eq!(
-            doc.to_string(),
-            "base: true\na:\n  b:\n    - {c: \"value\"}\n"
-        );
+        assert_eq!(doc.to_string(), "base: true\na:\n  b:\n    - {c: value}\n");
     }
 
     #[test]

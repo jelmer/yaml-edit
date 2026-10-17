@@ -168,6 +168,8 @@ impl AsYaml for TaggedNode {
         indent: usize,
         _flow_context: bool,
     ) -> bool {
+        // TODO: in flow context, quote plain content holding a flow
+        // indicator (`!t a, b`), as Scalar does.
         let content_on_tag_line = self
             .0
             .children_with_tokens()

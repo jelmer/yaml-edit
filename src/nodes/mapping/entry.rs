@@ -127,7 +127,7 @@ impl MappingEntry {
         if use_explicit_key && flow_context {
             question(&mut builder);
         }
-        crate::nodes::build_key_content(&mut builder, &key, key_indent);
+        crate::nodes::build_key_content(&mut builder, &key, key_indent, flow_context);
         let key_has_newline = false;
         debug_assert!(!key_has_newline, "Keys should not end with newlines");
         let colon_on_own_line = use_explicit_key && !flow_context;

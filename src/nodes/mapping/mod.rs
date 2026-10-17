@@ -1280,7 +1280,7 @@ impl Mapping {
                         builder.token(SyntaxKind::QUESTION.into(), "?");
                         builder.token(SyntaxKind::WHITESPACE.into(), " ");
                     }
-                    Self::rebuild_key(&mut builder, &n, &new_key);
+                    Self::rebuild_key(&mut builder, &n, &new_key, self.is_flow_style());
                     if make_explicit {
                         builder.token(SyntaxKind::NEWLINE.into(), "\n");
                         if indent > 0 {
@@ -1336,12 +1336,17 @@ impl Mapping {
     /// parser keeps that line break and indent inside KEY. They describe the
     /// entry's layout rather than the key, so they carry over; dropped, the
     /// entry collapses onto one line and reparses as one node.
-    fn rebuild_key(builder: &mut GreenNodeBuilder, old: &SyntaxNode, new_key: &impl crate::AsYaml) {
+    fn rebuild_key(
+        builder: &mut GreenNodeBuilder,
+        old: &SyntaxNode,
+        new_key: &impl crate::AsYaml,
+        flow: bool,
+    ) {
         builder.start_node(SyntaxKind::KEY.into());
         let indent = old
             .parent()
             .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry));
-        super::build_key_content(builder, new_key, indent);
+        super::build_key_content(builder, new_key, indent, flow);
         for trailing in old
             .children_with_tokens()
             .skip_while(|c| !matches!(c.as_token().map(|t| t.kind()), Some(SyntaxKind::NEWLINE)))

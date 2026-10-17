@@ -239,27 +239,19 @@ fn build_entry_value(
     // and indents its body past it; a block collection takes the column its
     // later lines align to, as in MappingEntry.
     let indent = |v: &dyn crate::AsYaml| if v.is_inline() { dash_column } else { column };
-    // In a flow sequence, collections and tagged values have to be told
-    // they are in flow context so they are not written in block style.
-    // Scalars are not: a raw string in flow context is always
-    // double-quoted, while YAML flow permits plain scalars.
-    // TODO: decide whether flow_context should mean only "inside a flow
-    // collection" for strings too; until then a plain string holding a
-    // flow indicator, such as "a, b", is written here unquoted.
-    let flow_context = flow && value.kind() != crate::as_yaml::YamlKind::Scalar;
     // The flow form is inline, so it is shifted by dash_column when built;
     // its continuation lines are given relative to that.
     match flow
         .then(|| crate::nodes::mapping::flow_form(value, 2))
         .flatten()
     {
-        Some(flow_value) => flow_value.build_content(builder, indent(&flow_value), flow_context),
+        Some(flow_value) => flow_value.build_content(builder, indent(&flow_value), flow),
         None => match value
             .as_node()
             .filter(|n| crate::nodes::mapping::is_block_scalar(n))
         {
             Some(scalar) => build_block_scalar(builder, scalar, dash_column + 2),
-            None => value.build_content(builder, indent(value), flow_context),
+            None => value.build_content(builder, indent(value), flow),
         },
     }
 }

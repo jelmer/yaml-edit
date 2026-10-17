@@ -1785,7 +1785,7 @@ impl AsYaml for BTreeMap<String, YamlValue> {
                     builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
                     builder.start_node(SyntaxKind::KEY.into());
-                    crate::nodes::build_key_content(builder, &key.as_str(), indent);
+                    crate::nodes::build_key_content(builder, &key.as_str(), indent, false);
                     builder.finish_node(); // KEY
 
                     builder.token(SyntaxKind::COLON.into(), ":");

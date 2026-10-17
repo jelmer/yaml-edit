@@ -508,7 +508,8 @@ pub(crate) fn nth_entry_index(
         .nth(index)
 }
 
-/// Emit `key`'s content for use inside a `KEY` node.
+/// Emit `key`'s content for use inside a `KEY` node, of a flow mapping
+/// if `flow`.
 ///
 /// Identical to `key.build_content` except that a key which would render as
 /// a block scalar (`|` / `>`), tagged or not, is emitted as a double-quoted
@@ -520,7 +521,13 @@ pub(crate) fn build_key_content(
     builder: &mut rowan::GreenNodeBuilder,
     key: &impl crate::AsYaml,
     indent: usize,
+    flow: bool,
 ) {
+    if flow {
+        // Flow context already rules out block scalars.
+        key.build_content(builder, indent, true);
+        return;
+    }
     // TODO: a node-backed block key (a block scalar or collection, tagged
     // or not) is copied as is. `MappingEntry::new_at_indent` converts it to
     // flow form first, but `Mapping::rename_key` does not, and writes a
@@ -555,7 +562,7 @@ pub(crate) fn build_key_content(
 pub(crate) fn key_spans_lines(key: &impl crate::AsYaml) -> bool {
     let mut builder = rowan::GreenNodeBuilder::new();
     builder.start_node(SyntaxKind::ROOT.into());
-    build_key_content(&mut builder, key, 0);
+    build_key_content(&mut builder, key, 0, false);
     builder.finish_node();
     SyntaxNode::new_root(builder.finish())
         .text()

@@ -221,6 +221,19 @@ fn token_column(token: &crate::nodes::SyntaxToken) -> usize {
     col
 }
 
+/// The least indentation a continuation line of `node` needs: one more
+/// than the column of the innermost block collection entry holding it, or
+/// `None` outside any block collection.
+fn continuation_indent(node: &SyntaxNode) -> Option<usize> {
+    let entry = node.ancestors().skip(1).find(|a| {
+        matches!(
+            a.kind(),
+            crate::SyntaxKind::MAPPING_ENTRY | crate::SyntaxKind::SEQUENCE_ENTRY
+        ) && a.parent().is_some_and(|c| !starts_a_flow_collection(&c))
+    })?;
+    Some(token_column(&entry.first_token()?) + 1)
+}
+
 /// Is this flow entry an omitted one, i.e. does its value consist solely of
 /// the zero-width implicit-null scalar the parser emits for an empty slot?
 ///
@@ -721,6 +734,22 @@ impl Validator {
                     // valid `\\` followed by an invalid `\$` (test suite
                     // 6SLA).
                     chars.next();
+                    // `\x`, `\u` and `\U` take exactly 2, 4 and 8 hex digits.
+                    let digits = match next {
+                        'x' => 2,
+                        'u' => 4,
+                        'U' => 8,
+                        _ => continue,
+                    };
+                    let code: String = chars.by_ref().take(digits).collect();
+                    if code.len() != digits || !code.chars().all(|c| c.is_ascii_hexdigit()) {
+                        violations.push(Violation::error_at(
+                            Rule::InvalidEscape,
+                            node.text_range(),
+                            format!("Invalid escape sequence: \\{next}{code}"),
+                        ));
+                        return;
+                    }
                 }
             }
         }
@@ -1098,9 +1127,12 @@ impl Validator {
                 // tab there is content (7A4E, PRH3), while one inside a
                 // mapping value must clear the key's column (DK95/01).
                 if node.kind() == crate::SyntaxKind::SCALAR
-                    && node
-                        .parent()
-                        .is_some_and(|p| p.kind() == crate::SyntaxKind::VALUE)
+                    && node.parent().is_some_and(|p| {
+                        matches!(
+                            p.kind(),
+                            crate::SyntaxKind::VALUE | crate::SyntaxKind::SEQUENCE_ENTRY
+                        )
+                    })
                     && token.text().starts_with(['"', '\''])
                     && token
                         .text()
@@ -1564,31 +1596,29 @@ impl Validator {
             }
         }
 
-        // Only a flow collection sitting inside a block collection can be
-        // confused with one: at column zero its continuation would read as a
-        // new entry of that block (9C9N's `flow: [a,\nb,\nc]`). A flow
+        // Only a flow collection sitting inside a block collection has to
+        // clear that block's indentation, or its continuation would read as
+        // a new entry of that block (9C9N's `flow: [a,\nb,\nc]`). A flow
         // collection that is the document's own node has no such neighbour,
         // so its entries may start at column zero (4ABK).
-        if !node.ancestors().skip(1).any(|a| {
-            matches!(
-                a.kind(),
-                crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-            )
-        }) {
+        let Some(required) = continuation_indent(node) else {
             return;
-        }
+        };
 
-        let mut after_newline = false;
+        // The indentation of the current line, while still at its start.
+        // Tabs are not indentation, so only leading spaces count.
+        let mut indent: Option<usize> = None;
         for el in node.descendants_with_tokens() {
             let rowan::NodeOrToken::Token(t) = el else {
                 continue;
             };
             match t.kind() {
-                crate::SyntaxKind::NEWLINE => after_newline = true,
-                crate::SyntaxKind::INDENT | crate::SyntaxKind::WHITESPACE if after_newline => {
-                    after_newline = false;
+                crate::SyntaxKind::NEWLINE => indent = Some(0),
+                crate::SyntaxKind::INDENT | crate::SyntaxKind::WHITESPACE if indent.is_some() => {
+                    indent = Some(t.text().chars().take_while(|c| *c == ' ').count());
                 }
-                _ if after_newline => {
+                crate::SyntaxKind::COMMENT => indent = None,
+                _ if indent.take().is_some_and(|i| i < required) => {
                     violations.push(Violation::error_at(
                         Rule::InvalidIndentation,
                         node.text_range(),
@@ -2285,13 +2315,10 @@ impl Validator {
             return;
         }
 
-        match node.parent() {
-            None => return,
-            Some(parent) if parent.kind() == crate::SyntaxKind::DOCUMENT => return,
-            Some(_) => {}
-        }
-
-        // For multiline quoted strings, continuation lines should be indented
+        // Continuation lines have to clear the enclosing block entry.
+        let Some(required) = continuation_indent(node) else {
+            return;
+        };
 
         // Check each line after the first
         let lines: Vec<&str> = text.split('\n').collect();
@@ -2304,12 +2331,9 @@ impl Validator {
                     continue;
                 }
 
-                // Count leading spaces
-                let leading_spaces = line.len() - line.trim_start().len();
-
-                // Continuation lines starting at column 0 are invalid
-                // (they should be indented at least to align with content)
-                if leading_spaces == 0 && !line.trim().is_empty() {
+                // A line opening with a tab is left to check_tab_usage.
+                let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
+                if leading_spaces < required && !line.trim().is_empty() && !line.starts_with('\t') {
                     violations.push(Violation::error_at(
                         Rule::InvalidIndentation,
                         node.text_range(),
@@ -3317,6 +3341,61 @@ mod tests {
                 vec!["Document marker inside a quoted scalar".to_string()],
                 "{yaml:?}"
             );
+        }
+    }
+
+    #[test]
+    fn test_escape_needs_its_hex_digits() {
+        for (yaml, expected) in [
+            ("k: \"\\xZZ\"\n", "Invalid escape sequence: \\xZZ"),
+            ("k: \"a\\x4z\"\n", "Invalid escape sequence: \\x4z"),
+            ("k: \"\\u12\"\n", "Invalid escape sequence: \\u12\""),
+            (
+                "k: \"\\U0001F60\"\n",
+                "Invalid escape sequence: \\U0001F60\"",
+            ),
+        ] {
+            assert_eq!(messages(yaml), vec![expected.to_string()], "{yaml:?}");
+        }
+        assert_eq!(
+            messages("k: \"\\u00e9\\x41\\U0001F600\"\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn test_continuation_must_clear_enclosing_entry() {
+        for (yaml, expected) in [
+            (
+                "a:\n  b: [x,\n  y]\n",
+                "Flow collection continuation line must be indented",
+            ),
+            (
+                "a:\n  b: \"x\n  y\"\n",
+                "Wrong indented multiline quoted scalar",
+            ),
+            (
+                "- a: \"x\n  y\"\n",
+                "Wrong indented multiline quoted scalar",
+            ),
+            (
+                "- \"a\n\tb\"\n",
+                "Tabs are not allowed for indentation in YAML",
+            ),
+            (
+                "k: \"a\n\tb\"\n",
+                "Tabs are not allowed for indentation in YAML",
+            ),
+        ] {
+            assert_eq!(messages(yaml), vec![expected.to_string()], "{yaml:?}");
+        }
+        for yaml in [
+            "a:\n  b: [x,\n   y]\n",
+            "a:\n  b: \"x\n   y\"\n",
+            "- a: \"x\n   y\"\n",
+            "k: [a,\n# c\n  b]\n",
+        ] {
+            assert_eq!(messages(yaml), Vec::<String>::new(), "{yaml:?}");
         }
     }
 }

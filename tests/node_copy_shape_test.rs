@@ -80,9 +80,17 @@ fn test_set_tagged_node_value() {
     assert_parser_shaped(&file, "a: 1\nb: !t v\n");
 }
 
-/// Indent every line of `text` after the first by two more columns.
+/// Indent every non-blank line of `text` after the first by two more
+/// columns.
 fn shift(text: &str) -> String {
-    text.replace('\n', "\n  ").trim_end_matches(' ').to_string()
+    text.split('\n')
+        .enumerate()
+        .map(|(i, line)| match (i, line) {
+            (0, _) | (_, "") => line.to_string(),
+            _ => format!("  {line}"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The text after `v:` in each source: block values that start on the key
@@ -444,5 +452,43 @@ fn test_set_sequence_item_to_block_scalar() {
         };
         sequence.set(0, value_of("k: |\n      text\n", "k"));
         assert_parser_shaped(&file, expected);
+    }
+}
+
+/// Everything a TAGGED_NODE holds between its tag and its content (an
+/// anchor after the tag, a comment, comment lines) comes along when it is
+/// copied under another key.
+#[test]
+fn test_set_tagged_node_value_keeps_properties_and_comments() {
+    for value in [
+        " !t  # c\n  x: 1\n",
+        " !t &a\n  x: 1\n",
+        " !t &a  # c\n  x: 1\n",
+        " !t\n  # c\n  x: 1\n",
+        " !t\n\n  x: 1\n",
+        " !t &a 1\n",
+        " !t &a |\n  x\n",
+        " !t |  # c\n  x\n",
+    ] {
+        let source = value_of(&format!("v:{value}"), "v");
+        for (src, nested, key, expected) in [
+            ("k: 1\n", false, "n", format!("k: 1\nn:{value}")),
+            (
+                "m:\n  k: 1\n",
+                true,
+                "n",
+                format!("m:\n  k: 1\n  n:{}", shift(value)),
+            ),
+        ] {
+            let file = YamlFile::from_str(src).unwrap();
+            let root = file.document().unwrap().as_mapping().unwrap();
+            let mapping = if nested {
+                root.get_mapping("m").unwrap()
+            } else {
+                root
+            };
+            mapping.set(key, &source);
+            assert_parser_shaped(&file, &expected);
+        }
     }
 }

@@ -4,13 +4,10 @@
 //!
 //! Split out of `nodes/mapping/mod.rs` unchanged.
 
-use super::Mapping;
 use crate::lex::SyntaxKind;
 use crate::nodes::{
-    append_children, fresh_token, has_child_token, trailing_newline_reachable, Scalar, Sequence,
-    SyntaxNode,
+    append_children, fresh_token, has_child_token, trailing_newline_reachable, Scalar, SyntaxNode,
 };
-use crate::yaml::ValueNode;
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
 
@@ -266,34 +263,26 @@ pub(super) fn built_block_node(value: &impl crate::AsYaml) -> Option<SyntaxNode>
     SyntaxNode::new_root(builder.finish()).first_child()
 }
 
-/// True if `node` (any yaml value node) renders inline (same line as its key).
-pub(super) fn node_is_inline(node: &SyntaxNode) -> bool {
-    match node.kind() {
-        SyntaxKind::MAPPING => {
-            Mapping::cast(node.clone()).is_some_and(|m| ValueNode::is_inline(&m))
-        }
-        SyntaxKind::SEQUENCE => {
-            Sequence::cast(node.clone()).is_some_and(|s| ValueNode::is_inline(&s))
-        }
-        SyntaxKind::SCALAR => Scalar::cast(node.clone()).is_some_and(|s| ValueNode::is_inline(&s)),
-        _ => true,
-    }
-}
-
-/// Build a VALUE node wrapping a TAGGED_NODE source. The tag stays on the
-/// key line; the wrapped inner value (mapping/sequence) goes on the next
-/// line at `target` for block content, or stays inline with a leading
-/// space for inline content and block scalars, with interior indentation
-/// re-shifted so nested lines line up.
+/// Build a VALUE node wrapping a TAGGED_NODE source. Everything the
+/// source holds (tag, anchor, comments, line breaks) is kept in place.
+/// Content on lines after the tag is shifted to start at `target`; a block
+/// scalar on the tag line has its content lines shifted to `target`.
 pub(super) fn build_tagged_value_node(source: &SyntaxNode, target: usize) -> BlockValue {
-    // A TAGGED_NODE holds the TAG token followed by the wrapped value node.
-    let tag_text = source
-        .children_with_tokens()
-        .filter_map(|c| c.into_token())
-        .find(|t| t.kind() == SyntaxKind::TAG)
-        .map(|t| t.text().to_string());
-    let inner = source.first_child();
     let anchor = source_anchor_text(source);
+    let base = source.first_child().and_then(|inner| {
+        let content_on_tag_line = source
+            .children_with_tokens()
+            .take_while(|c| c.as_node().is_none())
+            .all(|c| c.kind() != SyntaxKind::NEWLINE);
+        if !content_on_tag_line {
+            Some(crate::as_yaml::source_base_indent(&inner))
+        } else if is_block_scalar(&inner) {
+            block_scalar_content_indent(&inner)
+        } else {
+            None
+        }
+    });
+    let delta = base.map_or(0, |base| target as isize - base as isize);
 
     let mut value_builder = GreenNodeBuilder::new();
     value_builder.start_node(SyntaxKind::VALUE.into());
@@ -302,35 +291,8 @@ pub(super) fn build_tagged_value_node(source: &SyntaxNode, target: usize) -> Blo
         value_builder.token(SyntaxKind::WHITESPACE.into(), " ");
     }
     value_builder.start_node(SyntaxKind::TAGGED_NODE.into());
-    if let Some(tag) = tag_text.as_deref() {
-        value_builder.token(SyntaxKind::TAG.into(), tag);
-    }
-    let ends_with_newline = match inner {
-        None => false,
-        Some(inner) if node_is_inline(&inner) || is_block_scalar(&inner) => {
-            // `!!str value` or `!!str |`: content on the tag line, with a
-            // block scalar's content lines shifted to `target`.
-            let delta = match block_scalar_content_indent(&inner) {
-                Some(base) if is_block_scalar(&inner) => target as isize - base as isize,
-                _ => 0,
-            };
-            value_builder.token(SyntaxKind::WHITESPACE.into(), " ");
-            value_builder.start_node(inner.kind().into());
-            let n = crate::as_yaml::copy_node_content_reindent(&mut value_builder, &inner, delta);
-            value_builder.finish_node();
-            n
-        }
-        Some(inner) => {
-            // Block content: next line, re-indent by (target - source_base).
-            value_builder.token(SyntaxKind::NEWLINE.into(), "\n");
-            value_builder.token(SyntaxKind::INDENT.into(), &" ".repeat(target));
-            let delta = target as isize - crate::as_yaml::source_base_indent(&inner) as isize;
-            value_builder.start_node(inner.kind().into());
-            let n = crate::as_yaml::copy_node_content_reindent(&mut value_builder, &inner, delta);
-            value_builder.finish_node();
-            n
-        }
-    };
+    let ends_with_newline =
+        crate::as_yaml::copy_node_content_reindent(&mut value_builder, source, delta);
     value_builder.finish_node(); // TAGGED_NODE
     value_builder.finish_node(); // VALUE
     BlockValue {

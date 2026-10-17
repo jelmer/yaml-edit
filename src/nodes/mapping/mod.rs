@@ -283,6 +283,28 @@ impl Mapping {
                 .any(|t| t.kind() == SyntaxKind::WHITESPACE && t.text().is_empty())
     }
 
+    /// Wrap a flow pair in braces, so that it reads as one mapping however
+    /// many entries it ends up with: `[a: 1, b: 2]` would be two.
+    fn brace_flow_pair(&self) {
+        if !is_flow_pair(&self.0) {
+            return;
+        }
+        if let Some(entry) = self
+            .0
+            .children()
+            .find(|c| c.kind() == SyntaxKind::MAPPING_ENTRY)
+        {
+            move_question_into_key(&entry);
+        }
+        let end = self.0.children_with_tokens().count();
+        self.0.splice_children(
+            end..end,
+            vec![fresh_token(SyntaxKind::RIGHT_BRACE, "}").into()],
+        );
+        self.0
+            .splice_children(0..0, vec![fresh_token(SyntaxKind::LEFT_BRACE, "{").into()]);
+    }
+
     /// Slice this mapping's children into leading decoration, one
     /// `(entry, postscript)` group per entry, and trailing decoration.
     ///
@@ -397,6 +419,43 @@ impl Mapping {
     }
 }
 
+/// Is `node` a single pair in a flow sequence (`[a: 1]`), a flow mapping
+/// written without braces?
+pub(crate) fn is_flow_pair(node: &SyntaxNode) -> bool {
+    node.kind() == SyntaxKind::MAPPING
+        && !has_child_token(node, |k| k == SyntaxKind::LEFT_BRACE)
+        && node
+            .parent()
+            .filter(|p| p.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            .and_then(|p| p.parent())
+            .is_some_and(|seq| has_child_token(&seq, |k| k == SyntaxKind::LEFT_BRACKET))
+}
+
+/// Move the `?` of an explicit key into its KEY. The parser puts it beside
+/// KEY in a flow pair, but inside it in a flow mapping.
+fn move_question_into_key(entry: &SyntaxNode) {
+    let Some(key) = entry_key(entry) else {
+        return;
+    };
+    let indicator: Vec<_> =
+        std::iter::successors(key.prev_sibling_or_token(), |c| c.prev_sibling_or_token())
+            .take_while(|c| matches!(c.kind(), SyntaxKind::QUESTION | SyntaxKind::WHITESPACE))
+            .collect();
+    if !indicator.iter().any(|c| c.kind() == SyntaxKind::QUESTION) {
+        return;
+    }
+    let moved: Vec<_> = indicator
+        .iter()
+        .rev()
+        .filter_map(|c| c.as_token())
+        .map(|t| {
+            t.detach();
+            fresh_token(t.kind(), t.text()).into()
+        })
+        .collect();
+    key.splice_children(0..0, moved);
+}
+
 /// Check whether the CST key node matches `key` using semantic equality.
 ///
 /// `key_node` may be a raw KEY wrapper; `from_syntax_peeled` unwraps it.
@@ -410,13 +469,15 @@ pub(super) fn key_content_matches(key_node: &SyntaxNode, key: impl crate::AsYaml
 impl Mapping {
     /// Check if this mapping is in flow style (JSON/inline format with `{}`).
     ///
-    /// Returns `true` if the mapping uses flow style (e.g., `{key: value}`),
-    /// `false` if it uses block style (e.g., `key: value`).
+    /// Returns `true` if the mapping uses flow style (e.g., `{key: value}`,
+    /// or a single pair in a flow sequence such as `[key: value]`), `false`
+    /// if it uses block style (e.g., `key: value`).
     pub fn is_flow_style(&self) -> bool {
         // Flow-style mappings start with LEFT_BRACE token. A block
         // placeholder is `{}` in the text but is destined to become block, so
         // it does not count as flow.
-        has_child_token(&self.0, |k| k == SyntaxKind::LEFT_BRACE) && !self.is_block_placeholder()
+        (has_child_token(&self.0, |k| k == SyntaxKind::LEFT_BRACE) && !self.is_block_placeholder())
+            || is_flow_pair(&self.0)
     }
 
     /// Find the [`MappingEntry`] whose key matches `key`, or `None` if not found.
@@ -626,6 +687,7 @@ impl Mapping {
     /// dictated by `where_at`, wiring up `, ` separators so the entries stay
     /// syntactically valid inside the braces.
     pub(super) fn insert_flow_entry_cst_at(&self, new_entry: &SyntaxNode, where_at: FlowInsertPos) {
+        self.brace_flow_pair();
         let brace_pos = self.0.children_with_tokens().position(|c| {
             c.as_token()
                 .is_some_and(|t| t.kind() == SyntaxKind::RIGHT_BRACE)
@@ -1037,6 +1099,12 @@ impl Mapping {
         i: usize,
         removed: &SyntaxNode,
     ) {
+        // Without its pair, a flow pair would leave `[]`, an empty sequence.
+        if is_flow_pair(&self.0) {
+            self.brace_flow_pair();
+            let children: Vec<_> = self.0.children_with_tokens().collect();
+            return self.remove_entry_at(&children, removed.index(), removed);
+        }
         let is_last = !children.iter().skip(i + 1).any(|c| {
             c.as_node()
                 .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)

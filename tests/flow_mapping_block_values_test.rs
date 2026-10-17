@@ -266,3 +266,46 @@ fn test_commented_sequence_key_uses_explicit_key() {
     assert_file_cst_ok(&file);
     assert_eq!(file.to_string(), "a: 1\n? [1,  # one\n  2]\n: 1\n");
 }
+
+#[test]
+fn test_commented_sequence_key_in_flow_mapping() {
+    let file = YamlFile::from_str("{x: 1}\n").unwrap();
+    let root = file.document().unwrap().as_mapping().unwrap();
+    let key = parse_seq("- 1  # one\n- 2\n");
+    root.set(&key, 1);
+    assert_parser_shaped(&file);
+    assert_eq!(file.to_string(), "{x: 1, ? [1,  # one\n  2]: 1}\n");
+    let reparsed = parse_map(&file.to_string());
+    assert_eq!(reparsed.len(), 2);
+    assert_eq!(
+        reparsed.get(&key).unwrap().as_scalar().unwrap().as_i64(),
+        Some(1)
+    );
+
+    root.set(&key, 2);
+    assert_parser_shaped(&file);
+    assert_eq!(file.to_string(), "{x: 1, ? [1,  # one\n  2]: 2}\n");
+}
+
+#[test]
+fn test_commented_mapping_key_in_nested_flow_mapping() {
+    let file = YamlFile::from_str("a: {x: 1}\n").unwrap();
+    let a = file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("a")
+        .unwrap();
+    let key = parse_map("p: 1  # one\nq: 2\n");
+    a.set(&key, 3);
+    assert_parser_shaped(&file);
+    assert_eq!(
+        file.to_string(),
+        "a: {x: 1, ? {p: 1,  # one\n     q: 2}: 3}\n"
+    );
+    let reparsed = parse_map(&file.to_string());
+    let a = reparsed.get_mapping("a").unwrap();
+    assert_eq!(a.len(), 2);
+    assert_eq!(a.get(&key).unwrap().as_scalar().unwrap().as_i64(), Some(3));
+}

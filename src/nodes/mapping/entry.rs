@@ -96,12 +96,6 @@ impl MappingEntry {
             // Comments make the key span several lines, which only an
             // explicit key may do.
             let multiline = has_comment(key.syntax());
-            // TODO: write an explicit key in the shape the parser gives
-            // one inside a flow mapping (QUESTION within KEY).
-            assert!(
-                !(multiline && flow_context),
-                "a key with comments cannot yet be written into a flow mapping"
-            );
             let explicit = use_explicit_key || multiline;
             return Self::new_at_indent(key, value, flow_context, explicit, key_indent);
         }
@@ -114,14 +108,20 @@ impl MappingEntry {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
-        if use_explicit_key {
-            // Add explicit key indicator as child of MAPPING_ENTRY
+        // The parser puts the `?` beside KEY in a block mapping and inside
+        // it in a flow mapping.
+        let question = |builder: &mut GreenNodeBuilder| {
             builder.token(SyntaxKind::QUESTION.into(), "?");
             builder.token(SyntaxKind::WHITESPACE.into(), " ");
+        };
+        if use_explicit_key && !flow_context {
+            question(&mut builder);
         }
 
-        // Build KEY
         builder.start_node(SyntaxKind::KEY.into());
+        if use_explicit_key && flow_context {
+            question(&mut builder);
+        }
         crate::nodes::build_key_content(&mut builder, &key);
         let key_has_newline = false;
         debug_assert!(!key_has_newline, "Keys should not end with newlines");
@@ -131,14 +131,16 @@ impl MappingEntry {
         // inside KEY; at column 0 there is no indent to consume, so the
         // break stays a sibling of KEY. Match whichever shape applies, or
         // rename_key -- which replaces the whole KEY node -- drops the break
-        // and collapses the entry onto one line.
-        if use_explicit_key && key_indent > 0 {
+        // and collapses the entry onto one line. In a flow mapping the `:`
+        // simply follows the key.
+        let colon_on_own_line = use_explicit_key && !flow_context;
+        if colon_on_own_line && key_indent > 0 {
             builder.token(SyntaxKind::NEWLINE.into(), "\n");
             builder.token(SyntaxKind::INDENT.into(), &" ".repeat(key_indent));
         }
         builder.finish_node();
 
-        if use_explicit_key && key_indent == 0 {
+        if colon_on_own_line && key_indent == 0 {
             builder.token(SyntaxKind::NEWLINE.into(), "\n");
         }
 

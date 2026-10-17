@@ -359,9 +359,7 @@ pub(crate) fn entry_line_terminated(entry: &SyntaxNode) -> bool {
 ///
 /// The new sibling must be going in immediately after `entry`: an explicit-key
 /// entry is treated as terminated by a NEWLINE that follows it as a sibling,
-/// which only separates the two if nothing is spliced in between. Callers
-/// inserting at an independently computed position want
-/// [`ensure_own_trailing_newline`] instead.
+/// which only separates the two if nothing is spliced in between.
 pub(crate) fn ensure_trailing_newline(entry: &SyntaxNode) {
     if entry_line_terminated(entry) {
         return;
@@ -393,15 +391,6 @@ pub(crate) fn hand_line_break_to_mapping(entry: &SyntaxNode) {
     newline.detach();
     let at = entry.index() + 1;
     parent.splice_children(at..at, vec![fresh_token(SyntaxKind::NEWLINE, &text).into()]);
-}
-
-/// Append a trailing NEWLINE token to `entry` unless the entry itself already
-/// ends in one, ignoring any NEWLINE that merely follows it as a sibling.
-pub(crate) fn ensure_own_trailing_newline(entry: &SyntaxNode) {
-    if trailing_newline_reachable(entry) {
-        return;
-    }
-    append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
 }
 
 /// Add the line break that ends the last line of `node`, where the parser

@@ -1305,7 +1305,7 @@ impl Mapping {
     }
 
     /// Helper to create a MAPPING_ENTRY node from key and value strings
-    pub(super) fn create_mapping_entry(
+    fn create_mapping_entry(
         &self,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,

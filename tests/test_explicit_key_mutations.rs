@@ -340,3 +340,125 @@ fn nested_explicit_key_set_then_renamed_matches_parser() {
     assert_parser_shaped(&file);
     assert_eq!(file.to_string(), "m:\n  ? a\n  : 1\n  ? z\n  : '0'\n");
 }
+
+fn commented_sequence_key() -> yaml_edit::Sequence {
+    YamlFile::from_str("- 1  # one\n- 2\n")
+        .unwrap()
+        .document()
+        .unwrap()
+        .as_sequence()
+        .unwrap()
+}
+
+#[test]
+fn key_needing_explicit_form_inserted_relative_to_another() {
+    let key = commented_sequence_key();
+    let expected = "a: 1\n? [1,  # one\n  2]\n: 2\nc: 3\n";
+    assert_eq!(
+        edit_root("a: 1\nc: 3\n", |m| assert!(m.insert_after("a", &key, 2))),
+        expected
+    );
+    assert_eq!(
+        edit_root("a: 1\nc: 3\n", |m| assert!(m.move_after("a", &key, 2))),
+        expected
+    );
+    assert_eq!(
+        edit_root("a: 1\nc: 3\n", |m| assert!(m.insert_before("c", &key, 2))),
+        expected
+    );
+    assert_eq!(
+        edit_root("a: 1\nc: 3\n", |m| assert!(m.move_before("c", &key, 2))),
+        expected
+    );
+}
+
+#[test]
+fn entry_inserted_relative_to_another_follows_explicit_keys() {
+    let source = "? a\n: 1\n? c\n: 3\n";
+    let expected = "? a\n: 1\n? b\n: 2\n? c\n: 3\n";
+    assert_eq!(
+        edit_root(source, |m| assert!(m.insert_after("a", "b", 2))),
+        expected
+    );
+    assert_eq!(
+        edit_root(source, |m| assert!(m.move_after("a", "b", 2))),
+        expected
+    );
+    assert_eq!(
+        edit_root(source, |m| assert!(m.insert_before("c", "b", 2))),
+        expected
+    );
+    assert_eq!(
+        edit_root(source, |m| assert!(m.move_before("c", "b", 2))),
+        expected
+    );
+}
+
+#[test]
+fn entry_inserted_after_last_explicit_key_entry() {
+    assert_eq!(
+        edit_root("? a\n: 1\n", |m| assert!(m.insert_after("a", "b", 2))),
+        "? a\n: 1\n? b\n: 2\n"
+    );
+    assert_eq!(
+        edit_root("? a\n: 1", |m| assert!(m.move_after("a", "b", 2))),
+        "? a\n: 1\n? b\n: 2\n"
+    );
+    assert_eq!(
+        edit_root("? a\n: 1\n", |m| assert!(m.insert_before("a", "b", 2))),
+        "? b\n: 2\n? a\n: 1\n"
+    );
+}
+
+#[test]
+fn explicit_key_entry_moved_within_mapping() {
+    let source = "? a\n: 1\n? b\n: 2\n? c\n: 3\n";
+    assert_eq!(
+        edit_root(source, |m| assert!(m.move_after("c", "a", 9))),
+        "? b\n: 2\n? c\n: 3\n? a\n: 9\n"
+    );
+    assert_eq!(
+        edit_root(source, |m| assert!(m.move_before("a", "c", 9))),
+        "? c\n: 9\n? a\n: 1\n? b\n: 2\n"
+    );
+    assert_eq!(
+        edit_root(source, |m| assert!(m.move_after("a", "c", 9))),
+        "? a\n: 1\n? c\n: 9\n? b\n: 2\n"
+    );
+    assert_eq!(
+        edit_root(source, |m| assert!(m.move_before("c", "a", 9))),
+        "? b\n: 2\n? a\n: 9\n? c\n: 3\n"
+    );
+}
+
+#[test]
+fn nested_explicit_key_entry_inserted_and_moved() {
+    let source = "outer:\n  ? a\n  : 1\n  ? c\n  : 3\nz: 0\n";
+    let edit_outer = |edit: &dyn Fn(&Mapping)| {
+        let file = YamlFile::from_str(source).unwrap();
+        let root = file.document().unwrap().as_mapping().unwrap();
+        edit(&root.get_mapping("outer").unwrap());
+        assert_parser_shaped(&file);
+        file.to_string()
+    };
+    assert_eq!(
+        edit_outer(&|m| assert!(m.insert_after("a", "b", 2))),
+        "outer:\n  ? a\n  : 1\n  ? b\n  : 2\n  ? c\n  : 3\nz: 0\n"
+    );
+    assert_eq!(
+        edit_outer(&|m| assert!(m.insert_after("c", "b", 2))),
+        "outer:\n  ? a\n  : 1\n  ? c\n  : 3\n  ? b\n  : 2\nz: 0\n"
+    );
+    assert_eq!(
+        edit_outer(&|m| assert!(m.insert_before("a", "b", 2))),
+        "outer:\n  ? b\n  : 2\n  ? a\n  : 1\n  ? c\n  : 3\nz: 0\n"
+    );
+    assert_eq!(
+        edit_outer(&|m| assert!(m.move_after("c", "a", 9))),
+        "outer:\n  ? c\n  : 3\n  ? a\n  : 9\nz: 0\n"
+    );
+    assert_eq!(
+        edit_outer(&|m| assert!(m.move_before("a", "c", 9))),
+        "outer:\n  ? c\n  : 9\n  ? a\n  : 1\nz: 0\n"
+    );
+}

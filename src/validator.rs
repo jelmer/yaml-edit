@@ -469,6 +469,7 @@ impl Validator {
                 self.check_flow_pair_placement(node, violations);
                 self.check_flow_continuation_indent(node, violations);
                 self.check_block_mapping_entries_on_same_line(node, violations);
+                self.check_block_mapping_after_properties(node, violations);
                 self.check_mapping_entry_indentation(node, violations);
                 if self.config.check_duplicate_keys {
                     self.check_duplicate_keys(node, violations);
@@ -486,7 +487,9 @@ impl Validator {
                 self.check_single_content_node(node, violations);
             }
             SyntaxKind::TAGGED_NODE => {
-                self.check_set_content(node, violations);
+                self.check_collection_tag_content(node, violations);
+                self.check_omap_keys(node, violations);
+                self.check_set_values(node, violations);
             }
             SyntaxKind::DOCUMENT => {
                 self.check_document_level_anchors(node, violations);
@@ -2196,17 +2199,59 @@ impl Validator {
         }
     }
 
-    /// Check that a `!!set` tags a mapping, whose keys are its members.
+    /// Check that a block mapping does not start on the line of its tag or
+    /// anchor, as in `!x ? a`.
     ///
-    /// `!!set` is a YAML 1.1 type rather than a YAML 1.2 one, so the wrong
+    /// Node properties of a block collection have to be followed by a line
+    /// break (`s-l+block-collection`). An implicit key on that line takes the
+    /// properties itself, so only an explicit key gets here.
+    fn check_block_mapping_after_properties(
+        &self,
+        node: &SyntaxNode,
+        violations: &mut Vec<Violation>,
+    ) {
+        if starts_a_flow_collection(node) {
+            return;
+        }
+        let mut prev = node.prev_sibling_or_token();
+        while let Some(rowan::NodeOrToken::Token(token)) = &prev {
+            if token.kind() != crate::SyntaxKind::WHITESPACE {
+                break;
+            }
+            prev = token.prev_sibling_or_token();
+        }
+        let Some(rowan::NodeOrToken::Token(property)) = prev else {
+            return;
+        };
+        if matches!(
+            property.kind(),
+            crate::SyntaxKind::TAG | crate::SyntaxKind::ANCHOR
+        ) {
+            violations.push(Violation::error_at(
+                Rule::Other,
+                node.text_range(),
+                "A block mapping cannot start on the line of its tag or anchor",
+            ));
+        }
+    }
+
+    /// Check that a `!!set` tags a mapping, whose keys are its members, and
+    /// a `!!omap` or `!!pairs` a sequence.
+    ///
+    /// These are YAML 1.1 types rather than YAML 1.2 ones, so the wrong
     /// content is only a warning.
-    fn check_set_content(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+    fn check_collection_tag_content(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         let Some(tagged) = crate::yaml::TaggedNode::cast(node.clone()) else {
             return;
         };
-        if tagged.tag().as_deref() != Some("!!set") || tagged.as_set().is_some() {
-            return;
-        }
+        let message = match tagged.tag().as_deref() {
+            Some("!!set") if tagged.as_set().is_none() => "!!set content is not a mapping",
+            Some("!!omap") if tagged.as_sequence().is_none() => "!!omap content is not a sequence",
+            Some("!!pairs") if tagged.as_sequence().is_none() => {
+                "!!pairs content is not a sequence"
+            }
+            _ => return,
+        };
         let Some(tag) = node
             .children_with_tokens()
             .filter_map(|c| c.into_token())
@@ -2217,8 +2262,98 @@ impl Validator {
         violations.push(Violation::warning_at(
             Rule::InvalidTag,
             tag.text_range(),
-            "!!set content is not a mapping",
+            message,
         ));
+    }
+
+    /// Check that the members of a `!!set` have null values.
+    ///
+    /// Like other content that does not suit a YAML 1.1 type, a value is
+    /// only a warning. An alias is not resolved here; the conversion to
+    /// `YamlValue` checks the node it refers to.
+    fn check_set_values(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        use crate::as_yaml::YamlNode;
+
+        let Some(mapping) = crate::yaml::TaggedNode::cast(node.clone())
+            .filter(|tagged| tagged.as_set().is_some())
+            .and_then(|tagged| tagged.as_mapping())
+        else {
+            return;
+        };
+        for entry in mapping.entries() {
+            let Some(value) = entry.value_node() else {
+                continue;
+            };
+            if matches!(value, YamlNode::Alias(_)) {
+                continue;
+            }
+            let is_null = crate::as_yaml::scalar_canonical(value.syntax())
+                .is_some_and(|(tag, _)| tag == "!!null");
+            if is_null {
+                continue;
+            }
+            let member = entry
+                .key_node()
+                .map_or_else(String::new, |key| key.to_string());
+            violations.push(Violation::warning_at(
+                Rule::InvalidTag,
+                value.syntax().text_range(),
+                format!(
+                    "!!set member {member:?} has non-null value {:?}",
+                    value.to_string()
+                ),
+            ));
+        }
+    }
+
+    /// Check that the items of a `!!omap` have distinct keys; a `!!pairs`
+    /// may repeat a key.
+    ///
+    /// Like other content that does not suit a YAML 1.1 type, a repeated
+    /// key is only a warning. An alias equals nothing here, as in
+    /// [`Self::check_duplicate_keys`].
+    fn check_omap_keys(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        use crate::SyntaxKind;
+
+        let Some(tagged) = crate::yaml::TaggedNode::cast(node.clone()) else {
+            return;
+        };
+        if tagged.tag().as_deref() != Some("!!omap") {
+            return;
+        }
+        let Some(sequence) = tagged.as_sequence() else {
+            return;
+        };
+        // The key of each item that is a mapping, `!!map` or untagged, and
+        // the range of its entry.
+        let keys = sequence.items().filter_map(|item| {
+            let mapping = match crate::yaml::TaggedNode::cast(item.clone()) {
+                Some(tagged) if tagged.tag().as_deref() == Some("!!map") => tagged.as_mapping()?,
+                Some(_) => return None,
+                None => crate::yaml::Mapping::cast(item)?,
+            };
+            let entry = mapping
+                .syntax()
+                .children()
+                .find(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)?;
+            let key = entry.children().find(|n| n.kind() == SyntaxKind::KEY)?;
+            Some((key, entry.text_range()))
+        });
+        let mut seen: Vec<SyntaxNode> = Vec::new();
+        for (key, range) in keys {
+            if let Some(first) = seen.iter().find(|k| crate::as_yaml::node_eq(k, &key)) {
+                violations.push(Violation::warning_at(
+                    Rule::DuplicateKeys,
+                    range,
+                    format!(
+                        "Duplicate !!omap key: {:?} (semantically equal to {:?})",
+                        key.text().to_string().trim(),
+                        first.text().to_string().trim()
+                    ),
+                ));
+            }
+            seen.push(key);
+        }
     }
 
     /// Check that implicit keys don't span multiple lines
@@ -3715,6 +3850,7 @@ mod tests {
             ("s: !!set [a, b]\n", "1:4"),
             ("- !!set\n  - a\n", "1:3"),
             ("s: !!set\nt: 1\n", "1:4"),
+            ("!!set\n", "1:1"),
         ] {
             let file = crate::YamlFile::from_str(yaml).unwrap();
             let violations: Vec<_> = Validator::new()
@@ -3734,6 +3870,221 @@ mod tests {
             );
         }
         for yaml in ["s: !!set {? a}\n", "s: !!set &x\n  ? a\n", "s: !!set {}\n"] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_block_mapping_after_properties() {
+        for (yaml, location) in [
+            ("!x ? a\n", "1:4"),
+            ("&a ? a\n", "1:4"),
+            ("k: !x &a ? a\n", "1:10"),
+            ("- !x ? a\n", "1:6"),
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.severity, v.rule))
+                .collect();
+            assert_eq!(
+                violations,
+                vec![(
+                    "A block mapping cannot start on the line of its tag or anchor".to_string(),
+                    Some(location.to_string()),
+                    Severity::Error,
+                    Rule::Other
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "!x\n? a\n",
+            "&a\n? a\n",
+            "!x a: 1\n",
+            "k: !x {? a}\n",
+            "- ? a\n",
+            "? &a a\n",
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_pairs_content_must_be_sequence() {
+        for (yaml, location, message) in [
+            (
+                "o: !!omap {a: 1}\n",
+                "1:4",
+                "!!omap content is not a sequence",
+            ),
+            (
+                "- !!pairs\n  a: 1\n",
+                "1:3",
+                "!!pairs content is not a sequence",
+            ),
+            (
+                "o: !!omap\n  3\n",
+                "1:4",
+                "!!omap content is not a sequence",
+            ),
+            (
+                "- !!omap\n- a: 1\n",
+                "1:3",
+                "!!omap content is not a sequence",
+            ),
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.severity, v.rule))
+                .collect();
+            assert_eq!(
+                violations,
+                vec![(
+                    message.to_string(),
+                    Some(location.to_string()),
+                    Severity::Warning,
+                    Rule::InvalidTag
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "o: !!omap [a: 1]\n",
+            "o: !!pairs &x\n  - a: 1\n  - a: 2\n",
+            "o: !!omap []\n",
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_repeated_omap_key() {
+        for (yaml, message, location) in [
+            (
+                "o: !!omap [a: 1, a: 2]\n",
+                "Duplicate !!omap key: \"a\" (semantically equal to \"a\")",
+                "1:18",
+            ),
+            (
+                "o: !!omap\n- 16: a\n- b: 2\n- 0x10: c\n",
+                "Duplicate !!omap key: \"0x10\" (semantically equal to \"16\")",
+                "4:3",
+            ),
+            (
+                "o: !!omap [!!map {a: 1}, a: 2]\n",
+                "Duplicate !!omap key: \"a\" (semantically equal to \"a\")",
+                "1:26",
+            ),
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.severity, v.rule))
+                .collect();
+            assert_eq!(
+                violations,
+                vec![(
+                    message.to_string(),
+                    Some(location.to_string()),
+                    Severity::Warning,
+                    Rule::DuplicateKeys
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "o: !!omap [a: 1, b: 2]\n",
+            "o: !!omap [1: a, '1': b]\n",
+            "o: !!pairs [a: 1, a: 2]\n",
+            "o: [a: 1, a: 2]\n",
+            "o: !!omap [!x {a: 1}, a: 2]\n",
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
+        // A repeated !!set member is a repeated mapping key.
+        let file = crate::YamlFile::from_str("s: !!set {? a, ? a}\n").unwrap();
+        let violations: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| (v.message, v.location, v.severity, v.rule))
+            .collect();
+        assert_eq!(
+            violations,
+            vec![(
+                "Duplicate key: \"? a\" (semantically equal to \"? a\")".to_string(),
+                Some("1:16".to_string()),
+                Severity::Error,
+                Rule::DuplicateKeys
+            )]
+        );
+    }
+
+    #[test]
+    fn test_set_values_must_be_null() {
+        for (yaml, message, location) in [
+            (
+                "s: !!set {a: 1}\n",
+                "!!set member \"a\" has non-null value \"1\"",
+                "1:14",
+            ),
+            (
+                "s: !!set\n  a: [x]\n  b:\n",
+                "!!set member \"a\" has non-null value \"[x]\"",
+                "2:6",
+            ),
+            (
+                "s: !!set\n  ? a\n  : x\n",
+                "!!set member \"a\" has non-null value \"x\"",
+                "3:5",
+            ),
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.severity, v.rule))
+                .collect();
+            assert_eq!(
+                violations,
+                vec![(
+                    message.to_string(),
+                    Some(location.to_string()),
+                    Severity::Warning,
+                    Rule::InvalidTag
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "s: !!set {a: null, b: ~, ? c, d}\n",
+            "s: !!set\n  a:\n  ? b\n  c: !!null\n",
+            "n: &n ~\ns: !!set {a: *n}\n",
+        ] {
             let file = crate::YamlFile::from_str(yaml).unwrap();
             assert_eq!(
                 Validator::new().validate_syntax(file.syntax()),

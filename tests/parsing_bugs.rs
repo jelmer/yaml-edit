@@ -1973,20 +1973,48 @@ fn test_blank_line_before_an_indentless_sequence() {
     }
 }
 
-/// `!!omap`, `!!pairs` and `!!set` name a collection, so a plain scalar on
-/// the tag's own line cannot be their content.
+/// A plain scalar tagged `!!omap`, `!!pairs` or `!!set` parses as a tagged
+/// scalar, as with any other tag; the validator reports that it is not the
+/// collection the tag names. A block mapping cannot start on its tag's line.
 ///
-/// saphyr calls `!!omap 3` a bad value. The collection parser found nothing
-/// to take, leaving an empty node, and the scalar was dropped into an ERROR
-/// node with no error reported at all.
+/// The collection parser found nothing to take, leaving an empty node, and
+/// the scalar was dropped into an ERROR node with no error reported at all.
+/// A scalar on the tag's own line was then made a parse error, while one on
+/// the next line (`!!omap\n  3\n`) parsed without one.
 #[test]
-fn test_collection_tag_on_a_scalar_is_reported() {
-    for yaml in ["!!omap 3", "!!pairs a", "!!set x"] {
-        let err = YamlFile::from_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("requires a collection"),
-            "{yaml:?} -> {err}"
+fn test_collection_tag_on_a_scalar() {
+    use rowan::ast::AstNode;
+    use yaml_edit::validator::Validator;
+
+    for (tag, yaml, message) in [
+        ("!!omap", "!!omap 3", "!!omap content is not a sequence"),
+        ("!!pairs", "!!pairs a", "!!pairs content is not a sequence"),
+        ("!!set", "!!set x", "!!set content is not a mapping"),
+        (
+            "!!omap",
+            "!!omap\n  3\n",
+            "!!omap content is not a sequence",
+        ),
+        (
+            "!!set",
+            "!!set ? a\n",
+            "A block mapping cannot start on the line of its tag or anchor",
+        ),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let plain = YamlFile::from_str(&yaml.replace(tag, "!x")).unwrap();
+        assert_eq!(
+            yaml_edit::debug::tree_to_string(file.syntax()).replace(tag, "!x"),
+            yaml_edit::debug::tree_to_string(plain.syntax()),
+            "{yaml:?}"
         );
+        let violations: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| v.message)
+            .collect();
+        assert_eq!(violations, [message], "{yaml:?}");
     }
 }
 
@@ -4759,12 +4787,13 @@ fn test_collection_tag_on_other_collection_shape() {
             "{yaml:?}"
         );
     }
-    // With no content after the line break, the tag's own shape stands.
+    // With no content after the line break, the tag annotates an empty
+    // node, as any other tag does.
     for (yaml, expected) in [
-        ("!!omap\n", "SEQUENCE"),
-        ("!!pairs\n# c\n", "SEQUENCE"),
-        ("!!omap\n...\n", "SEQUENCE"),
-        ("!!set\n", "MAPPING"),
+        ("!!omap\n", "SCALAR"),
+        ("!!pairs\n# c\n", "SCALAR"),
+        ("!!omap\n...\n", "SCALAR"),
+        ("!!set\n", "SCALAR"),
     ] {
         let file = YamlFile::from_str(yaml).unwrap();
         let tagged = file
@@ -4779,9 +4808,27 @@ fn test_collection_tag_on_other_collection_shape() {
         assert_eq!(content, [expected], "{yaml:?}");
     }
     // Nor does a sibling entry become the body.
-    let file = YamlFile::from_str("- !!set\n- b\n").unwrap();
-    let sequence = file.document().unwrap().as_sequence().unwrap();
-    assert_eq!(sequence.len(), 2);
+    for yaml in [
+        "- !!set\n- b\n",
+        "- !!omap\n- a: 1\n",
+        "- !!pairs\n- a: 1\n",
+        "- !!omap &o\n- a: 1\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let sequence = file.document().unwrap().as_sequence().unwrap();
+        assert_eq!(sequence.len(), 2, "{yaml:?}");
+        let first = sequence.get(0).unwrap();
+        let tagged = first.as_tagged().unwrap();
+        assert_eq!(
+            tagged
+                .syntax()
+                .children()
+                .map(|n| n.kind())
+                .collect::<Vec<_>>(),
+            [yaml_edit::SyntaxKind::SCALAR],
+            "{yaml:?}"
+        );
+    }
     // A block mapping in the value position still has to nest under its
     // key; at the key's column its entries are siblings.
     for yaml in [
@@ -4799,5 +4846,37 @@ a: 1
         let mapping = file.document().unwrap().as_mapping().unwrap();
         let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
         assert_eq!(keys, ["k", "a"], "{yaml:?}");
+    }
+}
+
+/// A tagged flow collection is an implicit key like an untagged one,
+/// whatever the tag.
+#[test]
+fn test_tagged_flow_collection_as_implicit_key() {
+    use rowan::ast::AstNode;
+
+    for yaml in [
+        "!!set {a}: 1\n",
+        "!!omap [a: 1]: 1\n",
+        "!!seq [a]: 1\n",
+        "k:\n  !!set {a}: 1\n",
+        "- !!pairs [a: 1]: 1\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = yaml_edit::debug::tree_to_string(file.syntax());
+        assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+        let key = file
+            .syntax()
+            .descendants()
+            .find(|n| {
+                n.kind() == yaml_edit::SyntaxKind::KEY && n.text().to_string().starts_with("!!")
+            })
+            .unwrap();
+        assert_eq!(
+            key.children().map(|n| n.kind()).collect::<Vec<_>>(),
+            [yaml_edit::SyntaxKind::TAGGED_NODE],
+            "{yaml:?}"
+        );
     }
 }

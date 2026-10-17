@@ -80,7 +80,9 @@ pub enum ResolveError {
     },
     /// A mapping has two equal keys, such as `a` and `'a'`, or a key and
     /// an alias to an equal node, so it cannot keep both values. A direct
-    /// key shadowing a key from a merge key (`<<`) is not a duplicate.
+    /// key shadowing a key from a merge key (`<<`) is not a duplicate. The
+    /// members of a `!!set` and the keys of a `!!omap` have to be distinct
+    /// too.
     DuplicateKey {
         /// The source text of the key that was seen first.
         first: String,
@@ -89,7 +91,8 @@ pub enum ResolveError {
     },
     /// Two distinct keys of a mapping have the same string form, such as
     /// the int `1` and the string `'1'`, so they cannot both be kept in a
-    /// [`YamlValue::Mapping`].
+    /// [`YamlValue::Mapping`]. The same goes for the members of a
+    /// [`YamlValue::Set`] and the keys of a [`YamlValue::OrderedMapping`].
     KeyCollision {
         /// The source text of the key that was seen first.
         first: String,
@@ -122,6 +125,14 @@ pub enum ResolveError {
         tag: String,
         /// The source text of the item.
         item: String,
+    },
+    /// The content of a `!!omap` or `!!pairs` is not a sequence, so it has
+    /// no entries.
+    InvalidPairsContent {
+        /// The tag, `!!omap` or `!!pairs`.
+        tag: String,
+        /// The source text of the content.
+        content: String,
     },
     /// [`YamlValue::cast`] met an alias, which it cannot resolve without
     /// the document's anchors. [`YamlValue::from_document`] and
@@ -167,6 +178,9 @@ impl std::fmt::Display for ResolveError {
                     f,
                     "{tag} item {item:?} is not a mapping with a single entry"
                 )
+            }
+            ResolveError::InvalidPairsContent { tag, content } => {
+                write!(f, "{tag} content {content:?} is not a sequence")
             }
             ResolveError::UnresolvedAlias { alias } => {
                 write!(
@@ -535,6 +549,7 @@ fn resolved_tagged(
             }
         }
         let mut members = std::collections::BTreeSet::new();
+        let mut seen = Vec::new();
         for member in set.members() {
             let Some(YamlValue::Scalar(s)) = resolved_value(member.clone(), registry, expanding)?
             else {
@@ -542,18 +557,31 @@ fn resolved_tagged(
                     member: member.to_string(),
                 });
             };
+            record_unique_key(&mut seen, member, s.value().to_string(), registry)?;
             members.insert(s.value().to_string());
         }
         return Ok(Some(YamlValue::Set(members)));
     }
-    if tagged.tag().as_deref() == Some("!!set") {
-        return Err(ResolveError::InvalidSetContent {
-            content: tagged
-                .syntax()
-                .children()
-                .next()
-                .map_or_else(String::new, |content| content.to_string()),
-        });
+    let content_text = || {
+        tagged
+            .syntax()
+            .children()
+            .next()
+            .map_or_else(String::new, |content| content.to_string())
+    };
+    match tagged.tag().as_deref() {
+        Some("!!set") => {
+            return Err(ResolveError::InvalidSetContent {
+                content: content_text(),
+            })
+        }
+        Some(tag @ ("!!omap" | "!!pairs")) if tagged.as_sequence().is_none() => {
+            return Err(ResolveError::InvalidPairsContent {
+                tag: tag.to_string(),
+                content: content_text(),
+            })
+        }
+        _ => {}
     }
     let content = tagged
         .as_mapping()
@@ -585,6 +613,7 @@ fn resolved_pairs(
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<Vec<(String, YamlValue)>, ResolveError> {
     let mut pairs = Vec::new();
+    let mut seen = Vec::new();
     for item in seq.values() {
         let entries = match resolved_value(item.clone(), registry, expanding)? {
             Some(YamlValue::Mapping(entries)) => Some(entries),
@@ -599,9 +628,78 @@ fn resolved_pairs(
             tag: tag.to_string(),
             item: item.to_string(),
         })?;
+        if tag == "!!omap" {
+            let key = pair_key(tag, &item, registry)?;
+            // The item's one key.
+            for key_str in entries.keys() {
+                record_unique_key(&mut seen, key.clone(), key_str.clone(), registry)?;
+            }
+        }
         pairs.extend(entries);
     }
     Ok(pairs)
+}
+
+/// The key of `item`, a `!!omap` or `!!pairs` item that converts to a
+/// mapping with a single entry, as written.
+fn pair_key(
+    tag: &str,
+    item: &crate::as_yaml::YamlNode,
+    registry: Option<&AnchorRegistry>,
+) -> Result<crate::as_yaml::YamlNode, ResolveError> {
+    use crate::as_yaml::YamlNode;
+
+    let invalid = || ResolveError::InvalidPairsItem {
+        tag: tag.to_string(),
+        item: item.to_string(),
+    };
+    let resolved = match registry {
+        Some(registry) => resolve_alias_node(item.clone(), registry)?,
+        None => item.clone(),
+    };
+    let mapping = match resolved {
+        YamlNode::Mapping(mapping) => mapping,
+        YamlNode::TaggedNode(tagged) => tagged.as_mapping().ok_or_else(invalid)?,
+        _ => return Err(invalid()),
+    };
+    let key = match registry {
+        Some(registry) => MergedMapping::new(mapping, registry)?.keys().next(),
+        None => mapping.keys().next(),
+    };
+    key.ok_or_else(invalid)
+}
+
+/// Add `key`, as written, with string form `key_str`, to the `seen` keys
+/// of one mapping, `!!set` or `!!omap`, as (resolved key, string form, key
+/// as written).
+///
+/// A key equal to one seen before is a [`ResolveError::DuplicateKey`], and
+/// a distinct key with the same string form a
+/// [`ResolveError::KeyCollision`], as in [`apply_merge_keys`].
+fn record_unique_key(
+    seen: &mut Vec<(crate::as_yaml::YamlNode, String, crate::as_yaml::YamlNode)>,
+    key: crate::as_yaml::YamlNode,
+    key_str: String,
+    registry: Option<&AnchorRegistry>,
+) -> Result<(), ResolveError> {
+    let resolved = match registry {
+        Some(registry) => resolve_alias_node(key.clone(), registry)?,
+        None => key.clone(),
+    };
+    if let Some((_, _, first)) = seen.iter().find(|(k, _, _)| k.yaml_eq(&resolved)) {
+        return Err(ResolveError::DuplicateKey {
+            first: first.to_string(),
+            second: key.to_string(),
+        });
+    }
+    if let Some((_, _, first)) = seen.iter().find(|(_, s, _)| *s == key_str) {
+        return Err(ResolveError::KeyCollision {
+            first: first.to_string(),
+            second: key.to_string(),
+        });
+    }
+    seen.push((resolved, key_str, key));
+    Ok(())
 }
 
 /// A view over a [`Mapping`](crate::yaml::Mapping) that transparently expands
@@ -1916,6 +2014,79 @@ m:
                 "{yaml:?}"
             );
         }
+    }
+
+    #[test]
+    fn get_resolved_pairs_content_must_be_sequence() {
+        for (yaml, tag, content) in [
+            ("m: !!omap {a: 1}\n", "!!omap", "{a: 1}"),
+            ("m: !!pairs &p {a: 1}\n", "!!pairs", "{a: 1}"),
+            ("m: !!omap\n  a: 1\n", "!!omap", "a: 1\n"),
+            ("m: !!pairs\n  3\n", "!!pairs", "3"),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Err(ResolveError::InvalidPairsContent {
+                    tag: tag.to_string(),
+                    content: content.to_string()
+                }),
+                "{yaml:?}"
+            );
+        }
+        assert_eq!(
+            ResolveError::InvalidPairsContent {
+                tag: "!!omap".to_string(),
+                content: "{a: 1}".to_string()
+            }
+            .to_string(),
+            "!!omap content \"{a: 1}\" is not a sequence"
+        );
+    }
+
+    #[test]
+    fn get_resolved_repeated_set_member_or_omap_key() {
+        for (yaml, first, second) in [
+            ("m: !!set {? a, ? a}\n", "a", "a"),
+            ("m: !!set\n  ? a\n  ? b\n  ? 'a'\n", "a", "'a'"),
+            ("m: !!set {? 16, ? 0x10}\n", "16", "0x10"),
+            ("x: &k a\nm: !!set {? a, ? *k}\n", "a", "*k"),
+            ("m: !!omap [a: 1, a: 2]\n", "a", "a"),
+            ("m: !!omap\n  - a: 1\n  - b: 2\n  - 'a': 3\n", "a", "'a'"),
+            ("m: !!omap [16: a, 0x10: b]\n", "16", "0x10"),
+            ("x: &k a\nm: !!omap [a: 1, *k : 2]\n", "a", "*k"),
+            ("e: &e {a: 1}\nm: !!omap [*e, a: 2]\n", "a", "a"),
+            ("e: &e {a: 1}\nm: !!omap [{<<: *e}, a: 2]\n", "a", "a"),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Err(ResolveError::DuplicateKey {
+                    first: first.to_string(),
+                    second: second.to_string()
+                }),
+                "{yaml:?}"
+            );
+        }
+        for (yaml, first, second) in [
+            ("m: !!set {? 1, ? '1'}\n", "1", "'1'"),
+            ("m: !!omap [1: a, '1': b]\n", "1", "'1'"),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Err(ResolveError::KeyCollision {
+                    first: first.to_string(),
+                    second: second.to_string()
+                }),
+                "{yaml:?}"
+            );
+        }
+        // !!pairs allows a key to repeat.
+        assert_eq!(
+            doc("m: !!pairs [a: 1, a: 2]\n").get_resolved("m"),
+            Ok(Some(YamlValue::Pairs(pair_list(vec![
+                ("a", YamlValue::from(1)),
+                ("a", YamlValue::from(2))
+            ]))))
+        );
     }
 
     #[test]

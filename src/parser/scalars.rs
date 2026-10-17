@@ -336,70 +336,61 @@ impl Parser {
     /// As `parse_tagged_value`, for a tag in the value position of a block
     /// mapping entry.
     ///
-    /// A block mapping cannot be an indentless value, so a `!!set` whose
-    /// entries sit at the key's own column annotates an implicit null and
-    /// those entries stay siblings of the key.
+    /// A block mapping cannot be an indentless value, so a tag followed by
+    /// entries at the key's own column annotates an implicit null and those
+    /// entries stay siblings of the key.
     pub(super) fn parse_tagged_value_as_mapping_value(&mut self, base_indent: usize) {
         self.parse_tagged_value_inner(base_indent, true)
     }
 
     fn parse_tagged_value_inner(&mut self, base_indent: usize, as_mapping_value: bool) {
-        // Peek at the tag to determine what kind of collection to parse
-        let tag_text = self.peek_tag_text();
+        // The content's own shape decides how it parses, whatever the tag
+        // names, even for `!!set`, `!!omap` and `!!pairs`: the validator
+        // reports content that does not suit the tag.
+        self.builder.start_node(SyntaxKind::TAGGED_NODE.into());
+        self.bump(); // TAG token
 
-        match tag_text {
-            Some("!!set") => self.parse_tagged_collection(true, base_indent, as_mapping_value),
-            Some("!!omap" | "!!pairs") => {
-                self.parse_tagged_collection(false, base_indent, as_mapping_value)
-            }
-            _ => {
-                // Default tagged value behavior - tags can be applied to scalars, mappings, or sequences
-                self.builder.start_node(SyntaxKind::TAGGED_NODE.into());
-                self.bump(); // TAG token
-
-                // An empty node leaves the whitespace after the tag to the
-                // enclosing flow collection, like any other flow node.
-                let empty_flow_node = self.annotates_empty_flow_node();
-                if !empty_flow_node {
-                    while matches!(self.current(), Some(SyntaxKind::WHITESPACE)) {
-                        self.bump();
-                    }
-                }
-
-                match self.tagged_block_node_indent(base_indent, as_mapping_value) {
-                    _ if empty_flow_node => self.emit_implicit_null(),
-                    Some(indent) => {
-                        // The tag is alone on its line and annotates a block
-                        // node starting on a later line. parse_value's NEWLINE
-                        // arm only nests when an INDENT follows the line break
-                        // directly, so step over any blank and comment-only
-                        // lines and parse the node here, inside this
-                        // TAGGED_NODE.
-                        // An anchor between the tag and the line break
-                        // annotates the same node; keep it in the TAGGED_NODE.
-                        if self.current() == Some(SyntaxKind::ANCHOR) {
-                            self.bump();
-                        }
-                        self.parse_tagged_block_body(indent, base_indent);
-                    }
-                    None if self.annotation_ends_line() => self.emit_annotated_null(),
-                    // Scalar, flow collection, or nothing that belongs to this
-                    // tag: the ordinary value path already handles it. Keep
-                    // our own base indent, and tell a trailing anchor
-                    // (`k: !!str &a`) which position we are in, so it asks
-                    // the same attachment question we just answered and
-                    // leaves a dedented sibling entry alone.
-                    None => {
-                        let outer = self.annotation_in_value_position;
-                        self.annotation_in_value_position = as_mapping_value;
-                        self.parse_value_with_base_indent(base_indent);
-                        self.annotation_in_value_position = outer;
-                    }
-                }
-
-                self.builder.finish_node();
+        // An empty node leaves the whitespace after the tag to the
+        // enclosing flow collection, like any other flow node.
+        let empty_flow_node = self.annotates_empty_flow_node();
+        if !empty_flow_node {
+            while matches!(self.current(), Some(SyntaxKind::WHITESPACE)) {
+                self.bump();
             }
         }
+
+        match self.tagged_block_node_indent(base_indent, as_mapping_value) {
+            _ if empty_flow_node => self.emit_implicit_null(),
+            Some(indent) => {
+                // The tag is alone on its line and annotates a block
+                // node starting on a later line. parse_value's NEWLINE
+                // arm only nests when an INDENT follows the line break
+                // directly, so step over any blank and comment-only
+                // lines and parse the node here, inside this
+                // TAGGED_NODE.
+                // An anchor between the tag and the line break
+                // annotates the same node; keep it in the TAGGED_NODE.
+                if self.current() == Some(SyntaxKind::ANCHOR) {
+                    self.bump();
+                }
+                self.parse_tagged_block_body(indent, base_indent);
+            }
+            None if self.annotation_ends_line() => self.emit_annotated_null(),
+            // Scalar, flow collection, or nothing that belongs to this
+            // tag: the ordinary value path already handles it. Keep
+            // our own base indent, and tell a trailing anchor
+            // (`k: !!str &a`) which position we are in, so it asks
+            // the same attachment question we just answered and
+            // leaves a dedented sibling entry alone.
+            None => {
+                let outer = self.annotation_in_value_position;
+                self.annotation_in_value_position = as_mapping_value;
+                self.parse_value_with_base_indent(base_indent);
+                self.annotation_in_value_position = outer;
+            }
+        }
+
+        self.builder.finish_node();
     }
 
     /// Indent of the block node a lone tag annotates, if it starts on a
@@ -536,111 +527,6 @@ impl Parser {
             self.parse_value_with_base_indent(indent);
             self.scalar_continuation_floor = outer_floor;
         }
-    }
-
-    fn peek_tag_text(&self) -> Option<&str> {
-        self.tokens
-            .last()
-            .filter(|(kind, _)| *kind == SyntaxKind::TAG)
-            .map(|(_, text)| text.as_str())
-    }
-
-    /// `is_mapping` is the shape the tag names, used for content on the
-    /// tag's own line that is neither a flow collection nor a line break.
-    fn parse_tagged_collection(
-        &mut self,
-        is_mapping: bool,
-        base_indent: usize,
-        as_mapping_value: bool,
-    ) {
-        // A block mapping only nests under its key, so an entry at
-        // base_indent belongs to the enclosing mapping, not to this tag.
-        let min_mapping_indent = as_mapping_value.then_some(base_indent);
-        self.builder.start_node(SyntaxKind::TAGGED_NODE.into());
-
-        // Read the tag's text before bumping past it, for the error below.
-        let tag_text = self.peek_tag_text().unwrap_or("tag").to_string();
-
-        // Consume the tag
-        self.bump(); // TAG token
-
-        // Skip any whitespace after the tag
-        while matches!(self.current(), Some(SyntaxKind::WHITESPACE)) {
-            self.bump();
-        }
-
-        // An anchor between the tag and the line break annotates the same
-        // node; keep it in the TAGGED_NODE. Without this the ANCHOR falls
-        // through to the catch-all arm below, which parses the collection as
-        // if it started on the tag's own line and swallows the next sibling
-        // entry.
-        if self.current() == Some(SyntaxKind::ANCHOR) {
-            self.bump();
-            while matches!(self.current(), Some(SyntaxKind::WHITESPACE)) {
-                self.bump();
-            }
-        }
-
-        // The content's own shape decides how it parses, as for any other
-        // tag, even where it does not suit the tag: the validator reports
-        // that.
-        if let Some(indent) = self.tagged_block_node_indent(base_indent, as_mapping_value) {
-            self.parse_tagged_block_body(indent, base_indent);
-        } else {
-            match self.current() {
-                Some(SyntaxKind::LEFT_BRACE) => self.parse_flow_mapping(),
-                Some(SyntaxKind::LEFT_BRACKET) => self.parse_flow_sequence(),
-                Some(SyntaxKind::NEWLINE) => {
-                    self.bump(); // consume newline
-                                 // Check if next token is indent (for indented content)
-                    if self.current() == Some(SyntaxKind::INDENT) {
-                        self.bump(); // consume indent
-                    }
-                    // Anchor the inner block on the indent we just
-                    // consumed so a column-0 sibling entry dedents out of
-                    // this tagged collection instead of being absorbed.
-                    let inner_base = self.current_line_indent;
-                    // TODO: a `!!omap` or `!!pairs` with no body absorbs a
-                    // sibling entry at its own column, as in
-                    // `- !!omap\n- a: 1\n`.
-                    if is_mapping {
-                        if min_mapping_indent.is_some_and(|min| inner_base <= min) {
-                            // The entries are siblings of our own key, so this tag
-                            // annotates an implicit null and they stay outside.
-                            self.emit_implicit_null();
-                        } else {
-                            self.parse_mapping_with_base_indent(inner_base);
-                        }
-                    } else {
-                        self.parse_sequence_with_base_indent(inner_base);
-                    }
-                }
-                _ => {
-                    // These tags name a collection, so a plain scalar on the
-                    // tag's own line cannot be their content: the collection
-                    // parser below finds nothing to take and the scalar is left
-                    // with nowhere to go. saphyr calls `!!omap 3` a bad value;
-                    // say so rather than dropping the scalar into an ERROR node
-                    // with no error reported.
-                    if self.current().is_some_and(|kind| {
-                        is_plain_scalar_kind(kind) || kind == SyntaxKind::QUESTION
-                    }) {
-                        self.add_error(
-                            format!("{tag_text} requires a collection, found a scalar"),
-                            ParseErrorKind::Other,
-                        );
-                    }
-                    let inner_base = self.current_line_indent;
-                    if is_mapping {
-                        self.parse_mapping_with_base_indent(inner_base);
-                    } else {
-                        self.parse_sequence_with_base_indent(inner_base);
-                    }
-                }
-            }
-        }
-
-        self.builder.finish_node();
     }
 
     pub(super) fn parse_literal_block_scalar(&mut self) {

@@ -155,6 +155,8 @@ fn numbers_in_both_versions_are_left_alone() {
         "a: 0\n",
         "a: -12\n",
         "a: 0x1F\n",
+        "a: 0x89\n",
+        "a: 0x9\n",
         "a: 1.5\n",
         "a: .5\n",
         "a: 1.\n",

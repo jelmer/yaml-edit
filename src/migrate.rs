@@ -152,7 +152,7 @@ fn yaml_1_1_string(text: &str) -> bool {
     match ScalarValue::classify_plain(text) {
         CoreScalarType::Integer => {
             let body = text.strip_prefix(['+', '-']).unwrap_or(text);
-            body.starts_with("0o") || (body.starts_with('0') && body.contains(['8', '9']))
+            body.starts_with("0o") || ScalarValue::is_leading_zero_decimal(text)
         }
         CoreScalarType::Float => text
             .find(['e', 'E'])

@@ -478,8 +478,12 @@ impl Validator {
                 self.check_flow_collection_commas(node, violations);
                 self.check_flow_continuation_indent(node, violations);
             }
+            SyntaxKind::KEY => {
+                self.check_single_content_node(node, violations);
+            }
             SyntaxKind::VALUE => {
                 self.check_anchor_and_alias(node, violations);
+                self.check_single_content_node(node, violations);
             }
             SyntaxKind::TAGGED_NODE => {
                 self.check_set_content(node, violations);
@@ -1532,6 +1536,42 @@ impl Validator {
                 "Mapping without braces can only be a flow sequence entry",
             ));
         }
+    }
+
+    /// Check that a KEY or VALUE holds exactly one node.
+    ///
+    /// In `? a\n 5b: 1\n` the more indented line would continue the plain
+    /// scalar `a`, which then could not be an implicit key spanning lines;
+    /// the parser keeps the mapping as a second node of the key instead.
+    fn check_single_content_node(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        use crate::SyntaxKind;
+
+        let Some(extra) = node
+            .children()
+            .filter(|c| {
+                matches!(
+                    c.kind(),
+                    SyntaxKind::SCALAR
+                        | SyntaxKind::MAPPING
+                        | SyntaxKind::SEQUENCE
+                        | SyntaxKind::TAGGED_NODE
+                        | SyntaxKind::ALIAS
+                )
+            })
+            .nth(1)
+        else {
+            return;
+        };
+        let what = if node.kind() == SyntaxKind::KEY {
+            "Key"
+        } else {
+            "Value"
+        };
+        violations.push(Violation::error_at(
+            Rule::Other,
+            extra.text_range(),
+            format!("{what} holds more than one node"),
+        ));
     }
 
     /// Check for multiple mapping entries on the same line in block mappings
@@ -3424,6 +3464,38 @@ mod tests {
             "[[? a: b]]\n",
             "{? a}\n",
             "[? a\n? b]\n",
+        ] {
+            assert_eq!(located(yaml), vec![], "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn test_key_holds_one_node() {
+        for (yaml, location) in [
+            ("? a\n 5b: 1\n", "2:2"),
+            ("? a\n  5b: 1\n", "2:3"),
+            ("? !t a\n 5b: 1\n", "2:2"),
+            ("? [a]\n 5b: 1\n", "2:2"),
+            ("- ? a\n   5b: 1\n", "2:4"),
+        ] {
+            assert_eq!(
+                located(yaml),
+                vec![(
+                    "Key holds more than one node".to_string(),
+                    location.to_string()
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "? a5\n",
+            "? a\n5b: 1\n",
+            "? a\n:5b: 1\n",
+            "? a\n  b\n",
+            "? &x\n  5b: 1\n",
+            "? !t\n  5b: 1\n",
+            "x:\n  ? a\n  5b: 1\n",
+            "- ? a\n  5b: 1\n",
         ] {
             assert_eq!(located(yaml), vec![], "{yaml:?}");
         }

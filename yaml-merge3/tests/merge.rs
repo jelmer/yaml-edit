@@ -666,3 +666,89 @@ fn keys_added_at_the_same_place_ours_first_in_theirs_order() {
         "b: 1\na: 1\nx: 1\ny: 1\nz: 1\n"
     );
 }
+
+#[test]
+fn list_item_comment_change_is_kept() {
+    assert_eq!(
+        clean(
+            "images:\n  - nginx:1.25  # pinned\n",
+            "images:\n  - nginx:1.27  # pinned\n",
+            "images:\n  - nginx:1.25  # pinned until #42 is fixed\n"
+        ),
+        "images:\n  - nginx:1.27  # pinned until #42 is fixed\n"
+    );
+}
+
+#[test]
+fn list_item_reformatting_is_kept() {
+    assert_eq!(
+        clean(
+            "l:\n  - a\n  - b\n",
+            "l:\n  - a\n  - c\n",
+            "l:\n  - 'a'\n  - b\n"
+        ),
+        "l:\n  - 'a'\n  - c\n"
+    );
+}
+
+#[test]
+fn flow_item_reformatting_is_kept() {
+    assert_eq!(
+        clean("l: [a, b]\n", "l: [a, c]\n", "l: ['a', b]\n"),
+        "l: ['a', c]\n"
+    );
+}
+
+#[test]
+fn value_and_comment_on_the_same_line() {
+    assert_eq!(
+        clean(
+            "replicas: 2  # one per zone\n",
+            "replicas: 3  # one per zone\n",
+            "replicas: 2  # one per zone, see RUNBOOK.md\n"
+        ),
+        "replicas: 3  # one per zone, see RUNBOOK.md\n"
+    );
+}
+
+#[test]
+fn key_and_value_on_the_same_line() {
+    assert_eq!(
+        clean("name: web\n", "\"name\": web\n", "name: api\n"),
+        "\"name\": api\n"
+    );
+}
+
+#[test]
+fn respelled_value_and_comment_on_the_same_line() {
+    assert_eq!(
+        clean("a: x  # c\n", "a: 'x'  # c\n", "a: x  # d\n"),
+        "a: 'x'  # d\n"
+    );
+}
+
+#[test]
+fn value_respelled_on_one_side_changed_on_the_other() {
+    assert_eq!(
+        clean("a: x  # c\n", "a: 'x'  # c\n", "a: y  # c\n"),
+        "a: y  # c\n"
+    );
+}
+
+#[test]
+fn same_line_value_conflict() {
+    let (text, paths) = conflicted("a: 1  # c\n", "a: 2  # c\n", "a: 3  # d\n");
+    assert_eq!(
+        text,
+        "<<<<<<<\na: 2  # c\n|||||||\na: 1  # c\n=======\na: 3  # d\n>>>>>>>\n"
+    );
+    assert_eq!(paths, vec![path(&["a"])]);
+}
+
+#[test]
+fn flow_entry_key_and_value() {
+    assert_eq!(
+        clean("{a: 1, b: 2}\n", "{\"a\": 1, b: 2}\n", "{a: 10, b: 2}\n"),
+        "{\"a\": 10, b: 2}\n"
+    );
+}

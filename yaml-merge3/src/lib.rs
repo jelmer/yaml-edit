@@ -173,9 +173,12 @@ impl Hash for Value {
     }
 }
 
-/// Something holding a value that sequences are matched on.
+/// A mapping entry or sequence item, with the value it is matched on.
 trait HasValue {
     fn value(&self) -> &Option<Value>;
+
+    /// The text of the entry or item itself, without trivia around it.
+    fn span(&self) -> Range<usize>;
 }
 
 fn same_values<T: HasValue>(a: &[T], b: &[T]) -> bool {
@@ -233,6 +236,10 @@ impl Segment {
 impl HasValue for Segment {
     fn value(&self) -> &Option<Value> {
         &self.value
+    }
+
+    fn span(&self) -> Range<usize> {
+        self.body.clone()
     }
 }
 
@@ -356,6 +363,10 @@ struct FlowItem {
 impl HasValue for FlowItem {
     fn value(&self) -> &Option<Value> {
         &self.value
+    }
+
+    fn span(&self) -> Range<usize> {
+        self.range.clone()
     }
 }
 
@@ -1080,6 +1091,18 @@ impl<'a> Merger<'a> {
         first: usize,
         shift: Shift,
     ) -> String {
+        // Items changed in place, by one side or both. Merged one by one,
+        // so that changes to comments or spelling are kept as well.
+        if o.len() == b.len() && t.len() == b.len() {
+            let mut pieces = Vec::new();
+            for (i, ((b, o), t)) in b.iter().zip(o).zip(t).enumerate() {
+                self.path.push(format!("[{}]", first + i));
+                pieces.push(self.merge_entry(Some(b), o, t, shift, Kind::Sequence));
+                self.path.pop();
+            }
+            return join(pieces, false);
+        }
+
         let ours = self.ours.slice(span(o));
         if same_values(t, b) || same_values(o, t) {
             return ours.to_string();
@@ -1096,17 +1119,6 @@ impl<'a> Merger<'a> {
                 if !o.iter().any(|i| i.value == item.value) {
                     pieces.push(self.theirs_text(item.full(), shift));
                 }
-            }
-            return join(pieces, false);
-        }
-
-        // Both changed the same items in place.
-        if o.len() == b.len() && t.len() == b.len() {
-            let mut pieces = Vec::new();
-            for (i, ((b, o), t)) in b.iter().zip(o).zip(t).enumerate() {
-                self.path.push(format!("[{}]", first + i));
-                pieces.push(self.merge_entry(Some(b), o, t, shift, Kind::Sequence));
-                self.path.pop();
             }
             return join(pieces, false);
         }
@@ -1162,6 +1174,9 @@ impl<'a> Merger<'a> {
         shift: Shift,
         kind: Kind,
     ) -> String {
+        if let Some(text) = self.merge_parts(b, o, t, shift) {
+            return text;
+        }
         // Both made the same change, perhaps spelled differently.
         if o.value == t.value {
             return self.ours.slice(o.body.clone()).to_string();
@@ -1401,7 +1416,16 @@ impl<'a> Merger<'a> {
         let (mut ib, mut io, mut it) = (0, 0, 0);
         for (zb, ob, tb, len) in sync_regions(bs, os, ts) {
             let (bc, oc, tc) = (&bs[ib..zb], &os[io..ob], &ts[it..tb]);
-            if same_values(tc, bc) || same_values(oc, tc) {
+            // As for block sequences, items changed in place are merged one
+            // by one, so that changes to their spelling are kept.
+            if oc.len() == bc.len() && tc.len() == bc.len() {
+                for k in 0..bc.len() {
+                    items.push((
+                        Some(io + k),
+                        self.merge_flow_item(Some(&bc[k]), &oc[k], &tc[k])?,
+                    ));
+                }
+            } else if same_values(tc, bc) || same_values(oc, tc) {
                 items.extend((io..ob).map(ours));
             } else if same_values(oc, bc) {
                 items.extend(tc.iter().map(theirs));
@@ -1412,13 +1436,6 @@ impl<'a> Merger<'a> {
                         .filter(|i| !oc.iter().any(|o| o.value == i.value))
                         .map(theirs),
                 );
-            } else if oc.len() == bc.len() && tc.len() == bc.len() {
-                for k in 0..bc.len() {
-                    items.push((
-                        Some(io + k),
-                        self.merge_flow_item(Some(&bc[k]), &oc[k], &tc[k])?,
-                    ));
-                }
             } else {
                 return None;
             }
@@ -1439,6 +1456,9 @@ impl<'a> Merger<'a> {
         if let Some(text) = self.choose(ranges.0, ranges.1, ranges.2, Shift::NONE) {
             return Some(text);
         }
+        if let Some(text) = self.merge_parts(b, o, t, Shift::NONE) {
+            return Some(text);
+        }
         if o.value == t.value {
             return Some(self.ours.slice(o.range.clone()).to_string());
         }
@@ -1449,5 +1469,63 @@ impl<'a> Merger<'a> {
         let of = item_flow_region(&self.ours, o)?;
         let tf = item_flow_region(&self.theirs, t)?;
         self.merge_flow_in(bf.as_ref(), &of, &tf, Shift::NONE)
+    }
+
+    /// Merge a one-line entry or item whose value is a scalar in three
+    /// parts: the text ahead of the value, such as the key; the value; and
+    /// the text after it, such as a comment. This lets changes to different
+    /// parts of the same line combine. `None` if that needs a conflict.
+    fn merge_parts<T: HasValue>(
+        &self,
+        b: Option<&T>,
+        o: &T,
+        t: &T,
+        shift: Shift,
+    ) -> Option<String> {
+        fn parts<'v, T: HasValue>(
+            side: &Side,
+            item: &'v T,
+        ) -> Option<(&'v Value, [Range<usize>; 3])> {
+            let value = item.value().as_ref()?;
+            let (span, v) = (item.span(), to_range(value.node.byte_range()));
+            let one_line = !side
+                .slice(span.clone())
+                .trim_end_matches('\n')
+                .contains('\n');
+            let within = span.start <= v.start && v.end <= span.end;
+            (one_line && within && !value.is_collection())
+                .then(|| (value, [span.start..v.start, v.clone(), v.end..span.end]))
+        }
+        let b = match b {
+            Some(b) => Some(parts(&self.base, b)?),
+            None => None,
+        };
+        let (ov, o) = parts(&self.ours, o)?;
+        let (tv, t) = parts(&self.theirs, t)?;
+        let part = |i: usize| {
+            (
+                b.as_ref().map(|(_, b)| b[i].clone()),
+                o[i].clone(),
+                t[i].clone(),
+            )
+        };
+
+        // The text ahead of the value starts the line, so it is the only
+        // part that needs reindenting.
+        let (bp, op, tp) = part(0);
+        let prefix = self.choose(bp, op, tp, shift)?;
+        let (bs, os, ts) = part(2);
+        let suffix = self.choose(bs, os, ts, Shift::NONE)?;
+        let (bv, ov_range, tv_range) = part(1);
+        let base_value = b.as_ref().map(|(v, _)| *v);
+        let value = match self.choose(bv, ov_range.clone(), tv_range.clone(), Shift::NONE) {
+            Some(value) => value,
+            // One side only respelled the value, so the other side's change
+            // wins; or both made the same change, spelled differently.
+            None if base_value == Some(ov) => self.theirs.slice(tv_range).to_string(),
+            None if base_value == Some(tv) || ov == tv => self.ours.slice(ov_range).to_string(),
+            None => return None,
+        };
+        Some(prefix + &value + &suffix)
     }
 }

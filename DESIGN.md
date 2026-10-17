@@ -214,8 +214,8 @@ the lines after it as body until one is indented less than its body. A
 whitespace-only line with spaces past the body's column, or a tab, would
 add text to its value, so that line loses its white space: `a: 1\n     \n`
 with `k: "text\n"` inserted after `a` gives `a: 1\nk: |\n  text\n\n`. A
-comment line indented as far as the body moves back to the entry's
-column. Other lines are left as they are.
+comment line indented as far as the body, after any blank lines, moves
+back to the entry's column. Other lines are left as they are.
 
 ## Implicit-null values
 

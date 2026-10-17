@@ -260,12 +260,24 @@ fn absorb_blank_lines_after(scalar: &SyntaxNode) {
 fn dedent_comment_line_after(entry: &SyntaxNode, scalar: &SyntaxNode) {
     let column = crate::as_yaml::source_base_indent(entry);
     let body = block_scalar_body_column(scalar).unwrap_or(column + 1);
-    let mut next = entry.last_token().and_then(|t| t.next_token());
-    while let Some(t) = next.clone().filter(|t| t.kind() == SyntaxKind::NEWLINE) {
-        next = t.next_token();
+    let is_space =
+        |t: &SyntaxToken| matches!(t.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE);
+    let mut next = block_scalar_line_end(scalar).and_then(|t| t.next_token());
+    // Blank lines, which may hold spaces up to the body's column, do not
+    // end the body.
+    while let Some(t) = next.clone() {
+        let line_break = match t.kind() {
+            SyntaxKind::NEWLINE => t,
+            _ if is_space(&t) => match t.next_token() {
+                Some(nl) if nl.kind() == SyntaxKind::NEWLINE => nl,
+                _ => break,
+            },
+            _ => break,
+        };
+        next = line_break.next_token();
     }
     let Some(indent) = next.filter(|t| {
-        t.kind() == SyntaxKind::INDENT
+        is_space(t)
             && t.text().len() >= body
             && t.next_token()
                 .is_some_and(|c| c.kind() == SyntaxKind::COMMENT)

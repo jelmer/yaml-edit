@@ -171,6 +171,13 @@ fn test_insert_after_before_blank_and_deep_comment_lines() {
 }
 
 #[test]
+fn test_insert_after_before_whitespace_and_deep_comment_lines() {
+    let f = YamlFile::from_str("a: 1\n  \n    # c\nb: 2\n").unwrap();
+    assert!(f.insert_after("a", "k", "text\n"));
+    check(&f, "a: 1\nk: |\n  text\n  \n# c\nb: 2\n", "k", "text\n");
+}
+
+#[test]
 fn test_insert_after_before_two_deep_comment_lines() {
     let f = YamlFile::from_str("a: 1\n    # c\n    # d\nb: 2\n").unwrap();
     assert!(f.insert_after("a", "k", "text\n"));
@@ -201,6 +208,13 @@ fn test_set_before_deep_comment_line() {
     let f = YamlFile::from_str("a: 1\n    # c\nb: 2\n").unwrap();
     f.set("a", "text\n");
     check(&f, "a: |\n  text\n# c\nb: 2\n", "a", "text\n");
+}
+
+#[test]
+fn test_set_before_whitespace_and_deep_comment_lines() {
+    let f = YamlFile::from_str("a: 1\n  \n    # c\nb: 2\n").unwrap();
+    f.set("a", "text\n");
+    check(&f, "a: |\n  text\n  \n# c\nb: 2\n", "a", "text\n");
 }
 
 #[test]

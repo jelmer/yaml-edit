@@ -110,8 +110,8 @@ pub enum ResolveError {
         item: String,
     },
     /// [`YamlValue::cast`] met an alias, which it cannot resolve without
-    /// the document's anchors.
-    /// [`DocumentResolvedExt::get_resolved`] resolves aliases.
+    /// the document's anchors. [`YamlValue::from_document`] and
+    /// [`DocumentResolvedExt::get_resolved`] resolve aliases.
     UnresolvedAlias {
         /// The anchor name the alias references, without the `*`.
         alias: String,

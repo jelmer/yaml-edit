@@ -41,7 +41,8 @@ impl YamlValue {
     ///
     /// Content that a YamlValue cannot hold is an error rather than being
     /// dropped: an alias, which this cannot resolve without the document's
-    /// anchors ([`DocumentResolvedExt::get_resolved`] resolves them),
+    /// anchors ([`YamlValue::from_document`] and
+    /// [`DocumentResolvedExt::get_resolved`] resolve them),
     /// distinct mapping keys with the same string form, such as `1` and
     /// `'1'`, and `!!set`, `!!omap` or `!!pairs` content of the wrong shape.
     /// A merge key (`<<`) is kept as an ordinary key.
@@ -92,7 +93,7 @@ impl YamlValue {
     /// Parse a raw YAML string into a YamlValue
     /// This handles both simple scalars and complex structures
     ///
-    /// Fails as [`YamlValue::cast`] does.
+    /// Fails as [`YamlValue::from_document`] does.
     pub fn parse_raw(yaml_str: &str) -> Result<Self, crate::anchor_resolution::ResolveError> {
         use std::str::FromStr;
 
@@ -109,13 +110,27 @@ impl YamlValue {
 
     /// Convert a Document to a YamlValue
     ///
-    /// Fails as [`YamlValue::cast`] does.
+    /// Unlike [`YamlValue::cast`], this resolves aliases against the
+    /// document's anchors and applies merge keys (`<<`), as
+    /// [`DocumentResolvedExt::get_resolved`] does. Merge keys are a YAML 1.1
+    /// type that YAML 1.2 does not define, but are still widely used.
+    ///
+    /// Fails if an alias is undefined or recursive, a merge key operand is
+    /// not a mapping, or on other content [`YamlValue::cast`] reports.
+    ///
+    /// [`DocumentResolvedExt::get_resolved`]: crate::anchor_resolution::DocumentResolvedExt::get_resolved
     pub fn from_document(
         doc: &crate::yaml::Document,
     ) -> Result<Self, crate::anchor_resolution::ResolveError> {
         use rowan::ast::AstNode;
+        let registry = crate::anchor_resolution::AnchorRegistry::from_document(doc);
         for child in doc.syntax().children() {
-            if let Some(value) = Self::cast(child)? {
+            let Some(node) = crate::as_yaml::YamlNode::from_syntax_peeled(child) else {
+                continue;
+            };
+            if let Some(value) =
+                crate::anchor_resolution::resolved_value(node, Some(&registry), &mut Vec::new())?
+            {
                 return Ok(value);
             }
         }
@@ -591,6 +606,7 @@ where
 mod tests {
     use super::*;
     use crate::debug::assert_cst_ok;
+    use std::str::FromStr;
 
     fn render_as_yaml<T: crate::AsYaml>(v: &T) -> String {
         let mut builder = rowan::GreenNodeBuilder::new();
@@ -798,6 +814,18 @@ mod tests {
         assert!(AsYaml::is_inline(&YamlValue::mapping()));
     }
 
+    /// [`YamlValue::cast`] on the content of the single document in `yaml`.
+    fn cast_root(yaml: &str) -> Result<Option<YamlValue>, crate::anchor_resolution::ResolveError> {
+        use rowan::ast::AstNode;
+        let doc = crate::Document::from_str(yaml).unwrap();
+        let content = doc
+            .syntax()
+            .children()
+            .find(|n| crate::as_yaml::YamlNode::from_syntax_peeled(n.clone()).is_some())
+            .unwrap();
+        YamlValue::cast(content)
+    }
+
     #[test]
     fn test_cast_alias_is_error() {
         use crate::anchor_resolution::ResolveError;
@@ -812,7 +840,7 @@ mod tests {
             "x: &x {a: 1}\ny: {<<: *x}\n",
         ] {
             assert_eq!(
-                YamlValue::parse_raw(yaml),
+                cast_root(yaml),
                 Err(ResolveError::UnresolvedAlias {
                     alias: "x".to_string()
                 }),
@@ -868,15 +896,87 @@ mod tests {
     #[test]
     fn test_cast_keeps_merge_key() {
         assert_eq!(
-            YamlValue::parse_raw("<<: {a: 1}\nb: 2\n"),
-            Ok(YamlValue::Mapping(BTreeMap::from([
+            cast_root("<<: {a: 1}\nb: 2\n"),
+            Ok(Some(YamlValue::Mapping(BTreeMap::from([
                 (
                     "<<".to_string(),
                     YamlValue::Mapping(BTreeMap::from([("a".to_string(), YamlValue::from(1))]))
                 ),
                 ("b".to_string(), YamlValue::from(2)),
-            ])))
+            ]))))
         );
+    }
+
+    #[test]
+    fn test_from_document_resolves_aliases_and_merge_keys() {
+        let yaml = "\
+base: &base
+  name: x
+  tags: !!set {? a, ? b}
+list: &list [1, *base]
+derived:
+  <<: *base
+  name: y
+  extra: *list
+  nested: !local {inner: *base}
+ordered: !!omap [first: *list]
+";
+        let mapping = |entries: Vec<(&str, YamlValue)>| {
+            YamlValue::Mapping(
+                entries
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect(),
+            )
+        };
+        let tags = YamlValue::Set(["a", "b"].map(String::from).into());
+        let base = mapping(vec![("name", YamlValue::from("x")), ("tags", tags.clone())]);
+        let list = YamlValue::Sequence(vec![YamlValue::from(1), base.clone()]);
+        let expected = mapping(vec![
+            ("base", base.clone()),
+            ("list", list.clone()),
+            (
+                "derived",
+                mapping(vec![
+                    ("name", YamlValue::from("y")),
+                    ("tags", tags),
+                    ("extra", list.clone()),
+                    (
+                        "nested",
+                        YamlValue::tagged("!local", mapping(vec![("inner", base)])),
+                    ),
+                ]),
+            ),
+            (
+                "ordered",
+                YamlValue::OrderedMapping(vec![("first".to_string(), list)]),
+            ),
+        ]);
+        let doc = crate::Document::from_str(yaml).unwrap();
+        assert_eq!(YamlValue::from_document(&doc), Ok(expected.clone()));
+        assert_eq!(YamlValue::parse_raw(yaml), Ok(expected));
+    }
+
+    #[test]
+    fn test_from_document_alias_errors() {
+        use crate::anchor_resolution::ResolveError;
+        for (yaml, expected) in [
+            (
+                "a: *nope\n",
+                ResolveError::UndefinedAlias {
+                    alias: "nope".to_string(),
+                },
+            ),
+            (
+                "a: &a [*a]\n",
+                ResolveError::RecursiveAlias {
+                    alias: "a".to_string(),
+                },
+            ),
+        ] {
+            let doc = crate::Document::from_str(yaml).unwrap();
+            assert_eq!(YamlValue::from_document(&doc), Err(expected), "{yaml:?}");
+        }
     }
 
     #[test]

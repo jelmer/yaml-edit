@@ -513,6 +513,9 @@ impl FlowWriter {
     }
 
     fn mapping_entry(&mut self, entry: &SyntaxNode, indent: usize) {
+        // TODO: keep the `?` of an explicit key; without it a key with
+        // comments becomes an implicit key spanning several lines, which
+        // PyYAML rejects.
         let mut has_value = false;
         for child in entry.children_with_tokens() {
             match child {

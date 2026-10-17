@@ -236,9 +236,7 @@ impl Document {
         } else if self.root_node().is_none() {
             let mapping = Mapping::new();
             mapping.set(key, value);
-            let child_count = self.0.children_with_tokens().count();
-            self.0
-                .splice_children(child_count..child_count, vec![mapping.0.into()]);
+            self.attach_root(mapping.0);
             true
         } else {
             false
@@ -271,9 +269,7 @@ impl Document {
         } else if self.root_node().is_none() {
             let mapping = Mapping::new();
             mapping.set_with_field_order(key, value, field_order);
-            let child_count = self.0.children_with_tokens().count();
-            self.0
-                .splice_children(child_count..child_count, vec![mapping.0.into()]);
+            self.attach_root(mapping.0);
             true
         } else {
             false
@@ -485,14 +481,32 @@ impl Document {
             return false;
         }
 
-        // No mapping exists yet: create one and replace document contents
         let mapping = Mapping::new();
         mapping.insert_at_index_preserving(index, key, value);
-        let new_doc = Self::from_mapping(mapping);
-        let new_children: Vec<_> = new_doc.0.children_with_tokens().collect();
-        let child_count = self.0.children_with_tokens().count();
-        crate::nodes::replace_children(&self.0, 0..child_count, new_children);
+        self.attach_root(mapping.0);
         true
+    }
+
+    /// Splice `root` into this document, which has none, where the parser
+    /// reads it: on a line of its own after the `---` marker and any comment
+    /// lines, and before a `...` marker.
+    fn attach_root(&self, root: SyntaxNode) {
+        let children: Vec<_> = self.0.children_with_tokens().collect();
+        let index = children
+            .iter()
+            .position(|c| c.kind() == SyntaxKind::DOC_END)
+            .unwrap_or(children.len());
+        let mut new_children = Vec::new();
+        if index > 0
+            && !matches!(
+                children[index - 1].kind(),
+                SyntaxKind::NEWLINE | SyntaxKind::BOM
+            )
+        {
+            new_children.push(crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into());
+        }
+        new_children.push(root.into());
+        self.0.splice_children(index..index, new_children);
     }
 
     /// Get the scalar value for `key` as a decoded `String`.
@@ -1845,6 +1859,43 @@ Repository: https://github.com/example/example.git
                 crate::debug::tree_to_string(parsed.syntax()),
                 "{text:?}"
             );
+        }
+    }
+
+    /// Adding the first key to a document without a root keeps the tokens it
+    /// has, and puts the new mapping where the parser would read it.
+    #[test]
+    fn test_add_root_to_rootless_document() {
+        for (src, expected) in [
+            ("---\n", "---\nk: v\n"),
+            ("---", "---\nk: v\n"),
+            ("--- \n", "--- \nk: v\n"),
+            ("--- # c\n", "--- # c\nk: v\n"),
+            ("--- # c", "--- # c\nk: v\n"),
+            ("---\n# c\n", "---\n# c\nk: v\n"),
+            ("%YAML 1.2\n---\n# c\n", "%YAML 1.2\n---\n# c\nk: v\n"),
+            ("\u{feff}---\n", "\u{feff}---\nk: v\n"),
+            ("---\n...\n", "---\nk: v\n...\n"),
+            ("--- # c\n...\n", "--- # c\nk: v\n...\n"),
+            ("---\n...", "---\nk: v\n..."),
+        ] {
+            let insert = |doc: &Document| doc.insert_at_index(0, "k", "v");
+            let set = |doc: &Document| doc.set("k", "v");
+            let set_ordered = |doc: &Document| doc.set_with_field_order("k", "v", ["k"]);
+            for add in [&insert as &dyn Fn(&Document) -> bool, &set, &set_ordered] {
+                let file = YamlFile::from_str(src).unwrap();
+                let doc = file.document().unwrap();
+                assert!(add(&doc), "{src:?}");
+                assert_eq!(file.to_string(), expected);
+                crate::debug::validate_tree(file.syntax()).unwrap();
+                crate::debug::roundtrip_ok(file.syntax()).unwrap();
+                let reparsed = YamlFile::from_str(expected).unwrap();
+                assert_eq!(
+                    crate::debug::tree_to_string(file.syntax()),
+                    crate::debug::tree_to_string(reparsed.syntax()),
+                    "{src:?}"
+                );
+            }
         }
     }
 }

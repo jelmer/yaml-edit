@@ -378,7 +378,27 @@ impl MappingEntry {
     }
 
     /// Replace the value of this entry in place, preserving the key and surrounding whitespace.
+    ///
+    /// Comments inside the old value are removed with it; the comment on
+    /// the key's line stays with the entry.
     pub fn set_value(&self, new_value: impl crate::AsYaml, flow_context: bool) {
+        use crate::nodes::replaced_value::{
+            remove_lifted_comment, restore_trailing_lines, take_trailing_lines,
+        };
+        let trailing_lines = match self.value() {
+            Some(old) if !flow_context => {
+                let lines = take_trailing_lines(&old);
+                remove_lifted_comment(&self.0, &old);
+                lines
+            }
+            _ => Vec::new(),
+        };
+        self.replace_value(new_value, flow_context);
+        crate::nodes::hand_line_break_to_mapping(&self.0);
+        restore_trailing_lines(&self.0, trailing_lines);
+    }
+
+    fn replace_value(&self, new_value: impl crate::AsYaml, flow_context: bool) {
         use crate::as_yaml::YamlKind;
 
         // A block collection or block scalar coming from another CST goes

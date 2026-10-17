@@ -105,12 +105,36 @@ impl MappingEntry {
 
     /// Like [`new_at_indent`](Self::new_at_indent), for a flow mapping
     /// quoting strings as `flow` says if it is set.
+    ///
+    /// A node-backed key preceded by an `&anchor` in its parent keeps that
+    /// anchor, so aliases to it still resolve.
     pub(crate) fn new_in(
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
         flow: Option<FlowQuoting>,
         use_explicit_key: bool,
         key_indent: usize,
+    ) -> Self {
+        let key_anchor = key.as_node().and_then(source_anchor_text);
+        Self::build(
+            key,
+            value,
+            flow,
+            use_explicit_key,
+            key_indent,
+            key_anchor.as_deref(),
+        )
+    }
+
+    /// Build an entry as [`new_in`](Self::new_in) does, putting
+    /// `key_anchor` on the key.
+    fn build(
+        key: impl crate::AsYaml,
+        value: impl crate::AsYaml,
+        flow: Option<FlowQuoting>,
+        use_explicit_key: bool,
+        key_indent: usize,
+        key_anchor: Option<&str>,
     ) -> Self {
         let flow_context = flow.is_some();
         let quoting = flow.unwrap_or(FlowQuoting::Minimal);
@@ -121,15 +145,15 @@ impl MappingEntry {
             // explicit key may do.
             let multiline = has_comment(key.syntax());
             let explicit = use_explicit_key || multiline;
-            return Self::new_in(key, value, flow, explicit, key_indent);
+            return Self::build(key, value, flow, explicit, key_indent, key_anchor);
         }
         if !use_explicit_key && !flow_context && crate::nodes::key_spans_lines(&key) {
-            return Self::new_at_indent(key, value, flow_context, true, key_indent);
+            return Self::build(key, value, flow, true, key_indent, key_anchor);
         }
         // Built inline below, the flow form is shifted by key_indent, so its
         // continuation lines are given relative to the key.
         if let Some(value) = flow.and_then(|q| flow_form(&value, 2, q)) {
-            return Self::new_in(key, value, flow, use_explicit_key, key_indent);
+            return Self::build(key, value, flow, use_explicit_key, key_indent, key_anchor);
         }
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
@@ -147,6 +171,10 @@ impl MappingEntry {
         builder.start_node(SyntaxKind::KEY.into());
         if use_explicit_key && flow_context {
             question(&mut builder);
+        }
+        if let Some(anchor) = key_anchor {
+            builder.token(SyntaxKind::ANCHOR.into(), anchor);
+            builder.token(SyntaxKind::WHITESPACE.into(), " ");
         }
         crate::nodes::build_key_content(&mut builder, &key, key_indent, flow);
         let key_has_newline = false;

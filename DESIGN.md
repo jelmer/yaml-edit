@@ -332,6 +332,7 @@ value that is a node with an anchor of its own keeps it only if the old
 value had none: the document's aliases refer to the old anchor, and the
 node the value was copied from keeps its own. An alias cannot carry an
 anchor, so replacing an anchored value with one still drops the anchor.
+A node passed as a new key keeps its anchor too.
 
 An alias resolves to the closest preceding definition of its anchor in the
 same document, as the spec requires. In `<<` merge keys only alias nodes are

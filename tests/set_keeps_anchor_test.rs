@@ -211,3 +211,81 @@ fn set_path_keeps_anchor() {
     assert_eq!(doc.get_resolved("c").unwrap(), Some(YamlValue::from(6)));
     assert_eq!(doc.get_resolved("d").unwrap(), Some(YamlValue::from(7)));
 }
+
+#[test]
+fn new_key_keeps_anchor() {
+    let cases = [
+        ("k: &a key\n", "a: *a\n", "&a key: 2\na: *a\n", "key"),
+        ("k: &a key\n", "{a: *a}\n", "{&a key: 2, a: *a}\n", "key"),
+        (
+            "k: &a key\n",
+            "? a\n: *a\n",
+            "? &a key\n: 2\n? a\n: *a\n",
+            "key",
+        ),
+        (
+            "k: &a !!str key\n",
+            "{a: *a}\n",
+            "{&a !!str key: 2, a: *a}\n",
+            "!!str key",
+        ),
+        (
+            "k: &a !!str key\n",
+            "? a\n: *a\n",
+            "? &a !!str key\n: 2\n? a\n: *a\n",
+            "!!str key",
+        ),
+        ("k: [&a key]\n", "a: *a\n", "&a key: 2\na: *a\n", "key"),
+        ("k: &a [key]\n", "a: *a\n", "&a [key]: 2\na: *a\n", "[key]"),
+        (
+            "k: &a\n  - key\n",
+            "a: *a\n",
+            "&a [key]: 2\na: *a\n",
+            "[key]",
+        ),
+    ];
+    for (source, target, expected, value) in cases {
+        let key = node_from(source, "k");
+        let key = match key.as_sequence() {
+            Some(seq) if source.starts_with("k: [") => seq.get(0).unwrap(),
+            _ => key,
+        };
+        let doc = Document::from_str(target).unwrap();
+        doc.as_mapping().unwrap().insert_at_index(0, &key, 2);
+        assert_edited(&doc, expected);
+        let value = Document::from_str(&format!("x: {value}\n")).unwrap();
+        assert_eq!(
+            doc.get_resolved("a").unwrap(),
+            value.get_resolved("x").unwrap()
+        );
+    }
+}
+
+#[test]
+fn set_and_insert_new_key_keep_anchor() {
+    let key = node_from("k: &a key\n", "k");
+    let doc = Document::from_str("b: 1\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    mapping.insert_before("b", &key, 2);
+    mapping.set("c", yaml_edit::Alias::new("a"));
+    assert_edited(&doc, "&a key: 2\nb: 1\nc: *a\n");
+
+    let doc = Document::from_str("b: 1\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    mapping.insert_after("b", &key, 2);
+    mapping.set(node_from("k: &c other\n", "k"), 3);
+    assert_edited(&doc, "b: 1\n&a key: 2\n&c other: 3\n");
+}
+
+#[test]
+fn new_tagged_key_keeps_anchor() {
+    let key = node_from("k: &a !!str key\n", "k");
+    let doc = Document::from_str("a: *a\n").unwrap();
+    doc.as_mapping().unwrap().insert_at_index(0, &key, 2);
+    assert_edited(&doc, "&a !!str key: 2\na: *a\n");
+    let value = Document::from_str("x: !!str key\n").unwrap();
+    assert_eq!(
+        doc.get_resolved("a").unwrap(),
+        value.get_resolved("x").unwrap()
+    );
+}

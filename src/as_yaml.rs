@@ -1018,7 +1018,7 @@ pub(crate) fn build_set_content<T: AsYaml>(
         if flow {
             member.build_content(builder, 0, true);
         } else {
-            crate::nodes::build_key_content(builder, &member);
+            crate::nodes::build_key_content(builder, &member, indent + 2);
         }
         builder.finish_node(); // KEY
         builder.token(SyntaxKind::COLON.into(), ":");

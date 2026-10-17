@@ -158,14 +158,27 @@ impl AsYaml for TaggedNode {
     }
 
     /// Content on lines after the tag (a block collection, say) is shifted
-    /// to start at column `indent`, as for an untagged collection.
+    /// to start at column `indent`, as for an untagged collection. Content
+    /// starting on the tag line (a flow collection) is shifted like an
+    /// untagged flow collection, keeping its continuation lines' offset
+    /// from `indent`.
     fn build_content(
         &self,
         builder: &mut rowan::GreenNodeBuilder,
         indent: usize,
         _flow_context: bool,
     ) -> bool {
-        let delta = continuation_indent(&self.0).map_or(0, |base| indent as isize - base as isize);
+        let content_on_tag_line = self
+            .0
+            .children_with_tokens()
+            .take_while(|c| c.as_node().is_none())
+            .all(|c| c.kind() != SyntaxKind::NEWLINE);
+        let base = if content_on_tag_line {
+            Some(crate::as_yaml::source_line_indent(&self.0))
+        } else {
+            continuation_indent(&self.0)
+        };
+        let delta = base.map_or(0, |base| indent as isize - base as isize);
         builder.start_node(SyntaxKind::TAGGED_NODE.into());
         let ends_with_newline = crate::as_yaml::copy_node_content_reindent(builder, &self.0, delta);
         builder.finish_node();

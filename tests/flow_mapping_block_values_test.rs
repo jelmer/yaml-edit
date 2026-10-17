@@ -209,8 +209,10 @@ fn test_decorated_implicit_nulls_stay_empty() {
     assert_eq!(reparsed.get_sequence("y").unwrap().len(), 2);
 }
 
+/// Continuation lines move with the value, keeping their offset from the
+/// line it starts on.
 #[test]
-fn test_multiline_flow_value_keeps_indentation() {
+fn test_multiline_flow_value_keeps_relative_indentation() {
     let source = parse_map("v: [a,\n    b]\n").get("v").unwrap();
     let file = YamlFile::from_str("k:\n  j: 1\n").unwrap();
     let k = file
@@ -222,7 +224,7 @@ fn test_multiline_flow_value_keeps_indentation() {
         .unwrap();
     k.set("n", &source);
     assert_parser_shaped(&file);
-    assert_eq!(file.to_string(), "k:\n  j: 1\n  n: [a,\n    b]\n");
+    assert_eq!(file.to_string(), "k:\n  j: 1\n  n: [a,\n      b]\n");
 }
 
 #[test]

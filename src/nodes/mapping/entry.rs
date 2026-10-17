@@ -92,17 +92,18 @@ impl MappingEntry {
         use_explicit_key: bool,
         key_indent: usize,
     ) -> Self {
-        if let Some(key) = flow_form(&key, key_indent + 2) {
+        // build_key_content shifts the flow form by key_indent, so its
+        // continuation lines are given relative to the key.
+        if let Some(key) = flow_form(&key, 2) {
             // Comments make the key span several lines, which only an
             // explicit key may do.
             let multiline = has_comment(key.syntax());
             let explicit = use_explicit_key || multiline;
             return Self::new_at_indent(key, value, flow_context, explicit, key_indent);
         }
-        if let Some(value) = flow_context
-            .then(|| flow_form(&value, key_indent + 2))
-            .flatten()
-        {
+        // Built inline below, the flow form is shifted by key_indent, so its
+        // continuation lines are given relative to the key.
+        if let Some(value) = flow_context.then(|| flow_form(&value, 2)).flatten() {
             return Self::new_at_indent(key, value, flow_context, use_explicit_key, key_indent);
         }
         let mut builder = GreenNodeBuilder::new();
@@ -122,7 +123,7 @@ impl MappingEntry {
         if use_explicit_key && flow_context {
             question(&mut builder);
         }
-        crate::nodes::build_key_content(&mut builder, &key);
+        crate::nodes::build_key_content(&mut builder, &key, key_indent);
         let key_has_newline = false;
         debug_assert!(!key_has_newline, "Keys should not end with newlines");
         // The `:` goes on its own line at the entry's own column. Where that
@@ -207,11 +208,9 @@ impl MappingEntry {
                 (true, _) => {
                     // TAGGED_NODE values (!!set, !!omap, !!pairs) are
                     // inline but may end with newlines from their
-                    // block-style content.
-                    // TODO: pass key_indent; at 0, a multi-line flow value
-                    // copied from a shallower key under a nested one keeps
-                    // continuation lines too shallow for its new key.
-                    value.build_content(&mut builder, 0, flow_context)
+                    // block-style content. A multi-line flow value has its
+                    // continuation lines shifted to clear the key's column.
+                    value.build_content(&mut builder, key_indent, flow_context)
                 }
                 // Block mappings and sequences start on new line but don't get pre-indented
                 // They handle their own indentation via build_content

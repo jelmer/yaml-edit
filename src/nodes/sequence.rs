@@ -232,8 +232,10 @@ fn build_entry_value(
     // collection" for strings too; until then a plain string holding a
     // flow indicator, such as "a, b", is written here unquoted.
     let flow_context = flow && value.kind() != crate::as_yaml::YamlKind::Scalar;
+    // The flow form is inline, so it is shifted by dash_column when built;
+    // its continuation lines are given relative to that.
     match flow
-        .then(|| crate::nodes::mapping::flow_form(value, column))
+        .then(|| crate::nodes::mapping::flow_form(value, 2))
         .flatten()
     {
         Some(flow_value) => flow_value.build_content(builder, indent(&flow_value), flow_context),
@@ -720,7 +722,7 @@ impl Sequence {
         builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
         // Should the value need several lines (to keep comments), they are
         // indented past the entry holding this sequence, as for mappings.
-        let column = self
+        let base = self
             .0
             .ancestors()
             .find(|n| {
@@ -729,9 +731,8 @@ impl Sequence {
                     SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
                 )
             })
-            .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry))
-            + 2;
-        build_entry_value(&mut builder, &value, 0, column, true);
+            .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry));
+        build_entry_value(&mut builder, &value, base, base + 2, true);
         builder.finish_node();
         let new_entry = SyntaxNode::new_root_mut(builder.finish());
 

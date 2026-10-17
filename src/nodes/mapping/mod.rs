@@ -606,8 +606,9 @@ impl Mapping {
                 matches.then_some((i, entry))
             });
         if let Some((i, entry)) = existing {
-            let indent = self.detect_indentation_level() + 2;
-            match flow_context.then(|| flow_form(&value, indent)).flatten() {
+            // set_value shifts the flow form to the entry's line, so its
+            // continuation lines are given relative to that.
+            match flow_context.then(|| flow_form(&value, 2)).flatten() {
                 Some(flow) => entry.set_value(flow, flow_context),
                 None => entry.set_value(value, flow_context),
             }
@@ -1282,7 +1283,10 @@ impl Mapping {
     /// entry collapses onto one line and reparses as one node.
     fn rebuild_key(builder: &mut GreenNodeBuilder, old: &SyntaxNode, new_key: &impl crate::AsYaml) {
         builder.start_node(SyntaxKind::KEY.into());
-        super::build_key_content(builder, new_key);
+        let indent = old
+            .parent()
+            .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry));
+        super::build_key_content(builder, new_key, indent);
         for trailing in old
             .children_with_tokens()
             .skip_while(|c| !matches!(c.as_token().map(|t| t.kind()), Some(SyntaxKind::NEWLINE)))
@@ -1304,7 +1308,7 @@ impl Mapping {
 
         // Add KEY node
         builder.start_node(SyntaxKind::KEY.into());
-        super::build_key_content(&mut builder, &key);
+        super::build_key_content(&mut builder, &key, self.detect_indentation_level());
         builder.finish_node(); // KEY
 
         // Add colon
@@ -1317,10 +1321,16 @@ impl Mapping {
         } else {
             builder.token(SyntaxKind::WHITESPACE.into(), " ");
         }
+        // An inline node keeps its continuation lines' offset from the line
+        // it starts on, which here is the key's.
+        let value_indent = match value.as_node() {
+            Some(_) if value.is_inline() => self.detect_indentation_level(),
+            _ => 2,
+        };
 
         // Add VALUE node
         builder.start_node(SyntaxKind::VALUE.into());
-        let value_ends_with_newline = value.build_content(&mut builder, 2, false);
+        let value_ends_with_newline = value.build_content(&mut builder, value_indent, false);
         builder.finish_node(); // VALUE
 
         // Every block-style MAPPING_ENTRY ends with NEWLINE

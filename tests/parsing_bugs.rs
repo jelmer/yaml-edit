@@ -3856,7 +3856,6 @@ fn test_legacy_yaml_1_1_warnings() {
     for clean in [
         "a: 'yes'\n",
         "a: \"no\"\n",
-        "mode: 0o755\n",
         "mode: 755\n",
         "a: true\n",
         "z: 0\n",
@@ -3864,6 +3863,115 @@ fn test_legacy_yaml_1_1_warnings() {
         "n: 89\n",
         "n: 0x89\n",
         "n: '089'\n",
+    ] {
+        assert_eq!(warn(clean), vec![], "{clean:?}");
+    }
+}
+
+#[test]
+fn test_legacy_yaml_1_1_number_warnings() {
+    use yaml_edit::validator::{Rule, Severity, Validator};
+    let warn = |src: &str| -> Vec<(Rule, Severity, String)> {
+        let doc = yaml_edit::Document::from_str(src).unwrap();
+        Validator::new()
+            .validate(&doc)
+            .into_iter()
+            .map(|v| (v.rule, v.severity, v.message))
+            .collect()
+    };
+    let warning =
+        |message: &str| vec![(Rule::LegacyYaml11, Severity::Warning, message.to_string())];
+
+    // Numbers to a 1.1 reader, strings in 1.2.
+    assert_eq!(
+        warn("a: 0b1010\n"),
+        warning(
+            "`0b1010` is the integer 10 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `10` to keep the integer meaning"
+        )
+    );
+    assert_eq!(
+        warn("a: -0x1F\n"),
+        warning(
+            "`-0x1F` is the integer -31 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `-31` to keep the integer meaning"
+        )
+    );
+    assert_eq!(
+        warn("a: 0x_1F\n"),
+        warning(
+            "`0x_1F` is the integer 31 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `0x1F` to keep the integer meaning"
+        )
+    );
+    assert_eq!(
+        warn("a: 0_755\n"),
+        warning(
+            "`0_755` is the integer 493 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `0o755` to keep the integer meaning"
+        )
+    );
+    assert_eq!(
+        warn("a: 1_000\n"),
+        warning(
+            "`1_000` is the integer 1000 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `1000` to keep the integer meaning"
+        )
+    );
+    assert_eq!(
+        warn("a: 1_000.5\n"),
+        warning(
+            "`1_000.5` is the float 1000.5 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `1000.5` to keep the float meaning"
+        )
+    );
+    assert_eq!(
+        warn("t: 1:30\n"),
+        warning(
+            "`1:30` is the integer 90 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `90` to keep the integer meaning"
+        )
+    );
+    assert_eq!(
+        warn("t: 1:30.5\n"),
+        warning(
+            "`1:30.5` is the float 90.5 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `90.5` to keep the float meaning"
+        )
+    );
+
+    // Strings to a 1.1 reader, numbers in 1.2.
+    assert_eq!(
+        warn("mode: 0o17\n"),
+        warning(
+            "`0o17` is a string in YAML 1.1; YAML 1.2 reads it as the integer 15. \
+             Write `'0o17'` to keep the string meaning"
+        )
+    );
+    assert_eq!(
+        warn("a: 1e3\n"),
+        warning(
+            "`1e3` is a string in YAML 1.1; YAML 1.2 reads it as a float. \
+             Write `'1e3'` to keep the string meaning"
+        )
+    );
+    assert_eq!(
+        warn("a: -1.0E3\n"),
+        warning(
+            "`-1.0E3` is a string in YAML 1.1; YAML 1.2 reads it as a float. \
+             Write `'-1.0E3'` to keep the string meaning"
+        )
+    );
+
+    for clean in [
+        "a: 1.0e+3\n",
+        "a: 0x1F\n",
+        "a: 1000\n",
+        "a: 1.5\n",
+        "a: 0b102\n",
+        "a: 1:60\n",
+        "a: '1e3'\n",
+        "a: \"0b1010\"\n",
     ] {
         assert_eq!(warn(clean), vec![], "{clean:?}");
     }

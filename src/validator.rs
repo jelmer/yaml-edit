@@ -972,6 +972,12 @@ impl Validator {
     /// 1.2 requires, but a 1.1 reader still takes them as booleans. A
     /// leading-zero decimal with an 8 or 9 (`089`) is the reverse: an integer
     /// here, but a string to a 1.1 reader.
+    ///
+    /// The other numbers whose reading changed are covered too, matching
+    /// what [`crate::migrate::to_yaml_1_2`] rewrites: binary, signed hex,
+    /// base 60 and underscored numbers were 1.1 numbers and are strings here,
+    /// while `0o` octal and exponents without a `.` or sign (`1e3`) were 1.1
+    /// strings.
     fn check_legacy_yaml_1_1(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // Only a plain scalar resolves by its text; a quoted one is a string
         // in every version.
@@ -979,7 +985,10 @@ impl Validator {
             c.into_token().filter(|t| {
                 matches!(
                     t.kind(),
-                    crate::SyntaxKind::INT | crate::SyntaxKind::STRING | crate::SyntaxKind::BOOL
+                    crate::SyntaxKind::INT
+                        | crate::SyntaxKind::FLOAT
+                        | crate::SyntaxKind::STRING
+                        | crate::SyntaxKind::BOOL
                 )
             })
         }) else {
@@ -1014,6 +1023,26 @@ impl Validator {
             return;
         }
 
+        if let Some((after, kind)) = crate::migrate::yaml_1_1_number(text) {
+            let (value, kind) = if kind == crate::SyntaxKind::FLOAT {
+                (after.clone(), "float")
+            } else if let Some(hex) = after.strip_prefix("0x") {
+                (crate::scalar::digits_to_decimal(hex, 16), "integer")
+            } else if let Some(octal) = after.strip_prefix("0o") {
+                (crate::scalar::digits_to_decimal(octal, 8), "integer")
+            } else {
+                (after.clone(), "integer")
+            };
+            violations.push(Violation::warning_at(
+                Rule::LegacyYaml11,
+                token.text_range(),
+                format!(
+                    "`{text}` is the {kind} {value} in YAML 1.1; YAML 1.2 reads it as a string. Write `{after}` to keep the {kind} meaning",
+                ),
+            ));
+            return;
+        }
+
         if crate::ScalarValue::is_leading_zero_decimal(text) {
             let minus = if text.starts_with('-') { "-" } else { "" };
             let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
@@ -1023,6 +1052,23 @@ impl Validator {
                 token.text_range(),
                 format!(
                     "`{text}` is a string in YAML 1.1; YAML 1.2 reads it as the integer {minus}{as_decimal}. Write `'{text}'` to keep the string meaning",
+                ),
+            ));
+            return;
+        }
+
+        if crate::migrate::yaml_1_1_string(text) {
+            let reading = match text.strip_prefix("0o") {
+                Some(octal) => {
+                    format!("the integer {}", crate::scalar::digits_to_decimal(octal, 8))
+                }
+                None => "a float".to_string(),
+            };
+            violations.push(Violation::warning_at(
+                Rule::LegacyYaml11,
+                token.text_range(),
+                format!(
+                    "`{text}` is a string in YAML 1.1; YAML 1.2 reads it as {reading}. Write `'{text}'` to keep the string meaning",
                 ),
             ));
             return;

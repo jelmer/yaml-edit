@@ -469,14 +469,24 @@ pub(crate) fn nth_entry_index(
         .nth(index)
 }
 
-/// Emit `key`'s content for use inside a `KEY` node.
+/// Emit `key`'s content for use inside a `KEY` node, of a flow mapping
+/// if `flow`.
 ///
 /// Identical to `key.build_content` except that a key which would render as
 /// a block scalar (`|` / `>`) is emitted as one double-quoted scalar
 /// instead. A block scalar is a valid *value* but cannot be a key: it does
 /// not read back as the same key, and the entry's `:` lands inside the
 /// block.
-pub(crate) fn build_key_content(builder: &mut rowan::GreenNodeBuilder, key: &impl crate::AsYaml) {
+pub(crate) fn build_key_content(
+    builder: &mut rowan::GreenNodeBuilder,
+    key: &impl crate::AsYaml,
+    flow: bool,
+) {
+    if flow {
+        // Flow context already rules out block scalars.
+        key.build_content(builder, 0, true);
+        return;
+    }
     if key.as_node().is_none() {
         // A raw value (&str, String, ...). Render it once on its own: the
         // block form is emitted as a single STRING token whose text starts

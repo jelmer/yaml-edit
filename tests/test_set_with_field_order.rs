@@ -212,7 +212,7 @@ fn test_set_with_field_order_empty_document() {
     let result = yaml.to_string();
     // Inserting into `{}` now appends inside the braces (was: added broken
     // block-style entries after `}`).
-    assert_eq!(result, "---\n{name: \"my-app\", version: 1.0}");
+    assert_eq!(result, "---\n{name: my-app, version: 1.0}");
 }
 
 #[test]
@@ -787,7 +787,7 @@ fn test_set_with_field_order_all_new_fields() {
     // block-style entries appended after `}`).
     assert_eq!(
         result,
-        "---\n{name: \"test-app\", version: \"0.1.0\", author: \"Tester\", description: \"A test app\"}"
+        "---\n{name: test-app, version: 0.1.0, author: Tester, description: A test app}"
     );
 }
 

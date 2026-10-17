@@ -388,9 +388,15 @@ impl AsYaml for Scalar {
     fn build_content(
         &self,
         builder: &mut rowan::GreenNodeBuilder,
-        _indent: usize,
-        _flow_context: bool,
+        indent: usize,
+        flow_context: bool,
     ) -> bool {
+        let plain = !self.is_quoted() && !self.is_block();
+        if flow_context && plain && self.value().contains([',', '[', ']', '{', '}']) {
+            // Inside a flow collection a plain scalar ends at the indicator.
+            return ScalarValue::double_quoted(self.as_string())
+                .build_content(builder, indent, true);
+        }
         crate::yaml::copy_node_to_builder(builder, &self.0);
         // Scalars don't end with newlines
         false

@@ -18,7 +18,7 @@ impl Parser {
     ///
     /// At root level (`base_indent == 0`) every comment belongs to this
     /// collection, indented or not, because there is no enclosing scope.
-    fn absorb_entry_comments(&mut self, base_indent: usize) -> bool {
+    fn absorb_entry_comments(&mut self, base_indent: usize, dash_lines: bool) -> bool {
         while self.current() == Some(SyntaxKind::COMMENT) {
             // A comment on its own line says nothing about the block by its
             // own column: what ends the block is the next line with content,
@@ -43,7 +43,7 @@ impl Parser {
             if self.current() == Some(SyntaxKind::NEWLINE) {
                 self.bump();
             }
-            if self.skip_whitespace_only_with_dedent_check(base_indent) {
+            if self.skip_whitespace_only_with_dedent_check(base_indent, dash_lines) {
                 return true;
             }
         }
@@ -71,7 +71,7 @@ impl Parser {
         while self.current().is_some() {
             let tokens_before_iter = self.tokens.len();
             // Skip whitespace, break on dedent
-            if self.skip_whitespace_only_with_dedent_check(base_indent) {
+            if self.skip_whitespace_only_with_dedent_check(base_indent, false) {
                 break;
             }
 
@@ -91,7 +91,7 @@ impl Parser {
             }
 
             // Emit comments as children of MAPPING
-            if self.absorb_entry_comments(base_indent) {
+            if self.absorb_entry_comments(base_indent, false) {
                 break;
             }
 
@@ -160,12 +160,12 @@ impl Parser {
         let mut first_entry = true;
         while self.current().is_some() {
             // Skip whitespace, break on dedent
-            if self.skip_whitespace_only_with_dedent_check(base_indent) {
+            if self.skip_whitespace_only_with_dedent_check(base_indent, true) {
                 break;
             }
 
             // Emit comments as children of SEQUENCE
-            if self.absorb_entry_comments(base_indent) {
+            if self.absorb_entry_comments(base_indent, true) {
                 break;
             }
 

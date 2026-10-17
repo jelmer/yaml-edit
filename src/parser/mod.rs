@@ -741,7 +741,16 @@ impl Parser {
         if self.current() == Some(SyntaxKind::COMMENT) {
             self.bump();
         }
-        if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
+        if let Some(column) =
+            mapping_column.filter(|column| self.dedented_block_scalar_header_follows(*column))
+        {
+            // `? a\n:\n|\n x\n`: the header can only be this value. Its
+            // body still has to clear the mapping's column.
+            self.skip_ws_and_newlines();
+            let outer_column = self.mapping_value_column.replace(column);
+            self.parse_value();
+            self.mapping_value_column = outer_column;
+        } else if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
             self.parse_value();
         } else if self.current() == Some(SyntaxKind::NEWLINE) {
             self.bump(); // consume newline
@@ -1111,6 +1120,48 @@ impl Parser {
                     return (indent > dash_column).then_some(indent);
                 }
                 _ => return None,
+            }
+        }
+    }
+
+    /// Whether a block scalar header not indented past `indicator_column`
+    /// opens the next line with content.
+    ///
+    /// The caller is on the NEWLINE, or a comment before it, that ends the
+    /// line of a `-`, `?` or explicit `:` at that column. Such a header can
+    /// only be the indicator's node, as nothing else starts with `|` or
+    /// `>`, though `s-separate(n+1)` wants it indented past the indicator;
+    /// the validator reports it.
+    pub(super) fn dedented_block_scalar_header_follows(&self, indicator_column: usize) -> bool {
+        let mut rest = self
+            .tokens
+            .iter()
+            .rev()
+            .map(|(kind, text)| (*kind, text.len()))
+            .peekable();
+        rest.next_if(|(kind, _)| *kind == SyntaxKind::COMMENT);
+        if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+            return false;
+        }
+        loop {
+            let mut indent = 0;
+            let mut token = rest.next();
+            if let Some((SyntaxKind::INDENT, len)) = token {
+                indent = len;
+                token = rest.next();
+            }
+            match token {
+                // A blank line, whose indentation is not significant.
+                Some((SyntaxKind::NEWLINE, _)) => continue,
+                Some((SyntaxKind::COMMENT, _)) => {
+                    if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
+                        return false;
+                    }
+                }
+                Some((SyntaxKind::PIPE | SyntaxKind::GREATER, _)) => {
+                    return indent <= indicator_column
+                }
+                _ => return false,
             }
         }
     }

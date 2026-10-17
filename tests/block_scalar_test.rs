@@ -1169,3 +1169,90 @@ fn test_block_value_body_bounded_by_key_column_in_sequence_item() {
         assert_eq!(header_violations(&file), vec![], "{yaml:?}");
     }
 }
+
+/// Render a node as a compact string, so a test can compare a whole
+/// structure at once.
+fn render(node: &yaml_edit::YamlNode) -> String {
+    use yaml_edit::YamlNode;
+    match node {
+        YamlNode::Scalar(s) if s.is_null() => "null".to_string(),
+        YamlNode::Scalar(s) => format!("{:?}", s.as_string()),
+        YamlNode::Sequence(s) => {
+            let items: Vec<_> = s.values().map(|v| render(&v)).collect();
+            format!("[{}]", items.join(", "))
+        }
+        YamlNode::Mapping(m) => {
+            let entries: Vec<_> = m
+                .iter()
+                .map(|(k, v)| format!("{}: {}", render(&k), render(&v)))
+                .collect();
+            format!("{{{}}}", entries.join(", "))
+        }
+        YamlNode::TaggedNode(t) => format!("{} {:?}", t.tag().unwrap(), t.as_string()),
+        YamlNode::Alias(a) => format!("*{}", a.name()),
+    }
+}
+
+fn render_document(file: &yaml_edit::YamlFile) -> String {
+    use rowan::ast::AstNode;
+    let document = file.document().unwrap();
+    let root = document
+        .syntax()
+        .children()
+        .find_map(yaml_edit::YamlNode::from_syntax)
+        .unwrap();
+    render(&root)
+}
+
+/// A block scalar header on the line after a `-`, `?` or explicit `:`, but
+/// not indented past it, can only be that indicator's node: nothing else
+/// starts with `|` or `>`. `s-separate(n+1)` rules it out, so the validator
+/// reports it.
+#[test]
+fn test_header_at_indicator_column_is_the_node() {
+    use std::str::FromStr;
+    use yaml_edit::YamlFile;
+
+    for (yaml, expected, location) in [
+        ("-\n|\n x\n", r#"["x\n"]"#, Some("2:1")),
+        ("-\n>\n x\n y\n", r#"["x y\n"]"#, Some("2:1")),
+        ("-\n|\n x\n- y\n", r#"["x\n", "y"]"#, Some("2:1")),
+        ("-\n|\n- y\n", r#"["", "y"]"#, Some("2:1")),
+        ("- # c\n|\n x\n", r#"["x\n"]"#, Some("2:1")),
+        ("-\n# c\n|\n x\n", r#"["x\n"]"#, Some("3:1")),
+        ("- -\n  |\n   x\n", r#"[["x\n"]]"#, Some("2:3")),
+        ("- -\n  |\n  - y\n", r#"[["", "y"]]"#, Some("2:3")),
+        ("-\n |\n  x\n", r#"["x\n"]"#, None),
+        ("?\n|\n x\n", r#"{"x\n": null}"#, Some("2:1")),
+        ("?\n|\n x\n: v\n", r#"{"x\n": "v"}"#, Some("2:1")),
+        ("? # c\n|\n x\n", r#"{"x\n": null}"#, Some("2:1")),
+        ("? a\n:\n|\n x\n", r#"{"a": "x\n"}"#, Some("3:1")),
+        (
+            "? a\n:\n>\n x\n? b\n",
+            r#"{"a": "x\n", "b": null}"#,
+            Some("3:1"),
+        ),
+        ("? a\n: # c\n|\n x\n", r#"{"a": "x\n"}"#, Some("3:1")),
+        ("- ? a\n  :\n  |\n   x\n", r#"[{"a": "x\n"}]"#, Some("3:3")),
+        ("- ?\n  |\n   x\n", r#"[{"x\n": null}]"#, Some("2:3")),
+        ("? a\n:\n |\n  x\n", r#"{"a": "x\n"}"#, None),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
+        assert_eq!(file.to_string(), yaml);
+        {
+            use rowan::ast::AstNode;
+            yaml_edit::debug::validate_tree(file.syntax()).unwrap();
+        }
+        assert_eq!(render_document(&file), expected, "{yaml:?}");
+        let expected_violations: Vec<_> = location
+            .map(|location| {
+                (
+                    "Block scalar header must be indented past its parent node".to_string(),
+                    Some(location.to_string()),
+                )
+            })
+            .into_iter()
+            .collect();
+        assert_eq!(header_violations(&file), expected_violations, "{yaml:?}");
+    }
+}

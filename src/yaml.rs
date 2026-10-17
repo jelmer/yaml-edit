@@ -2849,6 +2849,22 @@ next: value"#;
     }
 
     #[test]
+    fn test_block_scalar_body_starting_with_tab() {
+        // A tab is not indentation, so the body is indented two and its
+        // first line holds the tab.
+        let yaml = "k: |-\n  \ta\n  b\nz: 1\n";
+        let file = YamlFile::from_str(yaml).unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let value = mapping.get("k").unwrap();
+        assert_eq!(value.as_scalar().unwrap().as_string(), "\ta\nb");
+        assert_eq!(
+            mapping.get("z").unwrap().as_scalar().unwrap().as_string(),
+            "1"
+        );
+        assert_eq!(file.to_string(), yaml);
+    }
+
+    #[test]
     fn test_block_scalar_with_anchors_and_aliases() {
         let yaml = r#"template: &template |
   This is a template

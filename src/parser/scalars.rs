@@ -643,7 +643,9 @@ impl Parser {
                         break;
                     }
                     SyntaxKind::INDENT => {
-                        first_content_indent = self.current_text().map(|t| t.len());
+                        first_content_indent = self
+                            .current_text()
+                            .map(|text| body_indent(text, enclosing_column.unwrap_or(0)));
                     }
                     // A blank line carries no content, so it sets no base.
                     SyntaxKind::NEWLINE => {
@@ -1020,4 +1022,21 @@ pub(super) fn is_plain_scalar_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::BOOL
             | SyntaxKind::NULL
     )
+}
+
+/// The indentation a block scalar's first body line sets, where `indent`
+/// is the line's leading white space and `enclosing_column` the column of
+/// the collection the scalar is a node of.
+///
+/// Indentation is spaces only (s-indent), so a tab after them is content:
+/// `k: |\n  \tx\n` is indented two and holds `\tx`. Spaces that don't
+/// clear the enclosing column make the line invalid as body; the parser
+/// leniently counts its tabs as indentation then.
+fn body_indent(indent: &str, enclosing_column: usize) -> usize {
+    let spaces = indent.bytes().take_while(|b| *b == b' ').count();
+    if spaces > enclosing_column {
+        spaces
+    } else {
+        indent.len()
+    }
 }

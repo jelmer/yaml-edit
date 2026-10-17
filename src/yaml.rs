@@ -782,26 +782,26 @@ impl YamlFile {
             .0
             .children()
             .any(|n| matches!(n.kind(), SyntaxKind::DOCUMENT | SyntaxKind::DIRECTIVE));
-        if needs_start {
-            if !crate::nodes::trailing_newline_reachable(&self.0) {
-                let newline = crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n");
-                match self.0.last_child_or_token() {
-                    Some(rowan::NodeOrToken::Node(last)) if last.kind() == SyntaxKind::DOCUMENT => {
-                        crate::nodes::append_children(&last, vec![newline.into()])
-                    }
-                    _ => crate::nodes::append_children(&self.0, vec![newline.into()]),
+        if !self.0.text_range().is_empty() && !crate::nodes::trailing_newline_reachable(&self.0) {
+            match self.0.last_child_or_token() {
+                Some(rowan::NodeOrToken::Node(last)) if last.kind() == SyntaxKind::DOCUMENT => {
+                    crate::nodes::terminate_last_line(&last)
                 }
+                _ => crate::nodes::append_children(
+                    &self.0,
+                    vec![crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into()],
+                ),
             }
-            if !has_child_token(document.syntax(), |k| k == SyntaxKind::DOC_START) {
-                let index = usize::from(bom.is_some());
-                document.syntax().splice_children(
-                    index..index,
-                    vec![
-                        crate::nodes::fresh_token(SyntaxKind::DOC_START, "---").into(),
-                        crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into(),
-                    ],
-                );
-            }
+        }
+        if needs_start && !has_child_token(document.syntax(), |k| k == SyntaxKind::DOC_START) {
+            let index = usize::from(bom.is_some());
+            document.syntax().splice_children(
+                index..index,
+                vec![
+                    crate::nodes::fresh_token(SyntaxKind::DOC_START, "---").into(),
+                    crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into(),
+                ],
+            );
         }
         if let Some(bom) = bom.filter(|_| !self.0.text_range().is_empty()) {
             bom.detach();
@@ -1092,6 +1092,69 @@ mod tests {
             assert_eq!(yaml.to_string(), expected, "{src:?} + {pushed:?}");
             assert_parser_shape(&yaml);
         }
+    }
+
+    #[test]
+    fn test_push_document_terminates_last_line_like_parser() {
+        // TODO: sources ending in a tag or anchor with no value (`a: !!str`,
+        // `- &a`) or a comment line under a nested mapping are missing: the
+        // parser gives them a different shape at the end of the input than
+        // in front of `---`, so no placement of the line break can match.
+        for src in [
+            "a: 1",
+            "- 1",
+            "a: 1\n# end",
+            "- 1\n# end",
+            "foo",
+            "foo # c",
+            "{a: 1}",
+            "|\n x",
+            "!!str",
+            "&a",
+            "!!str # c",
+            "--- !!str",
+            "---",
+            "--- # c",
+            "a: [1]",
+            "a: 1 # c",
+            "a: |\n  x",
+            "a:",
+            "a: &x",
+            "a: # c",
+            "a:\n  b: 1",
+            "a:\n  - 1",
+            "a:\n  b:",
+            "a: !t\n  b: 1",
+            "? a",
+            "? a\n: b",
+            "? a\n:",
+            "? a\n: # c",
+            "? a\n: - 1",
+            "? a\n: {b: 1}",
+            "-",
+            "- a: 1",
+            "- - 1",
+            "- |\n  x",
+            "- # c",
+            "- &a # c",
+            "- \n  # c",
+            "- a # c",
+            "- ? a\n  : b",
+            "- ? a\n  :",
+        ] {
+            let yaml = YamlFile::from_str(src).unwrap();
+            yaml.push_document(Document::from_str("b: 2\n").unwrap());
+            assert_eq!(yaml.to_string(), format!("{src}\n---\nb: 2\n"));
+            assert_parser_shape(&yaml);
+        }
+    }
+
+    #[test]
+    fn test_push_document_after_unterminated_comment() {
+        let yaml = YamlFile::from_str("# c").unwrap();
+        yaml.push_document(Document::from_str("b: 2\n").unwrap());
+        assert_eq!(yaml.to_string(), "# c\nb: 2\n");
+        assert_parser_shape(&yaml);
     }
 
     #[test]

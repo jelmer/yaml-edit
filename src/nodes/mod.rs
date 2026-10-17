@@ -374,6 +374,79 @@ pub(crate) fn ensure_own_trailing_newline(entry: &SyntaxNode) {
     append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
 }
 
+/// Add the line break that ends the last line of `node`, where the parser
+/// puts it when another document follows.
+///
+/// The parser hands the break to the innermost construct still open at the
+/// end of the line: the last block entry, a block scalar, the collection
+/// holding a trailing comment line, or the spot in front of an empty value
+/// it went looking for on the next line. `node` must not already end in a
+/// NEWLINE.
+pub(crate) fn terminate_last_line(node: &SyntaxNode) {
+    let newline = || vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()];
+    let insert_before = |n: &SyntaxNode| {
+        let parent = n.parent().expect("a descendant has a parent");
+        parent.splice_children(n.index()..n.index(), newline());
+    };
+
+    // A node without even a zero-width token is a value the parser only
+    // gave up on after reading the line break.
+    let mut tail = node.clone();
+    while let Some(rowan::NodeOrToken::Node(n)) = tail.last_child_or_token() {
+        tail = n;
+    }
+    if tail != *node && tail.first_child_or_token().is_none() {
+        insert_before(&tail);
+        return;
+    }
+
+    let mut cur = node.clone();
+    while let Some(rowan::NodeOrToken::Node(last)) = cur.last_child_or_token() {
+        if last.text_range().is_empty() {
+            match cur.kind() {
+                SyntaxKind::MAPPING_ENTRY if has_child_token(&cur, |k| k == SyntaxKind::COLON) => {}
+                SyntaxKind::MAPPING_ENTRY | SyntaxKind::VALUE => {
+                    insert_before(&last);
+                    return;
+                }
+                _ => break,
+            }
+        } else if !holds_line_end(&last) {
+            break;
+        }
+        cur = last;
+    }
+
+    // An explicit-key entry leaves the break to its mapping.
+    if cur.kind() == SyntaxKind::MAPPING_ENTRY
+        && has_child_token(&cur, |k| k == SyntaxKind::QUESTION)
+    {
+        let parent = cur.parent().expect("a mapping entry has a mapping");
+        let after = cur.index() + 1;
+        parent.splice_children(after..after, newline());
+    } else {
+        append_children(&cur, newline());
+    }
+}
+
+/// Does the parser put the line break after `node`'s last line inside it?
+fn holds_line_end(node: &SyntaxNode) -> bool {
+    match node.kind() {
+        SyntaxKind::MAPPING | SyntaxKind::SEQUENCE => !has_child_token(node, |k| {
+            matches!(k, SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET)
+        }),
+        SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY => true,
+        SyntaxKind::SCALAR => has_child_token(node, |k| {
+            matches!(k, SyntaxKind::PIPE | SyntaxKind::GREATER)
+        }),
+        SyntaxKind::VALUE => node
+            .last_child()
+            .is_some_and(|last| last.text_range().is_empty() || holds_line_end(&last)),
+        SyntaxKind::TAGGED_NODE => node.last_child().is_some_and(|last| holds_line_end(&last)),
+        _ => false,
+    }
+}
+
 /// The `children_with_tokens()` indices of `parent`'s direct child nodes of
 /// the given kind, in order.
 ///

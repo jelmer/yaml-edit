@@ -114,17 +114,26 @@ fn test_sequence_key_in_block_mapping() {
 fn block_yaml_values() -> Vec<(YamlValue, &'static str)> {
     vec![
         (
-            YamlValue::parse_raw("!local\n  a: 1\n  b: 2"),
+            YamlValue::parse_raw("!local\n  a: 1\n  b: 2").unwrap(),
             "!local {a: 1, b: 2}",
         ),
-        (YamlValue::parse_raw("a: 1\nb: [x]\n"), "{a: 1, b: [x]}"),
-        (YamlValue::parse_raw("- a\n- b, c\n"), "[a, \"b, c\"]"),
-        (YamlValue::parse_raw("!!set\n  a: ~\n"), "!!set {a: null}"),
         (
-            YamlValue::parse_raw("!!omap\n  - a: 1\n"),
+            YamlValue::parse_raw("a: 1\nb: [x]\n").unwrap(),
+            "{a: 1, b: [x]}",
+        ),
+        (
+            YamlValue::parse_raw("- a\n- b, c\n").unwrap(),
+            "[a, \"b, c\"]",
+        ),
+        (
+            YamlValue::parse_raw("!!set\n  a: ~\n").unwrap(),
+            "!!set {a: null}",
+        ),
+        (
+            YamlValue::parse_raw("!!omap\n  - a: 1\n").unwrap(),
             "!!omap [{a: 1}]",
         ),
-        (YamlValue::parse_raw("!t\n  - a\n"), "!t [a]"),
+        (YamlValue::parse_raw("!t\n  - a\n").unwrap(), "!t [a]"),
         (
             YamlValue::Sequence(vec![YamlValue::Scalar(ScalarValue::literal("a\nb\n"))]),
             "[\"a\\nb\\n\"]",

@@ -10,8 +10,9 @@
 //! - **Preserves structure**: Original syntax tree remains unchanged
 //! - **Lazy evaluation**: Anchors are resolved on-demand, not eagerly
 //! - **Error handling**: An undefined or recursive alias, a merge key
-//!   whose operand is not a mapping, or distinct keys that would collide
-//!   in a resolved mapping are reported as a [`ResolveError`]
+//!   whose operand is not a mapping, distinct keys that would collide
+//!   in a resolved mapping, or `!!set`, `!!omap` and `!!pairs` content
+//!   that [`YamlValue`] cannot hold are reported as a [`ResolveError`]
 //!
 //! # Examples
 //!
@@ -55,7 +56,8 @@ use crate::yaml::SyntaxNode;
 use rowan::ast::AstNode;
 use std::collections::HashMap;
 
-/// An error resolving aliases or merge keys.
+/// An error resolving aliases or merge keys, or converting a node to a
+/// [`YamlValue`] that cannot hold it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError {
     /// An alias refers to an anchor that is not defined before it in the
@@ -85,6 +87,27 @@ pub enum ResolveError {
         /// The source text of the key that collides with it.
         second: String,
     },
+    /// A `!!set` member is not a scalar, so it cannot be kept in a
+    /// [`YamlValue::Set`].
+    InvalidSetMember {
+        /// The source text of the member.
+        member: String,
+    },
+    /// An item of a `!!omap` or `!!pairs` sequence is not a mapping with a
+    /// single entry.
+    InvalidPairsItem {
+        /// The tag of the sequence, `!!omap` or `!!pairs`.
+        tag: String,
+        /// The source text of the item.
+        item: String,
+    },
+    /// [`YamlValue::cast`] met an alias, which it cannot resolve without
+    /// the document's anchors.
+    /// [`DocumentResolvedExt::get_resolved`] resolves aliases.
+    UnresolvedAlias {
+        /// The anchor name the alias references, without the `*`.
+        alias: String,
+    },
 }
 
 impl std::fmt::Display for ResolveError {
@@ -103,6 +126,22 @@ impl std::fmt::Display for ResolveError {
                 write!(
                     f,
                     "distinct keys {first:?} and {second:?} have the same string form"
+                )
+            }
+            ResolveError::InvalidSetMember { member } => {
+                write!(f, "!!set member {member:?} is not a scalar")
+            }
+            ResolveError::InvalidPairsItem { tag, item } => {
+                write!(
+                    f,
+                    "{tag} item {item:?} is not a mapping with a single entry"
+                )
+            }
+            ResolveError::UnresolvedAlias { alias } => {
+                write!(
+                    f,
+                    "alias {alias:?} cannot be converted without resolving it; \
+                     use get_resolved to resolve aliases"
                 )
             }
         }
@@ -284,7 +323,7 @@ impl DocumentResolvedExt for crate::yaml::Document {
             return Ok(None);
         };
         let registry = self.build_anchor_registry();
-        resolved_value(node, &registry, &mut Vec::new())
+        resolved_value(node, Some(&registry), &mut Vec::new())
     }
 
     fn build_anchor_registry(&self) -> AnchorRegistry {
@@ -298,9 +337,17 @@ fn is_merge_key(key: &crate::as_yaml::YamlNode) -> bool {
     key.as_scalar().is_some_and(|s| s.value() == "<<")
 }
 
-/// Extract a string value from a YamlNode scalar.
-fn node_as_string(node: &crate::as_yaml::YamlNode) -> Option<String> {
-    node.as_scalar().map(|s| s.as_string())
+/// The string form of a mapping key: the value of a scalar, tagged or
+/// not, and the source text of anything else.
+fn key_string(key: &crate::as_yaml::YamlNode) -> String {
+    use crate::as_yaml::YamlNode;
+
+    let scalar = match key {
+        YamlNode::Scalar(s) => Some(s.clone()),
+        YamlNode::TaggedNode(t) => t.value(),
+        _ => None,
+    };
+    scalar.map_or_else(|| key.to_string(), |s| s.as_string())
 }
 
 /// Apply merge keys to create a new merged mapping (returns BTreeMap for YamlValue::Mapping)
@@ -309,23 +356,34 @@ fn node_as_string(node: &crate::as_yaml::YamlNode) -> Option<String> {
 /// precedence order [`merge_sources`] returns them. Keys are compared as
 /// YAML values, so a direct `16` shadows a merged `0x10`. Distinct keys
 /// with the same string form, such as `1` and `'1'`, are a
-/// [`ResolveError::KeyCollision`].
+/// [`ResolveError::KeyCollision`]. Without a registry, `<<` is an
+/// ordinary key and an alias key is a [`ResolveError::UnresolvedAlias`].
 fn apply_merge_keys(
     mapping: &crate::yaml::Mapping,
-    registry: &AnchorRegistry,
+    registry: Option<&AnchorRegistry>,
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<std::collections::BTreeMap<String, YamlValue>, ResolveError> {
     let mut merged_pairs = std::collections::BTreeMap::new();
     let mut seen: Vec<(crate::as_yaml::YamlNode, String)> = Vec::new();
-    let sources = merge_sources(mapping, registry)?;
+    let sources = match registry {
+        Some(registry) => merge_sources(mapping, registry)?,
+        None => Vec::new(),
+    };
     for source in std::iter::once(mapping).chain(&sources) {
         for (key, value) in source.iter() {
-            if is_merge_key(&key) || seen.iter().any(|(k, _)| k.yaml_eq(&key)) {
+            if (registry.is_some() && is_merge_key(&key))
+                || seen.iter().any(|(k, _)| k.yaml_eq(&key))
+            {
                 continue;
             }
-            // A non-scalar key has no string form, so use its text as
-            // YamlValue::cast does.
-            let key_str = node_as_string(&key).unwrap_or_else(|| key.to_string());
+            if let (crate::as_yaml::YamlNode::Alias(alias), None) = (&key, registry) {
+                return Err(ResolveError::UnresolvedAlias {
+                    alias: alias.name(),
+                });
+            }
+            // TODO: with a registry, an alias key is kept as its source
+            // text, such as "*a", rather than resolved.
+            let key_str = key_string(&key);
             if let Some((first, _)) = seen.iter().find(|(_, s)| *s == key_str) {
                 return Err(ResolveError::KeyCollision {
                     first: first.to_string(),
@@ -344,11 +402,14 @@ fn apply_merge_keys(
 /// Turn `node` into a [`YamlValue`], following aliases and applying merge
 /// keys at every level.
 ///
+/// Without a registry, as for [`YamlValue::cast`], an alias is a
+/// [`ResolveError::UnresolvedAlias`] and merge keys are not applied.
+///
 /// `expanding` holds the anchored nodes currently being expanded, so an alias
 /// that refers back to one of them is reported as recursive.
-fn resolved_value(
+pub(crate) fn resolved_value(
     node: crate::as_yaml::YamlNode,
-    registry: &AnchorRegistry,
+    registry: Option<&AnchorRegistry>,
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<Option<YamlValue>, ResolveError> {
     use crate::as_yaml::YamlNode;
@@ -356,6 +417,9 @@ fn resolved_value(
     match node {
         YamlNode::Alias(alias) => {
             let name = alias.name();
+            let Some(registry) = registry else {
+                return Err(ResolveError::UnresolvedAlias { alias: name });
+            };
             let target = registry
                 .resolve_alias(&name, alias.syntax())
                 .ok_or_else(|| ResolveError::UndefinedAlias {
@@ -368,7 +432,7 @@ fn resolved_value(
                 return Err(ResolveError::UndefinedAlias { alias: name });
             };
             expanding.push(target.clone());
-            let value = resolved_value(target_node, registry, expanding);
+            let value = resolved_value(target_node, Some(registry), expanding);
             expanding.pop();
             value
         }
@@ -383,15 +447,19 @@ fn resolved_value(
             Ok(Some(YamlValue::Sequence(items)))
         }
         YamlNode::TaggedNode(tagged) => resolved_tagged(&tagged, registry, expanding),
-        other => Ok(YamlValue::cast(other.syntax().clone())),
+        YamlNode::Scalar(scalar) => Ok(Some(YamlValue::Scalar(
+            crate::scalar::ScalarValue::from_scalar(&scalar),
+        ))),
     }
 }
 
-/// Resolve a tagged node like [`resolved_value`], keeping the
-/// representation [`YamlValue::cast`] gives its tag.
+/// Resolve a tagged node like [`resolved_value`]: `!!set`, `!!omap` and
+/// `!!pairs` get their own [`YamlValue`] variants, other tagged
+/// collections are [`YamlValue::Tagged`] and a tagged scalar keeps its tag
+/// on the [`ScalarValue`](crate::ScalarValue).
 fn resolved_tagged(
     tagged: &crate::yaml::TaggedNode,
-    registry: &AnchorRegistry,
+    registry: Option<&AnchorRegistry>,
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<Option<YamlValue>, ResolveError> {
     use crate::as_yaml::YamlNode;
@@ -399,11 +467,13 @@ fn resolved_tagged(
     if let Some(set) = tagged.as_set() {
         let mut members = std::collections::BTreeSet::new();
         for member in set.members() {
-            // TODO: YamlValue::Set only holds scalars, so other members are
-            // dropped, as YamlValue::cast does.
-            if let Some(YamlValue::Scalar(s)) = resolved_value(member, registry, expanding)? {
-                members.insert(s.value().to_string());
-            }
+            let Some(YamlValue::Scalar(s)) = resolved_value(member.clone(), registry, expanding)?
+            else {
+                return Err(ResolveError::InvalidSetMember {
+                    member: member.to_string(),
+                });
+            };
+            members.insert(s.value().to_string());
         }
         return Ok(Some(YamlValue::Set(members)));
     }
@@ -412,33 +482,46 @@ fn resolved_tagged(
         .map(YamlNode::Mapping)
         .or_else(|| tagged.as_sequence().map(YamlNode::Sequence));
     let (Some(tag), Some(content)) = (tagged.tag(), content) else {
-        return Ok(YamlValue::cast(tagged.syntax().clone()));
+        return Ok(crate::scalar::ScalarValue::from_tagged(tagged).map(YamlValue::Scalar));
     };
     match (tag.as_str(), &content) {
         ("!!omap", YamlNode::Sequence(seq)) => Ok(Some(YamlValue::OrderedMapping(resolved_pairs(
-            seq, registry, expanding,
+            &tag, seq, registry, expanding,
         )?))),
         ("!!pairs", YamlNode::Sequence(seq)) => Ok(Some(YamlValue::Pairs(resolved_pairs(
-            seq, registry, expanding,
+            &tag, seq, registry, expanding,
         )?))),
         _ => Ok(resolved_value(content, registry, expanding)?
             .map(|value| YamlValue::Tagged(tag, Box::new(value)))),
     }
 }
 
-/// The entries of a `!!omap` or `!!pairs` sequence, in order.
+/// The entries of a `!!omap` or `!!pairs` sequence tagged `tag`, in order.
+///
+/// Each item has to be a mapping, untagged or tagged `!!map`, with a single
+/// entry.
 fn resolved_pairs(
+    tag: &str,
     seq: &crate::yaml::Sequence,
-    registry: &AnchorRegistry,
+    registry: Option<&AnchorRegistry>,
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<Vec<(String, YamlValue)>, ResolveError> {
     let mut pairs = Vec::new();
     for item in seq.values() {
-        // TODO: an item that is not a mapping is dropped, as
-        // YamlValue::cast does.
-        if let Some(YamlValue::Mapping(entries)) = resolved_value(item, registry, expanding)? {
-            pairs.extend(entries);
+        let entries = match resolved_value(item.clone(), registry, expanding)? {
+            Some(YamlValue::Mapping(entries)) => Some(entries),
+            Some(YamlValue::Tagged(t, inner)) if t == "!!map" => match *inner {
+                YamlValue::Mapping(entries) => Some(entries),
+                _ => None,
+            },
+            _ => None,
         }
+        .filter(|entries| entries.len() == 1)
+        .ok_or_else(|| ResolveError::InvalidPairsItem {
+            tag: tag.to_string(),
+            item: item.to_string(),
+        })?;
+        pairs.extend(entries);
     }
     Ok(pairs)
 }
@@ -1602,6 +1685,79 @@ m:
             Err(ResolveError::InvalidMergeOperand {
                 operand: "3".to_string()
             })
+        );
+    }
+
+    #[test]
+    fn get_resolved_invalid_set_member() {
+        for (yaml, member) in [
+            ("m: !!set {? [a], ? b}\n", "[a]"),
+            ("m: !!set {? {a: 1}}\n", "{a: 1}"),
+            ("x: &x [a]\nm: !!set {? *x}\n", "*x"),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Err(ResolveError::InvalidSetMember {
+                    member: member.to_string()
+                }),
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn get_resolved_invalid_pairs_item() {
+        for (yaml, tag, item) in [
+            ("m: !!omap [a]\n", "!!omap", "a"),
+            ("m: !!omap [[a]]\n", "!!omap", "[a]"),
+            ("m: !!omap [{}]\n", "!!omap", "{}"),
+            ("m: !!pairs [{b: 1, c: 2}]\n", "!!pairs", "{b: 1, c: 2}"),
+            ("m: !!pairs [!local {a: 1}]\n", "!!pairs", "!local {a: 1}"),
+            ("e: &e {a: 1, b: 2}\nm: !!omap [*e]\n", "!!omap", "*e"),
+            (
+                "e: &e {a: 1}\nm: !!omap [{<<: *e, b: 2}]\n",
+                "!!omap",
+                "{<<: *e, b: 2}",
+            ),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Err(ResolveError::InvalidPairsItem {
+                    tag: tag.to_string(),
+                    item: item.to_string()
+                }),
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn get_resolved_pairs_item_tagged_map() {
+        assert_eq!(
+            doc("m: !!omap [!!map {a: 1}]\n").get_resolved("m"),
+            Ok(Some(YamlValue::OrderedMapping(pair_list(vec![(
+                "a",
+                YamlValue::from(1)
+            )]))))
+        );
+    }
+
+    #[test]
+    fn resolve_error_display() {
+        assert_eq!(
+            ResolveError::InvalidSetMember {
+                member: "[a]".to_string()
+            }
+            .to_string(),
+            "!!set member \"[a]\" is not a scalar"
+        );
+        assert_eq!(
+            ResolveError::InvalidPairsItem {
+                tag: "!!omap".to_string(),
+                item: "a".to_string()
+            }
+            .to_string(),
+            "!!omap item \"a\" is not a mapping with a single entry"
         );
     }
 }

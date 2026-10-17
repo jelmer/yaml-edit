@@ -326,28 +326,28 @@ fn round_trip_scalar_block_preserves_comment() {
 fn block_yaml_values_in_mappings() {
     let cases = [
         (
-            YamlValue::parse_raw("!local\n  a: 1\n  b: 2"),
+            YamlValue::parse_raw("!local\n  a: 1\n  b: 2").unwrap(),
             "k: !local\n  a: 1\n  b: 2\nj: 1\n",
             "k: 1\nj: 1\nn: !local\n  a: 1\n  b: 2\n",
             "p:\n  k: !local\n    a: 1\n    b: 2\n  j: 1\n",
             "p:\n  k: 1\n  j: 1\n  n: !local\n    a: 1\n    b: 2\n",
         ),
         (
-            YamlValue::parse_raw("a: 1\nb: [x]\n"),
+            YamlValue::parse_raw("a: 1\nb: [x]\n").unwrap(),
             "k:\n  a: 1\n  b:\n    - x\nj: 1\n",
             "k: 1\nj: 1\nn:\n  a: 1\n  b:\n    - x\n",
             "p:\n  k:\n    a: 1\n    b:\n      - x\n  j: 1\n",
             "p:\n  k: 1\n  j: 1\n  n:\n    a: 1\n    b:\n      - x\n",
         ),
         (
-            YamlValue::parse_raw("- a\n- b\n"),
+            YamlValue::parse_raw("- a\n- b\n").unwrap(),
             "k:\n  - a\n  - b\nj: 1\n",
             "k: 1\nj: 1\nn:\n- a\n- b\n",
             "p:\n  k:\n    - a\n    - b\n  j: 1\n",
             "p:\n  k: 1\n  j: 1\n  n:\n    - a\n    - b\n",
         ),
         (
-            YamlValue::parse_raw("!!set\n  a: ~\n"),
+            YamlValue::parse_raw("!!set\n  a: ~\n").unwrap(),
             "k: !!set\n  a: null\nj: 1\n",
             "k: 1\nj: 1\nn: !!set\n  a: null\n",
             "p:\n  k: !!set\n    a: null\n  j: 1\n",

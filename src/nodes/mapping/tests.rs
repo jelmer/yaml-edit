@@ -1816,3 +1816,116 @@ fn test_set_after_unterminated_nested_value() {
         assert_edited(&yaml, expected);
     }
 }
+
+/// A new entry after one whose value ends in a comment on its last line
+/// goes after that comment's line, where a re-parse keeps the comment.
+#[test]
+fn test_insert_after_nested_value_with_line_comment() {
+    use crate::debug::assert_edited;
+    use rowan::ast::AstNode;
+    let cases = [
+        ("x:\n  - 1 # c\n", "x:\n  - 1 # c\ny: 2\n"),
+        ("x:\n  - 1 # c", "x:\n  - 1 # c\ny: 2\n"),
+        ("x:\n  - 1 # c\nz: 3\n", "x:\n  - 1 # c\ny: 2\nz: 3\n"),
+        ("x:\n- 1 # c\nz: 3\n", "x:\n- 1 # c\ny: 2\nz: 3\n"),
+        ("x:\n  - - 1 # c\n", "x:\n  - - 1 # c\ny: 2\n"),
+        ("x:\n  - [1] # c\n", "x:\n  - [1] # c\ny: 2\n"),
+        ("x:\n  - | # c\n    t\n", "x:\n  - | # c\n    t\ny: 2\n"),
+        ("x:\n  a: 1 # c\n", "x:\n  a: 1 # c\ny: 2\n"),
+        ("x:\n  - a: 1 # c\n", "x:\n  - a: 1 # c\ny: 2\n"),
+        ("x:\n  a:\n    - 1 # c\n", "x:\n  a:\n    - 1 # c\ny: 2\n"),
+        ("x: | # c\n  t\n", "x: | # c\n  t\ny: 2\n"),
+        (
+            "- x:\n    a: 1 # c\n- 2\n",
+            "- x:\n    a: 1 # c\n  y: 2\n- 2\n",
+        ),
+        (
+            "a:\n  x:\n    - 1 # c\nb: 1\n",
+            "a:\n  x:\n    - 1 # c\n  y: 2\nb: 1\n",
+        ),
+    ];
+    // `set` appends and `insert_before` needs a following key, so each
+    // stands in for the other where it would not put `y` after `x`.
+    let set_or_insert_before = |m: &crate::Mapping| {
+        if m.contains_key("z") {
+            assert!(m.insert_before("z", "y", 2));
+        } else {
+            m.set("y", 2);
+        }
+    };
+    let ops: [&dyn Fn(&crate::Mapping); 4] = [
+        &set_or_insert_before,
+        &|m| m.insert_at_index(1, "y", 2),
+        &|m| assert!(m.insert_after("x", "y", 2)),
+        &|m| m.set_with_field_order("y", 2, ["x", "y", "z"]),
+    ];
+    for (source, expected) in cases {
+        for op in ops {
+            let yaml = YamlFile::from_str(source).unwrap();
+            let mapping = yaml
+                .syntax()
+                .descendants()
+                .filter_map(crate::Mapping::cast)
+                .find(|m| m.contains_key("x"))
+                .unwrap();
+            op(&mapping);
+            assert_edited(&yaml, expected);
+        }
+    }
+}
+
+/// The same after a sequence at the column of the mapping's own keys,
+/// with or without a comment ending it.
+#[test]
+fn test_insert_after_nested_indentless_sequence() {
+    use crate::debug::assert_edited;
+    use rowan::ast::AstNode;
+    let cases = [
+        ("- x:\n  - 1\n- 2\n", "- x:\n  - 1\n  y: 2\n- 2\n"),
+        ("- x:\n  - 1 # c\n- 2\n", "- x:\n  - 1 # c\n  y: 2\n- 2\n"),
+        ("- x:\n  - 1 # c\n", "- x:\n  - 1 # c\n  y: 2\n"),
+        ("- x:\n  - 1\n  z: 3\n", "- x:\n  - 1\n  y: 2\n  z: 3\n"),
+        (
+            "- x:\n  - 1 # c\n  z: 3\n- 2\n",
+            "- x:\n  - 1 # c\n  y: 2\n  z: 3\n- 2\n",
+        ),
+        (
+            "- x:\n  - 1\n\n  z: 3\n- 2\n",
+            "- x:\n  - 1\n\n  y: 2\n  z: 3\n- 2\n",
+        ),
+        (
+            "- x:\n  - | # c\n    t\n- 2\n",
+            "- x:\n  - | # c\n    t\n  y: 2\n- 2\n",
+        ),
+        (
+            "a:\n  x:\n  - 1 # c\n  z: 3\n",
+            "a:\n  x:\n  - 1 # c\n  y: 2\n  z: 3\n",
+        ),
+    ];
+    let set_or_insert_before = |m: &crate::Mapping| {
+        if m.contains_key("z") {
+            assert!(m.insert_before("z", "y", 2));
+        } else {
+            m.set("y", 2);
+        }
+    };
+    let ops: [&dyn Fn(&crate::Mapping); 4] = [
+        &set_or_insert_before,
+        &|m| m.insert_at_index(1, "y", 2),
+        &|m| assert!(m.insert_after("x", "y", 2)),
+        &|m| m.set_with_field_order("y", 2, ["x", "y", "z"]),
+    ];
+    for (source, expected) in cases {
+        for op in ops {
+            let yaml = YamlFile::from_str(source).unwrap();
+            let mapping = yaml
+                .syntax()
+                .descendants()
+                .filter_map(crate::Mapping::cast)
+                .find(|m| m.contains_key("x"))
+                .unwrap();
+            op(&mapping);
+            assert_edited(&yaml, expected);
+        }
+    }
+}

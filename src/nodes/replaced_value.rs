@@ -441,24 +441,9 @@ pub(crate) fn add_dash_line_comment(entry: &SyntaxNode, comment: LineComment) {
     if let Some(line_break) = line_break {
         elements.push(fresh_token(SyntaxKind::NEWLINE, &line_break).into());
     }
-    let anchor = lifted_comment_anchor(entry);
-    let parent = anchor.parent().expect("an entry is attached");
-    let at = anchor.index() + 1;
+    let parent = entry.parent().expect("an entry is attached");
+    let at = entry.index() + 1;
     parent.splice_children(at..at, elements);
-}
-
-/// The node a comment lifted out of `entry` follows: the outermost node
-/// ending where `entry` does that something follows, or `entry` itself at
-/// the end of the document.
-fn lifted_comment_anchor(entry: &SyntaxNode) -> SyntaxNode {
-    let mut node = entry.clone();
-    while node.next_sibling_or_token().is_none() {
-        match node.parent().filter(|p| p.kind() != SyntaxKind::DOCUMENT) {
-            Some(parent) => node = parent,
-            None => return entry.clone(),
-        }
-    }
-    node
 }
 
 /// Put `comment` on a line of its own directly above `entry`, at the

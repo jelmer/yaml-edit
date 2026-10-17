@@ -712,7 +712,6 @@ impl Sequence {
         }
 
         let indentation = self.detect_indentation();
-
         // Locate the last SEQUENCE_ENTRY and the insert position by walking
         // back from the end of the child list.
         //
@@ -729,8 +728,11 @@ impl Sequence {
         // Walk back over the trailing tokens the parser leaves after the
         // last entry. A NEWLINE there is a blank line belonging to the
         // enclosing mapping, so the new entry goes before it; an INDENT is a
-        // separator, so the new entry goes after it.
+        // separator, so the new entry goes after it. The last comment, on
+        // the last entry's line or a line of its own, stays in front of the
+        // new entry, which goes after the comment's line break.
         let mut last_entry_index = None;
+        let mut last_comment = None;
         let mut insert_pos = child_count;
         let mut idx = child_count;
         while idx > 0 {
@@ -745,6 +747,23 @@ impl Sequence {
                     }
                     break;
                 }
+                Some(rowan::NodeOrToken::Token(tok))
+                    if tok.kind() == SyntaxKind::COMMENT.into() =>
+                {
+                    last_comment.get_or_insert(idx);
+                }
+                Some(rowan::NodeOrToken::Token(tok)) if last_comment.is_some() => {
+                    debug_assert!(
+                        [
+                            SyntaxKind::INDENT,
+                            SyntaxKind::NEWLINE,
+                            SyntaxKind::WHITESPACE
+                        ]
+                        .iter()
+                        .any(|k| tok.kind() == (*k).into()),
+                        "unexpected token between sequence entry and comment"
+                    );
+                }
                 Some(rowan::NodeOrToken::Token(tok)) if tok.kind() == SyntaxKind::INDENT.into() => {
                     insert_pos = idx + 1;
                 }
@@ -757,10 +776,24 @@ impl Sequence {
             }
         }
 
-        // Ensure the previous last entry has a trailing newline (it won't be
-        // last anymore). `last_child` reaches it without walking the list.
         let mut last_entry_has_newline = true;
-        if last_entry_index.is_some() {
+        if let Some(comment) = last_comment.filter(|_| last_entry_index.is_some()) {
+            // The comment's line ends the previous entry's lines.
+            let terminated = green
+                .children()
+                .nth(comment + 1)
+                .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE.into());
+            if !terminated {
+                let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
+                self.0
+                    .splice_children(comment + 1..comment + 1, vec![nl.into()]);
+                last_entry_has_newline = false;
+            }
+            insert_pos = comment + 2;
+        } else if last_entry_index.is_some() {
+            // Ensure the previous last entry has a trailing newline (it won't
+            // be last anymore). `last_child` reaches it without walking the
+            // list.
             if let Some(node) = self
                 .0
                 .last_child()
@@ -962,8 +995,22 @@ impl Sequence {
         // Appending past the last entry (source doc had no trailing
         // newline)? Ensure the previous entry has one, otherwise our
         // new INDENT+ENTRY gets glued onto its tail as `- b  - c`.
+        // A comment after the previous entry, on its line or one of its own,
+        // ends its lines instead.
+        let mut inserts = Vec::new();
         if target_entry_pos == children.len() {
-            if let Some(prev_entry) = children.iter().rev().find_map(|c| {
+            let tail = children.iter().rev().take_while(|c| {
+                c.as_node()
+                    .map_or(true, |n| n.kind() != SyntaxKind::SEQUENCE_ENTRY)
+            });
+            if tail.clone().any(|c| c.kind() == SyntaxKind::COMMENT) {
+                if children
+                    .last()
+                    .is_some_and(|c| c.kind() == SyntaxKind::COMMENT)
+                {
+                    inserts.push(fresh_token(SyntaxKind::NEWLINE, "\n").into());
+                }
+            } else if let Some(prev_entry) = children.iter().rev().find_map(|c| {
                 c.as_node()
                     .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             }) {
@@ -993,7 +1040,7 @@ impl Sequence {
             return;
         }
 
-        let mut inserts: Vec<_> = indent_token(&indentation).into_iter().collect();
+        inserts.extend(indent_token(&indentation));
         inserts.push(new_entry.clone().into());
         self.0.splice_children(insert_at..insert_at, inserts);
         crate::nodes::settle_lines_after_inserted_entry(&new_entry);
@@ -2807,6 +2854,118 @@ scores:
             let seq = yaml.document().unwrap().as_sequence().unwrap();
             seq.insert(1, "x");
             crate::debug::assert_edited(&yaml, expected);
+        }
+    }
+
+    /// A comment line ending the sequence stays before the new last item;
+    /// a comment on the last item's own line stays with that item.
+    #[test]
+    fn test_append_after_trailing_comment() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("- 1\n  # c\n", "- 1\n  # c\n- x\n", "- 1\n  # c\n- x\n"),
+            ("- 1\n  # c", "- 1\n  # c\n- x", "- 1\n  # c\n- x\n"),
+            ("- 1\n# c\n", "- 1\n# c\n- x\n", "- 1\n# c\n- x\n"),
+            (
+                "- 1\n  # c\n  # d\n",
+                "- 1\n  # c\n  # d\n- x\n",
+                "- 1\n  # c\n  # d\n- x\n",
+            ),
+            ("- 1 # c\n", "- 1 # c\n- x\n", "- 1 # c\n- x\n"),
+            ("- 1 # c", "- 1 # c\n- x", "- 1 # c\n- x\n"),
+            (
+                "- 1 # c\n  # d\n",
+                "- 1 # c\n  # d\n- x\n",
+                "- 1 # c\n  # d\n- x\n",
+            ),
+            (
+                "a:\n  - 1\n    # c\n",
+                "a:\n  - 1\n    # c\n  - x\n",
+                "a:\n  - 1\n    # c\n  - x\n",
+            ),
+            (
+                "a:\n  - 1\n    # c",
+                "a:\n  - 1\n    # c\n  - x",
+                "a:\n  - 1\n    # c\n  - x\n",
+            ),
+            (
+                "a:\n- 1\n  # c\n",
+                "a:\n- 1\n  # c\n- x\n",
+                "a:\n- 1\n  # c\n- x\n",
+            ),
+            (
+                "a:\n  - 1 # c\n",
+                "a:\n  - 1 # c\n  - x\n",
+                "a:\n  - 1 # c\n  - x\n",
+            ),
+            (
+                "a:\n  - 1 # c",
+                "a:\n  - 1 # c\n  - x",
+                "a:\n  - 1 # c\n  - x\n",
+            ),
+            (
+                "a:\n  - 1 # c\nb: 1\n",
+                "a:\n  - 1 # c\n  - x\nb: 1\n",
+                "a:\n  - 1 # c\n  - x\nb: 1\n",
+            ),
+            ("a:\n- 1 # c\n", "a:\n- 1 # c\n- x\n", "a:\n- 1 # c\n- x\n"),
+            // A comment line the parser lifted out of the sequence goes with
+            // what follows it, as for mappings.
+            (
+                "a:\n  - 1\n    # c\nb: 1\n",
+                "a:\n  - 1\n  - x\n    # c\nb: 1\n",
+                "a:\n  - 1\n  - x\n    # c\nb: 1\n",
+            ),
+        ];
+        for (source, pushed, inserted) in cases {
+            for (append, expected) in [
+                (
+                    &(|s: &crate::Sequence| s.push("x")) as &dyn Fn(&crate::Sequence),
+                    pushed,
+                ),
+                (&|s: &crate::Sequence| s.insert(s.len(), "x"), inserted),
+            ] {
+                let yaml = YamlFile::from_str(source).unwrap();
+                let doc = yaml.document().unwrap();
+                let seq = doc
+                    .as_sequence()
+                    .or_else(|| doc.as_mapping()?.get_sequence("a"))
+                    .unwrap();
+                append(&seq);
+                crate::debug::assert_edited(&yaml, expected);
+            }
+        }
+    }
+
+    /// The same for a sequence nested in another one.
+    #[test]
+    fn test_append_to_nested_sequence_after_comment() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "- - 1\n    # c\n",
+                "- - 1\n    # c\n  - x\n",
+                "- - 1\n    # c\n  - x\n",
+            ),
+            ("- - 1 # c\n", "- - 1 # c\n  - x\n", "- - 1 # c\n  - x\n"),
+            (
+                "- - 1 # c\n- 2\n",
+                "- - 1 # c\n  - x\n- 2\n",
+                "- - 1 # c\n  - x\n- 2\n",
+            ),
+        ];
+        for (source, pushed, inserted) in cases {
+            for (append, expected) in [
+                (
+                    &(|s: &crate::Sequence| s.push("x")) as &dyn Fn(&crate::Sequence),
+                    pushed,
+                ),
+                (&|s: &crate::Sequence| s.insert(s.len(), "x"), inserted),
+            ] {
+                let yaml = YamlFile::from_str(source).unwrap();
+                let outer = yaml.document().unwrap().as_sequence().unwrap();
+                let seq = outer.get(0).unwrap().as_sequence().cloned().unwrap();
+                append(&seq);
+                crate::debug::assert_edited(&yaml, expected);
+            }
         }
     }
 }

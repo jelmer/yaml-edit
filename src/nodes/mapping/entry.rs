@@ -5,8 +5,8 @@
 //! Split out of `nodes/mapping/mod.rs` unchanged.
 
 use super::helpers::{
-    build_block_value_node, built_block_node, find_key_line_comment, flow_form, has_comment,
-    source_anchor_text, value_is_block,
+    add_key_line_comment, build_block_value_node, built_block_node, find_key_line_comment,
+    flow_form, has_comment, source_anchor_text, value_is_block,
 };
 use super::{key_content_matches, MappingEntry};
 use crate::lex::SyntaxKind;
@@ -182,11 +182,14 @@ impl MappingEntry {
             });
 
         let value_ends_with_newline = if let Some(source) = block_source {
-            let (value_node, ends_with_newline) = build_block_value_node(source, key_indent + 2);
-            builder.start_node(value_node.kind().into());
-            add_node_children_to(&mut builder, &value_node);
+            let block = build_block_value_node(source, key_indent + 2);
+            if block.on_key_line {
+                builder.token(SyntaxKind::WHITESPACE.into(), " ");
+            }
+            builder.start_node(block.node.kind().into());
+            add_node_children_to(&mut builder, &block.node);
             builder.finish_node();
-            ends_with_newline
+            block.ends_with_newline
         } else {
             // For inline values, put the separator WHITESPACE at the
             // MAPPING_ENTRY level (between COLON and VALUE), matching
@@ -251,6 +254,14 @@ impl MappingEntry {
             .position(|c| c.as_node().is_some_and(|n| n.kind() == SyntaxKind::VALUE))
     }
 
+    /// True if the entry's VALUE opens with a key-line comment, as the
+    /// parser lays out `key:  # note` followed by a block collection.
+    fn value_starts_with_comment(&self) -> bool {
+        self.value()
+            .and_then(|v| v.first_token())
+            .is_some_and(|t| t.kind() == SyntaxKind::COMMENT)
+    }
+
     /// Insert `tokens` at position `at` in `self.0`.
     fn insert_at(&self, at: usize, tokens: Vec<rowan::SyntaxToken<Lang>>) {
         let elems: Vec<_> = tokens.into_iter().map(Into::into).collect();
@@ -291,8 +302,8 @@ impl MappingEntry {
     /// surrounding tokens) rather than rebuilding the whole entry, so
     /// unrelated tokens (leading comments, alignment whitespace) survive.
     fn set_block_value(&self, source: &SyntaxNode) {
-        let (new_value_node, value_ends_with_newline) =
-            build_block_value_node(source, self.indent_of_line() + 2);
+        let block = build_block_value_node(source, self.indent_of_line() + 2);
+        let value_ends_with_newline = block.ends_with_newline;
 
         // For explicit-key entries the parser sometimes stores the entry's
         // terminating NEWLINE at the MAPPING level (as a sibling of this
@@ -303,36 +314,48 @@ impl MappingEntry {
         let Some(value_idx) = self.value_index() else {
             return;
         };
-        let trailing_comment = find_key_line_comment(&self.0);
-        // Grab the WHITESPACE between COLON and VALUE before we splice so
-        // we can detach it later without re-walking. It's the only shape
-        // that "COLON followed by WHITESPACE followed by VALUE" takes.
+        // The WHITESPACE between COLON and VALUE, if any.
         let ws_between = self
             .0
             .children_with_tokens()
             .nth(value_idx.wrapping_sub(1))
             .and_then(|c| c.into_token())
             .filter(|t| t.kind() == SyntaxKind::WHITESPACE);
-
-        self.0
-            .splice_children(value_idx..value_idx + 1, vec![new_value_node.into()]);
-        // Block content lives on the next line, so drop the inline space.
-        if let Some(ws) = ws_between {
-            ws.detach();
-        }
-        // Slot the rescued comment (`WHITESPACE COMMENT`) right before the
-        // new VALUE so it stays on the key line.
-        if let Some((ws, comment)) = trailing_comment {
-            if let Some(idx) = self.value_index() {
-                self.insert_at(
-                    idx,
-                    vec![
-                        fresh_token(SyntaxKind::WHITESPACE, &ws),
-                        fresh_token(SyntaxKind::COMMENT, &comment),
-                    ],
+        // That whitespace separates the colon from a key-line comment, not
+        // from the value, if the comment comes first in VALUE.
+        let value_ws = ws_between
+            .as_ref()
+            .filter(|_| !self.value_starts_with_comment())
+            .map(|t| t.text().to_string());
+        let kept_ws = || value_ws.clone().unwrap_or_else(|| " ".to_string());
+        // Keep any key-line comment on the key line: after what the new
+        // value puts there, or else first in VALUE, before its line break.
+        let separator = match find_key_line_comment(&self.0) {
+            Some((ws, comment)) if !block.on_key_line => {
+                block.node.splice_children(
+                    0..0,
+                    vec![fresh_token(SyntaxKind::COMMENT, &comment).into()],
                 );
+                Some(ws)
             }
+            Some(comment) => {
+                add_key_line_comment(&block.node, comment);
+                Some(kept_ws())
+            }
+            None => block.on_key_line.then(kept_ws),
+        };
+
+        let start = if ws_between.is_some() {
+            value_idx - 1
+        } else {
+            value_idx
+        };
+        let mut replacement = Vec::new();
+        if let Some(ws) = separator {
+            replacement.push(fresh_token(SyntaxKind::WHITESPACE, &ws).into());
         }
+        replacement.push(block.node.into());
+        crate::nodes::replace_children(&self.0, start..value_idx + 1, replacement);
 
         // Keep exactly one trailing NEWLINE on the entry, either inside
         // VALUE (block content usually provides one), at MAPPING_ENTRY
@@ -456,11 +479,12 @@ impl MappingEntry {
             return;
         };
 
-        // If the parser stored a key-line comment as a sibling of the old
-        // block VALUE (`k:  # note\n  - block`), detach it: the new inline
-        // `new_value_node` already carries the rescued comment inside
-        // itself. Leaving the old tokens would duplicate the comment and
-        // - since comments extend to end of line - swallow the new value.
+        // A key-line comment of the old block VALUE (`k:  # note\n  - block`)
+        // has the whitespace before it, and possibly the comment itself,
+        // before VALUE. Detach them: the new inline `new_value_node`
+        // already carries the rescued comment inside itself. Leaving the
+        // old tokens would duplicate the comment and - since comments
+        // extend to end of line - swallow the new value.
         let stale: Vec<_> = self
             .0
             .children_with_tokens()
@@ -468,7 +492,8 @@ impl MappingEntry {
             .filter_map(|c| c.into_token())
             .filter(|t| matches!(t.kind(), SyntaxKind::WHITESPACE | SyntaxKind::COMMENT))
             .collect();
-        if stale.iter().any(|t| t.kind() == SyntaxKind::COMMENT) {
+        if self.value_starts_with_comment() || stale.iter().any(|t| t.kind() == SyntaxKind::COMMENT)
+        {
             for tok in stale {
                 tok.detach();
             }

@@ -72,3 +72,99 @@ fn test_set_tagged_node_value() {
     mapping.set("b", tagged.as_tagged().unwrap());
     assert_parser_shaped(&file, "a: 1\nb: !t v\n");
 }
+
+/// Indent every line of `text` after the first by two more columns.
+fn shift(text: &str) -> String {
+    text.replace('\n', "\n  ").trim_end_matches(' ').to_string()
+}
+
+/// The text after `v:` in each source: block values that start on the key
+/// line (anchor, tag, block scalar indicator) and ones that don't.
+const BLOCK_VALUES: &[&str] = &[
+    " |\n  x\n",
+    " >-\n  x\n  y\n",
+    " &a |\n  x\n",
+    " &a\n  x: 1\n",
+    " &a\n  - a\n",
+    " !t\n  x: 1\n",
+    " &a !t\n  x: 1\n",
+    " !t |\n  x\n",
+    " !!str >\n  x\n",
+    "\n  x: 1\n",
+    "\n  - a\n",
+];
+
+#[test]
+fn test_set_block_value_node() {
+    for value in BLOCK_VALUES {
+        let source = value_of(&format!("v:{value}"), "v");
+        for (src, nested, key, expected) in [
+            ("k: 1\n", false, "k", format!("k:{value}")),
+            ("k: 1\n", false, "n", format!("k: 1\nn:{value}")),
+            (
+                "m:\n  k: 1\n",
+                true,
+                "k",
+                format!("m:\n  k:{}", shift(value)),
+            ),
+            (
+                "m:\n  k: 1\n",
+                true,
+                "n",
+                format!("m:\n  k: 1\n  n:{}", shift(value)),
+            ),
+        ] {
+            let file = YamlFile::from_str(src).unwrap();
+            let root = file.document().unwrap().as_mapping().unwrap();
+            let mapping = if nested {
+                root.get_mapping("m").unwrap()
+            } else {
+                root
+            };
+            mapping.set(key, &source);
+            assert_parser_shaped(&file, &expected);
+        }
+    }
+}
+
+#[test]
+fn test_set_block_value_node_keeps_key_line_comment() {
+    for (value, expected) in [
+        (" |\n  x\n", "k: |  # note\n  x\n"),
+        (" &a |\n  x\n", "k: &a |  # note\n  x\n"),
+        (" &a\n  x: 1\n", "k: &a  # note\n  x: 1\n"),
+        (" !t\n  x: 1\n", "k: !t  # note\n  x: 1\n"),
+        (" &a !t\n  x: 1\n", "k: &a !t  # note\n  x: 1\n"),
+        (" !t |\n  x\n", "k: !t |  # note\n  x\n"),
+        ("\n  x: 1\n", "k:  # note\n  x: 1\n"),
+    ] {
+        let source = value_of(&format!("v:{value}"), "v");
+        for src in ["k: 1  # note\nj: 2\n", "k:  # note\n  - old\nj: 2\n"] {
+            let file = YamlFile::from_str(src).unwrap();
+            file.document()
+                .unwrap()
+                .as_mapping()
+                .unwrap()
+                .set("k", &source);
+            assert_parser_shaped(&file, &format!("{expected}j: 2\n"));
+        }
+    }
+}
+
+#[test]
+fn test_builder_pair_block_value_node() {
+    for value in BLOCK_VALUES {
+        let source = value_of(&format!("v:{value}"), "v");
+        let doc = yaml_edit::MappingBuilder::new()
+            .pair("n", &source)
+            .pair("j", 1)
+            .build_document();
+        let expected = format!("n:{value}j: 1\n");
+        assert_eq!(doc.to_string(), expected);
+        let reparsed = yaml_edit::Document::from_str(&expected).unwrap();
+        assert_eq!(
+            debug::tree_to_string(doc.syntax()),
+            debug::tree_to_string(reparsed.syntax())
+        );
+    }
+}

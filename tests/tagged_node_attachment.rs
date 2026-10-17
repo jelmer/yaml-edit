@@ -686,11 +686,22 @@ fn block_key_tag_is_a_tagged_node() {
             .collect()
     }
     for props in ["!t", "!!timestamp", "&a !t", "!t &a", "!t !u", "!t &a !u"] {
-        for key in ["k", "\"k\"", "'k'"] {
+        for key in ["k", "\"k\"", "'k'", "[a]", "{a: b}"] {
             let block = key_tree(&format!("{props} {key}: v\n"));
             assert_eq!(block, key_tree(&format!("? {props} {key}\n: v\n")));
             assert_eq!(block, key_tree(&format!("{{{props} {key}: v}}\n")));
         }
     }
     assert_eq!(key_tree("!t : v\n"), key_tree("{!t : v}\n"));
+    assert_eq!(key_tree("- !t [a]: v\n"), key_tree("!t [a]: v\n"));
+    let file = YamlFile::from_str("x:\n  !t [a]: v\n").unwrap();
+    let x = file.document().unwrap().as_mapping().unwrap().get("x");
+    let keys: Vec<String> = x
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .map(|k| format!("{:?}", k.kind()))
+        .collect();
+    assert_eq!(keys, ["Tagged(\"!t\")"]);
 }

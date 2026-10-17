@@ -376,7 +376,7 @@ impl Parser {
                             self.scalar_continuation_floor = outer_floor;
                         }
                     }
-                    None if self.annotation_ends_line() => self.emit_implicit_null(),
+                    None if self.annotation_ends_line() => self.emit_annotated_null(),
                     // Scalar, flow collection, or nothing that belongs to this
                     // tag: the ordinary value path already handles it. Keep
                     // our own base indent, and tell a trailing anchor

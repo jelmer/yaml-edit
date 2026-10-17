@@ -389,17 +389,6 @@ pub(crate) fn terminate_last_line(node: &SyntaxNode) {
         parent.splice_children(n.index()..n.index(), newline());
     };
 
-    // A node without even a zero-width token is a value the parser only
-    // gave up on after reading the line break.
-    let mut tail = node.clone();
-    while let Some(rowan::NodeOrToken::Node(n)) = tail.last_child_or_token() {
-        tail = n;
-    }
-    if tail != *node && tail.first_child_or_token().is_none() {
-        insert_before(&tail);
-        return;
-    }
-
     let mut cur = node.clone();
     while let Some(rowan::NodeOrToken::Node(last)) = cur.last_child_or_token() {
         if last.text_range().is_empty() {

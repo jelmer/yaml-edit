@@ -378,13 +378,21 @@ impl Validator {
                     .filter_map(|c| c.into_token())
                     .filter(|t| t.kind() == crate::SyntaxKind::TAG)
                 {
-                    // The lexer splits `!prefix!A` into the TAG tokens
-                    // `!prefix` and `!A`, so match the handle without
-                    // its closing `!`.
-                    if let Some(handle) = declared_earlier.iter().find(|h| {
-                        !own.contains(h)
-                            && (tag.text() == h.as_str() || tag.text() == h.trim_end_matches('!'))
-                    }) {
+                    // Only a named handle (`!prefix!A`) can be undefined;
+                    // `!` and `!!` fall back to their defaults.
+                    let text = tag.text();
+                    let Some(named) = text
+                        .strip_prefix('!')
+                        .and_then(|rest| rest.find('!'))
+                        .filter(|&i| i > 0)
+                        .map(|i| &text[..i + 2])
+                    else {
+                        continue;
+                    };
+                    if let Some(handle) = declared_earlier
+                        .iter()
+                        .find(|h| h.as_str() == named && !own.contains(h))
+                    {
                         violations.push(Violation::error_at(
                             Rule::Other,
                             tag.text_range(),

@@ -4377,3 +4377,22 @@ fn test_flow_colon_after_plain_scalar_on_next_line_is_content() {
         "bar"
     );
 }
+
+#[test]
+fn test_named_tag_handle_is_one_tag() {
+    // `!e!foo` is the named handle `!e!` with suffix `foo`, not two tags.
+    let file = yaml_edit::YamlFile::from_str("%TAG !e! tag:x,2000:\n---\n!e!foo bar\n").unwrap();
+    let doc = file.documents().next().unwrap();
+    let tagged = doc.as_tagged().unwrap();
+    assert_eq!(tagged.tag().unwrap(), "!e!foo");
+    assert_eq!(tagged.value().unwrap().as_string(), "bar");
+}
+
+#[test]
+fn test_tag_suffix_may_hold_hash() {
+    // `#` is a URI character, so it belongs to the tag.
+    let doc = yaml_edit::Document::from_str("!foo#bar x\n").unwrap();
+    let tagged = doc.as_tagged().unwrap();
+    assert_eq!(tagged.tag().unwrap(), "!foo#bar");
+    assert_eq!(tagged.value().unwrap().as_string(), "x");
+}

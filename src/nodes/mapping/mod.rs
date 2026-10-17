@@ -292,13 +292,6 @@ impl Mapping {
         if !is_flow_pair(&self.0) {
             return;
         }
-        if let Some(entry) = self
-            .0
-            .children()
-            .find(|c| c.kind() == SyntaxKind::MAPPING_ENTRY)
-        {
-            move_question_into_key(&entry);
-        }
         let end = self.0.children_with_tokens().count();
         self.0.splice_children(
             end..end,
@@ -438,31 +431,6 @@ pub(crate) fn is_flow_pair(node: &SyntaxNode) -> bool {
             .filter(|p| p.kind() == SyntaxKind::SEQUENCE_ENTRY)
             .and_then(|p| p.parent())
             .is_some_and(|seq| has_child_token(&seq, |k| k == SyntaxKind::LEFT_BRACKET))
-}
-
-/// Move the `?` of an explicit key into its KEY. The parser puts it beside
-/// KEY in a flow pair, but inside it in a flow mapping.
-fn move_question_into_key(entry: &SyntaxNode) {
-    let Some(key) = entry_key(entry) else {
-        return;
-    };
-    let indicator: Vec<_> =
-        std::iter::successors(key.prev_sibling_or_token(), |c| c.prev_sibling_or_token())
-            .take_while(|c| matches!(c.kind(), SyntaxKind::QUESTION | SyntaxKind::WHITESPACE))
-            .collect();
-    if !indicator.iter().any(|c| c.kind() == SyntaxKind::QUESTION) {
-        return;
-    }
-    let moved: Vec<_> = indicator
-        .iter()
-        .rev()
-        .filter_map(|c| c.as_token())
-        .map(|t| {
-            t.detach();
-            fresh_token(t.kind(), t.text()).into()
-        })
-        .collect();
-    key.splice_children(0..0, moved);
 }
 
 /// Check whether the CST key node matches `key` using semantic equality.
@@ -688,8 +656,9 @@ impl Mapping {
 
     /// Detect if this mapping uses explicit key indicators (?)
     pub(super) fn uses_explicit_keys(&self) -> bool {
-        // Check if any existing entries use explicit key format
-        // The QUESTION token is a child of MAPPING_ENTRY (sibling to KEY), not inside KEY
+        // Only block explicit keys count, whose `?` is a child of
+        // MAPPING_ENTRY. In flow context the parser puts it inside KEY, and
+        // new entries there are written implicit.
         for child in self.0.children() {
             if child.kind() == SyntaxKind::MAPPING_ENTRY {
                 // Check if this entry has a QUESTION token as a child

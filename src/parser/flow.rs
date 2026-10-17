@@ -23,12 +23,9 @@ impl Parser {
     /// - `[ [a, b]: value ]` → true (colon after nested collection completes)
     /// - `[ {a: 1}, b ]` → false (colon is inside braces, not at depth 0)
     fn next_flow_element_is_implicit_mapping(&self) -> bool {
-        // A `?` makes the entry an explicit-key mapping, which parse_value
-        // builds complete. Wrapping that in an implicit single-pair mapping
-        // as well gives `[? a : b]` two mappings where the YAML test suite's
-        // CT4Q expects one.
+        // A `?` opens a single pair with an explicit key, `:` or not.
         if self.current() == Some(SyntaxKind::QUESTION) {
-            return false;
+            return true;
         }
         // Chain current token with upcoming tokens (no allocation needed)
         let tokens = std::iter::once(self.current().unwrap_or(SyntaxKind::EOF))
@@ -42,10 +39,18 @@ impl Parser {
         self.builder.start_node(SyntaxKind::MAPPING.into());
         self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
-        // Parse key; a missing one (`[: v]`) is an implicit null, as in a
+        // Parse key; a missing one (`[: v]`, `[? : v]`) is an implicit
+        // null, and the `?` of an explicit key goes inside KEY, both as in a
         // flow mapping.
         self.builder.start_node(SyntaxKind::KEY.into());
-        if self.current() == Some(SyntaxKind::COLON) {
+        if self.current() == Some(SyntaxKind::QUESTION) {
+            self.bump();
+            self.skip_whitespace();
+        }
+        if matches!(
+            self.current(),
+            Some(SyntaxKind::COLON | SyntaxKind::COMMA | SyntaxKind::RIGHT_BRACKET)
+        ) {
             self.emit_implicit_null();
         } else {
             self.parse_value();

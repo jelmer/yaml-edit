@@ -439,13 +439,15 @@ impl MappingEntry {
 
         // Targeted splice: replace the VALUE child in place; siblings and
         // surrounding tokens (comments, alignment WS) survive untouched.
-        if let Some(value_idx) = self
-            .0
-            .children_with_tokens()
-            .position(|c| c.as_node().is_some_and(|n| n.kind() == SyntaxKind::VALUE))
-        {
+        if let Some(value_idx) = self.value_index() {
+            // A block scalar's body ends with the entry's line break.
+            let old_ends_line = self.ends_with_newline();
             self.0
                 .splice_children(value_idx..value_idx + 1, vec![new_value_node.into()]);
+            if old_ends_line && !self.ends_with_newline() {
+                self.append(vec![fresh_token(SyntaxKind::NEWLINE, "\n")]);
+                crate::nodes::hand_line_break_to_mapping(&self.0);
+            }
             return;
         }
 

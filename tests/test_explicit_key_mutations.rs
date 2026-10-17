@@ -629,3 +629,68 @@ fn new_key_spanning_lines_is_explicit() {
         "{a: 1, \"x\n  y\": 5}\n"
     );
 }
+
+fn first_value(source: &str) -> yaml_edit::YamlNode {
+    yaml_edit::Document::from_str(source)
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("k")
+        .unwrap()
+}
+
+#[test]
+fn block_key_written_in_flow_form() {
+    let block = first_value("k: |\n  x\n");
+    let tagged_block = first_value("k: !!str |\n  x\n");
+    let sequence = first_value("k:\n  - x\n  - y\n");
+    let tagged_sequence = first_value("k: !t\n  - x\n");
+    for (key, expected) in [
+        (&block, "\"x\\n\": 1\nb: 2\n"),
+        (&tagged_block, "!!str \"x\\n\": 1\nb: 2\n"),
+        (&sequence, "[x, y]: 1\nb: 2\n"),
+        (&tagged_sequence, "!t [x]: 1\nb: 2\n"),
+    ] {
+        assert_eq!(
+            edit_root_valid("a: 1\nb: 2\n", |m| assert!(m.rename_key("a", key))),
+            expected
+        );
+        assert_eq!(
+            edit_root_valid("b: 2\n", |m| m.set(key, 1)),
+            format!("b: 2\n{}", &expected[..expected.len() - "b: 2\n".len()])
+        );
+    }
+}
+
+#[test]
+fn tagged_key_in_explicit_and_flow_entries() {
+    let tagged = first_value("k: !t\n  - x\n");
+    assert_eq!(
+        edit_root_valid("? a\n: 1\n", |m| assert!(m.rename_key("a", &tagged))),
+        "? !t [x]\n: 1\n"
+    );
+    assert_eq!(
+        edit_root_valid("{a: 1}\n", |m| assert!(m.rename_key("a", &tagged))),
+        "{!t [x]: 1}\n"
+    );
+    assert_eq!(
+        edit_root_valid("{a: 1}\n", |m| m.set(&tagged, 2)),
+        "{a: 1, !t [x]: 2}\n"
+    );
+}
+
+#[test]
+fn set_key_written_in_flow_form() {
+    let set = |members: &[&str]| -> std::collections::BTreeSet<String> {
+        members.iter().map(|m| m.to_string()).collect()
+    };
+    let nested: std::collections::BTreeSet<_> = [set(&["p", "q"])].into_iter().collect();
+    assert_eq!(
+        edit_root_valid("a: 1\n", |m| m.set("s", &nested)),
+        "a: 1\ns: !!set\n  !!set {p: null, q: null}: null\n"
+    );
+    assert_eq!(
+        edit_root_valid("a: 1\n", |m| assert!(m.rename_key("a", set(&["p"])))),
+        "!!set {p: null}: 1\n"
+    );
+}

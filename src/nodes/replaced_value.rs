@@ -26,7 +26,8 @@ fn owns_line_end(value: &SyntaxNode) -> bool {
 
 /// Remove the comment that ends the last line of `value`, `entry`'s value,
 /// where the parser keeps it after the value rather than in it, unless it
-/// is on the entry's own first line. Its line break becomes `entry`'s.
+/// is on the entry's own first line, where it belongs to the entry. Its
+/// line break becomes `entry`'s.
 pub(crate) fn remove_lifted_comment(entry: &SyntaxNode, value: &SyntaxNode) {
     if !owns_line_end(value) {
         return;
@@ -43,6 +44,12 @@ pub(crate) fn remove_lifted_comment(entry: &SyntaxNode, value: &SyntaxNode) {
     let Some(comment) = next.filter(|t| t.kind() == SyntaxKind::COMMENT) else {
         return;
     };
+    let on_first_line = !entry.descendants_with_tokens().any(|c| {
+        c.kind() == SyntaxKind::NEWLINE && c.text_range().end() <= comment.text_range().start()
+    });
+    if on_first_line {
+        return;
+    }
     let line_break = comment
         .next_token()
         .filter(|t| t.kind() == SyntaxKind::NEWLINE);
@@ -205,23 +212,11 @@ fn innermost_trailing_collection(entry: &SyntaxNode) -> Option<SyntaxNode> {
 /// A line comment: the whitespace before it and its text.
 pub(crate) type LineComment = (String, String);
 
-/// Is `token`, which follows the dash of `entry` on its line, part of a
-/// block collection nested in `entry`? Such a collection starts on the
-/// dash line, and the comment on that line belongs to its first entry.
-fn in_nested_collection(token: &SyntaxToken, entry: &SyntaxNode) -> bool {
-    if !entry.text_range().contains_range(token.text_range()) {
-        return false;
-    }
-    token
-        .parent_ancestors()
-        .take_while(|a| a != entry)
-        .any(|a| is_block_collection(&a))
-}
-
-/// Detach and return the comment on the line of `entry`'s dash, if it is
-/// the entry's own rather than that of a collection nested in it. The
-/// parser keeps it before the item when the item starts on a later line,
-/// inside the item, or, after a single-line item, after the entry.
+/// Detach and return the comment on the line of `entry`'s dash, which
+/// belongs to the entry even where the item nests a collection starting
+/// on that line. The parser keeps it before the item when the item starts
+/// on a later line, inside the item, or, after a single-line item, after
+/// the entry.
 pub(crate) fn take_dash_line_comment(entry: &SyntaxNode) -> Option<LineComment> {
     let dash = entry
         .children_with_tokens()
@@ -231,9 +226,6 @@ pub(crate) fn take_dash_line_comment(entry: &SyntaxNode) -> Option<LineComment> 
     let mut next = dash.next_token();
     let comment = loop {
         let t = next?;
-        if in_nested_collection(&t, entry) {
-            return None;
-        }
         match t.kind() {
             SyntaxKind::COMMENT => break t,
             SyntaxKind::NEWLINE => return None,

@@ -3505,6 +3505,7 @@ mod tests {
             ("s: !!set [a, b]\n", "1:4"),
             ("- !!set\n  - a\n", "1:3"),
             ("s: !!set\nt: 1\n", "1:4"),
+            ("!!set\n", "1:1"),
         ] {
             let file = crate::YamlFile::from_str(yaml).unwrap();
             let violations: Vec<_> = Validator::new()
@@ -3591,6 +3592,11 @@ mod tests {
             (
                 "o: !!omap\n  3\n",
                 "1:4",
+                "!!omap content is not a sequence",
+            ),
+            (
+                "- !!omap\n- a: 1\n",
+                "1:3",
                 "!!omap content is not a sequence",
             ),
         ] {

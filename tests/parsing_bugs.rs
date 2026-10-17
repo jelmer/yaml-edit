@@ -3619,14 +3619,8 @@ fn test_compact_nested_sequence_ends_at_its_own_column() {
     ] {
         let doc = yaml_edit::Document::from_str(yaml).unwrap();
         assert_eq!(doc.to_string(), yaml);
-        yaml_edit::debug::validate_tree(doc.syntax()).unwrap();
-        yaml_edit::debug::roundtrip_ok(doc.syntax()).unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(sequence_items(&doc.as_sequence().unwrap()), expected);
-        // TODO: enable for the `- - -` inputs once the stray INDENT ending
-        // their outer SEQUENCE_ENTRY is fixed
-        if !yaml.starts_with("- - -") {
-            assert_cst_ok(&doc);
-        }
     }
 
     // A dash or key between the enclosing column and the compact

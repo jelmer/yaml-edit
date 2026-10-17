@@ -203,9 +203,7 @@ fn test_decorated_implicit_nulls_stay_empty() {
     let file = YamlFile::from_str("{x: 1}\n").unwrap();
     let root = file.document().unwrap().as_mapping().unwrap();
     root.set("y", parse_seq("- &n\n- !t\n"));
-    // TODO: check the tree shape too once the parser gives `[&n, !t]` the
-    // same NULL token it gives the block form.
-    assert_file_cst_ok(&file);
+    assert_parser_shaped(&file);
     assert_eq!(file.to_string(), "{x: 1, y: [&n, !t]}\n");
     let reparsed = parse_map(&file.to_string());
     assert_eq!(reparsed.get_sequence("y").unwrap().len(), 2);

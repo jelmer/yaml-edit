@@ -1142,3 +1142,30 @@ fn test_header_at_key_column_is_the_value() {
     assert_eq!(b.as_scalar().unwrap().as_string(), "1");
     assert_eq!(header_violations(&file), under_indented("2:3"));
 }
+
+/// A block scalar on the line after its key, in a mapping that is a
+/// sequence item, ends at a line back at the key's column.
+#[test]
+fn test_block_value_body_bounded_by_key_column_in_sequence_item() {
+    use std::str::FromStr;
+    use yaml_edit::YamlFile;
+
+    for (yaml, expected) in [
+        ("- a:\n   |\n  b: 1\n", ""),
+        ("- a:\n   >\n  b: 1\n", ""),
+        ("- a:\n   |\n    x\n  b: 1\n", "x\n"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let sequence = file.document().unwrap().as_sequence().unwrap();
+        assert_eq!(sequence.len(), 1);
+        let item = sequence.get(0).unwrap();
+        let mapping = item.as_mapping().unwrap();
+        assert_eq!(mapping.len(), 2, "{yaml:?}");
+        let a = mapping.get("a").unwrap();
+        assert_eq!(a.as_scalar().unwrap().as_string(), expected, "{yaml:?}");
+        let b = mapping.get("b").unwrap();
+        assert_eq!(b.as_scalar().unwrap().as_string(), "1");
+        assert_eq!(header_violations(&file), vec![], "{yaml:?}");
+    }
+}

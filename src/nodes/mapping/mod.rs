@@ -1054,6 +1054,8 @@ impl Mapping {
     /// with a newly built entry at the **same position** (the `index` argument is
     /// ignored). Surrounding whitespace in the file is preserved, but the entry
     /// node itself is rebuilt (comments attached to the old entry may be lost).
+    /// An anchor on the old value stays on the new one, as with
+    /// [`set`](Self::set).
     /// If `index` is out of bounds, the entry is appended at the end.
     pub fn insert_at_index_preserving(
         &self,
@@ -1068,21 +1070,36 @@ impl Mapping {
     }
 
     /// Replace `old`, an entry of this mapping, with a new entry built the
-    /// way `set` builds one, in the same place.
+    /// way `set` builds one, in the same place. As with `set`, an anchor on
+    /// the old value goes on the new one unless that is an alias.
     fn replace_entry(&self, old: &SyntaxNode, key: impl crate::AsYaml, value: impl crate::AsYaml) {
-        crate::nodes::kept_aliases::keeping_aliases(old, None, || {
-            self.splice_in_entry(old, key, value);
-            None
+        let kept = MappingEntry::cast(old.clone())
+            .and_then(|e| e.value())
+            .filter(|_| value.kind() != YamlKind::Alias)
+            .and_then(|v| held_anchor_token(&v));
+        let anchor = kept.as_ref().map(|t| t.text().to_string());
+        crate::nodes::kept_aliases::keeping_aliases(old, kept, || {
+            // The entry is built without the value's anchor; putting the
+            // value in again settles which anchor it gets, as in set_value.
+            let entry = MappingEntry(self.splice_in_entry(old, key, &value));
+            let flow_context = self.is_flow_style();
+            let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
+            match flow.and_then(|q| flow_form(&value, 2, q)) {
+                Some(flow) => entry.replace_value_under(flow, flow_context, anchor.as_deref()),
+                None => entry.replace_value_under(&value, flow_context, anchor.as_deref()),
+            }
+            entry.value()
         });
     }
 
-    /// The edit of [`replace_entry`](Self::replace_entry).
+    /// The edit of [`replace_entry`](Self::replace_entry), without the
+    /// kept anchor. Returns the new entry.
     fn splice_in_entry(
         &self,
         old: &SyntaxNode,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) {
+    ) -> SyntaxNode {
         let flow_context = self.is_flow_style();
         let new_entry = MappingEntry::new_at_indent(
             key,
@@ -1121,6 +1138,7 @@ impl Mapping {
         self.0
             .splice_children(i..i + 1, vec![new_entry.clone().into()]);
         hand_line_break_to_mapping(&new_entry);
+        new_entry
     }
 
     /// Remove a key-value pair, returning the removed entry.

@@ -341,12 +341,12 @@ because they would change every other alias of the same anchor;
 `AliasPolicy::Follow` writes to the anchored node and `AliasPolicy::Expand`
 replaces the alias with an independent copy, built as CST.
 
-Replacing a value (`Mapping::set`, `Sequence::set`, `set_path`) keeps the
-old value's anchor on the new one, so aliases to it still resolve. A new
-value that is a node with an anchor of its own keeps it only if the old
-value had none: the document's aliases refer to the old anchor, and the
-node the value was copied from keeps its own. A node passed as a new key
-keeps its anchor too.
+Replacing a value (`Mapping::set`, `Sequence::set`, `set_path`,
+`insert_at_index_preserving`) keeps the old value's anchor on the new one,
+so aliases to it still resolve. A new value that is a node with an anchor
+of its own keeps it only if the old value had none: the document's aliases
+refer to the old anchor, and the node the value was copied from keeps its
+own. A node passed as a new key keeps its anchor too.
 
 Other anchors in a node that is removed or replaced (`remove`, `clear`,
 `set`, `set_path`, `remove_path`, `rename_key`, ...) go with it, and so

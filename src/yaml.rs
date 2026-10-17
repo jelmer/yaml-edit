@@ -1391,7 +1391,7 @@ another_key: value
         let yaml = r#"
 special: "line1\nline2"
 unicode: "emoji 😀"
-escaped: 'it\'s escaped'
+escaped: 'it''s escaped'
 "#;
         let result = YamlFile::from_str(yaml);
         // Should parse without panicking

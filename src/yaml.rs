@@ -4854,7 +4854,7 @@ server:
 
     #[test]
     fn test_parse_complex_key_mapping_with_stray_close_bracket_does_not_hang() {
-        // Regression: parse_complex_key_mapping's continuation loop must
+        // Regression: the mapping loop after a complex key must
         // make progress when is_mapping_key() is fooled by `]:`.
         let input = "[%:%:]: \n]: \n\n";
         let parse = crate::Parse::parse_yaml(input);

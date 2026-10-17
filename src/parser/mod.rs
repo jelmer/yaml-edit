@@ -400,8 +400,8 @@ impl Parser {
                 // keeps a value-position anchor on the implicit-null path, so
                 // a dedented sibling entry stays a sibling.
                 // An anchor introducing a complex key belongs inside that
-                // key's KEY node, so let the complex-key parser take it
-                // rather than emitting it as a sibling of the mapping.
+                // key's KEY node, so let the mapping parser take it rather
+                // than emitting it as a sibling of the mapping.
                 if !self.in_flow_context
                     && !self.in_value_context
                     && matches!(
@@ -412,7 +412,7 @@ impl Parser {
                     )
                     && self.is_complex_mapping_key_after_annotations()
                 {
-                    self.parse_complex_key_mapping();
+                    self.parse_mapping_with_base_indent(base_indent);
                     self.nesting_depth -= 1;
                     return;
                 }
@@ -514,7 +514,7 @@ impl Parser {
                 // But not if we're already in a value context
                 if !self.in_flow_context && !self.in_value_context && self.is_complex_mapping_key()
                 {
-                    self.parse_complex_key_mapping();
+                    self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_flow_sequence();
                 }
@@ -524,7 +524,7 @@ impl Parser {
                 // But not if we're already in a value context
                 if !self.in_flow_context && !self.in_value_context && self.is_complex_mapping_key()
                 {
-                    self.parse_complex_key_mapping();
+                    self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_flow_mapping();
                 }

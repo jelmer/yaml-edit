@@ -10,8 +10,9 @@
 //! - **Preserves structure**: Original syntax tree remains unchanged
 //! - **Lazy evaluation**: Anchors are resolved on-demand, not eagerly
 //! - **Error handling**: An undefined or recursive alias, a merge key
-//!   whose operand is not a mapping, or distinct keys that would collide
-//!   in a resolved mapping are reported as a [`ResolveError`]
+//!   whose operand is not a mapping, distinct keys that would collide
+//!   in a resolved mapping, or `!!set`, `!!omap` and `!!pairs` content
+//!   that [`YamlValue`] cannot hold are reported as a [`ResolveError`]
 //!
 //! # Examples
 //!
@@ -85,6 +86,20 @@ pub enum ResolveError {
         /// The source text of the key that collides with it.
         second: String,
     },
+    /// A `!!set` member is not a scalar, so it cannot be kept in a
+    /// [`YamlValue::Set`].
+    InvalidSetMember {
+        /// The source text of the member.
+        member: String,
+    },
+    /// An item of a `!!omap` or `!!pairs` sequence is not a mapping with a
+    /// single entry.
+    InvalidPairsItem {
+        /// The tag of the sequence, `!!omap` or `!!pairs`.
+        tag: String,
+        /// The source text of the item.
+        item: String,
+    },
 }
 
 impl std::fmt::Display for ResolveError {
@@ -103,6 +118,15 @@ impl std::fmt::Display for ResolveError {
                 write!(
                     f,
                     "distinct keys {first:?} and {second:?} have the same string form"
+                )
+            }
+            ResolveError::InvalidSetMember { member } => {
+                write!(f, "!!set member {member:?} is not a scalar")
+            }
+            ResolveError::InvalidPairsItem { tag, item } => {
+                write!(
+                    f,
+                    "{tag} item {item:?} is not a mapping with a single entry"
                 )
             }
         }
@@ -399,11 +423,13 @@ fn resolved_tagged(
     if let Some(set) = tagged.as_set() {
         let mut members = std::collections::BTreeSet::new();
         for member in set.members() {
-            // TODO: YamlValue::Set only holds scalars, so other members are
-            // dropped, as YamlValue::cast does.
-            if let Some(YamlValue::Scalar(s)) = resolved_value(member, registry, expanding)? {
-                members.insert(s.value().to_string());
-            }
+            let Some(YamlValue::Scalar(s)) = resolved_value(member.clone(), registry, expanding)?
+            else {
+                return Err(ResolveError::InvalidSetMember {
+                    member: member.to_string(),
+                });
+            };
+            members.insert(s.value().to_string());
         }
         return Ok(Some(YamlValue::Set(members)));
     }
@@ -416,29 +442,42 @@ fn resolved_tagged(
     };
     match (tag.as_str(), &content) {
         ("!!omap", YamlNode::Sequence(seq)) => Ok(Some(YamlValue::OrderedMapping(resolved_pairs(
-            seq, registry, expanding,
+            &tag, seq, registry, expanding,
         )?))),
         ("!!pairs", YamlNode::Sequence(seq)) => Ok(Some(YamlValue::Pairs(resolved_pairs(
-            seq, registry, expanding,
+            &tag, seq, registry, expanding,
         )?))),
         _ => Ok(resolved_value(content, registry, expanding)?
             .map(|value| YamlValue::Tagged(tag, Box::new(value)))),
     }
 }
 
-/// The entries of a `!!omap` or `!!pairs` sequence, in order.
+/// The entries of a `!!omap` or `!!pairs` sequence tagged `tag`, in order.
+///
+/// Each item has to be a mapping, untagged or tagged `!!map`, with a single
+/// entry.
 fn resolved_pairs(
+    tag: &str,
     seq: &crate::yaml::Sequence,
     registry: &AnchorRegistry,
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<Vec<(String, YamlValue)>, ResolveError> {
     let mut pairs = Vec::new();
     for item in seq.values() {
-        // TODO: an item that is not a mapping is dropped, as
-        // YamlValue::cast does.
-        if let Some(YamlValue::Mapping(entries)) = resolved_value(item, registry, expanding)? {
-            pairs.extend(entries);
+        let entries = match resolved_value(item.clone(), registry, expanding)? {
+            Some(YamlValue::Mapping(entries)) => Some(entries),
+            Some(YamlValue::Tagged(t, inner)) if t == "!!map" => match *inner {
+                YamlValue::Mapping(entries) => Some(entries),
+                _ => None,
+            },
+            _ => None,
         }
+        .filter(|entries| entries.len() == 1)
+        .ok_or_else(|| ResolveError::InvalidPairsItem {
+            tag: tag.to_string(),
+            item: item.to_string(),
+        })?;
+        pairs.extend(entries);
     }
     Ok(pairs)
 }
@@ -1602,6 +1641,79 @@ m:
             Err(ResolveError::InvalidMergeOperand {
                 operand: "3".to_string()
             })
+        );
+    }
+
+    #[test]
+    fn get_resolved_invalid_set_member() {
+        for (yaml, member) in [
+            ("m: !!set {? [a], ? b}\n", "[a]"),
+            ("m: !!set {? {a: 1}}\n", "{a: 1}"),
+            ("x: &x [a]\nm: !!set {? *x}\n", "*x"),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Err(ResolveError::InvalidSetMember {
+                    member: member.to_string()
+                }),
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn get_resolved_invalid_pairs_item() {
+        for (yaml, tag, item) in [
+            ("m: !!omap [a]\n", "!!omap", "a"),
+            ("m: !!omap [[a]]\n", "!!omap", "[a]"),
+            ("m: !!omap [{}]\n", "!!omap", "{}"),
+            ("m: !!pairs [{b: 1, c: 2}]\n", "!!pairs", "{b: 1, c: 2}"),
+            ("m: !!pairs [!local {a: 1}]\n", "!!pairs", "!local {a: 1}"),
+            ("e: &e {a: 1, b: 2}\nm: !!omap [*e]\n", "!!omap", "*e"),
+            (
+                "e: &e {a: 1}\nm: !!omap [{<<: *e, b: 2}]\n",
+                "!!omap",
+                "{<<: *e, b: 2}",
+            ),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Err(ResolveError::InvalidPairsItem {
+                    tag: tag.to_string(),
+                    item: item.to_string()
+                }),
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn get_resolved_pairs_item_tagged_map() {
+        assert_eq!(
+            doc("m: !!omap [!!map {a: 1}]\n").get_resolved("m"),
+            Ok(Some(YamlValue::OrderedMapping(pair_list(vec![(
+                "a",
+                YamlValue::from(1)
+            )]))))
+        );
+    }
+
+    #[test]
+    fn resolve_error_display() {
+        assert_eq!(
+            ResolveError::InvalidSetMember {
+                member: "[a]".to_string()
+            }
+            .to_string(),
+            "!!set member \"[a]\" is not a scalar"
+        );
+        assert_eq!(
+            ResolveError::InvalidPairsItem {
+                tag: "!!omap".to_string(),
+                item: "a".to_string()
+            }
+            .to_string(),
+            "!!omap item \"a\" is not a mapping with a single entry"
         );
     }
 }

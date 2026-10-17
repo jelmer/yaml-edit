@@ -377,6 +377,9 @@ impl Mapping {
     ///
     /// Fields not in the order list will appear after the ordered fields,
     /// in their original relative order.
+    ///
+    /// An alias that ends up before the node it refers to becomes a copy of
+    /// it, anchor included, and the node an alias where it can.
     pub fn reorder_fields<I, K>(&self, order: I)
     where
         I: IntoIterator<Item = K>,
@@ -418,7 +421,10 @@ impl Mapping {
         }
         new_children.extend(trailing);
 
-        crate::nodes::replace_children(&self.0, 0..all.len(), new_children);
+        crate::nodes::kept_aliases::keeping_aliases_moved(&self.0, None, || {
+            crate::nodes::replace_children(&self.0, 0..all.len(), new_children);
+            None
+        });
     }
 }
 
@@ -1082,14 +1088,25 @@ impl Mapping {
             // The entry is built without the value's anchor; putting the
             // value in again settles which anchor it gets, as in set_value.
             let entry = MappingEntry(self.splice_in_entry(old, key, &value));
-            let flow_context = self.is_flow_style();
-            let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
-            match flow.and_then(|q| flow_form(&value, 2, q)) {
-                Some(flow) => entry.replace_value_under(flow, flow_context, anchor.as_deref()),
-                None => entry.replace_value_under(&value, flow_context, anchor.as_deref()),
-            }
+            self.put_value(&entry, &value, anchor.as_deref());
             entry.value()
         });
+    }
+
+    /// Replace the value of `entry`, an entry of this mapping, with `value`
+    /// under `anchor`, as `set` does.
+    pub(super) fn put_value(
+        &self,
+        entry: &MappingEntry,
+        value: impl crate::AsYaml,
+        anchor: Option<&str>,
+    ) {
+        let flow_context = self.is_flow_style();
+        let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
+        match flow.and_then(|q| flow_form(&value, 2, q)) {
+            Some(flow) => entry.replace_value_under(flow, flow_context, anchor),
+            None => entry.replace_value_under(&value, flow_context, anchor),
+        }
     }
 
     /// The edit of [`replace_entry`](Self::replace_entry), without the
@@ -1202,7 +1219,7 @@ impl Mapping {
     }
 
     /// The edit of [`remove_entry_at`](Self::remove_entry_at).
-    fn splice_out_entry(
+    pub(super) fn splice_out_entry(
         &self,
         children: &[rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>],
         i: usize,

@@ -365,6 +365,20 @@ of this is `nodes::kept_aliases::keeping_aliases`. An alias with a tag or
 anchor of its own, which the parser tolerates though YAML does not, has no
 room for the copy's anchor; the edit panics before changing anything.
 
+Moving entries (`reorder_fields`, and `move_after`/`move_before` given the
+entry's own value) keeps every alias resolving to the node it did. An alias
+that ends up before that node becomes a copy of it, anchor included, and
+the node becomes an alias to the copy: `a: &x 1\nb: *x\n` reordered to
+`b, a` gives `b: &x 1\na: *x\n`. The node stays as it is, a copy with its
+own anchor, if it is a key, holds other anchors, or another anchor with
+its name comes between. An alias that ends up after another anchor with
+its name becomes a copy, with the anchor only if later aliases need it.
+An alias that cannot be
+replaced with a copy (see above) makes the edit panic, after putting the
+document back as it was. `move_after`/`move_before` given another value
+remove the old entry as `remove` does. Sequences have no reordering
+methods.
+
 An alias resolves to the closest preceding definition of its anchor in the
 same document, as the spec requires. In `<<` merge keys only alias nodes are
 merge operands; a quoted `'*a'` is a string.

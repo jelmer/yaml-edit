@@ -1,3 +1,4 @@
+use rowan::ast::AstNode;
 use yaml_edit::YamlFile;
 
 #[test]
@@ -760,4 +761,103 @@ fn test_block_scalar_in_nested_explicit_entry_does_not_swallow_next_entry() {
     assert_eq!(a.as_scalar().unwrap().as_string(), "");
     let b = mapping.get("b").unwrap();
     assert_eq!(b.as_scalar().unwrap().as_string(), "1");
+}
+
+/// A comment after `?` or an explicit `:` ends its line just as a line
+/// break does, so the next line belongs to the entry only if it is
+/// indented past the indicator.
+#[test]
+fn test_comment_after_explicit_indicator_leaves_next_entry_alone() {
+    let yaml = "? # c\nb: 1\n";
+    let doc = yaml.parse::<YamlFile>().unwrap();
+    assert_eq!(doc.to_string(), yaml);
+    assert_eq!(
+        yaml_edit::debug::tree_to_string(doc.syntax()),
+        r##"DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      QUESTION: "?"
+      WHITESPACE: " "
+      KEY
+        COMMENT: "# c"
+        SCALAR
+          NULL: ""
+      NEWLINE: "\\n"
+      VALUE
+        SCALAR
+          NULL: ""
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: "b"
+      COLON: ":"
+      WHITESPACE: " "
+      VALUE
+        SCALAR
+          INT: "1"
+      NEWLINE: "\\n"
+"##
+    );
+
+    assert_eq!(
+        entries("? a\n: # c\nb: 1\n"),
+        pairs(&[("a", ""), ("b", "1")])
+    );
+    assert_eq!(entries("? # c"), pairs(&[("", "")]));
+    assert_eq!(entries("? a\n: # c"), pairs(&[("a", "")]));
+
+    for yaml in ["- ? # c\n- 1\n", "- ? a\n  : # c\n- 1\n"] {
+        let doc = yaml.parse::<YamlFile>().unwrap();
+        assert_eq!(doc.to_string(), yaml);
+        let document = doc.document().unwrap();
+        let sequence = document.as_sequence().unwrap();
+        assert_eq!(sequence.len(), 2, "{yaml:?}");
+        let first = sequence.get(0).unwrap();
+        let mapping = first.as_mapping().unwrap();
+        assert_eq!(mapping.len(), 1, "{yaml:?}");
+        let (_, value) = mapping.iter().next().unwrap();
+        assert!(value.as_scalar().unwrap().is_null(), "{yaml:?}");
+        let second = sequence.get(1).unwrap();
+        assert_eq!(second.as_scalar().unwrap().as_string(), "1");
+    }
+}
+
+/// Content on the line after the comment still belongs to the entry when
+/// it is indented to, or is an indentless sequence.
+#[test]
+fn test_comment_after_explicit_indicator_keeps_next_line_node() {
+    let yaml = "? # c\n  k: v\n: x\n";
+    let doc = yaml.parse::<YamlFile>().unwrap();
+    assert_eq!(doc.to_string(), yaml);
+    let document = doc.document().unwrap();
+    let mapping = document.as_mapping().unwrap();
+    assert_eq!(mapping.len(), 1);
+    let (key, value) = mapping.iter().next().unwrap();
+    let key = key.as_mapping().unwrap();
+    assert_eq!(key.get("k").unwrap().as_scalar().unwrap().as_string(), "v");
+    assert_eq!(value.as_scalar().unwrap().as_string(), "x");
+
+    let yaml = "? # c\n- a\n: v\n";
+    let doc = yaml.parse::<YamlFile>().unwrap();
+    assert_eq!(doc.to_string(), yaml);
+    let document = doc.document().unwrap();
+    let mapping = document.as_mapping().unwrap();
+    assert_eq!(mapping.len(), 1);
+    let (key, value) = mapping.iter().next().unwrap();
+    let key = key.as_sequence().unwrap();
+    assert_eq!(key.len(), 1);
+    assert_eq!(key.get(0).unwrap().as_scalar().unwrap().as_string(), "a");
+    assert_eq!(value.as_scalar().unwrap().as_string(), "v");
+
+    for yaml in ["? a\n: # c\n- b\n", "? a\n: # c\n  - b\n"] {
+        let doc = yaml.parse::<YamlFile>().unwrap();
+        assert_eq!(doc.to_string(), yaml);
+        let document = doc.document().unwrap();
+        let mapping = document.as_mapping().unwrap();
+        assert_eq!(mapping.len(), 1, "{yaml:?}");
+        let value = mapping.get("a").unwrap();
+        let value = value.as_sequence().unwrap();
+        assert_eq!(value.len(), 1, "{yaml:?}");
+        assert_eq!(value.get(0).unwrap().as_scalar().unwrap().as_string(), "b");
+    }
 }

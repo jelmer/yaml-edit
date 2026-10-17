@@ -729,6 +729,11 @@ impl Parser {
         mapping_column: Option<usize>,
     ) {
         self.builder.start_node(SyntaxKind::VALUE.into());
+        // A comment ends the colon's line just as a line break does: the
+        // next line is the value only if it is indented to be one.
+        if self.current() == Some(SyntaxKind::COMMENT) {
+            self.bump();
+        }
         if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
             self.parse_value();
         } else if self.current() == Some(SyntaxKind::NEWLINE) {

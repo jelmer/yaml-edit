@@ -1595,6 +1595,8 @@ fn is_block_scalar(text: &str) -> bool {
 /// for it: the header and body tokens as the lexer splits them, then the
 /// line break ending the last line, which the parser keeps inside the
 /// SCALAR.
+// TODO: build the tokens directly rather than lexing rendered text, once the
+// lexer gives block scalar bodies a simple, consistent token structure.
 fn build_block_scalar(builder: &mut rowan::GreenNodeBuilder, text: &str) {
     use crate::lex::SyntaxKind;
     builder.start_node(SyntaxKind::SCALAR.into());

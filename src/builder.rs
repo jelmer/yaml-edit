@@ -1287,6 +1287,7 @@ item:
     fn test_trailing_block_scalar_keeps_line_break() {
         let yaml = YamlBuilder::mapping().pair("k", "a\n").build().build();
         assert_cst_ok(&yaml);
+        crate::debug::assert_parser_shaped(&yaml);
         assert_eq!(yaml.to_string(), "k: |\n  a\n");
         let doc = Document::from_str(&yaml.to_string()).unwrap();
         assert_eq!(
@@ -1296,6 +1297,7 @@ item:
 
         let yaml = YamlBuilder::sequence().item("a\n\n").build().build();
         assert_cst_ok(&yaml);
+        crate::debug::assert_parser_shaped(&yaml);
         assert_eq!(yaml.to_string(), "- |+\n  a\n\n");
         let doc = Document::from_str(&yaml.to_string()).unwrap();
         let seq = doc.as_sequence().unwrap();
@@ -1303,6 +1305,14 @@ item:
             seq.get(0).unwrap().as_scalar().unwrap().as_string(),
             "a\n\n"
         );
+
+        let yaml = YamlBuilder::mapping()
+            .mapping("n", |m| m.pair("k", "  a\nb"))
+            .build()
+            .build();
+        assert_cst_ok(&yaml);
+        crate::debug::assert_parser_shaped(&yaml);
+        assert_eq!(yaml.to_string(), "n:\n  k: |2-\n      a\n    b\n");
     }
 
     #[test]

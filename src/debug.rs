@@ -240,6 +240,27 @@ pub(crate) fn assert_cst_ok(node: &impl rowan::ast::AstNode<Language = crate::ya
     }
 }
 
+/// Panic unless the tree holding `node` is the one the parser builds for
+/// its text.
+#[cfg(test)]
+#[track_caller]
+pub(crate) fn assert_parser_shaped(node: &impl rowan::ast::AstNode<Language = crate::yaml::Lang>) {
+    use rowan::ast::AstNode;
+    let root = node
+        .syntax()
+        .ancestors()
+        .last()
+        .expect("a node is its own ancestor");
+    let text = root.to_string();
+    let parsed = crate::Parse::parse_yaml(&text).tree();
+    let reparsed = parsed
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == root.kind())
+        .unwrap_or_else(|| panic!("re-parse of {text:?} has no {:?}", root.kind()));
+    assert_eq!(tree_to_string(&root), tree_to_string(&reparsed), "{text:?}");
+}
+
 fn validate_node(node: &SyntaxNode) -> Result<(), String> {
     match node.kind() {
         SyntaxKind::MAPPING_ENTRY => {

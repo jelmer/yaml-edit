@@ -918,7 +918,6 @@ impl AsYaml for &str {
         indent: usize,
         flow_context: bool,
     ) -> bool {
-        use crate::lex::SyntaxKind;
         use crate::scalar::ScalarValue;
 
         // In flow context (JSON), always use double-quoted strings for compatibility
@@ -928,18 +927,7 @@ impl AsYaml for &str {
         } else {
             ScalarValue::string(*self)
         };
-
-        // A multi-line string renders as a block scalar, whose body has to
-        // clear the column its entry sits at.
-        // TODO: emit a block scalar as the parser tokenizes it, as for
-        // ScalarValue.
-        let yaml_text = scalar.to_yaml_string_with_indent(indent, 2);
-        // Both quoted and unquoted strings use STRING token kind;
-        // the token text includes any quotes needed for disambiguation.
-        builder.start_node(SyntaxKind::SCALAR.into());
-        builder.token(SyntaxKind::STRING.into(), &yaml_text);
-        builder.finish_node();
-        false
+        scalar.build_content(builder, indent, flow_context)
     }
 
     fn is_inline(&self) -> bool {
@@ -1735,6 +1723,16 @@ block_map:
         // Flow and block styles should be semantically equal
         assert!(yaml_eq(&flow_seq, &block_seq));
         assert!(yaml_eq(&flow_map, &block_map));
+    }
+
+    #[test]
+    fn test_multiline_str_is_parser_shaped() {
+        let doc = Document::from_str("a: 1  # c\nb: 2\n").unwrap();
+        doc.set("a", "x\ny\n");
+        doc.set("c", String::from("x\n\n"));
+        assert_cst_ok(&doc);
+        crate::debug::assert_parser_shaped(&doc);
+        assert_eq!(doc.to_string(), "a: |  # c\n  x\n  y\nb: 2\nc: |+\n  x\n\n");
     }
 
     #[test]

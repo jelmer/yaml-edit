@@ -236,6 +236,25 @@ pub(crate) fn fresh_token(kind: SyntaxKind, text: &str) -> SyntaxToken {
         .expect("just built a token")
 }
 
+/// Put `ws` and `comment` at the end of the first line of `value`, a
+/// mutable node holding a block scalar: on its header line, where the
+/// parser keeps a comment following the indicator.
+pub(crate) fn insert_header_comment(value: &SyntaxNode, ws: &str, comment: &str) {
+    let header_end = value
+        .descendants_with_tokens()
+        .find(|c| c.kind() == SyntaxKind::NEWLINE)
+        .expect("a block scalar's header ends with a line break");
+    let parent = header_end.parent().expect("a token has a parent");
+    let idx = header_end.index();
+    parent.splice_children(
+        idx..idx,
+        vec![
+            fresh_token(SyntaxKind::WHITESPACE, ws).into(),
+            fresh_token(SyntaxKind::COMMENT, comment).into(),
+        ],
+    );
+}
+
 /// The first direct child node of `parent` with the given `kind`, if any.
 pub(crate) fn child_of_kind(parent: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
     parent.children().find(|n| n.kind() == kind)
@@ -478,9 +497,8 @@ pub(crate) fn nth_entry_index(
 /// block.
 pub(crate) fn build_key_content(builder: &mut rowan::GreenNodeBuilder, key: &impl crate::AsYaml) {
     if key.as_node().is_none() {
-        // A raw value (&str, String, ...). Render it once on its own: the
-        // block form is emitted as a single STRING token whose text starts
-        // with the indicator, so check the text rather than the token kinds.
+        // A raw value (&str, String, ...). Render it once on its own to see
+        // whether it comes out as a block scalar.
         let mut probe = rowan::GreenNodeBuilder::new();
         probe.start_node(SyntaxKind::ROOT.into());
         key.build_content(&mut probe, 0, false);

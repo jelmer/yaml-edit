@@ -176,12 +176,12 @@ impl AsYaml for TaggedNode {
             .children_with_tokens()
             .take_while(|c| c.as_node().is_none())
             .all(|c| c.kind() != SyntaxKind::NEWLINE);
-        let base = if content_on_tag_line {
-            Some(crate::as_yaml::source_line_indent(&self.0))
+        let delta = if content_on_tag_line {
+            let delta = indent as isize - crate::as_yaml::source_line_indent(&self.0) as isize;
+            crate::as_yaml::clear_parent_column(&self.0, indent, delta)
         } else {
-            continuation_indent(&self.0)
+            continuation_indent(&self.0).map_or(0, |base| indent as isize - base as isize)
         };
-        let delta = base.map_or(0, |base| indent as isize - base as isize);
         builder.start_node(SyntaxKind::TAGGED_NODE.into());
         let ends_with_newline = crate::as_yaml::copy_node_content_reindent(builder, &self.0, delta);
         builder.finish_node();

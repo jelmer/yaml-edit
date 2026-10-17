@@ -668,9 +668,10 @@ pub(crate) fn copy_node_content(builder: &mut rowan::GreenNodeBuilder, node: &Sy
 }
 
 /// Copy the children of `node` into `builder`, shifting every post-newline
-/// whitespace by `delta` columns (may be negative to dedent). Only spaces
-/// are added or removed; tabs after them are kept. Line-leading whitespace
-/// is written as INDENT, as the parser does.
+/// whitespace, and the lines inside a multi-line quoted scalar, by `delta`
+/// columns (may be negative to dedent). Only spaces are added or removed;
+/// tabs after them are kept. Line-leading whitespace is written as INDENT,
+/// as the parser does.
 ///
 /// Newline state is tracked across node boundaries: a NEWLINE inside a
 /// child node correctly marks
@@ -682,6 +683,17 @@ pub(crate) fn copy_node_content_reindent(
     builder: &mut rowan::GreenNodeBuilder,
     node: &SyntaxNode,
     delta: isize,
+) -> bool {
+    reindent_children(builder, node, delta, node.text_range().end())
+}
+
+/// [`copy_node_content_reindent`] for a node within the copy, which ends at
+/// `end`.
+fn reindent_children(
+    builder: &mut rowan::GreenNodeBuilder,
+    node: &SyntaxNode,
+    delta: isize,
+    end: rowan::TextSize,
 ) -> bool {
     use crate::lex::SyntaxKind;
     let mut after_newline = false;
@@ -704,13 +716,20 @@ pub(crate) fn copy_node_content_reindent(
                     builder.token(SyntaxKind::INDENT.into(), &pad(delta));
                 }
                 builder.start_node(n.kind().into());
-                after_newline = copy_node_content_reindent(builder, &n, delta);
+                after_newline = reindent_children(builder, &n, delta, end);
                 builder.finish_node();
             }
             rowan::NodeOrToken::Token(t) => match t.kind() {
                 SyntaxKind::NEWLINE => {
                     builder.token(t.kind().into(), t.text());
                     after_newline = true;
+                    // Inside a flow collection a line's indentation follows
+                    // its line break in the same node, even when that is
+                    // the end of an entry.
+                    if delta > 0 && starts_unindented_line(&t, end) && in_flow_collection(&t) {
+                        builder.token(SyntaxKind::INDENT.into(), &pad(delta));
+                        after_newline = false;
+                    }
                 }
                 SyntaxKind::WHITESPACE | SyntaxKind::INDENT => {
                     if after_newline {
@@ -727,7 +746,7 @@ pub(crate) fn copy_node_content_reindent(
                     if after_newline && delta > 0 {
                         builder.token(SyntaxKind::INDENT.into(), &pad(delta));
                     }
-                    builder.token(t.kind().into(), t.text());
+                    builder.token(t.kind().into(), &shift_inner_lines(t.text(), delta));
                     after_newline = false;
                 }
             },
@@ -736,15 +755,74 @@ pub(crate) fn copy_node_content_reindent(
     after_newline
 }
 
-/// `text`, the whitespace at the start of a line, with `delta` spaces added
-/// or up to `-delta` leading spaces removed. Tabs are not indentation, so
-/// any that follow the spaces are kept.
-fn shift_line_start(text: &str, delta: isize) -> String {
+/// Whether the line after the line break `newline` has content before
+/// `end` and starts without indentation.
+fn starts_unindented_line(newline: &crate::nodes::SyntaxToken, end: rowan::TextSize) -> bool {
+    use crate::lex::SyntaxKind;
+    newline.next_token().is_some_and(|next| {
+        next.text_range().start() < end
+            && !matches!(
+                next.kind(),
+                SyntaxKind::WHITESPACE | SyntaxKind::INDENT | SyntaxKind::NEWLINE
+            )
+    })
+}
+
+/// Whether `token` sits inside a flow collection.
+fn in_flow_collection(token: &crate::nodes::SyntaxToken) -> bool {
+    use crate::lex::SyntaxKind;
+    token.parent_ancestors().any(|node| {
+        node.children_with_tokens()
+            .take_while(|c| c.as_token().is_some())
+            .any(|c| matches!(c.kind(), SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET))
+    })
+}
+
+/// `delta`, raised where needed so that every line of `node` after its
+/// first ends up past column `parent`. The continuation lines of a flow node
+/// or multi-line scalar have to clear the block entry it is nested in, but
+/// at the top of a document they may start at column 0.
+pub(crate) fn clear_parent_column(node: &SyntaxNode, parent: usize, delta: isize) -> isize {
+    let shallowest = node
+        .text()
+        .to_string()
+        .split('\n')
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start_matches(' ').len())
+        .min();
+    shallowest.map_or(delta, |column| {
+        delta.max(parent as isize + 1 - column as isize)
+    })
+}
+
+/// `text`, a line or the whitespace at its start, with `delta` spaces
+/// added or up to `-delta` leading spaces removed. Tabs are not
+/// indentation, so any that follow the spaces are kept.
+pub(crate) fn shift_line_start(text: &str, delta: isize) -> String {
     if delta >= 0 {
         return format!("{}{text}", " ".repeat(delta as usize));
     }
     let spaces = text.len() - text.trim_start_matches(' ').len();
     text[spaces.min(delta.unsigned_abs())..].to_string()
+}
+
+/// `text` with the indentation of each line after the first moved by
+/// `delta` columns, leaving empty lines empty.
+pub(crate) fn shift_inner_lines(text: &str, delta: isize) -> Cow<'_, str> {
+    let Some((first, rest)) = text.split_once('\n').filter(|_| delta != 0) else {
+        return Cow::Borrowed(text);
+    };
+    let mut shifted = first.to_string();
+    for line in rest.split('\n') {
+        shifted.push('\n');
+        if line.trim_end_matches('\r').is_empty() {
+            shifted.push_str(line);
+        } else {
+            shifted.push_str(&shift_line_start(line, delta));
+        }
+    }
+    Cow::Owned(shifted)
 }
 
 /// Column at which `node` starts on its line.

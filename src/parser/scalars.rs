@@ -498,12 +498,16 @@ impl Parser {
                 SyntaxKind::DOC_START | SyntaxKind::DOC_END => return None,
                 // An explicit key opens a mapping without a colon on the line.
                 SyntaxKind::QUESTION => return deep_enough(indent).then_some(indent),
-                // A block scalar header likewise carries no colon, and a
-                // flow collection is a complete node on its own.
-                SyntaxKind::PIPE
-                | SyntaxKind::GREATER
-                | SyntaxKind::LEFT_BRACKET
-                | SyntaxKind::LEFT_BRACE => return deep_enough(indent).then_some(indent),
+                // A block scalar header can only be this annotation's node,
+                // whatever its column: nothing else starts with `|` or `>`.
+                // The validator reports one left of its parent node, as in
+                // `a: !!str\n|\n x\n`; the YAML test suite's M5C3 has one
+                // less indented than the tag but still valid.
+                SyntaxKind::PIPE | SyntaxKind::GREATER => return Some(indent),
+                // A flow collection is a complete node on its own.
+                SyntaxKind::LEFT_BRACKET | SyntaxKind::LEFT_BRACE => {
+                    return deep_enough(indent).then_some(indent)
+                }
                 // Inside an explicit key, a `:` at or left of the `?` opens
                 // that entry's value rather than a node for us to annotate.
                 // Inside an explicit key, a `:` at or left of the `?` opens

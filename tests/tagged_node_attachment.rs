@@ -578,3 +578,66 @@ fn comment_after_annotation_keeps_an_indented_node() {
     };
     assert_eq!(tagged.as_string(), Some("value\n".to_string()));
 }
+
+/// A block scalar header on the line after a lone tag belongs to the tag
+/// whatever its column, with or without a comment ending the
+/// tag's line. Left of the enclosing entry's content it breaks
+/// `s-separate(n+1)`, which the validator reports.
+///
+/// With a comment the header was adopted silently; without one it was left
+/// over and failed the whole parse.
+#[test]
+fn block_scalar_header_after_lone_tag_is_adopted() {
+    use yaml_edit::validator::Validator;
+
+    let header_violations = |file: &YamlFile| -> Vec<(String, Option<String>)> {
+        Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| (v.message, v.location))
+            .collect()
+    };
+    let under_indented = |location: &str| {
+        vec![(
+            "Block scalar header must be indented past its parent node".to_string(),
+            Some(location.to_string()),
+        )]
+    };
+
+    for yaml in ["a: !!str # c\n|\n x\n", "a: !!str\n|\n x\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(mapping.len(), 1, "{yaml:?}");
+        let tagged = match mapping.get("a").unwrap() {
+            yaml_edit::YamlNode::TaggedNode(t) => t,
+            other => panic!("expected a tagged node, got {other:?}"),
+        };
+        assert_eq!(tagged.as_string(), Some("x\n".to_string()), "{yaml:?}");
+        assert_eq!(header_violations(&file), under_indented("2:1"), "{yaml:?}");
+    }
+
+    let yaml = "- !!str # c\n|\n x\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    assert_eq!(header_violations(&file), under_indented("2:1"));
+
+    let yaml = "- a: !!str\n  |\n   x\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    assert_eq!(header_violations(&file), under_indented("2:3"));
+
+    // Indented past the parent node, or with no parent node at all, the
+    // header is where the spec allows it.
+    for yaml in [
+        "a: !!str # c\n |\n x\n",
+        "folded:\n   !foo\n  >1\n value\n",
+        "!!str # c\n|\n x\n",
+        "- a: !!str\n   |\n   x\n",
+        "a: |\n x\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        assert_eq!(header_violations(&file), vec![], "{yaml:?}");
+    }
+}

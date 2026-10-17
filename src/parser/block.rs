@@ -433,6 +433,9 @@ impl Parser {
                 // so this one case is handled before delegating to it.
                 if self.indentless_sequence_follows(colon_column) {
                     self.builder.start_node(SyntaxKind::VALUE.into());
+                    if self.current() == Some(SyntaxKind::COMMENT) {
+                        self.bump();
+                    }
                     self.bump(); // consume the newline
                     self.parse_sequence_with_base_indent(base_indent);
                     self.builder.finish_node();
@@ -441,7 +444,10 @@ impl Parser {
                     // mapping's column, as for an implicit key: in
                     // `x:\n  ? a\n  : |\n  b: 1\n` the `b` line is not body.
                     let outer_column = self.mapping_value_column;
-                    if self.current() != Some(SyntaxKind::NEWLINE) {
+                    if !matches!(
+                        self.current(),
+                        Some(SyntaxKind::NEWLINE | SyntaxKind::COMMENT)
+                    ) {
                         self.mapping_value_column = Some(colon_column);
                     }
                     self.parse_value_after_colon(true, Some(question_column));
@@ -696,6 +702,13 @@ impl Parser {
     /// otherwise indented past it. With neither, the key is an implicit
     /// null.
     fn parse_explicit_key_node(&mut self, question_column: usize, base_indent: usize) {
+        // A comment ends the indicator's line just as a line break does, so
+        // the checks below still decide whether the next line is the key.
+        // Left to parse_value, it took the next line whatever its column:
+        // `? # c\nb: 1\n` nested `b: 1` inside the key.
+        if self.current() == Some(SyntaxKind::COMMENT) {
+            self.bump();
+        }
         if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
             // A sequence opening on the indicator's own line is bounded by
             // it: measured from column 0 instead, the key's sequence in
@@ -815,21 +828,26 @@ impl Parser {
     /// Whether the next line opens an indentless block sequence, whose
     /// entries sit at the current construct's own column.
     ///
-    /// The caller is on the NEWLINE that ends the `?` or `:` line. A `-`
-    /// straight after that line break carries no INDENT token, which is what
-    /// makes the sequence indentless.
+    /// The caller is on the NEWLINE, or a comment before it, that ends the
+    /// `?` or `:` line. A `-` straight after that line break carries no INDENT
+    /// token, which is what makes the sequence indentless.
     fn indentless_sequence_follows(&self, indicator_column: usize) -> bool {
         // The dashes carry no INDENT, so they start their line: only an
         // indicator in column 0 shares that column. Further in, `- ?\n- a\n`
         // dedents out of the entry and the sequence is the enclosing one's.
-        if self.current() != Some(SyntaxKind::NEWLINE) || indicator_column != 0 {
+        let mut rest = self
+            .current()
+            .into_iter()
+            .chain(self.upcoming_tokens())
+            .peekable();
+        rest.next_if_eq(&SyntaxKind::COMMENT);
+        if rest.next() != Some(SyntaxKind::NEWLINE) || indicator_column != 0 {
             return false;
         }
         // A blank line between the indicator and the sequence carries no
         // indentation of its own, so it neither ends the entry nor stops the
         // sequence being the indentless one: `?\n\n- a\n: v\n` is keyed by
         // the sequence `[a]`, exactly as `?\n- a\n: v\n` is.
-        let mut rest = self.upcoming_tokens();
         loop {
             match rest.next() {
                 Some(SyntaxKind::NEWLINE) => continue,

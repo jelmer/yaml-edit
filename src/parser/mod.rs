@@ -732,6 +732,11 @@ impl Parser {
         mapping_column: Option<usize>,
     ) {
         self.builder.start_node(SyntaxKind::VALUE.into());
+        // A comment ends the colon's line just as a line break does: the
+        // next line is the value only if it is indented to be one.
+        if self.current() == Some(SyntaxKind::COMMENT) {
+            self.bump();
+        }
         if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
             self.parse_value();
         } else if self.current() == Some(SyntaxKind::NEWLINE) {
@@ -783,10 +788,6 @@ impl Parser {
     /// Whether a tag or anchor whose line holds nothing else but perhaps a
     /// comment, and which adopted nothing from the following lines,
     /// annotates an implicit null.
-    ///
-    /// A block scalar header on a later line is the exception: the value
-    /// path still attaches it to the annotation, as in the YAML test suite's
-    /// M5C3.
     pub(super) fn annotation_ends_line(&self) -> bool {
         let mut rest = self
             .current()
@@ -794,14 +795,7 @@ impl Parser {
             .chain(self.upcoming_tokens())
             .peekable();
         rest.next_if_eq(&SyntaxKind::COMMENT);
-        match rest.next() {
-            None => true,
-            Some(SyntaxKind::NEWLINE) => !matches!(
-                rest.find(|k| !matches!(k, SyntaxKind::NEWLINE | SyntaxKind::INDENT)),
-                Some(SyntaxKind::PIPE | SyntaxKind::GREATER)
-            ),
-            Some(_) => false,
-        }
+        matches!(rest.next(), None | Some(SyntaxKind::NEWLINE))
     }
 
     /// Emit the implicit null of an annotation for which

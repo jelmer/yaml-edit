@@ -376,7 +376,7 @@ impl Parser {
                             self.scalar_continuation_floor = outer_floor;
                         }
                     }
-                    None if self.annotation_ends_line() => self.emit_implicit_null(),
+                    None if self.annotation_ends_line() => self.emit_annotated_null(),
                     // Scalar, flow collection, or nothing that belongs to this
                     // tag: the ordinary value path already handles it. Keep
                     // our own base indent, and tell a trailing anchor
@@ -476,6 +476,9 @@ impl Parser {
                     return None
                 }
                 SyntaxKind::DASH => return (indent >= base_indent).then_some(indent),
+                // A document marker ends the document rather than opening a
+                // body: `!!str\n---\n` tags a null.
+                SyntaxKind::DOC_START | SyntaxKind::DOC_END => return None,
                 // An explicit key opens a mapping without a colon on the line.
                 SyntaxKind::QUESTION => return deep_enough(indent).then_some(indent),
                 // A block scalar header likewise carries no colon, and a

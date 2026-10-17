@@ -1115,10 +1115,6 @@ mod tests {
 
     #[test]
     fn test_push_document_terminates_last_line_like_parser() {
-        // TODO: sources ending in a tag or anchor with no value (`a: !!str`,
-        // `- &a`) or a comment line under a nested mapping are missing: the
-        // parser gives them a different shape at the end of the input than
-        // in front of `---`, so no placement of the line break can match.
         for src in [
             "a: 1",
             "- 1",
@@ -1160,6 +1156,10 @@ mod tests {
             "- a # c",
             "- ? a\n  : b",
             "- ? a\n  :",
+            "a: !!str",
+            "- &a",
+            "a:\n  b: 1\n  # c",
+            "a:\n  - 1\n  # c",
         ] {
             let yaml = YamlFile::from_str(src).unwrap();
             yaml.push_document(Document::from_str("b: 2\n").unwrap());

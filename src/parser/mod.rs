@@ -456,7 +456,7 @@ impl Parser {
                     // line is left for the enclosing collection. Inside an
                     // explicit key that line opens the entry's value, for the
                     // `:` handling to claim.
-                    None if self.annotation_ends_line() => self.emit_implicit_null(),
+                    None if self.annotation_ends_line() => self.emit_annotated_null(),
                     None => self.parse_value_with_base_indent(base_indent),
                 }
             }
@@ -777,19 +777,39 @@ impl Parser {
         self.builder.finish_node();
     }
 
-    /// Whether a tag or anchor whose line holds nothing else, and which
-    /// adopted nothing from the following lines, annotates an implicit null.
+    /// Whether a tag or anchor whose line holds nothing else but perhaps a
+    /// comment, and which adopted nothing from the following lines,
+    /// annotates an implicit null.
     ///
     /// A block scalar header on a later line is the exception: the value
     /// path still attaches it to the annotation, as in the YAML test suite's
     /// M5C3.
     pub(super) fn annotation_ends_line(&self) -> bool {
-        self.current() == Some(SyntaxKind::NEWLINE)
-            && !matches!(
-                self.upcoming_tokens()
-                    .find(|k| !matches!(k, SyntaxKind::NEWLINE | SyntaxKind::INDENT)),
+        let mut rest = self
+            .current()
+            .into_iter()
+            .chain(self.upcoming_tokens())
+            .peekable();
+        rest.next_if_eq(&SyntaxKind::COMMENT);
+        match rest.next() {
+            None => true,
+            Some(SyntaxKind::NEWLINE) => !matches!(
+                rest.find(|k| !matches!(k, SyntaxKind::NEWLINE | SyntaxKind::INDENT)),
                 Some(SyntaxKind::PIPE | SyntaxKind::GREATER)
-            )
+            ),
+            Some(_) => false,
+        }
+    }
+
+    /// Emit the implicit null of an annotation for which
+    /// [`annotation_ends_line`](Self::annotation_ends_line) holds, after the
+    /// comment that may end its line. The line break is left to the
+    /// enclosing entry, as it is for `- # c\n`.
+    pub(super) fn emit_annotated_null(&mut self) {
+        if self.current() == Some(SyntaxKind::COMMENT) {
+            self.bump();
+        }
+        self.emit_implicit_null();
     }
 
     /// Whether a tag or anchor just consumed inside a flow collection
@@ -999,6 +1019,8 @@ impl Parser {
                 // A blank line's indentation is not significant either; its
                 // NEWLINE is the one we just read.
                 SyntaxKind::NEWLINE => continue,
+                // The document ends here, just as at the end of the input.
+                SyntaxKind::DOC_START | SyntaxKind::DOC_END => return None,
                 // Another comment line: step over its line break too.
                 SyntaxKind::COMMENT => {
                     if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {

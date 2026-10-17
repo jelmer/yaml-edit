@@ -4455,3 +4455,74 @@ fn test_block_scalar_trailing_comment_at_column_zero() {
         assert_eq!(next.as_scalar().unwrap().as_string(), "1", "{yaml:?}");
     }
 }
+
+/// What ends a document must not change the shape of its last line: `---`
+/// and `...` are not content for a lone annotation to adopt, nor a dedent
+/// that moves a comment line out of the collection it is indented under.
+#[test]
+fn test_document_shape_does_not_depend_on_what_follows() {
+    use rowan::ast::AstNode;
+
+    let first_document = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        yaml_edit::debug::tree_to_string(file.document().unwrap().syntax())
+    };
+    for src in [
+        "!!str\n",
+        "&a\n",
+        "a: !!str\n",
+        "- &a\n",
+        "a:\n  b: 1\n  # c\n",
+        "a:\n  - 1\n  # c\n",
+        "a:\n  b: 1\n# c\n",
+        "a:\n  b:\n    c: 1\n    # c\n",
+    ] {
+        let expected = first_document(src);
+        for end in ["---\nb: 2\n", "--- b\n"] {
+            assert_eq!(
+                first_document(&format!("{src}{end}")),
+                expected,
+                "{src:?} before {end:?}"
+            );
+        }
+        // `...` is part of the document it ends.
+        assert_eq!(
+            first_document(&format!("{src}...\n")),
+            format!("{expected}DOC_END: \"...\"\nNEWLINE: \"\\\\n\"\n"),
+            "{src:?} before \"...\""
+        );
+    }
+}
+
+/// An annotation at the very end of the input annotates the same zero-width
+/// null it does when a line break follows it.
+#[test]
+fn test_annotation_at_end_of_input_holds_implicit_null() {
+    use rowan::ast::AstNode;
+
+    for (yaml, expected) in [
+        (
+            "!!str",
+            "TAGGED_NODE\n  TAG: \"!!str\"\n  SCALAR\n    NULL: \"\"\n",
+        ),
+        (
+            "- &a",
+            "SEQUENCE\n  SEQUENCE_ENTRY\n    DASH: \"-\"\n    WHITESPACE: \" \"\n    ANCHOR: \"&a\"\n    SCALAR\n      NULL: \"\"\n",
+        ),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let document = file.document().unwrap();
+        assert_eq!(
+            yaml_edit::debug::tree_to_string(document.syntax()),
+            expected
+        );
+    }
+    let file = YamlFile::from_str("a: !!str").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let value = mapping.get("a").unwrap();
+    let value = value.as_tagged().unwrap();
+    assert_eq!(value.tag().unwrap(), "!!str");
+    assert!(value.value().unwrap().is_null());
+}

@@ -1413,6 +1413,8 @@ impl ScalarValue {
     /// Render as a literal block scalar (`|`) whose body sits `indent`
     /// spaces past `parent_column`; see
     /// [`to_yaml_string_with_indent`](Self::to_yaml_string_with_indent).
+    /// A value a block scalar can't hold, such as one with a carriage
+    /// return, is double-quoted instead.
     ///
     /// # Panics
     ///
@@ -1424,6 +1426,8 @@ impl ScalarValue {
     /// Render as a folded block scalar (`>`) whose body sits `indent`
     /// spaces past `parent_column`; see
     /// [`to_yaml_string_with_indent`](Self::to_yaml_string_with_indent).
+    /// A value a block scalar can't hold, such as one with a carriage
+    /// return, is double-quoted instead.
     ///
     /// # Panics
     ///
@@ -1436,14 +1440,23 @@ impl ScalarValue {
     /// with its body `indent` columns past `parent_column`.
     fn to_block_with_indent(&self, marker: char, parent_column: usize, indent: usize) -> String {
         assert!(indent > 0, "a block scalar's body must be indented");
+        // A block scalar reads a carriage return as a line break and can't
+        // escape anything, so such a value can only be double-quoted.
+        if Self::needs_double_quotes(&self.value) {
+            return self.to_double_quoted();
+        }
+        if self.value.is_empty() {
+            return format!("{marker}-");
+        }
         // Pick the chomping indicator that preserves the value's trailing
         // line breaks: a bare `|` clips to exactly one, `|-` strips them all
         // and `|+` keeps them. Otherwise reading the value back gains or
-        // loses a newline.
+        // loses a newline. Clipping keeps the break after the last content
+        // line, so a value of only line breaks has to keep them.
         let trailing = self.value.len() - self.value.trim_end_matches('\n').len();
         let chomp = match trailing {
             0 => "-",
-            1 => "",
+            1 if self.value.len() > 1 => "",
             _ => "+",
         };
         let mut lines: Vec<&str> = self.value.split('\n').collect();

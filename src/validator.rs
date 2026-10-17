@@ -466,6 +466,7 @@ impl Validator {
             }
             SyntaxKind::MAPPING => {
                 self.check_flow_collection_commas(node, violations);
+                self.check_flow_pair_placement(node, violations);
                 self.check_flow_continuation_indent(node, violations);
                 self.check_block_mapping_entries_on_same_line(node, violations);
                 self.check_mapping_entry_indentation(node, violations);
@@ -1507,6 +1508,29 @@ impl Validator {
                     "Missing comma between flow collection entries",
                 ));
             }
+        }
+    }
+
+    /// Check that a mapping without braces inside a flow collection is a
+    /// flow sequence entry.
+    ///
+    /// `[k: v]` holds a single-pair mapping, but a flow node cannot be one,
+    /// so the parser's reading of `{k: ? a}` is invalid.
+    fn check_flow_pair_placement(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        if starts_a_flow_collection(node) || !in_flow_collection(node) {
+            return;
+        }
+        let is_sequence_entry = node
+            .parent()
+            .filter(|p| p.kind() == crate::SyntaxKind::SEQUENCE_ENTRY)
+            .and_then(|p| p.parent())
+            .is_some_and(|s| starts_a_flow_collection(&s));
+        if !is_sequence_entry {
+            violations.push(Violation::error_at(
+                Rule::Other,
+                node.text_range(),
+                "Mapping without braces can only be a flow sequence entry",
+            ));
         }
     }
 
@@ -3373,6 +3397,34 @@ mod tests {
             );
         }
         for yaml in ["[a, b c, ]\n", "{a: 1, b: 2,}\n", "[a,\n b]\n", "[a b]\n"] {
+            assert_eq!(located(yaml), vec![], "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn test_flow_pair_only_as_sequence_entry() {
+        for (yaml, location) in [
+            ("[k: ? a]\n", "1:5"),
+            ("{k: ? a}\n", "1:5"),
+            ("[k: ? a: b]\n", "1:5"),
+            ("- {x: [y, k: ? a]}\n", "1:14"),
+        ] {
+            assert_eq!(
+                located(yaml),
+                vec![(
+                    "Mapping without braces can only be a flow sequence entry".to_string(),
+                    location.to_string()
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "[? a]\n",
+            "[k: v]\n",
+            "[[? a: b]]\n",
+            "{? a}\n",
+            "[? a\n? b]\n",
+        ] {
             assert_eq!(located(yaml), vec![], "{yaml:?}");
         }
     }

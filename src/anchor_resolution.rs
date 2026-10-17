@@ -93,6 +93,14 @@ pub enum ResolveError {
         /// The source text of the member.
         member: String,
     },
+    /// A `!!set` member has a value other than null, which a
+    /// [`YamlValue::Set`] cannot keep.
+    NonNullSetValue {
+        /// The source text of the member.
+        member: String,
+        /// The source text of its value.
+        value: String,
+    },
     /// An item of a `!!omap` or `!!pairs` sequence is not a mapping with a
     /// single entry.
     InvalidPairsItem {
@@ -102,8 +110,8 @@ pub enum ResolveError {
         item: String,
     },
     /// [`YamlValue::cast`] met an alias, which it cannot resolve without
-    /// the document's anchors.
-    /// [`DocumentResolvedExt::get_resolved`] resolves aliases.
+    /// the document's anchors. [`YamlValue::from_document`] and
+    /// [`DocumentResolvedExt::get_resolved`] resolve aliases.
     UnresolvedAlias {
         /// The anchor name the alias references, without the `*`.
         alias: String,
@@ -130,6 +138,9 @@ impl std::fmt::Display for ResolveError {
             }
             ResolveError::InvalidSetMember { member } => {
                 write!(f, "!!set member {member:?} is not a scalar")
+            }
+            ResolveError::NonNullSetValue { member, value } => {
+                write!(f, "!!set member {member:?} has non-null value {value:?}")
             }
             ResolveError::InvalidPairsItem { tag, item } => {
                 write!(
@@ -356,41 +367,50 @@ fn key_string(key: &crate::as_yaml::YamlNode) -> String {
 /// precedence order [`merge_sources`] returns them. Keys are compared as
 /// YAML values, so a direct `16` shadows a merged `0x10`. Distinct keys
 /// with the same string form, such as `1` and `'1'`, are a
-/// [`ResolveError::KeyCollision`]. Without a registry, `<<` is an
-/// ordinary key and an alias key is a [`ResolveError::UnresolvedAlias`].
+/// [`ResolveError::KeyCollision`]. An alias key is resolved and converted
+/// like the node it refers to, so an alias to a collection has the
+/// collection's source text as its string form, like a collection key.
+/// Without a registry, `<<` is an ordinary key and an alias key is a
+/// [`ResolveError::UnresolvedAlias`].
 fn apply_merge_keys(
     mapping: &crate::yaml::Mapping,
     registry: Option<&AnchorRegistry>,
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<std::collections::BTreeMap<String, YamlValue>, ResolveError> {
+    use crate::as_yaml::YamlNode;
+
     let mut merged_pairs = std::collections::BTreeMap::new();
-    let mut seen: Vec<(crate::as_yaml::YamlNode, String)> = Vec::new();
+    // The resolved key, its string form and the key as written.
+    let mut seen: Vec<(YamlNode, String, YamlNode)> = Vec::new();
     let sources = match registry {
         Some(registry) => merge_sources(mapping, registry)?,
         None => Vec::new(),
     };
     for source in std::iter::once(mapping).chain(&sources) {
         for (key, value) in source.iter() {
-            if (registry.is_some() && is_merge_key(&key))
-                || seen.iter().any(|(k, _)| k.yaml_eq(&key))
-            {
+            if registry.is_some() && is_merge_key(&key) {
                 continue;
             }
-            if let (crate::as_yaml::YamlNode::Alias(alias), None) = (&key, registry) {
-                return Err(ResolveError::UnresolvedAlias {
-                    alias: alias.name(),
-                });
+            let resolved_key = match (&key, registry) {
+                (YamlNode::Alias(alias), None) => {
+                    return Err(ResolveError::UnresolvedAlias {
+                        alias: alias.name(),
+                    });
+                }
+                (YamlNode::Alias(_), Some(registry)) => resolve_alias_node(key.clone(), registry)?,
+                _ => key.clone(),
+            };
+            if seen.iter().any(|(k, _, _)| k.yaml_eq(&resolved_key)) {
+                continue;
             }
-            // TODO: with a registry, an alias key is kept as its source
-            // text, such as "*a", rather than resolved.
-            let key_str = key_string(&key);
-            if let Some((first, _)) = seen.iter().find(|(_, s)| *s == key_str) {
+            let key_str = key_string(&resolved_key);
+            if let Some((_, _, first)) = seen.iter().find(|(_, s, _)| *s == key_str) {
                 return Err(ResolveError::KeyCollision {
                     first: first.to_string(),
                     second: key.to_string(),
                 });
             }
-            seen.push((key, key_str.clone()));
+            seen.push((resolved_key, key_str.clone(), key));
             if let Some(yaml_value) = resolved_value(value, registry, expanding)? {
                 merged_pairs.insert(key_str, yaml_value);
             }
@@ -465,6 +485,23 @@ fn resolved_tagged(
     use crate::as_yaml::YamlNode;
 
     if let Some(set) = tagged.as_set() {
+        for entry in tagged.as_mapping().iter().flat_map(|m| m.entries()) {
+            let Some(value) = entry.value_node() else {
+                continue;
+            };
+            let is_null = matches!(
+                resolved_value(value.clone(), registry, expanding)?,
+                Some(YamlValue::Scalar(s)) if s.scalar_type() == crate::scalar::ScalarType::Null
+            );
+            if !is_null {
+                return Err(ResolveError::NonNullSetValue {
+                    member: entry
+                        .key_node()
+                        .map_or_else(String::new, |key| key.to_string()),
+                    value: value.to_string(),
+                });
+            }
+        }
         let mut members = std::collections::BTreeSet::new();
         for member in set.members() {
             let Some(YamlValue::Scalar(s)) = resolved_value(member.clone(), registry, expanding)?
@@ -1706,6 +1743,48 @@ m:
     }
 
     #[test]
+    fn get_resolved_set_value_must_be_null() {
+        for (yaml, member, value) in [
+            ("m: !!set {a: 1}\n", "a", "1"),
+            ("m: !!set\n  ? a\n  b: x\n", "b", "x"),
+            ("m: !!set\n  ? b\n  ? a\n  : x\n", "a", "x"),
+            ("m: !!set {a: ~, b: 'null'}\n", "b", "'null'"),
+            ("m: !!set {a: [~]}\n", "a", "[~]"),
+            ("x: &x 1\nm: !!set {a: *x}\n", "a", "*x"),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Err(ResolveError::NonNullSetValue {
+                    member: member.to_string(),
+                    value: value.to_string()
+                }),
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "m: !!set {a: ~, b: null, c: , ? d, e: !!null ''}\n",
+            "m: !!set\n  ? a\n  b:\n  c: ~\n  ? d\n  e: !!null ''\n",
+            "n: &n ~\nm: !!set {a: *n, b: , c: *n, ? d, e: *n}\n",
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Ok(Some(YamlValue::Set(
+                    ["a", "b", "c", "d", "e"].map(String::from).into()
+                ))),
+                "{yaml:?}"
+            );
+        }
+        assert_eq!(
+            ResolveError::NonNullSetValue {
+                member: "a".to_string(),
+                value: "1".to_string()
+            }
+            .to_string(),
+            "!!set member \"a\" has non-null value \"1\""
+        );
+    }
+
+    #[test]
     fn get_resolved_invalid_pairs_item() {
         for (yaml, tag, item) in [
             ("m: !!omap [a]\n", "!!omap", "a"),
@@ -1729,6 +1808,39 @@ m:
                 "{yaml:?}"
             );
         }
+    }
+
+    #[test]
+    fn get_resolved_alias_key() {
+        for (yaml, expected) in [
+            ("x: &a k\nm: {*a : 1}\n", vec![("k", "1")]),
+            ("x: &a !!int 5\nm:\n  *a : 1\n", vec![("5", "1")]),
+            (
+                "x: &a k\nm: {*a : 1, j: &a i, *a : 3}\n",
+                vec![("i", "3"), ("j", "i"), ("k", "1")],
+            ),
+            (
+                "x: &a k\ns: &s {*a : 1}\nm: {<<: *s, j: 2}\n",
+                vec![("j", "2"), ("k", "1")],
+            ),
+            // A collection key is converted to its source text.
+            ("x: &a [p, q]\nm: {*a : 1}\n", vec![("[p, q]", "1")]),
+        ] {
+            assert_eq!(resolved_pairs(yaml, "m"), pairs(&expected), "{yaml:?}");
+        }
+        assert_eq!(
+            doc("x: &a 1\nm: {*a : a, '1': b}\n").get_resolved("m"),
+            Err(ResolveError::KeyCollision {
+                first: "*a".to_string(),
+                second: "'1'".to_string()
+            })
+        );
+        assert_eq!(
+            doc("m: {*nope : 1}\n").get_resolved("m"),
+            Err(ResolveError::UndefinedAlias {
+                alias: "nope".to_string()
+            })
+        );
     }
 
     #[test]

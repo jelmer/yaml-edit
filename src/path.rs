@@ -797,6 +797,7 @@ fn lookup_merged(
             unreachable!("a merged view keeps keys as YAML nodes, not strings")
         }
         ResolveError::InvalidSetMember { .. }
+        | ResolveError::NonNullSetValue { .. }
         | ResolveError::InvalidPairsItem { .. }
         | ResolveError::UnresolvedAlias { .. } => {
             unreachable!("a merged view does not convert values to YamlValue")

@@ -674,6 +674,26 @@ mod tests {
     }
 
     #[test]
+    fn test_yaml_node_byte_range() {
+        let text = "- foo  # c\n- &x [1, 2]\n- !t bar\n";
+        let doc = Document::from_str(text).unwrap();
+        let ranges: Vec<_> = doc
+            .as_sequence()
+            .unwrap()
+            .values()
+            .map(|v| v.byte_range())
+            .collect();
+        assert_eq!(
+            ranges,
+            vec![
+                TextPosition::new(2, 5),
+                TextPosition::new(16, 22),
+                TextPosition::new(25, 31)
+            ]
+        );
+    }
+
+    #[test]
     fn test_empty_lines_positions() {
         let text = "a: 1\n\n\nb: 2";
 

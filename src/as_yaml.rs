@@ -511,6 +511,11 @@ impl YamlNode {
         matches!(self, YamlNode::Alias(_))
     }
 
+    /// Get the byte offset range of this node in the source text.
+    pub fn byte_range(&self) -> crate::TextPosition {
+        self.syntax().text_range().into()
+    }
+
     /// If this node is a scalar, try to parse it as an `i64`.
     ///
     /// Returns `None` if this is not a scalar or cannot be parsed as an integer.

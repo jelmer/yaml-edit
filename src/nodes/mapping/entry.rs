@@ -685,7 +685,7 @@ impl MappingEntry {
     ///
     /// The entry node is detached from the tree; the `MappingEntry` value is
     /// consumed. To retrieve the removed entry from a mapping (and get back a
-    /// `MappingEntry` you can inspect), use [`Mapping::remove`] instead.
+    /// `MappingEntry` you can inspect), use [`Mapping::remove`](super::Mapping::remove) instead.
     pub fn discard(self) {
         self.0.detach();
     }
@@ -694,7 +694,7 @@ impl MappingEntry {
     ///
     /// This is a convenience method that calls [`discard`](Self::discard)
     /// internally. It's useful when you have a [`MappingEntry`] (e.g., from
-    /// [`find_all_entries_by_key`](Mapping::find_all_entries_by_key)) and want
+    /// [`find_all_entries_by_key`](super::Mapping::find_all_entries_by_key)) and want
     /// to remove it without retrieving it from the mapping again.
     ///
     /// Consumes `self` and detaches the entry from the parent mapping.

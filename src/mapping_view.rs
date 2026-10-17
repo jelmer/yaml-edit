@@ -44,6 +44,8 @@
 //! The trait is intentionally read-only: mutations only make sense on the
 //! CST [`Mapping`], so [`set`](crate::yaml::Mapping::set),
 //! [`remove`](crate::yaml::Mapping::remove), etc. remain on that type.
+//!
+//! [`Mapping`]: crate::yaml::Mapping
 
 use crate::as_yaml::YamlNode;
 

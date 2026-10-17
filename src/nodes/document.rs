@@ -6,6 +6,7 @@ use crate::yaml::YamlFile;
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
 use std::path::Path;
+use std::str::FromStr;
 
 ast_node!(Document, DOCUMENT, "A single YAML document");
 
@@ -40,7 +41,6 @@ impl Document {
     /// This follows the standard Rust naming convention of `from_file()`
     /// to pair with `to_file()`.
     pub fn from_file<P: AsRef<Path>>(path: P) -> YamlResult<Document> {
-        use std::str::FromStr;
         let content = std::fs::read_to_string(path)?;
         Self::from_str(&content)
     }
@@ -687,7 +687,7 @@ impl Default for Document {
     }
 }
 
-impl std::str::FromStr for Document {
+impl FromStr for Document {
     type Err = crate::error::YamlError;
 
     /// Parse a document from a YAML string.

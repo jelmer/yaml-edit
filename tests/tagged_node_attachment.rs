@@ -641,3 +641,67 @@ fn block_scalar_header_after_lone_tag_is_adopted() {
         assert_eq!(header_violations(&file), vec![], "{yaml:?}");
     }
 }
+
+/// A tagged implicit key in a block mapping has the TAGGED_NODE an
+/// explicit or flow key with the same properties gets.
+#[test]
+fn block_key_tag_is_a_tagged_node() {
+    let yaml = "&a !t k: v\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    assert_eq!(
+        debug::tree_to_string(file.syntax()),
+        r##"DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        ANCHOR: "&a"
+        WHITESPACE: " "
+        TAGGED_NODE
+          TAG: "!t"
+          WHITESPACE: " "
+          SCALAR
+            STRING: "k"
+      COLON: ":"
+      WHITESPACE: " "
+      VALUE
+        SCALAR
+          STRING: "v"
+      NEWLINE: "\\n"
+"##
+    );
+
+    // The first KEY subtree of the parse of `yaml`, as printed by
+    // `tree_to_string`.
+    fn key_tree(yaml: &str) -> String {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let tree = debug::tree_to_string(file.syntax());
+        let mut lines = tree.lines().skip_while(|l| l.trim_start() != "KEY");
+        let key = lines.next().unwrap();
+        let depth = key.len() - key.trim_start().len();
+        lines
+            .take_while(|l| l.len() - l.trim_start().len() > depth)
+            .map(|l| format!("{}\n", &l[depth..]))
+            .collect()
+    }
+    for props in ["!t", "!!timestamp", "&a !t", "!t &a", "!t !u", "!t &a !u"] {
+        for key in ["k", "\"k\"", "'k'", "[a]", "{a: b}"] {
+            let block = key_tree(&format!("{props} {key}: v\n"));
+            assert_eq!(block, key_tree(&format!("? {props} {key}\n: v\n")));
+            assert_eq!(block, key_tree(&format!("{{{props} {key}: v}}\n")));
+        }
+    }
+    assert_eq!(key_tree("!t : v\n"), key_tree("{!t : v}\n"));
+    assert_eq!(key_tree("- !t [a]: v\n"), key_tree("!t [a]: v\n"));
+    let file = YamlFile::from_str("x:\n  !t [a]: v\n").unwrap();
+    let x = file.document().unwrap().as_mapping().unwrap().get("x");
+    let keys: Vec<String> = x
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .map(|k| format!("{:?}", k.kind()))
+        .collect();
+    assert_eq!(keys, ["Tagged(\"!t\")"]);
+}

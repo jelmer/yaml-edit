@@ -407,12 +407,6 @@ impl Parser {
                 // than emitting it as a sibling of the mapping.
                 if !self.in_flow_context
                     && !self.in_value_context
-                    && matches!(
-                        self.upcoming_tokens().find(|k| {
-                            !matches!(k, SyntaxKind::WHITESPACE | SyntaxKind::INDENT)
-                        }),
-                        Some(SyntaxKind::LEFT_BRACKET | SyntaxKind::LEFT_BRACE)
-                    )
                     && self.is_complex_mapping_key_after_annotations()
                 {
                     self.parse_mapping_with_base_indent(base_indent);
@@ -480,8 +474,14 @@ impl Parser {
                 // [WS] COLON) and dispatch to mapping parsing so
                 // parse_mapping_key_value_pair can consume the tag as
                 // part of the KEY. Otherwise fall back to the default
-                // tag-wraps-following-value behaviour.
-                if !self.in_flow_context && !self.in_value_context && self.is_mapping_key() {
+                // tag-wraps-following-value behaviour. As with an anchor,
+                // the same goes for a flow collection key: in `!t [a]: v`
+                // the tag shares the key's line, which a block mapping's
+                // own properties cannot.
+                if !self.in_flow_context
+                    && !self.in_value_context
+                    && (self.is_mapping_key() || self.is_complex_mapping_key_after_annotations())
+                {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_tagged_value(base_indent);

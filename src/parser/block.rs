@@ -909,21 +909,32 @@ impl Parser {
         }
         false
     }
-    fn parse_mapping_key_value_pair(&mut self, base_indent: usize) {
-        // The key's own column, read before anything is consumed. It is
-        // 1-based, so step back to a column.
-        let key_column = self.error_context.current_location().1.saturating_sub(1);
-        // Start MAPPING_ENTRY node to wrap the entire key-value pair
-        self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
-        // Parse regular key
-        self.builder.start_node(SyntaxKind::KEY.into());
-
-        // Absorb any number of TAG / ANCHOR annotations preceding the
-        // key scalar (`&anchor a:`, `!!str foo:`, `!!str &a1 "foo":`).
-        while matches!(self.current(), Some(SyntaxKind::ANCHOR | SyntaxKind::TAG)) {
-            self.bump(); // consume tag or anchor token
+    /// The node of an implicit block key, with its properties.
+    ///
+    /// As in every other position, a tag wraps the rest of the node in a
+    /// TAGGED_NODE while an anchor in front of it stays outside:
+    /// `&a !t k:` gives `KEY { ANCHOR, WHITESPACE, TAGGED_NODE { TAG, ... } }`.
+    fn parse_block_key_node(&mut self) {
+        while self.current() == Some(SyntaxKind::ANCHOR) {
+            self.bump();
             self.skip_whitespace();
+        }
+        if self.current() == Some(SyntaxKind::TAG) {
+            self.builder.start_node(SyntaxKind::TAGGED_NODE.into());
+            self.bump();
+            // A tagged empty key (`!t : v`) leaves the whitespace before the
+            // colon outside, as in a flow mapping.
+            if self.current() == Some(SyntaxKind::WHITESPACE)
+                && self.upcoming_tokens().next() == Some(SyntaxKind::COLON)
+            {
+                self.emit_implicit_null();
+            } else {
+                self.skip_whitespace();
+                self.parse_block_key_node();
+            }
+            self.builder.finish_node(); // TAGGED_NODE
+            return;
         }
 
         if self.current() == Some(SyntaxKind::MERGE_KEY) {
@@ -960,6 +971,19 @@ impl Parser {
             self.builder.token(SyntaxKind::NULL.into(), "");
             self.builder.finish_node(); // SCALAR
         }
+    }
+
+    fn parse_mapping_key_value_pair(&mut self, base_indent: usize) {
+        // The key's own column, read before anything is consumed. It is
+        // 1-based, so step back to a column.
+        let key_column = self.error_context.current_location().1.saturating_sub(1);
+        // Start MAPPING_ENTRY node to wrap the entire key-value pair
+        self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
+
+        // Parse regular key
+        self.builder.start_node(SyntaxKind::KEY.into());
+
+        self.parse_block_key_node();
         self.builder.finish_node(); // KEY
 
         self.skip_whitespace();

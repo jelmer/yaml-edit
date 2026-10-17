@@ -198,11 +198,28 @@ impl Parser {
             }
 
             if kind == SyntaxKind::NEWLINE {
-                self.bump();
+                // Only take the line break if the scalar goes on after it, so
+                // that one before a delimiter stays outside the scalar.
+                let mut n = 1;
                 while matches!(
-                    self.current(),
-                    Some(SyntaxKind::WHITESPACE | SyntaxKind::INDENT)
+                    self.peek_kind(n),
+                    Some(SyntaxKind::WHITESPACE | SyntaxKind::INDENT | SyntaxKind::NEWLINE)
                 ) {
+                    n += 1;
+                }
+                let continues = !matches!(
+                    self.peek_kind(n),
+                    None | Some(
+                        SyntaxKind::COMMA
+                            | SyntaxKind::RIGHT_BRACE
+                            | SyntaxKind::RIGHT_BRACKET
+                            | SyntaxKind::COMMENT
+                    )
+                ) && !self.flow_key_separator_at(n);
+                if !continues {
+                    break;
+                }
+                for _ in 0..n {
                     self.bump();
                 }
                 continue;

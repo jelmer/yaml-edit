@@ -619,3 +619,37 @@ fn test_empty_flow_collections_with_whitespace() {
     let output = doc.to_string();
     assert_eq!(output, yaml);
 }
+
+/// A line break before the closing bracket ends the last plain scalar
+/// rather than being part of it, just as spaces do.
+#[test]
+fn test_line_break_before_closing_bracket_is_outside_scalar() {
+    let yaml = "m: {\n  a: 1,\n  b: 2\n}\nl: [x,\n  y\n  ]\n";
+    let parsed = YamlFile::from_str(yaml).unwrap();
+    let doc = parsed.document().unwrap();
+
+    let b = doc.get_mapping("m").unwrap().get("b").unwrap();
+    let range = b.as_scalar().unwrap().byte_range();
+    assert_eq!(&yaml[range.start as usize..range.end as usize], "2");
+
+    let y = doc.get_sequence("l").unwrap().get(1).unwrap();
+    let range = y.as_scalar().unwrap().byte_range();
+    assert_eq!(&yaml[range.start as usize..range.end as usize], "y");
+
+    assert_eq!(parsed.to_string(), yaml);
+}
+
+/// A plain scalar in a flow collection still continues across line breaks,
+/// including blank lines.
+#[test]
+fn test_multi_line_plain_scalar_in_flow() {
+    let yaml = "[a\n  b,\n  c\n\n  d\n]\n";
+    let parsed = YamlFile::from_str(yaml).unwrap();
+    let seq = parsed.document().unwrap().as_sequence().unwrap();
+    let values: Vec<String> = seq
+        .values()
+        .map(|v| v.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(values, vec!["a b", "c\nd"]);
+    assert_eq!(parsed.to_string(), yaml);
+}

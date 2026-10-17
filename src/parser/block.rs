@@ -24,12 +24,18 @@ impl Parser {
             // own column: what ends the block is the next line with content,
             // so `a:\n  - x\n# c\n  - y\n` keeps both entries. Stop only
             // when that line really is dedented. A comment with no content
-            // after it, and a trailing comment on an entry's own line, keep
-            // the old reading, which leaves them inside this block.
-            let dedented = match self.indent_after_comment_lines() {
-                Some(indent) => indent < base_indent,
-                None => self.is_at_dedented_position(base_indent),
-            };
+            // after it keeps the old reading, which leaves it inside this
+            // block. A comment on the last entry's own line stays with that
+            // entry whatever follows, as it does before another entry.
+            let own_line = matches!(
+                self.previous_kind,
+                None | Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
+            );
+            let dedented = own_line
+                && match self.indent_after_comment_lines() {
+                    Some(indent) => indent < base_indent,
+                    None => self.is_at_dedented_position(base_indent),
+                };
             if base_indent > 0 && dedented {
                 return true;
             }

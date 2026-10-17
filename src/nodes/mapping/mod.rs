@@ -600,21 +600,16 @@ impl Mapping {
         // An existing entry with this key takes the value in place.
         let existing = self
             .0
-            .children_with_tokens()
-            .enumerate()
-            .find_map(|(i, c)| {
-                let entry = MappingEntry::cast(c.into_node()?)?;
-                let matches = entry.key().is_some_and(|k| key_content_matches(&k, &key));
-                matches.then_some((i, entry))
-            });
-        if let Some((i, entry)) = existing {
+            .children()
+            .filter_map(MappingEntry::cast)
+            .find(|entry| entry.key().is_some_and(|k| key_content_matches(&k, &key)));
+        if let Some(entry) = existing {
             // set_value shifts the flow form to the entry's line, so its
             // continuation lines are given relative to that.
             match flow_context.then(|| flow_form(&value, 2)).flatten() {
                 Some(flow) => entry.set_value(flow, flow_context),
                 None => entry.set_value(value, flow_context),
             }
-            self.0.splice_children(i..i + 1, vec![entry.0.into()]);
             return;
         }
 

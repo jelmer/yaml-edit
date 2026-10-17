@@ -5,11 +5,12 @@
 //! Split out of `nodes/mapping/mod.rs` unchanged.
 
 use super::helpers::{
-    add_key_line_comment, build_block_value_node, built_block_node, find_key_line_comment,
-    flow_form, has_comment, source_anchor_text, value_is_block,
+    build_block_value_node, built_block_node, find_key_line_comment, flow_form, has_comment,
+    source_anchor_text, value_is_block,
 };
 use super::{key_content_matches, MappingEntry};
 use crate::lex::SyntaxKind;
+use crate::nodes::replaced_value::{add_to_first_line, insert_comment_line_above};
 use crate::nodes::{entry_key, entry_value, fresh_token, Lang, SyntaxNode};
 use crate::yaml::add_node_children_to;
 use rowan::GreenNodeBuilder;
@@ -325,6 +326,9 @@ impl MappingEntry {
         let kept_ws = || value_ws.clone().unwrap_or_else(|| " ".to_string());
         // Keep any key-line comment on the key line: after what the new
         // value puts there, or else first in VALUE, before its line break.
+        // If the new value has a comment of its own there (a block scalar
+        // header's), the old one goes on a line of its own above the entry.
+        let mut displaced_comment = None;
         let separator = match find_key_line_comment(&self.0) {
             Some((ws, comment)) if !block.on_key_line => {
                 block.node.splice_children(
@@ -334,7 +338,9 @@ impl MappingEntry {
                 Some(ws)
             }
             Some(comment) => {
-                add_key_line_comment(&block.node, comment);
+                if !add_to_first_line(&block.node, comment.clone()) {
+                    displaced_comment = Some(comment.1);
+                }
                 Some(kept_ws())
             }
             None => block.on_key_line.then(kept_ws),
@@ -374,6 +380,9 @@ impl MappingEntry {
                     next.detach();
                 }
             }
+        }
+        if let Some(comment) = displaced_comment {
+            insert_comment_line_above(&self.0, &comment);
         }
     }
 

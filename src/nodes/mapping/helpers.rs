@@ -249,36 +249,6 @@ pub(crate) fn build_block_value_node(source: &SyntaxNode, target: usize) -> Bloc
     }
 }
 
-/// Put `comment` (the whitespace before it, then its text) at the end of
-/// the first line of `value`, a VALUE built by [`build_block_value_node`]
-/// that starts on the key line. The parser keeps such a comment beside the
-/// anchor, tag or block scalar header it follows.
-// TODO: if that line already has a comment (a block scalar's header
-// comment), the value's own is kept and `comment` is silently dropped, as
-// a line holds only one.
-pub(super) fn add_key_line_comment(value: &SyntaxNode, comment: (String, String)) {
-    let first_line: Vec<_> = value
-        .descendants_with_tokens()
-        .filter_map(|c| c.into_token())
-        .take_while(|t| t.kind() != SyntaxKind::NEWLINE)
-        .collect();
-    if first_line.iter().any(|t| t.kind() == SyntaxKind::COMMENT) {
-        return;
-    }
-    let last = first_line
-        .last()
-        .expect("a value on the key line starts with a token");
-    let parent = last.parent().expect("a token has a parent");
-    let at = last.index() + 1;
-    parent.splice_children(
-        at..at,
-        vec![
-            fresh_token(SyntaxKind::WHITESPACE, &comment.0).into(),
-            fresh_token(SyntaxKind::COMMENT, &comment.1).into(),
-        ],
-    );
-}
-
 /// `value` built as a standalone node, if it has no node of its own but
 /// spans several lines (a non-empty `YamlValue` collection, or a tagged
 /// one), so it can be laid out like a block node from another CST.

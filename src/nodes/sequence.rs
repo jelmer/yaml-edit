@@ -935,13 +935,13 @@ impl Sequence {
         };
         let node = children[i].as_node().expect("entry index names a node");
         let flow = self.is_flow_style();
-        let trailing_lines = match entry_item(node) {
+        let (trailing_lines, dash_comment) = match entry_item(node) {
             Some(old) if !flow => {
                 let lines = replaced_value::take_trailing_lines(&old);
                 replaced_value::remove_lifted_comment(node, &old);
-                lines
+                (lines, replaced_value::take_dash_line_comment(node))
             }
-            _ => Vec::new(),
+            _ => (Vec::new(), None),
         };
         let new_entry = rebuild_entry_with_value(node, &value, flow);
 
@@ -954,6 +954,9 @@ impl Sequence {
             .and_then(|c| c.into_node());
         let new_entry = new_entry.expect("the new entry was just spliced in");
         replaced_value::restore_trailing_lines(&new_entry, trailing_lines);
+        if let Some(comment) = dash_comment {
+            replaced_value::add_dash_line_comment(&new_entry, comment);
+        }
         true
     }
 
@@ -1531,8 +1534,8 @@ mod tests {
         use crate::{AsYaml, Document};
 
         for (src, expected) in [
-            ("-  # c\n  x: 1\n- 2\n", "-  # c\n  5\n- 2\n"),
-            ("- # c\n  - 1\n", "- # c\n  5\n"),
+            ("-  # c\n  x: 1\n- 2\n", "- 5  # c\n- 2\n"),
+            ("- # c\n  - 1\n", "- 5 # c\n"),
         ] {
             let doc = Document::from_str(src).unwrap();
             assert!(doc.as_sequence().unwrap().set(0, 5));

@@ -467,6 +467,7 @@ impl Validator {
                 self.check_flow_collection_commas(node, violations);
                 self.check_flow_continuation_indent(node, violations);
                 self.check_block_mapping_entries_on_same_line(node, violations);
+                self.check_block_mapping_after_properties(node, violations);
                 self.check_mapping_entry_indentation(node, violations);
                 if self.config.check_duplicate_keys {
                     self.check_duplicate_keys(node, violations);
@@ -2094,6 +2095,42 @@ impl Validator {
         }
     }
 
+    /// Check that a block mapping does not start on the line of its tag or
+    /// anchor, as in `!x ? a`.
+    ///
+    /// Node properties of a block collection have to be followed by a line
+    /// break (`s-l+block-collection`). An implicit key on that line takes the
+    /// properties itself, so only an explicit key gets here.
+    fn check_block_mapping_after_properties(
+        &self,
+        node: &SyntaxNode,
+        violations: &mut Vec<Violation>,
+    ) {
+        if starts_a_flow_collection(node) {
+            return;
+        }
+        let mut prev = node.prev_sibling_or_token();
+        while let Some(rowan::NodeOrToken::Token(token)) = &prev {
+            if token.kind() != crate::SyntaxKind::WHITESPACE {
+                break;
+            }
+            prev = token.prev_sibling_or_token();
+        }
+        let Some(rowan::NodeOrToken::Token(property)) = prev else {
+            return;
+        };
+        if matches!(
+            property.kind(),
+            crate::SyntaxKind::TAG | crate::SyntaxKind::ANCHOR
+        ) {
+            violations.push(Violation::error_at(
+                Rule::Other,
+                node.text_range(),
+                "A block mapping cannot start on the line of its tag or anchor",
+            ));
+        }
+    }
+
     /// Check that a `!!set` tags a mapping, whose keys are its members, and
     /// a `!!omap` or `!!pairs` a sequence.
     ///
@@ -3487,6 +3524,48 @@ mod tests {
             );
         }
         for yaml in ["s: !!set {? a}\n", "s: !!set &x\n  ? a\n", "s: !!set {}\n"] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_block_mapping_after_properties() {
+        for (yaml, location) in [
+            ("!x ? a\n", "1:4"),
+            ("&a ? a\n", "1:4"),
+            ("k: !x &a ? a\n", "1:10"),
+            ("- !x ? a\n", "1:6"),
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.severity, v.rule))
+                .collect();
+            assert_eq!(
+                violations,
+                vec![(
+                    "A block mapping cannot start on the line of its tag or anchor".to_string(),
+                    Some(location.to_string()),
+                    Severity::Error,
+                    Rule::Other
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "!x\n? a\n",
+            "&a\n? a\n",
+            "!x a: 1\n",
+            "k: !x {? a}\n",
+            "- ? a\n",
+            "? &a a\n",
+        ] {
             let file = crate::YamlFile::from_str(yaml).unwrap();
             assert_eq!(
                 Validator::new().validate_syntax(file.syntax()),

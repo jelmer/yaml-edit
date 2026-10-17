@@ -101,6 +101,9 @@ impl MappingEntry {
             let explicit = use_explicit_key || multiline;
             return Self::new_at_indent(key, value, flow_context, explicit, key_indent);
         }
+        if !use_explicit_key && !flow_context && crate::nodes::key_spans_lines(&key) {
+            return Self::new_at_indent(key, value, flow_context, true, key_indent);
+        }
         // Built inline below, the flow form is shifted by key_indent, so its
         // continuation lines are given relative to the key.
         if let Some(value) = flow_context.then(|| flow_form(&value, 2)).flatten() {

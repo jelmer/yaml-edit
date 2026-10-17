@@ -1256,6 +1256,10 @@ impl Mapping {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn rename_key(&self, old_key: impl crate::AsYaml, new_key: impl crate::AsYaml) -> bool {
+        let indent = self.detect_indentation_level();
+        if let Some(key) = flow_form(&new_key, 2) {
+            return self.rename_key(old_key, key);
+        }
         let Some(node) = self.find_entry_by_key(&old_key).map(|e| e.0) else {
             return false;
         };
@@ -1265,17 +1269,39 @@ impl Mapping {
             self.remove_other_entries(&node, &new_key);
         }
 
+        // A key spanning lines has to be explicit, with the `:` on a line
+        // of its own.
+        let make_explicit = !self.is_flow_style()
+            && !has_child_token(&node, |k| k == SyntaxKind::QUESTION)
+            && super::key_spans_lines(&new_key);
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
+        let mut after_key = false;
         for entry_child in node.children_with_tokens() {
             match entry_child {
                 rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::KEY => {
+                    if make_explicit {
+                        builder.token(SyntaxKind::QUESTION.into(), "?");
+                        builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                    }
                     Self::rebuild_key(&mut builder, &n, &new_key);
+                    if make_explicit {
+                        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                        if indent > 0 {
+                            builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent));
+                        }
+                    }
+                    after_key = true;
                 }
+                // Whitespace between the key and the `:` would now start
+                // the `:` line.
+                rowan::NodeOrToken::Token(t)
+                    if make_explicit && after_key && t.kind() == SyntaxKind::WHITESPACE => {}
                 rowan::NodeOrToken::Node(n) => {
                     crate::yaml::copy_node_to_builder(&mut builder, &n);
                 }
                 rowan::NodeOrToken::Token(t) => {
+                    after_key &= t.kind() != SyntaxKind::COLON;
                     builder.token(t.kind().into(), t.text());
                 }
             }
@@ -1283,7 +1309,11 @@ impl Mapping {
         builder.finish_node();
         let new_entry = SyntaxNode::new_root_mut(builder.finish());
         let i = node.index();
-        self.0.splice_children(i..i + 1, vec![new_entry.into()]);
+        self.0
+            .splice_children(i..i + 1, vec![new_entry.clone().into()]);
+        if make_explicit {
+            hand_line_break_to_mapping(&new_entry);
+        }
         true
     }
 

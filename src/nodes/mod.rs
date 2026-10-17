@@ -549,6 +549,18 @@ pub(crate) fn build_key_content(
     key.build_content(builder, indent, false);
 }
 
+/// Whether `key`, as [`build_key_content`] writes it, spans several lines,
+/// which in a block mapping only an explicit key may do.
+pub(crate) fn key_spans_lines(key: &impl crate::AsYaml) -> bool {
+    let mut builder = rowan::GreenNodeBuilder::new();
+    builder.start_node(SyntaxKind::ROOT.into());
+    build_key_content(&mut builder, key, 0);
+    builder.finish_node();
+    SyntaxNode::new_root(builder.finish())
+        .text()
+        .contains_char('\n')
+}
+
 /// The `KEY` child of a `MAPPING_ENTRY`.
 pub(crate) fn entry_key(entry: &SyntaxNode) -> Option<SyntaxNode> {
     child_of_kind(entry, SyntaxKind::KEY)

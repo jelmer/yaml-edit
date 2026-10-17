@@ -1,0 +1,18 @@
+[package]
+name = "yaml-merge3"
+version = "0.1.0"
+edition = "2021"
+authors = ["Jelmer Vernooĳ <jelmer@jelmer.uk>"]
+license = "Apache-2.0"
+description = "Structure-aware three-way merge for YAML files"
+keywords = ["yaml", "merge", "git"]
+categories = ["command-line-utilities", "development-tools"]
+repository = "https://github.com/jelmer/yaml-edit"
+homepage = "https://github.com/jelmer/yaml-edit"
+readme = "README.md"
+rust-version = "1.85"
+
+[dependencies]
+yaml-edit = { path = "..", version = "0.3.2" }
+clap = { version = "4", features = ["derive"] }
+merge3 = { version = "0.2", default-features = false }

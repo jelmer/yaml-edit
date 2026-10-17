@@ -668,9 +668,10 @@ pub(crate) fn copy_node_content(builder: &mut rowan::GreenNodeBuilder, node: &Sy
 }
 
 /// Copy the children of `node` into `builder`, shifting every post-newline
-/// whitespace by `delta` columns (may be negative to dedent). Only spaces
-/// are added or removed; tabs after them are kept. Line-leading whitespace
-/// is written as INDENT, as the parser does.
+/// whitespace, and the lines inside a multi-line quoted scalar, by `delta`
+/// columns (may be negative to dedent). Only spaces are added or removed;
+/// tabs after them are kept. Line-leading whitespace is written as INDENT,
+/// as the parser does.
 ///
 /// Newline state is tracked across node boundaries: a NEWLINE inside a
 /// child node correctly marks
@@ -727,7 +728,7 @@ pub(crate) fn copy_node_content_reindent(
                     if after_newline && delta > 0 {
                         builder.token(SyntaxKind::INDENT.into(), &pad(delta));
                     }
-                    builder.token(t.kind().into(), t.text());
+                    builder.token(t.kind().into(), &shift_inner_lines(t.text(), delta));
                     after_newline = false;
                 }
             },
@@ -736,15 +737,33 @@ pub(crate) fn copy_node_content_reindent(
     after_newline
 }
 
-/// `text`, the whitespace at the start of a line, with `delta` spaces added
-/// or up to `-delta` leading spaces removed. Tabs are not indentation, so
-/// any that follow the spaces are kept.
-fn shift_line_start(text: &str, delta: isize) -> String {
+/// `text`, a line or the whitespace at its start, with `delta` spaces
+/// added or up to `-delta` leading spaces removed. Tabs are not
+/// indentation, so any that follow the spaces are kept.
+pub(crate) fn shift_line_start(text: &str, delta: isize) -> String {
     if delta >= 0 {
         return format!("{}{text}", " ".repeat(delta as usize));
     }
     let spaces = text.len() - text.trim_start_matches(' ').len();
     text[spaces.min(delta.unsigned_abs())..].to_string()
+}
+
+/// `text` with the indentation of each line after the first moved by
+/// `delta` columns, leaving empty lines empty.
+pub(crate) fn shift_inner_lines(text: &str, delta: isize) -> Cow<'_, str> {
+    let Some((first, rest)) = text.split_once('\n').filter(|_| delta != 0) else {
+        return Cow::Borrowed(text);
+    };
+    let mut shifted = first.to_string();
+    for line in rest.split('\n') {
+        shifted.push('\n');
+        if line.trim_end_matches('\r').is_empty() {
+            shifted.push_str(line);
+        } else {
+            shifted.push_str(&shift_line_start(line, delta));
+        }
+    }
+    Cow::Owned(shifted)
 }
 
 /// Column at which `node` starts on its line.

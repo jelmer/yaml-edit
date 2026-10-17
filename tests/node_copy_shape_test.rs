@@ -583,3 +583,38 @@ fn test_set_tagged_scalar_key_in_block_mapping() {
     mapping.set(ScalarValue::regex("^a+$"), 3);
     assert_parser_shaped(&file, "a: 1\n!!timestamp 2001-12-14: 2\n!!regex ^a+$: 3\n");
 }
+
+/// Continuation lines of a multi-line quoted scalar inside a copied
+/// collection are shifted with the collection's other lines.
+#[test]
+fn test_set_nested_key_to_flow_sequence_with_multiline_quoted_scalar() {
+    let file = YamlFile::from_str("m:\n  k: 1\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    mapping
+        .get_mapping("m")
+        .unwrap()
+        .set("n", value_of("v: [\"a\n\n b\"]\n", "v"));
+    assert_valid_copy(&file, "m:\n  k: 1\n  n: [\"a\n\n   b\"]\n");
+}
+
+#[test]
+fn test_set_nested_key_to_block_mapping_with_multiline_quoted_scalar() {
+    let file = YamlFile::from_str("m:\n  k: 1\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    mapping
+        .get_mapping("m")
+        .unwrap()
+        .set("n", value_of("v:\n  q: 'a\n   b'\n", "v"));
+    assert_valid_copy(&file, "m:\n  k: 1\n  n:\n    q: 'a\n     b'\n");
+}
+
+#[test]
+fn test_set_nested_key_to_block_sequence_with_multiline_quoted_scalar() {
+    let file = YamlFile::from_str("m:\n  k: 1\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    mapping
+        .get_mapping("m")
+        .unwrap()
+        .set("n", value_of("v:\n- \"a\n  b\"\n", "v"));
+    assert_valid_copy(&file, "m:\n  k: 1\n  n:\n    - \"a\n      b\"\n");
+}

@@ -464,7 +464,7 @@ fn copy_shifting_continuation_lines(
                 continue;
             }
             SyntaxKind::INDENT | SyntaxKind::WHITESPACE if after_newline => {
-                let shifted = shift_line_prefix(token.text(), delta);
+                let shifted = crate::as_yaml::shift_line_start(token.text(), delta);
                 if !shifted.is_empty() {
                     builder.token(SyntaxKind::INDENT.into(), &shifted);
                 }
@@ -473,39 +473,15 @@ fn copy_shifting_continuation_lines(
                 if after_newline && delta > 0 {
                     builder.token(SyntaxKind::INDENT.into(), &" ".repeat(delta as usize));
                 }
-                builder.token(kind.into(), &shift_inner_lines(token.text(), delta));
+                builder.token(
+                    kind.into(),
+                    &crate::as_yaml::shift_inner_lines(token.text(), delta),
+                );
             }
         }
         after_newline = false;
     }
     after_newline
-}
-
-/// `text` with the indentation of each line after the first moved by
-/// `delta` columns, leaving empty lines empty.
-fn shift_inner_lines(text: &str, delta: isize) -> Cow<'_, str> {
-    let Some((first, rest)) = text.split_once('\n').filter(|_| delta != 0) else {
-        return Cow::Borrowed(text);
-    };
-    let mut shifted = first.to_string();
-    for line in rest.split('\n') {
-        shifted.push('\n');
-        if line.trim_end_matches('\r').is_empty() {
-            shifted.push_str(line);
-        } else {
-            shifted.push_str(&shift_line_prefix(line, delta));
-        }
-    }
-    Cow::Owned(shifted)
-}
-
-/// `line` with its leading spaces moved by `delta` columns. Tabs after
-/// them are kept: they separate rather than indent. A source too shallow
-/// to dedent that far ends up at column 0.
-fn shift_line_prefix(line: &str, delta: isize) -> String {
-    let rest = line.trim_start_matches(' ');
-    let spaces = (line.len() - rest.len()) as isize + delta;
-    format!("{}{}", " ".repeat(spaces.max(0) as usize), rest)
 }
 
 // TryFrom implementations for typed access. These read the scalar the way

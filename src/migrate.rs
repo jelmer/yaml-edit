@@ -24,9 +24,9 @@
 //! The single-letter booleans `y` and `n` are left alone: they are rarely
 //! meant as booleans, and 1.1 readers such as PyYAML treat them as strings.
 //!
-//! [`crate::validator::Rule::LegacyYaml11`] reports the octal and
-//! `yes`/`no`/`on`/`off` forms without changing anything, for callers who
-//! would rather decide per site.
+//! [`crate::validator::Rule::LegacyYaml11`] reports the octal,
+//! leading-zero decimal and `yes`/`no`/`on`/`off` forms without changing
+//! anything, for callers who would rather decide per site.
 
 use crate::lex::SyntaxKind;
 use crate::scalar::{digits_to_decimal, places_to_decimal, CoreScalarType, ScalarValue};

@@ -937,7 +937,9 @@ impl Validator {
     /// in YAML 1.1 and is 755 in 1.2, with no syntax error either way, so a
     /// file carried across versions changes meaning without complaint. The
     /// 1.1 booleans (`yes`, `no`, `on`, `off`) are already strings here, as
-    /// 1.2 requires, but a 1.1 reader still takes them as booleans.
+    /// 1.2 requires, but a 1.1 reader still takes them as booleans. A
+    /// leading-zero decimal with an 8 or 9 (`089`) is the reverse: an integer
+    /// here, but a string to a 1.1 reader.
     fn check_legacy_yaml_1_1(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // Only a plain scalar resolves by its text; a quoted one is a string
         // in every version.
@@ -975,6 +977,20 @@ impl Validator {
                 token.text_range(),
                 format!(
                     "`{text}` is YAML 1.1 octal, read as {sign}{as_octal}; YAML 1.2 reads it as {sign}{as_decimal}. Write `{suggestion}` to keep the octal meaning",
+                ),
+            ));
+            return;
+        }
+
+        if crate::ScalarValue::is_leading_zero_decimal(text) {
+            let minus = if text.starts_with('-') { "-" } else { "" };
+            let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
+            let as_decimal = crate::scalar::digits_to_decimal(digits, 10);
+            violations.push(Violation::warning_at(
+                Rule::LegacyYaml11,
+                token.text_range(),
+                format!(
+                    "`{text}` is a string in YAML 1.1; YAML 1.2 reads it as the integer {minus}{as_decimal}. Write `'{text}'` to keep the string meaning",
                 ),
             ));
             return;

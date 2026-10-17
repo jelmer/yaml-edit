@@ -539,3 +539,36 @@ fn test_set_implicitly_tagged_scalar_key_matches_tagged_key() {
         assert_parser_shaped(&file, expected);
     }
 }
+
+/// Tabs after a continuation line's indentation separate tokens rather
+/// than indent, so shifting the line keeps them.
+#[test]
+fn test_set_multiline_flow_value_keeps_tabs() {
+    for (value, expected) in [
+        ("[a,\n \tb]\n", "m:\n  k: 1\n  n: [a,\n   \tb]\n"),
+        ("[a,\n  \t b]\n", "m:\n  k: 1\n  n: [a,\n    \t b]\n"),
+        (
+            "{a: 1,\n\t\n b: 2}\n",
+            "m:\n  k: 1\n  n: {a: 1,\n  \t\n   b: 2}\n",
+        ),
+    ] {
+        let file = YamlFile::from_str("m:\n  k: 1\n").unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let nested = mapping.get_mapping("m").unwrap();
+        nested.set("n", value_of(&format!("v: {value}"), "v"));
+        assert_valid_copy(&file, expected);
+    }
+}
+
+#[test]
+fn test_set_dedented_multiline_flow_value_keeps_tabs() {
+    let source = value_of("m:\n  v: [a,\n   \tb]\n", "m");
+    let source = source.as_mapping().unwrap().get("v").unwrap();
+    let file = YamlFile::from_str("k: 1\n").unwrap();
+    file.document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .set("n", source);
+    assert_valid_copy(&file, "k: 1\nn: [a,\n \tb]\n");
+}

@@ -512,11 +512,11 @@ mod tests {
         // as children of the SCALAR node instead of as siblings.
 
         let json = r#"{
-      "items": [
+  "items": [
     "first",
     "second"
-      ]
-    }"#;
+  ]
+}"#;
 
         let doc = Document::from_str(json).unwrap();
         let mapping = doc.as_mapping().unwrap();
@@ -586,8 +586,8 @@ mod tests {
     fn test_yaml_flow_arrays_quoted_strings() {
         // YAML flow-style arrays should behave the same
         let yaml = r#"
-    items: ["first", "second"]
-    "#;
+items: ["first", "second"]
+"#;
 
         let doc = Document::from_str(yaml).unwrap();
         let mapping = doc.as_mapping().unwrap();

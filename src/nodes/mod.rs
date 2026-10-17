@@ -64,6 +64,10 @@
 //!   SEQUENCE_ENTRY ...
 //! ```
 //!
+//! An explicit-key entry (`? key\n: value\n`) never owns the NEWLINE
+//! ending its value line: the parser leaves it to the MAPPING, right
+//! after the entry. See [`hand_line_break_to_mapping`].
+//!
 //! Two carve-outs:
 //! - The **last** entry of a block collection may lack a terminator
 //!   (unterminated sources like `a: 1\nb: 2` are legitimate YAML and
@@ -367,6 +371,32 @@ pub(crate) fn ensure_trailing_newline(entry: &SyntaxNode) {
         return;
     }
     append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+}
+
+/// Move the NEWLINE that `entry` ends with out to follow it in its mapping,
+/// if `entry` is an explicit-key entry: the parser leaves the break after
+/// such an entry's value line to the mapping. Entries built standalone
+/// carry the break themselves, so call this once one is attached.
+pub(crate) fn hand_line_break_to_mapping(entry: &SyntaxNode) {
+    if entry.kind() != SyntaxKind::MAPPING_ENTRY
+        || !has_child_token(entry, |k| k == SyntaxKind::QUESTION)
+    {
+        return;
+    }
+    let Some(parent) = entry.parent() else {
+        return;
+    };
+    let Some(newline) = entry
+        .last_child_or_token()
+        .and_then(|c| c.into_token())
+        .filter(|t| t.kind() == SyntaxKind::NEWLINE)
+    else {
+        return;
+    };
+    let text = newline.text().to_string();
+    newline.detach();
+    let at = entry.index() + 1;
+    parent.splice_children(at..at, vec![fresh_token(SyntaxKind::NEWLINE, &text).into()]);
 }
 
 /// Append a trailing NEWLINE token to `entry` unless the entry itself already

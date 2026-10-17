@@ -167,10 +167,9 @@ fn resolve_scalar(scalar: crate::scalar::ScalarValue) -> Resolved {
     let text = scalar.value();
     let canonical = |parsed: Option<String>| parsed.unwrap_or_else(|| text.to_string());
     let (tag, value) = match scalar.scalar_type() {
-        // TODO: integers outside the i64 range compare by spelling.
         ScalarType::Integer => (
             "!!int".to_string(),
-            canonical(ScalarValue::parse_integer(text).map(|i| i.to_string())),
+            canonical(ScalarValue::canonical_integer(text)),
         ),
         ScalarType::Float => (
             "!!float".to_string(),
@@ -1803,6 +1802,38 @@ block_map:
         assert!(yaml_eq(&m.get("e").unwrap(), &m.get("f").unwrap()));
         assert!(!yaml_eq(&m.get("a").unwrap(), &m.get("e").unwrap()));
         assert!(yaml_eq(&m.get("b").unwrap(), &f64::INFINITY));
+    }
+
+    #[test]
+    fn test_yaml_eq_integers_outside_i64() {
+        let yaml = "dec: 18446744073709551616\n\
+                    hex: 0x10000000000000000\n\
+                    oct: 0o2000000000000000000000\n\
+                    padded: 00018446744073709551616\n\
+                    tagged: !!int 0x10000000000000000\n\
+                    other: 18446744073709551617\n\
+                    min: 9223372036854775808\n\
+                    plusmin: +9223372036854775808\n\
+                    negmin: -9223372036854775809\n\
+                    neghex: -0x8000000000000001\n";
+        assert!(eq_values(yaml, "dec", "hex"));
+        assert!(eq_values(yaml, "dec", "oct"));
+        assert!(eq_values(yaml, "dec", "padded"));
+        assert!(eq_values(yaml, "dec", "tagged"));
+        assert!(!eq_values(yaml, "dec", "other"));
+        assert!(eq_values(yaml, "min", "plusmin"));
+        assert!(!eq_values(yaml, "min", "negmin"));
+        // `-0x...` is not a core schema integer, so it is a string.
+        assert!(!eq_values(yaml, "negmin", "neghex"));
+        let doc = Document::from_str("a: 0xFFFFFFFFFFFFFFFF\n").unwrap();
+        let a = doc.as_mapping().unwrap().get("a").unwrap();
+        assert!(yaml_eq(&a, &u64::MAX));
+    }
+
+    #[test]
+    fn test_yaml_eq_negative_zero() {
+        assert!(eq_values("a: -0\nb: 0\nc: +000\n", "a", "b"));
+        assert!(eq_values("a: -0\nb: 0\nc: +000\n", "a", "c"));
     }
 
     fn eq_values(yaml: &str, a: &str, b: &str) -> bool {

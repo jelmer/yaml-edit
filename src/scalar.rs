@@ -178,6 +178,33 @@ fn all_digits(s: &str, radix: u32) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_digit(radix))
 }
 
+/// Convert `digits`, already checked to be valid in `radix`, to decimal
+/// without an upper bound on their value.
+fn digits_to_decimal(digits: &str, radix: u32) -> String {
+    const LIMB: u64 = 1_000_000_000;
+    // Little-endian base 10^9 limbs.
+    let mut limbs: Vec<u64> = Vec::new();
+    for c in digits.chars() {
+        let mut carry = u64::from(c.to_digit(radix).expect("digits checked by caller"));
+        for limb in &mut limbs {
+            let v = *limb * u64::from(radix) + carry;
+            *limb = v % LIMB;
+            carry = v / LIMB;
+        }
+        if carry > 0 {
+            limbs.push(carry);
+        }
+    }
+    let Some((most, rest)) = limbs.split_last() else {
+        return "0".to_string();
+    };
+    let mut out = most.to_string();
+    for limb in rest.iter().rev() {
+        out.push_str(&format!("{limb:09}"));
+    }
+    out
+}
+
 impl ScalarValue {
     /// Create a scalar value explicitly treating it as a string (no type auto-detection)
     ///
@@ -586,10 +613,32 @@ impl ScalarValue {
     /// Parse a YAML 1.2 core schema integer: `[-+]?[0-9]+` (decimal, even
     /// with leading zeros), `0o[0-7]+` or `0x[0-9a-fA-F]+`.
     pub(crate) fn parse_integer(value: &str) -> Option<i64> {
+        let (radix, digits, is_negative) = Self::split_core_int(value)?;
+        // Parse the magnitude wider than i64 so that i64::MIN fits.
+        let magnitude = i128::from_str_radix(digits, radix).ok()?;
+        i64::try_from(if is_negative { -magnitude } else { magnitude }).ok()
+    }
+
+    /// The decimal spelling of a YAML 1.2 core schema integer of any size,
+    /// without leading zeros, a `+` sign or a sign on zero, so that equal
+    /// values are spelled the same.
+    pub(crate) fn canonical_integer(value: &str) -> Option<String> {
+        let (radix, digits, is_negative) = Self::split_core_int(value)?;
+        let magnitude = digits_to_decimal(digits, radix);
+        Some(if is_negative && magnitude != "0" {
+            format!("-{magnitude}")
+        } else {
+            magnitude
+        })
+    }
+
+    /// Split a YAML 1.2 core schema integer into its radix, its digits and
+    /// whether it is negative.
+    fn split_core_int(value: &str) -> Option<(u32, &str, bool)> {
         if !Self::is_core_int(value) {
             return None;
         }
-        let (radix, digits, is_negative) = if let Some(hex) = value.strip_prefix("0x") {
+        Some(if let Some(hex) = value.strip_prefix("0x") {
             (16, hex, false)
         } else if let Some(oct) = value.strip_prefix("0o") {
             (8, oct, false)
@@ -597,10 +646,7 @@ impl ScalarValue {
             (10, dec, true)
         } else {
             (10, value.strip_prefix('+').unwrap_or(value), false)
-        };
-        // Parse the magnitude wider than i64 so that i64::MIN fits.
-        let magnitude = i128::from_str_radix(digits, radix).ok()?;
-        i64::try_from(if is_negative { -magnitude } else { magnitude }).ok()
+        })
     }
 
     /// Parse a YAML 1.2 core schema float, including `.inf` and `.nan`.
@@ -2774,6 +2820,51 @@ mod tests {
                 CoreScalarType::Float,
                 "{input:?} should classify as Float"
             );
+        }
+    }
+
+    #[test]
+    fn test_canonical_integer() {
+        for (text, expected) in [
+            ("0", "0"),
+            ("-0", "0"),
+            ("+000", "0"),
+            ("0x0", "0"),
+            ("0o0", "0"),
+            ("42", "42"),
+            ("+0042", "42"),
+            ("-42", "-42"),
+            ("0x2A", "42"),
+            ("0o52", "42"),
+            ("-9223372036854775808", "-9223372036854775808"),
+            ("9223372036854775808", "9223372036854775808"),
+            ("+9223372036854775808", "9223372036854775808"),
+            ("0x10000000000000000", "18446744073709551616"),
+            ("0o2000000000000000000000", "18446744073709551616"),
+            ("0x1000000000", "68719476736"),
+            (
+                "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+                "340282366920938463463374607431768211455",
+            ),
+            (
+                "0x100000000000000000000000000000000",
+                "340282366920938463463374607431768211456",
+            ),
+            (
+                "-000100000000000000000000000000",
+                "-100000000000000000000000000",
+            ),
+        ] {
+            assert_eq!(
+                ScalarValue::canonical_integer(text).as_deref(),
+                Some(expected),
+                "{text}"
+            );
+        }
+        for text in [
+            "", "+", "-", "0x", "0o8", "-0x1", "+0o1", "1_000", "1.0", " 1",
+        ] {
+            assert_eq!(ScalarValue::canonical_integer(text), None, "{text:?}");
         }
     }
 

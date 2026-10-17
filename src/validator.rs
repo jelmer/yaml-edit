@@ -2818,6 +2818,27 @@ mod tests {
     }
 
     #[test]
+    fn test_validator_duplicate_keys_outside_i64() {
+        let doc = Document::from_str(
+            "18446744073709551616: a\n0x10000000000000000: b\n9223372036854775808: c\n+9223372036854775808: d\n",
+        )
+        .unwrap();
+        let messages: Vec<_> = Validator::new()
+            .validate(&doc)
+            .into_iter()
+            .filter(|v| v.rule == Rule::DuplicateKeys)
+            .map(|v| v.message)
+            .collect();
+        assert_eq!(
+            messages,
+            vec![
+                "Duplicate key: \"0x10000000000000000\" (semantically equal to \"18446744073709551616\")",
+                "Duplicate key: \"+9223372036854775808\" (semantically equal to \"9223372036854775808\")",
+            ]
+        );
+    }
+
+    #[test]
     fn test_validator_semantic_duplicate_keys() {
         let validator = Validator::new();
 

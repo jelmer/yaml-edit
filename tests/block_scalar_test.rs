@@ -1,8 +1,6 @@
 //! Tests for block scalar indicators
 //! Testing literal (|) and folded (>) scalars with various chomping and indentation indicators
 
-use yaml_edit::YamlFile;
-
 // ========================================
 // Literal Scalars (|)
 // ========================================
@@ -970,4 +968,63 @@ fn test_header_comment_does_not_set_indicators() {
         assert_eq!(k.as_scalar().unwrap().as_string(), expected, "{yaml:?}");
         assert_eq!(doc.to_string(), yaml);
     }
+}
+
+use yaml_edit::{YamlFile, YamlNode};
+
+/// Read `yaml` and return the scalar found by following `path`, where a
+/// numeric step indexes a sequence.
+fn scalar_at(yaml: &str, path: &[&str]) -> String {
+    let doc = YamlFile::parse(yaml).to_result().unwrap();
+    assert_eq!(doc.to_string(), yaml);
+    let document = doc.document().unwrap();
+    let mut node = match document.as_mapping() {
+        Some(mapping) => YamlNode::Mapping(mapping),
+        None => YamlNode::Sequence(document.as_sequence().unwrap()),
+    };
+    for step in path {
+        node = match step.parse::<usize>() {
+            Ok(i) => node.as_sequence().unwrap().get(i).unwrap(),
+            Err(_) => node.as_mapping().unwrap().get(*step).unwrap(),
+        };
+    }
+    node.as_scalar().unwrap().as_string()
+}
+
+/// The indentation indicator counts from the enclosing collection's column
+/// (spec 8.1.1.1), not from column 0.
+#[test]
+fn test_indentation_indicator_is_relative_to_parent() {
+    // The YAML test suite's 4WA9.
+    let yaml = "- aaa: |2\n    xxx\n  bbb: |\n    xxx\n";
+    assert_eq!(scalar_at(yaml, &["0", "aaa"]), "xxx\n");
+    assert_eq!(scalar_at(yaml, &["0", "bbb"]), "xxx\n");
+
+    let yaml = "a:\n  b: |1\n    x\n  c: 1\n";
+    assert_eq!(scalar_at(yaml, &["a", "b"]), " x\n");
+    assert_eq!(scalar_at(yaml, &["a", "c"]), "1");
+
+    assert_eq!(scalar_at("o:\n  k: |2\n      x\n", &["o", "k"]), "  x\n");
+    assert_eq!(scalar_at("- - |1\n    x\n", &["0", "0"]), " x\n");
+
+    // A header on its own line still counts from the mapping's column.
+    let yaml = "o:\n  k:\n    |1\n     x\n  z: 1\n";
+    assert_eq!(scalar_at(yaml, &["o", "k"]), "  x\n");
+    assert_eq!(scalar_at(yaml, &["o", "z"]), "1");
+}
+
+#[test]
+fn test_set_indented_block_value_in_nested_mapping() {
+    let doc = YamlFile::parse("o:\n  k: v\n").to_result().unwrap();
+    let o = doc
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("o")
+        .unwrap();
+    o.as_mapping().unwrap().set("k", "  x\n  y");
+    let output = doc.to_string();
+    assert_eq!(output, "o:\n  k: |2-\n      x\n      y\n");
+    assert_eq!(scalar_at(&output, &["o", "k"]), "  x\n  y");
 }

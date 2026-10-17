@@ -77,7 +77,7 @@ impl Scalar {
                 unescaped
             }
         } else if self.is_block() {
-            Self::parse_block_scalar(&text)
+            Self::parse_block_scalar(&text, self.block_parent_column())
         } else {
             // Plain scalar - fold lines if multi-line
             if text.contains('\n') {
@@ -115,8 +115,26 @@ impl Scalar {
         }
     }
 
+    /// The column a block scalar's indentation indicator counts from: that
+    /// of the innermost collection entry holding it, or 0 at the document
+    /// root.
+    fn block_parent_column(&self) -> usize {
+        self.0
+            .ancestors()
+            .find(|n| {
+                matches!(
+                    n.kind(),
+                    SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+                )
+            })
+            .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry))
+    }
+
     /// Parse a block scalar (literal `|` or folded `>`) into its string content
-    fn parse_block_scalar(text: &str) -> String {
+    ///
+    /// `parent_column` is the column of the collection the scalar is a node
+    /// of, which an explicit indentation indicator counts from.
+    fn parse_block_scalar(text: &str, parent_column: usize) -> String {
         let mut lines = text.lines();
         let first_line = match lines.next() {
             Some(line) => line,
@@ -148,17 +166,17 @@ impl Scalar {
         }
 
         // An explicit indentation indicator (`|2`, `>2-`) says where the
-        // content starts, counted from the block's own column. Anything
-        // further right is part of the value: `|2` over a 4-space body is
-        // `"  x"`, not `"x"`. Without it, take the first non-empty line's
-        // indentation as the base.
+        // content starts, counted from the parent collection's column.
+        // Anything further right is part of the value: `|2` over a 4-space
+        // body at the root is `"  x"`, not `"x"`. Without it, take the first
+        // non-empty line's indentation as the base.
         let explicit_indent = header
             .chars()
             .find(|c| c.is_ascii_digit() && *c != '0')
             .and_then(|c| c.to_digit(10))
             .map(|d| d as usize);
         let base_indent = match explicit_indent {
-            Some(explicit) => explicit,
+            Some(explicit) => parent_column + explicit,
             None => content_lines
                 .iter()
                 .find(|line| !line.trim().is_empty())
@@ -634,7 +652,7 @@ items: ["first", "second"]
         // character at less than `base_indent` spaces of indentation.
         let yaml = ">\n  a\n\u{4f1}b\n";
         // We only care that it does not panic.
-        let _ = super::Scalar::parse_block_scalar(yaml);
+        let _ = super::Scalar::parse_block_scalar(yaml, 0);
     }
 
     #[test]

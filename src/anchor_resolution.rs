@@ -382,11 +382,65 @@ fn resolved_value(
             }
             Ok(Some(YamlValue::Sequence(items)))
         }
-        // TODO: a tagged collection such as `!!map {<<: *a, k: *b}` is cast
-        // as-is, so its aliases and merge keys are not resolved and entries
-        // whose value is an alias are dropped.
+        YamlNode::TaggedNode(tagged) => resolved_tagged(&tagged, registry, expanding),
         other => Ok(YamlValue::cast(other.syntax().clone())),
     }
+}
+
+/// Resolve a tagged node like [`resolved_value`], keeping the
+/// representation [`YamlValue::cast`] gives its tag.
+fn resolved_tagged(
+    tagged: &crate::yaml::TaggedNode,
+    registry: &AnchorRegistry,
+    expanding: &mut Vec<SyntaxNode>,
+) -> Result<Option<YamlValue>, ResolveError> {
+    use crate::as_yaml::YamlNode;
+
+    if let Some(set) = tagged.as_set() {
+        let mut members = std::collections::BTreeSet::new();
+        for member in set.members() {
+            // TODO: YamlValue::Set only holds scalars, so other members are
+            // dropped, as YamlValue::cast does.
+            if let Some(YamlValue::Scalar(s)) = resolved_value(member, registry, expanding)? {
+                members.insert(s.value().to_string());
+            }
+        }
+        return Ok(Some(YamlValue::Set(members)));
+    }
+    let content = tagged
+        .as_mapping()
+        .map(YamlNode::Mapping)
+        .or_else(|| tagged.as_sequence().map(YamlNode::Sequence));
+    let (Some(tag), Some(content)) = (tagged.tag(), content) else {
+        return Ok(YamlValue::cast(tagged.syntax().clone()));
+    };
+    match (tag.as_str(), &content) {
+        ("!!omap", YamlNode::Sequence(seq)) => Ok(Some(YamlValue::OrderedMapping(resolved_pairs(
+            seq, registry, expanding,
+        )?))),
+        ("!!pairs", YamlNode::Sequence(seq)) => Ok(Some(YamlValue::Pairs(resolved_pairs(
+            seq, registry, expanding,
+        )?))),
+        _ => Ok(resolved_value(content, registry, expanding)?
+            .map(|value| YamlValue::Tagged(tag, Box::new(value)))),
+    }
+}
+
+/// The entries of a `!!omap` or `!!pairs` sequence, in order.
+fn resolved_pairs(
+    seq: &crate::yaml::Sequence,
+    registry: &AnchorRegistry,
+    expanding: &mut Vec<SyntaxNode>,
+) -> Result<Vec<(String, YamlValue)>, ResolveError> {
+    let mut pairs = Vec::new();
+    for item in seq.values() {
+        // TODO: an item that is not a mapping is dropped, as
+        // YamlValue::cast does.
+        if let Some(YamlValue::Mapping(entries)) = resolved_value(item, registry, expanding)? {
+            pairs.extend(entries);
+        }
+    }
+    Ok(pairs)
 }
 
 /// A view over a [`Mapping`](crate::yaml::Mapping) that transparently expands
@@ -1453,6 +1507,101 @@ m:
         assert_eq!(
             e.to_string(),
             "distinct keys \"1\" and \"'1'\" have the same string form"
+        );
+    }
+
+    fn mapping(entries: Vec<(&str, YamlValue)>) -> YamlValue {
+        YamlValue::Mapping(
+            entries
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        )
+    }
+
+    fn pair_list(entries: Vec<(&str, YamlValue)>) -> Vec<(String, YamlValue)> {
+        entries
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect()
+    }
+
+    #[test]
+    fn get_resolved_tagged_collections() {
+        let k1 = || mapping(vec![("k", YamlValue::from(1))]);
+        for (yaml, expected) in [
+            (
+                "s: &s {k: 1}\nm: !!map {<<: *s, j: *s}\n",
+                YamlValue::tagged(
+                    "!!map",
+                    mapping(vec![("j", k1()), ("k", YamlValue::from(1))]),
+                ),
+            ),
+            (
+                "s: &s {k: 1}\nm: !!seq [*s, 2]\n",
+                YamlValue::tagged("!!seq", YamlValue::Sequence(vec![k1(), YamlValue::from(2)])),
+            ),
+            (
+                "s: &s {k: 1}\nm: {a: !local [*s]}\n",
+                mapping(vec![(
+                    "a",
+                    YamlValue::tagged("!local", YamlValue::Sequence(vec![k1()])),
+                )]),
+            ),
+            (
+                "s: &s {k: 1}\nt: &t !!map {a: *s}\nm: [*t]\n",
+                YamlValue::Sequence(vec![YamlValue::tagged("!!map", mapping(vec![("a", k1())]))]),
+            ),
+            (
+                "x: &x a\nm: !!set {? *x, ? b}\n",
+                YamlValue::Set(["a", "b"].map(String::from).into()),
+            ),
+            (
+                "s: &s {k: 1}\nm: !!omap [z: *s, a: 2]\n",
+                YamlValue::OrderedMapping(pair_list(vec![("z", k1()), ("a", YamlValue::from(2))])),
+            ),
+            (
+                "s: &s {k: 1}\nm: !!pairs [z: *s, z: 2]\n",
+                YamlValue::Pairs(pair_list(vec![("z", k1()), ("z", YamlValue::from(2))])),
+            ),
+            (
+                "e: &e {z: 1}\nm: !!omap [*e, a: 2]\n",
+                YamlValue::OrderedMapping(pair_list(vec![
+                    ("z", YamlValue::from(1)),
+                    ("a", YamlValue::from(2)),
+                ])),
+            ),
+        ] {
+            assert_eq!(doc(yaml).get_resolved("m"), Ok(Some(expected)), "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn get_resolved_tagged_collection_errors() {
+        let undefined = Err(ResolveError::UndefinedAlias {
+            alias: "nope".to_string(),
+        });
+        for yaml in [
+            "m: !!map {a: *nope}\n",
+            "m: !!seq [*nope]\n",
+            "m: !!set {? *nope}\n",
+            "m: !!omap [a: *nope]\n",
+            "m: !!pairs [a: *nope]\n",
+            "m: !!map {<<: *nope}\n",
+        ] {
+            assert_eq!(doc(yaml).get_resolved("m"), undefined, "{yaml:?}");
+        }
+        assert_eq!(
+            doc("m: &a !!seq [*a]\n").get_resolved("m"),
+            Err(ResolveError::RecursiveAlias {
+                alias: "a".to_string()
+            })
+        );
+        assert_eq!(
+            doc("m: !!map {<<: 3}\n").get_resolved("m"),
+            Err(ResolveError::InvalidMergeOperand {
+                operand: "3".to_string()
+            })
         );
     }
 }

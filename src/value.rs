@@ -39,6 +39,9 @@ impl YamlValue {
         use crate::yaml::{Mapping, Scalar, Sequence, TaggedNode};
         use rowan::ast::AstNode;
 
+        // TODO: an alias casts to None, so a sequence item, mapping value,
+        // set member or omap/pairs entry that is an alias is silently
+        // dropped. get_resolved resolves them; cast has no anchor registry.
         match node.kind() {
             SyntaxKind::SCALAR => {
                 // cast() only checks the kind, which we already matched, so it cannot fail here

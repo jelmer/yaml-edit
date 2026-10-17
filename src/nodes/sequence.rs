@@ -3,8 +3,9 @@ use super::{
     append_children, ensure_trailing_newline, entry_indices, fresh_token, has_child_token,
     nth_entry_index, strip_flow_separator, Lang, SyntaxNode,
 };
-use crate::as_yaml::{AsYaml, YamlKind};
+use crate::as_yaml::{build_in, AsYaml, FlowQuoting, YamlKind};
 use crate::lex::SyntaxKind;
+use crate::nodes::flow_quoting;
 use crate::yaml::ValueNode;
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
@@ -109,7 +110,7 @@ fn trailing_newline_indent(node: &SyntaxNode) -> Option<String> {
 fn rebuild_entry_with_value(
     entry: &SyntaxNode,
     value: &impl crate::AsYaml,
-    flow: bool,
+    flow: Option<FlowQuoting>,
 ) -> SyntaxNode {
     let entry_children: Vec<_> = entry.children_with_tokens().collect();
     // Track the column while copying the entry, so the new value's later
@@ -233,7 +234,7 @@ fn build_entry_value(
     value: &impl crate::AsYaml,
     dash_column: usize,
     column: usize,
-    flow: bool,
+    flow: Option<FlowQuoting>,
 ) -> bool {
     // An inline value (a block scalar, say) takes the column of the entry
     // and indents its body past it; a block collection takes the column its
@@ -241,17 +242,14 @@ fn build_entry_value(
     let indent = |v: &dyn crate::AsYaml| if v.is_inline() { dash_column } else { column };
     // The flow form is inline, so it is shifted by dash_column when built;
     // its continuation lines are given relative to that.
-    match flow
-        .then(|| crate::nodes::mapping::flow_form(value, 2))
-        .flatten()
-    {
-        Some(flow_value) => flow_value.build_content(builder, indent(&flow_value), flow),
+    match flow.and_then(|q| crate::nodes::mapping::flow_form(value, 2, q)) {
+        Some(flow_value) => build_in(&flow_value, builder, indent(&flow_value), flow),
         None => match value
             .as_node()
             .filter(|n| crate::nodes::mapping::is_block_scalar(n))
         {
             Some(scalar) => build_block_scalar(builder, scalar, dash_column + 2),
-            None => value.build_content(builder, indent(value), flow),
+            None => build_in(value, builder, indent(value), flow),
         },
     }
 }
@@ -580,7 +578,7 @@ impl Sequence {
                 &value,
                 indentation.len(),
                 indentation.len() + 2,
-                false,
+                None,
             );
             if !ends_with_newline {
                 builder.token(SyntaxKind::NEWLINE.into(), "\n");
@@ -691,7 +689,7 @@ impl Sequence {
             &value,
             indentation.len(),
             indentation.len() + 2,
-            false,
+            None,
         );
 
         // Add trailing newline only if the value doesn't already end with one
@@ -759,7 +757,8 @@ impl Sequence {
                 )
             })
             .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry));
-        build_entry_value(&mut builder, &value, base, base + 2, true);
+        let flow = Some(flow_quoting(&self.0));
+        build_entry_value(&mut builder, &value, base, base + 2, flow);
         builder.finish_node();
         let new_entry = SyntaxNode::new_root_mut(builder.finish());
 
@@ -835,7 +834,7 @@ impl Sequence {
             &value,
             indentation.len(),
             indentation.len() + 2,
-            false,
+            None,
         );
         if !value_ends_with_newline {
             builder.token(SyntaxKind::NEWLINE.into(), "\n");
@@ -926,9 +925,9 @@ impl Sequence {
             return false;
         };
         let node = children[i].as_node().expect("entry index names a node");
-        let flow = self.is_flow_style();
+        let flow = self.is_flow_style().then(|| flow_quoting(&self.0));
         let (trailing_lines, dash_comment) = match entry_item(node) {
-            Some(old) if !flow => {
+            Some(old) if flow.is_none() => {
                 let lines = replaced_value::take_trailing_lines(&old);
                 replaced_value::remove_lifted_comment(node, &old);
                 (lines, replaced_value::take_dash_line_comment(node))

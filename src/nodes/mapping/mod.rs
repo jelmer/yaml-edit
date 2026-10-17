@@ -605,7 +605,8 @@ impl Mapping {
         if let Some(entry) = existing {
             // set_value shifts the flow form to the entry's line, so its
             // continuation lines are given relative to that.
-            match flow_context.then(|| flow_form(&value, 2)).flatten() {
+            let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
+            match flow.and_then(|q| flow_form(&value, 2, q)) {
                 Some(flow) => entry.set_value(flow, flow_context),
                 None => entry.set_value(value, flow_context),
             }
@@ -616,8 +617,8 @@ impl Mapping {
         // what column its key will sit so a node-backed block value has its
         // interior indentation shifted to line up under the new entry.
         let key_indent = self.detect_indentation_level();
-        let new_entry =
-            MappingEntry::new_at_indent(key, value, flow_context, use_explicit_keys, key_indent);
+        let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
+        let new_entry = MappingEntry::new_in(key, value, flow, use_explicit_keys, key_indent);
         self.insert_entry_cst(&new_entry.0);
     }
 
@@ -807,14 +808,9 @@ impl Mapping {
             let flow_context = self.is_flow_style();
             let use_explicit_keys = self.uses_explicit_keys();
             let key_indent = self.detect_indentation_level();
-            let new_entry = MappingEntry::new_at_indent(
-                &key,
-                &value,
-                flow_context,
-                use_explicit_keys,
-                key_indent,
-            )
-            .0;
+            let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
+            let new_entry =
+                MappingEntry::new_in(&key, &value, flow, use_explicit_keys, key_indent).0;
 
             match (insert_after_node, insert_before_node) {
                 (Some(after), _) if flow_context => {
@@ -1253,7 +1249,7 @@ impl Mapping {
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn rename_key(&self, old_key: impl crate::AsYaml, new_key: impl crate::AsYaml) -> bool {
         let indent = self.detect_indentation_level();
-        if let Some(key) = flow_form(&new_key, 2) {
+        if let Some(key) = flow_form(&new_key, 2, crate::nodes::flow_quoting(&self.0)) {
             return self.rename_key(old_key, key);
         }
         let Some(node) = self.find_entry_by_key(&old_key).map(|e| e.0) else {
@@ -1280,7 +1276,10 @@ impl Mapping {
                         builder.token(SyntaxKind::QUESTION.into(), "?");
                         builder.token(SyntaxKind::WHITESPACE.into(), " ");
                     }
-                    Self::rebuild_key(&mut builder, &n, &new_key, self.is_flow_style());
+                    let flow = self
+                        .is_flow_style()
+                        .then(|| crate::nodes::flow_quoting(&self.0));
+                    Self::rebuild_key(&mut builder, &n, &new_key, flow);
                     if make_explicit {
                         builder.token(SyntaxKind::NEWLINE.into(), "\n");
                         if indent > 0 {
@@ -1340,7 +1339,7 @@ impl Mapping {
         builder: &mut GreenNodeBuilder,
         old: &SyntaxNode,
         new_key: &impl crate::AsYaml,
-        flow: bool,
+        flow: Option<crate::as_yaml::FlowQuoting>,
     ) {
         builder.start_node(SyntaxKind::KEY.into());
         let indent = old
@@ -1458,8 +1457,8 @@ impl Mapping {
         let flow_context = self.is_flow_style();
         let use_explicit_keys = self.uses_explicit_keys();
         let key_indent = self.detect_indentation_level();
-        let new_entry =
-            MappingEntry::new_at_indent(&key, &value, flow_context, use_explicit_keys, key_indent);
+        let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
+        let new_entry = MappingEntry::new_in(&key, &value, flow, use_explicit_keys, key_indent);
 
         // Flow needs bracket-aware placement (see insert_flow_entry_cst_at);
         // the block splice below would drop after `}`.

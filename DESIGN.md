@@ -134,6 +134,21 @@ key (scalars, empties) or on a new indented line (block collections).
 content has to be emitted in flow form, since block syntax is not allowed
 there.
 
+Strings written into a flow collection follow the quoting of the string
+scalars already in it. If its keys and items that are strings are all
+double-quoted, as in a JSON file, new strings are double-quoted too, so JSON
+stays JSON. Otherwise they are quoted only where a plain scalar would not
+read back as the same string, for instance when it holds a flow indicator
+such as `,`. A collection with no strings of its own (empty, or only
+numbers) goes by the nearest enclosing flow collection that has some, and
+failing that quotes only where needed; a block collection ends the search.
+This applies to keys and values of new and replaced entries, renamed keys,
+and the contents of raw collections (`YamlValue`, `Vec`, ...) written there.
+Numbers, booleans and nulls are unaffected, as are strings given an
+explicit style and scalar nodes, which keep the style they were written in.
+The choice is passed down as `FlowQuoting` through the hidden
+`AsYaml::build_flow_content`.
+
 ## `ScalarValue` and scalar typing
 
 Constructors with explicit intent:

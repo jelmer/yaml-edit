@@ -9,6 +9,7 @@ use super::helpers::{
     source_anchor_text, value_is_block,
 };
 use super::{key_content_matches, MappingEntry};
+use crate::as_yaml::{build_in, FlowQuoting};
 use crate::lex::SyntaxKind;
 use crate::nodes::replaced_value::{add_to_first_line, insert_comment_line_above};
 use crate::nodes::{entry_key, entry_value, fresh_token, Lang, SyntaxNode};
@@ -93,22 +94,42 @@ impl MappingEntry {
         use_explicit_key: bool,
         key_indent: usize,
     ) -> Self {
+        Self::new_in(
+            key,
+            value,
+            flow_context.then_some(FlowQuoting::Minimal),
+            use_explicit_key,
+            key_indent,
+        )
+    }
+
+    /// Like [`new_at_indent`](Self::new_at_indent), for a flow mapping
+    /// quoting strings as `flow` says if it is set.
+    pub(crate) fn new_in(
+        key: impl crate::AsYaml,
+        value: impl crate::AsYaml,
+        flow: Option<FlowQuoting>,
+        use_explicit_key: bool,
+        key_indent: usize,
+    ) -> Self {
+        let flow_context = flow.is_some();
+        let quoting = flow.unwrap_or(FlowQuoting::Minimal);
         // build_key_content shifts the flow form by key_indent, so its
         // continuation lines are given relative to the key.
-        if let Some(key) = flow_form(&key, 2) {
+        if let Some(key) = flow_form(&key, 2, quoting) {
             // Comments make the key span several lines, which only an
             // explicit key may do.
             let multiline = has_comment(key.syntax());
             let explicit = use_explicit_key || multiline;
-            return Self::new_at_indent(key, value, flow_context, explicit, key_indent);
+            return Self::new_in(key, value, flow, explicit, key_indent);
         }
         if !use_explicit_key && !flow_context && crate::nodes::key_spans_lines(&key) {
             return Self::new_at_indent(key, value, flow_context, true, key_indent);
         }
         // Built inline below, the flow form is shifted by key_indent, so its
         // continuation lines are given relative to the key.
-        if let Some(value) = flow_context.then(|| flow_form(&value, 2)).flatten() {
-            return Self::new_at_indent(key, value, flow_context, use_explicit_key, key_indent);
+        if let Some(value) = flow.and_then(|q| flow_form(&value, 2, q)) {
+            return Self::new_in(key, value, flow, use_explicit_key, key_indent);
         }
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
@@ -127,7 +148,7 @@ impl MappingEntry {
         if use_explicit_key && flow_context {
             question(&mut builder);
         }
-        crate::nodes::build_key_content(&mut builder, &key, key_indent, flow_context);
+        crate::nodes::build_key_content(&mut builder, &key, key_indent, flow);
         let key_has_newline = false;
         debug_assert!(!key_has_newline, "Keys should not end with newlines");
         let colon_on_own_line = use_explicit_key && !flow_context;
@@ -208,19 +229,19 @@ impl MappingEntry {
                     // inline but may end with newlines from their
                     // block-style content. A multi-line flow value has its
                     // continuation lines shifted to clear the key's column.
-                    value.build_content(&mut builder, key_indent, flow_context)
+                    build_in(&value, &mut builder, key_indent, flow)
                 }
                 // Block mappings and sequences start on new line but don't get pre-indented
                 // They handle their own indentation via build_content
                 (false, crate::as_yaml::YamlKind::Mapping | crate::as_yaml::YamlKind::Sequence) => {
                     builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                    value.build_content(&mut builder, 0, flow_context)
+                    build_in(&value, &mut builder, 0, flow)
                 }
                 // Block scalars (literal/folded) get newline and indent
                 (false, _) => {
                     builder.token(SyntaxKind::NEWLINE.into(), "\n");
                     builder.token(SyntaxKind::INDENT.into(), "  ");
-                    value.build_content(&mut builder, 2, flow_context)
+                    build_in(&value, &mut builder, 2, flow)
                 }
             };
             builder.finish_node(); // VALUE
@@ -455,7 +476,12 @@ impl MappingEntry {
         }
         // A block scalar rendered here has to clear this entry's own
         // column, so hand it that rather than the document's.
-        new_value.build_content(&mut value_builder, self.indent_of_line(), flow_context);
+        let flow = flow_context.then(|| {
+            self.0
+                .parent()
+                .map_or(FlowQuoting::Minimal, |m| crate::nodes::flow_quoting(&m))
+        });
+        build_in(&new_value, &mut value_builder, self.indent_of_line(), flow);
         if let Some((ws, comment)) = &trailing_comment {
             value_builder.token(SyntaxKind::WHITESPACE.into(), ws);
             value_builder.token(SyntaxKind::COMMENT.into(), comment);

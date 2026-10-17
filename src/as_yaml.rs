@@ -87,6 +87,42 @@ pub trait AsYaml {
     /// `true` for scalars and empty collections; `false` for non-empty block
     /// collections.
     fn is_inline(&self) -> bool;
+
+    /// Like `build_content` inside a flow collection, quoting strings that
+    /// have no explicit style as `quoting` says.
+    #[doc(hidden)]
+    fn build_flow_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        _quoting: FlowQuoting,
+    ) -> bool {
+        self.build_content(builder, indent, true)
+    }
+}
+
+/// How strings without an explicit style are quoted inside a flow
+/// collection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowQuoting {
+    /// Only where a plain scalar would not read back as the same string.
+    Minimal,
+    /// Always double-quoted, as in JSON.
+    Double,
+}
+
+/// Emit `value` in a flow collection quoting strings as `flow` says, or in
+/// block context if `flow` is `None`.
+pub(crate) fn build_in<T: AsYaml + ?Sized>(
+    value: &T,
+    builder: &mut rowan::GreenNodeBuilder,
+    indent: usize,
+    flow: Option<FlowQuoting>,
+) -> bool {
+    match flow {
+        Some(quoting) => value.build_flow_content(builder, indent, quoting),
+        None => value.build_content(builder, indent, false),
+    }
 }
 
 /// Compare two [`AsYaml`] values for semantic equality.
@@ -617,6 +653,15 @@ impl<T: AsYaml + ?Sized> AsYaml for &T {
     fn is_inline(&self) -> bool {
         (*self).is_inline()
     }
+
+    fn build_flow_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        quoting: FlowQuoting,
+    ) -> bool {
+        (*self).build_flow_content(builder, indent, quoting)
+    }
 }
 
 /// Recursively copy the children of `node` into `builder`.
@@ -913,6 +958,15 @@ impl AsYaml for String {
     fn is_inline(&self) -> bool {
         true
     }
+
+    fn build_flow_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        quoting: FlowQuoting,
+    ) -> bool {
+        self.as_str().build_flow_content(builder, indent, quoting)
+    }
 }
 
 impl AsYaml for &str {
@@ -935,6 +989,15 @@ impl AsYaml for &str {
 
     fn is_inline(&self) -> bool {
         true
+    }
+
+    fn build_flow_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        quoting: FlowQuoting,
+    ) -> bool {
+        crate::scalar::ScalarValue::string(*self).build_flow_content(builder, indent, quoting)
     }
 }
 
@@ -969,6 +1032,18 @@ impl<T: AsYaml> AsYaml for Option<T> {
             None => true,
         }
     }
+
+    fn build_flow_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        quoting: FlowQuoting,
+    ) -> bool {
+        match self {
+            Some(v) => v.build_flow_content(builder, indent, quoting),
+            None => self.build_content(builder, indent, true),
+        }
+    }
 }
 
 /// Emit a `!!set`: a tagged mapping with each member as a key and a null
@@ -977,14 +1052,15 @@ pub(crate) fn build_set_content<T: AsYaml>(
     builder: &mut rowan::GreenNodeBuilder,
     members: impl ExactSizeIterator<Item = T>,
     indent: usize,
-    flow_context: bool,
+    flow_context: Option<FlowQuoting>,
 ) -> bool {
     use crate::lex::SyntaxKind;
     use crate::scalar::ScalarValue;
 
     let len = members.len();
     // An empty mapping is written as `{}` in either context.
-    let flow = flow_context || len == 0;
+    let quoting = flow_context.unwrap_or(FlowQuoting::Minimal);
+    let flow = flow_context.is_some() || len == 0;
 
     builder.start_node(SyntaxKind::TAGGED_NODE.into());
     builder.token(SyntaxKind::TAG.into(), "!!set");
@@ -1006,11 +1082,7 @@ pub(crate) fn build_set_content<T: AsYaml>(
         }
         builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
         builder.start_node(SyntaxKind::KEY.into());
-        if flow {
-            member.build_content(builder, 0, true);
-        } else {
-            crate::nodes::build_key_content(builder, &member, indent + 2, false);
-        }
+        crate::nodes::build_key_content(builder, &member, indent + 2, flow.then_some(quoting));
         builder.finish_node(); // KEY
         builder.token(SyntaxKind::COLON.into(), ":");
         builder.token(SyntaxKind::WHITESPACE.into(), " ");
@@ -1053,12 +1125,26 @@ impl<T: AsYaml> AsYaml for std::collections::BTreeSet<T> {
         indent: usize,
         flow_context: bool,
     ) -> bool {
-        build_set_content(builder, self.iter(), indent, flow_context)
+        build_set_content(
+            builder,
+            self.iter(),
+            indent,
+            flow_context.then_some(FlowQuoting::Minimal),
+        )
     }
 
     fn is_inline(&self) -> bool {
         // The tag goes on the key's line, as in `tags: !!set`.
         true
+    }
+
+    fn build_flow_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        quoting: FlowQuoting,
+    ) -> bool {
+        build_set_content(builder, self.iter(), indent, Some(quoting))
     }
 }
 

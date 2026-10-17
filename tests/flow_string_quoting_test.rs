@@ -2,8 +2,9 @@
 //! would not read back as the same string there, and only there.
 
 use rowan::ast::AstNode;
+use std::collections::BTreeMap;
 use std::str::FromStr;
-use yaml_edit::{debug, Document, Mapping, Scalar, Sequence};
+use yaml_edit::{debug, Document, Mapping, Scalar, ScalarValue, Sequence, YamlValue};
 
 /// Check that `doc` has the same tree as a re-parse of its text, and
 /// return the scalars the re-parse holds, in order.
@@ -127,4 +128,148 @@ fn test_plain_scalar_node_copied_into_flow_collections() {
     map(&doc).set(&value, &value);
     assert_eq!(doc.to_string(), "x: {k: 1, \"a, b\": \"a, b\"}\n");
     assert_eq!(reparsed_scalars(&doc), ["x", "k", "1", "a, b", "a, b"]);
+}
+
+#[test]
+fn test_strings_in_double_quoted_flow_mapping() {
+    let doc = Document::from_str("{\"a\": \"b\", \"n\": 1}\n").unwrap();
+    let m = doc.as_mapping().unwrap();
+    m.set("c", "d");
+    m.set("a", "x");
+    m.set("s", "1");
+    m.set("i", 2);
+    m.set("t", true);
+    assert_eq!(
+        doc.to_string(),
+        "{\"a\": \"x\", \"n\": 1, \"c\": \"d\", \"s\": \"1\", \"i\": 2, \"t\": true}\n"
+    );
+    assert_eq!(
+        reparsed_scalars(&doc),
+        ["a", "x", "n", "1", "c", "d", "s", "1", "i", "2", "t", "true"]
+    );
+
+    let doc = Document::from_str("{\"a\": \"b\", \"c\": \"d\"}\n").unwrap();
+    let m = doc.as_mapping().unwrap();
+    assert!(m.rename_key("a", "z"));
+    assert!(m.insert_after("z", "k", "v"));
+    assert!(m.insert_before("c", "a, b", "x]"));
+    assert_eq!(
+        doc.to_string(),
+        "{\"z\": \"b\", \"k\": \"v\", \"a, b\": \"x]\", \"c\": \"d\"}\n"
+    );
+    assert_eq!(
+        reparsed_scalars(&doc),
+        ["z", "b", "k", "v", "a, b", "x]", "c", "d"]
+    );
+}
+
+#[test]
+fn test_strings_in_double_quoted_flow_sequence() {
+    let doc = Document::from_str("x: [\"a\", 1]\n").unwrap();
+    let s = seq(&doc);
+    s.push("b");
+    s.insert(0, "c");
+    assert!(s.set(1, "d"));
+    s.push(3);
+    assert_eq!(doc.to_string(), "x: [\"c\", \"d\", 1, \"b\", 3]\n");
+    assert_eq!(reparsed_scalars(&doc), ["x", "c", "d", "1", "b", "3"]);
+}
+
+#[test]
+fn test_strings_in_mixed_flow_collections() {
+    let doc = Document::from_str("{\"a\": b}\n").unwrap();
+    doc.as_mapping().unwrap().set("c", "d");
+    assert_eq!(doc.to_string(), "{\"a\": b, c: d}\n");
+    assert_eq!(reparsed_scalars(&doc), ["a", "b", "c", "d"]);
+
+    let doc = Document::from_str("x: [\"a\", 'b']\n").unwrap();
+    seq(&doc).push("c");
+    assert_eq!(doc.to_string(), "x: [\"a\", 'b', c]\n");
+    assert_eq!(reparsed_scalars(&doc), ["x", "a", "b", "c"]);
+}
+
+#[test]
+fn test_strings_in_flow_collections_without_strings() {
+    let doc = Document::from_str("x: {}\n").unwrap();
+    map(&doc).set("k", "v");
+    assert_eq!(doc.to_string(), "x: {k: v}\n");
+    assert_eq!(reparsed_scalars(&doc), ["x", "k", "v"]);
+
+    let doc = Document::from_str("x: [1, 2]\n").unwrap();
+    seq(&doc).push("a");
+    assert_eq!(doc.to_string(), "x: [1, 2, a]\n");
+    assert_eq!(reparsed_scalars(&doc), ["x", "1", "2", "a"]);
+
+    let doc = Document::from_str("[]\n").unwrap();
+    doc.as_sequence().unwrap().push("a");
+    assert_eq!(doc.to_string(), "[a]\n");
+    assert_eq!(reparsed_scalars(&doc), ["a"]);
+}
+
+#[test]
+fn test_strings_in_nested_double_quoted_flow_collections() {
+    // A collection without strings of its own follows the nearest
+    // enclosing flow collection that has some.
+    let doc = Document::from_str("{\"a\": [], \"b\": [1], \"c\": {}}\n").unwrap();
+    let m = doc.as_mapping().unwrap();
+    m.get_sequence("a").unwrap().push("x");
+    m.get_sequence("b").unwrap().push("y");
+    m.get_mapping("c").unwrap().set("k", "v");
+    assert_eq!(
+        doc.to_string(),
+        "{\"a\": [\"x\"], \"b\": [1, \"y\"], \"c\": {\"k\": \"v\"}}\n"
+    );
+    assert_eq!(
+        reparsed_scalars(&doc),
+        ["a", "x", "b", "1", "y", "c", "k", "v"]
+    );
+
+    // A collection with strings of its own goes by those.
+    let doc = Document::from_str("{\"a\": [b]}\n").unwrap();
+    let m = doc.as_mapping().unwrap();
+    m.get_sequence("a").unwrap().push("c");
+    assert_eq!(doc.to_string(), "{\"a\": [b, c]}\n");
+    assert_eq!(reparsed_scalars(&doc), ["a", "b", "c"]);
+
+    // Raw collections written into a double-quoted collection follow it.
+    let doc = Document::from_str("{\"a\": \"b\"}\n").unwrap();
+    let m = doc.as_mapping().unwrap();
+    m.set(
+        "m",
+        YamlValue::Mapping(BTreeMap::from([("k".to_string(), YamlValue::from("v"))])),
+    );
+    m.set("s", vec![YamlValue::from("x"), YamlValue::from(1)]);
+    assert_eq!(
+        doc.to_string(),
+        "{\"a\": \"b\", \"m\": {\"k\": \"v\"}, \"s\": [\"x\", 1]}\n"
+    );
+    assert_eq!(
+        reparsed_scalars(&doc),
+        ["a", "b", "m", "k", "v", "s", "x", "1"]
+    );
+}
+
+#[test]
+fn test_double_quoted_flow_collection_in_block_collection() {
+    // Only enclosing flow collections count.
+    let doc = Document::from_str("\"a\": \"b\"\nx: []\n").unwrap();
+    seq(&doc).push("c");
+    assert_eq!(doc.to_string(), "\"a\": \"b\"\nx: [c]\n");
+    assert_eq!(reparsed_scalars(&doc), ["a", "b", "x", "c"]);
+}
+
+#[test]
+fn test_explicit_style_kept_in_double_quoted_flow_collection() {
+    let doc = Document::from_str("x: [\"a\"]\n").unwrap();
+    seq(&doc).push(ScalarValue::single_quoted("b"));
+    assert_eq!(doc.to_string(), "x: [\"a\", 'b']\n");
+    assert_eq!(reparsed_scalars(&doc), ["x", "a", "b"]);
+
+    // A scalar node keeps the style it was written in.
+    let source = Document::from_str("a: plain\n").unwrap();
+    let value = source.as_mapping().unwrap().get("a").unwrap();
+    let doc = Document::from_str("x: [\"a\"]\n").unwrap();
+    seq(&doc).push(&value);
+    assert_eq!(doc.to_string(), "x: [\"a\", plain]\n");
+    assert_eq!(reparsed_scalars(&doc), ["x", "a", "plain"]);
 }

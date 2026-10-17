@@ -1075,3 +1075,70 @@ fn test_set_value_with_whitespace_only_lines() {
         ("k: \" \\n\"\n".to_string(), " \n".to_string())
     );
 }
+
+fn header_violations(file: &yaml_edit::YamlFile) -> Vec<(String, Option<String>)> {
+    use rowan::ast::AstNode;
+    yaml_edit::validator::Validator::new()
+        .validate_syntax(file.syntax())
+        .into_iter()
+        .map(|v| (v.message, v.location))
+        .collect()
+}
+
+/// A block scalar header on the line after its key, but not indented past
+/// it, is still the key's value: nothing else starts with `|` or `>`. The
+/// validator reports it, as `s-separate(n+1)` rules it out.
+#[test]
+fn test_header_at_key_column_is_the_value() {
+    use std::str::FromStr;
+    use yaml_edit::YamlFile;
+
+    let under_indented = |location: &str| {
+        vec![(
+            "Block scalar header must be indented past its parent node".to_string(),
+            Some(location.to_string()),
+        )]
+    };
+
+    for (yaml, expected, location) in [
+        ("a:\n|\n x\n", "x\n", "2:1"),
+        ("a: &x\n|\n x\n", "x\n", "2:1"),
+        ("a:\n>\n x\n y\n", "x y\n", "2:1"),
+        ("a:\n|2\n  x\n", "x\n", "2:1"),
+        ("a:\n|\nb: 1\n", "", "2:1"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let a = mapping.get("a").unwrap();
+        assert_eq!(a.as_scalar().unwrap().as_string(), expected, "{yaml:?}");
+        assert_eq!(
+            header_violations(&file),
+            under_indented(location),
+            "{yaml:?}"
+        );
+    }
+
+    // The body still has to clear the key's column, so `b` stays a sibling.
+    let file = YamlFile::from_str("a:\n|\nb: 1\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.len(), 2);
+    assert_eq!(
+        mapping.get("b").unwrap().as_scalar().unwrap().as_string(),
+        "1"
+    );
+
+    let yaml = "- a:\n  |\n   x\n  b: 1\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let sequence = file.document().unwrap().as_sequence().unwrap();
+    assert_eq!(sequence.len(), 1);
+    let item = sequence.get(0).unwrap();
+    let mapping = item.as_mapping().unwrap();
+    assert_eq!(mapping.len(), 2);
+    let a = mapping.get("a").unwrap();
+    assert_eq!(a.as_scalar().unwrap().as_string(), "x\n");
+    let b = mapping.get("b").unwrap();
+    assert_eq!(b.as_scalar().unwrap().as_string(), "1");
+    assert_eq!(header_violations(&file), under_indented("2:3"));
+}

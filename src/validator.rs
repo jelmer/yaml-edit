@@ -848,14 +848,14 @@ impl Validator {
         }
     }
 
-    /// Check that a block scalar header starting a later line than its
-    /// node's properties is indented past the parent node.
+    /// Check that a block scalar header starting a later line than its key
+    /// or its node's properties is indented past the parent node.
     ///
-    /// Between the properties and the header, `s-separate(n+1)` requires at
-    /// least `n+1` spaces of indentation on a new line, so the parser's
-    /// reading of `a: !!str\n|\n x\n` as a tagged block scalar is not
-    /// valid YAML. The YAML test suite's M5C3 has the header two columns
-    /// left of its tag, which is still past the key.
+    /// Before the header, `s-separate(n+1)` requires at least `n+1` spaces
+    /// of indentation on a new line, so the parser's reading of
+    /// `a: !!str\n|\n x\n` as a tagged block scalar, or of `a:\n|\n x\n`
+    /// as a block scalar, is not valid YAML. The YAML test suite's M5C3 has
+    /// the header two columns left of its tag, which is still past the key.
     fn check_block_scalar_header_indent(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         let Some(header) = node.children_with_tokens().find_map(|c| {
             c.into_token().filter(|t| {

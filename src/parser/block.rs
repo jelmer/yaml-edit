@@ -1082,6 +1082,23 @@ impl Parser {
                     // (`- k:\n  j: 1\n`), which is why only a dash counts.
                     self.parse_sequence_with_base_indent(self.current_line_indent);
                     has_value = true;
+                } else if matches!(self.current(), Some(SyntaxKind::PIPE | SyntaxKind::GREATER)) {
+                    // A block scalar header can only be this key's value,
+                    // whatever its column: nothing else starts with `|` or
+                    // `>`. The validator reports one not indented past the
+                    // key. Its body still has to clear the key's column, so
+                    // `a:\n|\nb: 1\n` keeps `b` a sibling.
+                    let column = base_indent.max(key_column);
+                    let outer_value_column = self.mapping_value_column.replace(column);
+                    let outer_block_column = self.mapping_block_value_column.replace(column);
+                    if self.current() == Some(SyntaxKind::PIPE) {
+                        self.parse_literal_block_scalar();
+                    } else {
+                        self.parse_folded_block_scalar();
+                    }
+                    self.mapping_value_column = outer_value_column;
+                    self.mapping_block_value_column = outer_block_column;
+                    has_value = true;
                 }
                 // Otherwise the "value" would be at the parent's indent or
                 // less, so this key has an implicit null value and what

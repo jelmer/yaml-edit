@@ -684,6 +684,17 @@ pub(crate) fn copy_node_content_reindent(
     node: &SyntaxNode,
     delta: isize,
 ) -> bool {
+    reindent_children(builder, node, delta, node.text_range().end())
+}
+
+/// [`copy_node_content_reindent`] for a node within the copy, which ends at
+/// `end`.
+fn reindent_children(
+    builder: &mut rowan::GreenNodeBuilder,
+    node: &SyntaxNode,
+    delta: isize,
+    end: rowan::TextSize,
+) -> bool {
     use crate::lex::SyntaxKind;
     let mut after_newline = false;
     let pad = |n: isize| " ".repeat(n.max(0) as usize);
@@ -705,13 +716,20 @@ pub(crate) fn copy_node_content_reindent(
                     builder.token(SyntaxKind::INDENT.into(), &pad(delta));
                 }
                 builder.start_node(n.kind().into());
-                after_newline = copy_node_content_reindent(builder, &n, delta);
+                after_newline = reindent_children(builder, &n, delta, end);
                 builder.finish_node();
             }
             rowan::NodeOrToken::Token(t) => match t.kind() {
                 SyntaxKind::NEWLINE => {
                     builder.token(t.kind().into(), t.text());
                     after_newline = true;
+                    // Inside a flow collection a line's indentation follows
+                    // its line break in the same node, even when that is
+                    // the end of an entry.
+                    if delta > 0 && starts_unindented_line(&t, end) && in_flow_collection(&t) {
+                        builder.token(SyntaxKind::INDENT.into(), &pad(delta));
+                        after_newline = false;
+                    }
                 }
                 SyntaxKind::WHITESPACE | SyntaxKind::INDENT => {
                     if after_newline {
@@ -735,6 +753,47 @@ pub(crate) fn copy_node_content_reindent(
         }
     }
     after_newline
+}
+
+/// Whether the line after the line break `newline` has content before
+/// `end` and starts without indentation.
+fn starts_unindented_line(newline: &crate::nodes::SyntaxToken, end: rowan::TextSize) -> bool {
+    use crate::lex::SyntaxKind;
+    newline.next_token().is_some_and(|next| {
+        next.text_range().start() < end
+            && !matches!(
+                next.kind(),
+                SyntaxKind::WHITESPACE | SyntaxKind::INDENT | SyntaxKind::NEWLINE
+            )
+    })
+}
+
+/// Whether `token` sits inside a flow collection.
+fn in_flow_collection(token: &crate::nodes::SyntaxToken) -> bool {
+    use crate::lex::SyntaxKind;
+    token.parent_ancestors().any(|node| {
+        node.children_with_tokens()
+            .take_while(|c| c.as_token().is_some())
+            .any(|c| matches!(c.kind(), SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET))
+    })
+}
+
+/// `delta`, raised where needed so that every line of `node` after its
+/// first ends up past column `parent`. The continuation lines of a flow node
+/// or multi-line scalar have to clear the block entry it is nested in, but
+/// at the top of a document they may start at column 0.
+pub(crate) fn clear_parent_column(node: &SyntaxNode, parent: usize, delta: isize) -> isize {
+    let shallowest = node
+        .text()
+        .to_string()
+        .split('\n')
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start_matches(' ').len())
+        .min();
+    shallowest.map_or(delta, |column| {
+        delta.max(parent as isize + 1 - column as isize)
+    })
 }
 
 /// `text`, a line or the whitespace at its start, with `delta` spaces

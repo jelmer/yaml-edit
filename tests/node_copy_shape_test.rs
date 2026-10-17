@@ -618,3 +618,71 @@ fn test_set_nested_key_to_block_sequence_with_multiline_quoted_scalar() {
         .set("n", value_of("v:\n- \"a\n  b\"\n", "v"));
     assert_valid_copy(&file, "m:\n  k: 1\n  n:\n    - \"a\n      b\"\n");
 }
+
+/// Set key `n` of the mapping under `m` in `target` to `value`.
+#[track_caller]
+fn set_nested(target: &str, value: impl yaml_edit::AsYaml) -> YamlFile {
+    let file = YamlFile::from_str(target).unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    mapping.get_mapping("m").unwrap().set("n", value);
+    file
+}
+
+fn root(src: &str) -> yaml_edit::Document {
+    yaml_edit::Document::from_str(src).unwrap()
+}
+
+/// A document's flow collection may continue at column 0, but under a key
+/// its continuation lines have to clear the key's column.
+#[test]
+fn test_set_nested_key_to_root_flow_sequence_continued_at_column_zero() {
+    let file = set_nested("m:\n  k: 1\n", root("[a,\nb]\n").as_sequence().unwrap());
+    assert_valid_copy(&file, "m:\n  k: 1\n  n: [a,\n   b]\n");
+}
+
+#[test]
+fn test_set_nested_key_to_root_flow_sequence_closed_at_column_zero() {
+    let file = set_nested("m:\n  k: 1\n", root("[\n  a\n]\n").as_sequence().unwrap());
+    assert_valid_copy(&file, "m:\n  k: 1\n  n: [\n     a\n   ]\n");
+}
+
+#[test]
+fn test_set_nested_key_to_root_flow_mapping_continued_at_column_zero() {
+    let file = set_nested(
+        "m:\n  k: 1\n",
+        root("{a: 1,\nb: 2}\n").as_mapping().unwrap(),
+    );
+    assert_valid_copy(&file, "m:\n  k: 1\n  n: {a: 1,\n   b: 2}\n");
+}
+
+#[test]
+fn test_set_nested_key_to_root_tagged_flow_sequence_continued_at_column_zero() {
+    let file = set_nested("m:\n  k: 1\n", root("!t [a,\nb]\n").as_tagged().unwrap());
+    assert_valid_copy(&file, "m:\n  k: 1\n  n: !t [a,\n   b]\n");
+}
+
+#[test]
+fn test_set_nested_key_to_root_quoted_scalar_continued_at_column_zero() {
+    let file = set_nested("m:\n  k: 1\n", root("\"a\nb\"\n").as_scalar().unwrap());
+    assert_valid_copy(&file, "m:\n  k: 1\n  n: \"a\n   b\"\n");
+}
+
+/// A tab before a continuation line separates rather than indents, so it
+/// is kept and the line still has to be moved past the key's column.
+#[test]
+fn test_set_key_to_root_flow_sequence_continued_after_tab() {
+    let file = YamlFile::from_str("k: 1\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    mapping.set("n", root("[a,\n\t b]\n").as_sequence().unwrap());
+    assert_valid_copy(&file, "k: 1\nn: [a,\n \t b]\n");
+}
+
+#[test]
+fn test_set_sequence_item_to_root_flow_sequence_continued_at_column_zero() {
+    let file = YamlFile::from_str("m:\n  - x\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let seq = mapping.get_sequence("m").unwrap();
+    seq.set(0, root("[a,\nb]\n").as_sequence().unwrap());
+    seq.push(root("[c,\nd]\n").as_sequence().unwrap());
+    assert_valid_copy(&file, "m:\n  - [a,\n   b]\n  - [c,\n   d]\n");
+}

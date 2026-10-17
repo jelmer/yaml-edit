@@ -425,6 +425,7 @@ impl AsYaml for Scalar {
             return false;
         }
         let delta = indent as isize - crate::as_yaml::source_line_indent(&self.0) as isize;
+        let delta = crate::as_yaml::clear_parent_column(&self.0, indent, delta);
         builder.start_node(SyntaxKind::SCALAR.into());
         copy_shifting_continuation_lines(builder, &self.0, delta, false);
         builder.finish_node();

@@ -1221,8 +1221,12 @@ impl AsYaml for Sequence {
         indent: usize,
         _flow_context: bool,
     ) -> bool {
-        let delta = indent as isize
-            - crate::as_yaml::source_reindent_base(&self.0, self.is_flow_style()) as isize;
+        let is_flow = self.is_flow_style();
+        let mut delta =
+            indent as isize - crate::as_yaml::source_reindent_base(&self.0, is_flow) as isize;
+        if is_flow {
+            delta = crate::as_yaml::clear_parent_column(&self.0, indent, delta);
+        }
         builder.start_node(SyntaxKind::SEQUENCE.into());
         crate::as_yaml::copy_node_content_reindent(builder, &self.0, delta);
         builder.finish_node();

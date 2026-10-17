@@ -109,6 +109,9 @@ pub(super) struct Parser {
     /// introduces: `-\n  ? &e\n  : &a\n` is one mapping, as the YAML test
     /// suite's PW8X expects, not an anchor whose body is a nested one.
     pub(super) explicit_key_column: Option<usize>,
+    /// Column of the `:` whose explicit value is being parsed, if any, the
+    /// counterpart of `explicit_key_column`.
+    pub(super) explicit_value_column: Option<usize>,
     /// The column of the mapping whose value is being parsed on a line
     /// after its key's, the counterpart of `mapping_value_column`.
     ///
@@ -159,6 +162,7 @@ impl Parser {
             mapping_value_column: None,
             node_is_document_root: false,
             explicit_key_column: None,
+            explicit_value_column: None,
             mapping_block_value_column: None,
             current_line_indent: 0,
             flow_depth: 0,

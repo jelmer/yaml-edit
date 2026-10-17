@@ -426,6 +426,8 @@ impl Parser {
                 let colon_column = self.error_context.current_location().1.saturating_sub(1);
                 self.bump(); // consume ':'
                 self.skip_whitespace();
+                let outer_explicit_value = self.explicit_value_column;
+                self.explicit_value_column = Some(colon_column);
 
                 // `:\n- c\n` -- an indentless sequence value, whose entries
                 // sit at the `:`'s own column rather than past it. The shared
@@ -453,6 +455,7 @@ impl Parser {
                     self.parse_value_after_colon(true, Some(question_column));
                     self.mapping_value_column = outer_column;
                 }
+                self.explicit_value_column = outer_explicit_value;
             } else {
                 // No value, just a key - create explicit null value
                 self.emit_implicit_null_value();
@@ -545,9 +548,13 @@ impl Parser {
         self.skip_ws_and_newlines();
 
         if self.current() == Some(SyntaxKind::COLON) {
+            let colon_column = self.error_context.current_location().1.saturating_sub(1);
             self.bump(); // consume ':'
             self.skip_whitespace();
+            let outer_explicit_value = self.explicit_value_column;
+            self.explicit_value_column = Some(colon_column);
             self.parse_value_after_colon(false, Some(question_column));
+            self.explicit_value_column = outer_explicit_value;
         } else {
             self.emit_implicit_null_value();
         }

@@ -42,8 +42,8 @@ impl YamlValue {
     /// Content that a YamlValue cannot hold is an error rather than being
     /// dropped: an alias, which this cannot resolve without the document's
     /// anchors ([`YamlValue::from_document`] and
-    /// [`DocumentResolvedExt::get_resolved`] resolve them),
-    /// distinct mapping keys with the same string form, such as `1` and
+    /// [`DocumentResolvedExt::get_resolved`] resolve them), a mapping with
+    /// the same key twice, distinct mapping keys with the same string form, such as `1` and
     /// `'1'`, and `!!set`, `!!omap` or `!!pairs` content of the wrong shape.
     /// A merge key (`<<`) is kept as an ordinary key.
     ///
@@ -901,6 +901,32 @@ mod tests {
                 "{yaml:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_cast_duplicate_key_is_error() {
+        use crate::anchor_resolution::ResolveError;
+        let expected = ResolveError::DuplicateKey {
+            first: "a".to_string(),
+            second: "a".to_string(),
+        };
+        let yaml = "a: 1\nb: 2\na: 3\n";
+        assert_eq!(cast_root(yaml), Err(expected.clone()));
+        let doc = crate::Document::from_str(yaml).unwrap();
+        assert_eq!(YamlValue::from_document(&doc), Err(expected.clone()));
+        match YamlValue::parse_raw(yaml) {
+            Err(crate::YamlError::Resolve(err)) => assert_eq!(err, expected),
+            other => panic!("unexpected result: {other:?}"),
+        }
+        // Without a registry `<<` is an ordinary key, so two of them are
+        // duplicates.
+        assert_eq!(
+            cast_root("<<: {a: 1}\n<<: {b: 2}\n"),
+            Err(ResolveError::DuplicateKey {
+                first: "<<".to_string(),
+                second: "<<".to_string(),
+            })
+        );
     }
 
     #[test]

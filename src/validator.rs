@@ -445,6 +445,7 @@ impl Validator {
                 self.check_trailing_content_after_quoted(node, violations);
                 // Check for colons in plain scalar values
                 self.check_colon_in_plain_scalar(node, violations);
+                self.check_plain_scalar_start(node, violations);
                 // Check for directives inside document content (e.g. %YAML after ---)
                 self.check_directive_in_content(node, violations);
                 // Warn about constructs YAML 1.1 read differently
@@ -465,7 +466,6 @@ impl Validator {
             SyntaxKind::SEQUENCE => {
                 self.check_flow_collection_commas(node, violations);
                 self.check_flow_continuation_indent(node, violations);
-                self.check_sequence_entry_in_flow(node, violations);
             }
             SyntaxKind::VALUE => {
                 self.check_anchor_and_alias(node, violations);
@@ -1085,6 +1085,39 @@ impl Validator {
         }
     }
 
+    /// Check that a plain scalar does not open with an indicator.
+    ///
+    /// The parser reads `a: ,b`, `- ]` and `[a, - b]` as plain scalars, but
+    /// none can start one: `,`, `]` and `}` never can, and a `-` can only
+    /// when a safe character follows it, as in `-1`. Outside a flow
+    /// collection a following space makes it a block sequence entry
+    /// instead, so only flow context needs checking (G5U8 is `[-, -]`).
+    fn check_plain_scalar_start(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        use crate::SyntaxKind;
+
+        let Some(first) = node.first_token() else {
+            return;
+        };
+        let text = first.text();
+        let invalid = text.starts_with([',', ']', '}'])
+            || (in_flow_collection(node)
+                && text.strip_prefix('-').is_some_and(|rest| {
+                    // `{-: 1}` is fine: the colon is safe, and the lexer
+                    // splits it off as its own token.
+                    (rest.is_empty()
+                        && first.next_token().map(|t| t.kind()) != Some(SyntaxKind::COLON))
+                        || rest.starts_with([' ', '\t', '\r', '\n', ',', '[', ']', '{', '}'])
+                }));
+        if invalid {
+            let start = text.chars().next().unwrap_or_default();
+            violations.push(Violation::error_at(
+                Rule::Other,
+                first.text_range(),
+                format!("Plain scalar cannot start with {start:?}"),
+            ));
+        }
+    }
+
     /// Check for tab usage in whitespace nodes
     fn check_tab_usage(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // Only check whitespace nodes - more efficient than serializing everything
@@ -1635,37 +1668,6 @@ impl Validator {
         }
     }
 
-    fn check_sequence_entry_in_flow(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        // Check if this is a flow sequence
-        let first_token = node.first_token();
-        let is_flow_sequence = first_token.as_ref().is_some_and(|t| t.text() == "[");
-
-        if !is_flow_sequence {
-            return;
-        }
-
-        // Flow entries are SEQUENCE_ENTRY nodes too, so their mere presence
-        // says nothing. Block syntax leaking in shows up as an entry whose
-        // value is a bare `-`, which the lexer hands back as scalar text
-        // rather than a DASH token.
-        for child in node.children() {
-            if child.kind() == crate::SyntaxKind::SEQUENCE_ENTRY
-                && child
-                    .text()
-                    .to_string()
-                    .trim_matches(|c: char| c.is_whitespace() || c == ',')
-                    == "-"
-            {
-                violations.push(Violation::error_at(
-                    Rule::Other,
-                    node.text_range(),
-                    "Flow sequence cannot use block sequence syntax (-)",
-                ));
-                return; // One violation is enough
-            }
-        }
-    }
-
     /// Check for anchors at document level without proper node attachment
     ///
     /// Anchors should be attached to nodes (values), not floating at document level.
@@ -1980,37 +1982,9 @@ impl Validator {
                         }
                     }
                 }
-                rowan::NodeOrToken::Node(n) => {
-                    // Found a node - check if it's a SCALAR that starts with a comma
-                    if n.kind() == crate::SyntaxKind::SCALAR {
-                        // Check if the first token in this scalar is a comma
-                        for child in n.children_with_tokens() {
-                            if let rowan::NodeOrToken::Token(t) = child {
-                                // In block context a `,` is scalar content, so
-                                // the comma that makes this invalid shows up as
-                                // the first character of the scalar rather than
-                                // as its own COMMA token.
-                                if t.kind() == crate::SyntaxKind::COMMA || t.text().starts_with(',')
-                                {
-                                    // The scalar starts with a comma - invalid after a tag
-                                    violations.push(Violation::error_at(
-                                        Rule::InvalidTag,
-                                        t.text_range(),
-                                        "Invalid comma after tag",
-                                    ));
-                                    return;
-                                } else if t.kind() != crate::SyntaxKind::WHITESPACE
-                                    && t.kind() != crate::SyntaxKind::NEWLINE
-                                {
-                                    // Found a non-comma, non-whitespace token - that's fine
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                    // Other node types are fine
-                    return;
-                }
+                // A scalar starting with a comma (`!!str, xxx` in block
+                // context) is reported by `check_plain_scalar_start`.
+                rowan::NodeOrToken::Node(_) => return,
             }
         }
     }
@@ -2468,6 +2442,19 @@ fn starts_a_flow_collection(node: &SyntaxNode) -> bool {
         })
 }
 
+/// Whether `node` sits inside a flow collection.
+fn in_flow_collection(node: &SyntaxNode) -> bool {
+    node.ancestors()
+        .skip(1)
+        .find(|a| {
+            matches!(
+                a.kind(),
+                crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
+            )
+        })
+        .is_some_and(|c| starts_a_flow_collection(&c))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2574,9 +2561,7 @@ mod tests {
             "flow: [a,\nb,\nc]\n",
             "[ \"key\"\n  :value ]\n",
         ] {
-            // The parser rejects some of these too; check the tree it
-            // recovers anyway.
-            let doc = crate::YamlFile::parse(src).tree().document().unwrap();
+            let doc = Document::from_str(src).unwrap();
             assert_ne!(Validator::new().validate(&doc), vec![], "{src:?}");
         }
     }
@@ -3025,34 +3010,78 @@ mod tests {
 
     #[test]
     fn test_u99r_invalid_comma_in_tag() {
-        // Test U99R: Invalid comma after tag
-        let yaml = "- !!str, xxx\n";
-        use crate::YamlFile;
-        let parsed = YamlFile::parse(yaml);
+        let file = crate::YamlFile::from_str("- !!str, xxx\n").unwrap();
+        let violations = Validator::new().validate_syntax(file.syntax());
         assert_eq!(
-            parsed.errors(),
-            vec!["1:8: Plain scalar cannot start with ','".to_string()]
+            violations
+                .iter()
+                .map(|v| (v.message.as_str(), v.rule, v.text_range.map(|r| r.start)))
+                .collect::<Vec<_>>(),
+            vec![("Plain scalar cannot start with ','", Rule::Other, Some(7))]
         );
-        let file = parsed.tree();
-        let validator = Validator::new();
+    }
 
-        // Print tree for debugging
-        println!("\n=== Syntax tree ===");
-        crate::debug::print_tree(file.syntax());
-
-        let violations = validator.validate_syntax(file.syntax());
-        println!("\n=== Violations ({}) ===", violations.len());
-        for v in &violations {
-            println!("  {}", v);
+    #[test]
+    fn test_plain_scalar_cannot_start_with_an_indicator() {
+        let messages = |yaml: &str| -> Vec<(String, Option<u32>)> {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.text_range.map(|r| r.start)))
+                .collect()
+        };
+        for (yaml, error, start) in [
+            ("]}]}", "Plain scalar cannot start with ']'", 0),
+            ("a: ,b\n", "Plain scalar cannot start with ','", 3),
+            ("- a\n- }\n", "Plain scalar cannot start with '}'", 6),
+            ("[-1, - 2]", "Plain scalar cannot start with '-'", 5),
+            ("[a, -]", "Plain scalar cannot start with '-'", 4),
+            ("{- : 1}", "Plain scalar cannot start with '-'", 1),
+        ] {
+            assert_eq!(
+                messages(yaml),
+                vec![(error.to_string(), Some(start))],
+                "{yaml:?}"
+            );
         }
+        for yaml in ["[-1, -a]", "{-: 1}", "a: x]\n", "a: x,y\n", "[a\n -]"] {
+            assert_eq!(messages(yaml), vec![], "{yaml:?}");
+        }
+    }
 
-        assert!(
-            !violations.is_empty(),
-            "Expected violation for invalid comma after tag"
-        );
-        assert_eq!(violations.len(), 1);
-        assert_eq!(violations[0].message, "Invalid comma after tag");
-        assert_eq!(violations[0].rule, Rule::InvalidTag);
+    #[test]
+    fn test_document_marker_in_quoted_scalar() {
+        let messages = |yaml: &str| -> Vec<String> {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| v.message)
+                .collect()
+        };
+        for yaml in [
+            "a: \"x\n---\ny\"\n",
+            "'x\n... y'\n",
+            "--- \"a\n...\tb\"\n",
+            "--- \"a\n--- b\"\n",
+            "---\n\"\n---\n\"\n",
+        ] {
+            assert_eq!(
+                messages(yaml),
+                vec!["Document marker inside a quoted scalar".to_string()],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "\"x\n---y\"\n",
+            "--- \"a\n---\"\n",
+            "'a\n...x'\n",
+            "--- \"a\n---x\nb\"\n",
+            "--- 'a\n...'\n",
+        ] {
+            assert_eq!(messages(yaml), Vec::<String>::new(), "{yaml:?}");
+        }
     }
 
     #[test]
@@ -3343,33 +3372,6 @@ mod tests {
             .map(|v| v.location)
             .collect();
         assert_eq!(locations, vec![Some("3:1".to_string())]);
-    }
-
-    #[test]
-    fn test_document_marker_in_quoted_scalar() {
-        // The parser reports the same error; validate the lenient tree.
-        let messages = |yaml: &str| -> Vec<String> {
-            let file = crate::YamlFile::parse(yaml).tree();
-            Validator::new()
-                .validate_syntax(file.syntax())
-                .into_iter()
-                .map(|v| v.message)
-                .collect()
-        };
-        for yaml in ["--- \"a\n---x\nb\"\n", "--- \"a\n---\"\n", "--- 'a\n...'\n"] {
-            assert_eq!(messages(yaml), Vec::<String>::new(), "{yaml:?}");
-        }
-        for yaml in [
-            "--- \"a\n--- b\"\n",
-            "--- \"a\n...\tb\"\n",
-            "---\n\"\n---\n\"\n",
-        ] {
-            assert_eq!(
-                messages(yaml),
-                vec!["Document marker inside a quoted scalar".to_string()],
-                "{yaml:?}"
-            );
-        }
     }
 
     #[test]

@@ -309,3 +309,48 @@ fn test_commented_mapping_key_in_nested_flow_mapping() {
     assert_eq!(a.len(), 2);
     assert_eq!(a.get(&key).unwrap().as_scalar().unwrap().as_i64(), Some(3));
 }
+
+#[test]
+fn test_commented_explicit_key_in_value_set_into_flow_mapping() {
+    let file = YamlFile::from_str("{x: 1}\n").unwrap();
+    let root = file.document().unwrap().as_mapping().unwrap();
+    root.set("y", parse_map("? - 1  # c\n  - 2\n: x\n"));
+    assert_parser_shaped(&file);
+    assert_eq!(file.to_string(), "{x: 1, y: {? [1,  # c\n    2]: x}}\n");
+    let reparsed = parse_map(&file.to_string());
+    let y = reparsed.get_mapping("y").unwrap();
+    assert_eq!(y.len(), 1);
+    let key = parse_seq("- 1\n- 2\n");
+    assert_eq!(y.get(&key).unwrap().as_scalar().unwrap().as_string(), "x");
+}
+
+#[test]
+fn test_single_line_explicit_key_in_value_becomes_implicit() {
+    let file = YamlFile::from_str("{x: 1}\n").unwrap();
+    let root = file.document().unwrap().as_mapping().unwrap();
+    root.set("y", parse_map("? - 1\n  - 2\n: x\n"));
+    assert_parser_shaped(&file);
+    assert_eq!(file.to_string(), "{x: 1, y: {[1, 2]: x}}\n");
+}
+
+#[test]
+fn test_commented_explicit_key_without_value_in_flow_mapping() {
+    let file = YamlFile::from_str("{x: 1}\n").unwrap();
+    let root = file.document().unwrap().as_mapping().unwrap();
+    root.set("y", parse_map("? - 1  # c\n  - 2\n"));
+    assert_parser_shaped(&file);
+    assert_eq!(file.to_string(), "{x: 1, y: {? [1,  # c\n    2]: null}}\n");
+    let reparsed = parse_map(&file.to_string());
+    let y = reparsed.get_mapping("y").unwrap();
+    let key = parse_seq("- 1\n- 2\n");
+    assert!(y.get(&key).unwrap().as_scalar().unwrap().is_null());
+}
+
+#[test]
+fn test_commented_explicit_key_in_item_appended_to_flow_sequence() {
+    let file = YamlFile::from_str("[1]\n").unwrap();
+    let root = file.document().unwrap().as_sequence().unwrap();
+    root.push(parse_map("? - 1  # c\n  - 2\n: x\n"));
+    assert_parser_shaped(&file);
+    assert_eq!(file.to_string(), "[1, {? [1,  # c\n    2]: x}]\n");
+}

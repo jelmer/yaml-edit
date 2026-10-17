@@ -1345,7 +1345,8 @@ impl Mapping {
     /// An explicit key (`? k\n  : v`) puts the `:` on its own line, and the
     /// parser keeps that line break and indent inside KEY. They describe the
     /// entry's layout rather than the key, so they carry over; dropped, the
-    /// entry collapses onto one line and reparses as one node.
+    /// entry collapses onto one line and reparses as one node. In a flow
+    /// mapping the `?` itself sits inside KEY, so it carries over too.
     fn rebuild_key(
         builder: &mut GreenNodeBuilder,
         old: &SyntaxNode,
@@ -1356,6 +1357,13 @@ impl Mapping {
         let indent = old
             .parent()
             .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry));
+        let mut leading = old.children_with_tokens().map_while(|c| c.into_token());
+        if let Some(question) = leading.next().filter(|t| t.kind() == SyntaxKind::QUESTION) {
+            builder.token(question.kind().into(), question.text());
+            for ws in leading.take_while(|t| t.kind() == SyntaxKind::WHITESPACE) {
+                builder.token(ws.kind().into(), ws.text());
+            }
+        }
         super::build_key_content(builder, new_key, indent, flow);
         for trailing in old
             .children_with_tokens()

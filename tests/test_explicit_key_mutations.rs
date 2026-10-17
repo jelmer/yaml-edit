@@ -694,3 +694,11 @@ fn set_key_written_in_flow_form() {
         "!!set {p: null}: 1\n"
     );
 }
+
+#[test]
+fn flow_explicit_key_renamed() {
+    assert_eq!(
+        edit_root_valid("{? a : 1, b: 2}\n", |m| assert!(m.rename_key("a", "z"))),
+        "{? z : 1, b: 2}\n"
+    );
+}

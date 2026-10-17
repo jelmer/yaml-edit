@@ -316,6 +316,35 @@ impl MappingEntry {
         self.0.splice_children(at..at, elems);
     }
 
+    /// Give a value that took the place of an omitted one, at child
+    /// `value_idx`, the separator it lacked: `a:` becomes `a: v`, not the
+    /// single plain scalar `a:v`, and in flow context `{a}` becomes
+    /// `{a: v}`, not `{av}`.
+    fn separate_filled_value(&self, value_idx: usize, flow_context: bool) {
+        let has_colon = self
+            .0
+            .children_with_tokens()
+            .take(value_idx)
+            .any(|c| c.kind() == SyntaxKind::COLON);
+        let follows_colon = value_idx
+            .checked_sub(1)
+            .and_then(|i| self.0.children_with_tokens().nth(i))
+            .is_some_and(|c| c.kind() == SyntaxKind::COLON);
+        if follows_colon {
+            self.insert_at(value_idx, vec![fresh_token(SyntaxKind::WHITESPACE, " ")]);
+        } else if !has_colon && flow_context {
+            self.insert_at(
+                value_idx,
+                vec![
+                    fresh_token(SyntaxKind::COLON, ":"),
+                    fresh_token(SyntaxKind::WHITESPACE, " "),
+                ],
+            );
+        }
+        // TODO: a block explicit key without a value (`? a` at the end of
+        // the input) needs `\n:` before the value, not `: `.
+    }
+
     /// Append `tokens` at the end of `self.0`.
     fn append(&self, tokens: Vec<rowan::SyntaxToken<Lang>>) {
         super::super::append_children(&self.0, tokens.into_iter().map(Into::into).collect());
@@ -547,8 +576,13 @@ impl MappingEntry {
         if let Some(value_idx) = self.value_index() {
             // A block scalar's body ends with the entry's line break.
             let old_ends_line = self.ends_with_newline();
+            let old_omitted = self.value().is_some_and(|v| v.text_range().is_empty());
+            let new_omitted = new_value_node.text_range().is_empty();
             self.0
                 .splice_children(value_idx..value_idx + 1, vec![new_value_node.into()]);
+            if old_omitted && !new_omitted {
+                self.separate_filled_value(value_idx, flow_context);
+            }
             if old_ends_line && !self.ends_with_newline() {
                 self.append(vec![fresh_token(SyntaxKind::NEWLINE, "\n")]);
                 crate::nodes::hand_line_break_to_mapping(&self.0);

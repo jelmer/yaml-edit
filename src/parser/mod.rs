@@ -915,6 +915,24 @@ impl Parser {
             .find(|kind| !skip.contains(kind))
     }
 
+    /// The kind of the next token that is not whitespace, a comment or a
+    /// line break.
+    pub(super) fn next_significant_kind(&self) -> Option<SyntaxKind> {
+        self.next_kind_past(&[
+            SyntaxKind::WHITESPACE,
+            SyntaxKind::NEWLINE,
+            SyntaxKind::INDENT,
+            SyntaxKind::COMMENT,
+        ])
+    }
+
+    /// Whether only whitespace, comments and line breaks stand between here
+    /// and the `,` or `closer` that ends a flow entry.
+    pub(super) fn at_flow_entry_end(&self, closer: SyntaxKind) -> bool {
+        let next = self.next_significant_kind();
+        next == Some(SyntaxKind::COMMA) || next == Some(closer)
+    }
+
     /// Iterator over upcoming tokens starting from the next token (not current)
     pub(super) fn upcoming_tokens(&self) -> impl Iterator<Item = SyntaxKind> + '_ {
         // Since tokens are in reverse order (last is current), we need to iterate

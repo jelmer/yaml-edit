@@ -52,23 +52,20 @@ impl Parser {
         // Consume colon
         if self.current() == Some(SyntaxKind::COLON) {
             self.bump();
-            self.skip_ws_and_newlines();
+            self.skip_whitespace();
         }
 
-        // Parse value
-        self.builder.start_node(SyntaxKind::VALUE.into());
-        // Check if value is omitted (implicit null)
-        if matches!(
-            self.current(),
-            Some(SyntaxKind::COMMA | SyntaxKind::RIGHT_BRACKET)
-        ) {
-            // Omitted value: emit the zero-width implicit-null scalar so
-            // every VALUE holds exactly one scalar/collection node.
-            self.emit_implicit_null();
+        // An omitted value is the zero-width implicit-null scalar, placed
+        // where a value would start so that a comment or line break after
+        // it follows the VALUE as it does for any other value.
+        if self.at_flow_entry_end(SyntaxKind::RIGHT_BRACKET) {
+            self.emit_implicit_null_value();
         } else {
+            self.skip_ws_and_newlines();
+            self.builder.start_node(SyntaxKind::VALUE.into());
             self.parse_value();
+            self.builder.finish_node();
         }
-        self.builder.finish_node();
 
         self.builder.finish_node(); // MAPPING_ENTRY
         self.builder.finish_node(); // MAPPING
@@ -255,35 +252,27 @@ impl Parser {
             }
             self.builder.finish_node();
 
-            self.skip_ws_and_newlines(); // Support comments after keys
-
-            if self.current() == Some(SyntaxKind::COLON) {
+            // An omitted value (`{key}`, `{key:}`) is a VALUE holding the
+            // implicit-null scalar. It goes where a value would start, right
+            // after the key or after the colon and the spaces following it,
+            // so a comment or line break before the `,` or `}` follows the
+            // VALUE as it does for any other value.
+            if self.at_flow_entry_end(SyntaxKind::RIGHT_BRACE) {
+                self.emit_implicit_null_value();
+            } else if self.next_significant_kind() == Some(SyntaxKind::COLON) {
+                self.skip_ws_and_newlines(); // Support comments after keys
                 self.bump();
-                self.skip_ws_and_newlines(); // Support comments after colons
-
-                // Check if value is omitted (comma or closing brace after colon)
-                // In YAML, `key:,` or `key:}` means key has null value
-                if matches!(
-                    self.current(),
-                    Some(SyntaxKind::COMMA | SyntaxKind::RIGHT_BRACE)
-                ) {
-                    // Omitted value - create VALUE node with implicit null scalar
+                self.skip_whitespace();
+                if self.at_flow_entry_end(SyntaxKind::RIGHT_BRACE) {
                     self.emit_implicit_null_value();
                 } else {
-                    // Parse value - wrap in VALUE node
+                    self.skip_ws_and_newlines(); // Support comments after colons
                     self.builder.start_node(SyntaxKind::VALUE.into());
                     self.parse_value();
                     self.builder.finish_node();
                 }
-            } else if matches!(
-                self.current(),
-                Some(SyntaxKind::COMMA | SyntaxKind::RIGHT_BRACE)
-            ) {
-                // No colon, but followed by comma or closing brace
-                // This means the key itself has a null value (shorthand for key: null)
-                // Create VALUE node with implicit null scalar
-                self.emit_implicit_null_value();
             } else {
+                self.skip_ws_and_newlines();
                 let error_msg = self.create_detailed_error(
                     "Missing colon in flow mapping",
                     "':' after key",

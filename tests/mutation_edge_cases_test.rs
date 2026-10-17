@@ -650,3 +650,55 @@ fn test_insert_at_index_keeps_document_markers() {
         assert_eq!(file.to_string(), expected, "{input:?}");
     }
 }
+
+/// Setting a value that was omitted at the end of a line in a multi-line
+/// flow collection keeps the line break before the closing bracket.
+#[test]
+fn test_set_omitted_flow_value_before_line_break() {
+    for (input, expected) in [
+        ("{\n  k: v,\n  m:\n}\n", "{\n  k: v,\n  m: 5\n}\n"),
+        ("{\n  k: v,\n  m:  \n}\n", "{\n  k: v,\n  m:  5\n}\n"),
+        ("{\n  m:\n  ,\n  k: v\n}\n", "{\n  m: 5\n  ,\n  k: v\n}\n"),
+        ("{\n  k: v,\n  m\n}\n", "{\n  k: v,\n  m: 5\n}\n"),
+        ("{m}\n", "{m: 5}\n"),
+        ("{ m }\n", "{ m: 5 }\n"),
+        ("{m:}\n", "{m: 5}\n"),
+        ("{m: }\n", "{m: 5}\n"),
+        ("{m: , k: v}\n", "{m: 5, k: v}\n"),
+    ] {
+        let yaml = YamlFile::from_str(input).unwrap();
+        yaml.document().unwrap().as_mapping().unwrap().set("m", 5);
+        assert_eq!(yaml.to_string(), expected, "input: {input:?}");
+        assert_file_cst_ok(&yaml);
+        assert_eq!(
+            debug::tree_to_string(yaml.syntax()),
+            debug::tree_to_string(YamlFile::from_str(expected).unwrap().syntax())
+        );
+    }
+}
+
+/// Same for the single-pair mapping a flow sequence entry `a:` stands for.
+#[test]
+fn test_set_omitted_implicit_flow_pair_value_before_line_break() {
+    for (input, expected) in [("[\n  a:\n]\n", "[\n  a: 5\n]\n"), ("[a:]\n", "[a: 5]\n")] {
+        let yaml = YamlFile::from_str(input).unwrap();
+        let seq = yaml.document().unwrap().as_sequence().unwrap();
+        seq.get(0).unwrap().as_mapping().unwrap().set("a", 5);
+        assert_eq!(yaml.to_string(), expected, "input: {input:?}");
+        assert_file_cst_ok(&yaml);
+        assert_eq!(
+            debug::tree_to_string(yaml.syntax()),
+            debug::tree_to_string(YamlFile::from_str(expected).unwrap().syntax())
+        );
+    }
+}
+
+/// A value set where the input ends right after the colon is separated from
+/// it, rather than turning `a:` into the plain scalar `a:5`.
+#[test]
+fn test_set_omitted_value_at_end_of_input() {
+    let yaml = YamlFile::from_str("x: 1\na:").unwrap();
+    yaml.document().unwrap().as_mapping().unwrap().set("a", 5);
+    assert_eq!(yaml.to_string(), "x: 1\na: 5");
+    assert_file_cst_ok(&yaml);
+}

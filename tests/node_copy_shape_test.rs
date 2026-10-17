@@ -80,9 +80,17 @@ fn test_set_tagged_node_value() {
     assert_parser_shaped(&file, "a: 1\nb: !t v\n");
 }
 
-/// Indent every line of `text` after the first by two more columns.
+/// Indent every non-blank line of `text` after the first by two more
+/// columns.
 fn shift(text: &str) -> String {
-    text.replace('\n', "\n  ").trim_end_matches(' ').to_string()
+    text.split('\n')
+        .enumerate()
+        .map(|(i, line)| match (i, line) {
+            (0, _) | (_, "") => line.to_string(),
+            _ => format!("  {line}"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The text after `v:` in each source: block values that start on the key
@@ -445,4 +453,122 @@ fn test_set_sequence_item_to_block_scalar() {
         sequence.set(0, value_of("k: |\n      text\n", "k"));
         assert_parser_shaped(&file, expected);
     }
+}
+
+/// Everything a TAGGED_NODE holds between its tag and its content (an
+/// anchor after the tag, a comment, comment lines) comes along when it is
+/// copied under another key.
+#[test]
+fn test_set_tagged_node_value_keeps_properties_and_comments() {
+    for value in [
+        " !t  # c\n  x: 1\n",
+        " !t &a\n  x: 1\n",
+        " !t &a  # c\n  x: 1\n",
+        " !t\n  # c\n  x: 1\n",
+        " !t\n\n  x: 1\n",
+        " !t &a 1\n",
+        " !t &a |\n  x\n",
+        " !t |  # c\n  x\n",
+    ] {
+        let source = value_of(&format!("v:{value}"), "v");
+        for (src, nested, key, expected) in [
+            ("k: 1\n", false, "n", format!("k: 1\nn:{value}")),
+            (
+                "m:\n  k: 1\n",
+                true,
+                "n",
+                format!("m:\n  k: 1\n  n:{}", shift(value)),
+            ),
+        ] {
+            let file = YamlFile::from_str(src).unwrap();
+            let root = file.document().unwrap().as_mapping().unwrap();
+            let mapping = if nested {
+                root.get_mapping("m").unwrap()
+            } else {
+                root
+            };
+            mapping.set(key, &source);
+            assert_parser_shaped(&file, &expected);
+        }
+    }
+}
+
+/// A timestamp, binary or regex scalar carries its tag even when none was
+/// given, and the tag is built as the parser reads it.
+#[test]
+fn test_set_implicitly_tagged_scalar_value() {
+    use yaml_edit::{ScalarValue, YamlValue};
+    let mut cases = vec![
+        (
+            ScalarValue::timestamp("2001-12-14"),
+            "a: 1\nb: !!timestamp 2001-12-14\n",
+        ),
+        (ScalarValue::regex("^a+$"), "a: 1\nb: !!regex ^a+$\n"),
+    ];
+    #[cfg(feature = "base64")]
+    cases.push((ScalarValue::binary(b"hi"), "a: 1\nb: !!binary aGk=\n"));
+    for (value, expected) in cases {
+        let file = YamlFile::from_str("a: 1\n").unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        mapping.set("b", &value);
+        assert_parser_shaped(&file, expected);
+
+        let file = YamlFile::from_str("a: 1\n").unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        mapping.set("b", YamlValue::Scalar(value));
+        assert_parser_shaped(&file, expected);
+    }
+}
+
+#[test]
+fn test_set_implicitly_tagged_scalar_key_matches_tagged_key() {
+    use yaml_edit::ScalarValue;
+    for (src, expected) in [
+        (
+            "? !!timestamp 2001-12-14\n: 1\n",
+            "? !!timestamp 2001-12-14\n: 2\n",
+        ),
+        (
+            "{!!timestamp 2001-12-14: 1}\n",
+            "{!!timestamp 2001-12-14: 2}\n",
+        ),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        mapping.set(ScalarValue::timestamp("2001-12-14"), 2);
+        assert_parser_shaped(&file, expected);
+    }
+}
+
+/// Tabs after a continuation line's indentation separate tokens rather
+/// than indent, so shifting the line keeps them.
+#[test]
+fn test_set_multiline_flow_value_keeps_tabs() {
+    for (value, expected) in [
+        ("[a,\n \tb]\n", "m:\n  k: 1\n  n: [a,\n   \tb]\n"),
+        ("[a,\n  \t b]\n", "m:\n  k: 1\n  n: [a,\n    \t b]\n"),
+        (
+            "{a: 1,\n\t\n b: 2}\n",
+            "m:\n  k: 1\n  n: {a: 1,\n  \t\n   b: 2}\n",
+        ),
+    ] {
+        let file = YamlFile::from_str("m:\n  k: 1\n").unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let nested = mapping.get_mapping("m").unwrap();
+        nested.set("n", value_of(&format!("v: {value}"), "v"));
+        assert_valid_copy(&file, expected);
+    }
+}
+
+#[test]
+fn test_set_dedented_multiline_flow_value_keeps_tabs() {
+    let source = value_of("m:\n  v: [a,\n   \tb]\n", "m");
+    let source = source.as_mapping().unwrap().get("v").unwrap();
+    let file = YamlFile::from_str("k: 1\n").unwrap();
+    file.document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .set("n", source);
+    assert_valid_copy(&file, "k: 1\nn: [a,\n \tb]\n");
 }

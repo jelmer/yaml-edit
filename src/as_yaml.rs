@@ -636,8 +636,9 @@ pub(crate) fn copy_node_content(builder: &mut rowan::GreenNodeBuilder, node: &Sy
 }
 
 /// Copy the children of `node` into `builder`, shifting every post-newline
-/// whitespace by `delta` columns (may be negative to dedent). Line-leading
-/// whitespace is written as INDENT, as the parser does.
+/// whitespace by `delta` columns (may be negative to dedent). Only spaces
+/// are added or removed; tabs after them are kept. Line-leading whitespace
+/// is written as INDENT, as the parser does.
 ///
 /// Newline state is tracked across node boundaries: a NEWLINE inside a
 /// child node correctly marks
@@ -681,9 +682,9 @@ pub(crate) fn copy_node_content_reindent(
                 }
                 SyntaxKind::WHITESPACE | SyntaxKind::INDENT => {
                     if after_newline {
-                        let total = t.text().len() as isize + delta;
-                        if total > 0 {
-                            builder.token(SyntaxKind::INDENT.into(), &pad(total));
+                        let shifted = shift_line_start(t.text(), delta);
+                        if !shifted.is_empty() {
+                            builder.token(SyntaxKind::INDENT.into(), &shifted);
                         }
                     } else {
                         builder.token(t.kind().into(), t.text());
@@ -701,6 +702,17 @@ pub(crate) fn copy_node_content_reindent(
         }
     }
     after_newline
+}
+
+/// `text`, the whitespace at the start of a line, with `delta` spaces added
+/// or up to `-delta` leading spaces removed. Tabs are not indentation, so
+/// any that follow the spaces are kept.
+fn shift_line_start(text: &str, delta: isize) -> String {
+    if delta >= 0 {
+        return format!("{}{text}", " ".repeat(delta as usize));
+    }
+    let spaces = text.len() - text.trim_start_matches(' ').len();
+    text[spaces.min(delta.unsigned_abs())..].to_string()
 }
 
 /// Column at which `node` starts on its line.

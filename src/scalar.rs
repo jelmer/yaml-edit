@@ -1239,17 +1239,22 @@ impl ScalarValue {
         self.render(parent_column, indent, false)
     }
 
-    /// Render the scalar with its tag; inside a flow collection when
-    /// `flow_context` is set.
-    fn render(&self, parent_column: usize, indent: usize, flow_context: bool) -> String {
-        // Special data types carry their tag unless an explicit one is set
-        let tag = self.tag.as_deref().or(match self.scalar_type {
+    /// The tag written in front of the content: the explicit one, or the
+    /// one special data types carry when none is set.
+    fn rendered_tag(&self) -> Option<&str> {
+        self.tag.as_deref().or(match self.scalar_type {
             #[cfg(feature = "base64")]
             ScalarType::Binary => Some("!!binary"),
             ScalarType::Timestamp => Some("!!timestamp"),
             ScalarType::Regex => Some("!!regex"),
             _ => None,
-        });
+        })
+    }
+
+    /// Render the scalar with its tag; inside a flow collection when
+    /// `flow_context` is set.
+    fn render(&self, parent_column: usize, indent: usize, flow_context: bool) -> String {
+        let tag = self.rendered_tag();
         let content = self.render_content_in(parent_column, indent, flow_context);
         match tag {
             Some(tag) if content.is_empty() => tag.to_string(),
@@ -1572,8 +1577,8 @@ impl crate::AsYaml for ScalarValue {
     }
 
     fn kind(&self) -> crate::as_yaml::YamlKind {
-        match &self.tag {
-            Some(tag) => crate::as_yaml::YamlKind::Tagged(std::borrow::Cow::Owned(tag.clone())),
+        match self.rendered_tag() {
+            Some(tag) => crate::as_yaml::YamlKind::Tagged(std::borrow::Cow::Owned(tag.to_string())),
             None => crate::as_yaml::YamlKind::Scalar,
         }
     }
@@ -1585,7 +1590,7 @@ impl crate::AsYaml for ScalarValue {
         flow_context: bool,
     ) -> bool {
         use crate::lex::SyntaxKind;
-        if let Some(tag) = &self.tag {
+        if let Some(tag) = self.rendered_tag() {
             builder.start_node(SyntaxKind::TAGGED_NODE.into());
             builder.token(SyntaxKind::TAG.into(), tag);
             let content = self.render_content_in(indent, 2, flow_context);

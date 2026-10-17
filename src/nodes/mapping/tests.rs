@@ -1691,3 +1691,62 @@ fn move_and_insert_relative_in_nested_mapping_keep_indent() {
         assert_eq!(doc.to_string(), expected);
     }
 }
+
+/// A single pair in a flow sequence (`[a: 1]`) is a flow mapping without
+/// braces. Edits to it give flow output, and it gains braces once it no
+/// longer holds exactly one pair, which keeps it one mapping.
+#[test]
+fn test_edit_single_pair_in_flow_sequence() {
+    use crate::debug::assert_edited;
+    use crate::nodes::Mapping;
+    use crate::value::YamlValue;
+    let block_seq = || {
+        crate::Document::from_str("- 1\n- 2\n")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+    };
+    let cases: &[(&str, &dyn Fn(&Mapping), &str)] = &[
+        ("[a: 1]\n", &|m| m.set("a", 2), "[a: 2]\n"),
+        ("[a: 1]\n", &|m| m.set("a", block_seq()), "[a: [1, 2]]\n"),
+        (
+            "[a: 1]\n",
+            &|m| m.set("a", vec![YamlValue::from("x"), YamlValue::from("y")]),
+            "[a: [x, y]]\n",
+        ),
+        ("[a: 1]\n", &|m| m.set("b", 2), "[{a: 1, b: 2}]\n"),
+        ("[a: 1, x]\n", &|m| m.set("b", 2), "[{a: 1, b: 2}, x]\n"),
+        (
+            "[x, a: 1]\n",
+            &|m| m.insert_at_index(0, "b", 2),
+            "[x, {b: 2, a: 1}]\n",
+        ),
+        (
+            "[a: 1]\n",
+            &|m| assert!(m.insert_after("a", "b", 2)),
+            "[{a: 1, b: 2}]\n",
+        ),
+        ("[a: 1]\n", &|m| assert!(m.remove("a").is_some()), "[{}]\n"),
+        ("[a: 1]\n", &|m| m.clear(), "[{}]\n"),
+        ("[a: 1]\n", &|m| assert!(m.rename_key("a", "b")), "[b: 1]\n"),
+        ("[? a : 1]\n", &|m| m.set("b", 2), "[{? a : 1, ? b: 2}]\n"),
+        ("[: 1]\n", &|m| m.set("b", 2), "[{: 1, b: 2}]\n"),
+        ("[\"a\": 1]\n", &|m| m.set("a", "x"), "[\"a\": \"x\"]\n"),
+        (
+            "[\"a\": 1]\n",
+            &|m| m.set("b", "x"),
+            "[{\"a\": 1, \"b\": \"x\"}]\n",
+        ),
+    ];
+    for (source, edit, expected) in cases {
+        let yaml = YamlFile::from_str(source).unwrap();
+        let doc = yaml.document().unwrap();
+        let seq = doc.as_sequence().unwrap();
+        let mapping = (0..seq.len())
+            .find_map(|i| seq.get(i).and_then(|n| n.as_mapping().cloned()))
+            .unwrap();
+        assert!(mapping.is_flow_style());
+        edit(&mapping);
+        assert_edited(&yaml, expected);
+    }
+}

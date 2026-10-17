@@ -659,6 +659,7 @@ pub(crate) fn flow_quoting(collection: &SyntaxNode) -> crate::as_yaml::FlowQuoti
     let is_flow = |n: &SyntaxNode| {
         n.children_with_tokens()
             .any(|c| matches!(c.kind(), SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET))
+            || mapping::is_flow_pair(n)
     };
     let own_quoting = |n: SyntaxNode| {
         let mut strings = n

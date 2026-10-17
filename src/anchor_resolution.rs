@@ -112,6 +112,11 @@ impl AnchorRegistry {
 
     /// Find the value node that an anchor refers to (low-level helper)
     fn find_anchored_value(&self, node: &SyntaxNode) -> Option<SyntaxNode> {
+        // Node properties come in either order. In `!!map &x` the anchor
+        // sits inside the TAGGED_NODE and anchors it, tag included.
+        if node.kind() == SyntaxKind::TAGGED_NODE {
+            return Some(node.clone());
+        }
         // The anchored value is typically a sibling MAPPING/SEQUENCE/SCALAR node
         for child in node.children() {
             if matches!(
@@ -528,7 +533,8 @@ fn collect_merge_sources(
                     else {
                         continue;
                     };
-                    let Some(m) = crate::yaml::Mapping::cast(target.clone()) else {
+                    let tagged = || crate::yaml::TaggedNode::cast(target.clone())?.as_mapping();
+                    let Some(m) = crate::yaml::Mapping::cast(target.clone()).or_else(tagged) else {
                         continue;
                     };
                     m
@@ -1151,5 +1157,31 @@ m:
         let d = doc("a: &x 1\nc: &x 2\n");
         let reg = d.build_anchor_registry();
         assert_eq!(reg.resolve("x").unwrap().text().to_string(), "2");
+    }
+
+    #[test]
+    fn anchor_after_tag_covers_the_tag() {
+        // `!!str &x` and `&x !!str` are the same node properties.
+        for src in ["a: !!str &x 1\nb: *x\n", "a: &x !!str 1\nb: *x\n"] {
+            let d = doc(src);
+            assert_eq!(
+                d.get_resolved("b"),
+                doc("b: !!str 1\n").get_resolved("b"),
+                "{src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_key_from_tagged_mapping() {
+        for src in [
+            "a: !!map &x\n  k: 1\nb:\n  <<: *x\n",
+            "a: &x !!map\n  k: 1\nb:\n  <<: *x\n",
+        ] {
+            let d = doc(src);
+            let view = d.merged().unwrap();
+            let b = view.as_mapping().get_merged("b").unwrap();
+            assert_eq!(b.get("k").unwrap().to_i64(), Some(1), "{src:?}");
+        }
     }
 }

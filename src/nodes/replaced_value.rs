@@ -103,7 +103,8 @@ fn starts_or_is_blank_line(token: &SyntaxToken) -> bool {
 
 /// Put `lines` from [`take_trailing_lines`] back after `entry`, which now
 /// holds the new value, and lay out the lines after it as the parser does
-/// after that value.
+/// after that value. A detached entry has nothing after it, so they go at
+/// its end.
 pub(crate) fn restore_trailing_lines(entry: &SyntaxNode, lines: Vec<SyntaxToken>) {
     let block_scalar = ending_block_scalar(entry);
     // TODO: a blank line after a block scalar reads as part of its body,
@@ -113,15 +114,17 @@ pub(crate) fn restore_trailing_lines(entry: &SyntaxNode, lines: Vec<SyntaxToken>
         .filter(|t| block_scalar.is_none() || t.kind() != SyntaxKind::NEWLINE)
         .map(|t| fresh_token(t.kind(), t.text()).into())
         .collect();
-    let parent = entry
-        .parent()
-        .expect("a replaced value's entry is attached");
-    // An explicit-key entry leaves its line break to the mapping.
-    let handed_off = !super::trailing_newline_reachable(entry)
-        && entry
-            .next_sibling_or_token()
-            .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE);
-    let after = entry.index() + 1 + usize::from(handed_off);
+    let (parent, after) = match entry.parent() {
+        Some(parent) => {
+            // An explicit-key entry leaves its line break to the mapping.
+            let handed_off = !super::trailing_newline_reachable(entry)
+                && entry
+                    .next_sibling_or_token()
+                    .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE);
+            (parent, entry.index() + 1 + usize::from(handed_off))
+        }
+        None => (entry.clone(), entry.children_with_tokens().count()),
+    };
     parent.splice_children(after..after, elements);
 
     if let Some(scalar) = block_scalar {
@@ -363,7 +366,8 @@ fn lifted_comment_anchor(entry: &SyntaxNode) -> SyntaxNode {
 }
 
 /// Put `comment` on a line of its own directly above `entry`, at the
-/// entry's column, where the parser keeps such a line.
+/// entry's column, where the parser keeps such a line. A detached entry
+/// has no line above it, so the comment line goes first in the entry.
 pub(crate) fn insert_comment_line_above(entry: &SyntaxNode, comment: &str) {
     let column = crate::as_yaml::source_base_indent(entry);
     // The line starts in the outermost node that `entry` starts.
@@ -381,9 +385,13 @@ pub(crate) fn insert_comment_line_above(entry: &SyntaxNode, comment: &str) {
     if column > 0 {
         elements.push(fresh_token(SyntaxKind::INDENT, &" ".repeat(column)).into());
     }
-    let parent = node.parent().expect("an entry is attached");
-    let at = node.index();
-    parent.splice_children(at..at, elements);
+    match node.parent() {
+        Some(parent) => {
+            let at = node.index();
+            parent.splice_children(at..at, elements);
+        }
+        None => node.splice_children(0..0, elements),
+    }
 }
 
 /// Put `comment` at the end of the first line of `value`, which starts on

@@ -306,6 +306,9 @@ block scalar's body is moved back to the entry's column.
 A block scalar whose header line has a comment of its own (`|  # src`)
 leaves no room on that line for the entry's comment, which then goes on
 a line of its own directly above the entry, at the entry's column.
+An entry that is not in a mapping (one returned by `Mapping::remove`, say)
+has no lines around it, so that line goes first in the entry, and the
+lines that would follow it go at its end.
 
 ## Paths, anchors and aliases
 

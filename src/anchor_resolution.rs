@@ -244,22 +244,29 @@ fn node_as_string(node: &crate::as_yaml::YamlNode) -> Option<String> {
 /// Apply merge keys to create a new merged mapping (returns BTreeMap for YamlValue::Mapping)
 ///
 /// Direct keys win over merged ones, and merge sources are taken in the
-/// precedence order [`merge_sources`] returns them.
+/// precedence order [`merge_sources`] returns them. Keys are compared as
+/// YAML values, so a direct `16` shadows a merged `0x10`.
 fn apply_merge_keys(
     mapping: &crate::yaml::Mapping,
     registry: &AnchorRegistry,
     expanding: &mut Vec<String>,
 ) -> std::collections::BTreeMap<String, YamlValue> {
     let mut merged_pairs = std::collections::BTreeMap::new();
+    let mut seen: Vec<crate::as_yaml::YamlNode> = Vec::new();
     let sources = merge_sources(mapping, registry);
     for source in std::iter::once(mapping).chain(&sources) {
         for (key, value) in source.iter() {
-            if is_merge_key(&key) {
+            if is_merge_key(&key) || seen.iter().any(|k| k.yaml_eq(&key)) {
                 continue;
             }
             // A non-scalar key has no string form, so use its text as
             // YamlValue::cast does.
             let key_str = node_as_string(&key).unwrap_or_else(|| key.to_string());
+            seen.push(key);
+            // TODO: distinct keys with the same text, such as `1` and `'1'`,
+            // collide in the String-keyed map and the later one is dropped.
+            // This should be reported as an error once get_resolved can
+            // return one.
             if merged_pairs.contains_key(&key_str) {
                 continue;
             }
@@ -689,6 +696,20 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn get_resolved_merge_shadows_by_key_value() {
+        // 16 and 0x10 are the same int, ~ and null the same null.
+        let yaml = "a: &a {0x10: merged, ~: merged}\nm: {<<: *a, 16: direct, null: direct}\n";
+        assert_eq!(
+            resolved_pairs(yaml, "m"),
+            pairs(&[("16", "direct"), ("null", "direct")])
+        );
+        assert_eq!(
+            merged_pairs(yaml, "m"),
+            pairs(&[("16", "direct"), ("null", "direct")])
+        );
     }
 
     #[test]

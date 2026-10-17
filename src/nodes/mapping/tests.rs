@@ -1357,6 +1357,33 @@ fn test_flow_mapping_implicit_null_key_and_value_shapes() {
     }
 }
 
+/// A single pair in a flow sequence with no key holds the same zero-width
+/// null key as a flow mapping does.
+#[test]
+fn test_flow_pair_implicit_null_key_shape() {
+    use rowan::ast::AstNode;
+    let yaml = YamlFile::from_str("[: 1]").unwrap();
+    assert_eq!(
+        crate::debug::tree_to_string(yaml.syntax()),
+        "DOCUMENT
+  SEQUENCE
+    LEFT_BRACKET: \"[\"
+    SEQUENCE_ENTRY
+      MAPPING
+        MAPPING_ENTRY
+          KEY
+            SCALAR
+              NULL: \"\"
+          COLON: \":\"
+          WHITESPACE: \" \"
+          VALUE
+            SCALAR
+              INT: \"1\"
+    RIGHT_BRACKET: \"]\"
+"
+    );
+}
+
 /// `Mapping::new_pending_block` serializes as `{}` so an empty mapping
 /// survives a round-trip, and turns into a block mapping once it has an
 /// entry. Before this, it rendered as `key:` followed by blank space, which

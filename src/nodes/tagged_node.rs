@@ -83,7 +83,8 @@ impl TaggedNode {
         None
     }
 
-    /// Extract a set from this tagged scalar if it has a !!set tag
+    /// Extract a set from this tagged node if it has a !!set tag on a
+    /// mapping.
     pub fn as_set(&self) -> Option<Set> {
         Set::cast(self.0.clone())
     }
@@ -219,6 +220,27 @@ mod tests {
         let val = mapping.get_node("key").unwrap();
         let tagged = crate::yaml::TaggedNode::cast(val).unwrap();
         assert_eq!(tagged.as_string(), Some("hello world".to_string()));
+    }
+
+    #[test]
+    fn test_as_set_requires_mapping() {
+        let members = |yaml: &str| {
+            let yaml = YamlFile::from_str(yaml).unwrap();
+            let doc = yaml.documents().next().unwrap();
+            let val = doc.as_mapping().unwrap().get_node("key").unwrap();
+            let tagged = crate::yaml::TaggedNode::cast(val).unwrap();
+            tagged
+                .as_set()
+                .map(|set| set.members().map(|m| m.to_string()).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            members("key: !!set {? a, ? b}\n"),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        assert_eq!(members("key: !!set &s {}\n"), Some(vec![]));
+        assert_eq!(members("key: !!set [a, b]\n"), None);
+        assert_eq!(members("key: !!set\n- a\n"), None);
+        assert_eq!(members("key: !!set\n"), None);
     }
 
     #[test]

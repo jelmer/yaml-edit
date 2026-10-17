@@ -4722,3 +4722,82 @@ fn test_annotation_at_end_of_input_holds_implicit_null() {
     assert_eq!(value.tag().unwrap(), "!!str");
     assert!(value.value().unwrap().is_null());
 }
+
+/// `!!set`, `!!omap` and `!!pairs` on a collection of the other shape
+/// parse like any other tag; whether the content suits the tag is for the
+/// validator to say.
+///
+/// The parser chose the collection shape from the tag, so `!!set [a, b]`
+/// went to the block mapping parser, which took nothing and left the flow
+/// sequence unparsed.
+#[test]
+fn test_collection_tag_on_other_collection_shape() {
+    use rowan::ast::AstNode;
+
+    for (tag, yaml) in [
+        ("!!set", "!!set [a, b]\n"),
+        ("!!set", "!!set &x [a]\n"),
+        ("!!set", "x: !!set [a, b]\ny: 1\n"),
+        ("!!set", "!!set\n- a\n- b\n"),
+        ("!!set", "!!set\n  - a\n"),
+        ("!!set", "k: !!set\n- a\nj: 1\n"),
+        ("!!omap", "!!omap {a: 1}\n"),
+        ("!!pairs", "!!pairs {a: 1}\n"),
+        ("!!omap", "!!omap\n  a: 1\n"),
+        ("!!pairs", "!!pairs\na: 1\nb: 2\n"),
+        ("!!set", "!!set\n# c\n- a\n"),
+        ("!!set", "!!set # c\n\n- a\n"),
+        ("!!set", "- k: !!set\n  - a\n- j\n"),
+        ("!!omap", "!!omap\n\n  a: 1\n"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let plain = YamlFile::from_str(&yaml.replace(tag, "!x")).unwrap();
+        assert_eq!(
+            yaml_edit::debug::tree_to_string(file.syntax()).replace(tag, "!x"),
+            yaml_edit::debug::tree_to_string(plain.syntax()),
+            "{yaml:?}"
+        );
+    }
+    // With no content after the line break, the tag's own shape stands.
+    for (yaml, expected) in [
+        ("!!omap\n", "SEQUENCE"),
+        ("!!pairs\n# c\n", "SEQUENCE"),
+        ("!!omap\n...\n", "SEQUENCE"),
+        ("!!set\n", "MAPPING"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let tagged = file
+            .syntax()
+            .descendants()
+            .find(|n| n.kind() == yaml_edit::SyntaxKind::TAGGED_NODE)
+            .unwrap();
+        let content: Vec<String> = tagged
+            .children()
+            .map(|n| format!("{:?}", n.kind()))
+            .collect();
+        assert_eq!(content, [expected], "{yaml:?}");
+    }
+    // Nor does a sibling entry become the body.
+    let file = YamlFile::from_str("- !!set\n- b\n").unwrap();
+    let sequence = file.document().unwrap().as_sequence().unwrap();
+    assert_eq!(sequence.len(), 2);
+    // A block mapping in the value position still has to nest under its
+    // key; at the key's column its entries are siblings.
+    for yaml in [
+        "k: !!set
+a: 1
+",
+        "k: !!omap
+a: 1
+",
+        "k: !!pairs
+a: 1
+",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
+        assert_eq!(keys, ["k", "a"], "{yaml:?}");
+    }
+}

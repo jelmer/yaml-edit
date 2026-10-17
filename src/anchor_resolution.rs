@@ -10,8 +10,8 @@
 //! - **Preserves structure**: Original syntax tree remains unchanged
 //! - **Lazy evaluation**: Anchors are resolved on-demand, not eagerly
 //! - **Error handling**: An undefined or recursive alias, a merge key
-//!   whose operand is not a mapping, distinct keys that would collide
-//!   in a resolved mapping, or `!!set`, `!!omap` and `!!pairs` content
+//!   whose operand is not a mapping, a key repeated within a mapping,
+//!   distinct keys that would collide in a resolved mapping, or `!!set`, `!!omap` and `!!pairs` content
 //!   that [`YamlValue`] cannot hold are reported as a [`ResolveError`]
 //!
 //! # Examples
@@ -78,6 +78,15 @@ pub enum ResolveError {
         /// The source text of the offending operand.
         operand: String,
     },
+    /// A mapping has two equal keys, such as `a` and `'a'`, or a key and
+    /// an alias to an equal node, so it cannot keep both values. A direct
+    /// key shadowing a key from a merge key (`<<`) is not a duplicate.
+    DuplicateKey {
+        /// The source text of the key that was seen first.
+        first: String,
+        /// The source text of the key that repeats it.
+        second: String,
+    },
     /// Two distinct keys of a mapping have the same string form, such as
     /// the int `1` and the string `'1'`, so they cannot both be kept in a
     /// [`YamlValue::Mapping`].
@@ -86,6 +95,11 @@ pub enum ResolveError {
         first: String,
         /// The source text of the key that collides with it.
         second: String,
+    },
+    /// The content of a `!!set` is not a mapping, so it has no members.
+    InvalidSetContent {
+        /// The source text of the content.
+        content: String,
     },
     /// A `!!set` member is not a scalar, so it cannot be kept in a
     /// [`YamlValue::Set`].
@@ -135,6 +149,12 @@ impl std::fmt::Display for ResolveError {
                     f,
                     "distinct keys {first:?} and {second:?} have the same string form"
                 )
+            }
+            ResolveError::DuplicateKey { first, second } => {
+                write!(f, "duplicate mapping key: {second:?} equals {first:?}")
+            }
+            ResolveError::InvalidSetContent { content } => {
+                write!(f, "!!set content {content:?} is not a mapping")
             }
             ResolveError::InvalidSetMember { member } => {
                 write!(f, "!!set member {member:?} is not a scalar")
@@ -291,8 +311,9 @@ pub trait DocumentResolvedExt {
     ///
     /// Returns `Ok(None)` if the document root is not a mapping or has no
     /// such key, and an error if the value contains an undefined or
-    /// recursive alias, an invalid merge key, or distinct keys that have the
-    /// same string form, such as `1` and `'1'`.
+    /// recursive alias, an invalid merge key, a mapping with the same key
+    /// twice, or distinct keys that have the same string form, such as `1`
+    /// and `'1'`.
     ///
     /// Resolution is read-only. To write a merge or alias back, pass a mapping
     /// that already contains `<<: *name` (or an alias node) to
@@ -365,8 +386,9 @@ fn key_string(key: &crate::as_yaml::YamlNode) -> String {
 ///
 /// Direct keys win over merged ones, and merge sources are taken in the
 /// precedence order [`merge_sources`] returns them. Keys are compared as
-/// YAML values, so a direct `16` shadows a merged `0x10`. Distinct keys
-/// with the same string form, such as `1` and `'1'`, are a
+/// YAML values, so a direct `16` shadows a merged `0x10`; within one
+/// mapping, base or merged, an equal key is a
+/// [`ResolveError::DuplicateKey`]. Distinct keys with the same string form, such as `1` and `'1'`, are a
 /// [`ResolveError::KeyCollision`]. An alias key is resolved and converted
 /// like the node it refers to, so an alias to a collection has the
 /// collection's source text as its string form, like a collection key.
@@ -387,6 +409,8 @@ fn apply_merge_keys(
         None => Vec::new(),
     };
     for source in std::iter::once(mapping).chain(&sources) {
+        // The resolved keys of this mapping and their source text.
+        let mut own_keys: Vec<(YamlNode, YamlNode)> = Vec::new();
         for (key, value) in source.iter() {
             if registry.is_some() && is_merge_key(&key) {
                 continue;
@@ -400,6 +424,14 @@ fn apply_merge_keys(
                 (YamlNode::Alias(_), Some(registry)) => resolve_alias_node(key.clone(), registry)?,
                 _ => key.clone(),
             };
+            if let Some((_, first)) = own_keys.iter().find(|(k, _)| k.yaml_eq(&resolved_key)) {
+                return Err(ResolveError::DuplicateKey {
+                    first: first.to_string(),
+                    second: key.to_string(),
+                });
+            }
+            own_keys.push((resolved_key.clone(), key.clone()));
+            // An earlier mapping, the base or a merged one, shadows this key.
             if seen.iter().any(|(k, _, _)| k.yaml_eq(&resolved_key)) {
                 continue;
             }
@@ -513,6 +545,15 @@ fn resolved_tagged(
             members.insert(s.value().to_string());
         }
         return Ok(Some(YamlValue::Set(members)));
+    }
+    if tagged.tag().as_deref() == Some("!!set") {
+        return Err(ResolveError::InvalidSetContent {
+            content: tagged
+                .syntax()
+                .children()
+                .next()
+                .map_or_else(String::new, |content| content.to_string()),
+        });
     }
     let content = tagged
         .as_mapping()
@@ -1608,6 +1649,48 @@ m:
     }
 
     #[test]
+    fn get_resolved_duplicate_key_is_error() {
+        for (yaml, first, second) in [
+            ("m: {a: 1, a: 2}\n", "a", "a"),
+            ("m:\n  a: 1\n  b: 2\n  'a': 3\n", "a", "'a'"),
+            ("m: {16: a, 0x10: b}\n", "16", "0x10"),
+            ("m: {a: {~: 1, null: 2}}\n", "~", "null"),
+            ("x: &k a\nm: {a: 1, *k : 2}\n", "a", "*k"),
+            ("x: &k a\nm: {*k : 1, *k : 2}\n", "*k", "*k"),
+            // Within a merged mapping, too.
+            ("s: &s {a: 1, a: 2}\nm: {<<: *s, b: 3}\n", "a", "a"),
+            ("s: &s {a: 1, a: 2}\nm: {<<: *s, a: 3}\n", "a", "a"),
+            ("m: [{a: 1, a: 2}]\n", "a", "a"),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Err(ResolveError::DuplicateKey {
+                    first: first.to_string(),
+                    second: second.to_string(),
+                }),
+                "{yaml:?}"
+            );
+        }
+        // A direct key shadowing a merged one is not a duplicate, nor are
+        // keys shared between merged mappings.
+        assert_eq!(
+            resolved_pairs(
+                "s: &s {a: 1, b: 1}\nt: &t {a: 2, c: 2}\nm: {b: 3, <<: [*s, *t], c: 3}\n",
+                "m"
+            ),
+            pairs(&[("a", "1"), ("b", "3"), ("c", "3")])
+        );
+        assert_eq!(
+            ResolveError::DuplicateKey {
+                first: "a".to_string(),
+                second: "'a'".to_string()
+            }
+            .to_string(),
+            "duplicate mapping key: \"'a'\" equals \"a\""
+        );
+    }
+
+    #[test]
     fn get_resolved_equal_keys_are_not_a_collision() {
         // A key overriding an equal merged key, however it is spelled, is
         // the normal merge semantics.
@@ -1740,6 +1823,31 @@ m:
                 "{yaml:?}"
             );
         }
+    }
+
+    #[test]
+    fn get_resolved_set_content_must_be_mapping() {
+        for (yaml, content) in [
+            ("m: !!set [a, b]\n", "[a, b]"),
+            ("m: !!set &s [a]\n", "[a]"),
+            ("m: !!set\n- a\n", "- a\n"),
+            ("m: !!set\nn: 1\n", ""),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Err(ResolveError::InvalidSetContent {
+                    content: content.to_string()
+                }),
+                "{yaml:?}"
+            );
+        }
+        assert_eq!(
+            ResolveError::InvalidSetContent {
+                content: "[a]".to_string()
+            }
+            .to_string(),
+            "!!set content \"[a]\" is not a mapping"
+        );
     }
 
     #[test]

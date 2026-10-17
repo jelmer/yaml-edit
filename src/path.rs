@@ -796,7 +796,9 @@ fn lookup_merged(
         ResolveError::KeyCollision { .. } => {
             unreachable!("a merged view keeps keys as YAML nodes, not strings")
         }
-        ResolveError::InvalidSetMember { .. }
+        ResolveError::DuplicateKey { .. }
+        | ResolveError::InvalidSetContent { .. }
+        | ResolveError::InvalidSetMember { .. }
         | ResolveError::NonNullSetValue { .. }
         | ResolveError::InvalidPairsItem { .. }
         | ResolveError::UnresolvedAlias { .. } => {

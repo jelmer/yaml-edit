@@ -348,9 +348,10 @@ impl Parser {
         let tag_text = self.peek_tag_text();
 
         match tag_text {
-            Some("!!set") => self.parse_tagged_set(base_indent, as_mapping_value),
-            Some("!!omap") => self.parse_tagged_omap(),
-            Some("!!pairs") => self.parse_tagged_pairs(),
+            Some("!!set") => self.parse_tagged_collection(true, base_indent, as_mapping_value),
+            Some("!!omap" | "!!pairs") => {
+                self.parse_tagged_collection(false, base_indent, as_mapping_value)
+            }
             _ => {
                 // Default tagged value behavior - tags can be applied to scalars, mappings, or sequences
                 self.builder.start_node(SyntaxKind::TAGGED_NODE.into());
@@ -379,19 +380,7 @@ impl Parser {
                         if self.current() == Some(SyntaxKind::ANCHOR) {
                             self.bump();
                         }
-                        self.skip_ws_and_newlines();
-                        if self.current() == Some(SyntaxKind::DASH) {
-                            self.parse_sequence_with_base_indent(indent);
-                        } else {
-                            // The body is parsed at its own column, but a
-                            // plain scalar there still belongs to the
-                            // collection the tag sits in, so its continuation
-                            // only has to clear the tag's column.
-                            let outer_floor = self.scalar_continuation_floor;
-                            self.scalar_continuation_floor = Some(base_indent);
-                            self.parse_value_with_base_indent(indent);
-                            self.scalar_continuation_floor = outer_floor;
-                        }
+                        self.parse_tagged_block_body(indent, base_indent);
                     }
                     None if self.annotation_ends_line() => self.emit_annotated_null(),
                     // Scalar, flow collection, or nothing that belongs to this
@@ -532,6 +521,23 @@ impl Parser {
         }
     }
 
+    /// Parse the block node at `indent` that a tag alone on its line
+    /// annotates, stepping over the blank and comment-only lines before it.
+    fn parse_tagged_block_body(&mut self, indent: usize, base_indent: usize) {
+        self.skip_ws_and_newlines();
+        if self.current() == Some(SyntaxKind::DASH) {
+            self.parse_sequence_with_base_indent(indent);
+        } else {
+            // The body is parsed at its own column, but a plain scalar there
+            // still belongs to the collection the tag sits in, so its
+            // continuation only has to clear the tag's column.
+            let outer_floor = self.scalar_continuation_floor;
+            self.scalar_continuation_floor = Some(base_indent);
+            self.parse_value_with_base_indent(indent);
+            self.scalar_continuation_floor = outer_floor;
+        }
+    }
+
     fn peek_tag_text(&self) -> Option<&str> {
         self.tokens
             .last()
@@ -539,24 +545,17 @@ impl Parser {
             .map(|(_, text)| text.as_str())
     }
 
-    fn parse_tagged_set(&mut self, base_indent: usize, as_mapping_value: bool) {
+    /// `is_mapping` is the shape the tag names, used for content on the
+    /// tag's own line that is neither a flow collection nor a line break.
+    fn parse_tagged_collection(
+        &mut self,
+        is_mapping: bool,
+        base_indent: usize,
+        as_mapping_value: bool,
+    ) {
         // A block mapping only nests under its key, so an entry at
-        // base_indent belongs to the enclosing mapping, not to this set.
-        let indentless_value = as_mapping_value.then_some(base_indent);
-        self.parse_tagged_collection(true, indentless_value); // true = parse as mapping
-    }
-
-    fn parse_tagged_omap(&mut self) {
-        self.parse_tagged_collection(false, None); // false = parse as sequence
-    }
-
-    fn parse_tagged_pairs(&mut self) {
-        self.parse_tagged_collection(false, None); // false = parse as sequence
-    }
-
-    /// `min_mapping_indent` is the column a block mapping has to beat to be
-    /// this tag's value, set only when the tag is itself a mapping value.
-    fn parse_tagged_collection(&mut self, is_mapping: bool, min_mapping_indent: Option<usize>) {
+        // base_indent belongs to the enclosing mapping, not to this tag.
+        let min_mapping_indent = as_mapping_value.then_some(base_indent);
         self.builder.start_node(SyntaxKind::TAGGED_NODE.into());
 
         // Read the tag's text before bumping past it, for the error below.
@@ -582,53 +581,61 @@ impl Parser {
             }
         }
 
-        // Parse the following structure based on type
-        match self.current() {
-            Some(SyntaxKind::LEFT_BRACE) if is_mapping => self.parse_flow_mapping(),
-            Some(SyntaxKind::LEFT_BRACKET) if !is_mapping => self.parse_flow_sequence(),
-            Some(SyntaxKind::NEWLINE) => {
-                self.bump(); // consume newline
-                             // Check if next token is indent (for indented content)
-                if self.current() == Some(SyntaxKind::INDENT) {
-                    self.bump(); // consume indent
-                }
-                // Anchor the inner block on the indent we just
-                // consumed so a column-0 sibling entry dedents out of
-                // this tagged collection instead of being absorbed.
-                let inner_base = self.current_line_indent;
-                if is_mapping {
-                    if min_mapping_indent.is_some_and(|min| inner_base <= min) {
-                        // The entries are siblings of our own key, so this tag
-                        // annotates an implicit null and they stay outside.
-                        self.emit_implicit_null();
-                    } else {
-                        self.parse_mapping_with_base_indent(inner_base);
+        // The content's own shape decides how it parses, as for any other
+        // tag, even where it does not suit the tag: the validator reports
+        // that.
+        if let Some(indent) = self.tagged_block_node_indent(base_indent, as_mapping_value) {
+            self.parse_tagged_block_body(indent, base_indent);
+        } else {
+            match self.current() {
+                Some(SyntaxKind::LEFT_BRACE) => self.parse_flow_mapping(),
+                Some(SyntaxKind::LEFT_BRACKET) => self.parse_flow_sequence(),
+                Some(SyntaxKind::NEWLINE) => {
+                    self.bump(); // consume newline
+                                 // Check if next token is indent (for indented content)
+                    if self.current() == Some(SyntaxKind::INDENT) {
+                        self.bump(); // consume indent
                     }
-                } else {
-                    self.parse_sequence_with_base_indent(inner_base);
+                    // Anchor the inner block on the indent we just
+                    // consumed so a column-0 sibling entry dedents out of
+                    // this tagged collection instead of being absorbed.
+                    let inner_base = self.current_line_indent;
+                    // TODO: a `!!omap` or `!!pairs` with no body absorbs a
+                    // sibling entry at its own column, as in
+                    // `- !!omap\n- a: 1\n`.
+                    if is_mapping {
+                        if min_mapping_indent.is_some_and(|min| inner_base <= min) {
+                            // The entries are siblings of our own key, so this tag
+                            // annotates an implicit null and they stay outside.
+                            self.emit_implicit_null();
+                        } else {
+                            self.parse_mapping_with_base_indent(inner_base);
+                        }
+                    } else {
+                        self.parse_sequence_with_base_indent(inner_base);
+                    }
                 }
-            }
-            _ => {
-                // These tags name a collection, so a plain scalar on the
-                // tag's own line cannot be their content: the collection
-                // parser below finds nothing to take and the scalar is left
-                // with nowhere to go. saphyr calls `!!omap 3` a bad value;
-                // say so rather than dropping the scalar into an ERROR node
-                // with no error reported.
-                if self
-                    .current()
-                    .is_some_and(|kind| is_plain_scalar_kind(kind) || kind == SyntaxKind::QUESTION)
-                {
-                    self.add_error(
-                        format!("{tag_text} requires a collection, found a scalar"),
-                        ParseErrorKind::Other,
-                    );
-                }
-                let inner_base = self.current_line_indent;
-                if is_mapping {
-                    self.parse_mapping_with_base_indent(inner_base);
-                } else {
-                    self.parse_sequence_with_base_indent(inner_base);
+                _ => {
+                    // These tags name a collection, so a plain scalar on the
+                    // tag's own line cannot be their content: the collection
+                    // parser below finds nothing to take and the scalar is left
+                    // with nowhere to go. saphyr calls `!!omap 3` a bad value;
+                    // say so rather than dropping the scalar into an ERROR node
+                    // with no error reported.
+                    if self.current().is_some_and(|kind| {
+                        is_plain_scalar_kind(kind) || kind == SyntaxKind::QUESTION
+                    }) {
+                        self.add_error(
+                            format!("{tag_text} requires a collection, found a scalar"),
+                            ParseErrorKind::Other,
+                        );
+                    }
+                    let inner_base = self.current_line_indent;
+                    if is_mapping {
+                        self.parse_mapping_with_base_indent(inner_base);
+                    } else {
+                        self.parse_sequence_with_base_indent(inner_base);
+                    }
                 }
             }
         }

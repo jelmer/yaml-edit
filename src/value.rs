@@ -42,8 +42,8 @@ impl YamlValue {
     /// Content that a YamlValue cannot hold is an error rather than being
     /// dropped: an alias, which this cannot resolve without the document's
     /// anchors ([`YamlValue::from_document`] and
-    /// [`DocumentResolvedExt::get_resolved`] resolve them),
-    /// distinct mapping keys with the same string form, such as `1` and
+    /// [`DocumentResolvedExt::get_resolved`] resolve them), a mapping with
+    /// the same key twice, distinct mapping keys with the same string form, such as `1` and
     /// `'1'`, and `!!set`, `!!omap` or `!!pairs` content of the wrong shape.
     /// A merge key (`<<`) is kept as an ordinary key.
     ///
@@ -116,6 +116,7 @@ impl YamlValue {
     /// document's anchors and applies merge keys (`<<`), as
     /// [`DocumentResolvedExt::get_resolved`] does. Merge keys are a YAML 1.1
     /// type that YAML 1.2 does not define, but are still widely used.
+    /// An empty document is null.
     ///
     /// Fails if an alias is undefined or recursive, a merge key operand is
     /// not a mapping, or on other content [`YamlValue::cast`] reports.
@@ -136,7 +137,8 @@ impl YamlValue {
                 return Ok(value);
             }
         }
-        Ok(YamlValue::Scalar(ScalarValue::string("")))
+        // An empty node is null.
+        Ok(YamlValue::Scalar(ScalarValue::null()))
     }
 
     /// Create a mapping from a BTreeMap
@@ -880,6 +882,12 @@ mod tests {
                 member: "[a]".to_string()
             })
         );
+        assert_eq!(
+            cast_root("!!set [a, b]\n"),
+            Err(ResolveError::InvalidSetContent {
+                content: "[a, b]".to_string()
+            })
+        );
         for (yaml, tag, item) in [
             ("!!omap [a, d: 3]\n", "!!omap", "a"),
             ("!!pairs [{b: 1, c: 2}]\n", "!!pairs", "{b: 1, c: 2}"),
@@ -893,6 +901,32 @@ mod tests {
                 "{yaml:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_cast_duplicate_key_is_error() {
+        use crate::anchor_resolution::ResolveError;
+        let expected = ResolveError::DuplicateKey {
+            first: "a".to_string(),
+            second: "a".to_string(),
+        };
+        let yaml = "a: 1\nb: 2\na: 3\n";
+        assert_eq!(cast_root(yaml), Err(expected.clone()));
+        let doc = crate::Document::from_str(yaml).unwrap();
+        assert_eq!(YamlValue::from_document(&doc), Err(expected.clone()));
+        match YamlValue::parse_raw(yaml) {
+            Err(crate::YamlError::Resolve(err)) => assert_eq!(err, expected),
+            other => panic!("unexpected result: {other:?}"),
+        }
+        // Without a registry `<<` is an ordinary key, so two of them are
+        // duplicates.
+        assert_eq!(
+            cast_root("<<: {a: 1}\n<<: {b: 2}\n"),
+            Err(ResolveError::DuplicateKey {
+                first: "<<".to_string(),
+                second: "<<".to_string(),
+            })
+        );
     }
 
     #[test]
@@ -957,6 +991,28 @@ ordered: !!omap [first: *list]
         let doc = crate::Document::from_str(yaml).unwrap();
         assert_eq!(YamlValue::from_document(&doc), Ok(expected.clone()));
         assert_eq!(YamlValue::parse_raw(yaml).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_from_document_empty_is_null() {
+        for yaml in ["---\n", "--- # c\n", "---\n...\n", "--- \n"] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let doc = file.document().unwrap();
+            assert_eq!(
+                YamlValue::from_document(&doc),
+                Ok(YamlValue::Scalar(ScalarValue::null())),
+                "{yaml:?}"
+            );
+            assert_eq!(
+                YamlValue::parse_raw(yaml).unwrap(),
+                YamlValue::Scalar(ScalarValue::null()),
+                "{yaml:?}"
+            );
+        }
+        assert_eq!(
+            YamlValue::from_document(&crate::Document::new()),
+            Ok(YamlValue::Scalar(ScalarValue::null()))
+        );
     }
 
     #[test]

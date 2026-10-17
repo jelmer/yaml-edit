@@ -553,20 +553,13 @@ impl FlowWriter {
     }
 
     fn mapping_entry(&mut self, entry: &SyntaxNode, indent: usize) {
-        // TODO: keep the `?` of an explicit key; without it a key with
-        // comments becomes an implicit key spanning several lines, which
-        // PyYAML rejects.
         let mut has_value = false;
         for child in entry.children_with_tokens() {
             match child {
                 rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::COMMENT => {
                     self.push_comment(&t)
                 }
-                rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::KEY => {
-                    self.builder.start_node(SyntaxKind::KEY.into());
-                    self.decorated(&n, indent, false);
-                    self.builder.finish_node();
-                }
+                rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::KEY => self.key(&n, indent),
                 rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::VALUE => {
                     self.colon();
                     self.builder.start_node(SyntaxKind::VALUE.into());
@@ -585,6 +578,35 @@ impl FlowWriter {
             self.builder.finish_node();
             self.builder.finish_node();
         }
+    }
+
+    /// Write a KEY, as an explicit key if comments break it over several
+    /// lines. YAML 1.2 lets an implicit key in a flow mapping span lines,
+    /// but PyYAML and others only accept single-line implicit keys. The
+    /// parser puts the `?` of a flow explicit key inside KEY.
+    ///
+    /// The key is written aside first, since only then is it known whether
+    /// it breaks.
+    fn key(&mut self, key: &SyntaxNode, indent: usize) {
+        let mut sub = FlowWriter {
+            builder: GreenNodeBuilder::new(),
+            pending: std::mem::take(&mut self.pending),
+        };
+        sub.builder.start_node(SyntaxKind::KEY.into());
+        sub.decorated(key, indent, false);
+        sub.builder.finish_node();
+        self.pending = sub.pending;
+        let written = SyntaxNode::new_root(sub.builder.finish());
+        self.builder.start_node(SyntaxKind::KEY.into());
+        let multiline = written
+            .descendants_with_tokens()
+            .any(|c| c.kind() == SyntaxKind::NEWLINE);
+        if multiline {
+            self.builder.token(SyntaxKind::QUESTION.into(), "?");
+            self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
+        }
+        crate::yaml::add_node_children_to(&mut self.builder, &written);
+        self.builder.finish_node();
     }
 
     fn colon(&mut self) {

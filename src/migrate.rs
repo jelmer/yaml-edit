@@ -24,9 +24,13 @@
 //! The single-letter booleans `y` and `n` are left alone: they are rarely
 //! meant as booleans, and 1.1 readers such as PyYAML treat them as strings.
 //!
-//! [`crate::validator::Rule::LegacyYaml11`] reports the octal,
-//! leading-zero decimal and `yes`/`no`/`on`/`off` forms without changing
-//! anything, for callers who would rather decide per site.
+//! [`crate::validator::Rule::LegacyYaml11`] reports the same forms without
+//! changing anything, for callers who would rather decide per site.
+//!
+//! The output is meant for YAML 1.2 readers, and may itself be flagged by
+//! that rule: a 1.1 reader takes the `0o755` written for `0755` as a string.
+//! For a document that has to read the same in both versions, follow the
+//! rule's suggestions instead, which use the decimal there.
 
 use crate::lex::SyntaxKind;
 use crate::scalar::{digits_to_decimal, places_to_decimal, CoreScalarType, ScalarValue};
@@ -148,7 +152,7 @@ fn replacement_for(scalar: &SyntaxNode) -> Option<(String, SyntaxKind)> {
 /// - `0o` octal, which 1.1 did not have
 /// - an exponent without a `.` (`1e3`) or without a sign (`1.0e3`), as 1.1
 ///   floats need both
-fn yaml_1_1_string(text: &str) -> bool {
+pub(crate) fn yaml_1_1_string(text: &str) -> bool {
     match ScalarValue::classify_plain(text) {
         CoreScalarType::Integer => {
             let body = text.strip_prefix(['+', '-']).unwrap_or(text);
@@ -163,7 +167,7 @@ fn yaml_1_1_string(text: &str) -> bool {
 
 /// The 1.2 spelling of a YAML 1.1 number whose 1.2 reading differs, per the
 /// 1.1 `!!int` and `!!float` regular expressions.
-fn yaml_1_1_number(text: &str) -> Option<(String, SyntaxKind)> {
+pub(crate) fn yaml_1_1_number(text: &str) -> Option<(String, SyntaxKind)> {
     let (sign, body) = match text.strip_prefix(['+', '-']) {
         Some(body) => (&text[..1], body),
         None => ("", text),

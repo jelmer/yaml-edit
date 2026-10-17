@@ -392,7 +392,10 @@ impl CustomTagParser {
     /// Deserialize a tagged node with the handler registered for its tag.
     ///
     /// A scalar is passed to the handler as its string value, with quotes
-    /// and escapes resolved; a flow collection as its source text.
+    /// and escapes resolved; a flow collection as its source text. A block
+    /// collection is passed as its source text with its indentation in the
+    /// document removed, as it would read at the top level, so positions in
+    /// a handler's errors are relative to that text.
     pub fn process_tagged_node(
         &self,
         tagged_node: &TaggedNode,
@@ -411,18 +414,33 @@ impl CustomTagParser {
                     Some((s.syntax().clone(), s.is_flow_style()))
                 })
                 .ok_or_else(|| CustomTagError::new(&tag, "Invalid tagged node"))?;
-            if !is_flow {
-                // TODO: decide what text a handler should see for a block
-                // collection, whose lines carry the surrounding indentation.
-                return Err(CustomTagError::new(
-                    tag,
-                    "Tagged block collections are not supported",
-                ));
+            if is_flow {
+                collection.text().to_string()
+            } else {
+                dedented_block_text(&collection)
             }
-            collection.text().to_string()
         };
         self.registry.deserialize(&tag, &content)
     }
+}
+
+/// The text of block collection `collection` with its indentation in the
+/// document removed from every line after the first, which starts at the
+/// collection's column.
+///
+/// A line indented less than that (a blank line, a comment, a quoted
+/// scalar's continuation) loses only the indentation it has, which in those
+/// places carries no meaning.
+fn dedented_block_text(collection: &SyntaxNode) -> String {
+    let column = crate::as_yaml::source_base_indent(collection);
+    let text = collection.text().to_string();
+    let mut lines = text.split_inclusive('\n');
+    let mut dedented = lines.next().unwrap_or_default().to_string();
+    for line in lines {
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        dedented.push_str(&line[indent.min(column)..]);
+    }
+    dedented
 }
 
 // Built-in custom tag handlers for common use cases
@@ -1496,16 +1514,63 @@ mod tests {
 
     #[test]
     fn test_parse_with_custom_tags_block_collection() {
+        // A handler sees a block collection as it would read at the top
+        // level, without the indentation it has in the document.
         let (parser, seen) = recording_parser();
-        let document = doc("a: !rec\n  b: 1\n");
+        let document = doc(concat!(
+            "a: !rec\n",
+            "  b: !rec x\n",
+            "  c:\n",
+            "    - 1\n",
+            "d:\n",
+            "  - !rec\n",
+            "    -  y\n",
+            "    - z\n",
+        ));
+        assert_eq!(parser.parse_with_custom_tags(&document), Ok(()));
         assert_eq!(
-            parser.parse_with_custom_tags(&document),
-            Err(CustomTagError::new(
-                "!rec",
-                "Tagged block collections are not supported"
-            ))
+            *seen.lock().unwrap(),
+            vec!["b: !rec x\nc:\n  - 1\n", "x", "-  y\n- z\n"]
         );
-        assert_eq!(*seen.lock().unwrap(), Vec::<String>::new());
+
+        let (parser, seen) = recording_parser();
+        let document = doc("--- !rec\na: 1\nb:\n  - 2\n");
+        assert_eq!(parser.parse_with_custom_tags(&document), Ok(()));
+        assert_eq!(*seen.lock().unwrap(), vec!["a: 1\nb:\n  - 2\n"]);
+    }
+
+    #[test]
+    fn test_parse_with_custom_tags_block_collection_keeps_relative_indent() {
+        // Blank lines, comments and block scalar bodies keep their
+        // indentation relative to the collection.
+        let (parser, seen) = recording_parser();
+        let document = doc(concat!(
+            "items:\n",
+            "  - !rec\n",
+            "    k: |\n",
+            "      line\n",
+            "        more\n",
+            "\n",
+            "    # note\n",
+            "    j: \"a\n",
+            "   b\"\n",
+        ));
+        assert_eq!(parser.parse_with_custom_tags(&document), Ok(()));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["k: |\n  line\n    more\n\n# note\nj: \"a\nb\"\n"]
+        );
+    }
+
+    #[test]
+    fn test_process_tagged_block_mapping() {
+        let (parser, _) = recording_parser();
+        let document = doc("a: !rec\n  b: 1\n");
+        let tagged = document.as_mapping().unwrap().get("a").unwrap();
+        assert_eq!(
+            parser.process_tagged_node(tagged.as_tagged().unwrap()),
+            Ok(YamlValue::scalar("b: 1\n"))
+        );
     }
 
     #[test]

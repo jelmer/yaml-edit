@@ -1143,31 +1143,22 @@ mod tests {
     use std::collections::BTreeSet;
     use std::str::FromStr;
 
-    /// Check that the `!!set` in `doc` is laid out as the parser would lay
-    /// out its text.
-    ///
-    /// Only the set itself is compared: `Mapping::set` puts the space before
-    /// a block tagged value inside VALUE, where the parser has it before
-    /// VALUE (see the TODO in `build_block_value_node`).
+    /// Check that `doc` is laid out as the parser would lay out its text.
     #[track_caller]
-    fn assert_set_matches_reparse(doc: &Document) {
+    fn assert_matches_reparse(doc: &Document) {
         assert_cst_ok(doc);
         let reparsed = Document::from_str(&doc.to_string()).unwrap();
-        let tagged = |d: &Document| {
-            d.syntax()
-                .descendants()
-                .find(|n| n.kind() == crate::lex::SyntaxKind::TAGGED_NODE)
-                .map(|n| crate::debug::tree_to_string(&n))
-                .unwrap()
-        };
-        assert_eq!(tagged(doc), tagged(&reparsed));
+        assert_eq!(
+            crate::debug::tree_to_string(doc.syntax()),
+            crate::debug::tree_to_string(reparsed.syntax())
+        );
     }
 
     #[test]
     fn test_btreeset_block() {
         let doc = Document::from_str("name: project\n").unwrap();
         doc.set("tags", BTreeSet::from(["web", "db"]));
-        assert_set_matches_reparse(&doc);
+        assert_matches_reparse(&doc);
         assert_eq!(
             doc.to_string(),
             "name: project\ntags: !!set\n  db: null\n  web: null\n"
@@ -1179,7 +1170,7 @@ mod tests {
         let doc = Document::from_str("a:\n  b: 1\n").unwrap();
         let inner = doc.as_mapping().unwrap().get_mapping("a").unwrap();
         inner.set("s", BTreeSet::from([1_i64, 2]));
-        assert_set_matches_reparse(&doc);
+        assert_matches_reparse(&doc);
         assert_eq!(
             doc.to_string(),
             "a:\n  b: 1\n  s: !!set\n    1: null\n    2: null\n"
@@ -1190,7 +1181,7 @@ mod tests {
     fn test_btreeset_empty() {
         let doc = Document::from_str("name: project\n").unwrap();
         doc.set("tags", BTreeSet::<String>::new());
-        assert_set_matches_reparse(&doc);
+        assert_matches_reparse(&doc);
         assert_eq!(doc.to_string(), "name: project\ntags: !!set {}\n");
     }
 
@@ -1199,7 +1190,7 @@ mod tests {
         let doc = Document::from_str("m: {a: 1}\n").unwrap();
         let inner = doc.as_mapping().unwrap().get_mapping("m").unwrap();
         inner.set("s", BTreeSet::from(["y", "x"]));
-        assert_set_matches_reparse(&doc);
+        assert_matches_reparse(&doc);
         assert_eq!(doc.to_string(), "m: {a: 1, s: !!set {x: null, y: null}}\n");
     }
 
@@ -1207,7 +1198,7 @@ mod tests {
     fn test_btreeset_quotes_members() {
         let doc = Document::from_str("name: project\n").unwrap();
         doc.set("tags", BTreeSet::from(["true", "a: b", "x\ny"]));
-        assert_set_matches_reparse(&doc);
+        assert_matches_reparse(&doc);
         assert_eq!(
             doc.to_string(),
             "name: project\ntags: !!set\n  'a: b': null\n  'true': null\n  \"x\\ny\": null\n"

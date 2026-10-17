@@ -972,6 +972,12 @@ impl Validator {
     /// 1.2 requires, but a 1.1 reader still takes them as booleans. A
     /// leading-zero decimal with an 8 or 9 (`089`) is the reverse: an integer
     /// here, but a string to a 1.1 reader.
+    ///
+    /// The other numbers whose reading changed are covered too, matching
+    /// what [`crate::migrate::to_yaml_1_2`] rewrites: binary, signed hex,
+    /// base 60 and underscored numbers were 1.1 numbers and are strings here,
+    /// while `0o` octal and exponents without a `.` or sign (`1e3`) were 1.1
+    /// strings.
     fn check_legacy_yaml_1_1(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // Only a plain scalar resolves by its text; a quoted one is a string
         // in every version.
@@ -979,7 +985,10 @@ impl Validator {
             c.into_token().filter(|t| {
                 matches!(
                     t.kind(),
-                    crate::SyntaxKind::INT | crate::SyntaxKind::STRING | crate::SyntaxKind::BOOL
+                    crate::SyntaxKind::INT
+                        | crate::SyntaxKind::FLOAT
+                        | crate::SyntaxKind::STRING
+                        | crate::SyntaxKind::BOOL
                 )
             })
         }) else {
@@ -995,20 +1004,36 @@ impl Validator {
             let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
             let as_octal = crate::scalar::digits_to_decimal(digits, 8);
             let as_decimal = crate::scalar::digits_to_decimal(digits, 10);
-            // 1.2 has no signed `0o` form.
-            let suggestion = if sign.is_empty() {
-                match digits.trim_start_matches('0') {
-                    "" => "0o0".to_string(),
-                    octal => format!("0o{octal}"),
-                }
+            // The 1.2 spelling `0o755` is a string to a 1.1 reader; only the
+            // decimal reads the same in both.
+            violations.push(Violation::warning_at(
+                Rule::LegacyYaml11,
+                token.text_range(),
+                format!(
+                    "`{text}` is YAML 1.1 octal, read as {sign}{as_octal}; YAML 1.2 reads it as {sign}{as_decimal}. Write `{sign}{as_octal}` to keep the octal meaning",
+                ),
+            ));
+            return;
+        }
+
+        if let Some((after, kind)) = crate::migrate::yaml_1_1_number(text) {
+            // The migration's `0o` octal is a string to a 1.1 reader, so the
+            // decimal is suggested instead. Unsigned hex reads the same in both.
+            let (value, suggestion, kind) = if kind == crate::SyntaxKind::FLOAT {
+                (after.clone(), after, "float")
+            } else if let Some(hex) = after.strip_prefix("0x") {
+                (crate::scalar::digits_to_decimal(hex, 16), after, "integer")
+            } else if let Some(octal) = after.strip_prefix("0o") {
+                let value = crate::scalar::digits_to_decimal(octal, 8);
+                (value.clone(), value, "integer")
             } else {
-                format!("-{as_octal}")
+                (after.clone(), after, "integer")
             };
             violations.push(Violation::warning_at(
                 Rule::LegacyYaml11,
                 token.text_range(),
                 format!(
-                    "`{text}` is YAML 1.1 octal, read as {sign}{as_octal}; YAML 1.2 reads it as {sign}{as_decimal}. Write `{suggestion}` to keep the octal meaning",
+                    "`{text}` is the {kind} {value} in YAML 1.1; YAML 1.2 reads it as a string. Write `{suggestion}` to keep the {kind} meaning",
                 ),
             ));
             return;
@@ -1023,6 +1048,23 @@ impl Validator {
                 token.text_range(),
                 format!(
                     "`{text}` is a string in YAML 1.1; YAML 1.2 reads it as the integer {minus}{as_decimal}. Write `'{text}'` to keep the string meaning",
+                ),
+            ));
+            return;
+        }
+
+        if crate::migrate::yaml_1_1_string(text) {
+            let reading = match text.strip_prefix("0o") {
+                Some(octal) => {
+                    format!("the integer {}", crate::scalar::digits_to_decimal(octal, 8))
+                }
+                None => "a float".to_string(),
+            };
+            violations.push(Violation::warning_at(
+                Rule::LegacyYaml11,
+                token.text_range(),
+                format!(
+                    "`{text}` is a string in YAML 1.1; YAML 1.2 reads it as {reading}. Write `'{text}'` to keep the string meaning",
                 ),
             ));
             return;

@@ -476,6 +476,9 @@ impl Parser {
                     return None
                 }
                 SyntaxKind::DASH => return (indent >= base_indent).then_some(indent),
+                // A document marker ends the document rather than opening a
+                // body: `!!str\n---\n` tags a null.
+                SyntaxKind::DOC_START | SyntaxKind::DOC_END => return None,
                 // An explicit key opens a mapping without a colon on the line.
                 SyntaxKind::QUESTION => return deep_enough(indent).then_some(indent),
                 // A block scalar header likewise carries no colon, and a

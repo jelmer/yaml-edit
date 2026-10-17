@@ -782,14 +782,17 @@ impl Parser {
     ///
     /// A block scalar header on a later line is the exception: the value
     /// path still attaches it to the annotation, as in the YAML test suite's
-    /// M5C3.
+    /// M5C3. The end of the input ends the line too.
     pub(super) fn annotation_ends_line(&self) -> bool {
-        self.current() == Some(SyntaxKind::NEWLINE)
-            && !matches!(
+        match self.current() {
+            None => true,
+            Some(SyntaxKind::NEWLINE) => !matches!(
                 self.upcoming_tokens()
                     .find(|k| !matches!(k, SyntaxKind::NEWLINE | SyntaxKind::INDENT)),
                 Some(SyntaxKind::PIPE | SyntaxKind::GREATER)
-            )
+            ),
+            Some(_) => false,
+        }
     }
 
     /// Whether a tag or anchor just consumed inside a flow collection
@@ -999,6 +1002,8 @@ impl Parser {
                 // A blank line's indentation is not significant either; its
                 // NEWLINE is the one we just read.
                 SyntaxKind::NEWLINE => continue,
+                // The document ends here, just as at the end of the input.
+                SyntaxKind::DOC_START | SyntaxKind::DOC_END => return None,
                 // Another comment line: step over its line break too.
                 SyntaxKind::COMMENT => {
                     if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {

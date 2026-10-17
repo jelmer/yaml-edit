@@ -483,6 +483,7 @@ impl Validator {
             SyntaxKind::TAGGED_NODE => {
                 self.check_collection_tag_content(node, violations);
                 self.check_omap_keys(node, violations);
+                self.check_set_values(node, violations);
             }
             SyntaxKind::DOCUMENT => {
                 self.check_document_level_anchors(node, violations);
@@ -2163,6 +2164,46 @@ impl Validator {
         ));
     }
 
+    /// Check that the members of a `!!set` have null values.
+    ///
+    /// Like other content that does not suit a YAML 1.1 type, a value is
+    /// only a warning. An alias is not resolved here; the conversion to
+    /// `YamlValue` checks the node it refers to.
+    fn check_set_values(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        use crate::as_yaml::YamlNode;
+
+        let Some(mapping) = crate::yaml::TaggedNode::cast(node.clone())
+            .filter(|tagged| tagged.as_set().is_some())
+            .and_then(|tagged| tagged.as_mapping())
+        else {
+            return;
+        };
+        for entry in mapping.entries() {
+            let Some(value) = entry.value_node() else {
+                continue;
+            };
+            if matches!(value, YamlNode::Alias(_)) {
+                continue;
+            }
+            let is_null = crate::as_yaml::scalar_canonical(value.syntax())
+                .is_some_and(|(tag, _)| tag == "!!null");
+            if is_null {
+                continue;
+            }
+            let member = entry
+                .key_node()
+                .map_or_else(String::new, |key| key.to_string());
+            violations.push(Violation::warning_at(
+                Rule::InvalidTag,
+                value.syntax().text_range(),
+                format!(
+                    "!!set member {member:?} has non-null value {:?}",
+                    value.to_string()
+                ),
+            ));
+        }
+    }
+
     /// Check that the items of a `!!omap` have distinct keys; a `!!pairs`
     /// may repeat a key.
     ///
@@ -3748,6 +3789,56 @@ mod tests {
                 Rule::DuplicateKeys
             )]
         );
+    }
+
+    #[test]
+    fn test_set_values_must_be_null() {
+        for (yaml, message, location) in [
+            (
+                "s: !!set {a: 1}\n",
+                "!!set member \"a\" has non-null value \"1\"",
+                "1:14",
+            ),
+            (
+                "s: !!set\n  a: [x]\n  b:\n",
+                "!!set member \"a\" has non-null value \"[x]\"",
+                "2:6",
+            ),
+            (
+                "s: !!set\n  ? a\n  : x\n",
+                "!!set member \"a\" has non-null value \"x\"",
+                "3:5",
+            ),
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.severity, v.rule))
+                .collect();
+            assert_eq!(
+                violations,
+                vec![(
+                    message.to_string(),
+                    Some(location.to_string()),
+                    Severity::Warning,
+                    Rule::InvalidTag
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "s: !!set {a: null, b: ~, ? c, d}\n",
+            "s: !!set\n  a:\n  ? b\n  c: !!null\n",
+            "n: &n ~\ns: !!set {a: *n}\n",
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
     }
 
     #[test]

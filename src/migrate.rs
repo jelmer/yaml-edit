@@ -26,6 +26,11 @@
 //!
 //! [`crate::validator::Rule::LegacyYaml11`] reports the same forms without
 //! changing anything, for callers who would rather decide per site.
+//!
+//! The output is meant for YAML 1.2 readers, and may itself be flagged by
+//! that rule: a 1.1 reader takes the `0o755` written for `0755` as a string.
+//! For a document that has to read the same in both versions, follow the
+//! rule's suggestions instead, which use the decimal there.
 
 use crate::lex::SyntaxKind;
 use crate::scalar::{digits_to_decimal, places_to_decimal, CoreScalarType, ScalarValue};

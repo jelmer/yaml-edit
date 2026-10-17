@@ -1004,40 +1004,36 @@ impl Validator {
             let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
             let as_octal = crate::scalar::digits_to_decimal(digits, 8);
             let as_decimal = crate::scalar::digits_to_decimal(digits, 10);
-            // 1.2 has no signed `0o` form.
-            let suggestion = if sign.is_empty() {
-                match digits.trim_start_matches('0') {
-                    "" => "0o0".to_string(),
-                    octal => format!("0o{octal}"),
-                }
-            } else {
-                format!("-{as_octal}")
-            };
+            // The 1.2 spelling `0o755` is a string to a 1.1 reader; only the
+            // decimal reads the same in both.
             violations.push(Violation::warning_at(
                 Rule::LegacyYaml11,
                 token.text_range(),
                 format!(
-                    "`{text}` is YAML 1.1 octal, read as {sign}{as_octal}; YAML 1.2 reads it as {sign}{as_decimal}. Write `{suggestion}` to keep the octal meaning",
+                    "`{text}` is YAML 1.1 octal, read as {sign}{as_octal}; YAML 1.2 reads it as {sign}{as_decimal}. Write `{sign}{as_octal}` to keep the octal meaning",
                 ),
             ));
             return;
         }
 
         if let Some((after, kind)) = crate::migrate::yaml_1_1_number(text) {
-            let (value, kind) = if kind == crate::SyntaxKind::FLOAT {
-                (after.clone(), "float")
+            // The migration's `0o` octal is a string to a 1.1 reader, so the
+            // decimal is suggested instead. Unsigned hex reads the same in both.
+            let (value, suggestion, kind) = if kind == crate::SyntaxKind::FLOAT {
+                (after.clone(), after, "float")
             } else if let Some(hex) = after.strip_prefix("0x") {
-                (crate::scalar::digits_to_decimal(hex, 16), "integer")
+                (crate::scalar::digits_to_decimal(hex, 16), after, "integer")
             } else if let Some(octal) = after.strip_prefix("0o") {
-                (crate::scalar::digits_to_decimal(octal, 8), "integer")
+                let value = crate::scalar::digits_to_decimal(octal, 8);
+                (value.clone(), value, "integer")
             } else {
-                (after.clone(), "integer")
+                (after.clone(), after, "integer")
             };
             violations.push(Violation::warning_at(
                 Rule::LegacyYaml11,
                 token.text_range(),
                 format!(
-                    "`{text}` is the {kind} {value} in YAML 1.1; YAML 1.2 reads it as a string. Write `{after}` to keep the {kind} meaning",
+                    "`{text}` is the {kind} {value} in YAML 1.1; YAML 1.2 reads it as a string. Write `{suggestion}` to keep the {kind} meaning",
                 ),
             ));
             return;

@@ -74,6 +74,41 @@ fn sexagesimal_numbers_become_decimal() {
 }
 
 #[test]
+fn numbers_of_any_size_are_rewritten() {
+    // A 1.1 number too big for a fixed-width integer still changes meaning
+    // in 1.2, so it is rewritten like any other.
+    let octal = "7".repeat(45);
+    assert_eq!(
+        migrated(&format!("a: 0{octal}\n")),
+        format!("a: 0o{octal}\n")
+    );
+    assert_eq!(
+        migrated(&format!("a: -0{octal}\n")),
+        "a: -43556142965880123323311949751266331066367\n"
+    );
+    assert_eq!(
+        migrated(&format!("a: 0b{}\n", "1".repeat(130))),
+        "a: 1361129467683753853853498429727072845823\n"
+    );
+    assert_eq!(
+        migrated(&format!("a: -0x{}\n", "F".repeat(33))),
+        "a: -5444517870735015415413993718908291383295\n"
+    );
+    assert_eq!(
+        migrated(&format!("a: 0x_{}\n", "F".repeat(33))),
+        format!("a: 0x{}\n", "F".repeat(33))
+    );
+    assert_eq!(
+        migrated(&format!("t: {}:30:15\n", "1".repeat(30))),
+        "t: 400000000000000000000000000001415\n"
+    );
+    assert_eq!(
+        migrated(&format!("t: {}:30:15.5\n", "1".repeat(30))),
+        "t: 400000000000000000000000000001415.5\n"
+    );
+}
+
+#[test]
 fn near_misses_of_the_1_1_forms_are_left_alone() {
     for src in [
         "a: 1:60\n",

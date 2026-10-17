@@ -2996,8 +2996,19 @@ fn test_sibling_indentation_in_a_sequence_entry() {
         );
     }
 
-    // A genuinely misindented sibling is rejected by the parser itself.
-    assert!(YamlFile::from_str("a: 1\n  b: 2\n").is_err());
+    // A genuinely misindented sibling is still reported.
+    let messages: Vec<String> = violations("a: 1\n  b: 2\n")
+        .into_iter()
+        .map(|v| v.message)
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "Sibling block mapping entries have inconsistent indentation \
+             (expected \"\", found \"  \")"
+                .to_string()
+        ]
+    );
 }
 
 /// An anchor at document level annotates the document's own node, which is
@@ -3590,6 +3601,7 @@ fn sequence_items(seq: &yaml_edit::Sequence) -> String {
 
 #[test]
 fn test_compact_nested_sequence_ends_at_its_own_column() {
+    use rowan::ast::AstNode;
     // A dash left of a compact sequence's column belongs to an enclosing
     // sequence. It used to be taken as the innermost one's next entry,
     // giving `[[[a, x, y]]]`.
@@ -3599,13 +3611,34 @@ fn test_compact_nested_sequence_ends_at_its_own_column() {
         ("-   - a\n    - b\n", "[[a, b]]"),
     ] {
         let doc = yaml_edit::Document::from_str(yaml).unwrap();
+        assert_eq!(doc.to_string(), yaml);
+        yaml_edit::debug::validate_tree(doc.syntax()).unwrap();
+        yaml_edit::debug::roundtrip_ok(doc.syntax()).unwrap();
         assert_eq!(sequence_items(&doc.as_sequence().unwrap()), expected);
     }
 
     // A dash or key between the enclosing column and the compact
-    // collection's own is in neither.
-    for yaml in ["-   - a\n  - b\n", "-   k: 1\n  j: 2\n"] {
-        assert!(YamlFile::from_str(yaml).is_err(), "{yaml:?}");
+    // collection's own is in neither. The parser still accepts it and
+    // leaves the validator to report it.
+    use yaml_edit::validator::Validator;
+    for (yaml, message) in [
+        ("-   - a\n  - b\n", "Inconsistent sequence item indentation"),
+        (
+            "-   k: 1\n  j: 2\n",
+            "Sibling block mapping entries have inconsistent indentation \
+             (expected \"    \", found \"  \")",
+        ),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        yaml_edit::debug::validate_tree(file.syntax()).unwrap();
+        yaml_edit::debug::roundtrip_ok(file.syntax()).unwrap();
+        let messages: Vec<String> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| v.message)
+            .collect();
+        assert_eq!(messages, vec![message.to_string()], "{yaml:?}");
     }
 }
 

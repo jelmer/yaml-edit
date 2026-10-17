@@ -62,7 +62,6 @@ impl Parser {
         self.builder.start_node(SyntaxKind::MAPPING.into());
         self.error_context.push_context(ParseContext::Mapping);
 
-        let mut mapping_column = None;
         while self.current().is_some() {
             let tokens_before_iter = self.tokens.len();
             // Skip whitespace, break on dedent
@@ -99,15 +98,6 @@ impl Parser {
 
             // No mapping key found - exit
             if !self.is_mapping_key() && !self.is_complex_mapping_key() {
-                break;
-            }
-
-            // Every key sits at the first one's column. The base indent
-            // misses one left of it in a sequence entry, where it counts the
-            // dash but not the spaces after it: `-   k: 1\n  j: 2\n` is an
-            // error, not a mapping holding `j`.
-            let key_column = self.error_context.current_location().1.saturating_sub(1);
-            if *mapping_column.get_or_insert(key_column) != key_column {
                 break;
             }
 
@@ -221,7 +211,13 @@ impl Parser {
         self.builder.start_node(SyntaxKind::SEQUENCE.into());
         self.error_context.push_context(ParseContext::Sequence);
 
-        let mut sequence_column = None;
+        // Once the first dash is seen, entries are bounded by its column. The
+        // base indent misses one left of it in a compact nested sequence: in
+        // `- - - a\n  - y\n` the innermost sequence is at column 4 and `y`
+        // belongs to the middle one. Checking before the INDENT is consumed
+        // leaves that INDENT to the sequence `y` belongs to.
+        let mut base_indent = base_indent;
+        let mut first_entry = true;
         while self.current().is_some() {
             // Skip whitespace, break on dedent
             if self.skip_whitespace_only_with_dedent_check(base_indent) {
@@ -250,13 +246,9 @@ impl Parser {
             // 0 for the `-` of an explicit key (`? - a`), whose entries then
             // look indented past their own sequence.
             let dash_column = self.error_context.current_location().1.saturating_sub(1);
-
-            // Every entry's dash sits at the first one's column. The base
-            // indent misses one left of it in a compact nested sequence: in
-            // `- - - a\n  - y\n` the innermost sequence is at column 4 and
-            // `y` belongs to the middle one.
-            if *sequence_column.get_or_insert(dash_column) != dash_column {
-                break;
+            if first_entry {
+                base_indent = base_indent.max(dash_column);
+                first_entry = false;
             }
 
             // Start SEQUENCE_ENTRY node to wrap the entire item

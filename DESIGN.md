@@ -21,9 +21,9 @@ A few rules follow from that, and take precedence over convenience:
   line limits. The crate is tested against the YAML test suite.
 - **The parser is lenient, the validator is strict.** The parser accepts
   anything it can turn into a sensible tree, so that slightly broken files can
-  still be loaded and fixed. Spec violations are reported by the validator
-  (`validator.rs`), not by refusing to parse. Handlers such as the JSON
-  deserializer follow the same split.
+  still be loaded and fixed. Spec violations are reported by the validator,
+  not by refusing to parse. Handlers such as the JSON deserializer follow the
+  same split.
 - **Build trees, not text.** Builders and mutations construct CST nodes
   directly, in exactly the shape the parser would produce for the same text.
   They never render a string and re-parse it.
@@ -68,9 +68,9 @@ be turned into a sensible tree.
 
 `Validator` walks the tree and reports spec violations with positions. A new
 spec check goes into the validator, with a test, and not into the parser. The
-YAML test suite harness (`tests/yaml_test_suite.rs`) counts an invalid case as
-handled when either the parser or the validator rejects it, and requires the
-validator to accept every valid case. Valid cases the validator still rejects
+YAML test suite harness counts an invalid case as handled when either the
+parser or the validator rejects it, and requires the validator to accept every
+valid case. Valid cases the validator still rejects
 are listed in `KNOWN_VALIDATOR_FALSE_POSITIVES`; a listed case that starts
 validating cleanly fails the run, so the list can only shrink.
 
@@ -159,10 +159,10 @@ existing content.
 ## Newline ownership
 
 The full set of CST structural invariants lives in the module-level doc
-comment at the top of `src/nodes/mod.rs` -- newline placement, INDENT
-placement, entry termination, flow separators, and the rule against
-whole-node rebuilds. That file is the authoritative spec for anyone
-editing mutation code; the summary here is a quick reference.
+comment of the `nodes` module -- newline placement, INDENT placement, entry
+termination, flow separators, and the rule against whole-node rebuilds. That
+comment is the authoritative spec for anyone editing mutation code; the
+summary here is a quick reference.
 
 YAML newlines are terminators, not separators. Every block-style
 `MAPPING_ENTRY` and `SEQUENCE_ENTRY` owns its trailing `NEWLINE` token as a
@@ -274,25 +274,25 @@ DOCUMENT
 
 ## Paths, anchors and aliases
 
-`path.rs` implements path access (`server.hosts[0].name`), with `\` escapes
-for keys that contain `.` or `[`, and falls back to non-string keys (`1`,
-`true`) when no string key matches. Malformed paths are a `PathParseError`,
-not a best guess.
+Paths look like `server.hosts[0].name`, with `\` escapes for keys that
+contain `.` or `[`. Lookups fall back to non-string keys (`1`, `true`) when no
+string key matches. Malformed paths are a `PathParseError`, not a best
+guess.
 
 Reads resolve aliases. Writes through an alias are refused by default,
 because they would change every other alias of the same anchor;
 `AliasPolicy::Follow` writes to the anchored node and `AliasPolicy::Expand`
 replaces the alias with an independent copy, built as CST.
 
-`anchor_resolution.rs` resolves an alias to the closest preceding definition
-of its anchor in the same document, as the spec requires, and implements `<<`
-merge keys. Only alias nodes are merge operands; a quoted `'*a'` is a string.
+An alias resolves to the closest preceding definition of its anchor in the
+same document, as the spec requires. In `<<` merge keys only alias nodes are
+merge operands; a quoted `'*a'` is a string.
 
 ## Error handling
 
-The primary error type is `YamlError` (in `src/error.rs`), with variants for
-I/O, parse errors (with line and column), key-not-found (with available
-keys), type mismatch, invalid index, and invalid operation.
+The primary error type is `YamlError`, with variants for I/O, parse errors
+(with line and column), key-not-found (with available keys), type mismatch,
+invalid index, and invalid operation.
 
 Domain-specific error types are kept separate intentionally: `PathError` and
 `PathParseError` for path access, `ValidationError` for schema validation,
@@ -310,15 +310,15 @@ the alias text or skipping it.
 
 Every test that mutates a tree checks the result after each mutation:
 
-- `debug::validate_tree` checks the structural invariants from
-  `src/nodes/mod.rs`: entries terminated by a NEWLINE, no stacked INDENTs,
-  no doubled trailing NEWLINEs, one value node per KEY/VALUE/entry.
+- `debug::validate_tree` checks the structural invariants from the `nodes`
+  module docs: entries terminated by a NEWLINE, no stacked INDENTs, no
+  doubled trailing NEWLINEs, one value node per KEY/VALUE/entry.
 - `debug::roundtrip_ok` re-parses the text and checks that it parses without
   errors and renders back to the same text.
-- In integration tests, `assert_cst_ok(&doc)` and `assert_file_cst_ok(&file)`
-  from `tests/common/mod.rs` run both. Unit tests under `src/` use the
+- In integration tests, the shared `assert_cst_ok(&doc)` and
+  `assert_file_cst_ok(&file)` helpers run both. Unit tests use the
   test-only `debug::assert_cst_ok`, which takes any AST node. The fuzz and
-  property tests use the helpers in `tests/common/mutation_checks.rs`.
+  property tests have their own shared mutation-check helpers.
 - Tests of operations that fail on purpose check the CST too, to show the
   failed operation left the tree intact.
 
@@ -362,8 +362,8 @@ Tests compare with `assert_eq!` against exact expected values, not
 
 ## Checklist
 
-- Read the CST-invariants doc at the top of `src/nodes/mod.rs` before
-  editing mutation code
+- Read the CST-invariants doc of the `nodes` module before editing mutation
+  code
 - Use `splice_children` for mutations - don't rebuild nodes
 - Build CST nodes directly - never render text and re-parse it
 - Put new spec checks in the validator, not the parser

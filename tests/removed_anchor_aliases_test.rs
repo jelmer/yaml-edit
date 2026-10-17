@@ -327,20 +327,72 @@ fn other_documents_are_left_alone() {
 }
 
 #[test]
+fn alias_with_properties_gets_a_copy() {
+    // YAML does not allow properties on an alias, but the parser accepts
+    // them. The copy takes them over, and so leaves off the anchor it was
+    // copied with: a tag would change what later aliases refer to, and a
+    // node has room for one anchor only.
+    let cases = [
+        ("a: &a 1\nk: !t *a\n", "k: !t 1\n"),
+        ("a: &a 1\nk: !t *a\nl: *a\n", "k: !t 1\nl: &a 1\n"),
+        ("a: &a 1\nk: &b *a\nl: *b\n", "k: &b 1\nl: *b\n"),
+        ("a: &a 1\nk: &b *a\nl: *a\n", "k: &b 1\nl: &a 1\n"),
+        ("a: &a 1\nk: !t &b *a\nl: *b\n", "k: &b !t 1\nl: *b\n"),
+        ("a: !u &a 1\nk: &b *a\nl: *a\n", "k: &b !u 1\nl: !u &a 1\n"),
+        ("a: &a !u 1\nk: &b *a\nl: *a\n", "k: &b !u 1\nl: &a !u 1\n"),
+        ("a: &a 1\nk: [!t *a]\n", "k: [!t 1]\n"),
+        ("a: &a 1\nk: {l: &b *a}\n", "k: {l: &b 1}\n"),
+        ("a: &a\n  x: 1\nk: !t *a\n", "k: !t\n  x: 1\n"),
+        ("a: &a\n  x: 1\nk:\n- !t *a\n", "k:\n- !t\n  x: 1\n"),
+        ("a: &a\n- 1\nk:\n  l: !t *a\n", "k:\n  l: !t\n    - 1\n"),
+        ("a: &a |\n  x\nk: !t *a\n", "k: !t |\n  x\n"),
+        (
+            "a: &a {x: &c 1}\nk: !t *a\nl: *c\n",
+            "k: !t {x: &c 1}\nl: *c\n",
+        ),
+    ];
+    for (source, expected) in cases {
+        let doc = Document::from_str(source).unwrap();
+        doc.as_mapping().unwrap().remove("a");
+        assert_edited(&doc, expected);
+    }
+
+    let doc = Document::from_str("- &a 1\n- !t *a\n- &b *a\n- *b\n").unwrap();
+    doc.as_sequence().unwrap().remove(0);
+    assert_edited(&doc, "- !t 1\n- &b 1\n- *b\n");
+}
+
+#[test]
 fn alias_with_properties_is_refused_before_the_edit() {
-    // YAML does not allow properties on an alias, so there is no place for
-    // the anchor of a copy; the removal panics and leaves the text as it was.
+    // An alias with a tag cannot take a copy of a tagged node, and one in a
+    // key has no room for its properties and a copy; the removal panics
+    // and leaves the text as it was.
     // TODO: support these, or report them through a fallible API.
-    for source in [
-        "a: &a 1\nk: !t *a\n",
-        "a: &a 1\nk: &b *a\n",
-        "a: &a 1\nk: [!t *a]\n",
-    ] {
+    let cases = [
+        (
+            "a: &a !u 1\nk: !t *a\n",
+            "cannot keep alias *a resolving: it has a tag, and the node it refers to has one too",
+        ),
+        (
+            "a: !u &a 1\nk: [!t *a]\n",
+            "cannot keep alias *a resolving: it has a tag, and the node it refers to has one too",
+        ),
+        (
+            "a: &a 1\n? !t *a\n: v\n",
+            "cannot keep alias *a resolving: it is a key with a tag or anchor of its own",
+        ),
+        (
+            "a: &a 1\n? &b *a\n: v\n",
+            "cannot keep alias *a resolving: it is a key with a tag or anchor of its own",
+        ),
+    ];
+    for (source, message) in cases {
         let doc = Document::from_str(source).unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             doc.as_mapping().unwrap().remove("a");
         }));
-        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.downcast_ref::<String>().unwrap(), message);
         assert_eq!(doc.to_string(), source);
     }
 }

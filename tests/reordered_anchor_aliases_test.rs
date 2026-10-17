@@ -168,13 +168,35 @@ fn move_keeps_block_and_tagged_values() {
 }
 
 #[test]
+fn reorder_fields_copies_alias_with_properties() {
+    // The copy takes over the tag or anchor of the alias, so the node it
+    // was copied from keeps its anchor.
+    let cases: [(&str, &[&str], &str); 2] = [
+        ("a: &x 1\nb: !t *x\n", &["b", "a"], "b: !t 1\na: &x 1\n"),
+        (
+            "a: &x 1\nb: &b *x\nc: *b\n",
+            &["b", "a", "c"],
+            "b: &b 1\na: &x 1\nc: *b\n",
+        ),
+    ];
+    for (source, order, expected) in cases {
+        let doc = Document::from_str(source).unwrap();
+        assert!(doc.reorder_fields(order.iter().copied()));
+        assert_edited(&doc, expected);
+    }
+}
+
+#[test]
 fn failed_reorder_leaves_document_unchanged() {
-    // An alias with a tag of its own has no room for the tag of a copy.
+    // An alias with a tag of its own cannot take a copy of a tagged node.
     let source = "a: &x !u 1\nb: !t *x\n";
     let doc = Document::from_str(source).unwrap();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         doc.reorder_fields(["b", "a"]);
     }));
-    assert!(result.is_err());
+    assert_eq!(
+        result.unwrap_err().downcast_ref::<String>().unwrap(),
+        "cannot keep alias *x resolving: it has a tag, and the node it refers to has one too"
+    );
     assert_edited(&doc, source);
 }

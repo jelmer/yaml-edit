@@ -10,6 +10,9 @@
 //! When an edit moves nodes around instead, an alias that ends up before
 //! the node it referred to gets a copy of it, anchor included, and that
 //! node becomes an alias in turn where it can.
+//!
+//! An alias with a tag or anchor of its own passes them on to its copy,
+//! which goes without the anchor it was copied with.
 
 use super::{SyntaxNode, SyntaxToken};
 use crate::lex::SyntaxKind;
@@ -46,18 +49,16 @@ pub(crate) fn keeping_aliases(
         .collect();
     let broken: Vec<_> = aliases
         .iter()
-        .filter(|(alias, target)| {
-            !inside(alias) && target.is_some_and(|t| removed_ids.contains(&t))
-        })
-        .map(|(alias, _)| alias)
+        .filter(|(alias, _)| !inside(alias))
+        .filter_map(|(alias, target)| Some((alias, target.filter(|t| removed_ids.contains(t))?)))
         .collect();
     if broken.is_empty() {
         edit();
         return;
     }
     // Fail before the edit rather than leave an alias undefined.
-    for alias in &broken {
-        check_copyable(alias);
+    for (alias, target) in &broken {
+        check_copyable(alias, &anchored_node(&anchors[*target]));
     }
 
     let mut tracker = Tracker::new(
@@ -348,10 +349,11 @@ impl Tracker {
     fn repair(&mut self) {
         while let Some((alias, target)) = self.first_broken() {
             let (origin, in_snapshot) = self.origin(target);
-            if !replaceable(&alias) {
+            let node = anchored_node(&origin);
+            if copy_obstacle(&alias, &node).is_some() {
                 // Put the tree back as it was before panicking.
                 self.restore();
-                check_copyable(&alias);
+                check_copyable(&alias, &node);
             }
             // An alias that now comes before the node it referred to takes
             // over its anchor.
@@ -433,16 +435,40 @@ impl Tracker {
     fn copy_for(&mut self, alias: &SyntaxNode, target: usize, takes_anchor: bool) {
         let (origin, in_snapshot) = self.origin(target);
         let node = anchored_node(&origin);
-        let outer =
-            (origin.parent().map(|p| p.kind()) != Some(SyntaxKind::TAGGED_NODE)).then_some(&origin);
-        let holder = replace_alias(alias, &node, outer.map(|a| a.text()));
+        // The tag and anchor of the alias, if it has any, take the place of
+        // the anchor the node has outside it.
+        let (tag, own_anchor) = properties(alias);
+        let tag = tag.map(|t| t.text().to_string());
+        let own_anchor = own_anchor.map(|a| (a.text().to_string(), self.live_id(&a)));
+        strip_properties(alias);
+        let outer = (origin.parent().map(|p| p.kind()) != Some(SyntaxKind::TAGGED_NODE)
+            && tag.is_none()
+            && own_anchor.is_none())
+        .then_some(&origin);
+        let anchor = own_anchor
+            .as_ref()
+            .map(|(text, _)| text.as_str())
+            .or(outer.map(|a| a.text()));
+        let holder = match &tag {
+            Some(tag) => replace_alias(alias, &tagged(tag, &node), anchor),
+            None => replace_alias(alias, &node, anchor),
+        };
 
-        let originals = copied_anchors(outer, &node);
-        let copies: Vec<_> = holder
+        let mut originals = copied_anchors(outer, &node);
+        if own_anchor.is_some() {
+            // An anchor after the node's tag gave way to that of the alias.
+            originals.retain(|a| *a != origin);
+        }
+        let mut copies: Vec<_> = holder
             .descendants_with_tokens()
             .filter_map(|c| c.into_token())
             .filter(|t| t.kind() == SyntaxKind::ANCHOR)
             .collect();
+        if let Some((_, id)) = own_anchor {
+            let copy = copies.remove(0);
+            self.live_ids.push((copy.clone(), id));
+            self.origins[id] = Origin::Live(copy);
+        }
         assert_eq!(
             originals.len(),
             copies.len(),
@@ -608,14 +634,98 @@ fn replaceable(alias: &SyntaxNode) -> bool {
     })
 }
 
-/// Panic, unless `alias` can be replaced with a copy.
-fn check_copyable(alias: &SyntaxNode) {
-    // TODO: an alias with a tag or an anchor of its own, which the parser
-    // tolerates but YAML does not allow, cannot be replaced with a copy.
-    assert!(
-        replaceable(alias),
-        "cannot keep alias {alias} resolving: it has a tag or anchor of its own"
-    );
+/// Why `alias` cannot be replaced with a copy of `node`, if it cannot.
+///
+/// YAML does not allow a tag or anchor on an alias, but the parser accepts
+/// them; the copy takes them over. That leaves no room for them in a key,
+/// and two tags cannot go on one node.
+fn copy_obstacle(alias: &SyntaxNode, node: &SyntaxNode) -> Option<&'static str> {
+    // TODO: support these, or report them through a fallible API.
+    let parent = alias.parent().expect("an alias in a document has a parent");
+    let tagged = parent.kind() == SyntaxKind::TAGGED_NODE;
+    let holder = if tagged {
+        parent.parent().expect("a tagged alias has a holder")
+    } else {
+        parent
+    };
+    let has_properties = tagged || super::mapping::held_anchor_token(&holder).is_some();
+    match holder.kind() {
+        SyntaxKind::KEY if has_properties => Some("it is a key with a tag or anchor of its own"),
+        _ if tagged && node.kind() == SyntaxKind::TAGGED_NODE => {
+            Some("it has a tag, and the node it refers to has one too")
+        }
+        SyntaxKind::VALUE | SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::KEY => None,
+        _ => Some("it is not a value, sequence item or key"),
+    }
+}
+
+/// Panic, unless `alias` can be replaced with a copy of `node`.
+fn check_copyable(alias: &SyntaxNode, node: &SyntaxNode) {
+    if let Some(obstacle) = copy_obstacle(alias, node) {
+        panic!("cannot keep alias {alias} resolving: {obstacle}");
+    }
+}
+
+/// The tag and anchor `alias` has.
+fn properties(alias: &SyntaxNode) -> (Option<SyntaxToken>, Option<SyntaxToken>) {
+    let parent = alias.parent().expect("an alias in a document has a parent");
+    let (tagged, holder) = if parent.kind() == SyntaxKind::TAGGED_NODE {
+        let holder = parent.parent().expect("a tagged alias has a holder");
+        (Some(parent), holder)
+    } else {
+        (None, parent)
+    };
+    let tagged_token = |kind: SyntaxKind| {
+        tagged.as_ref().and_then(|t| {
+            t.children_with_tokens()
+                .filter_map(|c| c.into_token())
+                .find(|t| t.kind() == kind)
+        })
+    };
+    let anchor =
+        tagged_token(SyntaxKind::ANCHOR).or_else(|| super::mapping::held_anchor_token(&holder));
+    (tagged_token(SyntaxKind::TAG), anchor)
+}
+
+/// Remove the tag and anchor `alias` has, leaving it bare in its VALUE,
+/// SEQUENCE_ENTRY or KEY.
+fn strip_properties(alias: &SyntaxNode) {
+    let parent = alias.parent().expect("an alias in a document has a parent");
+    if parent.kind() == SyntaxKind::TAGGED_NODE {
+        let holder = parent.parent().expect("a tagged alias has a holder");
+        let i = parent.index();
+        alias.detach();
+        holder.splice_children(i..i + 1, vec![alias.clone().into()]);
+    }
+    let holder = alias.parent().expect("an alias in a document has a parent");
+    if let Some(anchor) = super::mapping::held_anchor_token(&holder) {
+        super::detach_anchor(&anchor);
+    }
+}
+
+/// A copy of `node` under `tag`, laid out as the parser would read it.
+fn tagged(tag: &str, node: &SyntaxNode) -> SyntaxNode {
+    use rowan::{GreenNode, GreenToken, NodeOrToken};
+    let token =
+        |kind: SyntaxKind, text: &str| NodeOrToken::Token(GreenToken::new(kind.into(), text));
+    let block_collection = matches!(node.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE)
+        && !node
+            .first_token()
+            .is_some_and(|t| matches!(t.kind(), SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET));
+    let mut children = vec![token(SyntaxKind::TAG, tag)];
+    if block_collection {
+        // Its lines keep their indentation, which is shifted along with
+        // the first one's when the copy is put in place.
+        children.push(token(SyntaxKind::NEWLINE, "\n"));
+        let column = crate::as_yaml::source_base_indent(node);
+        if column > 0 {
+            children.push(token(SyntaxKind::INDENT, &" ".repeat(column)));
+        }
+    } else {
+        children.push(token(SyntaxKind::WHITESPACE, " "));
+    }
+    children.push(NodeOrToken::Node(node.green().into_owned()));
+    SyntaxNode::new_root_mut(GreenNode::new(SyntaxKind::TAGGED_NODE.into(), children))
 }
 
 /// Replace `alias` with a copy of `node` under `anchor`, and return the

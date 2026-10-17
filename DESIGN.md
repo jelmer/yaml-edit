@@ -361,9 +361,15 @@ back to `a`. Anchors within the copy that would take over aliases
 referring to another node are left off it. An alias within the copy that
 would then refer to the wrong node is in turn replaced with a copy, which
 keeps only the anchors that aliases in it use. The shared helper for all
-of this is `nodes::kept_aliases::keeping_aliases`. An alias with a tag or
-anchor of its own, which the parser tolerates though YAML does not, has no
-room for the copy's anchor; the edit panics before changing anything.
+of this is `nodes::kept_aliases::keeping_aliases`.
+
+An alias with a tag or anchor of its own, which the parser tolerates though
+YAML does not, passes them on to its copy, which then goes without the
+anchor it was copied with: a tag would change what later aliases to that
+anchor refer to, and a node has room for one anchor only. Later aliases get
+copies of their own. `k: !t *a` gives `k: !t 1` and `k: &b *a` gives
+`k: &b 1`. Where that cannot be done, because the alias is a key or both it
+and the copied node have a tag, the edit panics before changing anything.
 
 Moving entries (`reorder_fields`, and `move_after`/`move_before` given the
 entry's own value) keeps every alias resolving to the node it did. An alias

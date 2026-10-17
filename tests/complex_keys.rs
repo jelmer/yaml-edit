@@ -888,3 +888,132 @@ fn test_set_multiline_string_key_is_quoted() {
         assert_eq!(mapping.get(&key).unwrap().to_string(), "2");
     }
 }
+
+/// A lone tag or anchor in an explicit key or value annotates an implicit
+/// null when the next line is not indented past the `?` or `:`, as PyYAML
+/// reads it: the line is the mapping's next entry.
+#[test]
+fn test_lone_annotation_in_explicit_entry_leaves_next_entry_alone() {
+    let yaml = "? !!str\nb: 1\n";
+    let doc = yaml.parse::<YamlFile>().unwrap();
+    assert_eq!(doc.to_string(), yaml);
+    assert_eq!(
+        yaml_edit::debug::tree_to_string(doc.syntax()),
+        r##"DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      QUESTION: "?"
+      WHITESPACE: " "
+      KEY
+        TAGGED_NODE
+          TAG: "!!str"
+          SCALAR
+            NULL: ""
+      NEWLINE: "\\n"
+      VALUE
+        SCALAR
+          NULL: ""
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: "b"
+      COLON: ":"
+      WHITESPACE: " "
+      VALUE
+        SCALAR
+          INT: "1"
+      NEWLINE: "\\n"
+"##
+    );
+
+    for yaml in [
+        "? !!str\nb: 1\n",
+        "? &a\nb: 1\n",
+        "? !!str &a\nb: 1\n",
+        "? a\n: !!str\nb: 1\n",
+        "? a\n: &x\nb: 1\n",
+        "- ? !!str\n  b: 1\n",
+        "- ? a\n  : &x\n  b: 1\n",
+        "? !!map\n? b\n: 1\n",
+        "? a\n: &x\n? b\n: 1\n",
+    ] {
+        let doc = yaml.parse::<YamlFile>().unwrap();
+        assert_eq!(doc.to_string(), yaml);
+        let document = doc.document().unwrap();
+        let mapping = match document.as_sequence() {
+            Some(sequence) => {
+                assert_eq!(sequence.len(), 1, "{yaml:?}");
+                sequence.get(0).unwrap().as_mapping().unwrap().clone()
+            }
+            None => document.as_mapping().unwrap(),
+        };
+        assert_eq!(mapping.len(), 2, "{yaml:?}");
+        let (_, value) = mapping.iter().next().unwrap();
+        assert!(value.as_mapping().is_none(), "{yaml:?}");
+        assert_eq!(
+            mapping.get("b").unwrap().as_scalar().unwrap().as_string(),
+            "1",
+            "{yaml:?}"
+        );
+    }
+}
+
+/// Indented past the `?` or `:`, the next line is still the annotated
+/// node.
+#[test]
+fn test_lone_annotation_in_explicit_entry_keeps_indented_node() {
+    let yaml = "? !!map\n  b: 1\n: v\n";
+    let doc = yaml.parse::<YamlFile>().unwrap();
+    assert_eq!(doc.to_string(), yaml);
+    let document = doc.document().unwrap();
+    let mapping = document.as_mapping().unwrap();
+    assert_eq!(mapping.len(), 1);
+    let (key, value) = mapping.iter().next().unwrap();
+    let key = key.as_tagged().unwrap().as_mapping().unwrap();
+    assert_eq!(key.get("b").unwrap().as_scalar().unwrap().as_string(), "1");
+    assert_eq!(value.as_scalar().unwrap().as_string(), "v");
+
+    let yaml = "? a\n: &x\n  b: 1\n";
+    let doc = yaml.parse::<YamlFile>().unwrap();
+    assert_eq!(doc.to_string(), yaml);
+    let document = doc.document().unwrap();
+    let mapping = document.as_mapping().unwrap();
+    assert_eq!(mapping.len(), 1);
+    let value = mapping.get("a").unwrap();
+    let value = value.as_mapping().unwrap();
+    assert_eq!(
+        value.get("b").unwrap().as_scalar().unwrap().as_string(),
+        "1"
+    );
+}
+
+/// An explicit value's tagged sequence may sit at the `:`'s own column,
+/// but a `-` left of it is the enclosing sequence's next entry.
+#[test]
+fn test_tagged_sequence_in_explicit_value_is_bounded_by_colon() {
+    let yaml = "? a\n: !!seq\n- b\n";
+    let doc = yaml.parse::<YamlFile>().unwrap();
+    assert_eq!(doc.to_string(), yaml);
+    let document = doc.document().unwrap();
+    let mapping = document.as_mapping().unwrap();
+    assert_eq!(mapping.len(), 1);
+    let value = mapping.get("a").unwrap();
+    let value = value.as_tagged().unwrap().as_sequence().unwrap();
+    assert_eq!(value.len(), 1);
+    assert_eq!(value.get(0).unwrap().as_scalar().unwrap().as_string(), "b");
+
+    let yaml = "- ? a\n  : !!seq\n- b\n";
+    let doc = yaml.parse::<YamlFile>().unwrap();
+    assert_eq!(doc.to_string(), yaml);
+    let document = doc.document().unwrap();
+    let sequence = document.as_sequence().unwrap();
+    assert_eq!(sequence.len(), 2);
+    let first = sequence.get(0).unwrap();
+    let value = first.as_mapping().unwrap().get("a").unwrap();
+    let value = value.as_tagged().unwrap();
+    assert_eq!(value.tag(), Some("!!seq".to_string()));
+    assert_eq!(value.as_sequence(), None);
+    assert!(value.value().unwrap().is_null());
+    let second = sequence.get(1).unwrap();
+    assert_eq!(second.as_scalar().unwrap().as_string(), "b");
+}

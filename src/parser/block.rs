@@ -426,6 +426,8 @@ impl Parser {
                 let colon_column = self.error_context.current_location().1.saturating_sub(1);
                 self.bump(); // consume ':'
                 self.skip_whitespace();
+                let outer_explicit_value = self.explicit_value_column;
+                self.explicit_value_column = Some(colon_column);
 
                 // `:\n- c\n` -- an indentless sequence value, whose entries
                 // sit at the `:`'s own column rather than past it. The shared
@@ -453,6 +455,7 @@ impl Parser {
                     self.parse_value_after_colon(true, Some(question_column));
                     self.mapping_value_column = outer_column;
                 }
+                self.explicit_value_column = outer_explicit_value;
             } else {
                 // No value, just a key - create explicit null value
                 self.emit_implicit_null_value();
@@ -545,9 +548,13 @@ impl Parser {
         self.skip_ws_and_newlines();
 
         if self.current() == Some(SyntaxKind::COLON) {
+            let colon_column = self.error_context.current_location().1.saturating_sub(1);
             self.bump(); // consume ':'
             self.skip_whitespace();
+            let outer_explicit_value = self.explicit_value_column;
+            self.explicit_value_column = Some(colon_column);
             self.parse_value_after_colon(false, Some(question_column));
+            self.explicit_value_column = outer_explicit_value;
         } else {
             self.emit_implicit_null_value();
         }
@@ -1098,6 +1105,23 @@ impl Parser {
                     // key at that column would be a sibling entry instead
                     // (`- k:\n  j: 1\n`), which is why only a dash counts.
                     self.parse_sequence_with_base_indent(self.current_line_indent);
+                    has_value = true;
+                } else if matches!(self.current(), Some(SyntaxKind::PIPE | SyntaxKind::GREATER)) {
+                    // A block scalar header can only be this key's value,
+                    // whatever its column: nothing else starts with `|` or
+                    // `>`. The validator reports one not indented past the
+                    // key. Its body still has to clear the key's column, so
+                    // `a:\n|\nb: 1\n` keeps `b` a sibling.
+                    let column = base_indent.max(key_column);
+                    let outer_value_column = self.mapping_value_column.replace(column);
+                    let outer_block_column = self.mapping_block_value_column.replace(column);
+                    if self.current() == Some(SyntaxKind::PIPE) {
+                        self.parse_literal_block_scalar();
+                    } else {
+                        self.parse_folded_block_scalar();
+                    }
+                    self.mapping_value_column = outer_value_column;
+                    self.mapping_block_value_column = outer_block_column;
                     has_value = true;
                 }
                 // Otherwise the "value" would be at the parent's indent or

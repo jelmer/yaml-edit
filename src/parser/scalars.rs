@@ -484,11 +484,16 @@ impl Parser {
                 // Inside an explicit key, a `-` at or left of the `?` is an
                 // entry of the sequence that key sits in, not a node for us
                 // to annotate: `-\n  ? &d\n-\n  ? e\n` is one sequence, as
-                // the YAML test suite's PW8X expects.
+                // the YAML test suite's PW8X expects. An explicit value's
+                // sequence may sit at the `:`'s own column, but not left of
+                // it.
                 SyntaxKind::DASH
                     if self
                         .explicit_key_column
-                        .is_some_and(|column| indent <= column) =>
+                        .is_some_and(|column| indent <= column)
+                        || self
+                            .explicit_value_column
+                            .is_some_and(|column| indent < column) =>
                 {
                     return None
                 }
@@ -496,28 +501,29 @@ impl Parser {
                 // A document marker ends the document rather than opening a
                 // body: `!!str\n---\n` tags a null.
                 SyntaxKind::DOC_START | SyntaxKind::DOC_END => return None,
-                // An explicit key opens a mapping without a colon on the line.
-                SyntaxKind::QUESTION => return deep_enough(indent).then_some(indent),
                 // A block scalar header can only be this annotation's node,
                 // whatever its column: nothing else starts with `|` or `>`.
                 // The validator reports one left of its parent node, as in
                 // `a: !!str\n|\n x\n`; the YAML test suite's M5C3 has one
                 // less indented than the tag but still valid.
                 SyntaxKind::PIPE | SyntaxKind::GREATER => return Some(indent),
+                // Any other node in an explicit key or value has to be
+                // indented past its `?` or `:`, as `s-l+block-node` asks.
+                // A line at or left of it is the entry's own value or the
+                // mapping's next entry: `? !!str\nb: 1\n` keys a null and
+                // keeps `b` a sibling, as PyYAML reads it.
+                _ if self
+                    .explicit_key_column
+                    .max(self.explicit_value_column)
+                    .is_some_and(|column| indent <= column) =>
+                {
+                    return None
+                }
+                // An explicit key opens a mapping without a colon on the line.
+                SyntaxKind::QUESTION => return deep_enough(indent).then_some(indent),
                 // A flow collection is a complete node on its own.
                 SyntaxKind::LEFT_BRACKET | SyntaxKind::LEFT_BRACE => {
                     return deep_enough(indent).then_some(indent)
-                }
-                // Inside an explicit key, a `:` at or left of the `?` opens
-                // that entry's value rather than a node for us to annotate.
-                // Inside an explicit key, a `:` at or left of the `?` opens
-                // that entry's value rather than a node for us to annotate.
-                SyntaxKind::COLON
-                    if self
-                        .explicit_key_column
-                        .is_some_and(|column| indent <= column) =>
-                {
-                    return None
                 }
                 // Anything else opens a plain scalar, which is a valid
                 // tagged body whether or not a colon makes it a mapping.

@@ -1013,6 +1013,78 @@ fn test_indentation_indicator_is_relative_to_parent() {
     assert_eq!(scalar_at(yaml, &["o", "z"]), "1");
 }
 
+/// In an explicit entry the indicator counts from the mapping's column,
+/// wherever the header sits.
+#[test]
+fn test_indentation_indicator_in_explicit_entry() {
+    for (yaml, scalar, sibling) in [
+        (
+            "x:\n  ? a\n  : |1\n     x\n  b: 1\n",
+            ["x", "a"],
+            ["x", "b"],
+        ),
+        (
+            "x:\n  ? a\n  :\n    |1\n     x\n  b: 1\n",
+            ["x", "a"],
+            ["x", "b"],
+        ),
+        (
+            "x:\n  ? a\n  : # c\n    |1\n     x\n  b: 1\n",
+            ["x", "a"],
+            ["x", "b"],
+        ),
+        ("- ? a\n  : |1\n     x\n  b: 1\n", ["0", "a"], ["0", "b"]),
+        (
+            "- ? a\n  :\n    |1\n     x\n  b: 1\n",
+            ["0", "a"],
+            ["0", "b"],
+        ),
+        (
+            "x:\n  c: 1\n  ? a\n  :\n    |1\n     x\n  b: 1\n",
+            ["x", "a"],
+            ["x", "b"],
+        ),
+        ("? a\n: b: |1\n     x\n  c: 1\n", ["a", "b"], ["a", "c"]),
+        (
+            "? a\n: b:\n    |1\n     x\n  c: 1\n",
+            ["a", "b"],
+            ["a", "c"],
+        ),
+    ] {
+        assert_eq!(scalar_at(yaml, &scalar), "  x\n", "{yaml:?}");
+        assert_eq!(scalar_at(yaml, &sibling), "1", "{yaml:?}");
+    }
+
+    // A nested explicit mapping as the key, at column 2.
+    let yaml = "? ? a\n  :\n    |1\n     x\n  b: 1\n: v\n";
+    let doc = YamlFile::parse(yaml).to_result().unwrap();
+    assert_eq!(doc.to_string(), yaml);
+    let mapping = doc.document().unwrap().as_mapping().unwrap();
+    let (key, value) = mapping.iter().next().unwrap();
+    let key = key.as_mapping().unwrap();
+    assert_eq!(
+        key.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "  x\n"
+    );
+    assert_eq!(key.get("b").unwrap().as_scalar().unwrap().as_string(), "1");
+    assert_eq!(value.as_scalar().unwrap().as_string(), "v");
+
+    // The key's own header counts from the `?`.
+    let yaml = "x:\n  ?\n    |1\n     x\n  : v\n";
+    let doc = YamlFile::parse(yaml).to_result().unwrap();
+    assert_eq!(doc.to_string(), yaml);
+    let x = doc
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("x")
+        .unwrap();
+    let (key, value) = x.as_mapping().unwrap().iter().next().unwrap();
+    assert_eq!(key.as_scalar().unwrap().as_string(), "  x\n");
+    assert_eq!(value.as_scalar().unwrap().as_string(), "v");
+}
+
 #[test]
 fn test_set_indented_block_value_in_nested_mapping() {
     let doc = YamlFile::parse("o:\n  k: v\n").to_result().unwrap();

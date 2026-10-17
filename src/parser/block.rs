@@ -437,11 +437,17 @@ impl Parser {
                     // A value on the colon's own line is bounded by this
                     // mapping's column, as for an implicit key: in
                     // `x:\n  ? a\n  : |\n  b: 1\n` the `b` line is not body.
+                    // A value on a later line has this mapping as its
+                    // parent all the same, so a block scalar's indentation
+                    // indicator counts from it: `- ? a\n  :\n    |1\n` has
+                    // its body at column 3, not 1.
                     let mut ctx = value_ctx;
-                    if !matches!(
+                    if matches!(
                         self.current(),
                         Some(SyntaxKind::NEWLINE | SyntaxKind::COMMENT)
                     ) {
+                        ctx.mapping_block_value_column = Some(colon_column);
+                    } else {
                         ctx.mapping_value_column = Some(colon_column);
                     }
                     self.scoped(ctx, |p| {

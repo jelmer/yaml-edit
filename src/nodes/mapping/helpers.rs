@@ -204,10 +204,14 @@ pub(crate) struct BlockValue {
 /// content on the next line. The source's interior indentation is shifted
 /// so nested lines line up. If the source is preceded by an `&anchor`
 /// inside its parent VALUE, the anchor is preserved on the key line so
-/// aliases still resolve.
-pub(crate) fn build_block_value_node(source: &SyntaxNode, target: usize) -> BlockValue {
+/// aliases still resolve. `anchor` replaces any anchor the source has.
+pub(crate) fn build_block_value_node(
+    source: &SyntaxNode,
+    target: usize,
+    anchor: Option<&str>,
+) -> BlockValue {
     if source.kind() == SyntaxKind::TAGGED_NODE {
-        return build_tagged_value_node(source, target);
+        return build_tagged_value_node(source, target, anchor);
     }
     // Block scalars store their content column *inside* the SCALAR
     // (after `|`/`>` + NEWLINE). Block collections have it in the INDENT
@@ -218,7 +222,9 @@ pub(crate) fn build_block_value_node(source: &SyntaxNode, target: usize) -> Bloc
     } else {
         target as isize - crate::as_yaml::source_base_indent(source) as isize
     };
-    let anchor = source_anchor_text(source);
+    let anchor = anchor
+        .map(str::to_string)
+        .or_else(|| source_anchor_text(source));
 
     let mut value_builder = GreenNodeBuilder::new();
     value_builder.start_node(SyntaxKind::VALUE.into());
@@ -266,8 +272,15 @@ pub(super) fn built_block_node(value: &impl crate::AsYaml) -> Option<SyntaxNode>
 /// source holds (tag, anchor, comments, line breaks) is kept in place.
 /// Content on lines after the tag is shifted to start at `target`; a block
 /// scalar on the tag line has its content lines shifted to `target`.
-pub(super) fn build_tagged_value_node(source: &SyntaxNode, target: usize) -> BlockValue {
-    let anchor = source_anchor_text(source);
+/// `anchor` replaces any anchor the source has, before or after its tag.
+pub(super) fn build_tagged_value_node(
+    source: &SyntaxNode,
+    target: usize,
+    replacement_anchor: Option<&str>,
+) -> BlockValue {
+    let anchor = replacement_anchor
+        .map(str::to_string)
+        .or_else(|| source_anchor_text(source));
     let delta = source.first_child().map_or(0, |inner| {
         let content_on_tag_line = source
             .children_with_tokens()
@@ -293,8 +306,12 @@ pub(super) fn build_tagged_value_node(source: &SyntaxNode, target: usize) -> Blo
         crate::as_yaml::copy_node_content_reindent(&mut value_builder, source, delta);
     value_builder.finish_node(); // TAGGED_NODE
     value_builder.finish_node(); // VALUE
+    let node = SyntaxNode::new_root_mut(value_builder.finish());
+    if replacement_anchor.is_some() {
+        drop_tagged_anchor(&node);
+    }
     BlockValue {
-        node: SyntaxNode::new_root_mut(value_builder.finish()),
+        node,
         on_key_line: true,
         ends_with_newline,
     }
@@ -302,7 +319,7 @@ pub(super) fn build_tagged_value_node(source: &SyntaxNode, target: usize) -> Blo
 
 /// If `source` is preceded by an `&anchor` token in its parent VALUE, return
 /// the anchor's text (including the leading `&`). Otherwise `None`.
-pub(super) fn source_anchor_text(source: &SyntaxNode) -> Option<String> {
+pub(crate) fn source_anchor_text(source: &SyntaxNode) -> Option<String> {
     let mut cursor = source.prev_sibling_or_token();
     while let Some(item) = cursor {
         let tok = item.as_token()?;
@@ -314,6 +331,38 @@ pub(super) fn source_anchor_text(source: &SyntaxNode) -> Option<String> {
         cursor = item.prev_sibling_or_token();
     }
     None
+}
+
+/// The anchor among the properties of the node `holder` (a VALUE or
+/// SEQUENCE_ENTRY) holds: before the node, or after the tag of a tagged
+/// node.
+pub(crate) fn held_anchor(holder: &SyntaxNode) -> Option<String> {
+    let tagged = holder
+        .children()
+        .next()
+        .filter(|n| n.kind() == SyntaxKind::TAGGED_NODE);
+    own_anchor(holder)
+        .or_else(|| tagged.and_then(|n| own_anchor(&n)))
+        .map(|t| t.text().to_string())
+}
+
+/// The ANCHOR token among the children of `node` before its first node.
+fn own_anchor(node: &SyntaxNode) -> Option<crate::nodes::SyntaxToken> {
+    node.children_with_tokens()
+        .map_while(|c| c.into_token())
+        .find(|t| t.kind() == SyntaxKind::ANCHOR)
+}
+
+/// Remove the anchor after the tag of the tagged node `holder` holds, if
+/// it has one, so another can go before the tag.
+pub(crate) fn drop_tagged_anchor(holder: &SyntaxNode) {
+    let anchor = holder
+        .children()
+        .find(|n| n.kind() == SyntaxKind::TAGGED_NODE)
+        .and_then(|n| own_anchor(&n));
+    if let Some(anchor) = anchor {
+        crate::nodes::detach_anchor(&anchor);
+    }
 }
 
 /// Find the content indent of a block scalar - the INDENT token right after

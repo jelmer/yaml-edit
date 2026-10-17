@@ -8,7 +8,10 @@ use helpers::{
     append_comma_space_to_entry, ensure_top_level_empty_renders_as_flow, index_after_entry_line,
     FlowInsertPos,
 };
-pub(crate) use helpers::{block_scalar_body_shift, block_scalar_content_indent, is_block_scalar};
+pub(crate) use helpers::{
+    block_scalar_body_shift, block_scalar_content_indent, drop_tagged_anchor, held_anchor,
+    is_block_scalar, source_anchor_text,
+};
 
 use super::{
     ensure_trailing_newline, entry_key, entry_line_terminated, entry_value, fresh_token,
@@ -545,6 +548,11 @@ impl Mapping {
     /// alias node (`*name`) or a mapping that already contains `<<: *name`.
     /// Merge **reads** (`get_resolved()`, `merged()`) stay separate from
     /// this CST replace.
+    ///
+    /// An anchor on the replaced value stays, on the new value, so aliases
+    /// to it still resolve: `b: &x 2` set to `6` gives `b: &x 6`. A node
+    /// value that has an anchor of its own keeps it only if the old value
+    /// had none.
     ///
     /// ```
     /// use std::str::FromStr;

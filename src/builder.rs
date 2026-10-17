@@ -206,7 +206,7 @@ fn emit_block_value(
     target: usize,
     wrap: bool,
 ) -> bool {
-    let block = crate::nodes::mapping::build_block_value_node(source, target);
+    let block = crate::nodes::mapping::build_block_value_node(source, target, None);
     if block.on_key_line {
         builder.token(SyntaxKind::WHITESPACE.into(), " ");
     }

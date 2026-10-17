@@ -4879,3 +4879,35 @@ fn test_tagged_flow_collection_as_implicit_key() {
         );
     }
 }
+
+/// The `?` of an explicit key goes inside KEY in a flow sequence's single
+/// pair, as it does in a flow mapping, so the two entries share one shape.
+#[test]
+fn test_explicit_key_entry_in_a_flow_pair_matches_a_flow_mapping() {
+    let entry_tree = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let root = <YamlFile as rowan::ast::AstNode>::syntax(&file).clone();
+        let entry = root
+            .descendants()
+            .find(|n| n.kind() == yaml_edit::SyntaxKind::MAPPING_ENTRY)
+            .unwrap();
+        yaml_edit::debug::tree_to_string(&entry)
+    };
+    for entry in [
+        "? a : 1",
+        "? : x",
+        "? a",
+        "? ",
+        "?\n a : b",
+        "? a # c\n : b",
+        "? a\n b : c",
+        "? [a] : b",
+    ] {
+        assert_eq!(
+            entry_tree(&format!("[{entry}]\n")),
+            entry_tree(&format!("{{{entry}}}\n")),
+            "{entry:?}"
+        );
+    }
+}

@@ -136,6 +136,8 @@
 //! {: v}      (flow mapping)       KEY { SCALAR { NULL "" } }, COLON, VALUE ...
 //! ? key\n    (explicit key)       MAPPING_ENTRY { QUESTION, KEY ..., NEWLINE,
 //!                                                 VALUE { SCALAR { NULL "" } } }
+//! {? : v}    (flow explicit key)  KEY { QUESTION, WHITESPACE,
+//!                                       SCALAR { NULL "" } }, COLON, ...
 //! - \n       (block sequence)     SEQUENCE_ENTRY { DASH, WHITESPACE,
 //!                                                  SCALAR { NULL "" }, NEWLINE }
 //! [a, , c]   (flow sequence)      SEQUENCE_ENTRY { SCALAR { NULL "" }, COMMA, ... }

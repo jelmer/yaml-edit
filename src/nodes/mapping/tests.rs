@@ -1729,7 +1729,18 @@ fn test_edit_single_pair_in_flow_sequence() {
         ("[a: 1]\n", &|m| assert!(m.remove("a").is_some()), "[{}]\n"),
         ("[a: 1]\n", &|m| m.clear(), "[{}]\n"),
         ("[a: 1]\n", &|m| assert!(m.rename_key("a", "b")), "[b: 1]\n"),
-        ("[? a : 1]\n", &|m| m.set("b", 2), "[{? a : 1, ? b: 2}]\n"),
+        ("[? a : 1]\n", &|m| m.set("b", 2), "[{? a : 1, b: 2}]\n"),
+        ("[? a : 1]\n", &|m| m.set("a", 2), "[? a : 2]\n"),
+        (
+            "[? a : 1]\n",
+            &|m| assert!(m.remove("a").is_some()),
+            "[{}]\n",
+        ),
+        (
+            "[? a : 1, x]\n",
+            &|m| assert!(m.rename_key("a", "b")),
+            "[? b : 1, x]\n",
+        ),
         ("[: 1]\n", &|m| m.set("b", 2), "[{: 1, b: 2}]\n"),
         ("[\"a\": 1]\n", &|m| m.set("a", "x"), "[\"a\": \"x\"]\n"),
         (
@@ -1927,5 +1938,33 @@ fn test_insert_after_nested_indentless_sequence() {
             op(&mapping);
             assert_edited(&yaml, expected);
         }
+    }
+}
+
+/// Edits keep the `?` of an explicit key in a flow mapping, and new entries
+/// beside it are implicit, as in a single pair in a flow sequence.
+#[test]
+fn test_edit_flow_mapping_with_explicit_key() {
+    use crate::debug::assert_edited;
+    use crate::nodes::Mapping;
+    let cases: &[(&str, &dyn Fn(&Mapping), &str)] = &[
+        ("{? a : 1}\n", &|m| m.set("b", 2), "{? a : 1, b: 2}\n"),
+        ("{? a : 1}\n", &|m| m.set("a", 2), "{? a : 2}\n"),
+        (
+            "{? a : 1}\n",
+            &|m| assert!(m.rename_key("a", "b")),
+            "{? b : 1}\n",
+        ),
+        (
+            "{? a : 1, c: 3}\n",
+            &|m| assert!(m.remove("a").is_some()),
+            "{c: 3}\n",
+        ),
+    ];
+    for (source, edit, expected) in cases {
+        let yaml = YamlFile::from_str(source).unwrap();
+        let mapping = yaml.document().unwrap().as_mapping().unwrap();
+        edit(&mapping);
+        assert_edited(&yaml, expected);
     }
 }

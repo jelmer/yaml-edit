@@ -909,6 +909,14 @@ impl Validator {
         if !has_block_indicator {
             return;
         }
+        // An indentation indicator fixes the body's column, so a deeper
+        // leading line is content rather than indentation.
+        if crate::nodes::scalar_node::block_scalar_indicators(node)
+            .1
+            .is_some()
+        {
+            return;
+        }
 
         // Walk tokens after the block indicator's NEWLINE. Track the
         // deepest INDENT seen so far (from blank-only lines); flag any
@@ -4216,5 +4224,25 @@ mod tests {
         ] {
             assert_eq!(messages(yaml), Vec::<String>::new(), "{yaml:?}");
         }
+    }
+
+    #[test]
+    fn test_blank_line_deeper_than_explicit_indent_is_content() {
+        // With an indentation indicator a line indented past the body is
+        // content, not a leading blank line that sets the indentation.
+        for yaml in [
+            "k: |2-\n   \n  x\n",
+            "- >2\n   \n  x\n",
+            "a:\n  k: |2\n     \n    x\n",
+        ] {
+            assert_eq!(messages(yaml), Vec::<String>::new(), "{yaml:?}");
+        }
+        assert_eq!(
+            messages("k: |\n   \n  x\n"),
+            vec![
+                "Block scalar content under-indented (2 spaces) relative to preceding blank line (3 spaces)"
+                    .to_string()
+            ]
+        );
     }
 }

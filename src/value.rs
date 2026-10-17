@@ -116,6 +116,7 @@ impl YamlValue {
     /// document's anchors and applies merge keys (`<<`), as
     /// [`DocumentResolvedExt::get_resolved`] does. Merge keys are a YAML 1.1
     /// type that YAML 1.2 does not define, but are still widely used.
+    /// An empty document is null.
     ///
     /// Fails if an alias is undefined or recursive, a merge key operand is
     /// not a mapping, or on other content [`YamlValue::cast`] reports.
@@ -136,7 +137,8 @@ impl YamlValue {
                 return Ok(value);
             }
         }
-        Ok(YamlValue::Scalar(ScalarValue::string("")))
+        // An empty node is null.
+        Ok(YamlValue::Scalar(ScalarValue::null()))
     }
 
     /// Create a mapping from a BTreeMap
@@ -963,6 +965,28 @@ ordered: !!omap [first: *list]
         let doc = crate::Document::from_str(yaml).unwrap();
         assert_eq!(YamlValue::from_document(&doc), Ok(expected.clone()));
         assert_eq!(YamlValue::parse_raw(yaml).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_from_document_empty_is_null() {
+        for yaml in ["---\n", "--- # c\n", "---\n...\n", "--- \n"] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let doc = file.document().unwrap();
+            assert_eq!(
+                YamlValue::from_document(&doc),
+                Ok(YamlValue::Scalar(ScalarValue::null())),
+                "{yaml:?}"
+            );
+            assert_eq!(
+                YamlValue::parse_raw(yaml).unwrap(),
+                YamlValue::Scalar(ScalarValue::null()),
+                "{yaml:?}"
+            );
+        }
+        assert_eq!(
+            YamlValue::from_document(&crate::Document::new()),
+            Ok(YamlValue::Scalar(ScalarValue::null()))
+        );
     }
 
     #[test]

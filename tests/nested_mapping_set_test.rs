@@ -257,6 +257,33 @@ fn scalar_over_block_preserves_key_line_comment() {
     assert_eq!(tf.to_string(), "k: new  # sticky\n");
 }
 
+/// Replacing a commented block value with a scalar moves it onto the key
+/// line, leaving what precedes the colon alone and giving the tree the
+/// parser's shape.
+#[test]
+fn scalar_over_block_on_key_line() {
+    for (src, path, expected) in [
+        ("k :  # c\n  x: 1\n", &[][..], "k : 5  # c\n"),
+        ("k:   \n  x: 1\n", &[], "k: 5\n"),
+        (
+            "o:\n  k:  # c\n    x: 1\n  b: 2\n",
+            &["o"],
+            "o:\n  k: 5  # c\n  b: 2\n",
+        ),
+    ] {
+        let (tf, root) = parse(src);
+        dig(&root, path).set("k", 5);
+        assert_file_cst_ok(&tf);
+        assert_eq!(tf.to_string(), expected, "{src:?}");
+        let reparsed = YamlFile::from_str(expected).unwrap();
+        assert_eq!(
+            debug::tree_to_string(tf.syntax()),
+            debug::tree_to_string(reparsed.syntax()),
+            "{src:?}"
+        );
+    }
+}
+
 #[test]
 fn set_path_creates_intermediate_mappings_with_indent() {
     // Regression for issue #18: set_path drilling through several missing

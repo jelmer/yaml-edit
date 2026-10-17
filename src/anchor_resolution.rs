@@ -356,41 +356,50 @@ fn key_string(key: &crate::as_yaml::YamlNode) -> String {
 /// precedence order [`merge_sources`] returns them. Keys are compared as
 /// YAML values, so a direct `16` shadows a merged `0x10`. Distinct keys
 /// with the same string form, such as `1` and `'1'`, are a
-/// [`ResolveError::KeyCollision`]. Without a registry, `<<` is an
-/// ordinary key and an alias key is a [`ResolveError::UnresolvedAlias`].
+/// [`ResolveError::KeyCollision`]. An alias key is resolved and converted
+/// like the node it refers to, so an alias to a collection has the
+/// collection's source text as its string form, like a collection key.
+/// Without a registry, `<<` is an ordinary key and an alias key is a
+/// [`ResolveError::UnresolvedAlias`].
 fn apply_merge_keys(
     mapping: &crate::yaml::Mapping,
     registry: Option<&AnchorRegistry>,
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<std::collections::BTreeMap<String, YamlValue>, ResolveError> {
+    use crate::as_yaml::YamlNode;
+
     let mut merged_pairs = std::collections::BTreeMap::new();
-    let mut seen: Vec<(crate::as_yaml::YamlNode, String)> = Vec::new();
+    // The resolved key, its string form and the key as written.
+    let mut seen: Vec<(YamlNode, String, YamlNode)> = Vec::new();
     let sources = match registry {
         Some(registry) => merge_sources(mapping, registry)?,
         None => Vec::new(),
     };
     for source in std::iter::once(mapping).chain(&sources) {
         for (key, value) in source.iter() {
-            if (registry.is_some() && is_merge_key(&key))
-                || seen.iter().any(|(k, _)| k.yaml_eq(&key))
-            {
+            if registry.is_some() && is_merge_key(&key) {
                 continue;
             }
-            if let (crate::as_yaml::YamlNode::Alias(alias), None) = (&key, registry) {
-                return Err(ResolveError::UnresolvedAlias {
-                    alias: alias.name(),
-                });
+            let resolved_key = match (&key, registry) {
+                (YamlNode::Alias(alias), None) => {
+                    return Err(ResolveError::UnresolvedAlias {
+                        alias: alias.name(),
+                    });
+                }
+                (YamlNode::Alias(_), Some(registry)) => resolve_alias_node(key.clone(), registry)?,
+                _ => key.clone(),
+            };
+            if seen.iter().any(|(k, _, _)| k.yaml_eq(&resolved_key)) {
+                continue;
             }
-            // TODO: with a registry, an alias key is kept as its source
-            // text, such as "*a", rather than resolved.
-            let key_str = key_string(&key);
-            if let Some((first, _)) = seen.iter().find(|(_, s)| *s == key_str) {
+            let key_str = key_string(&resolved_key);
+            if let Some((_, _, first)) = seen.iter().find(|(_, s, _)| *s == key_str) {
                 return Err(ResolveError::KeyCollision {
                     first: first.to_string(),
                     second: key.to_string(),
                 });
             }
-            seen.push((key, key_str.clone()));
+            seen.push((resolved_key, key_str.clone(), key));
             if let Some(yaml_value) = resolved_value(value, registry, expanding)? {
                 merged_pairs.insert(key_str, yaml_value);
             }
@@ -1729,6 +1738,39 @@ m:
                 "{yaml:?}"
             );
         }
+    }
+
+    #[test]
+    fn get_resolved_alias_key() {
+        for (yaml, expected) in [
+            ("x: &a k\nm: {*a : 1}\n", vec![("k", "1")]),
+            ("x: &a !!int 5\nm:\n  *a : 1\n", vec![("5", "1")]),
+            (
+                "x: &a k\nm: {*a : 1, j: &a i, *a : 3}\n",
+                vec![("i", "3"), ("j", "i"), ("k", "1")],
+            ),
+            (
+                "x: &a k\ns: &s {*a : 1}\nm: {<<: *s, j: 2}\n",
+                vec![("j", "2"), ("k", "1")],
+            ),
+            // A collection key is converted to its source text.
+            ("x: &a [p, q]\nm: {*a : 1}\n", vec![("[p, q]", "1")]),
+        ] {
+            assert_eq!(resolved_pairs(yaml, "m"), pairs(&expected), "{yaml:?}");
+        }
+        assert_eq!(
+            doc("x: &a 1\nm: {*a : a, '1': b}\n").get_resolved("m"),
+            Err(ResolveError::KeyCollision {
+                first: "*a".to_string(),
+                second: "'1'".to_string()
+            })
+        );
+        assert_eq!(
+            doc("m: {*nope : 1}\n").get_resolved("m"),
+            Err(ResolveError::UndefinedAlias {
+                alias: "nope".to_string()
+            })
+        );
     }
 
     #[test]

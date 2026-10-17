@@ -207,11 +207,19 @@ impl MappingEntry {
                 (true, _) => {
                     // TAGGED_NODE values (!!set, !!omap, !!pairs) are
                     // inline but may end with newlines from their
-                    // block-style content.
-                    // TODO: pass key_indent; at 0, a multi-line flow value
-                    // copied from a shallower key under a nested one keeps
-                    // continuation lines too shallow for its new key.
-                    value.build_content(&mut builder, 0, flow_context)
+                    // block-style content. A value built from scratch is
+                    // given the key's column, which a block scalar's body
+                    // has to clear.
+                    // TODO: pass key_indent for node-backed values too; at
+                    // 0, a multi-line flow value copied from a shallower
+                    // key under a nested one keeps continuation lines too
+                    // shallow for its new key.
+                    let column = if value.as_node().is_none() {
+                        key_indent
+                    } else {
+                        0
+                    };
+                    value.build_content(&mut builder, column, flow_context)
                 }
                 // Block mappings and sequences start on new line but don't get pre-indented
                 // They handle their own indentation via build_content
@@ -359,9 +367,19 @@ impl MappingEntry {
         replacement.push(block.node.into());
         crate::nodes::replace_children(&self.0, start..value_idx + 1, replacement);
 
-        // Keep exactly one trailing NEWLINE on the entry, either inside
-        // VALUE (block content usually provides one), at MAPPING_ENTRY
-        // level, or at MAPPING level (for explicit-key entries).
+        self.settle_trailing_newline(value_ends_with_newline, old_entry_owned_trailing_nl);
+    }
+
+    /// Keep exactly one trailing NEWLINE on the entry once its VALUE has
+    /// been replaced, either inside VALUE (block content usually provides
+    /// one), at MAPPING_ENTRY level, or at MAPPING level (for explicit-key
+    /// entries). `old_entry_owned_trailing_nl` says whether the entry ended
+    /// with a NEWLINE before the replacement.
+    fn settle_trailing_newline(
+        &self,
+        value_ends_with_newline: bool,
+        old_entry_owned_trailing_nl: bool,
+    ) {
         if value_ends_with_newline {
             // Drop the MAPPING_ENTRY-level trailing NEWLINE that was the
             // OLD entry's terminator - the new VALUE has its own.
@@ -422,6 +440,7 @@ impl MappingEntry {
         // line and doesn't swallow anything.
         let anchor = new_value.as_node().and_then(source_anchor_text);
         let trailing_comment = find_key_line_comment(&self.0);
+        let old_entry_owned_trailing_nl = self.ends_with_newline();
         let mut value_builder = GreenNodeBuilder::new();
         value_builder.start_node(SyntaxKind::VALUE.into());
         if let Some(a) = anchor.as_deref() {
@@ -430,17 +449,35 @@ impl MappingEntry {
         }
         // A block scalar rendered here has to clear this entry's own
         // column, so hand it that rather than the document's.
-        new_value.build_content(&mut value_builder, self.indent_of_line(), flow_context);
-        if let Some((ws, comment)) = &trailing_comment {
+        let value_ends_with_newline =
+            new_value.build_content(&mut value_builder, self.indent_of_line(), flow_context);
+        if let Some((ws, comment)) = trailing_comment
+            .as_ref()
+            .filter(|_| !value_ends_with_newline)
+        {
             value_builder.token(SyntaxKind::WHITESPACE.into(), ws);
             value_builder.token(SyntaxKind::COMMENT.into(), comment);
         }
         value_builder.finish_node();
         let new_value_node = SyntaxNode::new_root_mut(value_builder.finish());
+        // A block scalar's body follows its header line, which is where
+        // the parser puts a comment on the key line.
+        if let Some((ws, comment)) = trailing_comment.filter(|_| value_ends_with_newline) {
+            crate::nodes::insert_header_comment(&new_value_node, &ws, &comment);
+        }
 
+        self.splice_inline_value(&new_value_node);
+        if value_ends_with_newline {
+            self.settle_trailing_newline(true, old_entry_owned_trailing_nl);
+        }
+    }
+
+    /// Put `new_value_node`, a VALUE that starts on the key line, in place
+    /// of this entry's value.
+    fn splice_inline_value(&self, new_value_node: &SyntaxNode) {
         let old_was_block = self.value().is_some_and(|v| value_is_block(&v));
         if old_was_block {
-            self.rebuild_with_inline_value(&new_value_node);
+            self.rebuild_with_inline_value(new_value_node);
             return;
         }
 
@@ -451,8 +488,10 @@ impl MappingEntry {
             .children_with_tokens()
             .position(|c| c.as_node().is_some_and(|n| n.kind() == SyntaxKind::VALUE))
         {
-            self.0
-                .splice_children(value_idx..value_idx + 1, vec![new_value_node.into()]);
+            self.0.splice_children(
+                value_idx..value_idx + 1,
+                vec![new_value_node.clone().into()],
+            );
             return;
         }
 
@@ -465,8 +504,10 @@ impl MappingEntry {
         {
             let insert_at = colon_idx + 1;
             let ws = fresh_token(SyntaxKind::WHITESPACE, " ");
-            self.0
-                .splice_children(insert_at..insert_at, vec![ws.into(), new_value_node.into()]);
+            self.0.splice_children(
+                insert_at..insert_at,
+                vec![ws.into(), new_value_node.clone().into()],
+            );
         }
     }
 

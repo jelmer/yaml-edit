@@ -160,6 +160,12 @@ fn rebuild_entry_with_value(
                     value_inserted = true;
                     if value_ends_with_newline {
                         skip_until = terminator_end(&entry_children, i + 1);
+                        // Whitespace before a comment the sequence holds
+                        // after the entry would now start the next line.
+                        let rest = &entry_children[i + 1..];
+                        if rest.iter().all(|c| c.kind() == SyntaxKind::WHITESPACE) {
+                            skip_until = entry_children.len();
+                        }
                     }
                 }
                 after_dash = false;
@@ -254,6 +260,28 @@ fn terminator_end(children: &[rowan::SyntaxElement<Lang>], start: usize) -> usiz
         .map_while(blank_or_newline)
         .position(|k| k == SyntaxKind::NEWLINE)
         .map_or(start, |offset| start + offset + 1)
+}
+
+/// Move the comment ending the line of `entry`, which the parser keeps
+/// after the entry with its NEWLINE, onto the header line of the block
+/// scalar `entry` now holds, which ends its own last line; `ws` is the
+/// whitespace that went before the comment.
+fn adopt_line_comment(entry: &SyntaxNode, ws: &str) {
+    let Some(comment) = entry
+        .next_sibling_or_token()
+        .and_then(|c| c.into_token())
+        .filter(|t| t.kind() == SyntaxKind::COMMENT)
+    else {
+        return;
+    };
+    let newline = comment
+        .next_sibling_or_token()
+        .filter(|c| c.kind() == SyntaxKind::NEWLINE);
+    crate::nodes::insert_header_comment(entry, ws, comment.text());
+    comment.detach();
+    if let Some(newline) = newline {
+        newline.detach();
+    }
 }
 
 /// Drop the run of blank tokens (newline, indent, whitespace) that ends
@@ -901,7 +929,17 @@ impl Sequence {
         let new_entry = rebuild_entry_with_value(node, &value, self.is_flow_style());
 
         // Replace the old SEQUENCE_ENTRY with the new one
-        self.0.splice_children(i..i + 1, vec![new_entry.into()]);
+        self.0
+            .splice_children(i..i + 1, vec![new_entry.clone().into()]);
+        if new_entry
+            .last_token()
+            .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
+        {
+            let ws = node
+                .last_token()
+                .filter(|t| t.kind() == SyntaxKind::WHITESPACE);
+            adopt_line_comment(&new_entry, ws.as_ref().map_or(" ", |t| t.text()));
+        }
         true
     }
 
@@ -1611,16 +1649,20 @@ mod tests {
 
     #[test]
     fn test_block_scalar_items_clear_the_dash() {
-        use crate::debug::{roundtrip_ok, validate_tree};
+        use crate::debug::{assert_parser_shaped, roundtrip_ok, validate_tree};
         use crate::{AsYaml, Document};
 
-        // No tree comparison with a re-parse: ScalarValue writes a block
-        // scalar as a single STRING token, not the parser's PIPE/INDENT shape.
         let literal = crate::ScalarValue::literal("x\ny\n");
         for (src, set, expected) in [
             ("- a\n", false, "- a\n- |\n  x\n  y\n"),
             ("s:\n  - a\n", false, "s:\n  - a\n  - |\n    x\n    y\n"),
             ("s:\n  - a\n", true, "s:\n  - |\n    x\n    y\n"),
+            (
+                "s:\n  - a  # c\n  - b\n",
+                true,
+                "s:\n  - |  # c\n    x\n    y\n  - b\n",
+            ),
+            ("- a # c\n", true, "- | # c\n  x\n  y\n"),
         ] {
             let doc = Document::from_str(src).unwrap();
             let seq = doc
@@ -1635,6 +1677,7 @@ mod tests {
             assert_eq!(doc.to_string(), expected, "{src:?}");
             validate_tree(doc.as_node().unwrap()).unwrap();
             roundtrip_ok(doc.as_node().unwrap()).unwrap();
+            assert_parser_shaped(&doc);
         }
     }
 

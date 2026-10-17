@@ -999,6 +999,23 @@ mod tests {
     }
 
     #[test]
+    fn test_set_nested_block_scalar() {
+        use std::str::FromStr;
+        let mut inner = BTreeMap::new();
+        inner.insert("s".to_string(), YamlValue::from("x\ny\n"));
+        let mut m = BTreeMap::new();
+        m.insert("n".to_string(), YamlValue::Mapping(inner));
+        let doc = crate::yaml::Document::from_str("a: 1\n").unwrap();
+        doc.set("b", YamlValue::Mapping(m));
+        assert_cst_ok(&doc);
+        crate::debug::assert_parser_shaped(&doc);
+        assert_eq!(
+            doc.to_string(),
+            "a: 1\nb:\n  n:\n    s: |\n      x\n      y\n"
+        );
+    }
+
+    #[test]
     fn test_to_yaml_string_nested_keep_block_scalar() {
         let mut inner = BTreeMap::new();
         inner.insert(
@@ -1756,7 +1773,8 @@ impl AsYaml for BTreeMap<String, YamlValue> {
                     } else {
                         builder.token(SyntaxKind::WHITESPACE.into(), " ");
                         builder.start_node(SyntaxKind::VALUE.into());
-                        value.build_content(builder, 0, flow_context)
+                        // A block scalar's body has to clear the key's column.
+                        value.build_content(builder, indent, flow_context)
                     };
 
                     builder.finish_node(); // VALUE

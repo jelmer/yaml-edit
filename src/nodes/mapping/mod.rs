@@ -606,8 +606,9 @@ impl Mapping {
                 matches.then_some((i, entry))
             });
         if let Some((i, entry)) = existing {
-            let indent = self.detect_indentation_level() + 2;
-            match flow_context.then(|| flow_form(&value, indent)).flatten() {
+            // set_value shifts the flow form to the entry's line, so its
+            // continuation lines are given relative to that.
+            match flow_context.then(|| flow_form(&value, 2)).flatten() {
                 Some(flow) => entry.set_value(flow, flow_context),
                 None => entry.set_value(value, flow_context),
             }

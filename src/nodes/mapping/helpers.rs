@@ -402,7 +402,8 @@ pub(super) fn block_scalar_content_indent(scalar: &SyntaxNode) -> Option<usize> 
 /// node can break its line (after an opening bracket, after a comma, or
 /// before a closing bracket), with continuation lines at `indent`. A
 /// result containing comments therefore spans several lines; see
-/// [`has_comment`].
+/// [`has_comment`]. Building the result with `build_content` shifts those
+/// lines by the indent it is given.
 pub(crate) fn flow_form(
     value: &impl crate::AsYaml,
     indent: usize,

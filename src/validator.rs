@@ -490,6 +490,7 @@ impl Validator {
                 self.check_anchor_and_alias(node, violations);
                 self.check_tag_on_alias(node, violations);
                 self.check_collection_tag_content(node, violations);
+                self.check_pairs_items(node, violations);
                 self.check_omap_keys(node, violations);
                 self.check_set_values(node, violations);
             }
@@ -2333,6 +2334,51 @@ impl Validator {
         }
     }
 
+    /// Check that each item of a `!!omap` or `!!pairs` is a mapping,
+    /// untagged or tagged `!!map`, with a single entry.
+    ///
+    /// Like other content that does not suit a YAML 1.1 type, a bad item is
+    /// only a warning. An alias is not resolved here; the conversion to
+    /// `YamlValue` checks the node it refers to.
+    // TODO: resolve merge keys, which can change the number of entries.
+    fn check_pairs_items(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        use crate::as_yaml::YamlNode;
+
+        let Some(tagged) = crate::yaml::TaggedNode::cast(node.clone()) else {
+            return;
+        };
+        let Some(tag) = tagged
+            .tag()
+            .filter(|tag| matches!(tag.as_str(), "!!omap" | "!!pairs"))
+        else {
+            return;
+        };
+        let Some(sequence) = tagged.as_sequence() else {
+            return;
+        };
+        for item in sequence.values() {
+            let mapping = match &item {
+                YamlNode::Alias(_) => continue,
+                YamlNode::Mapping(mapping) => Some(mapping.clone()),
+                YamlNode::TaggedNode(tagged) if tagged.tag().as_deref() == Some("!!map") => {
+                    tagged.as_mapping()
+                }
+                _ => None,
+            };
+            if mapping.is_some_and(|mapping| mapping.entries().count() == 1) {
+                continue;
+            }
+            violations.push(Violation::warning_at(
+                Rule::InvalidTag,
+                item.syntax().text_range(),
+                format!(
+                    "{tag} item {:?} is not a mapping with a single entry",
+                    item.to_string()
+                ),
+            ));
+        }
+    }
+
     /// Check that the items of a `!!omap` have distinct keys; a `!!pairs`
     /// may repeat a key.
     ///
@@ -4068,6 +4114,74 @@ mod tests {
     }
 
     #[test]
+    fn test_pairs_items_must_be_single_entry_mappings() {
+        for (yaml, message, location) in [
+            (
+                "o: !!omap [a]\n",
+                "!!omap item \"a\" is not a mapping with a single entry",
+                "1:12",
+            ),
+            (
+                "o: !!omap [{a: 1, b: 2}]\n",
+                "!!omap item \"{a: 1, b: 2}\" is not a mapping with a single entry",
+                "1:12",
+            ),
+            (
+                "o: !!pairs\n- !x {a: 1}\n",
+                "!!pairs item \"!x {a: 1}\" is not a mapping with a single entry",
+                "2:3",
+            ),
+            (
+                "o: !!pairs [!!map [a]]\n",
+                "!!pairs item \"!!map [a]\" is not a mapping with a single entry",
+                "1:13",
+            ),
+            (
+                "o: !!omap\n- [a: 1]\n",
+                "!!omap item \"[a: 1]\" is not a mapping with a single entry",
+                "2:3",
+            ),
+            (
+                "o: !!omap\n- {}\n",
+                "!!omap item \"{}\" is not a mapping with a single entry",
+                "2:3",
+            ),
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.severity, v.rule))
+                .collect();
+            assert_eq!(
+                violations,
+                vec![(
+                    message.to_string(),
+                    Some(location.to_string()),
+                    Severity::Warning,
+                    Rule::InvalidTag
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "o: !!omap [a: 1, b: 2]\n",
+            "o: !!pairs [!!map {a: 1}, a: 2]\n",
+            "o: !!omap\n- a: 1\n- b:\n",
+            "m: &m {a: 1}\no: !!omap [*m]\n",
+            "o: [a, {b: 1, c: 2}]\n",
+            "o: !x [a]\n",
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_repeated_omap_key() {
         for (yaml, message, location) in [
             (
@@ -4108,7 +4222,6 @@ mod tests {
             "o: !!omap [1: a, '1': b]\n",
             "o: !!pairs [a: 1, a: 2]\n",
             "o: [a: 1, a: 2]\n",
-            "o: !!omap [!x {a: 1}, a: 2]\n",
         ] {
             let file = crate::YamlFile::from_str(yaml).unwrap();
             assert_eq!(
@@ -4117,6 +4230,14 @@ mod tests {
                 "{yaml:?}"
             );
         }
+        // An item that is not a mapping has no key to repeat.
+        let file = crate::YamlFile::from_str("o: !!omap [!x {a: 1}, a: 2]\n").unwrap();
+        let rules: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| v.rule)
+            .collect();
+        assert_eq!(rules, vec![Rule::InvalidTag]);
         // A repeated !!set member is a repeated mapping key.
         let file = crate::YamlFile::from_str("s: !!set {? a, ? a}\n").unwrap();
         let violations: Vec<_> = Validator::new()

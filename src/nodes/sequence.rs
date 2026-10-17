@@ -239,8 +239,28 @@ fn build_entry_value(
         .flatten()
     {
         Some(flow_value) => flow_value.build_content(builder, indent(&flow_value), flow_context),
-        None => value.build_content(builder, indent(value), flow_context),
+        None => match value
+            .as_node()
+            .filter(|n| crate::nodes::mapping::is_block_scalar(n))
+        {
+            Some(scalar) => build_block_scalar(builder, scalar, dash_column + 2),
+            None => value.build_content(builder, indent(value), flow_context),
+        },
     }
+}
+
+/// Copy the block scalar `scalar` with its body shifted to `target`.
+/// Returns whether the copy ends with a line break.
+fn build_block_scalar(builder: &mut GreenNodeBuilder, scalar: &SyntaxNode, target: usize) -> bool {
+    let body = crate::nodes::mapping::block_scalar_content_indent(scalar).unwrap_or(target);
+    builder.start_node(SyntaxKind::SCALAR.into());
+    let ends_with_newline = crate::as_yaml::copy_node_content_reindent(
+        builder,
+        scalar,
+        target as isize - body as isize,
+    );
+    builder.finish_node();
+    ends_with_newline
 }
 
 /// The index just past the NEWLINE that ends `children[start..]`, if only

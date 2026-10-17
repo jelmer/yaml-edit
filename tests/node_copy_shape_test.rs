@@ -428,3 +428,21 @@ fn test_new_entry_with_multiline_explicit_key() {
     let copied = nested.keys().next().unwrap();
     assert_eq!(copied.as_scalar().unwrap().as_string(), "a b");
 }
+
+#[test]
+fn test_set_sequence_item_to_block_scalar() {
+    for (target, expected) in [
+        ("- 1\n- 2\n", "- |\n  text\n- 2\n"),
+        ("- 1\n", "- |\n  text\n"),
+        ("a:\n  - 1\n  - 2\n", "a:\n  - |\n    text\n  - 2\n"),
+    ] {
+        let file = YamlFile::from_str(target).unwrap();
+        let root = file.document().unwrap();
+        let sequence = match root.as_sequence() {
+            Some(s) => s,
+            None => root.as_mapping().unwrap().get_sequence("a").unwrap(),
+        };
+        sequence.set(0, value_of("k: |\n      text\n", "k"));
+        assert_parser_shaped(&file, expected);
+    }
+}

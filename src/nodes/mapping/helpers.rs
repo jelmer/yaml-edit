@@ -181,7 +181,7 @@ pub(super) fn find_key_line_comment(entry: &SyntaxNode) -> Option<(String, Strin
 /// True if `source` is a block scalar (literal `|` or folded `>`) - its
 /// first token is the block indicator that must sit on the same line as
 /// the key.
-pub(super) fn is_block_scalar(source: &SyntaxNode) -> bool {
+pub(crate) fn is_block_scalar(source: &SyntaxNode) -> bool {
     source.kind() == SyntaxKind::SCALAR
         && source
             .first_token()
@@ -389,7 +389,7 @@ pub(super) fn source_anchor_text(source: &SyntaxNode) -> Option<String> {
 /// Find the content indent of a block scalar - the INDENT token right after
 /// the `|`/`>` indicator and its NEWLINE. Returns `None` if the scalar is
 /// empty (no content lines).
-pub(super) fn block_scalar_content_indent(scalar: &SyntaxNode) -> Option<usize> {
+pub(crate) fn block_scalar_content_indent(scalar: &SyntaxNode) -> Option<usize> {
     let mut after_newline = false;
     for child in scalar.children_with_tokens() {
         if let Some(tok) = child.as_token() {

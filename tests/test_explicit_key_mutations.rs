@@ -1,5 +1,29 @@
 mod common;
 use common::{assert_cst_ok, assert_file_cst_ok};
+use rowan::ast::AstNode;
+use std::str::FromStr;
+use yaml_edit::{debug, Mapping, YamlFile};
+
+/// Check that `file` has the same tree shape as a re-parse of its text.
+#[track_caller]
+fn assert_parser_shaped(file: &YamlFile) {
+    assert_file_cst_ok(file);
+    let reparsed = YamlFile::from_str(&file.to_string()).unwrap();
+    assert_eq!(
+        debug::tree_to_string(file.syntax()),
+        debug::tree_to_string(reparsed.syntax())
+    );
+}
+
+/// Apply `edit` to the root mapping of `source`, check the result is shaped
+/// as the parser would shape it, and return its text.
+#[track_caller]
+fn edit_root(source: &str, edit: impl FnOnce(&Mapping)) -> String {
+    let file = YamlFile::from_str(source).unwrap();
+    edit(&file.document().unwrap().as_mapping().unwrap());
+    assert_parser_shaped(&file);
+    file.to_string()
+}
 
 #[test]
 fn test_explicit_key_mutations() {
@@ -105,7 +129,7 @@ fn test_explicit_key_set_nested_keeps_indent() {
         .get_mapping("outer")
         .unwrap();
     outer.set("b", "9");
-    assert_file_cst_ok(&doc);
+    assert_parser_shaped(&doc);
     assert_eq!(doc.to_string(), "outer:\n  ? a\n  : 1\n  ? b\n  : '9'\n");
 }
 
@@ -123,7 +147,7 @@ fn test_explicit_key_insert_at_index_middle_keeps_indent() {
         .get_mapping("outer")
         .unwrap();
     outer.insert_at_index(1, "b", "9");
-    assert_file_cst_ok(&doc);
+    assert_parser_shaped(&doc);
     assert_eq!(
         doc.to_string(),
         "outer:\n  ? a\n  : 1\n  ? b\n  : '9'\n  ? c\n  : 2\n"
@@ -144,7 +168,7 @@ fn test_explicit_key_insert_at_index_first_keeps_indent() {
         .get_mapping("outer")
         .unwrap();
     outer.insert_at_index(0, "a", "9");
-    assert_file_cst_ok(&doc);
+    assert_parser_shaped(&doc);
     assert_eq!(
         doc.to_string(),
         "outer:\n  ? a\n  : '9'\n  ? b\n  : 1\n  ? c\n  : 2\n"
@@ -220,4 +244,99 @@ fn renaming_a_plain_key_stays_inline() {
     assert!(mapping.rename_key("a", "z"));
     assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "z: 1\nb: 2\n");
+}
+
+#[test]
+fn appended_explicit_key_entry_leaves_line_break_to_mapping() {
+    assert_eq!(
+        edit_root("? a\n: 1\n", |m| m.set("b", 2)),
+        "? a\n: 1\n? b\n: 2\n"
+    );
+}
+
+#[test]
+fn explicit_key_entry_inserted_at_index_leaves_line_break_to_mapping() {
+    let source = "? a\n: 1\n? c\n: 3\n";
+    assert_eq!(
+        edit_root(source, |m| m.insert_at_index(0, "b", 2)),
+        "? b\n: 2\n? a\n: 1\n? c\n: 3\n"
+    );
+    assert_eq!(
+        edit_root(source, |m| m.insert_at_index(1, "b", 2)),
+        "? a\n: 1\n? b\n: 2\n? c\n: 3\n"
+    );
+    assert_eq!(
+        edit_root(source, |m| m.insert_at_index(2, "b", 2)),
+        "? a\n: 1\n? c\n: 3\n? b\n: 2\n"
+    );
+}
+
+#[test]
+fn explicit_key_entry_placed_by_field_order_leaves_line_break_to_mapping() {
+    let source = "? a\n: 1\n? c\n: 3\n";
+    assert_eq!(
+        edit_root(source, |m| m.set_with_field_order("b", 2, ["a", "b", "c"])),
+        "? a\n: 1\n? b\n: 2\n? c\n: 3\n"
+    );
+    assert_eq!(
+        edit_root(source, |m| m.set_with_field_order("b", 2, ["b", "a", "c"])),
+        "? b\n: 2\n? a\n: 1\n? c\n: 3\n"
+    );
+}
+
+#[test]
+fn unterminated_explicit_key_entry_gets_line_break_in_mapping() {
+    assert_eq!(
+        edit_root("? a\n: 1", |m| m.set("b", 2)),
+        "? a\n: 1\n? b\n: 2\n"
+    );
+    assert_eq!(
+        edit_root("? a\n: 1", |m| m.set_with_field_order("b", 2, ["a", "b"])),
+        "? a\n: 1\n? b\n: 2\n"
+    );
+    assert_eq!(
+        edit_root("? b\n: 2\n? a\n: 1", |m| {
+            m.set_with_field_order("c", 3, ["b", "c", "a"])
+        }),
+        "? b\n: 2\n? c\n: 3\n? a\n: 1"
+    );
+}
+
+#[test]
+fn explicit_key_block_value_replaced_by_scalar_leaves_line_break_to_mapping() {
+    assert_eq!(
+        edit_root("? a\n:\n  x: 1\n? c\n: 3\n", |m| m.set("a", 5)),
+        "? a\n: 5\n? c\n: 3\n"
+    );
+}
+
+#[test]
+fn commented_key_inserted_mid_mapping_leaves_line_break_to_mapping() {
+    let key = YamlFile::from_str("- 1  # one\n- 2\n")
+        .unwrap()
+        .document()
+        .unwrap()
+        .as_sequence()
+        .unwrap();
+    assert_eq!(
+        edit_root("a: 1\nc: 3\n", |m| m.insert_at_index(1, &key, 2)),
+        "a: 1\n? [1,  # one\n  2]\n: 2\nc: 3\n"
+    );
+}
+
+#[test]
+fn nested_explicit_key_set_then_renamed_matches_parser() {
+    let file = YamlFile::from_str("m:\n  ? a\n  : 1\n").unwrap();
+    let m = file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("m")
+        .unwrap();
+    m.set("u", "0");
+    assert_parser_shaped(&file);
+    assert!(m.rename_key("u", "z"));
+    assert_parser_shaped(&file);
+    assert_eq!(file.to_string(), "m:\n  ? a\n  : 1\n  ? z\n  : '0'\n");
 }

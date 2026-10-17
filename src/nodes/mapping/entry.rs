@@ -125,21 +125,15 @@ impl MappingEntry {
         crate::nodes::build_key_content(&mut builder, &key);
         let key_has_newline = false;
         debug_assert!(!key_has_newline, "Keys should not end with newlines");
-        // The `:` goes on its own line at the entry's own column. Where that
-        // column is indented, the parser consumes the line break and the
-        // indent together as a multi-line key continuation and keeps both
-        // inside KEY; at column 0 there is no indent to consume, so the
-        // break stays a sibling of KEY. Match whichever shape applies, or
-        // rename_key -- which replaces the whole KEY node -- drops the break
-        // and collapses the entry onto one line.
-        if use_explicit_key && key_indent > 0 {
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-            builder.token(SyntaxKind::INDENT.into(), &" ".repeat(key_indent));
-        }
         builder.finish_node();
 
-        if use_explicit_key && key_indent == 0 {
+        // The `:` goes on its own line at the entry's own column; the parser
+        // keeps that line break and indent as siblings of KEY.
+        if use_explicit_key {
             builder.token(SyntaxKind::NEWLINE.into(), "\n");
+            if key_indent > 0 {
+                builder.token(SyntaxKind::INDENT.into(), &" ".repeat(key_indent));
+            }
         }
 
         builder.token(SyntaxKind::COLON.into(), ":");
@@ -500,6 +494,7 @@ impl MappingEntry {
         // one.
         if !self.ends_with_newline() {
             self.append(vec![fresh_token(SyntaxKind::NEWLINE, "\n")]);
+            crate::nodes::hand_line_break_to_mapping(&self.0);
         }
     }
 

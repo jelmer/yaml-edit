@@ -14,6 +14,11 @@ sides add items at the same place, all of them are kept, ours first, and an
 item both added appears once. Items both sides changed are merged in turn,
 so edits to different fields of the same list entry combine.
 
+Changes to different parts of the same line combine too: a changed value on
+one side and a changed comment after it on the other, or a respelled key
+and a changed value. If one side only respelled a value, for example by
+quoting it, the other side's change to it wins.
+
 Scalars, such as multi-line strings, and comments fall back to a
 line-by-line merge using [merge3](https://crates.io/crates/merge3).
 Collections are never merged line by line: if their structure cannot be
@@ -108,6 +113,48 @@ services:
 ```
 
 Where both sides added something at the same place, ours comes first.
+
+### Changes on the same line
+
+Here both sides change every line, but never the same part of it. A plain
+text merge treats this as a single conflict.
+
+Ours:
+
+```diff
+-replicas: 2  # one per zone
++replicas: 3  # one per zone
+-image: nginx:1.25
++image: 'nginx:1.25'
+-resources: {cpu: 500m, memory: 256Mi}
++resources: {cpu: 750m, memory: 256Mi}
+-tags: [web, public]
++tags: [internal, web, public]
+```
+
+Theirs:
+
+```diff
+-replicas: 2  # one per zone
++replicas: 2  # one per zone, see RUNBOOK.md
+-image: nginx:1.25
++image: nginx:1.27  # pinned
+-resources: {cpu: 500m, memory: 256Mi}
++resources: {cpu: 500m, memory: 512Mi}
+-tags: [web, public]
++tags: [web, public, beta]
+```
+
+Result, without conflicts:
+
+```yaml
+replicas: 3  # one per zone, see RUNBOOK.md
+image: nginx:1.27  # pinned
+resources: {cpu: 750m, memory: 512Mi}
+tags: [internal, web, public, beta]
+```
+
+Ours only quoted the image, so theirs' new version wins there.
 
 ### Formatting and comments
 

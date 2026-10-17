@@ -96,5 +96,5 @@ fn readme_examples() {
         assert_eq!(&result.text, expected, "{title}");
         checked += 1;
     }
-    assert_eq!(checked, 6);
+    assert_eq!(checked, 7);
 }

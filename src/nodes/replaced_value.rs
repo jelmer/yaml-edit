@@ -106,12 +106,8 @@ fn starts_or_is_blank_line(token: &SyntaxToken) -> bool {
 /// after that value. A detached entry has nothing after it, so they go at
 /// its end.
 pub(crate) fn restore_trailing_lines(entry: &SyntaxNode, lines: Vec<SyntaxToken>) {
-    let block_scalar = ending_block_scalar(entry);
-    // TODO: a blank line after a block scalar reads as part of its body,
-    // which changes a kept (`|+`) one, so such lines are dropped there.
     let elements: Vec<_> = lines
         .iter()
-        .filter(|t| block_scalar.is_none() || t.kind() != SyntaxKind::NEWLINE)
         .map(|t| fresh_token(t.kind(), t.text()).into())
         .collect();
     let (parent, after) = match entry.parent() {
@@ -127,7 +123,8 @@ pub(crate) fn restore_trailing_lines(entry: &SyntaxNode, lines: Vec<SyntaxToken>
     };
     parent.splice_children(after..after, elements);
 
-    if let Some(scalar) = block_scalar {
+    if let Some(scalar) = ending_block_scalar(entry) {
+        absorb_blank_lines_after(&scalar);
         dedent_comment_line_after(entry, &scalar);
         return;
     }
@@ -170,12 +167,73 @@ fn ending_block_scalar(entry: &SyntaxNode) -> Option<SyntaxNode> {
         .filter(crate::nodes::mapping::is_block_scalar)
 }
 
+/// The column of the body of `scalar`, a block scalar, if it is known:
+/// its explicit indentation indicator counted from the parent's column,
+/// or else that of its first line.
+fn block_scalar_body_column(scalar: &SyntaxNode) -> Option<usize> {
+    match crate::nodes::scalar_node::block_scalar_indicators(scalar).1 {
+        Some(indent) => Some(crate::nodes::scalar_node::block_parent_column(scalar) + indent),
+        None => crate::nodes::mapping::block_scalar_content_indent(scalar),
+    }
+}
+
+/// Move the blank lines after `scalar`, the block scalar a value was just
+/// replaced with, into it, as the parser reads them as part of its body.
+///
+/// They must not change its value. Spaces on such a line past the body's
+/// column would be body text, and a tab cannot start a body line at all,
+/// so those lines lose their white space. A kept (`|+`) scalar's value
+/// takes in every trailing blank line, and only a comment line could end
+/// it before them, so after one the blank lines are dropped.
+fn absorb_blank_lines_after(scalar: &SyntaxNode) {
+    let Some(end) = scalar
+        .last_token()
+        .filter(|t| t.kind() == SyntaxKind::NEWLINE)
+    else {
+        return;
+    };
+    let mut lines = Vec::new();
+    let mut next = end.next_token();
+    loop {
+        let space = next
+            .clone()
+            .filter(|t| matches!(t.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE));
+        let Some(line_break) = space
+            .as_ref()
+            .map_or(next.clone(), |t| t.next_token())
+            .filter(|t| t.kind() == SyntaxKind::NEWLINE)
+        else {
+            break;
+        };
+        next = line_break.next_token();
+        lines.push((space, line_break));
+    }
+    let keep = crate::nodes::scalar_node::block_scalar_indicators(scalar).0
+        == crate::nodes::scalar_node::Chomping::Keep;
+    let body = block_scalar_body_column(scalar);
+    let mut elements = Vec::new();
+    for (space, line_break) in lines {
+        if let Some(space) = space {
+            let text = space.text();
+            if !keep && text.bytes().all(|b| b == b' ') && body.map_or(true, |b| text.len() <= b) {
+                elements.push(fresh_token(SyntaxKind::INDENT, text).into());
+            }
+            space.detach();
+        }
+        if !keep {
+            elements.push(fresh_token(SyntaxKind::NEWLINE, line_break.text()).into());
+        }
+        line_break.detach();
+    }
+    append_children(scalar, elements);
+}
+
 /// Move a comment line after `entry` that is indented as far as the body
 /// of `scalar`, the block scalar `entry` ends with, back to the entry's
 /// column, so that it stays a comment rather than becoming body text.
 fn dedent_comment_line_after(entry: &SyntaxNode, scalar: &SyntaxNode) {
     let column = crate::as_yaml::source_base_indent(entry);
-    let body = crate::nodes::mapping::block_scalar_content_indent(scalar).unwrap_or(column + 1);
+    let body = block_scalar_body_column(scalar).unwrap_or(column + 1);
     let mut next = entry.last_token().and_then(|t| t.next_token());
     while let Some(t) = next.clone().filter(|t| t.kind() == SyntaxKind::NEWLINE) {
         next = t.next_token();

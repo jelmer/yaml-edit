@@ -301,7 +301,11 @@ Comments on the old value's later lines go with it:
 `a:  # c\n  # d\n  x: 1\n` with `a` set to `5` gives `a: 5  # c\n`.
 Comments, blank lines and indentation outside the old value are kept as
 they are, except that a comment line that would read as part of a new
-block scalar's body is moved back to the entry's column.
+block scalar's body is moved back to the entry's column. The blank lines
+after a new block scalar are part of its body, as the parser reads them;
+spaces on them that would be body text are dropped. A kept (`|+`) block
+scalar takes every blank line after it into its value, and only a
+comment line could end it before them, so those blank lines are dropped.
 
 A block scalar whose header line has a comment of its own (`|  # src`)
 leaves no room on that line for the entry's comment, which then goes on

@@ -389,3 +389,119 @@ fn detached_entry_set_value() {
         debug::validate_tree(entry.syntax()).unwrap();
     }
 }
+
+fn scalar_string(node: &YamlNode) -> String {
+    node.as_scalar().unwrap().as_string()
+}
+
+/// The parser reads the blank lines after a block scalar as part of its
+/// body, so they move into a new one. A kept (`|+`) scalar would take them
+/// into its value, so there they are dropped.
+#[test]
+fn blank_lines_after_new_block_scalar() {
+    for (src, path, value, expected) in [
+        (
+            "a:\n  x: 1\n\nb: 2\n",
+            "",
+            "v: |\n  text\n",
+            "a: |\n  text\n\nb: 2\n",
+        ),
+        (
+            "a: 1\n\nb: 2\n",
+            "",
+            "v: |\n  text\n",
+            "a: |\n  text\n\nb: 2\n",
+        ),
+        (
+            "a:\n  x: 1\n\n\nb: 2\n",
+            "",
+            "v: |-\n  text\n",
+            "a: |-\n  text\n\n\nb: 2\n",
+        ),
+        ("a: 1\n\n", "", "v: >\n  text\n", "a: >\n  text\n\n"),
+        (
+            "o:\n  a:\n    x: 1\n\nb: 2\n",
+            "o",
+            "v: |\n  text\n",
+            "o:\n  a: |\n    text\n\nb: 2\n",
+        ),
+        (
+            "a:\n  x: 1\n\n  # f\n\nb: 2\n",
+            "",
+            "v: |\n  text\n",
+            "a: |\n  text\n\n# f\n\nb: 2\n",
+        ),
+        (
+            "a:\n  x: 1\n \nb: 2\n",
+            "",
+            "v: |\n  text\n",
+            "a: |\n  text\n \nb: 2\n",
+        ),
+        (
+            "a:\n  x: 1\n    \nb: 2\n",
+            "",
+            "v: |\n  text\n",
+            "a: |\n  text\n\nb: 2\n",
+        ),
+        (
+            "a: 1\n   \nb: 2\n",
+            "",
+            "v: |1\n  text\n",
+            "a: |1\n  text\n\nb: 2\n",
+        ),
+        (
+            "a: 1\n # f\nb: 2\n",
+            "",
+            "v: |1\n  text\n",
+            "a: |1\n  text\n# f\nb: 2\n",
+        ),
+        (
+            "a:\n  x: 1\n\t\nb: 2\n",
+            "",
+            "v: |\n  text\n",
+            "a: |\n  text\n\nb: 2\n",
+        ),
+        (
+            "a:\n  x: 1\n\nb: 2\n",
+            "",
+            "v: |+\n  text\n",
+            "a: |+\n  text\nb: 2\n",
+        ),
+        (
+            "a: 1\n\nb: 2\n",
+            "",
+            "v: |+\n  text\n",
+            "a: |+\n  text\nb: 2\n",
+        ),
+        (
+            "a: 1\n\n# f\n\nb: 2\n",
+            "",
+            "v: |+\n  text\n",
+            "a: |+\n  text\n# f\n\nb: 2\n",
+        ),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        let source = value_of(value);
+        mapping_at(&file, path).set("a", &source);
+        assert_parser_shaped(&file, expected, src);
+        let set = mapping_at(&YamlFile::from_str(expected).unwrap(), path)
+            .get("a")
+            .unwrap();
+        assert_eq!(scalar_string(&set), scalar_string(&source), "{src:?}");
+    }
+
+    for (src, value, expected) in [
+        ("- 1\n\n- 2\n", "v: |\n  text\n", "- |\n  text\n\n- 2\n"),
+        ("- x: 1\n\n- 2\n", "v: |\n  text\n", "- |\n  text\n\n- 2\n"),
+        ("- 1\n\n- 2\n", "v: |+\n  text\n", "- |+\n  text\n- 2\n"),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        let source = value_of(value);
+        sequence_at(&file, "").set(0, &source);
+        assert_parser_shaped(&file, expected, src);
+        let set = sequence_at(&YamlFile::from_str(expected).unwrap(), "")
+            .get(0)
+            .unwrap();
+        assert_eq!(scalar_string(&set), scalar_string(&source), "{src:?}");
+    }
+}

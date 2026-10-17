@@ -1,3 +1,4 @@
+use super::replaced_value;
 use super::{
     append_children, ensure_trailing_newline, entry_indices, fresh_token, has_child_token,
     nth_entry_index, strip_flow_separator, Lang, SyntaxNode,
@@ -195,6 +196,20 @@ fn rebuild_entry_with_value(
     SyntaxNode::new_root_mut(builder.finish())
 }
 
+/// The item of a SEQUENCE_ENTRY.
+fn entry_item(entry: &SyntaxNode) -> Option<SyntaxNode> {
+    entry.children().find(|n| {
+        matches!(
+            n.kind(),
+            SyntaxKind::SCALAR
+                | SyntaxKind::MAPPING
+                | SyntaxKind::SEQUENCE
+                | SyntaxKind::ALIAS
+                | SyntaxKind::TAGGED_NODE
+        )
+    })
+}
+
 /// An INDENT token for `indentation`, or none at column 0, where the
 /// parser emits none.
 fn indent_token(indentation: &str) -> Option<rowan::SyntaxElement<Lang>> {
@@ -239,8 +254,28 @@ fn build_entry_value(
         .flatten()
     {
         Some(flow_value) => flow_value.build_content(builder, indent(&flow_value), flow_context),
-        None => value.build_content(builder, indent(value), flow_context),
+        None => match value
+            .as_node()
+            .filter(|n| crate::nodes::mapping::is_block_scalar(n))
+        {
+            Some(scalar) => build_block_scalar(builder, scalar, dash_column + 2),
+            None => value.build_content(builder, indent(value), flow_context),
+        },
     }
+}
+
+/// Copy the block scalar `scalar` with its body shifted to `target`.
+/// Returns whether the copy ends with a line break.
+fn build_block_scalar(builder: &mut GreenNodeBuilder, scalar: &SyntaxNode, target: usize) -> bool {
+    let body = crate::nodes::mapping::block_scalar_content_indent(scalar).unwrap_or(target);
+    builder.start_node(SyntaxKind::SCALAR.into());
+    let ends_with_newline = crate::as_yaml::copy_node_content_reindent(
+        builder,
+        scalar,
+        target as isize - body as isize,
+    );
+    builder.finish_node();
+    ends_with_newline
 }
 
 /// The index just past the NEWLINE that ends `children[start..]`, if only
@@ -899,10 +934,29 @@ impl Sequence {
             return false;
         };
         let node = children[i].as_node().expect("entry index names a node");
-        let new_entry = rebuild_entry_with_value(node, &value, self.is_flow_style());
+        let flow = self.is_flow_style();
+        let (trailing_lines, dash_comment) = match entry_item(node) {
+            Some(old) if !flow => {
+                let lines = replaced_value::take_trailing_lines(&old);
+                replaced_value::remove_lifted_comment(node, &old);
+                (lines, replaced_value::take_dash_line_comment(node))
+            }
+            _ => (Vec::new(), None),
+        };
+        let new_entry = rebuild_entry_with_value(node, &value, flow);
 
         // Replace the old SEQUENCE_ENTRY with the new one
         self.0.splice_children(i..i + 1, vec![new_entry.into()]);
+        let new_entry = self
+            .0
+            .children_with_tokens()
+            .nth(i)
+            .and_then(|c| c.into_node());
+        let new_entry = new_entry.expect("the new entry was just spliced in");
+        replaced_value::restore_trailing_lines(&new_entry, trailing_lines);
+        if let Some(comment) = dash_comment {
+            replaced_value::add_dash_line_comment(&new_entry, comment);
+        }
         true
     }
 
@@ -1480,8 +1534,8 @@ mod tests {
         use crate::{AsYaml, Document};
 
         for (src, expected) in [
-            ("-  # c\n  x: 1\n- 2\n", "-  # c\n  5\n- 2\n"),
-            ("- # c\n  - 1\n", "- # c\n  5\n"),
+            ("-  # c\n  x: 1\n- 2\n", "- 5  # c\n- 2\n"),
+            ("- # c\n  - 1\n", "- 5 # c\n"),
         ] {
             let doc = Document::from_str(src).unwrap();
             assert!(doc.as_sequence().unwrap().set(0, 5));

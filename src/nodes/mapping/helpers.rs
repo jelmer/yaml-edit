@@ -181,7 +181,7 @@ pub(super) fn find_key_line_comment(entry: &SyntaxNode) -> Option<(String, Strin
 /// True if `source` is a block scalar (literal `|` or folded `>`) - its
 /// first token is the block indicator that must sit on the same line as
 /// the key.
-pub(super) fn is_block_scalar(source: &SyntaxNode) -> bool {
+pub(crate) fn is_block_scalar(source: &SyntaxNode) -> bool {
     source.kind() == SyntaxKind::SCALAR
         && source
             .first_token()
@@ -247,36 +247,6 @@ pub(crate) fn build_block_value_node(source: &SyntaxNode, target: usize) -> Bloc
         on_key_line: is_scalar || anchor.is_some(),
         ends_with_newline,
     }
-}
-
-/// Put `comment` (the whitespace before it, then its text) at the end of
-/// the first line of `value`, a VALUE built by [`build_block_value_node`]
-/// that starts on the key line. The parser keeps such a comment beside the
-/// anchor, tag or block scalar header it follows.
-// TODO: if that line already has a comment (a block scalar's header
-// comment), the value's own is kept and `comment` is silently dropped, as
-// a line holds only one.
-pub(super) fn add_key_line_comment(value: &SyntaxNode, comment: (String, String)) {
-    let first_line: Vec<_> = value
-        .descendants_with_tokens()
-        .filter_map(|c| c.into_token())
-        .take_while(|t| t.kind() != SyntaxKind::NEWLINE)
-        .collect();
-    if first_line.iter().any(|t| t.kind() == SyntaxKind::COMMENT) {
-        return;
-    }
-    let last = first_line
-        .last()
-        .expect("a value on the key line starts with a token");
-    let parent = last.parent().expect("a token has a parent");
-    let at = last.index() + 1;
-    parent.splice_children(
-        at..at,
-        vec![
-            fresh_token(SyntaxKind::WHITESPACE, &comment.0).into(),
-            fresh_token(SyntaxKind::COMMENT, &comment.1).into(),
-        ],
-    );
 }
 
 /// `value` built as a standalone node, if it has no node of its own but
@@ -389,7 +359,7 @@ pub(super) fn source_anchor_text(source: &SyntaxNode) -> Option<String> {
 /// Find the content indent of a block scalar - the INDENT token right after
 /// the `|`/`>` indicator and its NEWLINE. Returns `None` if the scalar is
 /// empty (no content lines).
-pub(super) fn block_scalar_content_indent(scalar: &SyntaxNode) -> Option<usize> {
+pub(crate) fn block_scalar_content_indent(scalar: &SyntaxNode) -> Option<usize> {
     let mut after_newline = false;
     for child in scalar.children_with_tokens() {
         if let Some(tok) = child.as_token() {

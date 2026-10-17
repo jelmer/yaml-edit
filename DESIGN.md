@@ -272,6 +272,24 @@ DOCUMENT
       NEWLINE
 ```
 
+## Comments around a replaced value
+
+Replacing a value (`Mapping::set` on an existing key, `Sequence::set`,
+`set_path`) removes the comments inside the old value along with it:
+`a:  # c\n  # d\n  x: 1\n` with `a` set to `5` gives `a: 5  # c\n`.
+The comment on the key's line after the colon, or on a sequence item's
+dash line, belongs to the entry and stays, moving after the new value
+or onto the line where a new block value starts. A comment on that line
+that belongs to the first entry of a nested collection (`- x: 1  # c`)
+is part of the value. Comments, blank lines and indentation outside the
+old value are kept as they are, except that a comment line that would
+read as part of a new block scalar's body is moved back to the entry's
+column.
+
+A block scalar whose header line has a comment of its own (`|  # src`)
+leaves no room on that line for the entry's comment, which then goes on
+a line of its own directly above the entry, at the entry's column.
+
 ## Paths, anchors and aliases
 
 Paths look like `server.hosts[0].name`, with `\` escapes for keys that

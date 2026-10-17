@@ -126,6 +126,8 @@ pub(super) struct Parser {
     /// Every comment of a run gets asked about in turn, and each would
     /// otherwise rescan the rest of the run.
     comment_run_scan: Cell<Option<(usize, usize, Option<usize>)>>,
+    /// The kind of the token emitted last.
+    pub(super) previous_kind: Option<SyntaxKind>,
 }
 
 impl Parser {
@@ -162,6 +164,7 @@ impl Parser {
             flow_depth: 0,
             nesting_depth: 0,
             comment_run_scan: Cell::new(None),
+            previous_kind: None,
         }
     }
 
@@ -879,6 +882,7 @@ impl Parser {
             }
 
             self.builder.token(kind.into(), &text);
+            self.previous_kind = Some(kind);
             if self.current_token_index > 0 {
                 self.current_token_index -= 1;
             }

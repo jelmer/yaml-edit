@@ -249,6 +249,33 @@ fn preserves_blank_line_between_entries() {
     assert_eq!(tf.to_string(), "a:\n  - x\n\nb: 2\n");
 }
 
+/// A block scalar's body owns the line break that ends the entry, so an
+/// inline value replacing it needs one of its own.
+#[test]
+fn scalar_over_block_scalar_keeps_line_break() {
+    for (src, path, expected) in [
+        ("k: |\n  text\nb: 2\n", &[][..], "k: 5\nb: 2\n"),
+        ("k: >-\n  text\n", &[], "k: 5\n"),
+        (
+            "o:\n  k: |\n    text\n  b: 2\n",
+            &["o"],
+            "o:\n  k: 5\n  b: 2\n",
+        ),
+        ("? k\n: |\n  text\nb: 2\n", &[], "? k\n: 5\nb: 2\n"),
+    ] {
+        let (tf, root) = parse(src);
+        dig(&root, path).set("k", 5);
+        assert_file_cst_ok(&tf);
+        assert_eq!(tf.to_string(), expected, "{src:?}");
+        let reparsed = YamlFile::from_str(expected).unwrap();
+        assert_eq!(
+            debug::tree_to_string(tf.syntax()),
+            debug::tree_to_string(reparsed.syntax()),
+            "{src:?}"
+        );
+    }
+}
+
 #[test]
 fn scalar_over_block_preserves_key_line_comment() {
     let (tf, root) = parse("k:  # sticky\n  - old\n");

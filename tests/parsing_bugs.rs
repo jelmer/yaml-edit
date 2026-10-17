@@ -4481,6 +4481,32 @@ fn test_block_scalar_trailing_comment_at_column_zero() {
     }
 }
 
+/// A comment line after a block scalar is a line of the mapping, wherever
+/// it starts: at column 0 it is not a trailing comment of the value.
+#[test]
+fn test_block_scalar_followed_by_comment_line_at_column_zero() {
+    use rowan::ast::AstNode;
+
+    for (yaml, entry) in [
+        ("k: |\n  a\n# c\nz: 1\n", "k: |\n  a\n"),
+        ("k: |\n  a\n\n# c\nz: 1\n", "k: |\n  a\n\n"),
+        ("k: >  # h\n  a\n# c\n", "k: >  # h\n  a\n"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let first = mapping.entries().next().unwrap();
+        assert_eq!(first.syntax().to_string(), entry, "{yaml:?}");
+        let comments: Vec<_> = mapping
+            .syntax()
+            .children_with_tokens()
+            .filter(|c| c.kind() == yaml_edit::SyntaxKind::COMMENT)
+            .map(|c| c.to_string())
+            .collect();
+        assert_eq!(comments, vec!["# c".to_string()], "{yaml:?}");
+    }
+}
+
 /// What ends a document must not change the shape of its last line: `---`
 /// and `...` are not content for a lone annotation to adopt, nor a dedent
 /// that moves a comment line out of the collection it is indented under.

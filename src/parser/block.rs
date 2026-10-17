@@ -978,12 +978,16 @@ impl Parser {
                 has_value = true;
 
                 // Capture any trailing whitespace and comment on the same line (before NEWLINE)
-                // This keeps inline comments like "value  # comment" together in the VALUE node
-                if self.current() == Some(SyntaxKind::WHITESPACE) {
-                    self.bump(); // emit whitespace inside VALUE
-                }
-                if self.current() == Some(SyntaxKind::COMMENT) {
-                    self.bump(); // emit inline comment inside VALUE
+                // This keeps inline comments like "value  # comment" together in the VALUE node.
+                // A block scalar ends at a line break, after which a comment
+                // is a line of the mapping.
+                if self.previous_kind != Some(SyntaxKind::NEWLINE) {
+                    if self.current() == Some(SyntaxKind::WHITESPACE) {
+                        self.bump(); // emit whitespace inside VALUE
+                    }
+                    if self.current() == Some(SyntaxKind::COMMENT) {
+                        self.bump(); // emit inline comment inside VALUE
+                    }
                 }
             } else if self.current() == Some(SyntaxKind::NEWLINE) {
                 self.skip_ws_and_newlines();

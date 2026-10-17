@@ -634,6 +634,7 @@ pub mod directive;
 pub mod document;
 pub mod entry;
 pub mod mapping;
+mod replaced_value;
 pub mod scalar_node;
 pub mod sequence;
 pub mod tagged_node;

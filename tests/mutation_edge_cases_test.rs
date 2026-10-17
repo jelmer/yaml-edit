@@ -702,3 +702,24 @@ fn test_set_omitted_value_at_end_of_input() {
     assert_eq!(yaml.to_string(), "x: 1\na: 5");
     assert_file_cst_ok(&yaml);
 }
+
+/// A comment after a flow value stays where it is when the value is
+/// replaced, rather than being copied next to the new value.
+#[test]
+fn test_set_flow_value_keeps_trailing_comment_once() {
+    for (input, expected) in [
+        ("{\n  m: 1 # c\n}\n", "{\n  m: 5 # c\n}\n"),
+        ("{m: 1 # c\n}\n", "{m: 5 # c\n}\n"),
+        ("{\n  m: # c\n}\n", "{\n  m: 5 # c\n}\n"),
+        ("{\n  m: # c\n    1\n}\n", "{\n  m: # c\n    5\n}\n"),
+    ] {
+        let yaml = YamlFile::from_str(input).unwrap();
+        yaml.document().unwrap().as_mapping().unwrap().set("m", 5);
+        assert_eq!(yaml.to_string(), expected, "input: {input:?}");
+        assert_file_cst_ok(&yaml);
+        assert_eq!(
+            debug::tree_to_string(yaml.syntax()),
+            debug::tree_to_string(YamlFile::from_str(expected).unwrap().syntax())
+        );
+    }
+}

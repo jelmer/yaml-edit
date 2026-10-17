@@ -319,8 +319,19 @@ impl MappingEntry {
     /// Give a value that took the place of an omitted one, at child
     /// `value_idx`, the separator it lacked: `a:` becomes `a: v`, not the
     /// single plain scalar `a:v`, and in flow context `{a}` becomes
-    /// `{a: v}`, not `{av}`.
+    /// `{a: v}`, not `{av}`. A comment right after it is moved off it too.
     fn separate_filled_value(&self, value_idx: usize, flow_context: bool) {
+        let precedes_comment = self
+            .0
+            .children_with_tokens()
+            .nth(value_idx + 1)
+            .is_some_and(|c| c.kind() == SyntaxKind::COMMENT);
+        if precedes_comment {
+            self.insert_at(
+                value_idx + 1,
+                vec![fresh_token(SyntaxKind::WHITESPACE, " ")],
+            );
+        }
         let has_colon = self
             .0
             .children_with_tokens()
@@ -533,14 +544,18 @@ impl MappingEntry {
         // Build the new VALUE. Without an old anchor to keep, a node-backed
         // inline value preceded by an `&anchor` in its parent VALUE keeps
         // that anchor, so aliases pointing at the moved value still resolve.
-        // Any key-line comment from the old entry (whether it lived inside
-        // the old VALUE or at MAPPING_ENTRY level between COLON and VALUE)
-        // is embedded inside the new inline VALUE so it stays on the key
-        // line and doesn't swallow anything.
+        // A key-line comment that goes away with the old value (inside the
+        // old VALUE, or at MAPPING_ENTRY level before a block VALUE) is
+        // embedded inside the new inline VALUE so it stays on the key line
+        // and doesn't swallow anything. One outside an inline VALUE, as in
+        // a flow mapping, stays where it is.
         let anchor = old_anchor
             .map(str::to_string)
             .or_else(|| new_value.as_node().and_then(source_anchor_text));
-        let trailing_comment = find_key_line_comment(&self.0);
+        let old_was_block = self.value().is_some_and(|v| value_is_block(&v));
+        let trailing_comment = (old_was_block || self.value().is_some_and(|v| has_comment(&v)))
+            .then(|| find_key_line_comment(&self.0))
+            .flatten();
         let mut value_builder = GreenNodeBuilder::new();
         value_builder.start_node(SyntaxKind::VALUE.into());
         if let Some(a) = anchor.as_deref() {
@@ -565,7 +580,6 @@ impl MappingEntry {
             drop_tagged_anchor(&new_value_node);
         }
 
-        let old_was_block = self.value().is_some_and(|v| value_is_block(&v));
         if old_was_block {
             self.rebuild_with_inline_value(&new_value_node);
             return;

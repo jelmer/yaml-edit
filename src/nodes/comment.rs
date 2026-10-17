@@ -126,6 +126,7 @@ pub(crate) fn comments(node: &SyntaxNode) -> impl Iterator<Item = Comment> {
 
 #[cfg(test)]
 mod tests {
+    use crate::debug::assert_cst_ok;
     use crate::YamlFile;
     use std::str::FromStr;
 
@@ -174,6 +175,7 @@ mod tests {
         let file = YamlFile::from_str("key: value # teh value\n").unwrap();
         let comment = file.comments().next().unwrap();
         comment.set_text("# the value");
+        assert_cst_ok(&file);
         assert_eq!(file.to_string(), "key: value # the value\n");
     }
 
@@ -182,6 +184,7 @@ mod tests {
         let file = YamlFile::from_str("key: value #teh value\n").unwrap();
         let comment = file.comments().next().unwrap();
         comment.set_content("the value");
+        assert_cst_ok(&file);
         assert_eq!(file.to_string(), "key: value # the value\n");
     }
 
@@ -190,6 +193,7 @@ mod tests {
         let file = YamlFile::from_str("# header\nkey: value # teh value\n# footer\n").unwrap();
         let target = file.comments().nth(1).unwrap();
         target.set_text("# the value");
+        assert_cst_ok(&file);
         let texts: Vec<_> = file.comments().map(|c| c.text().to_string()).collect();
         assert_eq!(texts, vec!["# header", "# the value", "# footer"]);
     }

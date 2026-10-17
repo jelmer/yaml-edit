@@ -1119,6 +1119,7 @@ impl AsYaml for Sequence {
 }
 #[cfg(test)]
 mod tests {
+    use crate::debug::assert_cst_ok;
     use crate::yaml::YamlFile;
     use std::str::FromStr;
 
@@ -1136,6 +1137,7 @@ mod tests {
         doc.as_mapping()
             .unwrap()
             .set("s", Sequence::new_pending_block());
+        assert_cst_ok(&doc);
         let text = doc.to_string();
         assert_eq!(text, "a: 1\ns: []\n");
 
@@ -1149,8 +1151,10 @@ mod tests {
         let doc = Document::from_str("a: 1\n").unwrap();
         let root = doc.as_mapping().unwrap();
         root.set("s", Sequence::new_pending_block());
+        assert_cst_ok(&doc);
         let nested = root.get("s").unwrap();
         nested.as_sequence().unwrap().push("x");
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "a: 1\ns:\n  - x\n");
     }
 
@@ -1165,8 +1169,10 @@ mod tests {
         let doc = Document::from_str("a: 1\n").unwrap();
         let root = doc.as_mapping().unwrap();
         root.set("s", Sequence::new_flow());
+        assert_cst_ok(&doc);
         let nested = root.get("s").unwrap();
         nested.as_sequence().unwrap().push("x");
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "a: 1\ns: [x]\n");
     }
 
@@ -1180,6 +1186,7 @@ mod tests {
 
         let doc = Document::from_str("name: test\n").unwrap();
         doc.try_set_path("a.b[0]", "v").unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "name: test\na:\n  b:\n    - v\n");
     }
 
@@ -1204,6 +1211,7 @@ mod tests {
                     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
                     for _ in 0..count {
                         seq.push(crate::scalar::ScalarValue::null());
+                        assert_cst_ok(&doc);
                     }
                     doc.to_string()
                 };
@@ -1211,6 +1219,7 @@ mod tests {
                     let doc = Document::from_str(src).unwrap();
                     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
                     seq.extend_with(crate::scalar::ScalarValue::null(), count);
+                    assert_cst_ok(&doc);
                     doc.to_string()
                 };
                 assert_eq!(extended, pushed, "src={src:?} count={count}");
@@ -1234,6 +1243,7 @@ mod tests {
             .unwrap()
             .clone();
         seq.push("item1");
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "seq: [item1]");
     }
 
@@ -1249,6 +1259,7 @@ mod tests {
             .unwrap()
             .clone();
         seq.push("item1");
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "a:\n  seq: [item1]\n");
     }
 
@@ -1289,6 +1300,7 @@ mod tests {
             .unwrap()
             .clone();
         seq.push("new_item");
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "a:\n  b:\n    c:\n      - existing\n      - new_item\n"
@@ -1305,9 +1317,12 @@ mod tests {
         let doc = Document::from_str("existing: value\n").unwrap();
         let mapping = doc.as_mapping().unwrap();
         mapping.set("items", Sequence::new());
+        assert_cst_ok(&doc);
         let items = mapping.get_sequence("items").unwrap();
         items.push("apple");
+        assert_cst_ok(&doc);
         items.push("banana");
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "existing: value\nitems:\n  - apple\n  - banana\n"
@@ -1325,11 +1340,13 @@ mod tests {
         assert_eq!(seq.get(2).unwrap().as_scalar().unwrap().as_string(), "c");
 
         assert!(seq.set(1, "x"));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "- a\n- x\n- c\n");
 
         let doc = Document::from_str("- a\n- \n- c\n").unwrap();
         let seq = doc.as_sequence().unwrap();
         let removed = seq.remove(1);
+        assert_cst_ok(&doc);
         assert_eq!(
             removed.and_then(|n| n.as_scalar().map(|s| s.as_string())),
             Some(String::new())
@@ -1341,6 +1358,7 @@ mod tests {
         let seq = doc.as_sequence().unwrap();
         assert_eq!(seq.len(), 3);
         assert!(seq.set(1, "x"));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "- a\n- x\n- c\n");
     }
 
@@ -1362,11 +1380,13 @@ mod tests {
         roundtrip_ok(doc.as_node().unwrap()).unwrap();
 
         assert!(seq.set(1, "x"));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "[a, x, c]");
 
         let doc = Document::from_str("[a, , c]").unwrap();
         let seq = doc.as_sequence().unwrap();
         let removed = seq.remove(1);
+        assert_cst_ok(&doc);
         assert_eq!(
             removed.and_then(|n| n.as_scalar().map(|s| s.as_string())),
             Some(String::new())
@@ -1439,6 +1459,7 @@ mod tests {
         let seq = doc.as_sequence().unwrap();
 
         seq.set(0, "replaced");
+        assert_cst_ok(&parsed);
 
         let values: Vec<_> = seq.values().collect();
         assert_eq!(values.len(), 2);
@@ -1603,6 +1624,7 @@ mod tests {
         let seq = colors_node.as_sequence().unwrap();
 
         assert!(seq.set(0, "blue"));
+        assert_cst_ok(&parsed);
         assert_eq!(parsed.to_string(), "colors:\n  - blue\n  - keep\n");
 
         let first = seq.get(0).unwrap();
@@ -1622,6 +1644,7 @@ mod tests {
 
         // Test push
         seq.push("item3");
+        assert_cst_ok(&parsed);
         let values: Vec<_> = seq.values().collect();
         assert_eq!(values.len(), 3);
         assert_eq!(
@@ -1631,6 +1654,7 @@ mod tests {
 
         // Test insert
         seq.insert(0, "item0");
+        assert_cst_ok(&parsed);
         let values: Vec<_> = seq.values().collect();
         assert_eq!(values.len(), 4);
         assert_eq!(
@@ -1716,6 +1740,7 @@ mod tests {
         let mapping = doc.as_mapping().unwrap();
         let team = mapping.get_sequence("team").unwrap();
         team.push("Charlie");
+        assert_cst_ok(&doc);
 
         let expected = r#"team:
   - Alice
@@ -1735,7 +1760,9 @@ mod tests {
         let mapping = doc.as_mapping().unwrap();
         let team = mapping.get_sequence("team").unwrap();
         team.push("Charlie");
+        assert_cst_ok(&doc);
         team.push("Diana");
+        assert_cst_ok(&doc);
 
         let expected = r#"team:
   - Alice
@@ -1757,6 +1784,7 @@ mod tests {
         let mapping = doc.as_mapping().unwrap();
         let team = mapping.get_sequence("team").unwrap();
         team.set(1, "Robert");
+        assert_cst_ok(&doc);
 
         let expected = r#"team:
   - Alice
@@ -1780,9 +1808,12 @@ scores:
         let mapping = doc.as_mapping().unwrap();
         let team = mapping.get_sequence("team").unwrap();
         team.push("Charlie");
+        assert_cst_ok(&doc);
         let scores = mapping.get_sequence("scores").unwrap();
         scores.push(92);
+        assert_cst_ok(&doc);
         scores.set(0, 100);
+        assert_cst_ok(&doc);
 
         let expected = r#"team:
   - Alice
@@ -1810,11 +1841,15 @@ scores:
         let mapping = doc.as_mapping().unwrap();
         let config = mapping.get_mapping("config").unwrap();
         config.set("enabled", false);
+        assert_cst_ok(&doc);
         config.set("retries", 5);
+        assert_cst_ok(&doc);
 
         let servers = config.get_sequence("servers").unwrap();
         servers.push("host3");
+        assert_cst_ok(&doc);
         servers.set(0, "primary-host");
+        assert_cst_ok(&doc);
 
         let expected = r#"config:
   enabled: false
@@ -1895,10 +1930,12 @@ scores:
 
         assert_eq!(seq.len(), 3);
         let popped = seq.pop().unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(popped.to_string(), "c");
         assert_eq!(seq.len(), 2);
 
         let popped = seq.pop().unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(popped.to_string(), "b");
         assert_eq!(seq.len(), 1);
 
@@ -1906,9 +1943,11 @@ scores:
         assert_eq!(doc.to_string().trim_end(), expected);
 
         let popped = seq.pop().unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(popped.to_string(), "a");
         assert_eq!(seq.len(), 0);
         assert!(seq.pop().is_none());
+        assert_cst_ok(&doc);
     }
 
     #[test]
@@ -1920,6 +1959,7 @@ scores:
 
         assert_eq!(seq.len(), 3);
         seq.clear();
+        assert_cst_ok(&doc);
         assert_eq!(seq.len(), 0);
         assert!(seq.is_empty());
     }
@@ -2005,6 +2045,7 @@ scores:
 
         assert_eq!(seq.len(), 3);
         let removed = seq.remove(1);
+        assert_cst_ok(&doc);
         assert_eq!(removed.map(|v| v.to_string()), Some("b".to_string()));
         assert_eq!(seq.len(), 2);
 
@@ -2021,6 +2062,7 @@ scores:
 
         assert_eq!(seq.len(), 3);
         let removed = seq.remove(0);
+        assert_cst_ok(&doc);
         assert_eq!(removed.map(|v| v.to_string()), Some("a".to_string()));
         assert_eq!(seq.len(), 2);
 
@@ -2037,6 +2079,7 @@ scores:
 
         assert_eq!(seq.len(), 3);
         let removed = seq.remove(2);
+        assert_cst_ok(&doc);
         assert_eq!(removed.map(|v| v.to_string()), Some("c".to_string()));
         assert_eq!(seq.len(), 2);
 
@@ -2053,17 +2096,21 @@ scores:
 
         assert_eq!(seq.len(), 3);
         let popped = seq.pop().unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(popped.to_string(), "c");
         assert_eq!(seq.len(), 2);
 
         let popped = seq.pop().unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(popped.to_string(), "b");
         assert_eq!(seq.len(), 1);
 
         let popped = seq.pop().unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(popped.to_string(), "a");
         assert_eq!(seq.len(), 0);
         assert!(seq.pop().is_none());
+        assert_cst_ok(&doc);
     }
 
     #[test]
@@ -2075,6 +2122,7 @@ scores:
 
         assert_eq!(seq.len(), 3);
         seq.clear();
+        assert_cst_ok(&doc);
         assert_eq!(seq.len(), 0);
         assert!(seq.is_empty());
     }
@@ -2100,6 +2148,7 @@ scores:
 
         assert_eq!(seq.len(), 3);
         let removed = seq.remove(1);
+        assert_cst_ok(&doc);
         assert_eq!(removed.map(|v| v.to_string()), Some("b".to_string()));
         assert_eq!(seq.len(), 2);
 
@@ -2116,6 +2165,7 @@ scores:
 
         assert_eq!(seq.len(), 3);
         let removed = seq.remove(0);
+        assert_cst_ok(&doc);
         assert_eq!(removed.map(|v| v.to_string()), Some("a".to_string()));
         assert_eq!(seq.len(), 2);
 
@@ -2132,6 +2182,7 @@ scores:
 
         assert_eq!(seq.len(), 3);
         let removed = seq.remove(2);
+        assert_cst_ok(&doc);
         assert_eq!(removed.map(|v| v.to_string()), Some("c".to_string()));
         assert_eq!(seq.len(), 2);
 
@@ -2148,6 +2199,7 @@ scores:
 
         assert_eq!(seq.len(), 1);
         let removed = seq.remove(0);
+        assert_cst_ok(&doc);
         assert_eq!(removed.map(|v| v.to_string()), Some("only".to_string()));
         assert_eq!(seq.len(), 0);
     }
@@ -2161,6 +2213,7 @@ scores:
 
         assert_eq!(seq.len(), 1);
         let removed = seq.remove(0);
+        assert_cst_ok(&doc);
         assert_eq!(removed.map(|v| v.to_string()), Some("only".to_string()));
         assert_eq!(seq.len(), 0);
     }
@@ -2174,6 +2227,7 @@ scores:
 
         assert_eq!(seq.len(), 2);
         seq.push("c");
+        assert_cst_ok(&doc);
         assert_eq!(seq.len(), 3);
 
         let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
@@ -2188,8 +2242,11 @@ scores:
         let seq = mapping.get_sequence("items").unwrap();
 
         seq.push("b");
+        assert_cst_ok(&doc);
         seq.push("c");
+        assert_cst_ok(&doc);
         seq.push("d");
+        assert_cst_ok(&doc);
 
         let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
         assert_eq!(values, vec!["a", "b", "c", "d"]);
@@ -2203,6 +2260,7 @@ scores:
         let seq = mapping.get_sequence("items").unwrap();
 
         seq.set(1, "modified");
+        assert_cst_ok(&doc);
 
         let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
         assert_eq!(values, vec!["a", "modified", "c"]);
@@ -2216,6 +2274,7 @@ scores:
         let seq = mapping.get_sequence("items").unwrap();
 
         seq.insert(0, "a");
+        assert_cst_ok(&doc);
 
         let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
         assert_eq!(values, vec!["a", "b", "c"]);
@@ -2229,6 +2288,7 @@ scores:
         let seq = mapping.get_sequence("items").unwrap();
 
         seq.insert(1, "b");
+        assert_cst_ok(&doc);
 
         let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
         assert_eq!(values, vec!["a", "b", "c"]);
@@ -2242,6 +2302,7 @@ scores:
         let seq = mapping.get_sequence("items").unwrap();
 
         seq.insert(2, "c");
+        assert_cst_ok(&doc);
 
         let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
         assert_eq!(values, vec!["a", "b", "c"]);
@@ -2256,6 +2317,7 @@ scores:
 
         assert_eq!(seq.len(), 2);
         seq.push("c");
+        assert_cst_ok(&doc);
         assert_eq!(seq.len(), 3);
 
         let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
@@ -2270,6 +2332,7 @@ scores:
         let seq = mapping.get_sequence("items").unwrap();
 
         seq.set(1, "modified");
+        assert_cst_ok(&doc);
 
         let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
         assert_eq!(values, vec!["a", "modified", "c"]);
@@ -2283,6 +2346,7 @@ scores:
         let seq = mapping.get_sequence("items").unwrap();
 
         seq.insert(0, "a");
+        assert_cst_ok(&doc);
 
         let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
         assert_eq!(values, vec!["a", "b", "c"]);
@@ -2296,6 +2360,7 @@ scores:
         let seq = mapping.get_sequence("items").unwrap();
 
         seq.insert(1, "b");
+        assert_cst_ok(&doc);
 
         let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
         assert_eq!(values, vec!["a", "b", "c"]);
@@ -2309,6 +2374,7 @@ scores:
         let seq = mapping.get_sequence("items").unwrap();
 
         seq.insert(2, "c");
+        assert_cst_ok(&doc);
 
         let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
         assert_eq!(values, vec!["a", "b", "c"]);
@@ -2355,6 +2421,7 @@ scores:
         assert!(first.is_mapping());
 
         items.set(0, "replaced");
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "items:\n  - replaced\n  - name: second\n    value: 2\n"

@@ -17,7 +17,7 @@ use std::str::FromStr;
 use yaml_edit::{Document, YamlFile};
 
 mod common;
-use common::assert_file_cst_ok;
+use common::{assert_cst_ok, assert_file_cst_ok};
 
 #[test]
 fn test_simple_value_replacement() {
@@ -300,6 +300,7 @@ fn test_scalar_set_value_multiline_plain() {
         .as_scalar()
         .unwrap()
         .set_value("x");
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a: x\nb: 2\n");
 }
 
@@ -313,5 +314,6 @@ fn test_scalar_set_value_block_scalar() {
         .as_scalar()
         .unwrap()
         .set_value("x");
+    assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "a: x\nb: 2\n");
 }

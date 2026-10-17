@@ -1405,6 +1405,7 @@ fn set_path_on_sequence<V: crate::AsYaml>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug::assert_cst_ok;
 
     #[test]
     fn set_path_bounds_sequence_growth() {
@@ -1418,6 +1419,7 @@ mod tests {
         let err = doc
             .try_set_path("999.hh.hh.999.9aa", "")
             .expect_err("a far index must be refused");
+        assert_cst_ok(&doc);
         assert!(
             matches!(err, PathError::IndexTooFar { .. }),
             "unexpected error: {err}"
@@ -1429,6 +1431,7 @@ mod tests {
         // sequence is a normal way to build one.
         let doc = Document::from_str("m: {}\n").unwrap();
         doc.try_set_path("s[5]", "v").expect("small index is fine");
+        assert_cst_ok(&doc);
         assert_eq!(doc.try_get_path("s[5]").unwrap().to_string(), "v");
 
         let doc = Document::from_str("m: {}\n").unwrap();
@@ -1436,6 +1439,7 @@ mod tests {
             doc.try_set_path(&format!("s[{MAX_INDEX_GROWTH}]"), "v"),
             Err(PathError::IndexTooFar { .. })
         ));
+        assert_cst_ok(&doc);
     }
 
     fn merge_doc() -> crate::yaml::YamlFile {
@@ -1475,6 +1479,7 @@ mod tests {
         let before = file.to_string();
         let doc = file.document().unwrap();
         assert!(doc.try_remove_path("derived.shared").is_err());
+        assert_cst_ok(&doc);
         assert_eq!(file.to_string(), before);
     }
 
@@ -1675,6 +1680,7 @@ mod tests {
 
         let doc = Document::from_str("x: 1\n").unwrap();
         doc.try_set_path("a.\\0", "v").unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "x: 1\na:\n  '0': v\n");
     }
 
@@ -1750,6 +1756,7 @@ items:
 
         let doc = Document::new();
         doc.set("key.with.dots", "test value");
+        assert_cst_ok(&doc);
 
         // Without escaping - should not find it (looking for nested keys)
         assert!(doc.try_get_path("key.with.dots").is_err());
@@ -1810,6 +1817,7 @@ items:
 
         // Remove nested key inside array element
         assert!(doc.try_remove_path("items[0].nested.key").is_ok());
+        assert_cst_ok(&doc);
         assert!(doc.try_get_path("items[0].nested.key").is_err());
 
         // The nested mapping should still exist but be empty
@@ -1952,6 +1960,7 @@ config:
         let yaml = Document::from_str("name: Alice\nage: 30\n").unwrap();
 
         yaml.try_set_path("name", "Bob").expect("set_path");
+        assert_cst_ok(&yaml);
 
         assert_eq!(yaml.to_string(), "name: Bob\nage: 30\n");
     }
@@ -1964,6 +1973,7 @@ config:
         let yaml = Document::from_str("name: Alice\n").unwrap();
 
         yaml.try_set_path("age", 30).expect("set_path");
+        assert_cst_ok(&yaml);
 
         assert_eq!(yaml.to_string(), "name: Alice\nage: 30\n");
     }
@@ -1976,6 +1986,7 @@ config:
         let yaml = Document::from_str("server:\n  host: localhost\n  port: 8080\n").unwrap();
 
         yaml.try_set_path("server.port", 9000).expect("set_path");
+        assert_cst_ok(&yaml);
 
         assert_eq!(
             yaml.to_string(),
@@ -1991,6 +2002,7 @@ config:
         let yaml = Document::from_str("server:\n  host: localhost\n").unwrap();
 
         yaml.try_set_path("server.port", 8080).expect("set_path");
+        assert_cst_ok(&yaml);
 
         assert_eq!(
             yaml.to_string(),
@@ -2007,6 +2019,7 @@ config:
 
         yaml.try_set_path("server.database.host", "localhost")
             .expect("set_path");
+        assert_cst_ok(&yaml);
 
         assert_eq!(
             yaml.to_string(),
@@ -2032,8 +2045,10 @@ config:
 
         yaml.try_set_path("app.database.primary.host", "db.example.com")
             .expect("set_path");
+        assert_cst_ok(&yaml);
         yaml.try_set_path("app.database.primary.port", 5432)
             .expect("set_path");
+        assert_cst_ok(&yaml);
 
         // Parent was flow-style, so the whole nested chain stays flow.
         assert_eq!(
@@ -2061,6 +2076,7 @@ config:
         let yaml = Document::from_str("name: Alice\nage: 30\n").unwrap();
 
         let result = yaml.try_remove_path("age").is_ok();
+        assert_cst_ok(&yaml);
         assert!(result);
 
         assert_eq!(yaml.to_string(), "name: Alice\n");
@@ -2074,6 +2090,7 @@ config:
         let yaml = Document::from_str("server:\n  host: localhost\n  port: 8080\n").unwrap();
 
         let result = yaml.try_remove_path("server.port").is_ok();
+        assert_cst_ok(&yaml);
         assert!(result);
 
         assert_eq!(yaml.to_string(), "server:\n  host: localhost\n");
@@ -2087,9 +2104,11 @@ config:
         let yaml = Document::from_str("name: Alice\n").unwrap();
 
         let result = yaml.try_remove_path("missing").is_ok();
+        assert_cst_ok(&yaml);
         assert!(!result);
 
         let result = yaml.try_remove_path("name.nested").is_ok();
+        assert_cst_ok(&yaml);
         assert!(!result);
 
         // Document should be unchanged
@@ -2107,6 +2126,7 @@ config:
         .unwrap();
 
         let result = yaml.try_remove_path("app.database.primary.port").is_ok();
+        assert_cst_ok(&yaml);
         assert!(result);
 
         assert_eq!(
@@ -2126,19 +2146,23 @@ config:
         // whitespace when the removed entry was last.
         let doc = Document::from_str("config:\n  a: 1\n  b: 2\n  c: 3\n").unwrap();
         doc.try_remove_path("config.b").unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "config:\n  a: 1\n  c: 3\n");
 
         let doc = Document::from_str("config:\n  a: 1\n  b: 2\n  c: 3\n").unwrap();
         doc.try_remove_path("config.a").unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "config:\n  b: 2\n  c: 3\n");
 
         let doc = Document::from_str("config:\n  a: 1\n  b: 2\n  c: 3\n").unwrap();
         doc.try_remove_path("config.c").unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "config:\n  a: 1\n  b: 2\n");
 
         // Deeper nesting used to compound the over-indentation.
         let doc = Document::from_str("x:\n  y:\n    a: 1\n    b: 2\n").unwrap();
         doc.try_remove_path("x.y.a").unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "x:\n  y:\n    b: 2\n");
     }
 
@@ -2161,6 +2185,7 @@ config:
 
         // Set on mapping
         mapping.try_set_path("server.port", 8080).expect("set_path");
+        assert_cst_ok(&yaml);
         assert_eq!(
             yaml.to_string(),
             "server:\n  host: localhost\n  port: 8080\n"
@@ -2168,10 +2193,12 @@ config:
 
         // Remove from mapping
         let result = mapping.try_remove_path("server.port").is_ok();
+        assert_cst_ok(&yaml);
         assert!(result);
 
         // Try to remove non-existent path from mapping
         let result_missing = mapping.try_remove_path("nonexistent.path").is_ok();
+        assert_cst_ok(&yaml);
         assert!(!result_missing);
     }
 
@@ -2185,11 +2212,13 @@ config:
 
         // A single-segment path removes the key directly from the mapping.
         assert!(mapping.try_remove_path("a").is_ok());
+        assert_cst_ok(&yaml);
         assert!(mapping.try_get_path("a").is_err());
         assert!(mapping.try_get_path("b").is_ok());
 
         // Removing a missing single-segment key returns false.
         assert!(mapping.try_remove_path("missing").is_err());
+        assert_cst_ok(&yaml);
     }
 
     #[test]
@@ -2201,6 +2230,7 @@ config:
 
         yaml.try_set_path("server.host", "newhost")
             .expect("set_path");
+        assert_cst_ok(&yaml);
 
         assert_eq!(
             yaml.to_string(),
@@ -2218,10 +2248,14 @@ config:
         // Create nested structure
         yaml.try_set_path("server.host", "localhost")
             .expect("set_path");
+        assert_cst_ok(&yaml);
         yaml.try_set_path("server.port", 8080).expect("set_path");
+        assert_cst_ok(&yaml);
         yaml.try_set_path("database.host", "db.local")
             .expect("set_path");
+        assert_cst_ok(&yaml);
         yaml.try_set_path("database.port", 5432).expect("set_path");
+        assert_cst_ok(&yaml);
 
         // Verify all values
         assert_eq!(
@@ -2259,7 +2293,9 @@ config:
 
         // Remove some values
         yaml.try_remove_path("server.port").expect("remove_path");
+        assert_cst_ok(&yaml);
         yaml.try_remove_path("database.host").expect("remove_path");
+        assert_cst_ok(&yaml);
 
         // Verify removals
         assert!(yaml.try_get_path("server.port").is_err());
@@ -2294,6 +2330,7 @@ config:
         use std::str::FromStr;
         let doc = Document::from_str("base: true\n").unwrap();
         doc.try_set_path("a.b[0].c", "value").expect("set_path");
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "base: true\na:\n  b:\n    - {c: \"value\"}\n"
@@ -2306,6 +2343,7 @@ config:
         use std::str::FromStr;
         let doc = Document::from_str("items:\n  - a\n  - b\n").unwrap();
         doc.try_set_path("items[1]", "B").expect("set_path");
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "items:\n  - a\n  - B\n");
     }
 
@@ -2315,6 +2353,7 @@ config:
         use std::str::FromStr;
         let doc = Document::from_str("items:\n  - a\n").unwrap();
         doc.try_set_path("items[3]", "z").expect("set_path");
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "items:\n  - a\n  - null\n  - null\n  - z\n"
@@ -2333,6 +2372,7 @@ config:
         ] {
             let doc = Document::from_str(yaml).unwrap();
             let err = doc.try_set_path(path, "x").unwrap_err();
+            assert_cst_ok(&doc);
             assert!(
                 matches!(err, PathError::TypeMismatch { .. }),
                 "{:?}: {:?}",
@@ -2350,6 +2390,7 @@ config:
         for yaml in ["a:\n", "a: null\n", "a: ~\n"] {
             let doc = Document::from_str(yaml).unwrap();
             doc.try_set_path("a.b", "x").expect("set_path");
+            assert_cst_ok(&doc);
             assert_eq!(
                 doc.try_get_path("a.b")
                     .unwrap()
@@ -2367,6 +2408,7 @@ config:
         use std::str::FromStr;
         let doc = Document::from_str("m:\n  a: 1\n  b: 2\n").unwrap();
         doc.try_set_path("m[0]", "z").expect("set_path");
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "m:\n  a: 1\n  b: 2\n  '0': z\n");
 
         let doc = Document::from_str("m:\n  \"0\":\n    x: 1\n").unwrap();
@@ -2379,6 +2421,7 @@ config:
             "1"
         );
         doc.try_set_path("m.0.x", "2").expect("set_path");
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.try_get_path("m.0.x")
                 .unwrap()
@@ -2391,6 +2434,7 @@ config:
 
         let doc = Document::from_str("items:\n  - a: 1\n    b: 2\n").unwrap();
         doc.try_set_path("items[0][0]", "z").expect("set_path");
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "items:\n  - a: 1\n    b: 2\n    '0': z\n");
     }
 
@@ -2408,6 +2452,7 @@ config:
             doc.try_set_path("items.foo", "x"),
             Err(PathError::TypeMismatch { .. })
         ));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), original);
 
         // An alias is refused rather than silently overwritten; the
@@ -2421,6 +2466,7 @@ config:
                 alias: "o".to_string()
             })
         );
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), original);
     }
 
@@ -2442,12 +2488,14 @@ config:
                 alias: "o".to_string()
             })
         );
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), original);
 
         // A tagged sequence is a sequence wearing a tag: descend into it
         // and leave the tag alone (#88).
         let doc = Document::from_str("items: !!seq [1, 2]\n").unwrap();
         doc.try_set_path("items[1]", "x").unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "items: !!seq [1, x]\n");
 
         let original = "other: &o\n  a: 1\ntop:\n  - *o\n";
@@ -2459,12 +2507,14 @@ config:
                 alias: "o".to_string()
             })
         );
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), original);
 
         // A tagged mapping behaves like the mapping it wraps, so the
         // numeric-on-mapping fallback applies and `[0]` addresses key "0".
         let doc = Document::from_str("top:\n  - !custom\n    a: 1\n").unwrap();
         doc.try_set_path("top[0][0]", "x").unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "top:\n  - !custom\n    a: 1\n    '0': x\n");
     }
 
@@ -2484,7 +2534,9 @@ config:
         );
 
         doc.try_set_path("config.a", 5).unwrap();
+        assert_cst_ok(&doc);
         doc.try_set_path("config.c", 7).unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "config: !custom\n  a: 5\n  b: 2\n  c: 7\n");
     }
 
@@ -2504,7 +2556,9 @@ config:
         );
 
         doc.try_set_path("items[0]", 9).unwrap();
+        assert_cst_ok(&doc);
         doc.try_set_path("items[2]", 7).unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "items: !!seq [9, 2, 7]\n");
     }
 
@@ -2515,10 +2569,12 @@ config:
 
         let doc = Document::from_str("a: !outer\n  b: !inner\n    c: 1\n").unwrap();
         doc.try_set_path("a.b.c", 2).unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "a: !outer\n  b: !inner\n    c: 2\n");
 
         let doc = Document::from_str("l: !t\n  - x: 1\n").unwrap();
         doc.try_set_path("l[0].x", 9).unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "l: !t\n  - x: 9\n");
     }
 
@@ -2529,12 +2585,14 @@ config:
 
         let doc = Document::from_str("config: !custom\n  a: 1\n  b: 2\n").unwrap();
         let removed = doc.try_remove_path("config.b").unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(removed.as_scalar().unwrap().as_string(), "2");
         assert_eq!(doc.to_string(), "config: !custom\n  a: 1\n");
 
         // Draining the last entry collapses to the flow-empty form, as it
         // does for an untagged mapping, but keeps the tag.
         doc.try_remove_path("config.a").unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "config: !custom {}\n");
     }
 
@@ -2553,6 +2611,7 @@ config:
             doc.try_set_path("config.a", 1),
             Err(PathError::TypeMismatch { .. })
         ));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), original);
     }
 
@@ -2665,6 +2724,7 @@ config:
         );
         doc.try_set_path_with("b.k", 9, AliasPolicy::Follow)
             .unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "a: &x {k: 9}\nb: *x\nc: &x {k: 2}\n");
     }
 
@@ -2688,6 +2748,7 @@ config:
                 alias: "x".to_string()
             })
         );
+        assert_cst_ok(&doc);
     }
 
     #[test]
@@ -2723,6 +2784,7 @@ config:
                     alias: "x".to_string()
                 })
             );
+            assert_cst_ok(&file);
         }
         assert_eq!(file.to_string(), src.to_string());
     }
@@ -2784,6 +2846,7 @@ config:
                 alias: "shared".to_string()
             })
         );
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), ALIASED.to_string());
     }
 
@@ -2795,6 +2858,7 @@ config:
         let doc = Document::from_str(ALIASED).unwrap();
         doc.try_set_path_with("service.timeout", 60, AliasPolicy::Follow)
             .unwrap();
+        assert_cst_ok(&doc);
         // The anchored value changed, so every alias to it sees 60.
         assert_eq!(
             doc.to_string(),
@@ -2810,6 +2874,7 @@ config:
         let doc = Document::from_str(ALIASED).unwrap();
         doc.try_set_path_with("service.timeout", 60, AliasPolicy::Expand)
             .unwrap();
+        assert_cst_ok(&doc);
         // The alias is replaced by an independent copy; the anchor keeps
         // its original value and carries no duplicate `&shared`.
         assert_eq!(
@@ -2827,6 +2892,7 @@ config:
         let doc = Document::from_str(src).unwrap();
         doc.try_set_path_with("a.timeout", 60, AliasPolicy::Expand)
             .unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "shared: &shared\n  timeout: 30\na:\n  timeout: 60\nb: *shared\n".to_string()
@@ -2841,6 +2907,7 @@ config:
         let doc = Document::from_str("a: &x\n  k: 1\n  j: 2\nb: *x\n").unwrap();
         doc.try_set_path_with("b.j", 3, AliasPolicy::Expand)
             .unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "a: &x\n  k: 1\n  j: 2\nb:\n  k: 1\n  j: 3\n"
@@ -2849,6 +2916,7 @@ config:
         let doc = Document::from_str("a: &x\n  - 1\n  - 2\nb: *x\n").unwrap();
         doc.try_set_path_with("b[1]", 3, AliasPolicy::Expand)
             .unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "a: &x\n  - 1\n  - 2\nb:\n  - 1\n  - 3\n");
     }
 
@@ -2861,6 +2929,7 @@ config:
             Document::from_str("a: &x\n  k: &y 1\n  m: &z\n    n: 2\nb: *x\nc: *y\n").unwrap();
         doc.try_set_path_with("b.j", 3, AliasPolicy::Expand)
             .unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "a: &x\n  k: &y 1\n  m: &z\n    n: 2\nb:\n  k: 1\n  m:\n    n: 2\n  j: 3\nc: *y\n"
@@ -2869,6 +2938,7 @@ config:
         let doc = Document::from_str("a: &x\n  - &y [&z 1, 2]\n  - 3\nb: *x\n").unwrap();
         doc.try_set_path_with("b[1]", 4, AliasPolicy::Expand)
             .unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "a: &x\n  - &y [&z 1, 2]\n  - 3\nb:\n  - [1, 2]\n  - 4\n"
@@ -2884,6 +2954,7 @@ config:
         // than writing through it, so the default policy allows it.
         let doc = Document::from_str(ALIASED).unwrap();
         doc.try_set_path("service", 1).unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "shared: &shared\n  timeout: 30\nservice: 1\n".to_string()
@@ -2904,6 +2975,7 @@ config:
                 alias: "missing".to_string()
             })
         );
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), src.to_string());
     }
 
@@ -2920,6 +2992,7 @@ config:
                 alias: "shared".to_string()
             })
         );
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), ALIASED.to_string());
     }
 
@@ -2933,6 +3006,7 @@ config:
         let removed = doc
             .try_remove_path_with("service.timeout", AliasPolicy::Follow)
             .unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(removed.to_string(), "30".to_string());
         // The key is gone from the anchored mapping, so the alias sees
         // the removal too.
@@ -3007,10 +3081,12 @@ config:
         );
 
         doc.try_set_path("m.1", "uno").unwrap();
+        assert_cst_ok(&doc);
         assert_eq!(
             doc.try_remove_path("m.true").unwrap().to_string(),
             "t".to_string()
         );
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "m:\n  1: uno\n  null: n\n  0x10: hex\n");
 
         let doc = Document::from_str("m:\n  '1': s\n").unwrap();

@@ -1,3 +1,6 @@
+mod common;
+
+use common::assert_file_cst_ok;
 use std::str::FromStr;
 use yaml_edit::YamlFile;
 
@@ -8,6 +11,7 @@ fn test_set_with_field_order_nested_mapping_keeps_indent() {
     let mapping = yaml.document().unwrap().as_mapping().unwrap();
     let outer = mapping.get_mapping("outer").unwrap();
     outer.set_with_field_order("version", "1", ["name", "version", "desc"]);
+    assert_file_cst_ok(&yaml);
     assert_eq!(
         yaml.to_string(),
         "outer:\n  name: a\n  version: '1'\n  desc: c\n"
@@ -21,6 +25,7 @@ fn test_set_with_field_order_nested_insert_before_first_keeps_indent() {
     let mapping = yaml.document().unwrap().as_mapping().unwrap();
     let outer = mapping.get_mapping("outer").unwrap();
     outer.set_with_field_order("alpha", "1", ["alpha", "name", "desc"]);
+    assert_file_cst_ok(&yaml);
     assert_eq!(
         yaml.to_string(),
         "outer:\n  alpha: '1'\n  name: a\n  desc: c\n"
@@ -39,6 +44,7 @@ description: A test app"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "version", "description"];
             mapping.set_with_field_order("version", 2.0, field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -60,6 +66,7 @@ description: A test app"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "version", "description"];
             mapping.set_with_field_order("version", 1.0, field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -81,6 +88,7 @@ description: A test app"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "version", "description"];
             mapping.set_with_field_order("name", "my-app", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -102,6 +110,7 @@ version: 1.0"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "version", "description"];
             mapping.set_with_field_order("description", "A test app", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -124,6 +133,7 @@ version: 1.0"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "version", "description"];
             mapping.set_with_field_order("author", "John Doe", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -149,7 +159,9 @@ author: John Doe
 
             // Add multiple keys in different orders
             mapping.set_with_field_order("description", "A test app", field_order);
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order("name", "my-app", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -173,6 +185,7 @@ author: John Doe
     if let Some(doc) = yaml.document() {
         let field_order = &["name", "version", "description", "author"];
         doc.set_with_field_order("name", "my-app", field_order);
+        assert_file_cst_ok(&yaml);
     }
 
     let result = yaml.to_string();
@@ -191,7 +204,9 @@ fn test_set_with_field_order_empty_document() {
     if let Some(doc) = yaml.document() {
         let field_order = &["name", "version", "description"];
         doc.set_with_field_order("name", "my-app", field_order);
+        assert_file_cst_ok(&yaml);
         doc.set_with_field_order("version", 1.0, field_order);
+        assert_file_cst_ok(&yaml);
     }
 
     let result = yaml.to_string();
@@ -214,8 +229,11 @@ e: value_e"#;
 
             // Insert fields that should come before existing ones
             mapping.set_with_field_order("a", "value_a", field_order);
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order("b", "value_b", field_order);
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order("c", "value_c", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -242,6 +260,7 @@ c: value_c"#;
 
             // Insert 'b' between 'a' and 'c'
             mapping.set_with_field_order("b", "value_b", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -267,6 +286,7 @@ c: value_c"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["a", "b", "c"];
             mapping.set_with_field_order("a", "value_a", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -290,7 +310,9 @@ c: value_c"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["a", "b", "c", "d"];
             mapping.set_with_field_order("b", "value_b", field_order);
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order("d", "value_d", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -332,6 +354,7 @@ Contact: https://forum.example.com"#;
 
             // Add Name field which should be inserted at the very beginning
             mapping.set_with_field_order("Name", "blah", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -365,6 +388,7 @@ fn test_multiline_value_no_extra_newlines() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["multi", "next"];
             mapping.set_with_field_order("next", "value", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -405,32 +429,39 @@ fn test_lintian_brush_line_interrupted() {
 
             // Add multiple fields that should all come before Registry
             mapping.set_with_field_order("Name", "tsne", field_order);
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order(
                 "Contact",
                 "Justin Donaldson <jdonaldson@gmail.com>",
                 field_order,
             );
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order("Archive", "CRAN", field_order);
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order(
                 "Bug-Database",
                 "https://github.com/jdonaldson/rtsne/issues",
                 field_order,
             );
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order(
                 "Bug-Submit",
                 "https://github.com/jdonaldson/rtsne/issues/new",
                 field_order,
             );
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order(
                 "Repository",
                 "https://github.com/jdonaldson/rtsne.git",
                 field_order,
             );
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order(
                 "Repository-Browse",
                 "https://github.com/jdonaldson/rtsne",
                 field_order,
             );
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -475,21 +506,25 @@ Repository-Browse: https://github.com/example/blah
             ];
 
             mapping.set_with_field_order("Name", "blah", field_order);
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order(
                 "Bug-Database",
                 "https://github.com/example/blah/issues",
                 field_order,
             );
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order(
                 "Bug-Submit",
                 "https://github.com/example/blah/issues/new",
                 field_order,
             );
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order(
                 "Security-Contact",
                 "https://github.com/example/blah/tree/HEAD/SECURITY.md",
                 field_order,
             );
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -522,6 +557,7 @@ version: 1.0
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "author", "version", "description"];
             mapping.set_with_field_order("author", "John Doe", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -551,6 +587,7 @@ version: 1.0"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "author", "description", "version"];
             mapping.set_with_field_order("author", "Jane Smith", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -578,6 +615,7 @@ version: 1.0"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "name", "author", "version", "version"];
             mapping.set_with_field_order("author", "Bob", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -601,6 +639,7 @@ version: 1.0"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order: &[&str] = &[];
             mapping.set_with_field_order("author", "Alice", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -626,6 +665,7 @@ fn test_set_with_field_order_special_characters_in_keys() {
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["regular-key", "new-key", "key with spaces", "single-quoted"];
             mapping.set_with_field_order("new-key", "new-value", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -653,6 +693,7 @@ version: 1.0"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "author", "config", "version"];
             mapping.set_with_field_order("author", "Developer", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -680,7 +721,9 @@ count: 42"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "version", "count"];
             mapping.set_with_field_order("version", 2.0, field_order);
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order("count", 100, field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -705,6 +748,7 @@ description: test"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["version"];
             mapping.set_with_field_order("author", "Solo", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -728,9 +772,13 @@ fn test_set_with_field_order_all_new_fields() {
             let field_order = &["name", "version", "author", "description"];
 
             mapping.set_with_field_order("description", "A test app", field_order);
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order("name", "test-app", field_order);
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order("author", "Tester", field_order);
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order("version", "0.1.0", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -756,6 +804,7 @@ another: data"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["name", "author", "version"];
             mapping.set_with_field_order("author", "Partial", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -782,6 +831,7 @@ end: value"#;
                 "field7", "field8", "field9", "field10", "end", "field11", "field12",
             ];
             mapping.set_with_field_order("middle", "inserted", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -805,6 +855,7 @@ version: 1.0"#;
         if let Some(mapping) = doc.as_mapping() {
             let field_order = &["名前", "作者", "version"];
             mapping.set_with_field_order("作者", "山田太郎", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -829,9 +880,13 @@ field5: value5"#;
             let field_order = &["field1", "field2", "field3", "field4", "field5"];
 
             mapping.set_with_field_order("field3", "value3", field_order);
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order("field2", "value2", field_order);
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order("field4", "value4", field_order);
+            assert_file_cst_ok(&yaml);
             mapping.set_with_field_order("field1", "updated1", field_order);
+            assert_file_cst_ok(&yaml);
         }
     }
 
@@ -853,6 +908,7 @@ fn test_set_with_field_order_nested_insert_before_mid_list_keeps_indent() {
     let mapping = yaml.document().unwrap().as_mapping().unwrap();
     let outer = mapping.get_mapping("outer").unwrap();
     outer.set_with_field_order("e", "1", ["zz", "e", "f"]);
+    assert_file_cst_ok(&yaml);
     assert_eq!(
         yaml.to_string(),
         "outer:\n  b: 1\n  d: 2\n  e: '1'\n  f: 3\n"
@@ -866,6 +922,7 @@ fn test_set_with_field_order_nested_insert_before_after_comment_keeps_indent() {
     let mapping = yaml.document().unwrap().as_mapping().unwrap();
     let outer = mapping.get_mapping("outer").unwrap();
     outer.set_with_field_order("c", "1", ["zz", "c", "d"]);
+    assert_file_cst_ok(&yaml);
     assert_eq!(
         yaml.to_string(),
         "outer:\n  b: 1\n  # mid\n  c: '1'\n  d: 2\n"
@@ -880,6 +937,7 @@ fn test_set_with_field_order_ignores_comment_indent() {
     let outer = mapping.get_mapping("outer").unwrap();
     assert_eq!(outer.detect_indentation_level(), 2);
     outer.set_with_field_order("c", "1", ["b", "c", "d"]);
+    assert_file_cst_ok(&yaml);
     assert_eq!(
         yaml.to_string(),
         "outer:\n  b: 1\n  c: '1'\n      # deep\n  d: 2\n"
@@ -893,6 +951,7 @@ fn test_set_with_field_order_explicit_keys_keeps_indent() {
     let mapping = yaml.document().unwrap().as_mapping().unwrap();
     let outer = mapping.get_mapping("outer").unwrap();
     outer.set_with_field_order("c", "1", ["b", "c", "d"]);
+    assert_file_cst_ok(&yaml);
     assert_eq!(
         yaml.to_string(),
         "outer:\n  ? b\n  : 1\n  ? c\n  : '1'\n  ? d\n  : 2\n"

@@ -981,6 +981,7 @@ pub(crate) use crate::parser::parse;
 mod tests {
     use super::*;
     use crate::builder::{MappingBuilder, SequenceBuilder};
+    use crate::debug::assert_cst_ok;
     use crate::scalar::ScalarValue;
     use crate::value::YamlValue; // For special collections tests
 
@@ -1001,7 +1002,9 @@ mod tests {
         let yaml = YamlFile::from_str("a: 1\n").unwrap();
         let doc = Document::new_mapping();
         doc.set("b", 2);
+        assert_cst_ok(&doc);
         yaml.push_document(doc);
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "a: 1\n---\nb: 2\n");
         assert_eq!(doc_values(&yaml.to_string()), vec![Some(1), Some(2)]);
     }
@@ -1010,6 +1013,7 @@ mod tests {
     fn test_push_built_document_adds_separator() {
         let yaml = YamlFile::from_str("a: 1\n").unwrap();
         yaml.push_document(MappingBuilder::new().pair("b", 2).build_document());
+        assert_cst_ok(&yaml);
         assert_eq!(doc_values(&yaml.to_string()), vec![Some(1), Some(2)]);
     }
 
@@ -1017,6 +1021,7 @@ mod tests {
     fn test_push_document_without_trailing_newline() {
         let yaml = YamlFile::from_str("a: 1").unwrap();
         yaml.push_document(Document::from_str("b: 2").unwrap());
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "a: 1\n---\nb: 2");
         assert_eq!(doc_values(&yaml.to_string()), vec![Some(1), Some(2)]);
     }
@@ -1025,6 +1030,7 @@ mod tests {
     fn test_push_document_keeps_existing_start_marker() {
         let yaml = YamlFile::from_str("a: 1\n").unwrap();
         yaml.push_document(Document::from_str("---\nb: 2\n").unwrap());
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "a: 1\n---\nb: 2\n");
     }
 
@@ -1032,6 +1038,7 @@ mod tests {
     fn test_push_document_after_trailing_comment() {
         let yaml = YamlFile::from_str("a: 1\n# end").unwrap();
         yaml.push_document(Document::from_str("b: 2\n").unwrap());
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "a: 1\n# end\n---\nb: 2\n");
         assert_eq!(doc_values(&yaml.to_string()), vec![Some(1), Some(2)]);
     }
@@ -1040,6 +1047,7 @@ mod tests {
     fn test_push_document_after_implicit_null() {
         let yaml = YamlFile::from_str("a:\n").unwrap();
         yaml.push_document(Document::from_str("b: 2\n").unwrap());
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "a:\n---\nb: 2\n");
         assert_eq!(doc_values(&yaml.to_string()), vec![None, Some(2)]);
     }
@@ -1172,6 +1180,7 @@ mod tests {
     fn test_push_document_into_empty_file() {
         let yaml = YamlFile::new();
         yaml.push_document(Document::from_str("b: 2\n").unwrap());
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "b: 2\n");
     }
 
@@ -1179,11 +1188,13 @@ mod tests {
     fn test_set_reports_whether_the_key_was_set() {
         let file = YamlFile::from_str("a: 1\n").unwrap();
         assert!(file.set("b", 2));
+        assert_cst_ok(&file);
         assert_eq!(file.to_string(), "a: 1\nb: 2\n");
 
         for yaml in ["scalar\n", "- a\n"] {
             let file = YamlFile::from_str(yaml).unwrap();
             assert!(!file.set("b", 2), "{yaml:?}");
+            assert_cst_ok(&file);
             assert_eq!(file.to_string(), yaml);
         }
     }
@@ -1192,6 +1203,7 @@ mod tests {
     fn test_insert_at_index_reports_a_non_mapping_root() {
         let file = YamlFile::from_str("- a\n").unwrap();
         assert!(!file.insert_at_index(0, "k", "v"));
+        assert_cst_ok(&file);
         assert_eq!(file.to_string(), "- a\n");
     }
 
@@ -3391,7 +3403,9 @@ config:
         let yaml = YamlFile::from_str("name: old-name\nversion: 1.0.0").unwrap();
         if let Some(doc) = yaml.document() {
             doc.set("name", "new-name");
+            assert_cst_ok(&yaml);
             doc.set("version", "2.0.0");
+            assert_cst_ok(&yaml);
 
             // Verify values can be retrieved via API
             assert_eq!(doc.get_string("name"), Some("new-name".to_string()));
@@ -3826,6 +3840,7 @@ patterns:
             .as_sequence()
             .unwrap();
         let success = doc.insert_after("name", "features", features);
+        assert_cst_ok(&doc);
         assert!(success, "insert_after should succeed");
 
         let output = doc.to_string();
@@ -3858,6 +3873,7 @@ version: 1.0.0"#;
             .as_mapping()
             .unwrap();
         let success = doc.insert_before("version", "database", database);
+        assert_cst_ok(&doc);
         assert!(success, "insert_before should succeed");
 
         let output = doc.to_string();
@@ -3908,8 +3924,11 @@ version: 1.0.0"#;
 
         // Insert different types at various indices
         doc.insert_at_index(1, "version", "1.0.0");
+        assert_cst_ok(&doc);
         doc.insert_at_index(2, "active", true);
+        assert_cst_ok(&doc);
         doc.insert_at_index(3, "count", 42);
+        assert_cst_ok(&doc);
 
         let features = SequenceBuilder::new()
             .item("auth")
@@ -3918,6 +3937,7 @@ version: 1.0.0"#;
             .as_sequence()
             .unwrap();
         doc.insert_at_index(4, "features", features);
+        assert_cst_ok(&doc);
 
         let output = doc.to_string();
 
@@ -3969,9 +3989,13 @@ features:
 
         // Insert various scalar types
         doc.insert_after("name", "null_value", ScalarValue::null());
+        assert_cst_ok(&doc);
         doc.insert_after("null_value", "empty_string", "");
+        assert_cst_ok(&doc);
         doc.insert_after("empty_string", "number", 1.234);
+        assert_cst_ok(&doc);
         doc.insert_after("number", "boolean", false);
+        assert_cst_ok(&doc);
 
         let output = doc.to_string();
 
@@ -4028,7 +4052,9 @@ boolean: false"#;
 
         // Insert items to create proper ordering
         doc.insert_after("first", "second", 2);
+        assert_cst_ok(&doc);
         doc.insert_before("fifth", "fourth", 4);
+        assert_cst_ok(&doc);
 
         let output = doc.to_string();
 
@@ -4054,10 +4080,12 @@ fifth: 5"#;
 
         // Position after a string value
         let success = doc.insert_after("name", "description", "A sample project");
+        assert_cst_ok(&doc);
         assert!(success, "Should find string key");
 
         // Position after a numeric value
         let success = doc.insert_after(1.0, "build", "gradle");
+        assert_cst_ok(&doc);
         assert!(
             !success,
             "Should not find numeric key (1.0) when actual key is string 'version'"
@@ -4065,6 +4093,7 @@ fifth: 5"#;
 
         // Position after a boolean value
         let success = doc.insert_after(true, "test", "enabled");
+        assert_cst_ok(&doc);
         assert!(
             !success,
             "Should not find boolean key (true) when actual key is string 'active'"
@@ -4073,6 +4102,7 @@ fifth: 5"#;
         // But string representation should work
         let bool_string_key = "true";
         let success = doc.insert_after(bool_string_key, "test_mode", "development");
+        assert_cst_ok(&doc);
         assert!(!success, "Should not find 'true' key when value is true");
 
         let output = doc.to_string();
@@ -4098,6 +4128,7 @@ fifth: 5"#;
             .unwrap();
 
         doc.insert_after("name", "config", config);
+        assert_cst_ok(&doc);
 
         let output = doc.to_string();
 
@@ -4161,6 +4192,7 @@ fifth: 5"#;
 
         let yaml_set = YamlValue::from_set(tags);
         doc.insert_after("name", "tags", yaml_set);
+        assert_cst_ok(&doc);
 
         let output = doc.to_string();
 
@@ -4224,6 +4256,7 @@ fifth: 5"#;
 
         let yaml_omap = YamlValue::from_ordered_mapping(ordered_steps);
         doc.insert_after("name", "build_steps", yaml_omap);
+        assert_cst_ok(&doc);
 
         let output = doc.to_string();
 
@@ -4304,6 +4337,7 @@ fifth: 5"#;
 
         let yaml_pairs = YamlValue::from_pairs(connection_attempts);
         doc.insert_after("name", "connections", yaml_pairs);
+        assert_cst_ok(&doc);
 
         let output = doc.to_string();
 
@@ -4391,6 +4425,7 @@ fifth: 5"#;
         let empty_list = empty_seq_yaml.document().unwrap().as_sequence().unwrap();
 
         doc1.insert_after("name", "empty_list", empty_list);
+        assert_cst_ok(&doc1);
         let output1 = doc1.to_string();
         assert_eq!(output1, "name: project\nempty_list: []\n");
 
@@ -4404,6 +4439,7 @@ fifth: 5"#;
         let empty_map = empty_map_yaml.document().unwrap().as_mapping().unwrap();
 
         doc2.insert_after("name", "empty_map", empty_map);
+        assert_cst_ok(&doc2);
         let output2 = doc2.to_string();
         assert_eq!(output2, "name: project\nempty_map: {}\n");
 
@@ -4412,6 +4448,7 @@ fifth: 5"#;
         let parsed3 = YamlFile::from_str(yaml3).unwrap();
         let doc3 = parsed3.document().expect("Should have a document");
         doc3.insert_after("name", "empty_set", YamlValue::set());
+        assert_cst_ok(&doc3);
         let output3 = doc3.to_string();
         assert_eq!(output3, "name: project\nempty_set: !!set {}\n");
 
@@ -4449,6 +4486,7 @@ fifth: 5"#;
             .unwrap();
 
         doc.insert_after("name", "nested_data", nested_data);
+        assert_cst_ok(&doc);
 
         let output = doc.to_string();
 
@@ -4514,6 +4552,7 @@ key2: value2  # Inline comment 2
         // Insert a new key, re-inserting it if it already exists - changes propagate automatically
         if let Some(mapping) = doc.as_mapping() {
             mapping.move_after("key1", "new_key", "new_value");
+            assert_cst_ok(&doc);
         }
 
         let result = doc.to_string();
@@ -4543,6 +4582,7 @@ key2:        value2
         // Insert a new key using AST-preserving method
         if let Some(mapping) = doc.as_mapping() {
             mapping.move_after("key1", "new_key", "new_value");
+            assert_cst_ok(&doc);
         }
 
         let result = doc.to_string();
@@ -4581,6 +4621,7 @@ server:
         // Insert a new top-level key
         if let Some(mapping) = doc.as_mapping() {
             mapping.move_after("database", "logging", "debug");
+            assert_cst_ok(&doc);
         }
 
         let result = doc.to_string();

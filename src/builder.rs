@@ -495,6 +495,8 @@ impl Default for MappingBuilder {
 mod tests {
     use super::*;
     use crate::debug;
+
+    use crate::debug::assert_cst_ok;
     use std::str::FromStr;
 
     /// The built tree must be exactly what parsing its own text gives.
@@ -708,12 +710,14 @@ mod tests {
     #[test]
     fn test_scalar_builder() {
         let yaml = YamlBuilder::scalar("hello world").build();
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "hello world\n");
     }
 
     #[test]
     fn test_alias_builder() {
         let yaml = YamlBuilder::alias("shared").build();
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "*shared\n");
     }
 
@@ -723,6 +727,7 @@ mod tests {
             .pair("ref", crate::yaml::Alias::new("shared"))
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "ref: *shared\n");
     }
 
@@ -734,6 +739,7 @@ mod tests {
             .item("third")
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "- first\n- second\n- third\n");
     }
 
@@ -745,6 +751,7 @@ mod tests {
             .pair("city", "New York")
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(
             yaml.to_string(),
             "name: John Doe\nage: '30'\ncity: New York\n"
@@ -765,6 +772,7 @@ mod tests {
             })
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(
             yaml.to_string(),
             "version: '1.0'\ndependencies:\n  - serde\n  - tokio\n  - reqwest\ndatabase:\n  host: localhost\n  port: '5432'\n  name: myapp\n"
@@ -781,6 +789,7 @@ mod tests {
             })
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(
             yaml.to_string(),
             "level1:\n  level2:\n    level3:\n      deep: value\n"
@@ -792,9 +801,11 @@ mod tests {
         // Empty sequence and mapping serialize to the flow-empty form so
         // that placing them under a key doesn't reparse as null (issue #37).
         let empty_seq = YamlBuilder::sequence().build().build();
+        assert_cst_ok(&empty_seq);
         assert_eq!(empty_seq.to_string().trim(), "[]");
 
         let empty_map = YamlBuilder::mapping().build().build();
+        assert_cst_ok(&empty_map);
         assert_eq!(empty_map.to_string().trim(), "{}");
     }
 
@@ -807,6 +818,7 @@ mod tests {
             .pair("special", "value: with: colons")
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(
             yaml.to_string(),
             "url: https://example.com:8080/path?query=value\nemail: user@example.com\npath: /usr/local/bin\nspecial: 'value: with: colons'\n"
@@ -823,6 +835,7 @@ mod tests {
             .pair("binary_string", "0b1010")
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(
             yaml.to_string(),
             "int_string: '42'\nfloat_string: '3.14'\nhex_string: '0xFF'\noctal_string: '0o755'\nbinary_string: '0b1010'\n"
@@ -837,6 +850,7 @@ mod tests {
             .mapping(|m| m.pair("id", "3").pair("name", "Charlie"))
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(
             yaml.to_string(),
             "-\n  id: '1'\n  name: Alice\n-\n  id: '2'\n  name: Bob\n-\n  id: '3'\n  name: Charlie\n"
@@ -851,6 +865,7 @@ mod tests {
             .sequence(|s| s.item("x").item("y").item("z"))
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(
             yaml.to_string(),
             "-\n  - '1'\n  - '2'\n  - '3'\n-\n  - a\n  - b\n  - c\n-\n  - x\n  - y\n  - z\n"
@@ -872,6 +887,7 @@ mod tests {
             })
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(
             yaml.to_string(),
             "list:\n  - simple\n  -\n    key: value\n  -\n    - nested1\n    - nested2\nobject:\n  simple: value\n  list:\n    - item1\n    - item2\n  nested:\n    deep: value\n"
@@ -889,6 +905,7 @@ mod tests {
             .pair("tilde", "~")
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(
             yaml.to_string(),
             "bool_true: 'true'\nbool_false: 'false'\n'yes': 'yes'\n'no': 'no'\nnull_value: 'null'\ntilde: '~'\n"
@@ -902,6 +919,7 @@ mod tests {
             .pair("long", "a".repeat(100))
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(
             yaml.to_string(),
             format!("short: test\nlong: {}\n", "a".repeat(100))
@@ -917,6 +935,7 @@ mod tests {
             .pair("mixed", "Hello 世界 🌍")
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(
             yaml.to_string(),
             "emoji: 🎉🚀💻\nchinese: 你好世界\narabic: مرحبا بالعالم\nmixed: Hello 世界 🌍\n"
@@ -929,6 +948,7 @@ mod tests {
             .item("first")
             .item("second")
             .build_document();
+        assert_cst_ok(&doc);
 
         let text = doc.to_string();
         assert_eq!(text.trim(), "- first\n- second");
@@ -940,6 +960,7 @@ mod tests {
             .pair("name", "test")
             .pair("version", "1.0")
             .build_document();
+        assert_cst_ok(&doc);
 
         let text = doc.to_string();
         assert_eq!(text.trim(), "name: test\nversion: '1.0'");
@@ -951,6 +972,7 @@ mod tests {
             .pair("name", "my-app")
             .sequence("dependencies", |s| s.item("serde").item("tokio"))
             .build_document();
+        assert_cst_ok(&doc);
 
         let text = doc.to_string();
         assert_eq!(
@@ -967,6 +989,7 @@ mod tests {
                 m.pair("host", "localhost").pair("port", 5432)
             })
             .build_document();
+        assert_cst_ok(&doc);
 
         let text = doc.to_string();
         assert_eq!(
@@ -982,6 +1005,7 @@ mod tests {
             .sequence(|s| s.item("a").item("b"))
             .mapping(|m| m.pair("key", "value"))
             .build_document();
+        assert_cst_ok(&doc);
 
         let text = doc.to_string();
         assert_eq!(text.trim(), "- first\n-\n  - a\n  - b\n-\n  key: value");
@@ -995,13 +1019,15 @@ mod tests {
                 "dependencies",
                 SequenceBuilder::new().item("serde").item("tokio"),
             )
-            .build_document()
-            .to_string();
+            .build_document();
+        assert_cst_ok(&inserted);
+        let inserted = inserted.to_string();
         let closure = YamlBuilder::mapping()
             .pair("name", "my-app")
             .sequence("dependencies", |s| s.item("serde").item("tokio"))
-            .build_document()
-            .to_string();
+            .build_document();
+        assert_cst_ok(&closure);
+        let closure = closure.to_string();
 
         assert_eq!(
             inserted.trim(),
@@ -1020,15 +1046,17 @@ mod tests {
                     .pair("host", "localhost")
                     .pair("port", 5432),
             )
-            .build_document()
-            .to_string();
+            .build_document();
+        assert_cst_ok(&inserted);
+        let inserted = inserted.to_string();
         let closure = YamlBuilder::mapping()
             .pair("name", "my-app")
             .mapping("database", |m| {
                 m.pair("host", "localhost").pair("port", 5432)
             })
-            .build_document()
-            .to_string();
+            .build_document();
+        assert_cst_ok(&closure);
+        let closure = closure.to_string();
 
         assert_eq!(
             inserted.trim(),
@@ -1043,14 +1071,16 @@ mod tests {
             .item("first")
             .insert_sequence(SequenceBuilder::new().item("a").item("b"))
             .insert_mapping(MappingBuilder::new().pair("key", "value"))
-            .build_document()
-            .to_string();
+            .build_document();
+        assert_cst_ok(&inserted);
+        let inserted = inserted.to_string();
         let closure = YamlBuilder::sequence()
             .item("first")
             .sequence(|s| s.item("a").item("b"))
             .mapping(|m| m.pair("key", "value"))
-            .build_document()
-            .to_string();
+            .build_document();
+        assert_cst_ok(&closure);
+        let closure = closure.to_string();
 
         assert_eq!(inserted.trim(), "- first\n-\n  - a\n  - b\n-\n  key: value");
         assert_eq!(inserted, closure);
@@ -1068,6 +1098,7 @@ mod tests {
                     .mapping("deep", |m| m.pair("p", "9")),
             )
             .build_document();
+        assert_cst_ok(&doc);
 
         assert_eq!(
             doc.to_string().trim(),
@@ -1089,6 +1120,7 @@ mod tests {
                 s.item("serde").item("tokio").item("reqwest")
             })
             .build_document();
+        assert_cst_ok(&doc);
 
         let text = doc.to_string();
         assert_eq!(
@@ -1105,6 +1137,7 @@ mod tests {
             .pair("ratio", 1.5_f64)
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "port: 5432\ndebug: true\nratio: 1.5\n");
     }
 
@@ -1143,7 +1176,9 @@ Reference:
         }
 
         // Remove all Reference keys
-        while mapping.remove("Reference").is_some() {}
+        while mapping.remove("Reference").is_some() {
+            assert_cst_ok(&doc);
+        }
 
         // Create a sequence from the collected values
         let mut seq_builder = SequenceBuilder::new();
@@ -1155,6 +1190,7 @@ Reference:
         // Set the sequence back
         if let Some(seq) = seq_doc.as_sequence() {
             mapping.set("Reference", seq);
+            assert_cst_ok(&doc);
         }
 
         let result = doc.to_string();
@@ -1193,6 +1229,7 @@ item:
 
         // Create a sequence with this mapping
         let seq = SequenceBuilder::new().item(item_mapping).build_document();
+        assert_cst_ok(&seq);
 
         let result = seq.to_string();
 
@@ -1210,6 +1247,7 @@ item:
             .sequence("es", |s| s)
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "empty: {}\nes: []\n");
 
         let yaml = YamlBuilder::sequence()
@@ -1217,6 +1255,7 @@ item:
             .mapping(|m| m)
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "- []\n- {}\n");
     }
 
@@ -1227,6 +1266,7 @@ item:
             .insert_sequence("s", SequenceBuilder::new())
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "m: {}\ns: []\n");
 
         let yaml = YamlBuilder::sequence()
@@ -1234,12 +1274,14 @@ item:
             .insert_mapping(MappingBuilder::new())
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "- []\n- {}\n");
     }
 
     #[test]
     fn test_trailing_block_scalar_keeps_line_break() {
         let yaml = YamlBuilder::mapping().pair("k", "a\n").build().build();
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "k: |\n  a\n");
         let doc = Document::from_str(&yaml.to_string()).unwrap();
         assert_eq!(
@@ -1248,6 +1290,7 @@ item:
         );
 
         let yaml = YamlBuilder::sequence().item("a\n\n").build().build();
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "- |+\n  a\n\n");
         let doc = Document::from_str(&yaml.to_string()).unwrap();
         let seq = doc.as_sequence().unwrap();
@@ -1264,6 +1307,7 @@ item:
             .item("x")
             .build()
             .build();
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "-\n  - 1\n- x\n");
     }
 }

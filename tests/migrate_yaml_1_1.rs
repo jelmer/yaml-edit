@@ -1,5 +1,8 @@
 //! Migrating YAML 1.1 constructs to their 1.2 spellings.
 
+mod common;
+
+use common::assert_cst_ok;
 use std::str::FromStr;
 use yaml_edit::migrate::to_yaml_1_2;
 use yaml_edit::{Document, ScalarValue};
@@ -7,6 +10,7 @@ use yaml_edit::{Document, ScalarValue};
 fn migrated(src: &str) -> String {
     let doc = Document::from_str(src).unwrap();
     to_yaml_1_2(&doc);
+    assert_cst_ok(&doc);
     doc.to_string()
 }
 
@@ -178,6 +182,15 @@ fn formatting_and_comments_survive() {
 fn the_rewrites_are_reported() {
     let doc = Document::from_str("mode: 0755\nflag: yes\nkeep: 1\nid: 09\n").unwrap();
     let rewrites = to_yaml_1_2(&doc);
+    assert_cst_ok(&doc);
+    assert_eq!(
+        doc.to_string(),
+        "mode: 0o755
+flag: true
+keep: 1
+id: '09'
+"
+    );
     assert_eq!(rewrites.len(), 3);
     assert_eq!(rewrites[0].before, "0755");
     assert_eq!(rewrites[0].after, "0o755");

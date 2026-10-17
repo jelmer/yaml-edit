@@ -865,6 +865,7 @@ impl AsYaml for Document {
 mod tests {
     use super::*;
     use crate::builder::{MappingBuilder, SequenceBuilder};
+    use crate::debug::assert_cst_ok;
     use crate::yaml::YamlFile;
     use std::str::FromStr;
 
@@ -1050,6 +1051,7 @@ Author: Someone
 
         // Update Version - should stay in middle
         doc.set("Version", 2.0);
+        assert_cst_ok(&doc);
 
         let output = doc.to_string();
         let expected = r#"Name: original
@@ -1194,6 +1196,7 @@ active: true
         // Test Document.insert_after with sequence
         let doc1 = Document::new();
         doc1.set("name", "project");
+        assert_cst_ok(&doc1);
         let features = SequenceBuilder::new()
             .item("auth")
             .item("api")
@@ -1202,6 +1205,7 @@ active: true
             .as_sequence()
             .unwrap();
         let success = doc1.insert_after("name", "features", features);
+        assert_cst_ok(&doc1);
         assert!(success);
         let output1 = doc1.to_string();
         assert_eq!(
@@ -1212,7 +1216,9 @@ active: true
         // Test Document.insert_before with mapping
         let doc2 = Document::new();
         doc2.set("name", "project");
+        assert_cst_ok(&doc2);
         doc2.set("version", "1.0.0");
+        assert_cst_ok(&doc2);
         let database = MappingBuilder::new()
             .pair("host", "localhost")
             .pair("port", 5432)
@@ -1220,6 +1226,7 @@ active: true
             .as_mapping()
             .unwrap();
         let success = doc2.insert_before("version", "database", database);
+        assert_cst_ok(&doc2);
         assert!(success);
         let output2 = doc2.to_string();
         assert_eq!(
@@ -1230,6 +1237,7 @@ active: true
         // Test Document.insert_at_index with set
         let doc3 = Document::new();
         doc3.set("name", "project");
+        assert_cst_ok(&doc3);
         // TODO: migrate away from YamlValue once !!set has a non-YamlValue AsYaml impl
         #[allow(clippy::disallowed_types)]
         let tag_set = {
@@ -1240,6 +1248,7 @@ active: true
             YamlValue::from_set(tags)
         };
         doc3.insert_at_index(1, "tags", tag_set);
+        assert_cst_ok(&doc3);
         let output3 = doc3.to_string();
         assert_eq!(
             output3,
@@ -1265,16 +1274,21 @@ active: true
     fn test_insert_at_index_leaves_sequence_root() {
         let doc = Document::from_str("- a\n- b\n").unwrap();
         assert!(!doc.set("k", "v"));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "- a\n- b\n");
         assert!(!doc.insert_at_index(0, "k", "v"));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "- a\n- b\n");
         assert!(!doc.reorder_fields(["k"]));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "- a\n- b\n");
         assert!(doc.as_sequence().is_some());
 
         let doc = Document::from_str("b: 1\na: 2\n").unwrap();
         assert!(doc.insert_at_index(0, "k", "v"));
+        assert_cst_ok(&doc);
         assert!(doc.reorder_fields(["a"]));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "a: 2\nk: v\nb: 1\n");
     }
 
@@ -1286,6 +1300,7 @@ active: true
         // Check and modify fields
         assert!(!doc.contains_key("Repository"));
         doc.set("Repository", "https://github.com/user/repo.git");
+        assert_cst_ok(&doc);
         assert!(doc.contains_key("Repository"));
 
         // Test get_string
@@ -1303,6 +1318,7 @@ active: true
 
         // Test remove
         assert!(doc.remove("Repository").is_some());
+        assert_cst_ok(&doc);
         assert!(!doc.contains_key("Repository"));
         assert!(doc.is_empty());
 
@@ -1315,12 +1331,17 @@ active: true
 
         // Add fields in random order
         doc.set("Repository-Browse", "https://github.com/user/repo");
+        assert_cst_ok(&doc);
         doc.set("Name", "MyProject");
+        assert_cst_ok(&doc);
         doc.set("Bug-Database", "https://github.com/user/repo/issues");
+        assert_cst_ok(&doc);
         doc.set("Repository", "https://github.com/user/repo.git");
+        assert_cst_ok(&doc);
 
         // Reorder fields
         doc.reorder_fields(["Name", "Bug-Database", "Repository", "Repository-Browse"]);
+        assert_cst_ok(&doc);
 
         // Check that fields are in the expected order
         let keys: Vec<_> = doc.keys().collect();
@@ -1358,6 +1379,7 @@ active: true
             .as_sequence()
             .unwrap();
         doc.set("Repository", &array_value);
+        assert_cst_ok(&doc);
 
         // Test array detection
         assert!(doc.is_sequence("Repository"));
@@ -1376,7 +1398,9 @@ active: true
         // Create and save a document
         let doc = Document::new();
         doc.set("Name", "TestProject");
+        assert_cst_ok(&doc);
         doc.set("Repository", "https://example.com/repo.git");
+        assert_cst_ok(&doc);
 
         doc.to_file(test_path)?;
 
@@ -1591,6 +1615,7 @@ features:
                 "Repository",
                 "https://github.com/example/example.git",
             );
+            assert_cst_ok(&yaml_obj);
             assert!(result, "insert_after should return true when key is found");
 
             // Check the document output directly
@@ -1617,6 +1642,7 @@ Repository: https://github.com/example/example.git
                 "Repository",
                 "https://github.com/example/example.git",
             );
+            assert_cst_ok(&yaml_obj);
             assert!(result, "insert_after should return true when key is found");
 
             let output = doc.to_string();
@@ -1674,10 +1700,12 @@ Repository: https://github.com/example/example.git
     fn test_document_set_after_leading_blank_lines() {
         let doc = Document::from_str("\na: 1\n").unwrap();
         doc.set("b", 2);
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "\na: 1\nb: 2\n");
 
         let doc = Document::from_str("").unwrap();
         doc.set("a", 1);
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "a: 1\n");
     }
 
@@ -1763,6 +1791,7 @@ Repository: https://github.com/example/example.git
     fn test_document_set_before_end_marker_line() {
         let doc = Document::from_str("a: 1\n... # c\n").unwrap();
         doc.set("b", 2);
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "a: 1\nb: 2\n... # c\n");
     }
 
@@ -1837,6 +1866,7 @@ Repository: https://github.com/example/example.git
     fn test_set_on_sequence_document_does_not_append_mapping() {
         let doc = Document::from_str("- a\n- b\n").unwrap();
         assert!(!doc.set("k", "v"));
+        assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "- a\n- b\n");
         assert!(doc.get("k").is_none());
         assert!(doc.as_sequence().is_some());
@@ -1844,6 +1874,7 @@ Repository: https://github.com/example/example.git
 
         let empty = Document::new();
         assert!(empty.set("k", "v"));
+        assert_cst_ok(&empty);
         assert_eq!(empty.get_string("k"), Some("v".to_string()));
     }
 
@@ -1852,6 +1883,7 @@ Repository: https://github.com/example/example.git
     fn test_built_documents_are_parser_shaped() {
         let mapping = Mapping::new();
         mapping.set("a", 1);
+        assert_cst_ok(&mapping);
         for doc in [Document::new(), Document::from_mapping(mapping)] {
             let text = doc.to_string();
             let parsed = YamlFile::from_str(&text).unwrap().document().unwrap();

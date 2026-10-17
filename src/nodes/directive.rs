@@ -72,6 +72,7 @@ impl Directive {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug::assert_cst_ok;
     use crate::nodes::Document;
     use crate::yaml::YamlFile;
     use std::str::FromStr;
@@ -134,6 +135,7 @@ mod tests {
     fn test_add_directive_to_yaml() {
         let yaml = YamlFile::new();
         yaml.add_directive("%YAML 1.2");
+        assert_cst_ok(&yaml);
 
         let directives: Vec<_> = yaml.directives().collect();
         assert_eq!(directives.len(), 1);
@@ -143,6 +145,7 @@ mod tests {
     fn test_add_directive_to_existing_document() {
         let yaml = YamlFile::from_str("a: 1\n").unwrap();
         yaml.add_directive("%YAML 1.2");
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "%YAML 1.2\n---\na: 1\n");
 
         let reparsed = YamlFile::from_str(&yaml.to_string()).unwrap();
@@ -155,18 +158,21 @@ mod tests {
     fn test_add_directive_keeps_existing_document_start() {
         let yaml = YamlFile::from_str("---\na: 1\n").unwrap();
         yaml.add_directive("%YAML 1.2");
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "%YAML 1.2\n---\na: 1\n");
     }
     #[test]
     fn test_add_directive_without_trailing_newline() {
         let yaml = YamlFile::from_str("a: 1").unwrap();
         yaml.add_directive("%YAML 1.2");
+        assert_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), "%YAML 1.2\n---\na: 1");
     }
     #[test]
     fn test_add_second_directive() {
         let yaml = YamlFile::from_str("%YAML 1.2\n---\na: 1\n").unwrap();
         yaml.add_directive("%TAG ! tag:example.com,2000:app/");
+        assert_cst_ok(&yaml);
         assert_eq!(
             yaml.to_string(),
             "%TAG ! tag:example.com,2000:app/\n%YAML 1.2\n---\na: 1\n"
@@ -176,10 +182,13 @@ mod tests {
     fn test_yaml_with_directive_and_content() {
         let yaml = YamlFile::new();
         yaml.add_directive("%YAML 1.2");
+        assert_cst_ok(&yaml);
 
         let doc = Document::new_mapping();
         doc.set("name", "test");
+        assert_cst_ok(&doc);
         yaml.push_document(doc);
+        assert_cst_ok(&yaml);
 
         let output = yaml.to_string();
         assert_eq!(output, "%YAML 1.2\n---\nname: test\n");

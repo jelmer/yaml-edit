@@ -882,12 +882,12 @@ impl Parser {
             // unindented line is just another body line. Otherwise the first
             // such line is taken as content and every later one at the same
             // column reads as a dedent, which is how `|-\nx\ny\n` kept `x`
-            // and stranded `y`.
+            // and stranded `y`. A comment there is a trailing comment after
+            // the body, not part of it.
             if !body_at_column_zero
                 && current != Some(SyntaxKind::INDENT)
                 && current != Some(SyntaxKind::WHITESPACE)
                 && current != Some(SyntaxKind::NEWLINE)
-                && current != Some(SyntaxKind::COMMENT)
             {
                 // This is unindented content at the start of a line
                 return true;

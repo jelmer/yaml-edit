@@ -395,8 +395,14 @@ impl AsYaml for Scalar {
         &self,
         builder: &mut rowan::GreenNodeBuilder,
         indent: usize,
-        _flow_context: bool,
+        flow_context: bool,
     ) -> bool {
+        let plain = !self.is_quoted() && !self.is_block();
+        if flow_context && plain && self.value().contains([',', '[', ']', '{', '}']) {
+            // Inside a flow collection a plain scalar ends at the indicator.
+            return ScalarValue::double_quoted(self.as_string())
+                .build_content(builder, indent, true);
+        }
         if !ValueNode::is_inline(self) {
             crate::yaml::copy_node_to_builder(builder, &self.0);
             return false;

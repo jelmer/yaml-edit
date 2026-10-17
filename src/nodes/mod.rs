@@ -508,7 +508,48 @@ pub(crate) fn nth_entry_index(
         .nth(index)
 }
 
-/// Emit `key`'s content for use inside a `KEY` node.
+/// How strings written into the flow collection `collection` are quoted.
+///
+/// If the string scalars among its keys and items are all double-quoted,
+/// as in JSON, new strings are too; if any is plain or single-quoted, they
+/// are quoted only where needed. A collection without string scalars of its
+/// own goes by the nearest enclosing flow collection that has some, and
+/// failing that quotes only where needed.
+pub(crate) fn flow_quoting(collection: &SyntaxNode) -> crate::as_yaml::FlowQuoting {
+    use crate::as_yaml::FlowQuoting;
+    let is_flow = |n: &SyntaxNode| {
+        n.children_with_tokens()
+            .any(|c| matches!(c.kind(), SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET))
+    };
+    let own_quoting = |n: SyntaxNode| {
+        let mut strings = n
+            .children()
+            .flat_map(|entry| entry.children())
+            .flat_map(|c| match c.kind() {
+                SyntaxKind::KEY | SyntaxKind::VALUE => c.children().collect(),
+                _ => vec![c],
+            })
+            .filter(|c| c.kind() == SyntaxKind::SCALAR)
+            .filter_map(|c| c.first_token())
+            .filter(|t| t.kind() == SyntaxKind::STRING)
+            .peekable();
+        strings.peek()?;
+        Some(if strings.all(|t| t.text().starts_with('"')) {
+            FlowQuoting::Double
+        } else {
+            FlowQuoting::Minimal
+        })
+    };
+    collection
+        .ancestors()
+        .filter(|n| matches!(n.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE))
+        .take_while(is_flow)
+        .find_map(own_quoting)
+        .unwrap_or(FlowQuoting::Minimal)
+}
+
+/// Emit `key`'s content for use inside a `KEY` node, of a flow mapping
+/// quoting strings as `flow` says if it is set.
 ///
 /// Identical to `key.build_content` except that a key which would render as
 /// a block scalar (`|` / `>`), tagged or not, is emitted as a double-quoted
@@ -520,7 +561,13 @@ pub(crate) fn build_key_content(
     builder: &mut rowan::GreenNodeBuilder,
     key: &impl crate::AsYaml,
     indent: usize,
+    flow: Option<crate::as_yaml::FlowQuoting>,
 ) {
+    if let Some(quoting) = flow {
+        // Flow context already rules out block scalars.
+        key.build_flow_content(builder, indent, quoting);
+        return;
+    }
     // TODO: a node-backed block key (a block scalar or collection, tagged
     // or not) is copied as is. `MappingEntry::new_at_indent` converts it to
     // flow form first, but `Mapping::rename_key` does not, and writes a
@@ -555,7 +602,7 @@ pub(crate) fn build_key_content(
 pub(crate) fn key_spans_lines(key: &impl crate::AsYaml) -> bool {
     let mut builder = rowan::GreenNodeBuilder::new();
     builder.start_node(SyntaxKind::ROOT.into());
-    build_key_content(&mut builder, key, 0);
+    build_key_content(&mut builder, key, 0, None);
     builder.finish_node();
     SyntaxNode::new_root(builder.finish())
         .text()

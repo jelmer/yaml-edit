@@ -92,13 +92,13 @@ fn test_set_into_flow_mapping_inserts_inside_braces() {
 
     // Cases: (input, key to set, expected output)
     let cases = [
-        ("outer: {}", "a", r#"outer: {a: "X"}"#),
-        ("outer: {a: 1}", "b", r#"outer: {a: 1, b: "X"}"#),
+        ("outer: {}", "a", "outer: {a: X}"),
+        ("outer: {a: 1}", "b", "outer: {a: 1, b: X}"),
         // Trailing-comma style: the existing `,` is reused as the
         // separator instead of stacking a second one.
-        ("outer: {a: 1,}", "b", r#"outer: {a: 1,b: "X"}"#),
+        ("outer: {a: 1,}", "b", "outer: {a: 1,b: X}"),
         // Update-in-place stays inside the braces.
-        ("outer: {a: 1}", "a", "outer: {a: \"X\"}"),
+        ("outer: {a: 1}", "a", "outer: {a: X}"),
     ];
     for (input, key, expected) in cases {
         let doc = Document::from_str(input).unwrap();
@@ -903,10 +903,9 @@ fn test_empty_mapping_operations() {
     mapping.set("first", "value");
     assert_cst_ok(&yaml);
     assert!(!mapping.is_empty());
-    // In flow-style (JSON) context, strings are quoted
     assert_eq!(
         mapping.get("first").map(|v| v.to_string()),
-        Some("\"value\"".to_string())
+        Some("value".to_string())
     );
 }
 
@@ -1403,7 +1402,7 @@ fn parsed_flow_mapping_stays_flow_when_filled() {
     let nested = doc.as_mapping().unwrap().get("m").unwrap();
     nested.as_mapping().unwrap().set("x", "1");
     assert_cst_ok(&doc);
-    assert_eq!(doc.to_string(), "m: {x: \"1\"}\n");
+    assert_eq!(doc.to_string(), "m: {x: '1'}\n");
 
     let doc = Document::from_str("a: 1\n").unwrap();
     let root = doc.as_mapping().unwrap();
@@ -1412,7 +1411,7 @@ fn parsed_flow_mapping_stays_flow_when_filled() {
     let nested = root.get("k").unwrap();
     nested.as_mapping().unwrap().set("x", "1");
     assert_cst_ok(&doc);
-    assert_eq!(doc.to_string(), "a: 1\nk: {x: \"1\"}\n");
+    assert_eq!(doc.to_string(), "a: 1\nk: {x: '1'}\n");
 }
 
 /// The placeholder marker lives only in the tree: once serialized and
@@ -1432,7 +1431,7 @@ fn pending_block_marker_does_not_survive_reparse() {
     let nested = reparsed.as_mapping().unwrap().get("k").unwrap();
     nested.as_mapping().unwrap().set("x", "1");
     assert_cst_ok(&reparsed);
-    assert_eq!(reparsed.to_string(), "a: 1\nk: {x: \"1\"}\n");
+    assert_eq!(reparsed.to_string(), "a: 1\nk: {x: '1'}\n");
 }
 
 /// `set_path` builds nested intermediates as pending-block mappings, so a
@@ -1477,16 +1476,12 @@ fn insert_at_index_into_empty_mapping() {
         let m = Mapping::new_flow();
         insert(&m);
         assert_cst_ok(&m);
-        assert_eq!(m.to_string(), "{k: \"v\"}", "preserving={preserving}");
+        assert_eq!(m.to_string(), "{k: v}", "preserving={preserving}");
 
         let doc = Document::from_str("m: {}\n").unwrap();
         insert(&doc.as_mapping().unwrap().get_mapping("m").unwrap());
         assert_cst_ok(&doc);
-        assert_eq!(
-            doc.to_string(),
-            "m: {k: \"v\"}\n",
-            "preserving={preserving}"
-        );
+        assert_eq!(doc.to_string(), "m: {k: v}\n", "preserving={preserving}");
     }
 }
 
@@ -1496,8 +1491,8 @@ fn insert_at_index_preserving_new_key_matches_mapping_style() {
     use crate::Document;
 
     for (yaml, index, expected) in [
-        ("m: {a: 1}\n", 0, "m: {k: \"v\", a: 1}\n"),
-        ("m: {a: 1}\n", 5, "m: {a: 1, k: \"v\"}\n"),
+        ("m: {a: 1}\n", 0, "m: {k: v, a: 1}\n"),
+        ("m: {a: 1}\n", 5, "m: {a: 1, k: v}\n"),
         ("m:\n  a: 1\n", 0, "m:\n  k: v\n  a: 1\n"),
         ("m:\n  a: 1\n", 5, "m:\n  a: 1\n  k: v\n"),
         ("a: 1\nb: 2\n", 1, "a: 1\nk: v\nb: 2\n"),

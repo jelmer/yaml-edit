@@ -1,5 +1,6 @@
 //! Scalar value wrapper with proper escaping and style support.
 
+use crate::as_yaml::FlowQuoting;
 use std::fmt;
 
 #[cfg(feature = "base64")]
@@ -1236,7 +1237,7 @@ impl ScalarValue {
     /// For a block scalar, if `indent` is 0, or above 9 when the value
     /// needs an indentation indicator (its lines all start with spaces).
     pub fn to_yaml_string_with_indent(&self, parent_column: usize, indent: usize) -> String {
-        self.render(parent_column, indent, false)
+        self.render(parent_column, indent, None)
     }
 
     /// The tag written in front of the content: the explicit one, or the
@@ -1251,11 +1252,11 @@ impl ScalarValue {
         })
     }
 
-    /// Render the scalar with its tag; inside a flow collection when
-    /// `flow_context` is set.
-    fn render(&self, parent_column: usize, indent: usize, flow_context: bool) -> String {
+    /// Render the scalar with its tag; inside a flow collection quoting
+    /// strings as `flow` says, if it is set.
+    fn render(&self, parent_column: usize, indent: usize, flow: Option<FlowQuoting>) -> String {
         let tag = self.rendered_tag();
-        let content = self.render_content_in(parent_column, indent, flow_context);
+        let content = self.render_content_in(parent_column, indent, flow);
         match tag {
             Some(tag) if content.is_empty() => tag.to_string(),
             Some(tag) => format!("{tag} {content}"),
@@ -1263,14 +1264,27 @@ impl ScalarValue {
         }
     }
 
-    /// Render the scalar without any tag; inside a flow collection when
-    /// `flow_context` is set, where block scalars and plain scalars
-    /// holding flow indicators can't appear.
-    fn render_content_in(&self, parent_column: usize, indent: usize, flow_context: bool) -> String {
+    /// Render the scalar without any tag; inside a flow collection quoting
+    /// strings as `flow` says, if it is set. Block scalars and plain
+    /// scalars holding flow indicators can't appear there.
+    fn render_content_in(
+        &self,
+        parent_column: usize,
+        indent: usize,
+        flow: Option<FlowQuoting>,
+    ) -> String {
+        // A plain string is quoted as needed when rendered, and `string`
+        // picks the style itself, so a string with the style it would pick
+        // was not given one explicitly.
+        let auto_string = self.scalar_type == ScalarType::String
+            && (self.style == ScalarStyle::Plain || self.style == Self::detect_style(&self.value));
+        if flow == Some(FlowQuoting::Double) && auto_string {
+            return self.to_double_quoted();
+        }
         let content = self.render_content(parent_column, indent);
         let breaks_flow = content.starts_with(['|', '>'])
             || (!content.starts_with(['"', '\'']) && content.contains([',', '[', ']', '{', '}']));
-        if flow_context && breaks_flow {
+        if flow.is_some() && breaks_flow {
             self.to_double_quoted()
         } else {
             content
@@ -1571,29 +1585,20 @@ impl ScalarValue {
     }
 }
 
-impl crate::AsYaml for ScalarValue {
-    fn as_node(&self) -> Option<&crate::yaml::SyntaxNode> {
-        None
-    }
-
-    fn kind(&self) -> crate::as_yaml::YamlKind {
-        match self.rendered_tag() {
-            Some(tag) => crate::as_yaml::YamlKind::Tagged(std::borrow::Cow::Owned(tag.to_string())),
-            None => crate::as_yaml::YamlKind::Scalar,
-        }
-    }
-
-    fn build_content(
+impl ScalarValue {
+    /// Emit the scalar, inside a flow collection quoting strings as `flow`
+    /// says if it is set.
+    fn build(
         &self,
         builder: &mut rowan::GreenNodeBuilder,
         indent: usize,
-        flow_context: bool,
+        flow: Option<FlowQuoting>,
     ) -> bool {
         use crate::lex::SyntaxKind;
         if let Some(tag) = self.rendered_tag() {
             builder.start_node(SyntaxKind::TAGGED_NODE.into());
             builder.token(SyntaxKind::TAG.into(), tag);
-            let content = self.render_content_in(indent, 2, flow_context);
+            let content = self.render_content_in(indent, 2, flow);
             // Like the parser, give a tag with no content an empty scalar.
             let kind = if content.is_empty() {
                 SyntaxKind::NULL
@@ -1616,11 +1621,46 @@ impl crate::AsYaml for ScalarValue {
         // `a:\n  b: |-\n  x\n` has an empty scalar and a stray `x`.
         // TODO: emit a block scalar as the parser tokenizes it (PIPE, NEWLINE,
         // INDENT, ...) rather than as a single STRING token.
-        let text = self.render(indent, 2, flow_context);
+        let text = self.render(indent, 2, flow);
         builder.start_node(SyntaxKind::SCALAR.into());
         builder.token(self.token_kind(&text).into(), &text);
         builder.finish_node();
         false
+    }
+}
+
+impl crate::AsYaml for ScalarValue {
+    fn as_node(&self) -> Option<&crate::yaml::SyntaxNode> {
+        None
+    }
+
+    fn kind(&self) -> crate::as_yaml::YamlKind {
+        match self.rendered_tag() {
+            Some(tag) => crate::as_yaml::YamlKind::Tagged(std::borrow::Cow::Owned(tag.to_string())),
+            None => crate::as_yaml::YamlKind::Scalar,
+        }
+    }
+
+    fn build_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        flow_context: bool,
+    ) -> bool {
+        self.build(
+            builder,
+            indent,
+            flow_context.then_some(FlowQuoting::Minimal),
+        )
+    }
+
+    fn build_flow_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        quoting: FlowQuoting,
+    ) -> bool {
+        self.build(builder, indent, Some(quoting))
     }
 
     fn is_inline(&self) -> bool {

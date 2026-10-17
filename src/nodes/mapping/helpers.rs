@@ -346,26 +346,22 @@ pub(crate) fn block_scalar_content_indent(scalar: &SyntaxNode) -> Option<usize> 
 /// before a closing bracket), with continuation lines at `indent`. A
 /// result containing comments therefore spans several lines; see
 /// [`has_comment`]. Building the result with `build_content` shifts those
-/// lines by the indent it is given.
+/// lines by the indent it is given. The strings of a raw value are quoted
+/// as `quoting` says; those of a node keep their style.
 pub(crate) fn flow_form(
     value: &impl crate::AsYaml,
     indent: usize,
+    quoting: crate::as_yaml::FlowQuoting,
 ) -> Option<crate::as_yaml::YamlNode> {
     if value.is_inline() {
         return None;
     }
-    let built;
-    let node = match value.as_node() {
-        Some(node) => node,
-        None => {
-            let mut builder = GreenNodeBuilder::new();
-            builder.start_node(SyntaxKind::ROOT.into());
-            value.build_content(&mut builder, 0, false);
-            builder.finish_node();
-            let root = SyntaxNode::new_root(builder.finish());
-            built = root.first_child().expect("build_content emits a node");
-            &built
-        }
+    let Some(node) = value.as_node() else {
+        // A raw value has no comments to place and can be built in flow
+        // style directly.
+        let mut builder = GreenNodeBuilder::new();
+        value.build_flow_content(&mut builder, 0, quoting);
+        return crate::as_yaml::YamlNode::from_syntax(SyntaxNode::new_root_mut(builder.finish()));
     };
     let mut writer = FlowWriter {
         builder: GreenNodeBuilder::new(),

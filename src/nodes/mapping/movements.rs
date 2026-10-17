@@ -31,16 +31,11 @@ impl Mapping {
         // setting the mapping's style.
         let use_explicit_keys = self.uses_explicit_keys();
         let key_indent = self.detect_indentation_level();
+        let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
         // Contract: move, not duplicate. Drop any prior entry with the
         // same key first.
         self.remove(new_key);
-        let entry = MappingEntry::new_at_indent(
-            new_key,
-            new_value,
-            flow_context,
-            use_explicit_keys,
-            key_indent,
-        );
+        let entry = MappingEntry::new_in(new_key, new_value, flow, use_explicit_keys, key_indent);
         let target = target.syntax().clone();
         let children: Vec<_> = self.0.children_with_tokens().collect();
         match (flow_context, after) {

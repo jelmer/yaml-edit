@@ -345,9 +345,25 @@ Replacing a value (`Mapping::set`, `Sequence::set`, `set_path`) keeps the
 old value's anchor on the new one, so aliases to it still resolve. A new
 value that is a node with an anchor of its own keeps it only if the old
 value had none: the document's aliases refer to the old anchor, and the
-node the value was copied from keeps its own. An alias cannot carry an
-anchor, so replacing an anchored value with one still drops the anchor.
-A node passed as a new key keeps its anchor too.
+node the value was copied from keeps its own. A node passed as a new key
+keeps its anchor too.
+
+Other anchors in a node that is removed or replaced (`remove`, `clear`,
+`set`, `set_path`, `remove_path`, ...) go with it, and so would what
+the aliases after it refer to. Instead, the first alias that
+referred to such an anchor is replaced with a copy of the anchored node,
+anchor included, and the aliases after it refer to that copy:
+`b: {c: &y 1}\nd: *y\n` with `b` set to `6` gives `b: 6\nd: &y 1\n`. The
+same happens to the old anchor when the new value is an alias, which
+cannot carry one. Only aliases that referred to the removed node count, so
+`*y` in `a: &y 0\nb: {c: &y 1}\nd: *y\n` gets the copy rather than falling
+back to `a`. Anchors within the copy that would take over aliases
+referring to another node are left off it. An alias within the copy that
+would then refer to the wrong node is in turn replaced with a copy, which
+keeps only the anchors that aliases in it use. The shared helper for all
+of this is `nodes::kept_aliases::keeping_aliases`. An alias with a tag or
+anchor of its own, which the parser tolerates though YAML does not, has no
+room for the copy's anchor; the edit panics before changing anything.
 
 An alias resolves to the closest preceding definition of its anchor in the
 same document, as the spec requires. In `<<` merge keys only alias nodes are

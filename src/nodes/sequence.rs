@@ -112,6 +112,7 @@ fn rebuild_entry_with_value(
     entry: &SyntaxNode,
     value: &impl crate::AsYaml,
     flow: Option<FlowQuoting>,
+    new_anchor: Option<&str>,
 ) -> SyntaxNode {
     let entry_children: Vec<_> = entry.children_with_tokens().collect();
     // Track the column while copying the entry, so the new value's later
@@ -124,18 +125,18 @@ fn rebuild_entry_with_value(
     builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
 
     // The old item's anchor goes on the new one, so aliases to it still
-    // resolve; failing that the new item keeps the anchor it had where it
-    // was copied from.
-    // TODO: an alias cannot carry an anchor, so replacing an anchored item
-    // with one leaves aliases to the old anchor undefined. Report that
-    // instead of dropping the anchor.
+    // resolve; failing that `new_anchor`, or the anchor the new item had
+    // where it was copied from. An alias cannot carry an anchor.
     let old_anchor = held_anchor(entry).filter(|_| value.kind() != YamlKind::Alias);
-    let anchor = old_anchor.clone().or_else(|| {
-        value
-            .as_node()
-            .filter(|_| value.kind() != YamlKind::Alias)
-            .and_then(crate::nodes::mapping::source_anchor_text)
-    });
+    let anchor = old_anchor
+        .clone()
+        .or_else(|| new_anchor.map(str::to_string))
+        .or_else(|| {
+            value
+                .as_node()
+                .filter(|_| value.kind() != YamlKind::Alias)
+                .and_then(crate::nodes::mapping::source_anchor_text)
+        });
     // An anchor before the old item is rewritten along with it, unless a
     // comment separates the two, in which case it stays where it is.
     let item = entry_item(entry);
@@ -1005,15 +1006,52 @@ impl Sequence {
     ///
     /// An anchor on the replaced item stays, on the new item, so aliases to
     /// it still resolve. A node value that has an anchor of its own keeps
-    /// it only if the old item had none.
+    /// it only if the old item had none. The first alias to an anchor
+    /// deeper in the old item becomes a copy of the anchored node.
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn set(&self, index: usize, value: impl crate::AsYaml) -> bool {
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-
         let Some(i) = nth_entry_index(&self.0, SyntaxKind::SEQUENCE_ENTRY, index) else {
             return false;
         };
+        let node = self
+            .0
+            .children_with_tokens()
+            .nth(i)
+            .and_then(|c| c.into_node())
+            .expect("entry index names a node");
+        // An alias cannot carry an anchor; the first alias to the old one
+        // gets a copy of the old item instead.
+        let kept = crate::nodes::mapping::held_anchor_token(&node)
+            .filter(|_| value.kind() != YamlKind::Alias);
+        crate::nodes::kept_aliases::keeping_aliases(&node, kept, || {
+            Some(self.replace_entry_at(i, &value, None))
+        });
+        true
+    }
+
+    /// Replace the item at `index` as [`set`](Self::set) does, putting
+    /// `anchor` on the new item, and return the new entry.
+    pub(crate) fn replace_item_under(
+        &self,
+        index: usize,
+        value: impl crate::AsYaml,
+        anchor: Option<&str>,
+    ) -> SyntaxNode {
+        let i =
+            nth_entry_index(&self.0, SyntaxKind::SEQUENCE_ENTRY, index).expect("index is in range");
+        self.replace_entry_at(i, &value, anchor)
+    }
+
+    /// Replace the entry at child index `i` with one holding `value`, and
+    /// return it. `anchor` goes on the new item if the old one had none.
+    fn replace_entry_at(
+        &self,
+        i: usize,
+        value: &impl crate::AsYaml,
+        anchor: Option<&str>,
+    ) -> SyntaxNode {
+        let children: Vec<_> = self.0.children_with_tokens().collect();
         let node = children[i].as_node().expect("entry index names a node");
         let flow = self.is_flow_style().then(|| flow_quoting(&self.0));
         let (trailing_lines, dash_comment) = match entry_item(node) {
@@ -1024,7 +1062,7 @@ impl Sequence {
             }
             _ => (Vec::new(), None),
         };
-        let new_entry = rebuild_entry_with_value(node, &value, flow);
+        let new_entry = rebuild_entry_with_value(node, value, flow, anchor);
 
         // Replace the old SEQUENCE_ENTRY with the new one
         self.0.splice_children(i..i + 1, vec![new_entry.into()]);
@@ -1038,7 +1076,7 @@ impl Sequence {
         if let Some(comment) = dash_comment {
             replaced_value::add_dash_line_comment(&new_entry, comment);
         }
-        true
+        new_entry
     }
 
     /// Drop the INDENT that separated the entry just removed at child
@@ -1073,6 +1111,9 @@ impl Sequence {
     ///
     /// Returns `Some(value)` if the index was in bounds, `None` otherwise.
     ///
+    /// The first alias to an anchor in the removed item becomes a copy of
+    /// the anchored node, so it and later aliases keep their value.
+    ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn remove(&self, index: usize) -> Option<crate::as_yaml::YamlNode> {
         // Capture the value before removing so we can return it
@@ -1092,6 +1133,21 @@ impl Sequence {
             })
             .map(|(i, _)| i)
             .nth(index)?;
+        let removed = children[i].as_node().expect("SEQUENCE_ENTRY");
+        crate::nodes::kept_aliases::keeping_aliases(removed, None, || {
+            self.remove_entry_at(&children, i);
+            None
+        });
+        removed_value
+    }
+
+    /// Splice the entry at child index `i` out of this sequence, tidying
+    /// up the separators and line breaks around it.
+    fn remove_entry_at(
+        &self,
+        children: &[rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>],
+        i: usize,
+    ) {
         let is_last = !children.iter().skip(i + 1).any(|c| {
             c.as_node()
                 .is_some_and(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
@@ -1109,7 +1165,7 @@ impl Sequence {
         // entry any INDENT is a top-level formatting
         // one we leave alone.
         self.0.splice_children(i..(i + 1), vec![]);
-        self.detach_orphaned_indent(&children, i);
+        self.detach_orphaned_indent(children, i);
 
         let removed = children[i].as_node().expect("SEQUENCE_ENTRY");
         if is_last && self.is_flow_style() && !has_child_token(removed, |k| k == SyntaxKind::COMMA)
@@ -1149,7 +1205,6 @@ impl Sequence {
         if self.is_empty() {
             collapse_empty_child_sequence_in_parent(&self.0);
         }
-        removed_value
     }
 
     /// Check if this sequence is in flow style [item1, item2]

@@ -6,7 +6,7 @@
 
 use super::helpers::{
     build_block_value_node, built_block_node, drop_tagged_anchor, find_key_line_comment, flow_form,
-    has_comment, held_anchor, source_anchor_text, value_is_block,
+    has_comment, held_anchor_token, source_anchor_text, value_is_block,
 };
 use super::{key_content_matches, MappingEntry};
 use crate::as_yaml::{build_in, FlowQuoting};
@@ -512,11 +512,39 @@ impl MappingEntry {
     /// the key's line stays with the entry. An anchor on the old value is
     /// kept on the new one, in place of any anchor of its own, so aliases
     /// to it still resolve.
+    ///
+    /// Aliases elsewhere to anchors deeper in the old value are kept
+    /// resolving: the first of each becomes a copy of the anchored node.
     pub fn set_value(&self, new_value: impl crate::AsYaml, flow_context: bool) {
+        // An alias cannot carry an anchor; the first alias to the old one
+        // gets a copy of the old value instead.
+        let kept = self
+            .value()
+            .filter(|_| new_value.kind() != crate::as_yaml::YamlKind::Alias)
+            .and_then(|v| held_anchor_token(&v));
+        let anchor = kept.as_ref().map(|t| t.text().to_string());
+        let Some(old) = self.value() else {
+            self.replace_value_under(new_value, flow_context, anchor.as_deref());
+            return;
+        };
+        crate::nodes::kept_aliases::keeping_aliases(&old, kept, || {
+            self.replace_value_under(new_value, flow_context, anchor.as_deref());
+            self.value()
+        });
+    }
+
+    /// Replace the value as [`set_value`](Self::set_value) does, putting
+    /// `anchor` on the new value. Without one, a node value keeps the
+    /// anchor before it where it was copied from.
+    pub(crate) fn replace_value_under(
+        &self,
+        new_value: impl crate::AsYaml,
+        flow_context: bool,
+        anchor: Option<&str>,
+    ) {
         use crate::nodes::replaced_value::{
             remove_lifted_comment, restore_trailing_lines, take_trailing_lines,
         };
-        let old_anchor = self.value().and_then(|v| held_anchor(&v));
         let trailing_lines = match self.value() {
             Some(old) if !flow_context => {
                 let lines = take_trailing_lines(&old);
@@ -525,7 +553,7 @@ impl MappingEntry {
             }
             _ => Vec::new(),
         };
-        self.replace_value(new_value, flow_context, old_anchor.as_deref());
+        self.replace_value(new_value, flow_context, anchor);
         crate::nodes::hand_line_break_to_mapping(&self.0);
         restore_trailing_lines(&self.0, trailing_lines);
     }
@@ -539,9 +567,7 @@ impl MappingEntry {
     ) {
         use crate::as_yaml::YamlKind;
 
-        // TODO: an alias cannot carry an anchor, so replacing an anchored
-        // value with one leaves aliases to the old anchor undefined. Report
-        // that instead of dropping the anchor.
+        // An alias cannot carry an anchor.
         let old_anchor = old_anchor.filter(|_| new_value.kind() != YamlKind::Alias);
         if !flow_context {
             self.add_explicit_value_indicator();
@@ -718,7 +744,10 @@ impl MappingEntry {
     /// consumed. To retrieve the removed entry from a mapping (and get back a
     /// `MappingEntry` you can inspect), use [`Mapping::remove`](super::Mapping::remove) instead.
     pub fn discard(self) {
-        self.0.detach();
+        crate::nodes::kept_aliases::keeping_aliases(&self.0, None, || {
+            self.0.detach();
+            None
+        });
     }
 
     /// Remove this entry from its parent mapping.

@@ -190,7 +190,7 @@ fn root_node(built: YamlBuilder) -> YamlNode {
 fn start_mapping_entry(builder: &mut GreenNodeBuilder<'static>, key: &str) {
     builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
     builder.start_node(SyntaxKind::KEY.into());
-    crate::nodes::build_key_content(builder, &key);
+    crate::nodes::build_key_content(builder, &key, 0);
     builder.finish_node();
     builder.token(SyntaxKind::COLON.into(), ":");
 }

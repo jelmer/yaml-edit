@@ -3,7 +3,7 @@
 
 use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, validator::Validator, YamlFile, YamlNode};
+use yaml_edit::{debug, validator::Validator, MappingEntry, YamlFile, YamlNode};
 
 mod common;
 use common::assert_file_cst_ok;
@@ -173,4 +173,162 @@ fn test_set_flow_sequence_item_to_commented_block_value() {
     let flow = mapping.get_mapping("a").unwrap().get_sequence("f").unwrap();
     flow.set(0, value_of("v:\n  x: 1 # c\n  y: 2\n", "v"));
     assert_valid_copy(&file, "a:\n  f: [{x: 1, # c\n        y: 2}]\n");
+}
+
+/// The decoded value of the scalar at `key` in `src`.
+fn scalar_value_of(src: &str, key: &str) -> String {
+    value_of(src, key).as_scalar().unwrap().as_string()
+}
+
+/// Copy the scalar at `v` in `src` under a new key `n` in the mapping
+/// `m` of `target`, checking the result and that the value survived.
+#[track_caller]
+fn assert_scalar_copied_to_nested_key(src: &str, target: &str, expected: &str) {
+    let file = YamlFile::from_str(target).unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    mapping
+        .get_mapping("m")
+        .unwrap()
+        .set("n", value_of(src, "v"));
+    assert_valid_copy(&file, expected);
+    let copied = mapping.get_mapping("m").unwrap().get("n").unwrap();
+    assert_eq!(
+        copied.as_scalar().unwrap().as_string(),
+        scalar_value_of(src, "v")
+    );
+}
+
+/// Continuation lines of a multi-line quoted scalar copied under a deeper
+/// key are shifted with it, so they still clear the key's column.
+#[test]
+fn test_set_new_nested_key_to_multiline_double_quoted_scalar() {
+    assert_scalar_copied_to_nested_key(
+        "v: \"a\n b\"\n",
+        "m:\n  k: 1\n",
+        "m:\n  k: 1\n  n: \"a\n   b\"\n",
+    );
+}
+
+#[test]
+fn test_set_existing_nested_key_to_multiline_double_quoted_scalar() {
+    assert_scalar_copied_to_nested_key("v: \"a\n b\"\n", "m:\n  n: 1\n", "m:\n  n: \"a\n   b\"\n");
+}
+
+#[test]
+fn test_set_new_nested_key_to_multiline_single_quoted_scalar() {
+    assert_scalar_copied_to_nested_key(
+        "v: 'a\n\n b ''c'''\n",
+        "m:\n  k: 1\n",
+        "m:\n  k: 1\n  n: 'a\n\n   b ''c'''\n",
+    );
+}
+
+/// Escaped line breaks, escapes at the start of a line and blank lines
+/// all keep their meaning; only the line prefixes move.
+#[test]
+fn test_set_new_nested_key_to_double_quoted_scalar_with_escapes() {
+    assert_scalar_copied_to_nested_key(
+        "v: \"a \\\n  \\tb\n \n\n \\  c\\\n d\"\n",
+        "m:\n  k: 1\n",
+        "m:\n  k: 1\n  n: \"a \\\n    \\tb\n   \n\n   \\  c\\\n   d\"\n",
+    );
+}
+
+#[test]
+fn test_set_new_nested_key_to_multiline_plain_scalar() {
+    assert_scalar_copied_to_nested_key(
+        "v: x\n  y\n\n  \n \t z\n",
+        "m:\n  k: 1\n",
+        "m:\n  k: 1\n  n: x\n    y\n\n    \n   \t z\n",
+    );
+}
+
+#[test]
+fn test_set_new_nested_key_to_multiline_crlf_scalar() {
+    assert_scalar_copied_to_nested_key(
+        "v: \"a\r\n b\"\r\nw: x\r\n y\r\n",
+        "m:\n  k: 1\n",
+        "m:\n  k: 1\n  n: \"a\r\n   b\"\n",
+    );
+}
+
+/// Copied to a shallower key, continuation lines move in by the same
+/// amount, keeping their offset past the line the scalar starts on.
+#[test]
+fn test_set_root_key_to_nested_multiline_scalars() {
+    let src = "m:\n  q: \"a\n    b\"\n  p: x\n   y\n";
+    let source = value_of(src, "m");
+    let source = source.as_mapping().unwrap();
+    let file = YamlFile::from_str("k: 1\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    mapping.set("q", source.get("q").unwrap());
+    mapping.set("p", source.get("p").unwrap());
+    assert_valid_copy(&file, "k: 1\nq: \"a\n  b\"\np: x\n y\n");
+    assert_eq!(
+        mapping.get("q").unwrap().as_scalar().unwrap().as_string(),
+        "a b"
+    );
+    assert_eq!(
+        mapping.get("p").unwrap().as_scalar().unwrap().as_string(),
+        "x y"
+    );
+}
+
+#[test]
+fn test_set_sequence_item_to_multiline_scalar() {
+    let file = YamlFile::from_str("m:\n  - x\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let seq = mapping.get_sequence("m").unwrap();
+    seq.set(0, value_of("v: \"a\n b\"\n", "v"));
+    seq.push(value_of("v: x\n y\n", "v"));
+    assert_valid_copy(&file, "m:\n  - \"a\n   b\"\n  - x\n   y\n");
+}
+
+#[test]
+fn test_set_new_key_in_nested_flow_mapping_to_multiline_scalar() {
+    let file = YamlFile::from_str("m:\n  f: {x: 1}\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let flow = mapping.get_mapping("m").unwrap().get_mapping("f").unwrap();
+    flow.set("n", value_of("v: \"a\n b\"\n", "v"));
+    assert_valid_copy(&file, "m:\n  f: {x: 1, n: \"a\n      b\"}\n");
+}
+
+#[test]
+fn test_push_multiline_scalar_to_nested_flow_sequence() {
+    let file = YamlFile::from_str("m:\n  f: [x]\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let flow = mapping.get_mapping("m").unwrap().get_sequence("f").unwrap();
+    flow.push(value_of("v: x\n y\n", "v"));
+    assert_valid_copy(&file, "m:\n  f: [x, x\n   y]\n");
+}
+
+#[test]
+fn test_replace_deeply_nested_entry_with_multiline_scalar() {
+    let file = YamlFile::from_str("m:\n  o:\n    k: 1\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let nested = mapping.get_mapping("m").unwrap().get_mapping("o").unwrap();
+    nested.insert_at_index_preserving(0, "k", value_of("v: \"a\n b\"\n", "v"));
+    assert_valid_copy(&file, "m:\n  o:\n    k: \"a\n     b\"\n");
+}
+
+/// A multi-line explicit key is shifted to the entry's column like a value.
+#[test]
+fn test_new_entry_with_multiline_explicit_key() {
+    let src = YamlFile::from_str("? \"a\n  b\"\n: 1\n").unwrap();
+    let key = src
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap();
+    let entry = MappingEntry::new_at_indent(&key, 1, false, true, 2);
+    assert_eq!(entry.to_string(), "? \"a\n    b\"\n  : 1\n");
+    let file = YamlFile::from_str(&format!("m:\n  {}", entry)).unwrap();
+    assert_eq!(Validator::new().validate_syntax(file.syntax()), vec![]);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let nested = mapping.get_mapping("m").unwrap();
+    let copied = nested.keys().next().unwrap();
+    assert_eq!(copied.as_scalar().unwrap().as_string(), "a b");
 }

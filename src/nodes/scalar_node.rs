@@ -385,16 +385,26 @@ impl AsYaml for Scalar {
         YamlKind::Scalar
     }
 
+    /// The continuation lines of a multi-line plain or quoted scalar are
+    /// shifted as for a flow collection, keeping their offset from the
+    /// indentation of the line the scalar starts on, which becomes
+    /// `indent`. Leading whitespace on those lines is not content, so the
+    /// value is unchanged. A block scalar is copied as is: its body is laid
+    /// out by the caller, and its indentation can be content.
     fn build_content(
         &self,
         builder: &mut rowan::GreenNodeBuilder,
-        _indent: usize,
+        indent: usize,
         _flow_context: bool,
     ) -> bool {
-        // TODO: shift the continuation lines of a multi-line plain or quoted
-        // scalar by `indent`, as for a flow collection; copied under a deeper
-        // key they are left too shallow.
-        crate::yaml::copy_node_to_builder(builder, &self.0);
+        if !ValueNode::is_inline(self) {
+            crate::yaml::copy_node_to_builder(builder, &self.0);
+            return false;
+        }
+        let delta = indent as isize - crate::as_yaml::source_line_indent(&self.0) as isize;
+        builder.start_node(SyntaxKind::SCALAR.into());
+        copy_shifting_continuation_lines(builder, &self.0, delta, false);
+        builder.finish_node();
         // Scalars don't end with newlines
         false
     }
@@ -402,6 +412,77 @@ impl AsYaml for Scalar {
     fn is_inline(&self) -> bool {
         ValueNode::is_inline(self)
     }
+}
+
+/// Copy the children of `node`, moving the indentation of every line after
+/// the first by `delta` columns, both between tokens (a plain scalar) and
+/// within them (a quoted scalar). Empty lines stay empty. Returns whether
+/// the copy ends with a line break.
+fn copy_shifting_continuation_lines(
+    builder: &mut rowan::GreenNodeBuilder,
+    node: &SyntaxNode,
+    delta: isize,
+    mut after_newline: bool,
+) -> bool {
+    for child in node.children_with_tokens() {
+        let token = match child {
+            rowan::NodeOrToken::Node(n) => {
+                builder.start_node(n.kind().into());
+                after_newline = copy_shifting_continuation_lines(builder, &n, delta, after_newline);
+                builder.finish_node();
+                continue;
+            }
+            rowan::NodeOrToken::Token(t) => t,
+        };
+        match token.kind() {
+            SyntaxKind::NEWLINE => {
+                builder.token(token.kind().into(), token.text());
+                after_newline = true;
+                continue;
+            }
+            SyntaxKind::INDENT | SyntaxKind::WHITESPACE if after_newline => {
+                let shifted = shift_line_prefix(token.text(), delta);
+                if !shifted.is_empty() {
+                    builder.token(SyntaxKind::INDENT.into(), &shifted);
+                }
+            }
+            kind => {
+                if after_newline && delta > 0 {
+                    builder.token(SyntaxKind::INDENT.into(), &" ".repeat(delta as usize));
+                }
+                builder.token(kind.into(), &shift_inner_lines(token.text(), delta));
+            }
+        }
+        after_newline = false;
+    }
+    after_newline
+}
+
+/// `text` with the indentation of each line after the first moved by
+/// `delta` columns, leaving empty lines empty.
+fn shift_inner_lines(text: &str, delta: isize) -> Cow<'_, str> {
+    let Some((first, rest)) = text.split_once('\n').filter(|_| delta != 0) else {
+        return Cow::Borrowed(text);
+    };
+    let mut shifted = first.to_string();
+    for line in rest.split('\n') {
+        shifted.push('\n');
+        if line.trim_end_matches('\r').is_empty() {
+            shifted.push_str(line);
+        } else {
+            shifted.push_str(&shift_line_prefix(line, delta));
+        }
+    }
+    Cow::Owned(shifted)
+}
+
+/// `line` with its leading spaces moved by `delta` columns. Tabs after
+/// them are kept: they separate rather than indent. A source too shallow
+/// to dedent that far ends up at column 0.
+fn shift_line_prefix(line: &str, delta: isize) -> String {
+    let rest = line.trim_start_matches(' ');
+    let spaces = (line.len() - rest.len()) as isize + delta;
+    format!("{}{}", " ".repeat(spaces.max(0) as usize), rest)
 }
 
 // TryFrom implementations for typed access. These read the scalar the way

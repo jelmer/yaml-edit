@@ -240,6 +240,27 @@ pub(crate) fn assert_cst_ok(node: &impl rowan::ast::AstNode<Language = crate::ya
     }
 }
 
+/// Panic unless `yaml` reads `expected`, has the tree a parse of that text
+/// gives, and passes the validator.
+#[cfg(test)]
+#[track_caller]
+pub(crate) fn assert_edited(yaml: &crate::yaml::YamlFile, expected: &str) {
+    use rowan::ast::AstNode;
+    use std::str::FromStr;
+    assert_eq!(yaml.to_string(), expected);
+    let reparsed = crate::yaml::YamlFile::from_str(expected).unwrap();
+    assert_eq!(
+        tree_to_string(yaml.syntax()),
+        tree_to_string(reparsed.syntax())
+    );
+    let violations: Vec<String> = yaml
+        .documents()
+        .flat_map(|doc| crate::validator::Validator::new().validate(&doc))
+        .map(|v| v.to_string())
+        .collect();
+    assert_eq!(violations, Vec::<String>::new());
+}
+
 fn validate_node(node: &SyntaxNode) -> Result<(), String> {
     match node.kind() {
         SyntaxKind::MAPPING_ENTRY => {

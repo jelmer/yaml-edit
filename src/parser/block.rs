@@ -211,7 +211,12 @@ impl Parser {
             // The entry's value may still be on the next line though
             // (`- # c\n  v\n`, as in RZP5), so keep the comment and let the
             // later-line handling below claim it.
-            if self.current() == Some(SyntaxKind::COMMENT)
+            if self.dedented_block_scalar_header_follows(dash_column) {
+                // `-\n|\n x\n`: the header can only be this entry's value.
+                // Its body still has to clear the dash.
+                self.skip_ws_and_newlines();
+                self.parse_value();
+            } else if self.current() == Some(SyntaxKind::COMMENT)
                 && self.comment_ends_the_entry(dash_column)
             {
                 self.bump();
@@ -726,6 +731,11 @@ impl Parser {
             } else {
                 self.parse_value();
             }
+        } else if self.dedented_block_scalar_header_follows(question_column) {
+            // `?\n|\n x\n`: the header can only be the key. Its body still
+            // has to clear the `?`.
+            self.skip_ws_and_newlines();
+            self.parse_value();
         } else if self.indentless_sequence_follows(question_column) {
             self.bump(); // consume the newline
             self.parse_sequence_with_base_indent(base_indent);

@@ -1017,3 +1017,65 @@ fn test_tagged_sequence_in_explicit_value_is_bounded_by_colon() {
     let second = sequence.get(1).unwrap();
     assert_eq!(second.as_scalar().unwrap().as_string(), "b");
 }
+
+/// An explicit key's tagged or anchored sequence may sit at the `?`'s own
+/// column, as `seq-spaces` allows, but a `-` left of it is the enclosing
+/// sequence's next entry.
+#[test]
+fn test_annotated_sequence_in_explicit_key_at_question_column() {
+    for (yaml, tag) in [
+        ("? !!seq\n- a\n: v\n", Some("!!seq")),
+        ("? &x\n- a\n: v\n", None),
+        ("- ? !!seq\n  - a\n  : v\n", Some("!!seq")),
+        ("- ? &x\n  - a\n  : v\n", None),
+    ] {
+        let doc = yaml.parse::<YamlFile>().unwrap();
+        assert_eq!(doc.to_string(), yaml);
+        assert_file_cst_ok(&doc);
+        assert_eq!(
+            yaml_edit::validator::Validator::new()
+                .validate_syntax(doc.syntax())
+                .into_iter()
+                .map(|v| v.message)
+                .collect::<Vec<_>>(),
+            Vec::<String>::new(),
+            "{yaml:?}"
+        );
+        let document = doc.document().unwrap();
+        let mapping = match document.as_sequence() {
+            Some(sequence) => {
+                assert_eq!(sequence.len(), 1, "{yaml:?}");
+                sequence.get(0).unwrap().as_mapping().unwrap().clone()
+            }
+            None => document.as_mapping().unwrap(),
+        };
+        assert_eq!(mapping.len(), 1, "{yaml:?}");
+        let (key, value) = mapping.iter().next().unwrap();
+        let key = match tag {
+            Some(tag) => {
+                let tagged = key.as_tagged().unwrap();
+                assert_eq!(tagged.tag(), Some(tag.to_string()));
+                tagged.as_sequence().unwrap()
+            }
+            None => key.as_sequence().unwrap().clone(),
+        };
+        assert_eq!(key.len(), 1, "{yaml:?}");
+        assert_eq!(key.get(0).unwrap().as_scalar().unwrap().as_string(), "a");
+        assert_eq!(value.as_scalar().unwrap().as_string(), "v");
+    }
+
+    let yaml = "- ? !!seq\n- a\n";
+    let doc = yaml.parse::<YamlFile>().unwrap();
+    assert_eq!(doc.to_string(), yaml);
+    let document = doc.document().unwrap();
+    let sequence = document.as_sequence().unwrap();
+    assert_eq!(sequence.len(), 2);
+    let first = sequence.get(0).unwrap();
+    let (key, value) = first.as_mapping().unwrap().iter().next().unwrap();
+    let key = key.as_tagged().unwrap();
+    assert_eq!(key.tag(), Some("!!seq".to_string()));
+    assert!(key.value().unwrap().is_null());
+    assert!(value.as_scalar().unwrap().is_null());
+    let second = sequence.get(1).unwrap();
+    assert_eq!(second.as_scalar().unwrap().as_string(), "a");
+}

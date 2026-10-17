@@ -470,16 +470,16 @@ impl Parser {
                         _ => return None,
                     }
                 }
-                // Inside an explicit key, a `-` at or left of the `?` is an
-                // entry of the sequence that key sits in, not a node for us
-                // to annotate: `-\n  ? &d\n-\n  ? e\n` is one sequence, as
-                // the YAML test suite's PW8X expects. An explicit value's
-                // sequence may sit at the `:`'s own column, but not left of
-                // it.
+                // Inside an explicit key, a `-` left of the `?` is an entry
+                // of the sequence that key sits in, not a node for us to
+                // annotate: `-\n  ? &d\n-\n  ? e\n` is one sequence, as the
+                // YAML test suite's PW8X expects. The key's own sequence may
+                // sit at the `?`'s column, as `seq-spaces` allows, and an
+                // explicit value's at the `:`'s.
                 SyntaxKind::DASH
                     if self
                         .explicit_key_column
-                        .is_some_and(|column| indent <= column)
+                        .is_some_and(|column| indent < column)
                         || self
                             .explicit_value_column
                             .is_some_and(|column| indent < column) =>
@@ -709,9 +709,14 @@ impl Parser {
         // `- z` is the inner sequence's next entry. A scalar that is the
         // document's own node has no such collection.
         //
-        // Both columns can be set at once, as in `- a: |`, and the innermost
-        // collection is the one with the larger column.
-        let enclosing_column = self.sequence_entry_column.max(self.mapping_value_column);
+        // Several columns can be set at once, as in `- a: |`, and the
+        // innermost collection is the one with the largest column. A value
+        // on a later line than its key counts too: in `- a:\n   |\n  b: 1\n`
+        // the line back at `a`'s column is the mapping's next entry.
+        let enclosing_column = self
+            .sequence_entry_column
+            .max(self.mapping_value_column)
+            .max(self.mapping_block_value_column);
         // An explicit indentation indicator (`>2`) states the body's column
         // outright, so the first line does not get to set it: in
         // `a: >2\n   more\n  regular\n` the `regular` line is body at the
@@ -721,11 +726,7 @@ impl Parser {
         // column, which is the largest of the ones recorded, so
         // `- aaa: |2\n    xxx\n` has its body at column 4. With none, as at
         // the document root, it counts from column 0.
-        let parent_column = self
-            .sequence_entry_column
-            .max(self.mapping_value_column)
-            .max(self.mapping_block_value_column)
-            .unwrap_or(0);
+        let parent_column = enclosing_column.unwrap_or(0);
         let explicit_indent = explicit_indent.map(|indent| parent_column + indent);
         let mut base_indent: Option<usize> = explicit_indent;
         let mut first_content_indent: Option<usize> = explicit_indent;

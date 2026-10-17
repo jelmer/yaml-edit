@@ -8,7 +8,7 @@ use helpers::{
     append_comma_space_to_entry, ensure_top_level_empty_renders_as_flow, index_after_entry_line,
     FlowInsertPos,
 };
-pub(crate) use helpers::{block_scalar_content_indent, is_block_scalar};
+pub(crate) use helpers::{block_scalar_body_shift, block_scalar_content_indent, is_block_scalar};
 
 use super::{
     ensure_trailing_newline, entry_key, entry_line_terminated, entry_value, fresh_token,

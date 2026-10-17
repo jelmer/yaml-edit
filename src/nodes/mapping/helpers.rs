@@ -213,12 +213,11 @@ pub(crate) fn build_block_value_node(source: &SyntaxNode, target: usize) -> Bloc
     // (after `|`/`>` + NEWLINE). Block collections have it in the INDENT
     // that precedes them in their parent.
     let is_scalar = is_block_scalar(source);
-    let source_base = if is_scalar {
-        block_scalar_content_indent(source).unwrap_or(0)
+    let delta = if is_scalar {
+        block_scalar_body_shift(source, target)
     } else {
-        crate::as_yaml::source_base_indent(source)
+        target as isize - crate::as_yaml::source_base_indent(source) as isize
     };
-    let delta = target as isize - source_base as isize;
     let anchor = source_anchor_text(source);
 
     let mut value_builder = GreenNodeBuilder::new();
@@ -269,20 +268,19 @@ pub(super) fn built_block_node(value: &impl crate::AsYaml) -> Option<SyntaxNode>
 /// scalar on the tag line has its content lines shifted to `target`.
 pub(super) fn build_tagged_value_node(source: &SyntaxNode, target: usize) -> BlockValue {
     let anchor = source_anchor_text(source);
-    let base = source.first_child().and_then(|inner| {
+    let delta = source.first_child().map_or(0, |inner| {
         let content_on_tag_line = source
             .children_with_tokens()
             .take_while(|c| c.as_node().is_none())
             .all(|c| c.kind() != SyntaxKind::NEWLINE);
         if !content_on_tag_line {
-            Some(crate::as_yaml::source_base_indent(&inner))
+            target as isize - crate::as_yaml::source_base_indent(&inner) as isize
         } else if is_block_scalar(&inner) {
-            block_scalar_content_indent(&inner)
+            block_scalar_body_shift(&inner, target)
         } else {
-            None
+            0
         }
     });
-    let delta = base.map_or(0, |base| target as isize - base as isize);
 
     let mut value_builder = GreenNodeBuilder::new();
     value_builder.start_node(SyntaxKind::VALUE.into());
@@ -335,6 +333,24 @@ pub(crate) fn block_scalar_content_indent(scalar: &SyntaxNode) -> Option<usize> 
         }
     }
     None
+}
+
+/// How far to shift the body of `scalar`, a block scalar from another CST,
+/// to write it as the value of an entry whose content column is `target`,
+/// two columns past the entry's own. The body's first line goes to
+/// `target`, unless the scalar has an explicit indentation indicator
+/// (`|2`): that counts from the entry's column, so the body keeps its
+/// place relative to the entry instead, or its value would change.
+pub(crate) fn block_scalar_body_shift(scalar: &SyntaxNode, target: usize) -> isize {
+    if crate::nodes::scalar_node::block_scalar_indicators(scalar)
+        .1
+        .is_some()
+    {
+        let parent = crate::nodes::scalar_node::block_parent_column(scalar);
+        return target.saturating_sub(2) as isize - parent as isize;
+    }
+    let body = block_scalar_content_indent(scalar).unwrap_or(target);
+    target as isize - body as isize
 }
 
 /// `value` re-rendered in flow style, or `None` if it is already inline.

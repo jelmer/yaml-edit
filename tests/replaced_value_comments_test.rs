@@ -5,7 +5,7 @@
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::path::YamlPath;
-use yaml_edit::{debug, Mapping, MappingBuilder, Sequence, YamlFile, YamlNode};
+use yaml_edit::{debug, Mapping, MappingBuilder, MappingEntry, Sequence, YamlFile, YamlNode};
 
 mod common;
 use common::assert_file_cst_ok;
@@ -361,5 +361,147 @@ fn set_path_over_commented_value() {
         let file = YamlFile::from_str(src).unwrap();
         file.document().unwrap().try_set_path(path, 5).unwrap();
         assert_parser_shaped(&file, expected, src);
+    }
+}
+
+/// An entry that is not in a mapping has no lines around it, so whatever
+/// would go above or after it stays inside it.
+#[test]
+fn detached_entry_set_value() {
+    let entry = MappingEntry::new("k", 1, false, false);
+    entry.set_value(2, false);
+    assert_eq!(entry.to_string(), "k: 2\n");
+    debug::validate_tree(entry.syntax()).unwrap();
+
+    for (src, value, expected) in [
+        ("k: 1\nz: 2\n", "v: 2\n", "k: 2\n"),
+        (
+            "k: 1  # note\nz: 2\n",
+            "v: |  # src\n  text\n",
+            "# note\nk: |  # src\n  text\n",
+        ),
+        ("k:\n  x: 1\n\nz: 2\n", "v:\n  y: 1\n", "k:\n  y: 1\n\n"),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        let entry = mapping_at(&file, "").remove("k").unwrap();
+        entry.set_value(value_of(value), false);
+        assert_eq!(entry.to_string(), expected, "{src:?}");
+        debug::validate_tree(entry.syntax()).unwrap();
+    }
+}
+
+fn scalar_string(node: &YamlNode) -> String {
+    node.as_scalar().unwrap().as_string()
+}
+
+/// The parser reads the blank lines after a block scalar as part of its
+/// body, so they move into a new one. A kept (`|+`) scalar would take them
+/// into its value, so there they are dropped.
+#[test]
+fn blank_lines_after_new_block_scalar() {
+    for (src, path, value, expected) in [
+        (
+            "a:\n  x: 1\n\nb: 2\n",
+            "",
+            "v: |\n  text\n",
+            "a: |\n  text\n\nb: 2\n",
+        ),
+        (
+            "a: 1\n\nb: 2\n",
+            "",
+            "v: |\n  text\n",
+            "a: |\n  text\n\nb: 2\n",
+        ),
+        (
+            "a:\n  x: 1\n\n\nb: 2\n",
+            "",
+            "v: |-\n  text\n",
+            "a: |-\n  text\n\n\nb: 2\n",
+        ),
+        ("a: 1\n\n", "", "v: >\n  text\n", "a: >\n  text\n\n"),
+        (
+            "o:\n  a:\n    x: 1\n\nb: 2\n",
+            "o",
+            "v: |\n  text\n",
+            "o:\n  a: |\n    text\n\nb: 2\n",
+        ),
+        (
+            "a:\n  x: 1\n\n  # f\n\nb: 2\n",
+            "",
+            "v: |\n  text\n",
+            "a: |\n  text\n\n# f\n\nb: 2\n",
+        ),
+        (
+            "a:\n  x: 1\n \nb: 2\n",
+            "",
+            "v: |\n  text\n",
+            "a: |\n  text\n \nb: 2\n",
+        ),
+        (
+            "a:\n  x: 1\n    \nb: 2\n",
+            "",
+            "v: |\n  text\n",
+            "a: |\n  text\n\nb: 2\n",
+        ),
+        (
+            "a: 1\n   \nb: 2\n",
+            "",
+            "v: |1\n  text\n",
+            "a: |1\n  text\n\nb: 2\n",
+        ),
+        (
+            "a: 1\n # f\nb: 2\n",
+            "",
+            "v: |1\n  text\n",
+            "a: |1\n  text\n# f\nb: 2\n",
+        ),
+        (
+            "a:\n  x: 1\n\t\nb: 2\n",
+            "",
+            "v: |\n  text\n",
+            "a: |\n  text\n\nb: 2\n",
+        ),
+        (
+            "a:\n  x: 1\n\nb: 2\n",
+            "",
+            "v: |+\n  text\n",
+            "a: |+\n  text\nb: 2\n",
+        ),
+        (
+            "a: 1\n\nb: 2\n",
+            "",
+            "v: |+\n  text\n",
+            "a: |+\n  text\nb: 2\n",
+        ),
+        (
+            "a: 1\n\n# f\n\nb: 2\n",
+            "",
+            "v: |+\n  text\n",
+            "a: |+\n  text\n# f\n\nb: 2\n",
+        ),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        let source = value_of(value);
+        mapping_at(&file, path).set("a", &source);
+        assert_parser_shaped(&file, expected, src);
+        let set = mapping_at(&YamlFile::from_str(expected).unwrap(), path)
+            .get("a")
+            .unwrap();
+        assert_eq!(scalar_string(&set), scalar_string(&source), "{src:?}");
+    }
+
+    for (src, value, expected) in [
+        ("- 1\n\n- 2\n", "v: |\n  text\n", "- |\n  text\n\n- 2\n"),
+        ("- x: 1\n\n- 2\n", "v: |\n  text\n", "- |\n  text\n\n- 2\n"),
+        ("- 1\n\n- 2\n", "v: |+\n  text\n", "- |+\n  text\n- 2\n"),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        let source = value_of(value);
+        sequence_at(&file, "").set(0, &source);
+        assert_parser_shaped(&file, expected, src);
+        let set = sequence_at(&YamlFile::from_str(expected).unwrap(), "")
+            .get(0)
+            .unwrap();
+        assert_eq!(scalar_string(&set), scalar_string(&source), "{src:?}");
     }
 }

@@ -244,26 +244,34 @@ fn build_entry_value(
     // its continuation lines are given relative to that.
     match flow.and_then(|q| crate::nodes::mapping::flow_form(value, 2, q)) {
         Some(flow_value) => build_in(&flow_value, builder, indent(&flow_value), flow),
-        None => match value
-            .as_node()
-            .filter(|n| crate::nodes::mapping::is_block_scalar(n))
-        {
-            Some(scalar) => build_block_scalar(builder, scalar, dash_column + 2),
+        None => match value.as_node().and_then(|n| Some((n, block_scalar_of(n)?))) {
+            Some((node, scalar)) => build_block_scalar(builder, node, &scalar, dash_column + 2),
             None => build_in(value, builder, indent(value), flow),
         },
     }
 }
 
-/// Copy the block scalar `scalar` with its body shifted to `target`.
-/// Returns whether the copy ends with a line break.
-fn build_block_scalar(builder: &mut GreenNodeBuilder, scalar: &SyntaxNode, target: usize) -> bool {
-    let body = crate::nodes::mapping::block_scalar_content_indent(scalar).unwrap_or(target);
-    builder.start_node(SyntaxKind::SCALAR.into());
-    let ends_with_newline = crate::as_yaml::copy_node_content_reindent(
-        builder,
-        scalar,
-        target as isize - body as isize,
-    );
+/// The block scalar `node` is, or holds under its tag.
+fn block_scalar_of(node: &SyntaxNode) -> Option<SyntaxNode> {
+    let scalar = match node.kind() {
+        SyntaxKind::TAGGED_NODE => node.first_child()?,
+        _ => node.clone(),
+    };
+    crate::nodes::mapping::is_block_scalar(&scalar).then_some(scalar)
+}
+
+/// Copy `node`, the block scalar `scalar` or a tagged node holding it,
+/// with the body shifted to `target`. Returns whether the copy ends with a
+/// line break.
+fn build_block_scalar(
+    builder: &mut GreenNodeBuilder,
+    node: &SyntaxNode,
+    scalar: &SyntaxNode,
+    target: usize,
+) -> bool {
+    let delta = crate::nodes::mapping::block_scalar_body_shift(scalar, target);
+    builder.start_node(node.kind().into());
+    let ends_with_newline = crate::as_yaml::copy_node_content_reindent(builder, node, delta);
     builder.finish_node();
     ends_with_newline
 }

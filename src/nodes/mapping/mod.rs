@@ -409,6 +409,49 @@ pub(super) fn key_content_matches(key_node: &SyntaxNode, key: impl crate::AsYaml
     }
 }
 
+/// The anchor and tag on a KEY node, which sit in KEY itself or in the
+/// TAGGED_NODE it holds.
+fn key_annotations(key: &SyntaxNode) -> (Option<String>, Option<String>) {
+    let tagged = key
+        .children()
+        .next()
+        .filter(|n| n.kind() == SyntaxKind::TAGGED_NODE);
+    let tokens = key
+        .children_with_tokens()
+        .chain(tagged.iter().flat_map(|n| n.children_with_tokens()))
+        .filter_map(|c| c.into_token());
+    let (mut anchor, mut tag) = (None, None);
+    for token in tokens {
+        match token.kind() {
+            SyntaxKind::ANCHOR => anchor = anchor.or(Some(token.text().to_string())),
+            SyntaxKind::TAG => tag = tag.or(Some(token.text().to_string())),
+            _ => {}
+        }
+    }
+    (anchor, tag)
+}
+
+/// `key` under `tag`, if it has no tag of its own and is still the same key
+/// with it: `!!str` suits a string but not `1`, and a custom tag suits
+/// nothing given untagged.
+fn retagged_key(
+    tag: &str,
+    key: &impl crate::AsYaml,
+    flow: Option<crate::as_yaml::FlowQuoting>,
+) -> Option<crate::as_yaml::YamlNode> {
+    if matches!(key.kind(), YamlKind::Tagged(_)) {
+        return None;
+    }
+    let mut builder = GreenNodeBuilder::new();
+    builder.start_node(SyntaxKind::TAGGED_NODE.into());
+    builder.token(SyntaxKind::TAG.into(), tag);
+    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+    super::build_key_content(&mut builder, key, 0, flow);
+    builder.finish_node();
+    let tagged = crate::as_yaml::YamlNode::from_syntax(SyntaxNode::new_root_mut(builder.finish()))?;
+    crate::as_yaml::yaml_eq(&tagged, key).then_some(tagged)
+}
+
 impl Mapping {
     /// Check if this mapping is in flow style (JSON/inline format with `{}`).
     ///
@@ -1248,6 +1291,12 @@ impl Mapping {
     /// duplicate key. The renamed entry keeps its position, value and
     /// comments.
     ///
+    /// The key keeps its anchor, so aliases to it still resolve; an anchor
+    /// on a `new_key` node is used only if the old key had none. The key's
+    /// tag is kept if `new_key` has no tag of its own and still means the
+    /// same with it: `!!str a` renamed to `"b"` gives `!!str b`, but renamed
+    /// to `1` gives `1`, as `!!str 1` would be a string.
+    ///
     /// ```
     /// # use std::str::FromStr;
     /// # use yaml_edit::Document;
@@ -1344,7 +1393,8 @@ impl Mapping {
     /// An explicit key (`? k\n  : v`) puts the `:` on its own line, and the
     /// parser keeps that line break and indent inside KEY. They describe the
     /// entry's layout rather than the key, so they carry over; dropped, the
-    /// entry collapses onto one line and reparses as one node.
+    /// entry collapses onto one line and reparses as one node. In a flow
+    /// mapping the `?` itself sits inside KEY, so it carries over too.
     fn rebuild_key(
         builder: &mut GreenNodeBuilder,
         old: &SyntaxNode,
@@ -1355,7 +1405,22 @@ impl Mapping {
         let indent = old
             .parent()
             .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry));
-        super::build_key_content(builder, new_key, indent, flow);
+        let mut leading = old.children_with_tokens().map_while(|c| c.into_token());
+        if let Some(question) = leading.next().filter(|t| t.kind() == SyntaxKind::QUESTION) {
+            builder.token(question.kind().into(), question.text());
+            for ws in leading.take_while(|t| t.kind() == SyntaxKind::WHITESPACE) {
+                builder.token(ws.kind().into(), ws.text());
+            }
+        }
+        let (anchor, tag) = key_annotations(old);
+        if let Some(anchor) = anchor.or_else(|| new_key.as_node().and_then(source_anchor_text)) {
+            builder.token(SyntaxKind::ANCHOR.into(), &anchor);
+            builder.token(SyntaxKind::WHITESPACE.into(), " ");
+        }
+        match tag.and_then(|tag| retagged_key(&tag, new_key, flow)) {
+            Some(tagged) => super::build_key_content(builder, &tagged, indent, flow),
+            None => super::build_key_content(builder, new_key, indent, flow),
+        }
         for trailing in old
             .children_with_tokens()
             .skip_while(|c| !matches!(c.as_token().map(|t| t.kind()), Some(SyntaxKind::NEWLINE)))

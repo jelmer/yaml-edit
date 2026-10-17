@@ -690,12 +690,11 @@ pub(crate) fn flow_quoting(collection: &SyntaxNode) -> crate::as_yaml::FlowQuoti
 /// Emit `key`'s content for use inside a `KEY` node, of a flow mapping
 /// quoting strings as `flow` says if it is set.
 ///
-/// Identical to `key.build_content` except that a key which would render as
-/// a block scalar (`|` / `>`), tagged or not, is emitted as a double-quoted
-/// scalar instead. A block scalar is a valid *value* but cannot be a key:
-/// it does not read back as the same key, and the entry's `:` lands inside
-/// the block. `indent` is the column of the entry, which a multi-line key's
-/// continuation lines are shifted to clear.
+/// A block scalar or block collection, tagged or not, is written in flow
+/// form instead: a block collection cannot be an implicit key, and a block
+/// scalar does not read back as the same key, as the entry's `:` lands
+/// inside the block. `indent` is the column of the entry, which a
+/// multi-line key's continuation lines are shifted to clear.
 pub(crate) fn build_key_content(
     builder: &mut rowan::GreenNodeBuilder,
     key: &impl crate::AsYaml,
@@ -707,33 +706,22 @@ pub(crate) fn build_key_content(
         key.build_flow_content(builder, indent, quoting);
         return;
     }
-    // TODO: a node-backed block key (a block scalar or collection, tagged
-    // or not) is copied as is. `MappingEntry::new_at_indent` converts it to
-    // flow form first, but `Mapping::rename_key` does not, and writes a
-    // key that does not read back.
-    // A raw value (&str, ScalarValue, ...) renders a block scalar as a
-    // single STRING token whose text starts with the indicator, so check
-    // the scalar's text rather than its token kinds.
-    let renders_as_block_scalar = key.as_node().is_none() && {
+    if let Some(key) = mapping::flow_form(key, 2, crate::as_yaml::FlowQuoting::Minimal) {
+        return build_key_content(builder, &key, indent, None);
+    }
+    // flow_form leaves raw values that claim to be inline alone, but a
+    // string with line breaks still renders as a block scalar, and a set as
+    // a block mapping below its tag. In flow context both fit on one line.
+    let spans_lines = key.as_node().is_none() && {
         let mut probe = rowan::GreenNodeBuilder::new();
         probe.start_node(SyntaxKind::ROOT.into());
         key.build_content(&mut probe, 0, false);
         probe.finish_node();
-        let root = SyntaxNode::new_root(probe.finish());
-        root.first_child()
-            .and_then(|n| match n.kind() {
-                SyntaxKind::TAGGED_NODE => n.first_child(),
-                _ => Some(n),
-            })
-            .filter(|n| n.kind() == SyntaxKind::SCALAR)
-            .is_some_and(|scalar| {
-                let text = scalar.text().to_string();
-                text.starts_with('|') || text.starts_with('>')
-            })
+        SyntaxNode::new_root(probe.finish())
+            .text()
+            .contains_char('\n')
     };
-    // In flow context the same value is written as a double-quoted scalar
-    // that fits on one line.
-    key.build_content(builder, indent, renders_as_block_scalar);
+    key.build_content(builder, indent, spans_lines);
 }
 
 /// Whether `key`, as [`build_key_content`] writes it, spans several lines,

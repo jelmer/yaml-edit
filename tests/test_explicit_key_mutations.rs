@@ -629,3 +629,151 @@ fn new_key_spanning_lines_is_explicit() {
         "{a: 1, \"x\n  y\": 5}\n"
     );
 }
+
+fn first_value(source: &str) -> yaml_edit::YamlNode {
+    yaml_edit::Document::from_str(source)
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("k")
+        .unwrap()
+}
+
+#[test]
+fn block_key_written_in_flow_form() {
+    let block = first_value("k: |\n  x\n");
+    let tagged_block = first_value("k: !!str |\n  x\n");
+    let sequence = first_value("k:\n  - x\n  - y\n");
+    let tagged_sequence = first_value("k: !t\n  - x\n");
+    for (key, expected) in [
+        (&block, "\"x\\n\": 1\nb: 2\n"),
+        (&tagged_block, "!!str \"x\\n\": 1\nb: 2\n"),
+        (&sequence, "[x, y]: 1\nb: 2\n"),
+        (&tagged_sequence, "!t [x]: 1\nb: 2\n"),
+    ] {
+        assert_eq!(
+            edit_root_valid("a: 1\nb: 2\n", |m| assert!(m.rename_key("a", key))),
+            expected
+        );
+        assert_eq!(
+            edit_root_valid("b: 2\n", |m| m.set(key, 1)),
+            format!("b: 2\n{}", &expected[..expected.len() - "b: 2\n".len()])
+        );
+    }
+}
+
+#[test]
+fn tagged_key_in_explicit_and_flow_entries() {
+    let tagged = first_value("k: !t\n  - x\n");
+    assert_eq!(
+        edit_root_valid("? a\n: 1\n", |m| assert!(m.rename_key("a", &tagged))),
+        "? !t [x]\n: 1\n"
+    );
+    assert_eq!(
+        edit_root_valid("{a: 1}\n", |m| assert!(m.rename_key("a", &tagged))),
+        "{!t [x]: 1}\n"
+    );
+    assert_eq!(
+        edit_root_valid("{a: 1}\n", |m| m.set(&tagged, 2)),
+        "{a: 1, !t [x]: 2}\n"
+    );
+}
+
+#[test]
+fn set_key_written_in_flow_form() {
+    let set = |members: &[&str]| -> std::collections::BTreeSet<String> {
+        members.iter().map(|m| m.to_string()).collect()
+    };
+    let nested: std::collections::BTreeSet<_> = [set(&["p", "q"])].into_iter().collect();
+    assert_eq!(
+        edit_root_valid("a: 1\n", |m| m.set("s", &nested)),
+        "a: 1\ns: !!set\n  !!set {p: null, q: null}: null\n"
+    );
+    assert_eq!(
+        edit_root_valid("a: 1\n", |m| assert!(m.rename_key("a", set(&["p"])))),
+        "!!set {p: null}: 1\n"
+    );
+}
+
+#[test]
+fn flow_explicit_key_renamed() {
+    assert_eq!(
+        edit_root_valid("{? a : 1, b: 2}\n", |m| assert!(m.rename_key("a", "z"))),
+        "{? z : 1, b: 2}\n"
+    );
+}
+
+#[test]
+fn renamed_key_keeps_its_anchor() {
+    for (source, expected) in [
+        ("&x a: 1\nb: *x\n", "&x z: 1\nb: *x\n"),
+        ("&x !!str a: 1\nb: *x\n", "&x !!str z: 1\nb: *x\n"),
+        ("? &x a\n: 1\nb: *x\n", "? &x z\n: 1\nb: *x\n"),
+        ("? !!str &x a\n: 1\nb: *x\n", "? &x !!str z\n: 1\nb: *x\n"),
+        ("{&x a: 1, b: *x}\n", "{&x z: 1, b: *x}\n"),
+        ("{? &x a : 1, b: *x}\n", "{? &x z : 1, b: *x}\n"),
+    ] {
+        assert_eq!(
+            edit_root_valid(source, |m| assert!(m.rename_key("a", "z"))),
+            expected,
+            "{source:?}"
+        );
+    }
+    let quoted = first_item("- \"x\n  y\"\n");
+    assert_eq!(
+        edit_root_valid("&x a: 1\nb: *x\n", |m| assert!(m.rename_key("a", &quoted))),
+        "? &x \"x\n  y\"\n: 1\nb: *x\n"
+    );
+}
+
+#[test]
+fn renamed_key_keeps_its_tag_only_if_still_the_new_key() {
+    // `!!str 5` is a string, not the integer asked for, and `!t z` is not
+    // the string `z`.
+    assert_eq!(
+        edit_root_valid("&x !!str a: 1\nb: *x\n", |m| assert!(m.rename_key("a", 5))),
+        "&x 5: 1\nb: *x\n"
+    );
+    assert_eq!(
+        edit_root_valid("!t a: 1\n", |m| assert!(
+            m.rename_key(first_value("k: !t a\n"), "z")
+        )),
+        "z: 1\n"
+    );
+}
+
+#[test]
+fn renamed_key_given_as_annotated_node() {
+    // The new key's own tag replaces the old one. The old anchor stays,
+    // since aliases in this document refer to it; the new key's anchor is
+    // used only if the old key had none.
+    let tagged = first_value("k: !t [q]\n");
+    let anchored = first_value("k: &y q\n");
+    assert_eq!(
+        edit_root_valid("&x !!str a: 1\nb: *x\n", |m| assert!(
+            m.rename_key("a", &tagged)
+        )),
+        "&x !t [q]: 1\nb: *x\n"
+    );
+    assert_eq!(
+        edit_root_valid(
+            "&x a: 1\nb: *x\n",
+            |m| assert!(m.rename_key("a", &anchored))
+        ),
+        "&x q: 1\nb: *x\n"
+    );
+    assert_eq!(
+        edit_root_valid("a: 1\n", |m| assert!(m.rename_key("a", &anchored))),
+        "&y q: 1\n"
+    );
+}
+
+#[test]
+fn renamed_key_keeps_its_tag_in_a_json_style_mapping() {
+    assert_eq!(
+        edit_root_valid("{!!str \"a\": 1, \"b\": 2}\n", |m| assert!(
+            m.rename_key("a", "z")
+        )),
+        "{!!str \"z\": 1, \"b\": 2}\n"
+    );
+}

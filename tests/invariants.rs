@@ -499,7 +499,7 @@ fn insert_before_in_flow_mapping_stays_flow() {
     let doc = Document::from_str("{f: 0}").unwrap();
     doc.as_mapping().unwrap().insert_before("f", "a", "hi");
     assert_cst_ok(&doc);
-    assert_eq!(doc.to_string(), "{a: \"hi\", f: 0}");
+    assert_eq!(doc.to_string(), "{a: hi, f: 0}");
 }
 
 #[test]
@@ -507,7 +507,7 @@ fn insert_after_in_flow_mapping_stays_flow() {
     let doc = Document::from_str("{f: 0}").unwrap();
     doc.as_mapping().unwrap().insert_after("f", "a", "hi");
     assert_cst_ok(&doc);
-    assert_eq!(doc.to_string(), "{f: 0, a: \"hi\"}");
+    assert_eq!(doc.to_string(), "{f: 0, a: hi}");
 }
 
 #[test]

@@ -918,28 +918,7 @@ impl AsYaml for &str {
         indent: usize,
         flow_context: bool,
     ) -> bool {
-        use crate::lex::SyntaxKind;
-        use crate::scalar::ScalarValue;
-
-        // In flow context (JSON), always use double-quoted strings for compatibility
-        // In block context (YAML), use standard quoting rules
-        let scalar = if flow_context {
-            ScalarValue::double_quoted(*self)
-        } else {
-            ScalarValue::string(*self)
-        };
-
-        // A multi-line string renders as a block scalar, whose body has to
-        // clear the column its entry sits at.
-        // TODO: emit a block scalar as the parser tokenizes it, as for
-        // ScalarValue.
-        let yaml_text = scalar.to_yaml_string_with_indent(indent, 2);
-        // Both quoted and unquoted strings use STRING token kind;
-        // the token text includes any quotes needed for disambiguation.
-        builder.start_node(SyntaxKind::SCALAR.into());
-        builder.token(SyntaxKind::STRING.into(), &yaml_text);
-        builder.finish_node();
-        false
+        crate::scalar::ScalarValue::string(*self).build_content(builder, indent, flow_context)
     }
 
     fn is_inline(&self) -> bool {
@@ -1018,7 +997,7 @@ pub(crate) fn build_set_content<T: AsYaml>(
         if flow {
             member.build_content(builder, 0, true);
         } else {
-            crate::nodes::build_key_content(builder, &member);
+            crate::nodes::build_key_content(builder, &member, false);
         }
         builder.finish_node(); // KEY
         builder.token(SyntaxKind::COLON.into(), ":");
@@ -1136,10 +1115,7 @@ mod tests {
         let inner = doc.as_mapping().unwrap().get_mapping("m").unwrap();
         inner.set("s", BTreeSet::from(["y", "x"]));
         assert_set_matches_reparse(&doc);
-        assert_eq!(
-            doc.to_string(),
-            "m: {a: 1, s: !!set {\"x\": null, \"y\": null}}\n"
-        );
+        assert_eq!(doc.to_string(), "m: {a: 1, s: !!set {x: null, y: null}}\n");
     }
 
     #[test]

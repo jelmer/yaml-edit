@@ -165,6 +165,8 @@ impl AsYaml for TaggedNode {
         indent: usize,
         _flow_context: bool,
     ) -> bool {
+        // TODO: in flow context, quote plain content holding a flow
+        // indicator (`!t a, b`), as Scalar does.
         let delta = continuation_indent(&self.0).map_or(0, |base| indent as isize - base as isize);
         builder.start_node(SyntaxKind::TAGGED_NODE.into());
         let ends_with_newline = crate::as_yaml::copy_node_content_reindent(builder, &self.0, delta);

@@ -1240,7 +1240,7 @@ impl Mapping {
         for entry_child in node.children_with_tokens() {
             match entry_child {
                 rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::KEY => {
-                    Self::rebuild_key(&mut builder, &n, &new_key);
+                    Self::rebuild_key(&mut builder, &n, &new_key, self.is_flow_style());
                 }
                 rowan::NodeOrToken::Node(n) => {
                     crate::yaml::copy_node_to_builder(&mut builder, &n);
@@ -1280,9 +1280,14 @@ impl Mapping {
     /// parser keeps that line break and indent inside KEY. They describe the
     /// entry's layout rather than the key, so they carry over; dropped, the
     /// entry collapses onto one line and reparses as one node.
-    fn rebuild_key(builder: &mut GreenNodeBuilder, old: &SyntaxNode, new_key: &impl crate::AsYaml) {
+    fn rebuild_key(
+        builder: &mut GreenNodeBuilder,
+        old: &SyntaxNode,
+        new_key: &impl crate::AsYaml,
+        flow: bool,
+    ) {
         builder.start_node(SyntaxKind::KEY.into());
-        super::build_key_content(builder, new_key);
+        super::build_key_content(builder, new_key, flow);
         for trailing in old
             .children_with_tokens()
             .skip_while(|c| !matches!(c.as_token().map(|t| t.kind()), Some(SyntaxKind::NEWLINE)))
@@ -1304,7 +1309,7 @@ impl Mapping {
 
         // Add KEY node
         builder.start_node(SyntaxKind::KEY.into());
-        super::build_key_content(&mut builder, &key);
+        super::build_key_content(&mut builder, &key, false);
         builder.finish_node(); // KEY
 
         // Add colon

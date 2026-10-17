@@ -44,7 +44,7 @@ key1: value1"#;
     // Setting into a flow mapping now inserts inside its `{}` (was: appended
     // a broken block-style entry after `}`). The trailing invalid block
     // content is still preserved in ERROR nodes.
-    assert_eq!(result, "---\n{key2: \"value2\"}\nkey1: value1");
+    assert_eq!(result, "---\n{key2: value2}\nkey1: value1");
 }
 
 #[test]
@@ -73,7 +73,7 @@ version: 1.0"#;
 
             // The new key is added inside the `{}`; invalid trailing block
             // content stays in ERROR nodes.
-            let expected = "---\n{author: \"John\"}\nname: test\nversion: 1.0";
+            let expected = "---\n{author: John}\nname: test\nversion: 1.0";
             assert_eq!(yaml.to_string(), expected);
         }
     }

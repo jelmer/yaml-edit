@@ -376,7 +376,7 @@ fn test_replace_multiline_flow_sequence_value_with_scalar() {
     );
     assert_file_cst_ok(&yaml);
 
-    let expected = "{\n  \"Name\": \"yep\",\n  \"Repository\": \"cvs+ssh://_anoncvs@anoncvs.example.org/cvs#yep\",\n  \"Repository-Browse\": \"http://www.example.org/cvs.cgi/contrib/code/yep/\"\n}";
+    let expected = "{\n  \"Name\": \"yep\",\n  \"Repository\": cvs+ssh://_anoncvs@anoncvs.example.org/cvs#yep,\n  \"Repository-Browse\": \"http://www.example.org/cvs.cgi/contrib/code/yep/\"\n}";
 
     assert_eq!(yaml.to_string(), expected);
     debug::validate_tree(yaml.syntax()).expect("CST invariants hold after mutation");
@@ -399,7 +399,7 @@ fn test_replace_multiline_flow_value_with_scalar_variants() {
         (
             "mapping",
             "{\n  \"a\": \"1\",\n  \"nested\": {\n    \"x\": 1,\n    \"y\": 2\n  },\n  \"z\": \"3\"\n}",
-            "{\n  \"a\": \"1\",\n  \"nested\": \"replaced\",\n  \"z\": \"3\"\n}",
+            "{\n  \"a\": \"1\",\n  \"nested\": replaced,\n  \"z\": \"3\"\n}",
         ),
         (
             "anchor",

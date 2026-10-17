@@ -102,6 +102,9 @@ impl MappingEntry {
             let explicit = use_explicit_key || multiline;
             return Self::new_at_indent(key, value, flow_context, explicit, key_indent);
         }
+        if !use_explicit_key && !flow_context && crate::nodes::key_spans_lines(&key) {
+            return Self::new_at_indent(key, value, flow_context, true, key_indent);
+        }
         // Built inline below, the flow form is shifted by key_indent, so its
         // continuation lines are given relative to the key.
         if let Some(value) = flow_context.then(|| flow_form(&value, 2)).flatten() {
@@ -551,9 +554,6 @@ impl MappingEntry {
 
         // Inline values don't own a trailing NEWLINE; ensure the entry has
         // one.
-        // TODO: for an explicit-key entry the parser keeps the line break,
-        // and a key-line comment with the whitespace before it, in the
-        // MAPPING after the entry rather than in it.
         if !self.ends_with_newline() {
             self.append(vec![fresh_token(SyntaxKind::NEWLINE, "\n")]);
             crate::nodes::hand_line_break_to_mapping(&self.0);

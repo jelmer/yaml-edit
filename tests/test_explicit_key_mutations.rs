@@ -473,3 +473,159 @@ fn nested_explicit_key_entry_inserted_and_moved() {
         "outer:\n  ? c\n  : 9\n  ? a\n  : 1\nz: 0\n"
     );
 }
+
+#[test]
+fn explicit_key_entry_replaced_at_index() {
+    let source = "? a\n: 1\n? b\n: 2\n";
+    assert_eq!(
+        edit_root(source, |m| m.insert_at_index_preserving(0, "a", 5)),
+        "? a\n: 5\n? b\n: 2\n"
+    );
+    assert_eq!(
+        edit_root(source, |m| m.insert_at_index_preserving(0, "b", 5)),
+        "? a\n: 1\n? b\n: 5\n"
+    );
+    assert_eq!(
+        edit_root("? a\n: 1\n? b\n: 2", |m| m
+            .insert_at_index_preserving(0, "b", 5)),
+        "? a\n: 1\n? b\n: 5"
+    );
+}
+
+#[test]
+fn entry_replaced_at_index_keeps_mapping_layout() {
+    for (source, key, expected) in [
+        ("a: 1\nb: 2\n", "a", "a: 5\nb: 2\n"),
+        ("a: 1\nb: 2", "b", "a: 1\nb: 5"),
+        ("m:\n  a: 1\n  b: 2\n", "a", "m:\n  a: 5\n  b: 2\n"),
+        ("m:\n  a: 1\n  b: 2\n", "b", "m:\n  a: 1\n  b: 5\n"),
+        ("m:\n  a: 1\nz: 0\n", "a", "m:\n  a: 5\nz: 0\n"),
+        ("{k: v, m: 2}\n", "k", "{k: 5, m: 2}\n"),
+        ("{k: v, m: 2}\n", "m", "{k: v, m: 5}\n"),
+        ("{k: v,\n  m: 2}\n", "k", "{k: 5,\n  m: 2}\n"),
+    ] {
+        let file = YamlFile::from_str(source).unwrap();
+        let root = file.document().unwrap().as_mapping().unwrap();
+        let m = root.get_mapping("m").unwrap_or(root);
+        m.insert_at_index_preserving(1, key, 5);
+        assert_parser_shaped(&file);
+        assert_eq!(file.to_string(), expected, "{source:?}");
+    }
+}
+
+#[test]
+fn explicit_key_commented_block_value_replaced_by_scalar() {
+    assert_eq!(
+        edit_root("? a\n:  # c\n  x: 1\n", |m| m.set("a", 5)),
+        "? a\n: 5  # c\n"
+    );
+    assert_eq!(
+        edit_root("? a\n:  # c\n  x: 1\nb: 2\n", |m| m.set("a", 5)),
+        "? a\n: 5  # c\nb: 2\n"
+    );
+    assert_eq!(
+        edit_root("m:\n  ? a\n  :  # c\n    - 1\n  b: 2\n", |m| {
+            m.get_mapping("m").unwrap().set("a", 5)
+        }),
+        "m:\n  ? a\n  : 5  # c\n  b: 2\n"
+    );
+}
+
+#[test]
+fn explicit_key_commented_scalar_value_replaced() {
+    assert_eq!(
+        edit_root("? a\n: 1  # c\n? b\n: 2\n", |m| m.set("a", 5)),
+        "? a\n: 5  # c\n? b\n: 2\n"
+    );
+}
+
+fn first_item(source: &str) -> yaml_edit::YamlNode {
+    YamlFile::from_str(source)
+        .unwrap()
+        .document()
+        .unwrap()
+        .as_sequence()
+        .unwrap()
+        .get(0)
+        .unwrap()
+}
+
+/// Edit the root mapping of `source`, check the result is shaped as the
+/// parser would shape it and is valid, and return its text.
+#[track_caller]
+fn edit_root_valid(source: &str, edit: impl FnOnce(&Mapping)) -> String {
+    let text = edit_root(source, edit);
+    let doc = yaml_edit::Document::from_str(&text).unwrap();
+    assert_eq!(
+        yaml_edit::validator::Validator::new().validate(&doc),
+        vec![],
+        "{text:?}"
+    );
+    text
+}
+
+#[test]
+fn key_renamed_to_one_spanning_lines_becomes_explicit() {
+    let quoted = first_item("- \"x\n  y\"\n");
+    let commented = first_item("- - 1  # one\n  - 2\n");
+    for (source, key, expected) in [
+        ("a: 1\nb: 2\n", &quoted, "? \"x\n  y\"\n: 1\nb: 2\n"),
+        ("b: 2\na: 1\n", &quoted, "b: 2\n? \"x\n  y\"\n: 1\n"),
+        (
+            "a: 1  # c\nb: 2\n",
+            &quoted,
+            "? \"x\n  y\"\n: 1  # c\nb: 2\n",
+        ),
+        (
+            "a:\n  x: 1\nb: 2\n",
+            &quoted,
+            "? \"x\n  y\"\n:\n  x: 1\nb: 2\n",
+        ),
+        (
+            "a: 1\nb: 2\n",
+            &commented,
+            "? [1,  # one\n  2]\n: 1\nb: 2\n",
+        ),
+        ("{a: 1, b: 2}\n", &quoted, "{\"x\n   y\": 1, b: 2}\n"),
+    ] {
+        assert_eq!(
+            edit_root_valid(source, |m| assert!(m.rename_key("a", key))),
+            expected,
+            "{source:?}"
+        );
+    }
+}
+
+#[test]
+fn nested_key_renamed_to_one_spanning_lines_becomes_explicit() {
+    let key = first_item("- \"x\n    y\"\n");
+    let file = YamlFile::from_str("m:\n  a: 1\n  b: 2\n").unwrap();
+    let m = file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("m")
+        .unwrap();
+    assert!(m.rename_key("a", &key));
+    assert_parser_shaped(&file);
+    assert_eq!(file.to_string(), "m:\n  ? \"x\n      y\"\n  : 1\n  b: 2\n");
+}
+
+#[test]
+fn new_key_spanning_lines_is_explicit() {
+    let quoted = first_item("- \"x\n  y\"\n");
+    let flow = first_item("- [1,\n  2]\n");
+    assert_eq!(
+        edit_root_valid("a: 1\n", |m| m.set(&quoted, 5)),
+        "a: 1\n? \"x\n  y\"\n: 5\n"
+    );
+    assert_eq!(
+        edit_root_valid("a: 1\n", |m| m.set(&flow, 5)),
+        "a: 1\n? [1,\n  2]\n: 5\n"
+    );
+    assert_eq!(
+        edit_root_valid("{a: 1}\n", |m| m.set(&quoted, 5)),
+        "{a: 1, \"x\n  y\": 5}\n"
+    );
+}

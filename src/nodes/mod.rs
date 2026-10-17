@@ -368,7 +368,13 @@ pub(crate) fn ensure_trailing_newline(entry: &SyntaxNode) {
     if entry_line_terminated(entry) {
         return;
     }
-    append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+    // Callers splice the new sibling right after an explicit-key entry and
+    // then hand its break to the mapping (`hand_line_break_to_mapping`).
+    if has_child_token(entry, |k| k == SyntaxKind::QUESTION) {
+        append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+    } else {
+        terminate_last_line(entry);
+    }
 }
 
 /// Move the NEWLINE that `entry` ends with out to follow it in its mapping,

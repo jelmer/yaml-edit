@@ -1800,3 +1800,19 @@ fn test_set_value_of_explicit_key_without_one() {
         assert_edited(&yaml, expected);
     }
 }
+
+/// The line break ending an unterminated last entry goes where the parser
+/// puts it: in the innermost entry or block scalar on that line.
+#[test]
+fn test_set_after_unterminated_nested_value() {
+    use crate::debug::assert_edited;
+    for (source, expected) in [
+        ("a:\n  - 1", "a:\n  - 1\nb: 2\n"),
+        ("a:\n  x: 1", "a:\n  x: 1\nb: 2\n"),
+        ("a: |\n  x", "a: |\n  x\nb: 2\n"),
+    ] {
+        let yaml = YamlFile::from_str(source).unwrap();
+        yaml.document().unwrap().as_mapping().unwrap().set("b", 2);
+        assert_edited(&yaml, expected);
+    }
+}

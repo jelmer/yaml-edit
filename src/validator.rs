@@ -487,6 +487,8 @@ impl Validator {
                 self.check_single_content_node(node, violations);
             }
             SyntaxKind::TAGGED_NODE => {
+                self.check_anchor_and_alias(node, violations);
+                self.check_tag_on_alias(node, violations);
                 self.check_collection_tag_content(node, violations);
                 self.check_omap_keys(node, violations);
                 self.check_set_values(node, violations);
@@ -2021,6 +2023,31 @@ impl Validator {
                 "Node cannot have both an anchor and be an alias",
             ));
         }
+    }
+
+    /// Check that an alias has no tag
+    ///
+    /// An alias node cannot have properties (spec production c-ns-alias-node),
+    /// so `!t *a` is invalid.
+    fn check_tag_on_alias(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        if !node
+            .children()
+            .any(|child| child.kind() == crate::SyntaxKind::ALIAS)
+        {
+            return;
+        }
+        let Some(tag) = node
+            .children_with_tokens()
+            .filter_map(|c| c.into_token())
+            .find(|t| t.kind() == crate::SyntaxKind::TAG)
+        else {
+            return;
+        };
+        violations.push(Violation::error_at(
+            Rule::InvalidTag,
+            tag.text_range(),
+            "An alias cannot have a tag",
+        ));
     }
 
     /// Check that comment tokens have whitespace separation
@@ -3912,6 +3939,70 @@ mod tests {
             "- ? a\n",
             "? &a a\n",
         ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tag_on_alias() {
+        for (yaml, expected) in [
+            (
+                "a: &a 1\nk: !t *a\n",
+                vec![("An alias cannot have a tag", "2:4", Rule::InvalidTag)],
+            ),
+            (
+                "- &a 1\n- !t *a\n",
+                vec![("An alias cannot have a tag", "2:3", Rule::InvalidTag)],
+            ),
+            (
+                "[&a 1, !t *a]\n",
+                vec![("An alias cannot have a tag", "1:8", Rule::InvalidTag)],
+            ),
+            (
+                "a: &a 1\nb: {!!str *a : v}\n",
+                vec![("An alias cannot have a tag", "2:5", Rule::InvalidTag)],
+            ),
+            (
+                "a: &a 1\nk: !t\n  *a\n",
+                vec![("An alias cannot have a tag", "2:4", Rule::InvalidTag)],
+            ),
+            (
+                "a: &a 1\nk: !t &b *a\n",
+                vec![
+                    (
+                        "Node cannot have both an anchor and be an alias",
+                        "2:4",
+                        Rule::Other,
+                    ),
+                    ("An alias cannot have a tag", "2:4", Rule::InvalidTag),
+                ],
+            ),
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.severity, v.rule))
+                .collect();
+            let expected: Vec<_> = expected
+                .into_iter()
+                .map(|(message, location, rule)| {
+                    (
+                        message.to_string(),
+                        Some(location.to_string()),
+                        Severity::Error,
+                        rule,
+                    )
+                })
+                .collect();
+            assert_eq!(violations, expected, "{yaml:?}");
+        }
+        for yaml in ["a: &a 1\nk: !t &b x\nl: *a\n", "a: &a 1\nk: !t\n  *a : v\n"] {
             let file = crate::YamlFile::from_str(yaml).unwrap();
             assert_eq!(
                 Validator::new().validate_syntax(file.syntax()),

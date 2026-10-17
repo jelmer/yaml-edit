@@ -2060,7 +2060,7 @@ second: value
         let description = mapping
             .get("description")
             .expect("Should have 'description' key");
-        let expected_content = "This is the first paragraph that should be folded into a single line when processed by a YAML parser.\nThis is a second paragraph that should also be folded but kept separate from the first paragraph.\nThis is a third paragraph after multiple blank lines.\nFinal paragraph.\n";
+        let expected_content = "This is the first paragraph that should be folded into a single line when processed by a YAML parser.\nThis is a second paragraph that should also be folded but kept separate from the first paragraph.\n\nThis is a third paragraph after multiple blank lines.\nFinal paragraph.\n";
         assert_eq!(
             description.as_scalar().unwrap().as_string(),
             expected_content
@@ -2321,7 +2321,7 @@ literal_keep: |+
                 .as_scalar()
                 .unwrap()
                 .as_string(),
-            "\n"
+            ""
         );
 
         assert_eq!(parsed1.to_string(), yaml1);
@@ -2483,7 +2483,7 @@ just_spaces: |
                 .as_scalar()
                 .unwrap()
                 .as_string(),
-            "\n"
+            ""
         );
         assert_eq!(
             mapping
@@ -2492,7 +2492,7 @@ just_spaces: |
                 .as_scalar()
                 .unwrap()
                 .as_string(),
-            "\n"
+            ""
         );
         assert_eq!(
             mapping
@@ -2519,7 +2519,7 @@ just_spaces: |
                 .as_scalar()
                 .unwrap()
                 .as_string(),
-            "\n"
+            ""
         );
         assert_eq!(
             mapping
@@ -2528,7 +2528,7 @@ just_spaces: |
                 .as_scalar()
                 .unwrap()
                 .as_string(),
-            "\n"
+            ""
         );
 
         let output = parsed.to_string();

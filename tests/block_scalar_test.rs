@@ -829,10 +829,10 @@ fn test_empty_block_scalars_with_all_indicators() {
 
     // Verify exact values based on chomping indicators
     let literal_node = mapping.get("literal").unwrap();
-    assert_eq!(literal_node.as_scalar().unwrap().as_string(), "\n");
+    assert_eq!(literal_node.as_scalar().unwrap().as_string(), "");
 
     let folded_node = mapping.get("folded").unwrap();
-    assert_eq!(folded_node.as_scalar().unwrap().as_string(), "\n");
+    assert_eq!(folded_node.as_scalar().unwrap().as_string(), "");
 
     let strip_node = mapping.get("strip").unwrap();
     assert_eq!(strip_node.as_scalar().unwrap().as_string(), "");

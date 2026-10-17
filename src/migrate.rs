@@ -29,7 +29,7 @@
 //! would rather decide per site.
 
 use crate::lex::SyntaxKind;
-use crate::scalar::{CoreScalarType, ScalarValue};
+use crate::scalar::{digits_to_decimal, places_to_decimal, CoreScalarType, ScalarValue};
 use crate::yaml::{Document, SyntaxNode};
 use rowan::ast::AstNode;
 
@@ -163,42 +163,43 @@ fn yaml_1_1_string(text: &str) -> bool {
 
 /// The 1.2 spelling of a YAML 1.1 number whose 1.2 reading differs, per the
 /// 1.1 `!!int` and `!!float` regular expressions.
-///
-/// Values that do not fit in a `u128` are left alone.
 fn yaml_1_1_number(text: &str) -> Option<(String, SyntaxKind)> {
     let (sign, body) = match text.strip_prefix(['+', '-']) {
         Some(body) => (&text[..1], body),
         None => ("", text),
     };
     let negative = sign == "-";
-    let decimal = |value: u128| {
-        let minus = if negative && value != 0 { "-" } else { "" };
+    let decimal = |digits: &str, radix: u32| {
+        let value = digits_to_decimal(digits, radix);
+        let minus = if negative && value != "0" { "-" } else { "" };
         (format!("{minus}{value}"), SyntaxKind::INT)
     };
 
     if let Some(digits) = body.strip_prefix("0b") {
-        return parse_radix(digits, 2).map(decimal);
+        return radix_digits(digits, 2).map(|d| decimal(&d, 2));
     }
-    if let Some(digits) = body.strip_prefix("0x") {
-        let value = parse_radix(digits, 16)?;
+    if let Some(written) = body.strip_prefix("0x") {
+        let digits = radix_digits(written, 16)?;
         // 1.2 has no signed hex, and needs no rewrite for plain hex.
         if !sign.is_empty() {
-            return Some(decimal(value));
+            return Some(decimal(&digits, 16));
         }
-        return digits
+        return written
             .contains('_')
-            .then(|| (format!("0x{}", digits.replace('_', "")), SyntaxKind::INT));
+            .then(|| (format!("0x{digits}"), SyntaxKind::INT));
     }
     if body.contains(':') {
         return sexagesimal(sign, body);
     }
     // A bare leading zero was octal. 1.2 has no signed `0o`, so a negative
     // one becomes decimal.
-    if let Some(value) = body.strip_prefix('0').and_then(|d| parse_radix(d, 8)) {
+    if let Some(digits) = body.strip_prefix('0').and_then(|d| radix_digits(d, 8)) {
         if negative {
-            return Some(decimal(value));
+            return Some(decimal(&digits, 8));
         }
-        return Some((format!("0o{value:o}"), SyntaxKind::INT));
+        let digits = digits.trim_start_matches('0');
+        let digits = if digits.is_empty() { "0" } else { digits };
+        return Some((format!("0o{digits}"), SyntaxKind::INT));
     }
 
     if !body.contains('_') || !body.starts_with(|c: char| c.is_ascii_digit()) {
@@ -225,16 +226,14 @@ fn yaml_1_1_number(text: &str) -> Option<(String, SyntaxKind)> {
     Some((format!("{sign}{}", body.replace('_', "")), kind))
 }
 
-/// Parse YAML 1.1 digits in `radix`, which may contain underscores.
-fn parse_radix(digits: &str, radix: u32) -> Option<u128> {
+/// The digits of a YAML 1.1 number in `radix` with its underscores
+/// removed, or `None` if it is not one.
+fn radix_digits(digits: &str, radix: u32) -> Option<String> {
     if !digits.chars().all(|c| c == '_' || c.is_digit(radix)) {
         return None;
     }
     let digits = digits.replace('_', "");
-    if digits.is_empty() {
-        return None;
-    }
-    u128::from_str_radix(&digits, radix).ok()
+    (!digits.is_empty()).then_some(digits)
 }
 
 /// Rewrite a 1.1 base 60 number such as `1:30` (90) or `1:30.5` (90.5) to
@@ -254,15 +253,19 @@ fn sexagesimal(sign: &str, body: &str) -> Option<(String, SyntaxKind)> {
     {
         return None;
     }
-    let mut value = parse_radix(first, 10)?;
+    let mut places: Vec<(u32, u32)> = radix_digits(first, 10)?
+        .chars()
+        .map(|c| (10, c.to_digit(10).expect("checked by radix_digits")))
+        .collect();
     for part in rest.into_iter().chain([last]) {
         let digit = match part.as_bytes() {
             [d @ b'0'..=b'9'] => d - b'0',
             [t @ b'0'..=b'5', d @ b'0'..=b'9'] => (t - b'0') * 10 + (d - b'0'),
             _ => return None,
         };
-        value = value.checked_mul(60)?.checked_add(digit.into())?;
+        places.push((60, digit.into()));
     }
+    let value = places_to_decimal(places);
     match frac {
         None => Some((format!("{sign}{value}"), SyntaxKind::INT)),
         Some(frac) if frac.bytes().all(|b| b.is_ascii_digit() || b == b'_') => {

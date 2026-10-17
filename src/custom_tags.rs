@@ -753,10 +753,10 @@ fn json_scalar(s: &ScalarValue) -> Result<String, CustomTagError> {
             .to_bool()
             .map(|b| b.to_string())
             .ok_or_else(unrepresentable),
-        ScalarType::Integer => s
-            .to_i64()
-            .map(|i| i.to_string())
-            .ok_or_else(unrepresentable),
+        // JSON integers have no size limit.
+        ScalarType::Integer => {
+            ScalarValue::canonical_integer(s.value().trim()).ok_or_else(unrepresentable)
+        }
         ScalarType::Float => s
             .to_f64()
             .filter(|f| f.is_finite())
@@ -1212,6 +1212,38 @@ mod tests {
             .serialize(&YamlValue::scalar(f64::INFINITY))
             .unwrap_err();
         assert_eq!(err.message, "Value cannot be represented in JSON");
+    }
+
+    #[test]
+    fn test_json_handler_serialize_integers_of_any_size() {
+        let handler = JsonHandler;
+        let json = |text: &str| {
+            handler
+                .serialize(&YamlValue::Scalar(ScalarValue::parse(text)))
+                .unwrap()
+        };
+        assert_eq!(
+            json("123456789012345678901234567890"),
+            "123456789012345678901234567890"
+        );
+        assert_eq!(
+            json("-123456789012345678901234567890"),
+            "-123456789012345678901234567890"
+        );
+        assert_eq!(
+            json("+00123456789012345678901234567890"),
+            "123456789012345678901234567890"
+        );
+        assert_eq!(
+            json("0x100000000000000000000000000000000"),
+            "340282366920938463463374607431768211456"
+        );
+        assert_eq!(json("0o2000000000000000000000"), "18446744073709551616");
+
+        // A JSON integer outside i64 comes back as it went in.
+        let big = "-98765432109876543210987654321";
+        let value = handler.deserialize(big).unwrap();
+        assert_eq!(handler.serialize(&value).unwrap(), big);
     }
 
     #[test]

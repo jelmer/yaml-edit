@@ -479,6 +479,9 @@ impl Validator {
             SyntaxKind::VALUE => {
                 self.check_anchor_and_alias(node, violations);
             }
+            SyntaxKind::TAGGED_NODE => {
+                self.check_set_content(node, violations);
+            }
             SyntaxKind::DOCUMENT => {
                 self.check_document_level_anchors(node, violations);
                 if self.config.check_anchors {
@@ -2091,6 +2094,31 @@ impl Validator {
         }
     }
 
+    /// Check that a `!!set` tags a mapping, whose keys are its members.
+    ///
+    /// `!!set` is a YAML 1.1 type rather than a YAML 1.2 one, so the wrong
+    /// content is only a warning.
+    fn check_set_content(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        let Some(tagged) = crate::yaml::TaggedNode::cast(node.clone()) else {
+            return;
+        };
+        if tagged.tag().as_deref() != Some("!!set") || tagged.as_set().is_some() {
+            return;
+        }
+        let Some(tag) = node
+            .children_with_tokens()
+            .filter_map(|c| c.into_token())
+            .find(|t| t.kind() == crate::SyntaxKind::TAG)
+        else {
+            return;
+        };
+        violations.push(Violation::warning_at(
+            Rule::InvalidTag,
+            tag.text_range(),
+            "!!set content is not a mapping",
+        ));
+    }
+
     /// Check that implicit keys don't span multiple lines
     ///
     /// YAML spec restricts implicit keys (keys without explicit ? marker) to a single line.
@@ -3419,6 +3447,40 @@ mod tests {
             "k:\n  ? a\n  ? b\n",
             "set: !!set\n  ? a\n  ? b\n",
         ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_set_content_must_be_mapping() {
+        for (yaml, location) in [
+            ("s: !!set [a, b]\n", "1:4"),
+            ("- !!set\n  - a\n", "1:3"),
+            ("s: !!set\nt: 1\n", "1:4"),
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.severity, v.rule))
+                .collect();
+            assert_eq!(
+                violations,
+                vec![(
+                    "!!set content is not a mapping".to_string(),
+                    Some(location.to_string()),
+                    Severity::Warning,
+                    Rule::InvalidTag
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in ["s: !!set {? a}\n", "s: !!set &x\n  ? a\n", "s: !!set {}\n"] {
             let file = crate::YamlFile::from_str(yaml).unwrap();
             assert_eq!(
                 Validator::new().validate_syntax(file.syntax()),

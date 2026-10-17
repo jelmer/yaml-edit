@@ -87,6 +87,11 @@ pub enum ResolveError {
         /// The source text of the key that collides with it.
         second: String,
     },
+    /// The content of a `!!set` is not a mapping, so it has no members.
+    InvalidSetContent {
+        /// The source text of the content.
+        content: String,
+    },
     /// A `!!set` member is not a scalar, so it cannot be kept in a
     /// [`YamlValue::Set`].
     InvalidSetMember {
@@ -135,6 +140,9 @@ impl std::fmt::Display for ResolveError {
                     f,
                     "distinct keys {first:?} and {second:?} have the same string form"
                 )
+            }
+            ResolveError::InvalidSetContent { content } => {
+                write!(f, "!!set content {content:?} is not a mapping")
             }
             ResolveError::InvalidSetMember { member } => {
                 write!(f, "!!set member {member:?} is not a scalar")
@@ -513,6 +521,15 @@ fn resolved_tagged(
             members.insert(s.value().to_string());
         }
         return Ok(Some(YamlValue::Set(members)));
+    }
+    if tagged.tag().as_deref() == Some("!!set") {
+        return Err(ResolveError::InvalidSetContent {
+            content: tagged
+                .syntax()
+                .children()
+                .next()
+                .map_or_else(String::new, |content| content.to_string()),
+        });
     }
     let content = tagged
         .as_mapping()
@@ -1740,6 +1757,31 @@ m:
                 "{yaml:?}"
             );
         }
+    }
+
+    #[test]
+    fn get_resolved_set_content_must_be_mapping() {
+        for (yaml, content) in [
+            ("m: !!set [a, b]\n", "[a, b]"),
+            ("m: !!set &s [a]\n", "[a]"),
+            ("m: !!set\n- a\n", "- a\n"),
+            ("m: !!set\nn: 1\n", ""),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Err(ResolveError::InvalidSetContent {
+                    content: content.to_string()
+                }),
+                "{yaml:?}"
+            );
+        }
+        assert_eq!(
+            ResolveError::InvalidSetContent {
+                content: "[a]".to_string()
+            }
+            .to_string(),
+            "!!set content \"[a]\" is not a mapping"
+        );
     }
 
     #[test]

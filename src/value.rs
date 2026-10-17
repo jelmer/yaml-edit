@@ -880,6 +880,12 @@ mod tests {
                 member: "[a]".to_string()
             })
         );
+        assert_eq!(
+            cast_root("!!set [a, b]\n"),
+            Err(ResolveError::InvalidSetContent {
+                content: "[a, b]".to_string()
+            })
+        );
         for (yaml, tag, item) in [
             ("!!omap [a, d: 3]\n", "!!omap", "a"),
             ("!!pairs [{b: 1, c: 2}]\n", "!!pairs", "{b: 1, c: 2}"),

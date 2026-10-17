@@ -441,15 +441,17 @@ pub struct Set(SyntaxNode);
 
 impl Set {
     /// Cast a SyntaxNode to a Set only if it's a TAGGED_NODE with !!set tag
+    /// whose content is a mapping.
+    ///
+    /// A `!!set` on anything else is not a valid set and has no members;
+    /// the validator reports it.
     pub fn cast(node: SyntaxNode) -> Option<Self> {
-        if node.kind() == SyntaxKind::TAGGED_NODE {
-            if let Some(tagged_node) = TaggedNode::cast(node.clone()) {
-                if tagged_node.tag().as_deref() == Some("!!set") {
-                    return Some(Set(node));
-                }
-            }
+        let tagged_node = TaggedNode::cast(node.clone())?;
+        if tagged_node.tag().as_deref() == Some("!!set") && tagged_node.as_mapping().is_some() {
+            Some(Set(node))
+        } else {
+            None
         }
-        None
     }
 
     /// Return the inner `Mapping` of this set (the !!set body).

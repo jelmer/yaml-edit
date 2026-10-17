@@ -123,6 +123,14 @@ pub enum ResolveError {
         /// The source text of the item.
         item: String,
     },
+    /// The content of a `!!omap` or `!!pairs` is not a sequence, so it has
+    /// no entries.
+    InvalidPairsContent {
+        /// The tag, `!!omap` or `!!pairs`.
+        tag: String,
+        /// The source text of the content.
+        content: String,
+    },
     /// [`YamlValue::cast`] met an alias, which it cannot resolve without
     /// the document's anchors. [`YamlValue::from_document`] and
     /// [`DocumentResolvedExt::get_resolved`] resolve aliases.
@@ -167,6 +175,9 @@ impl std::fmt::Display for ResolveError {
                     f,
                     "{tag} item {item:?} is not a mapping with a single entry"
                 )
+            }
+            ResolveError::InvalidPairsContent { tag, content } => {
+                write!(f, "{tag} content {content:?} is not a sequence")
             }
             ResolveError::UnresolvedAlias { alias } => {
                 write!(
@@ -546,14 +557,26 @@ fn resolved_tagged(
         }
         return Ok(Some(YamlValue::Set(members)));
     }
-    if tagged.tag().as_deref() == Some("!!set") {
-        return Err(ResolveError::InvalidSetContent {
-            content: tagged
-                .syntax()
-                .children()
-                .next()
-                .map_or_else(String::new, |content| content.to_string()),
-        });
+    let content_text = || {
+        tagged
+            .syntax()
+            .children()
+            .next()
+            .map_or_else(String::new, |content| content.to_string())
+    };
+    match tagged.tag().as_deref() {
+        Some("!!set") => {
+            return Err(ResolveError::InvalidSetContent {
+                content: content_text(),
+            })
+        }
+        Some(tag @ ("!!omap" | "!!pairs")) if tagged.as_sequence().is_none() => {
+            return Err(ResolveError::InvalidPairsContent {
+                tag: tag.to_string(),
+                content: content_text(),
+            })
+        }
+        _ => {}
     }
     let content = tagged
         .as_mapping()
@@ -1916,6 +1939,33 @@ m:
                 "{yaml:?}"
             );
         }
+    }
+
+    #[test]
+    fn get_resolved_pairs_content_must_be_sequence() {
+        for (yaml, tag, content) in [
+            ("m: !!omap {a: 1}\n", "!!omap", "{a: 1}"),
+            ("m: !!pairs &p {a: 1}\n", "!!pairs", "{a: 1}"),
+            ("m: !!omap\n  a: 1\n", "!!omap", "a: 1\n"),
+            ("m: !!pairs\n  3\n", "!!pairs", "3"),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("m"),
+                Err(ResolveError::InvalidPairsContent {
+                    tag: tag.to_string(),
+                    content: content.to_string()
+                }),
+                "{yaml:?}"
+            );
+        }
+        assert_eq!(
+            ResolveError::InvalidPairsContent {
+                tag: "!!omap".to_string(),
+                content: "{a: 1}".to_string()
+            }
+            .to_string(),
+            "!!omap content \"{a: 1}\" is not a sequence"
+        );
     }
 
     #[test]

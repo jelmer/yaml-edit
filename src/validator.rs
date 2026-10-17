@@ -480,7 +480,7 @@ impl Validator {
                 self.check_anchor_and_alias(node, violations);
             }
             SyntaxKind::TAGGED_NODE => {
-                self.check_set_content(node, violations);
+                self.check_collection_tag_content(node, violations);
             }
             SyntaxKind::DOCUMENT => {
                 self.check_document_level_anchors(node, violations);
@@ -2094,17 +2094,23 @@ impl Validator {
         }
     }
 
-    /// Check that a `!!set` tags a mapping, whose keys are its members.
+    /// Check that a `!!set` tags a mapping, whose keys are its members, and
+    /// a `!!omap` or `!!pairs` a sequence.
     ///
-    /// `!!set` is a YAML 1.1 type rather than a YAML 1.2 one, so the wrong
+    /// These are YAML 1.1 types rather than YAML 1.2 ones, so the wrong
     /// content is only a warning.
-    fn check_set_content(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+    fn check_collection_tag_content(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         let Some(tagged) = crate::yaml::TaggedNode::cast(node.clone()) else {
             return;
         };
-        if tagged.tag().as_deref() != Some("!!set") || tagged.as_set().is_some() {
-            return;
-        }
+        let message = match tagged.tag().as_deref() {
+            Some("!!set") if tagged.as_set().is_none() => "!!set content is not a mapping",
+            Some("!!omap") if tagged.as_sequence().is_none() => "!!omap content is not a sequence",
+            Some("!!pairs") if tagged.as_sequence().is_none() => {
+                "!!pairs content is not a sequence"
+            }
+            _ => return,
+        };
         let Some(tag) = node
             .children_with_tokens()
             .filter_map(|c| c.into_token())
@@ -2115,7 +2121,7 @@ impl Validator {
         violations.push(Violation::warning_at(
             Rule::InvalidTag,
             tag.text_range(),
-            "!!set content is not a mapping",
+            message,
         ));
     }
 
@@ -3481,6 +3487,56 @@ mod tests {
             );
         }
         for yaml in ["s: !!set {? a}\n", "s: !!set &x\n  ? a\n", "s: !!set {}\n"] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            assert_eq!(
+                Validator::new().validate_syntax(file.syntax()),
+                vec![],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_pairs_content_must_be_sequence() {
+        for (yaml, location, message) in [
+            (
+                "o: !!omap {a: 1}\n",
+                "1:4",
+                "!!omap content is not a sequence",
+            ),
+            (
+                "- !!pairs\n  a: 1\n",
+                "1:3",
+                "!!pairs content is not a sequence",
+            ),
+            (
+                "o: !!omap\n  3\n",
+                "1:4",
+                "!!omap content is not a sequence",
+            ),
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.severity, v.rule))
+                .collect();
+            assert_eq!(
+                violations,
+                vec![(
+                    message.to_string(),
+                    Some(location.to_string()),
+                    Severity::Warning,
+                    Rule::InvalidTag
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "o: !!omap [a: 1]\n",
+            "o: !!pairs &x\n  - a: 1\n  - a: 2\n",
+            "o: !!omap []\n",
+        ] {
             let file = crate::YamlFile::from_str(yaml).unwrap();
             assert_eq!(
                 Validator::new().validate_syntax(file.syntax()),

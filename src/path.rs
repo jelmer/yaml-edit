@@ -800,6 +800,7 @@ fn lookup_merged(
         | ResolveError::InvalidSetContent { .. }
         | ResolveError::InvalidSetMember { .. }
         | ResolveError::NonNullSetValue { .. }
+        | ResolveError::InvalidPairsContent { .. }
         | ResolveError::InvalidPairsItem { .. }
         | ResolveError::UnresolvedAlias { .. } => {
             unreachable!("a merged view does not convert values to YamlValue")

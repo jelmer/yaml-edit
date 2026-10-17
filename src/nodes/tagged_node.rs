@@ -89,7 +89,8 @@ impl TaggedNode {
         Set::cast(self.0.clone())
     }
 
-    /// Extract ordered mapping from this tagged scalar if it has a !!omap tag.
+    /// Extract ordered mapping from this tagged node if it has a !!omap tag
+    /// on a sequence.
     ///
     /// Returns the entries of the inner sequence as `MappingEntry` values, each
     /// holding a single key-value pair with full CST fidelity.
@@ -97,10 +98,11 @@ impl TaggedNode {
         if self.tag().as_deref() != Some("!!omap") {
             return None;
         }
-        Some(self.extract_mapping_entries())
+        self.extract_mapping_entries()
     }
 
-    /// Extract pairs from this tagged scalar if it has a !!pairs tag.
+    /// Extract pairs from this tagged node if it has a !!pairs tag on a
+    /// sequence.
     ///
     /// Returns the entries of the inner sequence as `MappingEntry` values.
     /// Unlike `!!omap`, duplicate keys are allowed.
@@ -108,26 +110,20 @@ impl TaggedNode {
         if self.tag().as_deref() != Some("!!pairs") {
             return None;
         }
-        Some(self.extract_mapping_entries())
+        self.extract_mapping_entries()
     }
 
     /// Shared helper: iterate over the inner sequence and collect the first
     /// `MappingEntry` from each single-key mapping item.
-    fn extract_mapping_entries(&self) -> Vec<MappingEntry> {
-        let mut entries = Vec::new();
-        for child in self.0.children() {
-            if let Some(sequence) = Sequence::cast(child) {
-                for item in sequence.items() {
-                    if let Some(mapping) = Mapping::cast(item) {
-                        if let Some(entry) = mapping.entries().next() {
-                            entries.push(entry);
-                        }
-                    }
-                }
-                break;
-            }
-        }
-        entries
+    fn extract_mapping_entries(&self) -> Option<Vec<MappingEntry>> {
+        let sequence = self.as_sequence()?;
+        Some(
+            sequence
+                .items()
+                .filter_map(Mapping::cast)
+                .filter_map(|mapping| mapping.entries().next())
+                .collect(),
+        )
     }
 }
 
@@ -241,6 +237,41 @@ mod tests {
         assert_eq!(members("key: !!set [a, b]\n"), None);
         assert_eq!(members("key: !!set\n- a\n"), None);
         assert_eq!(members("key: !!set\n"), None);
+    }
+
+    #[test]
+    fn test_pairs_accessors_require_sequence() {
+        let tagged = |yaml: &str| {
+            let yaml = YamlFile::from_str(yaml).unwrap();
+            let doc = yaml.documents().next().unwrap();
+            let val = doc.as_mapping().unwrap().get_node("key").unwrap();
+            crate::yaml::TaggedNode::cast(val).unwrap()
+        };
+        let keys = |entries: Option<Vec<crate::MappingEntry>>| {
+            entries.map(|entries| {
+                entries
+                    .iter()
+                    .map(|e| e.key_node().unwrap().to_string())
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            keys(tagged("key: !!omap [a: 1, b: 2]\n").as_ordered_mapping()),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        assert_eq!(
+            keys(tagged("key: !!pairs [a: 1]\n").as_pairs()),
+            Some(vec!["a".to_string()])
+        );
+        assert_eq!(
+            keys(tagged("key: !!omap {a: 1}\n").as_ordered_mapping()),
+            None
+        );
+        assert_eq!(keys(tagged("key: !!pairs {a: 1}\n").as_pairs()), None);
+        assert_eq!(
+            keys(tagged("key: !!omap\n  a: 1\n").as_ordered_mapping()),
+            None
+        );
     }
 
     #[test]

@@ -888,6 +888,13 @@ mod tests {
                 content: "[a, b]".to_string()
             })
         );
+        assert_eq!(
+            cast_root("!!omap {a: 1}\n"),
+            Err(ResolveError::InvalidPairsContent {
+                tag: "!!omap".to_string(),
+                content: "{a: 1}".to_string()
+            })
+        );
         for (yaml, tag, item) in [
             ("!!omap [a, d: 3]\n", "!!omap", "a"),
             ("!!pairs [{b: 1, c: 2}]\n", "!!pairs", "{b: 1, c: 2}"),

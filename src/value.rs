@@ -33,122 +33,40 @@ pub enum YamlValue {
 }
 
 impl YamlValue {
-    /// Try to cast a SyntaxNode to a YamlValue
-    pub fn cast(node: rowan::SyntaxNode<crate::yaml::Lang>) -> Option<Self> {
-        use crate::lex::SyntaxKind;
-        use crate::yaml::{Mapping, Scalar, Sequence, TaggedNode};
-        use rowan::ast::AstNode;
-
-        // TODO: an alias casts to None, so a sequence item, mapping value,
-        // set member or omap/pairs entry that is an alias is silently
-        // dropped. get_resolved resolves them; cast has no anchor registry.
-        match node.kind() {
-            SyntaxKind::SCALAR => {
-                // cast() only checks the kind, which we already matched, so it cannot fail here
-                Scalar::cast(node)
-                    .map(|scalar| YamlValue::Scalar(ScalarValue::from_scalar(&scalar)))
-            }
-            SyntaxKind::SEQUENCE => {
-                if let Some(seq) = Sequence::cast(node) {
-                    let items: Vec<YamlValue> = seq.items().filter_map(YamlValue::cast).collect();
-                    Some(YamlValue::Sequence(items))
-                } else {
-                    None
-                }
-            }
-            SyntaxKind::MAPPING => {
-                if let Some(mapping) = Mapping::cast(node) {
-                    let mut map = std::collections::BTreeMap::new();
-                    for (key_node, value_node) in mapping.pairs() {
-                        // pairs() yields the KEY wrapper, so cast through
-                        // extract_scalar to reach the scalar inside it.
-                        // Casting the wrapper directly fails and falls back to
-                        // raw text, which keeps the quotes on `'0'` and makes
-                        // the entry unreachable by its actual key. A tagged
-                        // key (`!!str a: b`) reads as its content likewise.
-                        let key_str = crate::yaml::extract_scalar(&key_node)
-                            .map(|key_scalar| key_scalar.as_string())
-                            .or_else(|| {
-                                crate::yaml::extract_tagged_node(&key_node)
-                                    .and_then(|tagged| tagged.as_string())
-                            })
-                            .unwrap_or_else(|| key_node.text().to_string());
-
-                        // TODO: distinct keys with the same string form,
-                        // such as `1` and `'1'`, collide here and the later
-                        // one silently wins; cast cannot report an error.
-                        if let Some(value_yaml) = YamlValue::cast(value_node) {
-                            map.insert(key_str, value_yaml);
-                        }
-                    }
-                    Some(YamlValue::Mapping(map))
-                } else {
-                    None
-                }
-            }
-            SyntaxKind::TAGGED_NODE => {
-                // Delegate to tag-aware special-collection helpers, then fall back
-                // to extracting the plain string value from the inner scalar.
-                TaggedNode::cast(node).and_then(|tagged| {
-                    // Check for special collection tags first.
-                    if let Some(set) = tagged.as_set() {
-                        let members: BTreeSet<String> = set
-                            .members()
-                            .filter_map(|v| v.as_scalar().map(|s| s.as_string()))
-                            .collect();
-                        return Some(YamlValue::Set(members));
-                    }
-                    if let Some(entries) = tagged.as_ordered_mapping() {
-                        let pairs: Vec<(String, YamlValue)> = entries
-                            .into_iter()
-                            .filter_map(|e| {
-                                // key() returns the KEY wrapper node; get its scalar child
-                                let key_node = e.key()?;
-                                let key_scalar = Scalar::cast(key_node.children().next()?)?;
-                                let key = key_scalar.as_string();
-                                let val = e
-                                    .value()
-                                    .and_then(|v| v.children().next().and_then(YamlValue::cast))?;
-                                Some((key, val))
-                            })
-                            .collect();
-                        return Some(YamlValue::OrderedMapping(pairs));
-                    }
-                    if let Some(entries) = tagged.as_pairs() {
-                        let pairs: Vec<(String, YamlValue)> = entries
-                            .into_iter()
-                            .filter_map(|e| {
-                                let key_node = e.key()?;
-                                let key_scalar = Scalar::cast(key_node.children().next()?)?;
-                                let key = key_scalar.as_string();
-                                let val = e
-                                    .value()
-                                    .and_then(|v| v.children().next().and_then(YamlValue::cast))?;
-                                Some((key, val))
-                            })
-                            .collect();
-                        return Some(YamlValue::Pairs(pairs));
-                    }
-                    let collection = tagged
-                        .as_mapping()
-                        .map(|m| m.syntax().clone())
-                        .or_else(|| tagged.as_sequence().map(|s| s.syntax().clone()));
-                    if let Some(collection) = collection {
-                        let tag = tagged.tag()?;
-                        return Some(YamlValue::Tagged(
-                            tag,
-                            Box::new(YamlValue::cast(collection)?),
-                        ));
-                    }
-                    ScalarValue::from_tagged(&tagged).map(YamlValue::Scalar)
-                })
-            }
-            SyntaxKind::VALUE => {
-                // VALUE nodes contain the actual content as children
-                node.children().next().and_then(YamlValue::cast)
-            }
-            _ => None,
-        }
+    /// Convert a syntax node to a YamlValue.
+    ///
+    /// Returns `Ok(None)` if `node` is not a YAML value, such as a
+    /// [`Document`](crate::Document) node. A `KEY` or `VALUE` wrapper is
+    /// converted as its content.
+    ///
+    /// Content that a YamlValue cannot hold is an error rather than being
+    /// dropped: an alias, which this cannot resolve without the document's
+    /// anchors ([`DocumentResolvedExt::get_resolved`] resolves them),
+    /// distinct mapping keys with the same string form, such as `1` and
+    /// `'1'`, and `!!set`, `!!omap` or `!!pairs` content of the wrong shape.
+    /// A merge key (`<<`) is kept as an ordinary key.
+    ///
+    /// [`DocumentResolvedExt::get_resolved`]: crate::anchor_resolution::DocumentResolvedExt::get_resolved
+    ///
+    /// ```
+    /// use std::str::FromStr;
+    /// use rowan::ast::AstNode;
+    /// use yaml_edit::{Document, YamlValue};
+    /// use yaml_edit::anchor_resolution::ResolveError;
+    ///
+    /// let doc = Document::from_str("a: &x 1\nb: [*x, 2]\n").unwrap();
+    /// let b = doc.as_mapping().unwrap().get("b").unwrap();
+    /// assert_eq!(
+    ///     YamlValue::cast(b.as_sequence().unwrap().syntax().clone()),
+    ///     Err(ResolveError::UnresolvedAlias { alias: "x".to_string() })
+    /// );
+    /// ```
+    pub fn cast(
+        node: rowan::SyntaxNode<crate::yaml::Lang>,
+    ) -> Result<Option<Self>, crate::anchor_resolution::ResolveError> {
+        crate::as_yaml::YamlNode::from_syntax_peeled(node).map_or(Ok(None), |node| {
+            crate::anchor_resolution::resolved_value(node, None, &mut Vec::new())
+        })
     }
 
     /// Create a scalar value
@@ -173,7 +91,9 @@ impl YamlValue {
 
     /// Parse a raw YAML string into a YamlValue
     /// This handles both simple scalars and complex structures
-    pub fn parse_raw(yaml_str: &str) -> Self {
+    ///
+    /// Fails as [`YamlValue::cast`] does.
+    pub fn parse_raw(yaml_str: &str) -> Result<Self, crate::anchor_resolution::ResolveError> {
         use std::str::FromStr;
 
         // Try to parse as a complete YAML document
@@ -184,16 +104,22 @@ impl YamlValue {
         }
 
         // Fallback: treat as a scalar value
-        YamlValue::Scalar(ScalarValue::parse(yaml_str))
+        Ok(YamlValue::Scalar(ScalarValue::parse(yaml_str)))
     }
 
     /// Convert a Document to a YamlValue
-    pub fn from_document(doc: &crate::yaml::Document) -> Self {
+    ///
+    /// Fails as [`YamlValue::cast`] does.
+    pub fn from_document(
+        doc: &crate::yaml::Document,
+    ) -> Result<Self, crate::anchor_resolution::ResolveError> {
         use rowan::ast::AstNode;
-        doc.syntax()
-            .children()
-            .find_map(Self::cast)
-            .unwrap_or_else(|| YamlValue::Scalar(ScalarValue::string("")))
+        for child in doc.syntax().children() {
+            if let Some(value) = Self::cast(child)? {
+                return Ok(value);
+            }
+        }
+        Ok(YamlValue::Scalar(ScalarValue::string("")))
     }
 
     /// Create a mapping from a BTreeMap
@@ -873,27 +799,115 @@ mod tests {
     }
 
     #[test]
+    fn test_cast_alias_is_error() {
+        use crate::anchor_resolution::ResolveError;
+        for yaml in [
+            "x: &x 1\ny: [*x, 2]\n",
+            "x: &x 1\ny: *x\n",
+            "&x a: 1\n*x : 2\n",
+            "x: &x a\ny: !!set {? *x}\n",
+            "x: &x {a: 1}\ny: !!omap [*x]\n",
+            "x: &x 1\ny: !!pairs [a: *x]\n",
+            "x: &x 1\ny: !local [*x]\n",
+            "x: &x {a: 1}\ny: {<<: *x}\n",
+        ] {
+            assert_eq!(
+                YamlValue::parse_raw(yaml),
+                Err(ResolveError::UnresolvedAlias {
+                    alias: "x".to_string()
+                }),
+                "{yaml:?}"
+            );
+        }
+        assert_eq!(
+            ResolveError::UnresolvedAlias {
+                alias: "x".to_string()
+            }
+            .to_string(),
+            "alias \"x\" cannot be converted without resolving it; \
+             use get_resolved to resolve aliases"
+        );
+    }
+
+    #[test]
+    fn test_cast_key_collision_is_error() {
+        use crate::anchor_resolution::ResolveError;
+        assert_eq!(
+            YamlValue::parse_raw("1: a\n'1': b\n"),
+            Err(ResolveError::KeyCollision {
+                first: "1".to_string(),
+                second: "'1'".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn test_cast_invalid_special_collections() {
+        use crate::anchor_resolution::ResolveError;
+        assert_eq!(
+            YamlValue::parse_raw("!!set {? [a], ? b}\n"),
+            Err(ResolveError::InvalidSetMember {
+                member: "[a]".to_string()
+            })
+        );
+        for (yaml, tag, item) in [
+            ("!!omap [a, d: 3]\n", "!!omap", "a"),
+            ("!!pairs [{b: 1, c: 2}]\n", "!!pairs", "{b: 1, c: 2}"),
+        ] {
+            assert_eq!(
+                YamlValue::parse_raw(yaml),
+                Err(ResolveError::InvalidPairsItem {
+                    tag: tag.to_string(),
+                    item: item.to_string()
+                }),
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cast_keeps_merge_key() {
+        assert_eq!(
+            YamlValue::parse_raw("<<: {a: 1}\nb: 2\n"),
+            Ok(YamlValue::Mapping(BTreeMap::from([
+                (
+                    "<<".to_string(),
+                    YamlValue::Mapping(BTreeMap::from([("a".to_string(), YamlValue::from(1))]))
+                ),
+                ("b".to_string(), YamlValue::from(2)),
+            ])))
+        );
+    }
+
+    #[test]
+    fn test_cast_non_value_node() {
+        use rowan::ast::AstNode;
+        let file = "a: 1\n".parse::<crate::YamlFile>().unwrap();
+        assert_eq!(YamlValue::cast(file.syntax().clone()), Ok(None));
+    }
+
+    #[test]
     fn test_parse_raw_variants() {
         // parse_raw goes through YamlValue::cast, so each YAML shape must map to
         // the corresponding variant.
-        assert!(YamlValue::parse_raw("hello").is_scalar());
+        assert!(YamlValue::parse_raw("hello").unwrap().is_scalar());
 
-        let seq = YamlValue::parse_raw("- a\n- b\n");
+        let seq = YamlValue::parse_raw("- a\n- b\n").unwrap();
         assert_eq!(
             seq.as_sequence(),
             Some([YamlValue::from("a"), YamlValue::from("b")].as_slice())
         );
 
-        let map = YamlValue::parse_raw("k: v\n");
+        let map = YamlValue::parse_raw("k: v\n").unwrap();
         assert_eq!(map.as_mapping().map(|m| m.len()), Some(1));
 
-        let set = YamlValue::parse_raw("!!set\n  a: ~\n  b: ~\n");
+        let set = YamlValue::parse_raw("!!set\n  a: ~\n  b: ~\n").unwrap();
         assert_eq!(
             set.as_set(),
             Some(&BTreeSet::from(["a".to_string(), "b".to_string()]))
         );
 
-        let omap = YamlValue::parse_raw("!!omap\n  - a: 1\n  - b: 2\n");
+        let omap = YamlValue::parse_raw("!!omap\n  - a: 1\n  - b: 2\n").unwrap();
         assert_eq!(
             omap.as_ordered_mapping(),
             Some(
@@ -905,7 +919,7 @@ mod tests {
             )
         );
 
-        let pairs = YamlValue::parse_raw("!!pairs\n  - a: 1\n  - a: 2\n");
+        let pairs = YamlValue::parse_raw("!!pairs\n  - a: 1\n  - a: 2\n").unwrap();
         assert_eq!(
             pairs.as_pairs(),
             Some(
@@ -1001,7 +1015,7 @@ mod tests {
         let v = YamlValue::Mapping(m);
         let out = v.to_yaml_string(0);
         assert_eq!(out, "'': v\n'a: b': v\n'true': v\n\"x\\ny\": v");
-        assert_eq!(YamlValue::parse_raw(&out), v);
+        assert_eq!(YamlValue::parse_raw(&out).unwrap(), v);
     }
 
     #[test]
@@ -1026,7 +1040,7 @@ mod tests {
              o: !!omap\n    - a: |-\n        l1\n        l2\n\
              q:\n    - |-\n      l1\n      l2"
         );
-        assert_eq!(YamlValue::parse_raw(&out), v);
+        assert_eq!(YamlValue::parse_raw(&out).unwrap(), v);
     }
 
     #[test]
@@ -1041,7 +1055,7 @@ mod tests {
         let v = YamlValue::Mapping(m);
         let out = v.to_yaml_string(0);
         assert_eq!(out, "o:\n  k: |\n    x\n    y");
-        assert_eq!(YamlValue::parse_raw(&out), v);
+        assert_eq!(YamlValue::parse_raw(&out).unwrap(), v);
     }
 
     #[test]
@@ -1056,7 +1070,7 @@ mod tests {
         let v = YamlValue::Mapping(m);
         let out = v.to_yaml_string(0);
         assert_eq!(out, "o:\n  k: |2\n      x");
-        assert_eq!(YamlValue::parse_raw(&out), v);
+        assert_eq!(YamlValue::parse_raw(&out).unwrap(), v);
     }
 
     #[test]
@@ -1075,11 +1089,11 @@ mod tests {
             out,
             "e: {}\nl:\n    - []\ns: !!set\n  '#c': null\n  'a: b': null"
         );
-        assert_eq!(YamlValue::parse_raw(&out), v);
+        assert_eq!(YamlValue::parse_raw(&out).unwrap(), v);
     }
 
     fn tagged_value(src: &str) -> ScalarValue {
-        let v = YamlValue::parse_raw(src);
+        let v = YamlValue::parse_raw(src).unwrap();
         v.as_mapping().unwrap()["k"].as_scalar().unwrap().clone()
     }
 
@@ -1150,15 +1164,15 @@ mod tests {
             "!local\na: !!str 1",
             "!local\n  - a\n  - !!int 1",
         ] {
-            let v = YamlValue::parse_raw(src);
+            let v = YamlValue::parse_raw(src).unwrap();
             assert_eq!(v.to_yaml_string(0), src);
-            assert_eq!(YamlValue::parse_raw(&v.to_yaml_string(0)), v);
+            assert_eq!(YamlValue::parse_raw(&v.to_yaml_string(0)).unwrap(), v);
         }
     }
 
     #[test]
     fn test_cast_tagged_collections() {
-        let v = YamlValue::parse_raw("k: !local {a: 1}");
+        let v = YamlValue::parse_raw("k: !local {a: 1}").unwrap();
         let mut inner = BTreeMap::new();
         inner.insert("a".to_string(), YamlValue::from(1));
         let mut expected = BTreeMap::new();
@@ -1168,7 +1182,7 @@ mod tests {
         );
         assert_eq!(v, YamlValue::Mapping(expected));
 
-        let v = YamlValue::parse_raw("!!seq [a, b]");
+        let v = YamlValue::parse_raw("!!seq [a, b]").unwrap();
         assert_eq!(
             v,
             YamlValue::tagged("!!seq", YamlValue::from(vec!["a", "b"]))
@@ -1188,24 +1202,24 @@ mod tests {
     #[test]
     fn test_tagged_values_build_content() {
         let doc = crate::Document::new();
-        doc.set("a", YamlValue::parse_raw("!!float 1"));
+        doc.set("a", YamlValue::parse_raw("!!float 1").unwrap());
         assert_cst_ok(&doc);
-        doc.set("b", YamlValue::parse_raw("!local 'x'"));
+        doc.set("b", YamlValue::parse_raw("!local 'x'").unwrap());
         assert_cst_ok(&doc);
-        doc.set("c", YamlValue::parse_raw("!local [x]"));
+        doc.set("c", YamlValue::parse_raw("!local [x]").unwrap());
         assert_cst_ok(&doc);
-        doc.set("d", YamlValue::parse_raw("!!str"));
+        doc.set("d", YamlValue::parse_raw("!!str").unwrap());
         assert_cst_ok(&doc);
         assert_eq!(
             doc.to_string(),
             "---\na: !!float 1\nb: !local 'x'\nc: !local\n  - x\nd: !!str\n"
         );
-        let v = YamlValue::from_document(&doc);
+        let v = YamlValue::from_document(&doc).unwrap();
         let m = v.as_mapping().unwrap();
-        assert_eq!(m["a"], YamlValue::parse_raw("!!float 1"));
-        assert_eq!(m["b"], YamlValue::parse_raw("!local 'x'"));
-        assert_eq!(m["c"], YamlValue::parse_raw("!local [x]"));
-        assert_eq!(m["d"], YamlValue::parse_raw("!!str"));
+        assert_eq!(m["a"], YamlValue::parse_raw("!!float 1").unwrap());
+        assert_eq!(m["b"], YamlValue::parse_raw("!local 'x'").unwrap());
+        assert_eq!(m["c"], YamlValue::parse_raw("!local [x]").unwrap());
+        assert_eq!(m["d"], YamlValue::parse_raw("!!str").unwrap());
     }
 
     #[test]

@@ -56,7 +56,8 @@ use crate::yaml::SyntaxNode;
 use rowan::ast::AstNode;
 use std::collections::HashMap;
 
-/// An error resolving aliases or merge keys.
+/// An error resolving aliases or merge keys, or converting a node to a
+/// [`YamlValue`] that cannot hold it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError {
     /// An alias refers to an anchor that is not defined before it in the
@@ -100,6 +101,13 @@ pub enum ResolveError {
         /// The source text of the item.
         item: String,
     },
+    /// [`YamlValue::cast`] met an alias, which it cannot resolve without
+    /// the document's anchors.
+    /// [`DocumentResolvedExt::get_resolved`] resolves aliases.
+    UnresolvedAlias {
+        /// The anchor name the alias references, without the `*`.
+        alias: String,
+    },
 }
 
 impl std::fmt::Display for ResolveError {
@@ -127,6 +135,13 @@ impl std::fmt::Display for ResolveError {
                 write!(
                     f,
                     "{tag} item {item:?} is not a mapping with a single entry"
+                )
+            }
+            ResolveError::UnresolvedAlias { alias } => {
+                write!(
+                    f,
+                    "alias {alias:?} cannot be converted without resolving it; \
+                     use get_resolved to resolve aliases"
                 )
             }
         }
@@ -308,7 +323,7 @@ impl DocumentResolvedExt for crate::yaml::Document {
             return Ok(None);
         };
         let registry = self.build_anchor_registry();
-        resolved_value(node, &registry, &mut Vec::new())
+        resolved_value(node, Some(&registry), &mut Vec::new())
     }
 
     fn build_anchor_registry(&self) -> AnchorRegistry {
@@ -322,9 +337,17 @@ fn is_merge_key(key: &crate::as_yaml::YamlNode) -> bool {
     key.as_scalar().is_some_and(|s| s.value() == "<<")
 }
 
-/// Extract a string value from a YamlNode scalar.
-fn node_as_string(node: &crate::as_yaml::YamlNode) -> Option<String> {
-    node.as_scalar().map(|s| s.as_string())
+/// The string form of a mapping key: the value of a scalar, tagged or
+/// not, and the source text of anything else.
+fn key_string(key: &crate::as_yaml::YamlNode) -> String {
+    use crate::as_yaml::YamlNode;
+
+    let scalar = match key {
+        YamlNode::Scalar(s) => Some(s.clone()),
+        YamlNode::TaggedNode(t) => t.value(),
+        _ => None,
+    };
+    scalar.map_or_else(|| key.to_string(), |s| s.as_string())
 }
 
 /// Apply merge keys to create a new merged mapping (returns BTreeMap for YamlValue::Mapping)
@@ -333,23 +356,34 @@ fn node_as_string(node: &crate::as_yaml::YamlNode) -> Option<String> {
 /// precedence order [`merge_sources`] returns them. Keys are compared as
 /// YAML values, so a direct `16` shadows a merged `0x10`. Distinct keys
 /// with the same string form, such as `1` and `'1'`, are a
-/// [`ResolveError::KeyCollision`].
+/// [`ResolveError::KeyCollision`]. Without a registry, `<<` is an
+/// ordinary key and an alias key is a [`ResolveError::UnresolvedAlias`].
 fn apply_merge_keys(
     mapping: &crate::yaml::Mapping,
-    registry: &AnchorRegistry,
+    registry: Option<&AnchorRegistry>,
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<std::collections::BTreeMap<String, YamlValue>, ResolveError> {
     let mut merged_pairs = std::collections::BTreeMap::new();
     let mut seen: Vec<(crate::as_yaml::YamlNode, String)> = Vec::new();
-    let sources = merge_sources(mapping, registry)?;
+    let sources = match registry {
+        Some(registry) => merge_sources(mapping, registry)?,
+        None => Vec::new(),
+    };
     for source in std::iter::once(mapping).chain(&sources) {
         for (key, value) in source.iter() {
-            if is_merge_key(&key) || seen.iter().any(|(k, _)| k.yaml_eq(&key)) {
+            if (registry.is_some() && is_merge_key(&key))
+                || seen.iter().any(|(k, _)| k.yaml_eq(&key))
+            {
                 continue;
             }
-            // A non-scalar key has no string form, so use its text as
-            // YamlValue::cast does.
-            let key_str = node_as_string(&key).unwrap_or_else(|| key.to_string());
+            if let (crate::as_yaml::YamlNode::Alias(alias), None) = (&key, registry) {
+                return Err(ResolveError::UnresolvedAlias {
+                    alias: alias.name(),
+                });
+            }
+            // TODO: with a registry, an alias key is kept as its source
+            // text, such as "*a", rather than resolved.
+            let key_str = key_string(&key);
             if let Some((first, _)) = seen.iter().find(|(_, s)| *s == key_str) {
                 return Err(ResolveError::KeyCollision {
                     first: first.to_string(),
@@ -368,11 +402,14 @@ fn apply_merge_keys(
 /// Turn `node` into a [`YamlValue`], following aliases and applying merge
 /// keys at every level.
 ///
+/// Without a registry, as for [`YamlValue::cast`], an alias is a
+/// [`ResolveError::UnresolvedAlias`] and merge keys are not applied.
+///
 /// `expanding` holds the anchored nodes currently being expanded, so an alias
 /// that refers back to one of them is reported as recursive.
-fn resolved_value(
+pub(crate) fn resolved_value(
     node: crate::as_yaml::YamlNode,
-    registry: &AnchorRegistry,
+    registry: Option<&AnchorRegistry>,
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<Option<YamlValue>, ResolveError> {
     use crate::as_yaml::YamlNode;
@@ -380,6 +417,9 @@ fn resolved_value(
     match node {
         YamlNode::Alias(alias) => {
             let name = alias.name();
+            let Some(registry) = registry else {
+                return Err(ResolveError::UnresolvedAlias { alias: name });
+            };
             let target = registry
                 .resolve_alias(&name, alias.syntax())
                 .ok_or_else(|| ResolveError::UndefinedAlias {
@@ -392,7 +432,7 @@ fn resolved_value(
                 return Err(ResolveError::UndefinedAlias { alias: name });
             };
             expanding.push(target.clone());
-            let value = resolved_value(target_node, registry, expanding);
+            let value = resolved_value(target_node, Some(registry), expanding);
             expanding.pop();
             value
         }
@@ -407,15 +447,19 @@ fn resolved_value(
             Ok(Some(YamlValue::Sequence(items)))
         }
         YamlNode::TaggedNode(tagged) => resolved_tagged(&tagged, registry, expanding),
-        other => Ok(YamlValue::cast(other.syntax().clone())),
+        YamlNode::Scalar(scalar) => Ok(Some(YamlValue::Scalar(
+            crate::scalar::ScalarValue::from_scalar(&scalar),
+        ))),
     }
 }
 
-/// Resolve a tagged node like [`resolved_value`], keeping the
-/// representation [`YamlValue::cast`] gives its tag.
+/// Resolve a tagged node like [`resolved_value`]: `!!set`, `!!omap` and
+/// `!!pairs` get their own [`YamlValue`] variants, other tagged
+/// collections are [`YamlValue::Tagged`] and a tagged scalar keeps its tag
+/// on the [`ScalarValue`](crate::ScalarValue).
 fn resolved_tagged(
     tagged: &crate::yaml::TaggedNode,
-    registry: &AnchorRegistry,
+    registry: Option<&AnchorRegistry>,
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<Option<YamlValue>, ResolveError> {
     use crate::as_yaml::YamlNode;
@@ -438,7 +482,7 @@ fn resolved_tagged(
         .map(YamlNode::Mapping)
         .or_else(|| tagged.as_sequence().map(YamlNode::Sequence));
     let (Some(tag), Some(content)) = (tagged.tag(), content) else {
-        return Ok(YamlValue::cast(tagged.syntax().clone()));
+        return Ok(crate::scalar::ScalarValue::from_tagged(tagged).map(YamlValue::Scalar));
     };
     match (tag.as_str(), &content) {
         ("!!omap", YamlNode::Sequence(seq)) => Ok(Some(YamlValue::OrderedMapping(resolved_pairs(
@@ -459,7 +503,7 @@ fn resolved_tagged(
 fn resolved_pairs(
     tag: &str,
     seq: &crate::yaml::Sequence,
-    registry: &AnchorRegistry,
+    registry: Option<&AnchorRegistry>,
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<Vec<(String, YamlValue)>, ResolveError> {
     let mut pairs = Vec::new();

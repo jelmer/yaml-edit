@@ -300,14 +300,28 @@ pub fn assert_mapping_remove_stuck(mapping: &Mapping, k: &str, existed: bool, do
 
 /// `rename_key` renames only the first occurrence of `old`, so with
 /// duplicate keys `old` may legitimately still be present after a
-/// successful rename; only the presence of `new` is a hard check.
-pub fn assert_mapping_rename_stuck(mapping: &Mapping, new: &str, renamed: bool, doc: &Document) {
+/// successful rename. `new` must be present, and exactly once unless it
+/// is the same key as `old`.
+pub fn assert_mapping_rename_stuck(
+    mapping: &Mapping,
+    old: &str,
+    new: &str,
+    renamed: bool,
+    doc: &Document,
+) {
     if !renamed {
         return;
     }
-    let op = format!("MappingRename(-> {new:?})");
+    let op = format!("MappingRename({old:?} -> {new:?})");
     if !mapping.contains_key(new) {
         panic!("{op}: new key missing, text: {:?}", doc.to_string());
+    }
+    let count = mapping.find_all_entries_by_key(new).count();
+    if old != new && count != 1 {
+        panic!(
+            "{op}: new key present {count} times, text: {:?}",
+            doc.to_string()
+        );
     }
     let reparsed = reparse_mapping(doc, &op);
     if !reparsed.contains_key(new) {

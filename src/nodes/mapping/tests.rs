@@ -1481,3 +1481,67 @@ fn test_set_block_value_keeps_implicit_null() {
         debug::tree_to_string(reparsed.syntax())
     );
 }
+
+fn rename_in(src: &str, old: &str, new: &str) -> (bool, String) {
+    let yaml = YamlFile::from_str(src).unwrap();
+    let renamed = yaml
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .rename_key(old, new);
+    (renamed, yaml.to_string())
+}
+
+#[test]
+fn test_rename_key_onto_existing_key_replaces_it() {
+    assert_eq!(
+        rename_in("a: 1\nb: 2\nc: 3\n", "a", "b"),
+        (true, "b: 1\nc: 3\n".to_string())
+    );
+    assert_eq!(
+        rename_in("b: 2\na: 1\nc: 3\n", "a", "b"),
+        (true, "b: 1\nc: 3\n".to_string())
+    );
+    assert_eq!(
+        rename_in("x: 0\na: 1\nc: 3\nb: 2", "a", "b"),
+        (true, "x: 0\nb: 1\nc: 3".to_string())
+    );
+    assert_eq!(
+        rename_in("a: 1\nb: 2\nb: 3\n", "a", "b"),
+        (true, "b: 1\n".to_string())
+    );
+    assert_eq!(
+        rename_in("{a: 1, b: 2, c: 3}", "a", "b"),
+        (true, "{b: 1, c: 3}".to_string())
+    );
+}
+
+#[test]
+fn test_rename_key_onto_existing_key_keeps_comments_and_anchor() {
+    let yaml = YamlFile::from_str("top:\n  b: 2\n  # about a\n  a: &x 1\n").unwrap();
+    let top = yaml
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("top")
+        .unwrap();
+    assert!(top.rename_key("a", "b"));
+    assert_eq!(yaml.to_string(), "top:\n  # about a\n  b: &x 1\n");
+}
+
+#[test]
+fn test_rename_key_to_itself_keeps_duplicates() {
+    assert_eq!(
+        rename_in("a: 1\na: 2\n", "a", "a"),
+        (true, "a: 1\na: 2\n".to_string())
+    );
+}
+
+#[test]
+fn test_document_rename_key_onto_existing_key() {
+    let doc = crate::yaml::Document::from_str("a: 1\nb: 2\n").unwrap();
+    assert!(doc.rename_key("a", "b"));
+    assert_eq!(doc.to_string(), "b: 1\n");
+}

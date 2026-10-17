@@ -1044,6 +1044,30 @@ fn expanded_copy(target: &crate::yaml::SyntaxNode) -> crate::yaml::SyntaxNode {
     copy
 }
 
+/// Run `write`, which edits `container`'s child node at `child` (a
+/// `children_with_tokens` index) without moving it, and put that child back
+/// as it was if the write fails, e.g. when the rest of the path does not
+/// fit the copy an expanded alias left behind.
+fn undo_child_on_err(
+    container: &crate::yaml::SyntaxNode,
+    child: usize,
+    write: impl FnOnce() -> Result<(), PathError>,
+) -> Result<(), PathError> {
+    let saved = container
+        .children_with_tokens()
+        .nth(child)
+        .and_then(|c| c.into_node())
+        .expect("child names a node")
+        .green()
+        .into_owned();
+    let result = write();
+    if result.is_err() {
+        let restored = crate::yaml::SyntaxNode::new_root_mut(saved);
+        container.splice_children(child..child + 1, vec![restored.into()]);
+    }
+    result
+}
+
 /// Continue a write into `node`, dispatching on whether it is a mapping
 /// or a sequence. `via` is the segment that produced `node`, used only
 /// to label a type mismatch.
@@ -1054,10 +1078,10 @@ fn set_path_on_node<V: crate::AsYaml>(
     policy: AliasPolicy,
     via: &PathSegment,
 ) -> Result<(), PathError> {
-    if let Some(m) = node.as_mapping() {
-        set_path_on_mapping(m, segments, value, policy)
-    } else if let Some(seq) = node.as_sequence() {
-        set_path_on_sequence(seq, segments, value, policy)
+    if let Some(m) = node_as_mapping(&node) {
+        set_path_on_mapping(&m, segments, value, policy)
+    } else if let Some(seq) = node_as_sequence(&node) {
+        set_path_on_sequence(&seq, segments, value, policy)
     } else {
         Err(PathError::TypeMismatch {
             at: segment_display(via),
@@ -1116,19 +1140,21 @@ fn set_path_at_key<K: crate::AsYaml + Copy, V: crate::AsYaml>(
     // that copy.
     if let Some(crate::as_yaml::YamlNode::Alias(alias)) = mapping.get(first_key) {
         let resolved = resolve_alias_for_write(&alias, &segments[0], policy)?;
-        let target = if policy == AliasPolicy::Expand {
+        if policy != AliasPolicy::Expand {
+            return set_path_on_node(resolved, &segments[1..], value, policy, &segments[0]);
+        }
+        let child = mapping
+            .find_entry_index_by_key(first_key)
+            .expect("get just found this key");
+        return undo_child_on_err(&mapping.0, child, || {
             mapping.set(first_key, resolved);
             // Re-read through the mapping so we descend into the copy
             // that now lives in the tree, not the detached one.
-            mapping
+            let target = mapping
                 .get(first_key)
-                .ok_or_else(|| PathError::TypeMismatch {
-                    at: segment_display(&segments[0]),
-                })?
-        } else {
-            resolved
-        };
-        return set_path_on_node(target, &segments[1..], value, policy, &segments[0]);
+                .expect("set keeps the entry for this key");
+            set_path_on_node(target, &segments[1..], value, policy, &segments[0])
+        });
     }
 
     // What container does the next segment expect at `first_key`?
@@ -1265,15 +1291,19 @@ fn set_path_on_sequence<V: crate::AsYaml>(
     // anchored node, or swap in an anchor-free copy and descend there.
     if let Some(crate::as_yaml::YamlNode::Alias(alias)) = sequence.get(index) {
         let resolved = resolve_alias_for_write(&alias, &segments[0], policy)?;
-        let target = if policy == AliasPolicy::Expand {
+        if policy != AliasPolicy::Expand {
+            return set_path_on_node(resolved, &segments[1..], value, policy, &segments[0]);
+        }
+        let child =
+            crate::nodes::nth_entry_index(&sequence.0, crate::SyntaxKind::SEQUENCE_ENTRY, index)
+                .expect("get just found this index");
+        return undo_child_on_err(&sequence.0, child, || {
             sequence.set(index, resolved);
-            sequence.get(index).ok_or_else(|| PathError::TypeMismatch {
-                at: segment_display(&segments[0]),
-            })?
-        } else {
-            resolved
-        };
-        return set_path_on_node(target, &segments[1..], value, policy, &segments[0]);
+            let target = sequence
+                .get(index)
+                .expect("set keeps the entry at this index");
+            set_path_on_node(target, &segments[1..], value, policy, &segments[0])
+        });
     }
 
     // Descending through an existing scalar is fine when that scalar is
@@ -2982,6 +3012,80 @@ config:
             let segment = PathSegment::Key("b".to_string());
             let copy = resolve_alias_for_write(&alias, &segment, AliasPolicy::Expand).unwrap();
             assert_eq!(copy.to_string(), "!!map\nk: 1\n", "{src:?}");
+        }
+    }
+
+    fn set_and_check(
+        src: &str,
+        path: &str,
+        policy: AliasPolicy,
+    ) -> (Result<(), PathError>, String) {
+        use crate::yaml::Document;
+        use rowan::ast::AstNode;
+        use std::str::FromStr;
+
+        let doc = Document::from_str(src).unwrap();
+        let result = doc.try_set_path_with(path, 9, policy);
+        crate::debug::validate_tree(doc.syntax()).unwrap();
+        crate::debug::roundtrip_ok(doc.syntax()).unwrap();
+        (result, doc.to_string())
+    }
+
+    #[test]
+    fn test_set_path_through_alias_to_tagged_collection() {
+        let src = "a: &x !!map {k: 1}\nb: *x\n";
+        assert_eq!(
+            set_and_check(src, "b.j", AliasPolicy::Expand),
+            (
+                Ok(()),
+                "a: &x !!map {k: 1}\nb: !!map {k: 1, j: 9}\n".to_string()
+            )
+        );
+        assert_eq!(
+            set_and_check(src, "b.j", AliasPolicy::Follow),
+            (Ok(()), "a: &x !!map {k: 1, j: 9}\nb: *x\n".to_string())
+        );
+
+        let src = "a: &x !!seq [1]\nb: *x\n";
+        assert_eq!(
+            set_and_check(src, "b[0]", AliasPolicy::Expand),
+            (Ok(()), "a: &x !!seq [1]\nb: !!seq [9]\n".to_string())
+        );
+
+        let src = "s:\n  - &x !!map {k: 1}\n  - *x\n";
+        assert_eq!(
+            set_and_check(src, "s[1].j", AliasPolicy::Expand),
+            (
+                Ok(()),
+                "s:\n  - &x !!map {k: 1}\n  - !!map {k: 1, j: 9}\n".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn test_set_path_expand_failure_leaves_document_alone() {
+        let mismatch = |at: &str| Err(PathError::TypeMismatch { at: at.to_string() });
+        for (src, path, err) in [
+            ("a: &x 1\nb: *x\n", "b.k", mismatch("b")),
+            ("a: &x 1\nb: *x\n", "b[0]", mismatch("b")),
+            ("s:\n  - &x 1\n  - *x\n", "s[1].k", mismatch("[1]")),
+            ("s:\n  - &x 1\n  - *x\n", "s[1][0]", mismatch("[1]")),
+            ("a: &x {k: 1}\nb: *x\n", "b.k.j", mismatch("k")),
+            ("s:\n  - &x {k: 1}\n  - *x\n", "s[1].k.j", mismatch("k")),
+            (
+                "a: &x {k: 1, m: *y}\nb: *x\n",
+                "b.m.j",
+                Err(PathError::UndefinedAlias {
+                    at: "m".to_string(),
+                    alias: "y".to_string(),
+                }),
+            ),
+        ] {
+            assert_eq!(
+                set_and_check(src, path, AliasPolicy::Expand),
+                (err, src.to_string()),
+                "{path} on {src:?}"
+            );
         }
     }
 }

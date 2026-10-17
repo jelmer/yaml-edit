@@ -93,19 +93,21 @@ impl YamlValue {
     /// Parse a raw YAML string into a YamlValue
     /// This handles both simple scalars and complex structures
     ///
-    /// Fails as [`YamlValue::from_document`] does.
-    pub fn parse_raw(yaml_str: &str) -> Result<Self, crate::anchor_resolution::ResolveError> {
+    /// Input without a document, such as an empty string, is null.
+    ///
+    /// Fails with [`YamlError::Parse`](crate::YamlError::Parse) if
+    /// `yaml_str` does not parse, and with
+    /// [`YamlError::Resolve`](crate::YamlError::Resolve) where
+    /// [`YamlValue::from_document`] fails.
+    pub fn parse_raw(yaml_str: &str) -> crate::YamlResult<Self> {
         use std::str::FromStr;
 
-        // Try to parse as a complete YAML document
-        if let Ok(parsed) = crate::YamlFile::from_str(yaml_str) {
-            if let Some(doc) = parsed.document() {
-                return Self::from_document(&doc);
-            }
+        // TODO: only the first document is converted; any later ones are
+        // ignored.
+        match crate::YamlFile::from_str(yaml_str)?.document() {
+            Some(doc) => Ok(Self::from_document(&doc)?),
+            None => Ok(YamlValue::Scalar(ScalarValue::null())),
         }
-
-        // Fallback: treat as a scalar value
-        Ok(YamlValue::Scalar(ScalarValue::parse(yaml_str)))
     }
 
     /// Convert a Document to a YamlValue
@@ -861,7 +863,7 @@ mod tests {
     fn test_cast_key_collision_is_error() {
         use crate::anchor_resolution::ResolveError;
         assert_eq!(
-            YamlValue::parse_raw("1: a\n'1': b\n"),
+            cast_root("1: a\n'1': b\n"),
             Err(ResolveError::KeyCollision {
                 first: "1".to_string(),
                 second: "'1'".to_string()
@@ -873,7 +875,7 @@ mod tests {
     fn test_cast_invalid_special_collections() {
         use crate::anchor_resolution::ResolveError;
         assert_eq!(
-            YamlValue::parse_raw("!!set {? [a], ? b}\n"),
+            cast_root("!!set {? [a], ? b}\n"),
             Err(ResolveError::InvalidSetMember {
                 member: "[a]".to_string()
             })
@@ -883,7 +885,7 @@ mod tests {
             ("!!pairs [{b: 1, c: 2}]\n", "!!pairs", "{b: 1, c: 2}"),
         ] {
             assert_eq!(
-                YamlValue::parse_raw(yaml),
+                cast_root(yaml),
                 Err(ResolveError::InvalidPairsItem {
                     tag: tag.to_string(),
                     item: item.to_string()
@@ -954,7 +956,7 @@ ordered: !!omap [first: *list]
         ]);
         let doc = crate::Document::from_str(yaml).unwrap();
         assert_eq!(YamlValue::from_document(&doc), Ok(expected.clone()));
-        assert_eq!(YamlValue::parse_raw(yaml), Ok(expected));
+        assert_eq!(YamlValue::parse_raw(yaml).unwrap(), expected);
     }
 
     #[test]
@@ -984,6 +986,51 @@ ordered: !!omap [first: *list]
         use rowan::ast::AstNode;
         let file = "a: 1\n".parse::<crate::YamlFile>().unwrap();
         assert_eq!(YamlValue::cast(file.syntax().clone()), Ok(None));
+    }
+
+    #[test]
+    fn test_parse_raw_parse_error() {
+        for (yaml, expected) in [
+            ("key: \"x", "Parse error at line 1, column 6: Unterminated quoted string"),
+            (
+                "- a\n b: c\n",
+                "Parse error at line 2, column 2: Content after the document could not be parsed: \"b\"",
+            ),
+        ] {
+            let err = YamlValue::parse_raw(yaml).unwrap_err();
+            assert!(matches!(err, crate::YamlError::Parse { .. }), "{err:?}");
+            assert_eq!(err.to_string(), expected, "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_raw_resolve_error() {
+        use crate::anchor_resolution::ResolveError;
+        let result = YamlValue::parse_raw("a: *nope\n");
+        assert_eq!(
+            result.as_ref().unwrap_err().to_string(),
+            "Resolve error: alias to undefined anchor \"nope\""
+        );
+        match result {
+            Err(crate::YamlError::Resolve(err)) => assert_eq!(
+                err,
+                ResolveError::UndefinedAlias {
+                    alias: "nope".to_string()
+                }
+            ),
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_raw_without_document_is_null() {
+        for yaml in ["", "# just a comment\n"] {
+            assert_eq!(
+                YamlValue::parse_raw(yaml).unwrap(),
+                YamlValue::Scalar(ScalarValue::null()),
+                "{yaml:?}"
+            );
+        }
     }
 
     #[test]

@@ -55,6 +55,10 @@ pub enum YamlError {
         /// Why it's invalid
         reason: String,
     },
+
+    /// Content that could not be resolved or converted to a
+    /// [`YamlValue`](crate::YamlValue)
+    Resolve(crate::anchor_resolution::ResolveError),
 }
 
 impl fmt::Display for YamlError {
@@ -124,6 +128,8 @@ impl fmt::Display for YamlError {
             YamlError::InvalidOperation { operation, reason } => {
                 write!(f, "Invalid operation '{operation}': {reason}")
             }
+
+            YamlError::Resolve(err) => write!(f, "Resolve error: {err}"),
         }
     }
 }
@@ -132,6 +138,7 @@ impl std::error::Error for YamlError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             YamlError::Io(err) => Some(err),
+            YamlError::Resolve(err) => Some(err),
             _ => None,
         }
     }
@@ -140,6 +147,12 @@ impl std::error::Error for YamlError {
 impl From<std::io::Error> for YamlError {
     fn from(err: std::io::Error) -> Self {
         YamlError::Io(err)
+    }
+}
+
+impl From<crate::anchor_resolution::ResolveError> for YamlError {
+    fn from(err: crate::anchor_resolution::ResolveError) -> Self {
+        YamlError::Resolve(err)
     }
 }
 

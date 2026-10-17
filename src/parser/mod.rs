@@ -616,7 +616,16 @@ impl Parser {
 
     /// Skip only WHITESPACE, NEWLINE, and INDENT tokens. Returns true if dedent detected.
     /// Does NOT emit COMMENT tokens - caller must handle those separately.
-    pub(super) fn skip_whitespace_only_with_dedent_check(&mut self, base_indent: usize) -> bool {
+    ///
+    /// With `dash_lines`, as for a block sequence, a line that does not
+    /// start with a dash also ends the block, before its INDENT: in
+    /// `- k:\n  - 1\n  j: 2\n` the `j` line, indentation included, belongs
+    /// to the mapping, as it does when the sequence is indented past `k`.
+    pub(super) fn skip_whitespace_only_with_dedent_check(
+        &mut self,
+        base_indent: usize,
+        dash_lines: bool,
+    ) -> bool {
         while self.current().is_some() {
             match self.current() {
                 Some(SyntaxKind::WHITESPACE) => {
@@ -635,6 +644,9 @@ impl Parser {
                             // at column 0 below.
                             let blank_line =
                                 self.indent_is_blank_line() || self.indent_starts_comment_line();
+                            if !blank_line && dash_lines && !self.indent_starts_dash_line() {
+                                return true;
+                            }
                             if let Some((_, text)) = self.tokens.last() {
                                 if !blank_line && text.len() < base_indent {
                                     // Dedent detected - don't consume the indent token
@@ -689,6 +701,9 @@ impl Parser {
                     // Standalone indent token (NEWLINE was consumed by prior entry)
                     let blank_line =
                         self.indent_is_blank_line() || self.indent_starts_comment_line();
+                    if !blank_line && dash_lines && !self.indent_starts_dash_line() {
+                        return true;
+                    }
                     if let Some((_, text)) = self.tokens.last() {
                         if !blank_line && text.len() < base_indent {
                             return true; // dedent detected
@@ -987,6 +1002,11 @@ impl Parser {
     /// line with content, which the COMMENT arm reads once it is reached.
     pub(super) fn indent_starts_comment_line(&self) -> bool {
         self.upcoming_tokens().next() == Some(SyntaxKind::COMMENT)
+    }
+
+    /// Whether the INDENT at the current position starts a line with a `-`.
+    fn indent_starts_dash_line(&self) -> bool {
+        self.upcoming_tokens().next() == Some(SyntaxKind::DASH)
     }
 
     /// Indentation of the next line that carries content, looking past any

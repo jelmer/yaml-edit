@@ -540,45 +540,6 @@ impl Sequence {
                 .any(|t| t.kind() == SyntaxKind::WHITESPACE && t.text().is_empty())
     }
 
-    /// Move a comment on the last entry's line back into this sequence,
-    /// right after the entry, where the parser puts it when another entry
-    /// follows. With something else following, the parser lifts the comment
-    /// and its line break out to an ancestor.
-    fn reclaim_last_line_comment(&self) {
-        let Some(entry) = self
-            .0
-            .last_child()
-            .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-        else {
-            return;
-        };
-        if entry.next_sibling_or_token().is_some() || entry_line_terminated(&entry) {
-            return;
-        }
-        let Some(comment) = entry
-            .last_token()
-            .and_then(|t| t.next_token())
-            .filter(|t| t.kind() == SyntaxKind::COMMENT)
-        else {
-            return;
-        };
-        let mut moved = vec![comment.clone()];
-        moved.extend(
-            comment
-                .next_sibling_or_token()
-                .and_then(|c| c.into_token())
-                .filter(|t| t.kind() == SyntaxKind::NEWLINE),
-        );
-        let fresh: Vec<_> = moved
-            .iter()
-            .map(|t| fresh_token(t.kind(), t.text()).into())
-            .collect();
-        for t in moved {
-            t.detach();
-        }
-        append_children(&self.0, fresh);
-    }
-
     /// Indentation string used by entries in this sequence: a
     /// top-level INDENT before an entry if present, else WHITESPACE before
     /// DASH inside an entry, else the parent VALUE's INDENT (the parser's
@@ -750,8 +711,6 @@ impl Sequence {
         }
 
         let indentation = self.detect_indentation();
-        self.reclaim_last_line_comment();
-
         // Locate the last SEQUENCE_ENTRY and the insert position by walking
         // back from the end of the child list.
         //
@@ -975,9 +934,6 @@ impl Sequence {
         }
 
         let indentation = self.detect_indentation();
-        if index >= self.len() {
-            self.reclaim_last_line_comment();
-        }
 
         // Build the new SEQUENCE_ENTRY, terminated with its own NEWLINE.
         // Parser convention: the INDENT sits at SEQUENCE level as a
@@ -2920,8 +2876,7 @@ scores:
         }
     }
 
-    /// The same for a sequence nested in another one, where the parser lifts
-    /// the last item's line comment out to the outer sequence.
+    /// The same for a sequence nested in another one.
     #[test]
     fn test_append_to_nested_sequence_after_comment() {
         let cases: &[(&str, &str, &str)] = &[

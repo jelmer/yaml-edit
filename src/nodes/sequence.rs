@@ -6,6 +6,7 @@ use super::{
 use crate::as_yaml::{build_in, AsYaml, FlowQuoting, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::nodes::flow_quoting;
+use crate::nodes::mapping::{drop_tagged_anchor, held_anchor};
 use crate::yaml::ValueNode;
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
@@ -122,6 +123,45 @@ fn rebuild_entry_with_value(
     let mut builder = GreenNodeBuilder::new();
     builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
 
+    // The old item's anchor goes on the new one, so aliases to it still
+    // resolve; failing that the new item keeps the anchor it had where it
+    // was copied from.
+    // TODO: an alias cannot carry an anchor, so replacing an anchored item
+    // with one leaves aliases to the old anchor undefined. Report that
+    // instead of dropping the anchor.
+    let old_anchor = held_anchor(entry).filter(|_| value.kind() != YamlKind::Alias);
+    let anchor = old_anchor.clone().or_else(|| {
+        value
+            .as_node()
+            .filter(|_| value.kind() != YamlKind::Alias)
+            .and_then(crate::nodes::mapping::source_anchor_text)
+    });
+    // An anchor before the old item is rewritten along with it, unless a
+    // comment separates the two, in which case it stays where it is.
+    let item = entry_item(entry);
+    let item_at = entry_children
+        .iter()
+        .position(|c| c.as_node() == item.as_ref())
+        .unwrap_or(entry_children.len());
+    let outer_anchor_at = entry_children[..item_at]
+        .iter()
+        .position(|c| c.as_token().is_some_and(|t| t.kind() == SyntaxKind::ANCHOR));
+    let rewrite_anchor = outer_anchor_at.map_or(true, |at| {
+        entry_children[at + 1..item_at].iter().all(|c| {
+            c.as_token().is_some_and(|t| {
+                matches!(
+                    t.kind(),
+                    SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
+                )
+            })
+        })
+    });
+    let anchor = anchor.filter(|_| rewrite_anchor);
+    // A block collection goes on the line after its anchor.
+    let block_collection = flow.is_none()
+        && !value.is_inline()
+        && matches!(value.kind(), YamlKind::Mapping | YamlKind::Sequence);
+
     let mut value_inserted = false;
     let mut value_ends_with_newline = false;
     let mut trailing_text: Option<String> = None;
@@ -132,6 +172,9 @@ fn rebuild_entry_with_value(
 
     for (i, entry_child) in entry_children.iter().enumerate() {
         if i < skip_until {
+            continue;
+        }
+        if rewrite_anchor && outer_anchor_at.is_some_and(|at| (at..item_at).contains(&i)) {
             continue;
         }
         match entry_child {
@@ -156,6 +199,17 @@ fn rebuild_entry_with_value(
                     if after_dash {
                         builder.token(SyntaxKind::WHITESPACE.into(), " ");
                         column += 1;
+                    }
+                    if let Some(anchor) = &anchor {
+                        builder.token(SyntaxKind::ANCHOR.into(), anchor);
+                        if block_collection {
+                            column = dash_column + 2;
+                            builder.token(SyntaxKind::NEWLINE.into(), "\n");
+                            builder.token(SyntaxKind::INDENT.into(), &" ".repeat(column));
+                        } else {
+                            builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                            column += anchor.chars().count() + 1;
+                        }
                     }
                     value_ends_with_newline =
                         build_entry_value(&mut builder, value, dash_column, column, flow);
@@ -194,7 +248,11 @@ fn rebuild_entry_with_value(
     }
 
     builder.finish_node();
-    SyntaxNode::new_root_mut(builder.finish())
+    let new_entry = SyntaxNode::new_root_mut(builder.finish());
+    if old_anchor.is_some() {
+        drop_tagged_anchor(&new_entry);
+    }
+    new_entry
 }
 
 /// The item of a SEQUENCE_ENTRY.
@@ -924,6 +982,10 @@ impl Sequence {
     ///
     /// Returns `true` if the index was in bounds and the item was replaced,
     /// `false` if `index >= len()`.
+    ///
+    /// An anchor on the replaced item stays, on the new item, so aliases to
+    /// it still resolve. A node value that has an anchor of its own keeps
+    /// it only if the old item had none.
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn set(&self, index: usize, value: impl crate::AsYaml) -> bool {

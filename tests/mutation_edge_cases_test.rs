@@ -404,7 +404,7 @@ fn test_replace_multiline_flow_value_with_scalar_variants() {
         (
             "anchor",
             "a: 1\nb: &x [\n  1,\n  2\n]\nc: 3\n",
-            "a: 1\nb: replaced\nc: 3\n",
+            "a: 1\nb: &x replaced\nc: 3\n",
         ),
         (
             "tag",

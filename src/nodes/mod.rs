@@ -228,6 +228,24 @@ impl rowan::Language for Lang {
 pub type SyntaxNode = rowan::SyntaxNode<Lang>;
 pub type SyntaxToken = rowan::SyntaxToken<Lang>;
 
+/// Detach `anchor` with the whitespace separating it from what follows it
+/// on the same line, or else the space before it, so `k: &a 1` becomes
+/// `k: 1` and `k: &a` followed by a block becomes `k:`.
+pub(crate) fn detach_anchor(anchor: &SyntaxToken) {
+    let separator = anchor
+        .next_token()
+        .filter(|t| t.kind() == SyntaxKind::WHITESPACE)
+        .or_else(|| {
+            anchor
+                .prev_token()
+                .filter(|t| t.kind() == SyntaxKind::WHITESPACE)
+        });
+    if let Some(separator) = separator {
+        separator.detach();
+    }
+    anchor.detach();
+}
+
 /// Build a standalone `SyntaxToken` of `kind` with `text`, ready to
 /// splice into a parent's child list via `splice_children`.
 pub(crate) fn fresh_token(kind: SyntaxKind, text: &str) -> SyntaxToken {

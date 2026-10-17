@@ -225,11 +225,14 @@ fn preserves_anchor_on_inline_source() {
 
 #[test]
 fn scalar_replaces_block_value_with_anchor_or_tag() {
-    for target in ["k: &a\n  - old\n", "k: !!seq\n  - old\n"] {
+    for (target, expected) in [
+        ("k: &a\n  - old\n", "k: &a new\n"),
+        ("k: !!seq\n  - old\n", "k: new\n"),
+    ] {
         let (tf, root) = parse(target);
         root.set("k", "new");
         assert_file_cst_ok(&tf);
-        assert_eq!(tf.to_string(), "k: new\n");
+        assert_eq!(tf.to_string(), expected);
     }
 }
 

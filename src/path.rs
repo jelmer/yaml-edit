@@ -1065,21 +1065,7 @@ fn expanded_copy(target: &crate::yaml::SyntaxNode) -> crate::yaml::SyntaxNode {
         .filter(|t| t.kind() == SyntaxKind::ANCHOR)
         .collect();
     for anchor in anchors {
-        // Drop the whitespace separating the anchor from what follows it on
-        // the same line, or else the space before it, so `k: &a 1` becomes
-        // `k: 1` and `k: &a` followed by a block becomes `k:`.
-        let separator = anchor
-            .next_token()
-            .filter(|t| t.kind() == SyntaxKind::WHITESPACE)
-            .or_else(|| {
-                anchor
-                    .prev_token()
-                    .filter(|t| t.kind() == SyntaxKind::WHITESPACE)
-            });
-        if let Some(separator) = separator {
-            separator.detach();
-        }
-        anchor.detach();
+        crate::nodes::detach_anchor(&anchor);
     }
     copy
 }

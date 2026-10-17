@@ -5,8 +5,8 @@
 //! Split out of `nodes/mapping/mod.rs` unchanged.
 
 use super::helpers::{
-    build_block_value_node, built_block_node, find_key_line_comment, flow_form, has_comment,
-    source_anchor_text, value_is_block,
+    build_block_value_node, built_block_node, drop_tagged_anchor, find_key_line_comment, flow_form,
+    has_comment, held_anchor, source_anchor_text, value_is_block,
 };
 use super::{key_content_matches, MappingEntry};
 use crate::as_yaml::{build_in, FlowQuoting};
@@ -204,7 +204,7 @@ impl MappingEntry {
             });
 
         let value_ends_with_newline = if let Some(source) = block_source {
-            let block = build_block_value_node(source, key_indent + 2);
+            let block = build_block_value_node(source, key_indent + 2, None);
             if block.on_key_line {
                 builder.token(SyntaxKind::WHITESPACE.into(), " ");
             }
@@ -321,8 +321,8 @@ impl MappingEntry {
     /// Uses targeted CST edits (splice the VALUE, detach specific
     /// surrounding tokens) rather than rebuilding the whole entry, so
     /// unrelated tokens (leading comments, alignment whitespace) survive.
-    fn set_block_value(&self, source: &SyntaxNode) {
-        let block = build_block_value_node(source, self.indent_of_line() + 2);
+    fn set_block_value(&self, source: &SyntaxNode, anchor: Option<&str>) {
+        let block = build_block_value_node(source, self.indent_of_line() + 2, anchor);
         let value_ends_with_newline = block.ends_with_newline;
 
         // For explicit-key entries the parser sometimes stores the entry's
@@ -413,11 +413,14 @@ impl MappingEntry {
     /// Replace the value of this entry in place, preserving the key and surrounding whitespace.
     ///
     /// Comments inside the old value are removed with it; the comment on
-    /// the key's line stays with the entry.
+    /// the key's line stays with the entry. An anchor on the old value is
+    /// kept on the new one, in place of any anchor of its own, so aliases
+    /// to it still resolve.
     pub fn set_value(&self, new_value: impl crate::AsYaml, flow_context: bool) {
         use crate::nodes::replaced_value::{
             remove_lifted_comment, restore_trailing_lines, take_trailing_lines,
         };
+        let old_anchor = self.value().and_then(|v| held_anchor(&v));
         let trailing_lines = match self.value() {
             Some(old) if !flow_context => {
                 let lines = take_trailing_lines(&old);
@@ -426,13 +429,24 @@ impl MappingEntry {
             }
             _ => Vec::new(),
         };
-        self.replace_value(new_value, flow_context);
+        self.replace_value(new_value, flow_context, old_anchor.as_deref());
         crate::nodes::hand_line_break_to_mapping(&self.0);
         restore_trailing_lines(&self.0, trailing_lines);
     }
 
-    fn replace_value(&self, new_value: impl crate::AsYaml, flow_context: bool) {
+    /// Replace the value with `new_value`, under `old_anchor` if set.
+    fn replace_value(
+        &self,
+        new_value: impl crate::AsYaml,
+        flow_context: bool,
+        old_anchor: Option<&str>,
+    ) {
         use crate::as_yaml::YamlKind;
+
+        // TODO: an alias cannot carry an anchor, so replacing an anchored
+        // value with one leaves aliases to the old anchor undefined. Report
+        // that instead of dropping the anchor.
+        let old_anchor = old_anchor.filter(|_| new_value.kind() != YamlKind::Alias);
 
         // A block collection or block scalar coming from another CST goes
         // through set_block_value, which does targeted CST edits to swap
@@ -455,18 +469,20 @@ impl MappingEntry {
                 )
             });
         if let Some(source) = block_source {
-            self.set_block_value(source);
+            self.set_block_value(source, old_anchor);
             return;
         }
 
-        // Build the new VALUE. If the source is a node-backed inline value
-        // preceded by an `&anchor` in its parent VALUE, preserve that
-        // anchor so aliases pointing at the moved value still resolve.
+        // Build the new VALUE. Without an old anchor to keep, a node-backed
+        // inline value preceded by an `&anchor` in its parent VALUE keeps
+        // that anchor, so aliases pointing at the moved value still resolve.
         // Any key-line comment from the old entry (whether it lived inside
         // the old VALUE or at MAPPING_ENTRY level between COLON and VALUE)
         // is embedded inside the new inline VALUE so it stays on the key
         // line and doesn't swallow anything.
-        let anchor = new_value.as_node().and_then(source_anchor_text);
+        let anchor = old_anchor
+            .map(str::to_string)
+            .or_else(|| new_value.as_node().and_then(source_anchor_text));
         let trailing_comment = find_key_line_comment(&self.0);
         let mut value_builder = GreenNodeBuilder::new();
         value_builder.start_node(SyntaxKind::VALUE.into());
@@ -488,6 +504,9 @@ impl MappingEntry {
         }
         value_builder.finish_node();
         let new_value_node = SyntaxNode::new_root_mut(value_builder.finish());
+        if old_anchor.is_some() {
+            drop_tagged_anchor(&new_value_node);
+        }
 
         let old_was_block = self.value().is_some_and(|v| value_is_block(&v));
         if old_was_block {

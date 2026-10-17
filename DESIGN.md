@@ -349,8 +349,8 @@ node the value was copied from keeps its own. A node passed as a new key
 keeps its anchor too.
 
 Other anchors in a node that is removed or replaced (`remove`, `clear`,
-`set`, `set_path`, `remove_path`, ...) go with it, and so would what
-the aliases after it refer to. Instead, the first alias that
+`set`, `set_path`, `remove_path`, `rename_key`, ...) go with it, and so
+would what the aliases after it refer to. Instead, the first alias that
 referred to such an anchor is replaced with a copy of the anchored node,
 anchor included, and the aliases after it refer to that copy:
 `b: {c: &y 1}\nd: *y\n` with `b` set to `6` gives `b: 6\nd: &y 1\n`. The

@@ -344,3 +344,18 @@ fn alias_with_properties_is_refused_before_the_edit() {
         assert_eq!(doc.to_string(), source);
     }
 }
+
+#[test]
+fn rename_key_keeps_anchors() {
+    let doc = Document::from_str("&k a: 1\nb: *k\n").unwrap();
+    assert!(doc.as_mapping().unwrap().rename_key("a", "c"));
+    assert_edited(&doc, "&k c: 1\nb: *k\n");
+    assert_means(&doc, "c: 1\nb: c\n");
+
+    let doc = Document::from_str("[&y p]: 1\nb: *y\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let key = mapping.keys().next().unwrap();
+    assert!(mapping.rename_key(&key, "c"));
+    assert_edited(&doc, "c: 1\nb: &y p\n");
+    assert_means(&doc, "c: 1\nb: p\n");
+}

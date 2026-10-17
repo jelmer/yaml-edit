@@ -1408,7 +1408,8 @@ impl Mapping {
     /// on a `new_key` node is used only if the old key had none. The key's
     /// tag is kept if `new_key` has no tag of its own and still means the
     /// same with it: `!!str a` renamed to `"b"` gives `!!str b`, but renamed
-    /// to `1` gives `1`, as `!!str 1` would be a string.
+    /// to `1` gives `1`, as `!!str 1` would be a string. The first alias to
+    /// an anchor deeper in the old key becomes a copy of the anchored node.
     ///
     /// ```
     /// # use std::str::FromStr;
@@ -1428,7 +1429,11 @@ impl Mapping {
         if !renames_to_itself {
             self.remove_other_entries(&node, &new_key);
         }
-        self.replace_key(&node, new_key, None);
+        let old = entry_key(&node).expect("a mapping entry has a key");
+        let kept = held_anchor_token(&old);
+        crate::nodes::kept_aliases::keeping_aliases(&old, kept, || {
+            Some(self.replace_key(&node, new_key, None))
+        });
         true
     }
 

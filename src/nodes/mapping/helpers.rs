@@ -265,7 +265,17 @@ pub(super) fn built_block_node(value: &impl crate::AsYaml) -> Option<SyntaxNode>
     if value.is_inline() && !ends_with_newline {
         return None;
     }
-    SyntaxNode::new_root(builder.finish()).first_child()
+    let node = SyntaxNode::new_root(builder.finish()).first_child()?;
+    // A block scalar is laid out by build_content itself, given its key's
+    // column, as for any other scalar.
+    let scalar = match node.kind() {
+        SyntaxKind::TAGGED_NODE => node.children().last(),
+        _ => Some(node.clone()),
+    };
+    if scalar.is_some_and(|s| is_block_scalar(&s)) {
+        return None;
+    }
+    Some(node)
 }
 
 /// Build a VALUE node wrapping a TAGGED_NODE source. Everything the

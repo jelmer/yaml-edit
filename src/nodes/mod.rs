@@ -258,6 +258,25 @@ pub(crate) fn fresh_token(kind: SyntaxKind, text: &str) -> SyntaxToken {
         .expect("just built a token")
 }
 
+/// Put `ws` and `comment` at the end of the first line of `value`, a
+/// mutable node holding a block scalar: on its header line, where the
+/// parser keeps a comment following the indicator.
+pub(crate) fn insert_header_comment(value: &SyntaxNode, ws: &str, comment: &str) {
+    let header_end = value
+        .descendants_with_tokens()
+        .find(|c| c.kind() == SyntaxKind::NEWLINE)
+        .expect("a block scalar's header ends with a line break");
+    let parent = header_end.parent().expect("a token has a parent");
+    let idx = header_end.index();
+    parent.splice_children(
+        idx..idx,
+        vec![
+            fresh_token(SyntaxKind::WHITESPACE, ws).into(),
+            fresh_token(SyntaxKind::COMMENT, comment).into(),
+        ],
+    );
+}
+
 /// The first direct child node of `parent` with the given `kind`, if any.
 pub(crate) fn child_of_kind(parent: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
     parent.children().find(|n| n.kind() == kind)

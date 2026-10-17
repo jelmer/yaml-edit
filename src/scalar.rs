@@ -1585,6 +1585,28 @@ impl ScalarValue {
     }
 }
 
+/// Whether `text`, a scalar as [`ScalarValue::render`] writes it, is a
+/// block scalar.
+fn is_block_scalar(text: &str) -> bool {
+    text.starts_with(['|', '>'])
+}
+
+/// Emit `text`, a block scalar as rendered, as the SCALAR the parser builds
+/// for it: the header and body tokens as the lexer splits them, then the
+/// line break ending the last line, which the parser keeps inside the
+/// SCALAR.
+// TODO: build the tokens directly rather than lexing rendered text, once the
+// lexer gives block scalar bodies a simple, consistent token structure.
+fn build_block_scalar(builder: &mut rowan::GreenNodeBuilder, text: &str) {
+    use crate::lex::SyntaxKind;
+    builder.start_node(SyntaxKind::SCALAR.into());
+    for (kind, token) in crate::lex::lex(text) {
+        builder.token(kind.into(), token);
+    }
+    builder.token(SyntaxKind::NEWLINE.into(), "\n");
+    builder.finish_node();
+}
+
 impl ScalarValue {
     /// Emit the scalar, inside a flow collection quoting strings as `flow`
     /// says if it is set.
@@ -1595,6 +1617,9 @@ impl ScalarValue {
         flow: Option<FlowQuoting>,
     ) -> bool {
         use crate::lex::SyntaxKind;
+        // A block scalar's body has to clear the column its entry sits at,
+        // or the text it renders to is not the value it stood for:
+        // `a:\n  b: |-\n  x\n` has an empty scalar and a stray `x`.
         if let Some(tag) = self.rendered_tag() {
             builder.start_node(SyntaxKind::TAGGED_NODE.into());
             builder.token(SyntaxKind::TAG.into(), tag);
@@ -1604,6 +1629,11 @@ impl ScalarValue {
                 SyntaxKind::NULL
             } else {
                 builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                if is_block_scalar(&content) {
+                    build_block_scalar(builder, &content);
+                    builder.finish_node();
+                    return true;
+                }
                 self.token_kind(&content)
             };
             builder.start_node(SyntaxKind::SCALAR.into());
@@ -1616,12 +1646,11 @@ impl ScalarValue {
         // quotes (e.g. the string "null", or text containing ": "), the
         // rendered text starts with a quote and must be tokenized as a
         // STRING regardless of the semantic type.
-        // A block scalar's body has to clear the column its entry sits at,
-        // or the text it renders to is not the value it stood for:
-        // `a:\n  b: |-\n  x\n` has an empty scalar and a stray `x`.
-        // TODO: emit a block scalar as the parser tokenizes it (PIPE, NEWLINE,
-        // INDENT, ...) rather than as a single STRING token.
         let text = self.render(indent, 2, flow);
+        if is_block_scalar(&text) {
+            build_block_scalar(builder, &text);
+            return true;
+        }
         builder.start_node(SyntaxKind::SCALAR.into());
         builder.token(self.token_kind(&text).into(), &text);
         builder.finish_node();
@@ -3031,6 +3060,95 @@ mod tests {
         assert_eq!(
             ScalarValue::plain("a\rb").with_tag("!x").to_yaml_string(),
             "!x \"a\\rb\""
+        );
+    }
+
+    /// Write `value` into a mapping and a sequence, at the top level and
+    /// nested, both as a new entry and over an existing one. Each result
+    /// must have the tree the parser gives its text, and read `value` back.
+    fn check_block_scalar_edits(value: impl crate::AsYaml + Clone) {
+        use crate::as_yaml::yaml_eq;
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        type Edit<V> = fn(&Document, V) -> Option<crate::as_yaml::YamlNode>;
+        let cases: [(&str, Edit<_>); 7] = [
+            ("a: 1\n", |d, v| {
+                d.set("b", v);
+                d.get("b")
+            }),
+            ("a: 1\nc: 2\n", |d, v| {
+                d.set("a", v);
+                d.get("a")
+            }),
+            ("a:\n  k: 1\n", |d, v| {
+                let m = d.get_mapping("a").unwrap();
+                m.set("j", v);
+                m.get("j")
+            }),
+            ("a:\n  k: 1\nb: 2\n", |d, v| {
+                let m = d.get_mapping("a").unwrap();
+                m.set("k", v);
+                m.get("k")
+            }),
+            ("- 1\n", |d, v| {
+                let s = d.as_sequence().unwrap();
+                s.push(v);
+                s.get(1)
+            }),
+            ("s:\n  - a\nb: 2\n", |d, v| {
+                let s = d.get_sequence("s").unwrap();
+                s.push(v);
+                s.get(1)
+            }),
+            ("- 1\n- 2\n", |d, v| {
+                let s = d.as_sequence().unwrap();
+                assert!(s.set(0, v));
+                s.get(0)
+            }),
+        ];
+        for (src, edit) in cases {
+            let doc = Document::from_str(src).unwrap();
+            let written = edit(&doc, value.clone()).unwrap();
+            assert!(
+                yaml_eq(&written, &value),
+                "{src:?} -> {:?}",
+                doc.to_string()
+            );
+            assert_cst_ok(&doc);
+            crate::debug::assert_parser_shaped(&doc);
+        }
+    }
+
+    #[test]
+    fn test_block_scalars_are_parser_shaped() {
+        for value in [
+            ScalarValue::literal("x\ny\n"),
+            ScalarValue::literal("x\ny"),
+            ScalarValue::literal("x\ny\n\n"),
+            ScalarValue::folded("x\ny"),
+            ScalarValue::folded("x\n\n"),
+            ScalarValue::literal("  x\ny\n"),
+            ScalarValue::literal("x: 1 # no comment\n  [a, b]\n"),
+            ScalarValue::literal("x\n\ny\n").with_tag("!t"),
+            ScalarValue::folded("  x\n").with_tag("!!str"),
+        ] {
+            check_block_scalar_edits(value);
+        }
+        check_block_scalar_edits("x\ny\n");
+        check_block_scalar_edits("  x\ny".to_string());
+    }
+
+    #[test]
+    fn test_block_scalar_text() {
+        use std::str::FromStr;
+        let doc = crate::yaml::Document::from_str("a:\n  k: 1\n").unwrap();
+        let m = doc.get_mapping("a").unwrap();
+        m.set("j", ScalarValue::literal("x\n  y\n"));
+        m.set("k", ScalarValue::literal("  x\n").with_tag("!t"));
+        assert_eq!(
+            doc.to_string(),
+            "a:\n  k: !t |2\n      x\n  j: |\n    x\n      y\n"
         );
     }
 

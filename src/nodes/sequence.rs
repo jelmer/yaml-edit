@@ -801,7 +801,7 @@ impl Sequence {
         if entry_is_first {
             crate::yaml::detach_empty_collection_placeholder_newline(&self.0, &new_entry);
         }
-        crate::nodes::move_blank_lines_ahead_of_kept_scalar(&new_entry);
+        crate::nodes::settle_lines_after_inserted_entry(&new_entry);
     }
 
     /// Splice a new flow entry at `index` (or append when
@@ -977,7 +977,7 @@ impl Sequence {
         let mut inserts: Vec<_> = indent_token(&indentation).into_iter().collect();
         inserts.push(new_entry.clone().into());
         self.0.splice_children(insert_at..insert_at, inserts);
-        crate::nodes::move_blank_lines_ahead_of_kept_scalar(&new_entry);
+        crate::nodes::settle_lines_after_inserted_entry(&new_entry);
     }
 
     /// Replace the item at `index` with a new value.

@@ -435,6 +435,14 @@ pub(crate) fn hand_line_break_to_mapping(entry: &SyntaxNode) {
     parent.splice_children(at..at, moved);
 }
 
+/// Lay out the lines after `entry`, a block collection entry just
+/// inserted, so that a block scalar its value ends in does not take them
+/// in.
+pub(crate) fn settle_lines_after_inserted_entry(entry: &SyntaxNode) {
+    move_blank_lines_ahead_of_kept_scalar(entry);
+    replaced_value::settle_lines_after_block_scalar(entry);
+}
+
 /// Move the blank lines straight after `entry`, a block collection entry
 /// just inserted, to in front of its line, if its value ends in a kept
 /// (`|+`, `>+`) block scalar.
@@ -442,7 +450,7 @@ pub(crate) fn hand_line_break_to_mapping(entry: &SyntaxNode) {
 /// Such a scalar takes every blank line after it into its value, so the
 /// new entry goes after the blank lines rather than before them, leaving
 /// the text around it as it was.
-pub(crate) fn move_blank_lines_ahead_of_kept_scalar(entry: &SyntaxNode) {
+fn move_blank_lines_ahead_of_kept_scalar(entry: &SyntaxNode) {
     if !ends_with_kept_block_scalar(entry) {
         return;
     }
@@ -510,11 +518,21 @@ pub(crate) fn move_blank_lines_ahead_of_kept_scalar(entry: &SyntaxNode) {
 
 /// Whether the last node `entry` holds is a kept (`|+`, `>+`) block scalar.
 fn ends_with_kept_block_scalar(entry: &SyntaxNode) -> bool {
+    ending_block_scalar(entry).is_some_and(|scalar| {
+        scalar_node::block_scalar_indicators(&scalar).0 == scalar_node::Chomping::Keep
+    })
+}
+
+/// The block scalar that is the last node `entry` holds, if any.
+///
+/// A scalar built from a value is a single token, and a parsed one holds
+/// the line break ending its last line, so it is told apart by its text.
+pub(crate) fn ending_block_scalar(entry: &SyntaxNode) -> Option<SyntaxNode> {
     let tokens: Vec<_> = entry
         .descendants_with_tokens()
         .filter_map(|c| c.into_token())
         .collect();
-    let Some(scalar) = tokens
+    tokens
         .iter()
         .rev()
         .filter(|t| !t.text().is_empty())
@@ -531,22 +549,11 @@ fn ends_with_kept_block_scalar(entry: &SyntaxNode) -> bool {
             }
         })
         .flatten()
-    else {
-        return false;
-    };
-    // The indicators follow `|` or `>` straight away. A scalar built from a
-    // value is a single token, so stop at the end of the header line.
-    let header: String = scalar
-        .children_with_tokens()
-        .filter_map(|c| c.into_token())
-        .take_while(|t| t.kind() != SyntaxKind::NEWLINE)
-        .map(|t| t.text().to_string())
-        .collect();
-    let mut chars = header.chars();
-    matches!(chars.next(), Some('|' | '>'))
-        && chars
-            .take_while(|c| c.is_ascii_digit() || matches!(c, '+' | '-'))
-            .any(|c| c == '+')
+        .filter(|scalar| {
+            scalar
+                .first_token()
+                .is_some_and(|t| t.text().starts_with(['|', '>']))
+        })
 }
 
 /// Add the line break that ends the last line of `node`, where the parser

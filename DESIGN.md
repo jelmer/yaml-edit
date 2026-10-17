@@ -209,6 +209,14 @@ lines at the place it is inserted rather than before them:
 `a: 1\n\nk: |+\n  text\n\nb: 2\n`. The text around the new entry stays as
 it was, and the value keeps its style.
 
+Any block scalar written by an edit, inserted or replacing a value, reads
+the lines after it as body until one is indented less than its body. A
+whitespace-only line with spaces past the body's column, or a tab, would
+add text to its value, so that line loses its white space: `a: 1\n     \n`
+with `k: "text\n"` inserted after `a` gives `a: 1\nk: |\n  text\n\n`. A
+comment line indented as far as the body moves back to the entry's
+column. Other lines are left as they are.
+
 ## Implicit-null values
 
 Every `MAPPING_ENTRY` and `SEQUENCE_ENTRY` in the CST holds a value node,

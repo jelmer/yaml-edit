@@ -959,12 +959,8 @@ impl Validator {
         if crate::ScalarValue::is_legacy_octal(text) {
             let sign = if text.starts_with('-') { "-" } else { "" };
             let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
-            let Ok(as_octal) = i64::from_str_radix(digits, 8) else {
-                return;
-            };
-            let Ok(as_decimal) = digits.parse::<i64>() else {
-                return;
-            };
+            let as_octal = crate::scalar::digits_to_decimal(digits, 8);
+            let as_decimal = crate::scalar::digits_to_decimal(digits, 10);
             violations.push(Violation::warning_at(
                 Rule::LegacyYaml11,
                 token.text_range(),

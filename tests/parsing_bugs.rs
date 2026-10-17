@@ -3800,6 +3800,16 @@ fn test_legacy_yaml_1_1_warnings() {
          Write `0o755` to keep the octal meaning"
     );
 
+    // The readings are not limited to a fixed-width integer.
+    let octal = warn("mode: 0777777777777777777777777\n");
+    assert_eq!(octal.len(), 1);
+    assert_eq!(
+        octal[0].2,
+        "`0777777777777777777777777` is YAML 1.1 octal, read as \
+         4722366482869645213695; YAML 1.2 reads it as 777777777777777777777777. \
+         Write `0o777777777777777777777777` to keep the octal meaning"
+    );
+
     // The 1.1 booleans are already strings here, but a 1.1 reader differs.
     assert_eq!(warn("a: yes\n").len(), 1);
     assert_eq!(warn("a: OFF\n").len(), 1);

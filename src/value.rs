@@ -387,7 +387,20 @@ impl YamlValue {
     }
 
     /// Convert to YAML string representation
+    ///
+    /// The text has no final line break, except where a block scalar ends
+    /// it with an empty line: that line needs its line break, or the value
+    /// would read back without it.
     pub fn to_yaml_string(&self, indent: usize) -> String {
+        let mut text = self.render(indent);
+        if text.ends_with('\n') {
+            text.push('\n');
+        }
+        text
+    }
+
+    /// Render this value with no final line break.
+    fn render(&self, indent: usize) -> String {
         match self {
             YamlValue::Scalar(s) => s.to_yaml_string(),
             YamlValue::Sequence(seq) => {
@@ -402,7 +415,7 @@ impl YamlValue {
                         item.push_entry_value(&mut result, indent + 4);
                         result.push('\n');
                     }
-                    result.truncate(result.trim_end().len());
+                    result.pop();
                     result
                 }
             }
@@ -419,7 +432,7 @@ impl YamlValue {
                         value.push_entry_value(&mut result, indent + 2);
                         result.push('\n');
                     }
-                    result.truncate(result.trim_end().len());
+                    result.pop();
                     result
                 }
             }
@@ -437,14 +450,14 @@ impl YamlValue {
                         result.push_str(": null");
                         result.push('\n');
                     }
-                    result.truncate(result.trim_end().len());
+                    result.pop();
                     result
                 }
             }
             YamlValue::OrderedMapping(pairs) => Self::render_tagged_pairs("!!omap", pairs, indent),
             YamlValue::Pairs(pairs) => Self::render_tagged_pairs("!!pairs", pairs, indent),
             YamlValue::Tagged(tag, value) => {
-                let content = value.to_yaml_string(indent);
+                let content = value.render(indent);
                 if value.is_block_collection() {
                     format!("{tag}\n{content}")
                 } else {
@@ -486,11 +499,11 @@ impl YamlValue {
                     result.pop();
                 }
                 result.push('\n');
-                result.push_str(&self.to_yaml_string(indent));
+                result.push_str(&self.render(indent));
             }
             // Empty collections are flow style and tagged ones open with
             // their tag, so both stay on the indicator's line.
-            _ => result.push_str(&self.to_yaml_string(indent)),
+            _ => result.push_str(&self.render(indent)),
         }
     }
 
@@ -511,7 +524,7 @@ impl YamlValue {
             value.push_entry_value(&mut result, indent + 6);
             result.push('\n');
         }
-        result.truncate(result.trim_end().len());
+        result.pop();
         result
     }
 }
@@ -1292,6 +1305,35 @@ ordered: !!omap [first: *list]
         let out = v.to_yaml_string(0);
         assert_eq!(out, "o:\n  k: |\n    x\n    y");
         assert_eq!(YamlValue::parse_raw(&out).unwrap(), v);
+    }
+
+    #[test]
+    fn test_to_yaml_string_ends_block_scalar_line() {
+        let map = |value: &str| {
+            let mut m = BTreeMap::new();
+            m.insert(
+                "k".to_string(),
+                YamlValue::Scalar(ScalarValue::literal(value)),
+            );
+            YamlValue::Mapping(m)
+        };
+        for (value, expected) in [
+            ("x\n\n", "k: |+\n  x\n\n"),
+            ("x\n  \n", "k: |\n  x\n    "),
+            ("x\ny", "k: |-\n  x\n  y"),
+        ] {
+            let v = map(value);
+            assert_eq!(v.to_yaml_string(0), expected);
+            assert_eq!(v.to_string(), expected);
+            assert_eq!(YamlValue::parse_raw(expected).unwrap(), v);
+        }
+
+        let v = YamlValue::from(vec![
+            YamlValue::Scalar(ScalarValue::literal("x\n\n")),
+            YamlValue::from(1),
+        ]);
+        assert_eq!(v.to_yaml_string(0), "  - |+\n    x\n\n  - 1");
+        assert_eq!(YamlValue::parse_raw(&v.to_yaml_string(0)).unwrap(), v);
     }
 
     #[test]

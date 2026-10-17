@@ -123,9 +123,8 @@ pub(crate) fn restore_trailing_lines(entry: &SyntaxNode, lines: Vec<SyntaxToken>
     };
     parent.splice_children(after..after, elements);
 
-    if let Some(scalar) = ending_block_scalar(entry) {
-        absorb_blank_lines_after(&scalar);
-        dedent_comment_line_after(entry, &scalar);
+    if super::ending_block_scalar(entry).is_some() {
+        settle_lines_after_block_scalar(entry);
         return;
     }
     // The parser keeps blank lines and the indentation of a comment line
@@ -159,39 +158,59 @@ pub(crate) fn restore_trailing_lines(entry: &SyntaxNode, lines: Vec<SyntaxToken>
     );
 }
 
-/// The block scalar `entry` ends with, if any.
-fn ending_block_scalar(entry: &SyntaxNode) -> Option<SyntaxNode> {
-    entry
-        .last_token()
-        .and_then(|t| t.parent())
-        .filter(crate::nodes::mapping::is_block_scalar)
+/// Lay out the lines after `entry`, whose value now ends in a block
+/// scalar, so that they stay out of its body and its value is the one
+/// that was written.
+pub(crate) fn settle_lines_after_block_scalar(entry: &SyntaxNode) {
+    let Some(scalar) = super::ending_block_scalar(entry) else {
+        return;
+    };
+    absorb_blank_lines_after(&scalar);
+    dedent_comment_line_after(entry, &scalar);
 }
 
 /// The column of the body of `scalar`, a block scalar, if it is known:
 /// its explicit indentation indicator counted from the parent's column,
-/// or else that of its first line.
+/// or else that of its first line that is not empty.
 fn block_scalar_body_column(scalar: &SyntaxNode) -> Option<usize> {
-    match crate::nodes::scalar_node::block_scalar_indicators(scalar).1 {
-        Some(indent) => Some(crate::nodes::scalar_node::block_parent_column(scalar) + indent),
-        None => crate::nodes::mapping::block_scalar_content_indent(scalar),
+    if let Some(indent) = crate::nodes::scalar_node::block_scalar_indicators(scalar).1 {
+        return Some(crate::nodes::scalar_node::block_parent_column(scalar) + indent);
     }
+    let text = scalar.text().to_string();
+    text.lines()
+        .skip(1)
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start_matches(' ').len())
 }
 
-/// Move the blank lines after `scalar`, the block scalar a value was just
-/// replaced with, into it, as the parser reads them as part of its body.
+/// The line break ending the last line of `scalar`, a block scalar: its
+/// own last token if the parser put it there, or else the token after it.
+fn block_scalar_line_end(scalar: &SyntaxNode) -> Option<SyntaxToken> {
+    let last = scalar.last_token()?;
+    if last.kind() == SyntaxKind::NEWLINE {
+        return Some(last);
+    }
+    last.next_token()
+        .filter(|t| t.kind() == SyntaxKind::NEWLINE)
+}
+
+/// Fit the blank lines after `scalar`, a block scalar a value was just
+/// written as, to it, as the parser reads them as part of its body.
 ///
 /// They must not change its value. Spaces on such a line past the body's
 /// column would be body text, and a tab cannot start a body line at all,
 /// so those lines lose their white space. A kept (`|+`) scalar's value
 /// takes in every trailing blank line, and only a comment line could end
 /// it before them, so after one the blank lines are dropped.
+///
+/// The parser keeps those lines in the scalar, so they move into one
+/// that holds its own last line break, as a parsed one does. A scalar
+/// built from a value is a single token and leaves them where they are.
 fn absorb_blank_lines_after(scalar: &SyntaxNode) {
-    let Some(end) = scalar
-        .last_token()
-        .filter(|t| t.kind() == SyntaxKind::NEWLINE)
-    else {
+    let Some(end) = block_scalar_line_end(scalar) else {
         return;
     };
+    let into_scalar = end.parent().as_ref() == Some(scalar);
     let mut lines = Vec::new();
     let mut next = end.next_token();
     loop {
@@ -211,19 +230,26 @@ fn absorb_blank_lines_after(scalar: &SyntaxNode) {
     let keep = crate::nodes::scalar_node::block_scalar_indicators(scalar).0
         == crate::nodes::scalar_node::Chomping::Keep;
     let body = block_scalar_body_column(scalar);
+    let fits =
+        |text: &str| text.bytes().all(|b| b == b' ') && body.map_or(true, |b| text.len() <= b);
+    // A line stays (in the scalar or where it is) unless the scalar is
+    // kept, and keeps its spaces only if they fit.
     let mut elements = Vec::new();
     for (space, line_break) in lines {
-        if let Some(space) = space {
-            let text = space.text();
-            if !keep && text.bytes().all(|b| b == b' ') && body.map_or(true, |b| text.len() <= b) {
-                elements.push(fresh_token(SyntaxKind::INDENT, text).into());
-            }
-            space.detach();
+        let fitting_space = space
+            .as_ref()
+            .filter(|t| !keep && fits(t.text()))
+            .map(|t| t.text().to_string());
+        if into_scalar || fitting_space.is_none() {
+            space.iter().for_each(SyntaxToken::detach);
         }
-        if !keep {
+        if into_scalar || keep {
+            line_break.detach();
+        }
+        if into_scalar && !keep {
+            elements.extend(fitting_space.map(|t| fresh_token(SyntaxKind::INDENT, &t).into()));
             elements.push(fresh_token(SyntaxKind::NEWLINE, line_break.text()).into());
         }
-        line_break.detach();
     }
     append_children(scalar, elements);
 }
@@ -234,12 +260,24 @@ fn absorb_blank_lines_after(scalar: &SyntaxNode) {
 fn dedent_comment_line_after(entry: &SyntaxNode, scalar: &SyntaxNode) {
     let column = crate::as_yaml::source_base_indent(entry);
     let body = block_scalar_body_column(scalar).unwrap_or(column + 1);
-    let mut next = entry.last_token().and_then(|t| t.next_token());
-    while let Some(t) = next.clone().filter(|t| t.kind() == SyntaxKind::NEWLINE) {
-        next = t.next_token();
+    let is_space =
+        |t: &SyntaxToken| matches!(t.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE);
+    let mut next = block_scalar_line_end(scalar).and_then(|t| t.next_token());
+    // Blank lines, which may hold spaces up to the body's column, do not
+    // end the body.
+    while let Some(t) = next.clone() {
+        let line_break = match t.kind() {
+            SyntaxKind::NEWLINE => t,
+            _ if is_space(&t) => match t.next_token() {
+                Some(nl) if nl.kind() == SyntaxKind::NEWLINE => nl,
+                _ => break,
+            },
+            _ => break,
+        };
+        next = line_break.next_token();
     }
     let Some(indent) = next.filter(|t| {
-        t.kind() == SyntaxKind::INDENT
+        is_space(t)
             && t.text().len() >= body
             && t.next_token()
                 .is_some_and(|c| c.kind() == SyntaxKind::COMMENT)

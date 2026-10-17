@@ -121,7 +121,8 @@ omitted value:,
     // Verify 3 keys
     assert_eq!(mapping.keys().count(), 3, "Should have 3 keys");
 
-    // The space before the separator is not part of the key
+    // The space before the `:` separates the key from it, as 4ABK's
+    // test.event has it (`=VAL :unquoted`).
     let unquoted_val = mapping.get("unquoted").expect("Should have 'unquoted' key");
     assert_eq!(unquoted_val.as_scalar().unwrap().as_string(), "separate");
 

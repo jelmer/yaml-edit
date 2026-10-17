@@ -430,8 +430,12 @@ impl Parser {
                 let body_indent =
                     self.tagged_block_node_indent(base_indent, self.annotation_in_value_position);
                 self.bump(); // consume and emit anchor token to CST
-                self.skip_whitespace();
+                let empty_flow_node = self.annotates_empty_flow_node();
+                if !empty_flow_node {
+                    self.skip_whitespace();
+                }
                 match body_indent {
+                    _ if empty_flow_node => self.emit_implicit_null(),
                     Some(indent) => {
                         self.skip_ws_and_newlines();
                         if self.current() == Some(SyntaxKind::DASH) {
@@ -786,6 +790,33 @@ impl Parser {
                     .find(|k| !matches!(k, SyntaxKind::NEWLINE | SyntaxKind::INDENT)),
                 Some(SyntaxKind::PIPE | SyntaxKind::GREATER)
             )
+    }
+
+    /// Whether a tag or anchor just consumed inside a flow collection
+    /// annotates an empty node: nothing but whitespace and comments stand
+    /// between it and the `,`, `]`, `}` or key separator that ends the
+    /// node, as in `{ !!str : bar }` or `[ &a , b ]`.
+    pub(super) fn annotates_empty_flow_node(&self) -> bool {
+        if !self.in_flow_context {
+            return false;
+        }
+        let mut n = 0;
+        while matches!(
+            self.peek_kind(n),
+            Some(
+                SyntaxKind::WHITESPACE
+                    | SyntaxKind::NEWLINE
+                    | SyntaxKind::INDENT
+                    | SyntaxKind::COMMENT
+            )
+        ) {
+            n += 1;
+        }
+        match self.peek_kind(n) {
+            None
+            | Some(SyntaxKind::COMMA | SyntaxKind::RIGHT_BRACE | SyntaxKind::RIGHT_BRACKET) => true,
+            Some(_) => self.flow_key_separator_at(n),
+        }
     }
 
     /// Emit the zero-width `SCALAR { NULL "" }` that fills every value slot

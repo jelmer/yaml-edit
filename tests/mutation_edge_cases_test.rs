@@ -585,3 +585,37 @@ fn test_try_path_reports_specific_errors() {
         Err(PathError::TypeMismatch { .. })
     ));
 }
+
+/// New content in a document closed by `...` goes before the marker.
+#[test]
+fn test_set_in_document_ended_by_marker() {
+    for (input, expected) in [
+        ("--- \n...\n", "--- \nkey: value\n...\n"),
+        ("---\n...\n", "---\nkey: value\n...\n"),
+        ("a: 1\n...\n", "a: 1\nkey: value\n...\n"),
+        ("--- \n...\n--- b\n", "--- \nkey: value\n...\n--- b\n"),
+    ] {
+        let file = YamlFile::from_str(input).unwrap();
+        assert!(file.ensure_document().set("key", "value"));
+        assert_eq!(file.to_string(), expected, "{input:?}");
+
+        let file = YamlFile::from_str(input).unwrap();
+        assert!(file
+            .document()
+            .unwrap()
+            .set_with_field_order("key", "value", ["key"]));
+        assert_eq!(file.to_string(), expected, "{input:?}");
+    }
+}
+
+#[test]
+fn test_insert_at_index_keeps_document_markers() {
+    for (input, expected) in [
+        ("--- \n...\n", "--- \nkey: value\n...\n"),
+        ("---\n", "---\nkey: value\n"),
+    ] {
+        let file = YamlFile::from_str(input).unwrap();
+        file.document().unwrap().insert_at_index(0, "key", "value");
+        assert_eq!(file.to_string(), expected, "{input:?}");
+    }
+}

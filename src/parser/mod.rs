@@ -187,107 +187,33 @@ impl Parser {
             self.skip_ws_and_newlines();
         }
 
-        // Parse any directives at the beginning
-        while self.current() == Some(SyntaxKind::DIRECTIVE) {
-            self.parse_directive();
-            self.skip_ws_and_newlines();
+        // Content with no `---` of its own opens a document only at the start
+        // of the stream, after a directive or after a `...` (`a\n...\nb: 1\n`
+        // is two documents). Anywhere else it is stray.
+        let mut bare_document_allowed = true;
+        if prefix_in_document {
+            bare_document_allowed = self.parse_document();
         }
-
-        // Parse documents
-        // Always parse at least one document
-        if self.current().is_some() && self.current() != Some(SyntaxKind::EOF) {
-            self.parse_document();
+        loop {
             self.skip_ws_and_newlines();
-
-            // Parse additional documents (can have directives before each)
-            while self.current() == Some(SyntaxKind::DOC_START)
-                || self.current() == Some(SyntaxKind::DIRECTIVE)
-            {
-                // Parse any directives before this document
-                while self.current() == Some(SyntaxKind::DIRECTIVE) {
+            match self.current() {
+                None | Some(SyntaxKind::EOF) => break,
+                Some(SyntaxKind::DIRECTIVE) => {
                     self.parse_directive();
-                    self.skip_ws_and_newlines();
+                    bare_document_allowed = true;
                 }
-
-                // Parse the document if we have content
-                if self.current() == Some(SyntaxKind::DOC_START)
-                    || (self.current().is_some() && self.current() != Some(SyntaxKind::EOF))
-                {
-                    self.parse_document();
-                    self.skip_ws_and_newlines();
-                } else {
-                    break;
+                // A `...` that ends a document is consumed by that document.
+                // One with no document before it closes nothing and stays at
+                // the root (YAML test suite HWV9, QT73).
+                Some(SyntaxKind::DOC_END) => {
+                    self.parse_doc_end();
+                    bare_document_allowed = true;
                 }
-            }
-        }
-
-        // Consume any remaining tokens as ERROR nodes
-        // A lenient parser should consume all input, not leave it unparsed
-        while self.current().is_some() && self.current() != Some(SyntaxKind::EOF) {
-            // A `...` ends the document it closes and belongs to the tree,
-            // not to an ERROR node; a `---` or `%YAML` starts the next one.
-            // This loop drives multi-document parsing as well as the sweep,
-            // so it is entered with nothing to sweep -- make the ERROR node
-            // only when there are stray tokens to hold.
-            let has_stray = self.current().is_some()
-                && self.current() != Some(SyntaxKind::EOF)
-                && self.current() != Some(SyntaxKind::DOC_START)
-                && self.current() != Some(SyntaxKind::DIRECTIVE)
-                && self.current() != Some(SyntaxKind::DOC_END);
-            if has_stray {
-                // Whatever lands here could not be attached to any document,
-                // so it is gone from the parsed value. Say so: returning Ok
-                // with the content only in an ERROR node drops it silently.
-                let stray = self.current_text().unwrap_or("").to_string();
-                self.add_error(
-                    format!("Content after the document could not be parsed: {stray:?}"),
-                    ParseErrorKind::Other,
-                );
-                self.builder.start_node(SyntaxKind::ERROR.into());
-                while self.current().is_some()
-                    && self.current() != Some(SyntaxKind::EOF)
-                    && self.current() != Some(SyntaxKind::DOC_START)
-                    && self.current() != Some(SyntaxKind::DIRECTIVE)
-                    && self.current() != Some(SyntaxKind::DOC_END)
-                {
-                    self.bump();
+                Some(SyntaxKind::DOC_START) => bare_document_allowed = self.parse_document(),
+                Some(_) if bare_document_allowed => {
+                    bare_document_allowed = self.parse_document();
                 }
-                self.builder.finish_node();
-            }
-
-            // A `...` closes the document before it. What follows may be a
-            // fresh document with no `---` of its own (`a\n...\nb: 1\n` is
-            // two documents), so parse one rather than sweeping it away.
-            if self.current() == Some(SyntaxKind::DOC_END) {
-                self.bump();
-                self.skip_ws_and_newlines();
-                if self.current().is_some()
-                    && self.current() != Some(SyntaxKind::EOF)
-                    && self.current() != Some(SyntaxKind::DOC_START)
-                    && self.current() != Some(SyntaxKind::DIRECTIVE)
-                    && self.current() != Some(SyntaxKind::DOC_END)
-                {
-                    self.parse_document();
-                    self.skip_ws_and_newlines();
-                }
-                continue;
-            }
-
-            // If we hit a document/directive marker, try to parse it
-            if self.current() == Some(SyntaxKind::DOC_START)
-                || self.current() == Some(SyntaxKind::DIRECTIVE)
-            {
-                // Parse any directives
-                while self.current() == Some(SyntaxKind::DIRECTIVE) {
-                    self.parse_directive();
-                    self.skip_ws_and_newlines();
-                }
-
-                // Parse document if present
-                if self.current().is_some() && self.current() != Some(SyntaxKind::EOF) {
-                    self.parse_document();
-                    self.skip_ws_and_newlines();
-                }
+                Some(_) => self.parse_stray_content(),
             }
         }
 
@@ -300,7 +226,33 @@ impl Parser {
         }
     }
 
-    fn parse_document(&mut self) {
+    /// Hold content that could not be attached to any document in an ERROR
+    /// node, up to the next document or directive marker.
+    fn parse_stray_content(&mut self) {
+        // The content is gone from the parsed value. Say so: returning Ok
+        // with it only in an ERROR node drops it silently.
+        let stray = self.current_text().unwrap_or("").to_string();
+        self.add_error(
+            format!("Content after the document could not be parsed: {stray:?}"),
+            ParseErrorKind::Other,
+        );
+        self.builder.start_node(SyntaxKind::ERROR.into());
+        while !matches!(
+            self.current(),
+            None | Some(
+                SyntaxKind::EOF
+                    | SyntaxKind::DOC_START
+                    | SyntaxKind::DIRECTIVE
+                    | SyntaxKind::DOC_END
+            )
+        ) {
+            self.bump();
+        }
+        self.builder.finish_node();
+    }
+
+    /// Parse one document, returning whether it was closed by a `...`.
+    fn parse_document(&mut self) -> bool {
         self.builder.start_node(SyntaxKind::DOCUMENT.into());
 
         // Only the first document can start with these; see parse().
@@ -353,56 +305,13 @@ impl Parser {
         }
 
         // The line break, comments and blank lines after the root node belong
-        // to the document. A block collection takes them itself; a scalar or
-        // flow collection root stops at its last character.
-        // TODO: also take them when a `...` follows. parse() only looks for a
-        // bare document after a `...` it finds at the root, so the marker
-        // has to stay there for now.
-        let before_doc_end = self.next_kind_past(&[
-            SyntaxKind::WHITESPACE,
-            SyntaxKind::NEWLINE,
-            SyntaxKind::INDENT,
-            SyntaxKind::COMMENT,
-        ]) == Some(SyntaxKind::DOC_END);
-        if !before_doc_end {
-            self.skip_ws_and_newlines();
-        }
-
-        // Handle document end marker
-        if self.current() == Some(SyntaxKind::DOC_END) {
-            self.bump();
-
-            // Check for content after document end marker (spec violation).
-            // A comment is not content: `... # done` is as valid as the
-            // `...\n# done` spelling, which already kept it in the tree.
-            self.skip_whitespace();
-            let is_stray = |kind: Option<SyntaxKind>| {
-                kind.is_some_and(|kind| {
-                    !matches!(
-                        kind,
-                        SyntaxKind::NEWLINE
-                            | SyntaxKind::EOF
-                            | SyntaxKind::DOC_START
-                            | SyntaxKind::DIRECTIVE
-                            | SyntaxKind::COMMENT
-                    )
-                })
-            };
-            if is_stray(self.current()) {
-                // Found content after DOC_END. Both saphyr and PyYAML reject
-                // this; say so rather than returning a document the content
-                // has quietly been dropped from.
-                let stray = self.current_text().unwrap_or("").to_string();
-                self.add_error(
-                    format!("Content after the document end marker: {stray:?}"),
-                    ParseErrorKind::Other,
-                );
-                self.builder.start_node(SyntaxKind::ERROR.into());
-                while is_stray(self.current()) {
-                    self.bump();
-                }
-                self.builder.finish_node();
-            }
+        // to the document, as does a `...` ending it. A block collection
+        // takes them itself; a scalar or flow collection root stops at its
+        // last character.
+        self.skip_ws_and_newlines();
+        let ends_with_marker = self.current() == Some(SyntaxKind::DOC_END);
+        if ends_with_marker {
+            self.parse_doc_end();
 
             // The rest of the marker's line ends the document with it.
             if self.current() == Some(SyntaxKind::COMMENT) {
@@ -414,6 +323,44 @@ impl Parser {
         }
 
         self.builder.finish_node();
+        ends_with_marker
+    }
+
+    /// Consume a `...` and report any content after it on the same line.
+    fn parse_doc_end(&mut self) {
+        self.bump();
+
+        // Check for content after document end marker (spec violation).
+        // A comment is not content: `... # done` is as valid as the
+        // `...\n# done` spelling, which already kept it in the tree.
+        self.skip_whitespace();
+        let is_stray = |kind: Option<SyntaxKind>| {
+            kind.is_some_and(|kind| {
+                !matches!(
+                    kind,
+                    SyntaxKind::NEWLINE
+                        | SyntaxKind::EOF
+                        | SyntaxKind::DOC_START
+                        | SyntaxKind::DIRECTIVE
+                        | SyntaxKind::COMMENT
+                )
+            })
+        };
+        if is_stray(self.current()) {
+            // Found content after DOC_END. Both saphyr and PyYAML reject
+            // this; say so rather than returning a document the content
+            // has quietly been dropped from.
+            let stray = self.current_text().unwrap_or("").to_string();
+            self.add_error(
+                format!("Content after the document end marker: {stray:?}"),
+                ParseErrorKind::Other,
+            );
+            self.builder.start_node(SyntaxKind::ERROR.into());
+            while is_stray(self.current()) {
+                self.bump();
+            }
+            self.builder.finish_node();
+        }
     }
 
     pub(super) fn parse_value(&mut self) {

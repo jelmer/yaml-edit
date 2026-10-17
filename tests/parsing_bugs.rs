@@ -4396,3 +4396,20 @@ fn test_tag_suffix_may_hold_hash() {
     assert_eq!(tagged.tag().unwrap(), "!foo#bar");
     assert_eq!(tagged.value().unwrap().as_string(), "x");
 }
+
+/// Text after a quoted scalar on its own line stays in the scalar's node,
+/// for the validator to report, rather than dropping out of the document.
+#[test]
+fn test_quoted_scalar_keeps_trailing_text_on_its_line() {
+    let yaml = "a: \"b\" c\nd: e\n";
+    let parsed = YamlFile::parse(yaml);
+    assert_eq!(parsed.errors(), Vec::<String>::new());
+    let file = parsed.tree();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.len(), 2);
+    assert_eq!(
+        mapping.get("d").unwrap().as_scalar().unwrap().as_string(),
+        "e"
+    );
+}

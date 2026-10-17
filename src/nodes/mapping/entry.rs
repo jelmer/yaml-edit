@@ -5,8 +5,8 @@
 //! Split out of `nodes/mapping/mod.rs` unchanged.
 
 use super::helpers::{
-    build_block_value_node, built_block_node, find_key_line_comment, flow_form, source_anchor_text,
-    value_is_block,
+    build_block_value_node, built_block_node, find_key_line_comment, flow_form, has_comment,
+    source_anchor_text, value_is_block,
 };
 use super::{key_content_matches, MappingEntry};
 use crate::lex::SyntaxKind;
@@ -92,10 +92,23 @@ impl MappingEntry {
         use_explicit_key: bool,
         key_indent: usize,
     ) -> Self {
-        if let Some(key) = flow_form(&key) {
-            return Self::new_at_indent(key, value, flow_context, use_explicit_key, key_indent);
+        if let Some(key) = flow_form(&key, key_indent + 2) {
+            // Comments make the key span several lines, which only an
+            // explicit key may do.
+            let multiline = has_comment(key.syntax());
+            // TODO: write an explicit key in the shape the parser gives
+            // one inside a flow mapping (QUESTION within KEY).
+            assert!(
+                !(multiline && flow_context),
+                "a key with comments cannot yet be written into a flow mapping"
+            );
+            let explicit = use_explicit_key || multiline;
+            return Self::new_at_indent(key, value, flow_context, explicit, key_indent);
         }
-        if let Some(value) = flow_context.then(|| flow_form(&value)).flatten() {
+        if let Some(value) = flow_context
+            .then(|| flow_form(&value, key_indent + 2))
+            .flatten()
+        {
             return Self::new_at_indent(key, value, flow_context, use_explicit_key, key_indent);
         }
         let mut builder = GreenNodeBuilder::new();
@@ -190,6 +203,9 @@ impl MappingEntry {
                     // TAGGED_NODE values (!!set, !!omap, !!pairs) are
                     // inline but may end with newlines from their
                     // block-style content.
+                    // TODO: pass key_indent; at 0, a multi-line flow value
+                    // copied from a shallower key under a nested one keeps
+                    // continuation lines too shallow for its new key.
                     value.build_content(&mut builder, 0, flow_context)
                 }
                 // Block mappings and sequences start on new line but don't get pre-indented

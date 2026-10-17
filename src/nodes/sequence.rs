@@ -233,7 +233,7 @@ fn build_entry_value(
     // flow indicator, such as "a, b", is written here unquoted.
     let flow_context = flow && value.kind() != crate::as_yaml::YamlKind::Scalar;
     match flow
-        .then(|| crate::nodes::mapping::flow_form(value))
+        .then(|| crate::nodes::mapping::flow_form(value, column))
         .flatten()
     {
         Some(flow_value) => flow_value.build_content(builder, indent(&flow_value), flow_context),
@@ -718,7 +718,20 @@ impl Sequence {
     fn insert_flow(&self, index: usize, value: impl crate::AsYaml) {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
-        build_entry_value(&mut builder, &value, 0, 0, true);
+        // Should the value need several lines (to keep comments), they are
+        // indented past the entry holding this sequence, as for mappings.
+        let column = self
+            .0
+            .ancestors()
+            .find(|n| {
+                matches!(
+                    n.kind(),
+                    SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+                )
+            })
+            .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry))
+            + 2;
+        build_entry_value(&mut builder, &value, 0, column, true);
         builder.finish_node();
         let new_entry = SyntaxNode::new_root_mut(builder.finish());
 
@@ -1090,7 +1103,8 @@ impl AsYaml for Sequence {
         indent: usize,
         _flow_context: bool,
     ) -> bool {
-        let delta = indent as isize - crate::as_yaml::source_base_indent(&self.0) as isize;
+        let delta = indent as isize
+            - crate::as_yaml::source_reindent_base(&self.0, self.is_flow_style()) as isize;
         builder.start_node(SyntaxKind::SEQUENCE.into());
         crate::as_yaml::copy_node_content_reindent(builder, &self.0, delta);
         builder.finish_node();
@@ -1236,6 +1250,27 @@ mod tests {
             .clone();
         seq.push("item1");
         assert_eq!(doc.to_string(), "a:\n  seq: [item1]\n");
+    }
+
+    #[test]
+    fn test_push_commented_value_into_nested_flow_sequence() {
+        // Keeping the comment breaks the flow mapping across lines; the
+        // continuation has to stay inside `a`.
+        use crate::path::YamlPath;
+        use crate::Document;
+        use rowan::ast::AstNode;
+        let doc = Document::from_str("a:\n  seq: [1]\n").unwrap();
+        let seq = doc
+            .try_get_path("a.seq")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .clone();
+        let item = Document::from_str("x: 1 # c\ny: 2\n").unwrap();
+        seq.push(item.as_mapping().unwrap());
+        crate::debug::validate_tree(doc.syntax()).unwrap();
+        crate::debug::roundtrip_ok(doc.syntax()).unwrap();
+        assert_eq!(doc.to_string(), "a:\n  seq: [1, {x: 1, # c\n    y: 2}]\n");
     }
 
     #[test]

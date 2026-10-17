@@ -10,7 +10,6 @@ use crate::nodes::{append_children, fresh_token, has_child_token, Scalar, Sequen
 use crate::yaml::ValueNode;
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
-use std::str::FromStr;
 
 /// Where to place a new entry inside a flow-style mapping (`{...}`).
 pub(in crate::nodes) enum FlowInsertPos {
@@ -358,96 +357,283 @@ pub(super) fn block_scalar_content_indent(scalar: &SyntaxNode) -> Option<usize> 
 /// `value` re-rendered in flow style, or `None` if it is already inline.
 ///
 /// Block collections and block scalars can't appear inside a flow
-/// collection or as an implicit key. Anchors, tags and aliases carry over;
-/// comments are dropped, since a single-line flow node has no room for them.
-pub(crate) fn flow_form(value: &impl crate::AsYaml) -> Option<crate::as_yaml::YamlNode> {
+/// collection or as an implicit key. Anchors, tags and aliases carry over.
+/// Comments are kept: each one is moved to the next point where the flow
+/// node can break its line (after an opening bracket, after a comma, or
+/// before a closing bracket), with continuation lines at `indent`. A
+/// result containing comments therefore spans several lines; see
+/// [`has_comment`].
+pub(crate) fn flow_form(
+    value: &impl crate::AsYaml,
+    indent: usize,
+) -> Option<crate::as_yaml::YamlNode> {
     if value.is_inline() {
         return None;
     }
-    let text = match value.as_node() {
-        Some(node) => node_flow_text(node),
+    let built;
+    let node = match value.as_node() {
+        Some(node) => node,
         None => {
             let mut builder = GreenNodeBuilder::new();
             builder.start_node(SyntaxKind::ROOT.into());
             value.build_content(&mut builder, 0, false);
             builder.finish_node();
             let root = SyntaxNode::new_root(builder.finish());
-            let node = root.first_child().expect("build_content emits a node");
-            node_flow_text(&node)
+            built = root.first_child().expect("build_content emits a node");
+            &built
         }
     };
-    let file = crate::yaml::YamlFile::from_str(&text)
-        .unwrap_or_else(|e| panic!("flow rendering {text:?} does not parse: {e}"));
-    let node = file
-        .document()
-        .and_then(|d| d.root_node())
-        .expect("flow rendering has a root node");
-    crate::as_yaml::YamlNode::from_syntax(node)
+    let mut writer = FlowWriter {
+        builder: GreenNodeBuilder::new(),
+        pending: Vec::new(),
+    };
+    writer.node(node, indent);
+    // Comments only become pending inside a collection, which flushes them
+    // before its closing bracket.
+    assert!(writer.pending.is_empty(), "unplaced comments in flow form");
+    crate::as_yaml::YamlNode::from_syntax(SyntaxNode::new_root_mut(writer.builder.finish()))
 }
 
-fn node_flow_text(node: &SyntaxNode) -> String {
-    match node.kind() {
-        SyntaxKind::MAPPING => {
-            let entries: Vec<String> = node
-                .children()
-                .filter(|e| e.kind() == SyntaxKind::MAPPING_ENTRY)
-                .map(|e| {
-                    let part = |kind| {
-                        e.children()
-                            .find(|c| c.kind() == kind)
-                            .map(|c| content_flow_text(&c))
-                            .filter(|t| !t.is_empty())
-                    };
-                    let key = part(SyntaxKind::KEY).unwrap_or_else(|| "null".to_string());
-                    let value = part(SyntaxKind::VALUE).unwrap_or_else(|| "null".to_string());
-                    format!("{key}: {value}")
-                })
-                .collect();
-            format!("{{{}}}", entries.join(", "))
-        }
-        SyntaxKind::SEQUENCE => {
-            let items: Vec<String> = node
-                .children()
-                .filter(|e| e.kind() == SyntaxKind::SEQUENCE_ENTRY)
-                .map(|e| content_flow_text(&e))
-                .collect();
-            format!("[{}]", items.join(", "))
-        }
-        SyntaxKind::SCALAR => scalar_flow_text(node),
-        SyntaxKind::TAGGED_NODE => content_flow_text(node),
-        _ => node.text().to_string().trim().to_string(),
-    }
+/// True if `node` contains a comment anywhere.
+pub(super) fn has_comment(node: &SyntaxNode) -> bool {
+    node.descendants_with_tokens()
+        .any(|c| c.kind() == SyntaxKind::COMMENT)
 }
 
-/// Flow text for the node wrapped by a KEY, VALUE, SEQUENCE_ENTRY or
-/// TAGGED_NODE, including the anchor and tag in front of it.
-fn content_flow_text(wrapper: &SyntaxNode) -> String {
-    let parts: Vec<String> = wrapper
-        .children_with_tokens()
-        .filter_map(|c| match c {
-            rowan::NodeOrToken::Token(t)
-                if matches!(t.kind(), SyntaxKind::ANCHOR | SyntaxKind::TAG) =>
-            {
-                Some(t.text().to_string())
+/// Builds the flow-style CST for a block node, in the shape the parser
+/// produces for the same text.
+struct FlowWriter {
+    builder: GreenNodeBuilder<'static>,
+    /// Comments seen in the source but not yet written, each with the
+    /// whitespace to put in front of it if it ends up after other content.
+    pending: Vec<(String, String)>,
+}
+
+impl FlowWriter {
+    fn node(&mut self, node: &SyntaxNode, indent: usize) {
+        match node.kind() {
+            SyntaxKind::MAPPING | SyntaxKind::SEQUENCE => self.collection(node, indent),
+            SyntaxKind::SCALAR => self.scalar(node),
+            SyntaxKind::TAGGED_NODE => {
+                self.builder.start_node(SyntaxKind::TAGGED_NODE.into());
+                self.decorated(node, indent, true);
+                self.builder.finish_node();
             }
-            rowan::NodeOrToken::Node(n) => Some(node_flow_text(&n)),
-            rowan::NodeOrToken::Token(_) => None,
-        })
-        .filter(|t| !t.is_empty())
-        .collect();
-    parts.join(" ")
-}
-
-fn scalar_flow_text(node: &SyntaxNode) -> String {
-    let text = node.text().to_string();
-    let text = text.trim();
-    let quoted = text.starts_with(['"', '\'']);
-    let breaks_flow = is_block_scalar(node)
-        || text.contains('\n')
-        || (!quoted && text.contains([',', '[', ']', '{', '}']));
-    if !breaks_flow {
-        return text.to_string();
+            _ => {
+                self.builder.start_node(node.kind().into());
+                crate::as_yaml::copy_node_content(&mut self.builder, node);
+                self.builder.finish_node();
+            }
+        }
     }
-    let value = Scalar::cast(node.clone()).expect("SCALAR node").as_string();
-    crate::scalar::ScalarValue::double_quoted(value).to_yaml_string()
+
+    /// Write the anchor, tag and node held by a KEY, VALUE, SEQUENCE_ENTRY
+    /// or TAGGED_NODE. An undecorated implicit null becomes a textual
+    /// `null`, since an empty slot in a flow sequence would otherwise
+    /// vanish or leave a stray comma. `nested` is set for a TAGGED_NODE,
+    /// whose content sits at the same level as the tag.
+    fn decorated(&mut self, wrapper: &SyntaxNode, indent: usize, nested: bool) {
+        let mut decorated = false;
+        for child in wrapper.children_with_tokens() {
+            match child {
+                rowan::NodeOrToken::Token(t) => match t.kind() {
+                    SyntaxKind::ANCHOR | SyntaxKind::TAG => {
+                        if decorated {
+                            self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                        }
+                        self.builder.token(t.kind().into(), t.text());
+                        decorated = true;
+                    }
+                    SyntaxKind::COMMENT => self.push_comment(&t),
+                    _ => {}
+                },
+                rowan::NodeOrToken::Node(n) => {
+                    let empty = n.text_range().is_empty();
+                    if empty && !decorated && !nested {
+                        self.builder.start_node(SyntaxKind::SCALAR.into());
+                        self.builder.token(SyntaxKind::NULL.into(), "null");
+                        self.builder.finish_node();
+                        continue;
+                    }
+                    if decorated && !empty {
+                        self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                    }
+                    let inner = indent + if nested { 0 } else { 2 };
+                    self.node(&n, inner);
+                }
+            }
+        }
+    }
+
+    fn collection(&mut self, node: &SyntaxNode, indent: usize) {
+        let (entry_kind, open, close) = if node.kind() == SyntaxKind::MAPPING {
+            (
+                SyntaxKind::MAPPING_ENTRY,
+                ("{", SyntaxKind::LEFT_BRACE),
+                ("}", SyntaxKind::RIGHT_BRACE),
+            )
+        } else {
+            (
+                SyntaxKind::SEQUENCE_ENTRY,
+                ("[", SyntaxKind::LEFT_BRACKET),
+                ("]", SyntaxKind::RIGHT_BRACKET),
+            )
+        };
+        self.builder.start_node(node.kind().into());
+        self.builder.token(open.1.into(), open.0);
+        let children: Vec<_> = node.children_with_tokens().collect();
+        let entries: Vec<usize> = (0..children.len())
+            .filter(|&i| children[i].kind() == entry_kind)
+            .collect();
+        // Comments between entries sit beside them in a block collection;
+        // each goes with the entry before it.
+        self.push_comments(&children[..entries.first().copied().unwrap_or(children.len())]);
+        self.flush(indent);
+        for (n, &i) in entries.iter().enumerate() {
+            let entry = children[i].as_node().expect("entry is a node");
+            self.builder.start_node(entry_kind.into());
+            if entry_kind == SyntaxKind::MAPPING_ENTRY {
+                self.mapping_entry(entry, indent);
+            } else {
+                self.decorated(entry, indent, false);
+            }
+            let next = entries.get(n + 1).copied();
+            self.push_comments(&children[i + 1..next.unwrap_or(children.len())]);
+            if next.is_some() {
+                self.builder.token(SyntaxKind::COMMA.into(), ",");
+                if self.pending.is_empty() {
+                    self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
+                }
+            }
+            self.flush(indent);
+            self.builder.finish_node();
+        }
+        self.builder.token(close.1.into(), close.0);
+        self.builder.finish_node();
+    }
+
+    fn mapping_entry(&mut self, entry: &SyntaxNode, indent: usize) {
+        let mut has_value = false;
+        for child in entry.children_with_tokens() {
+            match child {
+                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::COMMENT => {
+                    self.push_comment(&t)
+                }
+                rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::KEY => {
+                    self.builder.start_node(SyntaxKind::KEY.into());
+                    self.decorated(&n, indent, false);
+                    self.builder.finish_node();
+                }
+                rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::VALUE => {
+                    self.colon();
+                    self.builder.start_node(SyntaxKind::VALUE.into());
+                    self.decorated(&n, indent, false);
+                    self.builder.finish_node();
+                    has_value = true;
+                }
+                _ => {}
+            }
+        }
+        if !has_value {
+            self.colon();
+            self.builder.start_node(SyntaxKind::VALUE.into());
+            self.builder.start_node(SyntaxKind::SCALAR.into());
+            self.builder.token(SyntaxKind::NULL.into(), "null");
+            self.builder.finish_node();
+            self.builder.finish_node();
+        }
+    }
+
+    fn colon(&mut self) {
+        self.builder.token(SyntaxKind::COLON.into(), ":");
+        self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
+    }
+
+    fn scalar(&mut self, node: &SyntaxNode) {
+        let tokens: Vec<_> = node
+            .descendants_with_tokens()
+            .filter_map(|c| c.into_token())
+            .collect();
+        for t in tokens.iter().filter(|t| t.kind() == SyntaxKind::COMMENT) {
+            self.push_comment(t);
+        }
+        let text: String = tokens
+            .iter()
+            .filter(|t| t.kind() != SyntaxKind::COMMENT)
+            .map(|t| t.text())
+            .collect();
+        let text = text.trim();
+        let quoted = text.starts_with(['"', '\'']);
+        let breaks_flow = is_block_scalar(node)
+            || text.contains('\n')
+            || (!quoted && text.contains([',', '[', ']', '{', '}']));
+        if breaks_flow {
+            let value = Scalar::cast(node.clone()).expect("SCALAR node").as_string();
+            crate::AsYaml::build_content(
+                &crate::scalar::ScalarValue::double_quoted(value),
+                &mut self.builder,
+                0,
+                true,
+            );
+            return;
+        }
+        self.builder.start_node(SyntaxKind::SCALAR.into());
+        let content = tokens.iter().filter(|t| {
+            !matches!(
+                t.kind(),
+                SyntaxKind::COMMENT
+                    | SyntaxKind::WHITESPACE
+                    | SyntaxKind::NEWLINE
+                    | SyntaxKind::INDENT
+            )
+        });
+        for t in content {
+            self.builder.token(t.kind().into(), t.text());
+        }
+        self.builder.finish_node();
+    }
+
+    fn push_comments(&mut self, elements: &[rowan::SyntaxElement<crate::nodes::Lang>]) {
+        for element in elements {
+            match element {
+                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::COMMENT => {
+                    self.push_comment(t)
+                }
+                rowan::NodeOrToken::Node(n) => {
+                    for t in n.descendants_with_tokens().filter_map(|c| c.into_token()) {
+                        if t.kind() == SyntaxKind::COMMENT {
+                            self.push_comment(&t);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn push_comment(&mut self, comment: &crate::nodes::SyntaxToken) {
+        let ws = comment
+            .prev_token()
+            .filter(|t| t.kind() == SyntaxKind::WHITESPACE)
+            .filter(|t| {
+                t.prev_token()
+                    .is_some_and(|p| p.kind() != SyntaxKind::NEWLINE)
+            })
+            .map_or_else(|| " ".to_string(), |t| t.text().to_string());
+        self.pending.push((ws, comment.text().to_string()));
+    }
+
+    /// Write the pending comments, each ending its line, so that what
+    /// follows starts a fresh line at `indent`.
+    fn flush(&mut self, indent: usize) {
+        for (i, (ws, comment)) in std::mem::take(&mut self.pending).into_iter().enumerate() {
+            if i == 0 {
+                self.builder.token(SyntaxKind::WHITESPACE.into(), &ws);
+            }
+            self.builder.token(SyntaxKind::COMMENT.into(), &comment);
+            self.builder.token(SyntaxKind::NEWLINE.into(), "\n");
+            self.builder
+                .token(SyntaxKind::INDENT.into(), &" ".repeat(indent));
+        }
+    }
 }

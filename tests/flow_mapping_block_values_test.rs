@@ -77,11 +77,10 @@ fn test_replace_scalar_with_sequence_in_flow_mapping() {
 fn test_flow_rendering_keeps_anchors_tags_and_quotes() {
     let file = YamlFile::from_str("{x: 1}\n").unwrap();
     let root = file.document().unwrap().as_mapping().unwrap();
-    let value = parse_map(
-        "p: &a 1 # comment\nq: !t [*a, 'c, d']\nr: |\n  line\ns:\n  - x, y\n  - {k: v}\nt:\n",
-    );
+    let value =
+        parse_map("p: &a 1\nq: !t [*a, 'c, d']\nr: |\n  line\ns:\n  - x, y\n  - {k: v}\nt:\n");
     root.set("y", value);
-    assert_file_cst_ok(&file);
+    assert_parser_shaped(&file);
     assert_eq!(
         file.to_string(),
         "{x: 1, y: {p: &a 1, q: !t [*a, 'c, d'], r: \"line\\n\", s: [\"x, y\", {k: v}], t: null}}\n"
@@ -180,4 +179,92 @@ fn test_set_scalar_with_flow_indicators_in_flow_mapping() {
         assert_parser_shaped(&file);
         assert_eq!(file.to_string(), format!("{{x: 1, y: {flow}}}\n"));
     }
+}
+
+#[test]
+fn test_implicit_null_entries_keep_their_count() {
+    for (block, flow, len) in [
+        ("-\n", "[null]", 1),
+        ("- a\n-\n", "[a, null]", 2),
+        ("-\n- a\n", "[null, a]", 2),
+    ] {
+        let file = YamlFile::from_str("{x: 1}\n").unwrap();
+        let root = file.document().unwrap().as_mapping().unwrap();
+        root.set("y", parse_seq(block));
+        assert_parser_shaped(&file);
+        assert_eq!(file.to_string(), format!("{{x: 1, y: {flow}}}\n"));
+        let reparsed = parse_map(&file.to_string());
+        assert_eq!(reparsed.get_sequence("y").unwrap().len(), len);
+    }
+}
+
+#[test]
+fn test_decorated_implicit_nulls_stay_empty() {
+    let file = YamlFile::from_str("{x: 1}\n").unwrap();
+    let root = file.document().unwrap().as_mapping().unwrap();
+    root.set("y", parse_seq("- &n\n- !t\n"));
+    // TODO: check the tree shape too once the parser gives `[&n, !t]` the
+    // same NULL token it gives the block form.
+    assert_file_cst_ok(&file);
+    assert_eq!(file.to_string(), "{x: 1, y: [&n, !t]}\n");
+    let reparsed = parse_map(&file.to_string());
+    assert_eq!(reparsed.get_sequence("y").unwrap().len(), 2);
+}
+
+#[test]
+fn test_multiline_flow_value_keeps_indentation() {
+    let source = parse_map("v: [a,\n    b]\n").get("v").unwrap();
+    let file = YamlFile::from_str("k:\n  j: 1\n").unwrap();
+    let k = file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("k")
+        .unwrap();
+    k.set("n", &source);
+    assert_parser_shaped(&file);
+    assert_eq!(file.to_string(), "k:\n  j: 1\n  n: [a,\n    b]\n");
+}
+
+#[test]
+fn test_comments_kept_in_flow_rendering() {
+    let file = YamlFile::from_str("{x: 1}\n").unwrap();
+    let root = file.document().unwrap().as_mapping().unwrap();
+    root.set("y", parse_map("p: 1 # keep me\nq: 2\n"));
+    assert_parser_shaped(&file);
+    assert_eq!(file.to_string(), "{x: 1, y: {p: 1, # keep me\n  q: 2}}\n");
+}
+
+#[test]
+fn test_comments_in_nested_and_last_entries_kept() {
+    let file = YamlFile::from_str("a: {x: 1}\n").unwrap();
+    let a = file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("a")
+        .unwrap();
+    a.set(
+        "y",
+        parse_map("p:  # head\n  - 1  # one\n  # own line\n  - 2\nq: 3  # last\n# trailing\n"),
+    );
+    assert_parser_shaped(&file);
+    assert_eq!(
+        file.to_string(),
+        "a: {x: 1, y: {p: [  # head\n       1,  # one\n       # own line\n       2], q: 3  # last\n     # trailing\n     }}\n"
+    );
+}
+
+#[test]
+fn test_commented_sequence_key_uses_explicit_key() {
+    let file = YamlFile::from_str("a: 1\n").unwrap();
+    let root = file.document().unwrap().as_mapping().unwrap();
+    let key = parse_seq("- 1  # one\n- 2\n");
+    root.set(&key, 1);
+    // TODO: check the tree shape too once explicit-key entries are built
+    // with their line break outside the entry, as the parser has it.
+    assert_file_cst_ok(&file);
+    assert_eq!(file.to_string(), "a: 1\n? [1,  # one\n  2]\n: 1\n");
 }

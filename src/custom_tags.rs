@@ -159,7 +159,8 @@
 //!
 //! 2. **Format Preservation**: Tags are preserved during parse/serialize, but the library doesn't
 //!    validate tag semantics during normal document operations - validation must be explicitly
-//!    called via the registry.
+//!    called via the registry, or for a whole document via
+//!    [`CustomTagParser::parse_with_custom_tags`].
 //!
 //! 3. **Thread Safety**: Tag handlers are `Send + Sync` and the registry can be shared across
 //!    threads safely.
@@ -170,6 +171,7 @@
 use crate::scalar::{ScalarType, ScalarValue};
 use crate::value::YamlValue;
 use crate::yaml::{Document, TaggedNode};
+use rowan::ast::AstNode;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -373,31 +375,50 @@ impl CustomTagParser {
         Self { registry }
     }
 
-    /// Parse a document and process custom tags
-    ///
-    /// TODO: unimplemented - this should walk the document and run every
-    /// tagged node through the registry. It currently accepts any document
-    /// without looking at it.
-    #[deprecated(
-        since = "0.4.0",
-        note = "unimplemented; it reports Ok(()) without inspecting the document"
-    )]
-    pub fn parse_with_custom_tags(&self, _document: &Document) -> Result<(), CustomTagError> {
-        Ok(())
+    /// Run every tagged node in `document` through the registry, as
+    /// [`process_tagged_node`](Self::process_tagged_node) does, stopping at
+    /// the first error.
+    pub fn parse_with_custom_tags(&self, document: &Document) -> Result<(), CustomTagError> {
+        document
+            .syntax()
+            .descendants()
+            .filter_map(TaggedNode::cast)
+            .try_for_each(|tagged| self.process_tagged_node(&tagged).map(|_| ()))
     }
 
-    /// Process a tagged scalar using the custom tag registry
+    /// Deserialize a tagged node with the handler registered for its tag.
+    ///
+    /// A scalar is passed to the handler as its string value, with quotes
+    /// and escapes resolved; a flow collection as its source text.
     pub fn process_tagged_node(
         &self,
         tagged_node: &TaggedNode,
     ) -> Result<YamlValue, CustomTagError> {
-        if let Some(tag) = tagged_node.tag() {
-            if let Some(scalar) = tagged_node.value() {
-                let content = scalar.as_string();
-                return self.registry.deserialize(&tag, &content);
+        let tag = tagged_node
+            .tag()
+            .ok_or_else(|| CustomTagError::new("", "Invalid tagged scalar"))?;
+        let content = if let Some(scalar) = tagged_node.value() {
+            scalar.as_string()
+        } else {
+            let (collection, is_flow) = tagged_node
+                .as_mapping()
+                .map(|m| (m.syntax().clone(), m.is_flow_style()))
+                .or_else(|| {
+                    let s = tagged_node.as_sequence()?;
+                    Some((s.syntax().clone(), s.is_flow_style()))
+                })
+                .ok_or_else(|| CustomTagError::new(&tag, "Invalid tagged node"))?;
+            if !is_flow {
+                // TODO: decide what text a handler should see for a block
+                // collection, whose lines carry the surrounding indentation.
+                return Err(CustomTagError::new(
+                    tag,
+                    "Tagged block collections are not supported",
+                ));
             }
-        }
-        Err(CustomTagError::new("", "Invalid tagged scalar"))
+            collection.text().to_string()
+        };
+        self.registry.deserialize(&tag, &content)
     }
 }
 
@@ -1056,6 +1077,113 @@ mod tests {
         // Test unregistered tag
         assert!(registry.serialize("!unknown", &scalar_value).is_err());
         assert!(registry.deserialize("!unknown", "content").is_err());
+    }
+
+    /// Records the content of every node it is given and rejects "bad".
+    struct RecordingHandler(Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl CustomTagHandler for RecordingHandler {
+        fn serialize(&self, _value: &YamlValue) -> Result<String, CustomTagError> {
+            Err(CustomTagError::new("!rec", "not used"))
+        }
+
+        fn deserialize(&self, content: &str) -> Result<YamlValue, CustomTagError> {
+            self.0.lock().unwrap().push(content.to_string());
+            if content == "bad" {
+                return Err(CustomTagError::with_content("!rec", "rejected", content));
+            }
+            Ok(YamlValue::scalar(content))
+        }
+
+        fn description(&self) -> &str {
+            "records its input"
+        }
+    }
+
+    fn recording_parser() -> (CustomTagParser, Arc<std::sync::Mutex<Vec<String>>>) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut registry = CustomTagRegistry::new();
+        registry
+            .register("!rec", RecordingHandler(Arc::clone(&seen)))
+            .unwrap();
+        (CustomTagParser::new(registry), seen)
+    }
+
+    fn doc(text: &str) -> Document {
+        use std::str::FromStr;
+        Document::from_str(text).unwrap()
+    }
+
+    #[test]
+    fn test_parse_with_custom_tags_visits_every_tagged_node() {
+        let (parser, seen) = recording_parser();
+        let document = doc(concat!(
+            "a: !rec one\n",
+            "? !rec two\n",
+            ": [!rec three, {!rec four: !rec '5'}]\n",
+            "c: !rec {\"x\": !rec six}\n",
+            "d:\n",
+            "  - !rec \"seven\"\n",
+        ));
+        assert_eq!(parser.parse_with_custom_tags(&document), Ok(()));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                "one",
+                "two",
+                "three",
+                "four",
+                "5",
+                "{\"x\": !rec six}",
+                "six",
+                "seven"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_with_custom_tags_returns_first_error() {
+        let (parser, seen) = recording_parser();
+        let document = doc("[!rec ok, !rec bad, !rec bad]\n");
+        assert_eq!(
+            parser.parse_with_custom_tags(&document),
+            Err(CustomTagError::with_content("!rec", "rejected", "bad"))
+        );
+        assert_eq!(*seen.lock().unwrap(), vec!["ok", "bad"]);
+    }
+
+    #[test]
+    fn test_parse_with_custom_tags_unregistered_tag() {
+        let (parser, _) = recording_parser();
+        let document = doc("a: !rec x\nb: !other y\n");
+        assert_eq!(
+            parser.parse_with_custom_tags(&document),
+            Err(CustomTagError::new("!other", "Tag not registered"))
+        );
+    }
+
+    #[test]
+    fn test_parse_with_custom_tags_block_collection() {
+        let (parser, seen) = recording_parser();
+        let document = doc("a: !rec\n  b: 1\n");
+        assert_eq!(
+            parser.parse_with_custom_tags(&document),
+            Err(CustomTagError::new(
+                "!rec",
+                "Tagged block collections are not supported"
+            ))
+        );
+        assert_eq!(*seen.lock().unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_parse_with_custom_tags_untagged_document() {
+        let (parser, seen) = recording_parser();
+        assert_eq!(
+            parser.parse_with_custom_tags(&doc("a: [1, {b: c}]\n")),
+            Ok(())
+        );
+        assert_eq!(*seen.lock().unwrap(), Vec::<String>::new());
     }
 
     #[test]

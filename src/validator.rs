@@ -447,6 +447,7 @@ impl Validator {
                 self.check_escape_sequences(node, violations);
                 // Check for content on same line as block scalar indicator
                 self.check_block_scalar_indicator(node, violations);
+                self.check_block_scalar_header_indent(node, violations);
                 // Check block scalar content indentation consistency
                 self.check_block_scalar_content_indent(node, violations);
                 // Check for trailing content after quoted strings
@@ -844,6 +845,37 @@ impl Validator {
                     }
                 }
             }
+        }
+    }
+
+    /// Check that a block scalar header starting a later line than its
+    /// node's properties is indented past the parent node.
+    ///
+    /// Between the properties and the header, `s-separate(n+1)` requires at
+    /// least `n+1` spaces of indentation on a new line, so the parser's
+    /// reading of `a: !!str\n|\n x\n` as a tagged block scalar is not
+    /// valid YAML. The YAML test suite's M5C3 has the header two columns
+    /// left of its tag, which is still past the key.
+    fn check_block_scalar_header_indent(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        let Some(header) = node.children_with_tokens().find_map(|c| {
+            c.into_token().filter(|t| {
+                matches!(
+                    t.kind(),
+                    crate::SyntaxKind::PIPE | crate::SyntaxKind::GREATER
+                )
+            })
+        }) else {
+            return;
+        };
+        let Some(min_indent) = continuation_indent(node) else {
+            return;
+        };
+        if token_column(&header) < min_indent {
+            violations.push(Violation::error_at(
+                Rule::Other,
+                header.text_range(),
+                "Block scalar header must be indented past its parent node",
+            ));
         }
     }
 

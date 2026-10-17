@@ -1751,16 +1751,20 @@ mod tests {
 
     #[test]
     fn test_block_scalar_items_clear_the_dash() {
-        use crate::debug::{roundtrip_ok, validate_tree};
+        use crate::debug::{assert_parser_shaped, roundtrip_ok, validate_tree};
         use crate::{AsYaml, Document};
 
-        // No tree comparison with a re-parse: ScalarValue writes a block
-        // scalar as a single STRING token, not the parser's PIPE/INDENT shape.
         let literal = crate::ScalarValue::literal("x\ny\n");
         for (src, set, expected) in [
             ("- a\n", false, "- a\n- |\n  x\n  y\n"),
             ("s:\n  - a\n", false, "s:\n  - a\n  - |\n    x\n    y\n"),
             ("s:\n  - a\n", true, "s:\n  - |\n    x\n    y\n"),
+            (
+                "s:\n  - a  # c\n  - b\n",
+                true,
+                "s:\n  - |  # c\n    x\n    y\n  - b\n",
+            ),
+            ("- a # c\n", true, "- | # c\n  x\n  y\n"),
         ] {
             let doc = Document::from_str(src).unwrap();
             let seq = doc
@@ -1775,6 +1779,7 @@ mod tests {
             assert_eq!(doc.to_string(), expected, "{src:?}");
             validate_tree(doc.as_node().unwrap()).unwrap();
             roundtrip_ok(doc.as_node().unwrap()).unwrap();
+            assert_parser_shaped(&doc);
         }
     }
 

@@ -1873,6 +1873,16 @@ block_map:
     }
 
     #[test]
+    fn test_multiline_str_is_parser_shaped() {
+        let doc = Document::from_str("a: 1  # c\nb: 2\n").unwrap();
+        doc.set("a", "x\ny\n");
+        doc.set("c", String::from("x\n\n"));
+        assert_cst_ok(&doc);
+        crate::debug::assert_parser_shaped(&doc);
+        assert_eq!(doc.to_string(), "a: |  # c\n  x\n  y\nb: 2\nc: |+\n  x\n\n");
+    }
+
+    #[test]
     fn test_option_none_emits_null() {
         let doc = Document::from_str("key: value\n").unwrap();
         doc.as_mapping().unwrap().set("key", None::<&str>);

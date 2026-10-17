@@ -377,6 +377,9 @@ impl Mapping {
     ///
     /// Fields not in the order list will appear after the ordered fields,
     /// in their original relative order.
+    ///
+    /// An alias that ends up before the node it refers to becomes a copy of
+    /// it, anchor included, and the node an alias where it can.
     pub fn reorder_fields<I, K>(&self, order: I)
     where
         I: IntoIterator<Item = K>,
@@ -418,7 +421,10 @@ impl Mapping {
         }
         new_children.extend(trailing);
 
-        crate::nodes::replace_children(&self.0, 0..all.len(), new_children);
+        crate::nodes::kept_aliases::keeping_aliases_moved(&self.0, None, || {
+            crate::nodes::replace_children(&self.0, 0..all.len(), new_children);
+            None
+        });
     }
 }
 
@@ -1054,6 +1060,8 @@ impl Mapping {
     /// with a newly built entry at the **same position** (the `index` argument is
     /// ignored). Surrounding whitespace in the file is preserved, but the entry
     /// node itself is rebuilt (comments attached to the old entry may be lost).
+    /// An anchor on the old value stays on the new one, as with
+    /// [`set`](Self::set).
     /// If `index` is out of bounds, the entry is appended at the end.
     pub fn insert_at_index_preserving(
         &self,
@@ -1068,21 +1076,47 @@ impl Mapping {
     }
 
     /// Replace `old`, an entry of this mapping, with a new entry built the
-    /// way `set` builds one, in the same place.
+    /// way `set` builds one, in the same place. As with `set`, an anchor on
+    /// the old value goes on the new one unless that is an alias.
     fn replace_entry(&self, old: &SyntaxNode, key: impl crate::AsYaml, value: impl crate::AsYaml) {
-        crate::nodes::kept_aliases::keeping_aliases(old, None, || {
-            self.splice_in_entry(old, key, value);
-            None
+        let kept = MappingEntry::cast(old.clone())
+            .and_then(|e| e.value())
+            .filter(|_| value.kind() != YamlKind::Alias)
+            .and_then(|v| held_anchor_token(&v));
+        let anchor = kept.as_ref().map(|t| t.text().to_string());
+        crate::nodes::kept_aliases::keeping_aliases(old, kept, || {
+            // The entry is built without the value's anchor; putting the
+            // value in again settles which anchor it gets, as in set_value.
+            let entry = MappingEntry(self.splice_in_entry(old, key, &value));
+            self.put_value(&entry, &value, anchor.as_deref());
+            entry.value()
         });
     }
 
-    /// The edit of [`replace_entry`](Self::replace_entry).
+    /// Replace the value of `entry`, an entry of this mapping, with `value`
+    /// under `anchor`, as `set` does.
+    pub(super) fn put_value(
+        &self,
+        entry: &MappingEntry,
+        value: impl crate::AsYaml,
+        anchor: Option<&str>,
+    ) {
+        let flow_context = self.is_flow_style();
+        let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
+        match flow.and_then(|q| flow_form(&value, 2, q)) {
+            Some(flow) => entry.replace_value_under(flow, flow_context, anchor),
+            None => entry.replace_value_under(&value, flow_context, anchor),
+        }
+    }
+
+    /// The edit of [`replace_entry`](Self::replace_entry), without the
+    /// kept anchor. Returns the new entry.
     fn splice_in_entry(
         &self,
         old: &SyntaxNode,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-    ) {
+    ) -> SyntaxNode {
         let flow_context = self.is_flow_style();
         let new_entry = MappingEntry::new_at_indent(
             key,
@@ -1121,6 +1155,7 @@ impl Mapping {
         self.0
             .splice_children(i..i + 1, vec![new_entry.clone().into()]);
         hand_line_break_to_mapping(&new_entry);
+        new_entry
     }
 
     /// Remove a key-value pair, returning the removed entry.
@@ -1184,7 +1219,7 @@ impl Mapping {
     }
 
     /// The edit of [`remove_entry_at`](Self::remove_entry_at).
-    fn splice_out_entry(
+    pub(super) fn splice_out_entry(
         &self,
         children: &[rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>],
         i: usize,

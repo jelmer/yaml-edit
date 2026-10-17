@@ -289,3 +289,46 @@ fn new_tagged_key_keeps_anchor() {
         value.get_resolved("x").unwrap()
     );
 }
+
+#[test]
+fn insert_at_index_preserving_keeps_anchor_like_set() {
+    let cases: [(&str, yaml_edit::YamlNode, &str); 6] = [
+        (
+            "b: &x 2\nc: *x\n",
+            node_from("k: 6\n", "k"),
+            "b: &x 6\nc: *x\n",
+        ),
+        (
+            "b: &x\n  d: 1\nc: *x\n",
+            node_from("k: 6\n", "k"),
+            "b: &x 6\nc: *x\n",
+        ),
+        (
+            "{b: &x 2, c: *x}\n",
+            node_from("k: 6\n", "k"),
+            "{b: &x 6, c: *x}\n",
+        ),
+        (
+            "b: !!int &x 2\nc: *x\n",
+            node_from("k: &y 5\n", "k"),
+            "b: &x 5\nc: *x\n",
+        ),
+        ("b: 2\n", node_from("k: &y 5\n", "k"), "b: &y 5\n"),
+        (
+            "a: &z 0\nb: &x 2\nc: *x\n",
+            node_from("k: *z\n", "k"),
+            "a: &z 0\nb: *z\nc: &x 2\n",
+        ),
+    ];
+    for (source, value, expected) in cases {
+        let doc = Document::from_str(source).unwrap();
+        doc.as_mapping().unwrap().set("b", &value);
+        assert_edited(&doc, expected);
+
+        let doc = Document::from_str(source).unwrap();
+        doc.as_mapping()
+            .unwrap()
+            .insert_at_index_preserving(0, "b", &value);
+        assert_edited(&doc, expected);
+    }
+}

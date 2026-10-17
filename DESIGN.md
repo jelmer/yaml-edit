@@ -341,12 +341,12 @@ because they would change every other alias of the same anchor;
 `AliasPolicy::Follow` writes to the anchored node and `AliasPolicy::Expand`
 replaces the alias with an independent copy, built as CST.
 
-Replacing a value (`Mapping::set`, `Sequence::set`, `set_path`) keeps the
-old value's anchor on the new one, so aliases to it still resolve. A new
-value that is a node with an anchor of its own keeps it only if the old
-value had none: the document's aliases refer to the old anchor, and the
-node the value was copied from keeps its own. A node passed as a new key
-keeps its anchor too.
+Replacing a value (`Mapping::set`, `Sequence::set`, `set_path`,
+`insert_at_index_preserving`) keeps the old value's anchor on the new one,
+so aliases to it still resolve. A new value that is a node with an anchor
+of its own keeps it only if the old value had none: the document's aliases
+refer to the old anchor, and the node the value was copied from keeps its
+own. A node passed as a new key keeps its anchor too.
 
 Other anchors in a node that is removed or replaced (`remove`, `clear`,
 `set`, `set_path`, `remove_path`, `rename_key`, ...) go with it, and so
@@ -361,9 +361,29 @@ back to `a`. Anchors within the copy that would take over aliases
 referring to another node are left off it. An alias within the copy that
 would then refer to the wrong node is in turn replaced with a copy, which
 keeps only the anchors that aliases in it use. The shared helper for all
-of this is `nodes::kept_aliases::keeping_aliases`. An alias with a tag or
-anchor of its own, which the parser tolerates though YAML does not, has no
-room for the copy's anchor; the edit panics before changing anything.
+of this is `nodes::kept_aliases::keeping_aliases`.
+
+An alias with a tag or anchor of its own, which the parser tolerates though
+YAML does not, passes them on to its copy, which then goes without the
+anchor it was copied with: a tag would change what later aliases to that
+anchor refer to, and a node has room for one anchor only. Later aliases get
+copies of their own. `k: !t *a` gives `k: !t 1` and `k: &b *a` gives
+`k: &b 1`. Where that cannot be done, because the alias is a key or both it
+and the copied node have a tag, the edit panics before changing anything.
+
+Moving entries (`reorder_fields`, and `move_after`/`move_before` given the
+entry's own value) keeps every alias resolving to the node it did. An alias
+that ends up before that node becomes a copy of it, anchor included, and
+the node becomes an alias to the copy: `a: &x 1\nb: *x\n` reordered to
+`b, a` gives `b: &x 1\na: *x\n`. The node stays as it is, a copy with its
+own anchor, if it is a key, holds other anchors, or another anchor with
+its name comes between. An alias that ends up after another anchor with
+its name becomes a copy, with the anchor only if later aliases need it.
+An alias that cannot be
+replaced with a copy (see above) makes the edit panic, after putting the
+document back as it was. `move_after`/`move_before` given another value
+remove the old entry as `remove` does. Sequences have no reordering
+methods.
 
 An alias resolves to the closest preceding definition of its anchor in the
 same document, as the spec requires. In `<<` merge keys only alias nodes are

@@ -189,7 +189,7 @@ pub(super) fn is_block_scalar(source: &SyntaxNode) -> bool {
 /// inside its parent VALUE, the anchor is preserved on the key line so
 /// aliases still resolve. Returns the new VALUE node plus whether it ends
 /// with a NEWLINE.
-pub(super) fn build_block_value_node(source: &SyntaxNode, target: usize) -> (SyntaxNode, bool) {
+pub(crate) fn build_block_value_node(source: &SyntaxNode, target: usize) -> (SyntaxNode, bool) {
     if source.kind() == SyntaxKind::TAGGED_NODE {
         return build_tagged_value_node(source, target);
     }
@@ -208,6 +208,8 @@ pub(super) fn build_block_value_node(source: &SyntaxNode, target: usize) -> (Syn
     let mut value_builder = GreenNodeBuilder::new();
     value_builder.start_node(SyntaxKind::VALUE.into());
     // "key: &anchor" - a leading space then the anchor sits on the key line.
+    // TODO: the parser keeps the space before an anchor, block scalar or tag
+    // at MAPPING_ENTRY level, not inside VALUE.
     if let Some(a) = anchor.as_deref() {
         value_builder.token(SyntaxKind::WHITESPACE.into(), " ");
         value_builder.token(SyntaxKind::ANCHOR.into(), a);

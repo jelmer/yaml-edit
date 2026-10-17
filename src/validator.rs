@@ -1207,9 +1207,10 @@ impl Validator {
     /// The parser reads `a: ,b`, `- ]` and `[a, - b]` as plain scalars, but
     /// none can start one: `,`, `]`, `}`, `%` and the reserved `@` and `` ` ``
     /// never can, and a `-` can only
-    /// when a safe character follows it, as in `-1`. Outside a flow
-    /// collection a following space makes it a block sequence entry
-    /// instead, so only flow context needs checking (G5U8 is `[-, -]`).
+    /// when a safe character follows it, as in `-1` (G5U8 is `[-, -]`).
+    /// Outside a flow collection a `- ` usually opens a block sequence
+    /// entry, but after a tag or anchor on the same line the parser reads
+    /// it as a plain scalar (SY6V is `&anchor - sequence entry`).
     fn check_plain_scalar_start(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         use crate::SyntaxKind;
 
@@ -1217,18 +1218,21 @@ impl Validator {
             return;
         };
         let text = first.text();
+        let unsafe_after_dash: &[char] = if in_flow_collection(node) {
+            &[' ', '\t', '\r', '\n', ',', '[', ']', '{', '}']
+        } else {
+            &[' ', '\t', '\r', '\n']
+        };
         // A `%` line is lexed as a DIRECTIVE, which
         // `check_directive_in_content` reports.
         let invalid = text.starts_with([',', ']', '}'])
             || (first.kind() == SyntaxKind::STRING && text.starts_with(['%', '@', '`']))
-            || (in_flow_collection(node)
-                && text.strip_prefix('-').is_some_and(|rest| {
-                    // `{-: 1}` is fine: the colon is safe, and the lexer
-                    // splits it off as its own token.
-                    (rest.is_empty()
-                        && first.next_token().map(|t| t.kind()) != Some(SyntaxKind::COLON))
-                        || rest.starts_with([' ', '\t', '\r', '\n', ',', '[', ']', '{', '}'])
-                }));
+            || text.strip_prefix('-').is_some_and(|rest| {
+                // `{-: 1}` is fine: the colon is safe, and the lexer
+                // splits it off as its own token.
+                (rest.is_empty() && first.next_token().map(|t| t.kind()) != Some(SyntaxKind::COLON))
+                    || rest.starts_with(unsafe_after_dash)
+            });
         if invalid {
             let start = text.chars().next().unwrap_or_default();
             violations.push(Violation::error_at(
@@ -1884,7 +1888,6 @@ impl Validator {
     /// Check for anchors at document level without proper node attachment
     ///
     /// Anchors should be attached to nodes (values), not floating at document level.
-    /// This is often the result of syntax errors like `&anchor - item`.
     fn check_document_level_anchors(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // Check for ANCHOR tokens that are direct children of DOCUMENT
         for child in node.children_with_tokens() {
@@ -1893,40 +1896,20 @@ impl Validator {
                     // An anchor at document level annotates the document's
                     // own node, which is the ordinary spelling of
                     // `&sequence\n- a\n` and `&flowseq [ ... ]`. It is
-                    // stranded only when nothing follows it, or when what
-                    // follows on its own line is a sequence entry, which
-                    // cannot sit there: `&anchor - sequence entry` is the
-                    // test suite's SY6V error.
-                    let mut annotates_a_node = false;
-                    let mut same_line = true;
-                    for sibling in token.siblings_with_tokens(rowan::Direction::Next).skip(1) {
-                        match sibling {
-                            rowan::NodeOrToken::Token(ref t)
-                                if t.kind() == crate::SyntaxKind::NEWLINE =>
-                            {
-                                same_line = false;
-                            }
-                            rowan::NodeOrToken::Node(ref n) => {
-                                let opens_an_entry = same_line
-                                    && n.kind() == crate::SyntaxKind::SCALAR
-                                    && n.text().to_string().starts_with("- ");
-                                if !opens_an_entry
-                                    && matches!(
-                                        n.kind(),
-                                        crate::SyntaxKind::MAPPING
-                                            | crate::SyntaxKind::SEQUENCE
-                                            | crate::SyntaxKind::SCALAR
-                                            | crate::SyntaxKind::TAGGED_NODE
-                                            | crate::SyntaxKind::ALIAS
-                                    )
-                                {
-                                    annotates_a_node = true;
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+                    // stranded only when nothing follows it.
+                    let annotates_a_node = token
+                        .siblings_with_tokens(rowan::Direction::Next)
+                        .filter_map(|sibling| sibling.into_node())
+                        .any(|n| {
+                            matches!(
+                                n.kind(),
+                                crate::SyntaxKind::MAPPING
+                                    | crate::SyntaxKind::SEQUENCE
+                                    | crate::SyntaxKind::SCALAR
+                                    | crate::SyntaxKind::TAGGED_NODE
+                                    | crate::SyntaxKind::ALIAS
+                            )
+                        });
                     if !annotates_a_node {
                         violations.push(Violation::error_at(
                             Rule::Other,
@@ -3502,6 +3485,15 @@ mod tests {
             ("a: @x\n", "Plain scalar cannot start with '@'", 3),
             ("- `x\n", "Plain scalar cannot start with '`'", 2),
             ("[%x]", "Plain scalar cannot start with '%'", 1),
+            ("!x - a\n", "Plain scalar cannot start with '-'", 3),
+            ("k: !x - a\n", "Plain scalar cannot start with '-'", 6),
+            ("- &a - a\n", "Plain scalar cannot start with '-'", 5),
+            ("- !x -\n", "Plain scalar cannot start with '-'", 5),
+            (
+                "&anchor - sequence entry\n",
+                "Plain scalar cannot start with '-'",
+                8,
+            ),
         ] {
             assert_eq!(
                 messages(yaml),
@@ -3517,6 +3509,10 @@ mod tests {
             "[a\n -]",
             "a: x%y@z`\n",
             "a: '@x'\n",
+            "a: b\n  - c\n",
+            "k: !x -1\n",
+            "- &a -a\n",
+            "!x -[a]\n",
         ] {
             assert_eq!(messages(yaml), vec![], "{yaml:?}");
         }

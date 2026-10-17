@@ -1199,7 +1199,8 @@ impl Validator {
     /// Check that a plain scalar does not open with an indicator.
     ///
     /// The parser reads `a: ,b`, `- ]` and `[a, - b]` as plain scalars, but
-    /// none can start one: `,`, `]` and `}` never can, and a `-` can only
+    /// none can start one: `,`, `]`, `}`, `%` and the reserved `@` and `` ` ``
+    /// never can, and a `-` can only
     /// when a safe character follows it, as in `-1`. Outside a flow
     /// collection a following space makes it a block sequence entry
     /// instead, so only flow context needs checking (G5U8 is `[-, -]`).
@@ -1210,7 +1211,10 @@ impl Validator {
             return;
         };
         let text = first.text();
+        // A `%` line is lexed as a DIRECTIVE, which
+        // `check_directive_in_content` reports.
         let invalid = text.starts_with([',', ']', '}'])
+            || (first.kind() == SyntaxKind::STRING && text.starts_with(['%', '@', '`']))
             || (in_flow_collection(node)
                 && text.strip_prefix('-').is_some_and(|rest| {
                     // `{-: 1}` is fine: the colon is safe, and the lexer
@@ -3287,6 +3291,9 @@ mod tests {
             ("[-1, - 2]", "Plain scalar cannot start with '-'", 5),
             ("[a, -]", "Plain scalar cannot start with '-'", 4),
             ("{- : 1}", "Plain scalar cannot start with '-'", 1),
+            ("a: @x\n", "Plain scalar cannot start with '@'", 3),
+            ("- `x\n", "Plain scalar cannot start with '`'", 2),
+            ("[%x]", "Plain scalar cannot start with '%'", 1),
         ] {
             assert_eq!(
                 messages(yaml),
@@ -3294,7 +3301,15 @@ mod tests {
                 "{yaml:?}"
             );
         }
-        for yaml in ["[-1, -a]", "{-: 1}", "a: x]\n", "a: x,y\n", "[a\n -]"] {
+        for yaml in [
+            "[-1, -a]",
+            "{-: 1}",
+            "a: x]\n",
+            "a: x,y\n",
+            "[a\n -]",
+            "a: x%y@z`\n",
+            "a: '@x'\n",
+        ] {
             assert_eq!(messages(yaml), vec![], "{yaml:?}");
         }
     }

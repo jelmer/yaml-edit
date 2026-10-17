@@ -660,6 +660,40 @@ mod tests {
     }
 
     #[test]
+    fn test_mapping_entry_byte_range() {
+        let text = "a: 1  # one\nbb: 2\n";
+        let doc = Document::from_str(text).unwrap();
+        let entries: Vec<_> = doc.as_mapping().unwrap().entries().collect();
+
+        let ranges: Vec<_> = entries.iter().map(|e| e.byte_range()).collect();
+        assert_eq!(
+            ranges,
+            vec![TextPosition::new(0, 12), TextPosition::new(12, 18)]
+        );
+        assert_eq!(entries[1].start_position(text), LineColumn::new(2, 1));
+    }
+
+    #[test]
+    fn test_yaml_node_byte_range() {
+        let text = "- foo  # c\n- &x [1, 2]\n- !t bar\n";
+        let doc = Document::from_str(text).unwrap();
+        let ranges: Vec<_> = doc
+            .as_sequence()
+            .unwrap()
+            .values()
+            .map(|v| v.byte_range())
+            .collect();
+        assert_eq!(
+            ranges,
+            vec![
+                TextPosition::new(2, 5),
+                TextPosition::new(16, 22),
+                TextPosition::new(25, 31)
+            ]
+        );
+    }
+
+    #[test]
     fn test_empty_lines_positions() {
         let text = "a: 1\n\n\nb: 2";
 

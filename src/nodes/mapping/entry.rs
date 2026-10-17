@@ -701,4 +701,6 @@ impl MappingEntry {
     pub fn remove(self) {
         self.discard();
     }
+
+    crate::nodes::ast_node_spans!("mapping entry");
 }

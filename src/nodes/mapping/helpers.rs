@@ -232,6 +232,23 @@ pub(super) fn build_block_value_node(source: &SyntaxNode, target: usize) -> (Syn
     )
 }
 
+/// `value` built as a standalone node, if it has no node of its own but
+/// spans several lines (a non-empty `YamlValue` collection, or a tagged
+/// one), so it can be laid out like a block node from another CST.
+pub(super) fn built_block_node(value: &impl crate::AsYaml) -> Option<SyntaxNode> {
+    if value.as_node().is_some() {
+        return None;
+    }
+    let mut builder = GreenNodeBuilder::new();
+    builder.start_node(SyntaxKind::ROOT.into());
+    let ends_with_newline = value.build_content(&mut builder, 0, false);
+    builder.finish_node();
+    if value.is_inline() && !ends_with_newline {
+        return None;
+    }
+    SyntaxNode::new_root(builder.finish()).first_child()
+}
+
 /// True if `node` (any yaml value node) renders inline (same line as its key).
 pub(super) fn node_is_inline(node: &SyntaxNode) -> bool {
     match node.kind() {

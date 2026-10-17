@@ -5,7 +5,8 @@
 //! Split out of `nodes/mapping/mod.rs` unchanged.
 
 use super::helpers::{
-    build_block_value_node, find_key_line_comment, flow_form, source_anchor_text, value_is_block,
+    build_block_value_node, built_block_node, find_key_line_comment, flow_form, source_anchor_text,
+    value_is_block,
 };
 use super::{key_content_matches, MappingEntry};
 use crate::lex::SyntaxKind;
@@ -142,9 +143,11 @@ impl MappingEntry {
         // A col-0 mapping there would read as siblings of the key, and for
         // nested insertion (key_indent > 0) any col-0 content would be
         // parsed as escaping the parent's scope, so we must re-indent.
-        let block_source = (!flow_context && !value.is_inline())
-            .then(|| value.as_node())
-            .flatten()
+        let built = (!flow_context).then(|| built_block_node(&value)).flatten();
+        let block_source = value
+            .as_node()
+            .filter(|_| !flow_context && !value.is_inline())
+            .or(built.as_ref())
             .filter(|_| {
                 matches!(
                     value.kind(),
@@ -160,7 +163,7 @@ impl MappingEntry {
             // landing at column 0).
             .filter(|src| {
                 key_indent > 0
-                    || src.kind() == SyntaxKind::MAPPING
+                    || src.kind() != SyntaxKind::SEQUENCE
                     || crate::as_yaml::source_base_indent(src) > 0
                     || src.children().next().is_none()
             });
@@ -351,9 +354,13 @@ impl MappingEntry {
         // rescue any inline comment on the old value line). Flow context
         // (parent mapping is flow-style) means block content isn't valid
         // there, so we fall through to the default path.
-        let block_source = (!flow_context && !new_value.is_inline())
-            .then(|| new_value.as_node())
-            .flatten()
+        let built = (!flow_context)
+            .then(|| built_block_node(&new_value))
+            .flatten();
+        let block_source = new_value
+            .as_node()
+            .filter(|_| !flow_context && !new_value.is_inline())
+            .or(built.as_ref())
             .filter(|_| {
                 matches!(
                     new_value.kind(),

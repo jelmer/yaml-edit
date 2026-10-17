@@ -1732,10 +1732,16 @@ impl Validator {
             .or_else(|| {
                 // A compact mapping on a sequence entry's own line has no
                 // INDENT of its own (`- key: value\n  key2: value2\n`); its
-                // entries line up under the dash's gap. Take the column from
-                // the node's offset within its line.
+                // entries line up under the dash's gap. The same goes for one
+                // after an explicit `?` or `:`. Take the column from the
+                // node's offset within its line.
                 let parent = node.parent()?;
-                if parent.kind() != crate::SyntaxKind::SEQUENCE_ENTRY {
+                if !matches!(
+                    parent.kind(),
+                    crate::SyntaxKind::SEQUENCE_ENTRY
+                        | crate::SyntaxKind::KEY
+                        | crate::SyntaxKind::VALUE
+                ) {
                     return None;
                 }
                 Some(" ".repeat(token_column(&node.first_token()?)))
@@ -3499,6 +3505,27 @@ mod tests {
         ] {
             assert_eq!(located(yaml), vec![], "{yaml:?}");
         }
+    }
+
+    #[test]
+    fn test_compact_mapping_in_explicit_entry() {
+        for yaml in [
+            "? a: 1\n  b: 2\n",
+            "?   a: 1\n    b: 2\n",
+            "? x\n: a: 1\n  b: 2\n",
+            "- ? a: 1\n    b: 2\n  : c: 3\n    d: 4\n",
+        ] {
+            assert_eq!(located(yaml), vec![], "{yaml:?}");
+        }
+        assert_eq!(
+            located("? a: 1\n b: 2\n"),
+            vec![(
+                "Sibling block mapping entries have inconsistent indentation \
+                 (expected \"  \", found \" \")"
+                    .to_string(),
+                "2:1".to_string()
+            )]
+        );
     }
 
     #[test]

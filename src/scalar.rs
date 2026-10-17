@@ -699,7 +699,7 @@ impl ScalarValue {
     /// Whether `value` matches the finite part of the YAML 1.2 core schema
     /// `!!float` regex:
     /// `[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?`.
-    fn is_core_float(value: &str) -> bool {
+    pub(crate) fn is_core_float(value: &str) -> bool {
         let body = value.strip_prefix(['+', '-']).unwrap_or(value);
         let (mantissa, exponent) = match body.find(['e', 'E']) {
             Some(i) => (&body[..i], Some(&body[i + 1..])),
@@ -725,6 +725,15 @@ impl ScalarValue {
     pub(crate) fn is_legacy_octal(value: &str) -> bool {
         let body = value.strip_prefix(['+', '-']).unwrap_or(value);
         body.len() > 1 && body.starts_with('0') && all_digits(body, 8)
+    }
+
+    /// Whether `value` is a decimal with a leading zero and an 8 or 9 (`089`).
+    ///
+    /// YAML 1.2 reads it as an integer. To YAML 1.1 it is a string: it is not
+    /// bare octal, and 1.1 decimal has no leading zero.
+    pub(crate) fn is_leading_zero_decimal(value: &str) -> bool {
+        let body = value.strip_prefix(['+', '-']).unwrap_or(value);
+        body.len() > 1 && body.starts_with('0') && all_digits(body, 10) && !all_digits(body, 8)
     }
 
     /// Classify a plain (unquoted) scalar's text per the YAML 1.2 core

@@ -3826,6 +3826,28 @@ fn test_legacy_yaml_1_1_warnings() {
          Write `0o0` to keep the octal meaning"
     );
 
+    // A leading zero with an 8 or 9 is not 1.1 octal, and 1.1 decimal has no
+    // leading zero, so 1.1 reads it as a string.
+    let decimal = warn("n: 089\n");
+    assert_eq!(decimal.len(), 1);
+    assert_eq!(decimal[0].0, Rule::LegacyYaml11);
+    assert_eq!(decimal[0].1, Severity::Warning);
+    assert_eq!(
+        decimal[0].2,
+        "`089` is a string in YAML 1.1; YAML 1.2 reads it as the integer 89. \
+         Write `'089'` to keep the string meaning"
+    );
+    assert_eq!(
+        warn("n: -0789\n")[0].2,
+        "`-0789` is a string in YAML 1.1; YAML 1.2 reads it as the integer -789. \
+         Write `'-0789'` to keep the string meaning"
+    );
+    assert_eq!(
+        warn("n: +09\n")[0].2,
+        "`+09` is a string in YAML 1.1; YAML 1.2 reads it as the integer 9. \
+         Write `'+09'` to keep the string meaning"
+    );
+
     // The 1.1 booleans are already strings here, but a 1.1 reader differs.
     assert_eq!(warn("a: yes\n").len(), 1);
     assert_eq!(warn("a: OFF\n").len(), 1);
@@ -3839,6 +3861,9 @@ fn test_legacy_yaml_1_1_warnings() {
         "a: true\n",
         "z: 0\n",
         "f: 0.5\n",
+        "n: 89\n",
+        "n: 0x89\n",
+        "n: '089'\n",
     ] {
         assert_eq!(warn(clean), vec![], "{clean:?}");
     }

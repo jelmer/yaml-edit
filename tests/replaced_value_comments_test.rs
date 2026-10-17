@@ -132,10 +132,16 @@ fn mapping_set_block_over_commented_value() {
 #[test]
 fn sequence_set_over_commented_value() {
     for (src, expected) in [
-        ("- x: 1  # c\n- 2\n", "- 5\n- 2\n"),
-        ("- - 1  # c\n  - 2\n- 3\n", "- 5\n- 3\n"),
+        ("- x: 1  # c\n- 2\n", "- 5  # c\n- 2\n"),
+        ("- x: 1  # c\n", "- 5  # c\n"),
+        ("- x: 1  # c\n  y: 2  # d\n- 3\n", "- 5  # c\n- 3\n"),
+        ("- x: |  # h\n    t\n- 2\n", "- 5  # h\n- 2\n"),
+        ("- - x: 1  # c\n- 2\n", "- 5  # c\n- 2\n"),
+        ("- - 1  # c\n  - 2\n- 3\n", "- 5  # c\n- 3\n"),
         ("- - 1\n  - 2  # c\n- 3\n", "- 5\n- 3\n"),
-        ("- - 1  # c\n- 3\n", "- 5\n- 3\n"),
+        ("- - 1  # c\n- 3\n", "- 5  # c\n- 3\n"),
+        ("- - 1  # c\n", "- 5  # c\n"),
+        ("- {x: 1,  # c\n  y: 2}\n- 3\n", "- 5  # c\n- 3\n"),
         ("- 1  # c\n- 2\n", "- 5  # c\n- 2\n"),
         ("- # c\n  - 1\n  # d\n- 2\n", "- 5 # c\n  # d\n- 2\n"),
         ("-  # c\n  x: 1\n- 2\n", "- 5  # c\n- 2\n"),
@@ -159,6 +165,8 @@ fn nested_sequence_set_over_commented_value() {
     for (src, expected) in [
         ("a:\n  - x: 1\n\nb: 2\n", "a:\n  - 5\n\nb: 2\n"),
         ("a:\n  - - 1\n    - 2  # c\nb: 2\n", "a:\n  - 5\nb: 2\n"),
+        ("a:\n  - x: 1  # c\n  - 2\n", "a:\n  - 5  # c\n  - 2\n"),
+        ("a:\n  - - 1  # c\nb: 2\n", "a:\n  - 5  # c\nb: 2\n"),
         ("a:\n  - |  # h\n    t\nb: 2\n", "a:\n  - 5  # h\nb: 2\n"),
         ("a:\n  - |  # h\n    t\n  - 2\n", "a:\n  - 5  # h\n  - 2\n"),
         ("a:\n  - |  # h\n    t\n", "a:\n  - 5  # h\n"),
@@ -172,7 +180,9 @@ fn nested_sequence_set_over_commented_value() {
 #[test]
 fn sequence_set_block_over_commented_value() {
     for (src, expected) in [
-        ("- x: 1  # c\n- 2\n", "- y: 2\n- 2\n"),
+        ("- x: 1  # c\n- 2\n", "-  # c\n  y: 2\n- 2\n"),
+        ("- - 1  # c\n- 3\n", "-  # c\n  y: 2\n- 3\n"),
+        ("- - 1  # c\n  - 2\n- 3\n", "-  # c\n  y: 2\n- 3\n"),
         ("- x: 1\n\n- 2\n", "- y: 2\n\n- 2\n"),
         ("- x: 1\n  # inner\n- 2\n", "- y: 2\n  # inner\n- 2\n"),
         ("-  # c\n  x: 1\n- 2\n", "-  # c\n  y: 2\n- 2\n"),
@@ -190,6 +200,8 @@ fn sequence_set_block_scalar_keeps_dash_line_comment() {
     for (src, expected) in [
         ("- 1  # c\n- 2\n", "- |  # c\n  text\n- 2\n"),
         ("-  # c\n  x: 1\n- 2\n", "- |  # c\n  text\n- 2\n"),
+        ("- x: 1  # c\n- 2\n", "- |  # c\n  text\n- 2\n"),
+        ("- - 1  # c\n- 2\n", "- |  # c\n  text\n- 2\n"),
     ] {
         let file = YamlFile::from_str(src).unwrap();
         sequence_at(&file, "").set(0, value_of("v: |\n  text\n"));

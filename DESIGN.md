@@ -275,16 +275,18 @@ DOCUMENT
 ## Comments around a replaced value
 
 Replacing a value (`Mapping::set` on an existing key, `Sequence::set`,
-`set_path`) removes the comments inside the old value along with it:
+`set_path`) keeps or removes the comments around the old value by
+position, the same for mappings and sequences. A comment on the entry's
+first line, the key's line after the colon or a sequence item's dash
+line, belongs to the entry and stays, even when the old value started
+on that line: `a: [1,  # c\n  2]`, `- x: 1  # c` and `- - 1  # c` set
+to `5` give `a: 5  # c` and `- 5  # c`. It moves after the new value, or
+onto the line where a new block value starts (`-  # c\n  y: 2`).
+Comments on the old value's later lines go with it:
 `a:  # c\n  # d\n  x: 1\n` with `a` set to `5` gives `a: 5  # c\n`.
-The comment on the key's line after the colon, or on a sequence item's
-dash line, belongs to the entry and stays, moving after the new value
-or onto the line where a new block value starts. A comment on that line
-that belongs to the first entry of a nested collection (`- x: 1  # c`)
-is part of the value. Comments, blank lines and indentation outside the
-old value are kept as they are, except that a comment line that would
-read as part of a new block scalar's body is moved back to the entry's
-column.
+Comments, blank lines and indentation outside the old value are kept as
+they are, except that a comment line that would read as part of a new
+block scalar's body is moved back to the entry's column.
 
 A block scalar whose header line has a comment of its own (`|  # src`)
 leaves no room on that line for the entry's comment, which then goes on

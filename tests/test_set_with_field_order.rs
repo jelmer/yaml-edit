@@ -957,3 +957,21 @@ fn test_set_with_field_order_explicit_keys_keeps_indent() {
         "outer:\n  ? b\n  : 1\n  ? c\n  : '1'\n  ? d\n  : 2\n"
     );
 }
+
+#[test]
+fn test_set_with_field_order_after_key_keeps_blank_lines_together() {
+    let yaml = YamlFile::from_str("a: 1\n\n\nc: 3\n").unwrap();
+    let mapping = yaml.document().unwrap().as_mapping().unwrap();
+    mapping.set_with_field_order("b", 2, ["a", "b", "c"]);
+    assert_file_cst_ok(&yaml);
+    assert_eq!(yaml.to_string(), "a: 1\nb: 2\n\n\nc: 3\n");
+}
+
+#[test]
+fn test_set_with_field_order_after_explicit_key_keeps_blank_lines_together() {
+    let yaml = YamlFile::from_str("? a\n: 1\n\n? c\n: 3\n").unwrap();
+    let mapping = yaml.document().unwrap().as_mapping().unwrap();
+    mapping.set_with_field_order("b", 2, ["a", "b", "c"]);
+    assert_file_cst_ok(&yaml);
+    assert_eq!(yaml.to_string(), "? a\n: 1\n? b\n: 2\n\n? c\n: 3\n");
+}

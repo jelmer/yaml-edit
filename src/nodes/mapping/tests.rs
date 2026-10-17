@@ -1544,7 +1544,7 @@ fn test_insert_root_level_collection_from_other_document() {
     assert!(doc.insert_after("name", "features", &features));
     assert_eq!(
         doc.to_string(),
-        "name: project\nfeatures:\n  - a\n  - b\ndatabase:\n  host: localhost\n  port: 5432\nversion: 1\n"
+        "name: project\nfeatures:\n- a\n- b\ndatabase:\n  host: localhost\n  port: 5432\nversion: 1\n"
     );
     debug::validate_tree(doc.syntax()).unwrap();
     debug::roundtrip_ok(doc.syntax()).unwrap();
@@ -1629,4 +1629,43 @@ fn test_document_rename_key_onto_existing_key() {
     let doc = crate::yaml::Document::from_str("a: 1\nb: 2\n").unwrap();
     assert!(doc.rename_key("a", "b"));
     assert_eq!(doc.to_string(), "b: 1\n");
+}
+
+/// Entries placed relative to another in a nested block mapping line up
+/// with their siblings.
+#[test]
+fn move_and_insert_relative_in_nested_mapping_keep_indent() {
+    use crate::Document;
+
+    let source = "outer:\n  a: 1\n  c: 3\nz: 0\n";
+    let cases: [(&dyn Fn(&super::Mapping) -> bool, &str); 5] = [
+        (
+            &|m| m.insert_after("a", "b", 2),
+            "outer:\n  a: 1\n  b: 2\n  c: 3\nz: 0\n",
+        ),
+        (
+            &|m| m.insert_before("a", "b", 2),
+            "outer:\n  b: 2\n  a: 1\n  c: 3\nz: 0\n",
+        ),
+        (
+            &|m| m.insert_after("c", "b", 2),
+            "outer:\n  a: 1\n  c: 3\n  b: 2\nz: 0\n",
+        ),
+        (
+            &|m| m.move_after("c", "a", 9),
+            "outer:\n  c: 3\n  a: 9\nz: 0\n",
+        ),
+        (
+            &|m| m.move_before("a", "c", 9),
+            "outer:\n  c: 9\n  a: 1\nz: 0\n",
+        ),
+    ];
+    for (edit, expected) in cases {
+        let doc = Document::from_str(source).unwrap();
+        assert!(edit(
+            &doc.as_mapping().unwrap().get_mapping("outer").unwrap()
+        ));
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), expected);
+    }
 }

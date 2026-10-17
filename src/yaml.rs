@@ -3843,9 +3843,9 @@ patterns:
         // Verify exact output - standard block-style sequence format
         let expected = r#"name: project
 features:
-  - feature1
-  - feature2
-  - feature3
+- feature1
+- feature2
+- feature3
 version: 1.0.0"#;
         assert_eq!(output.trim(), expected);
 
@@ -4186,9 +4186,8 @@ fifth: 5"#;
 
         let output = doc.to_string();
 
-        // Verify exact output (sets use 4-space indent)
         let expected =
-            "name: project\ntags: !!set\n    database: null\n    production: null\n    web: null\n";
+            "name: project\ntags: !!set\n  database: null\n  production: null\n  web: null\n";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
@@ -4250,8 +4249,7 @@ fifth: 5"#;
 
         let output = doc.to_string();
 
-        // Verify exact output (omap uses 4-space indent)
-        let expected = "name: project\nbuild_steps: !!omap\n    - compile: gcc main.c\n    - test: ./a.out test\n    - package: tar -czf app.tar.gz .\n";
+        let expected = "name: project\nbuild_steps: !!omap\n  - compile: gcc main.c\n  - test: ./a.out test\n  - package: tar -czf app.tar.gz .\n";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
@@ -4331,8 +4329,7 @@ fifth: 5"#;
 
         let output = doc.to_string();
 
-        // Verify exact output (pairs use 4-space indent)
-        let expected = "name: project\nconnections: !!pairs\n    - server: primary.db\n    - server: secondary.db\n    - server: tertiary.db\n    - timeout: 30\n";
+        let expected = "name: project\nconnections: !!pairs\n  - server: primary.db\n  - server: secondary.db\n  - server: tertiary.db\n  - timeout: 30\n";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
@@ -4484,7 +4481,7 @@ fifth: 5"#;
 
         let output = doc.to_string();
 
-        let expected = "name: project\nnested_data:\n  - item1\n  -\n    config:\n      - debug\n      - true\n      - 8080\n    name: service\n  - 42\n";
+        let expected = "name: project\nnested_data:\n- item1\n-\n  config:\n    - debug\n    - true\n    - 8080\n  name: service\n- 42\n";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");

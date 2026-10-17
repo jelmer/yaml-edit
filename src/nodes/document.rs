@@ -445,17 +445,6 @@ impl Document {
             .is_some_and(|mapping| mapping.move_before(before_key, key, value))
     }
 
-    /// Helper to build a VALUE wrapper node around any AsYaml value
-    pub(crate) fn build_value_content(
-        builder: &mut GreenNodeBuilder,
-        value: impl crate::AsYaml,
-        indent: usize,
-    ) {
-        builder.start_node(SyntaxKind::VALUE.into());
-        value.build_content(builder, indent, false);
-        builder.finish_node(); // VALUE
-    }
-
     /// Insert a key-value pair at a specific index.
     ///
     /// If the document already contains a mapping, delegates to
@@ -1210,7 +1199,7 @@ active: true
         let output1 = doc1.to_string();
         assert_eq!(
             output1,
-            "---\nname: project\nfeatures:\n  - auth\n  - api\n  - web\n"
+            "---\nname: project\nfeatures:\n- auth\n- api\n- web\n"
         );
 
         // Test Document.insert_before with mapping

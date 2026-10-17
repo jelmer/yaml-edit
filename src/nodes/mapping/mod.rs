@@ -12,7 +12,8 @@ use helpers::{
 
 use super::{
     ensure_trailing_newline, entry_key, entry_line_terminated, entry_value, fresh_token,
-    has_child_token, strip_flow_separator, trailing_newline_reachable, Lang, Sequence, SyntaxNode,
+    hand_line_break_to_mapping, has_child_token, strip_flow_separator, trailing_newline_reachable,
+    Lang, Sequence, SyntaxNode,
 };
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
@@ -743,6 +744,10 @@ impl Mapping {
         if count == 0 {
             crate::yaml::detach_empty_collection_placeholder_newline(&self.0, new_entry);
         }
+        last_mapping_entry
+            .iter()
+            .chain([new_entry])
+            .for_each(hand_line_break_to_mapping);
     }
 
     /// Set a key-value pair with field ordering support
@@ -863,6 +868,8 @@ impl Mapping {
             .collect();
         elements.push(new_entry.clone().into());
         self.0.splice_children(at..at, elements);
+        hand_line_break_to_mapping(after);
+        hand_line_break_to_mapping(new_entry);
     }
 
     /// Splice `new_entry` into this block mapping ahead of `before`.
@@ -876,10 +883,11 @@ impl Mapping {
             .iter()
             .position(|c| c.as_node() == Some(before))
             .expect("before was found in children earlier");
-        if let Some(prev) = children[..idx].iter().rev().find_map(|c| {
+        let prev = children[..idx].iter().rev().find_map(|c| {
             c.as_node()
                 .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-        }) {
+        });
+        if let Some(prev) = prev {
             ensure_trailing_newline(prev);
         }
         // The indent preceding `before` (the parent VALUE's for the first
@@ -889,6 +897,9 @@ impl Mapping {
             vec![new_entry.clone().into()];
         elements.extend(self.entry_indent_token().map(Into::into));
         self.0.splice_children(idx..idx, elements);
+        prev.into_iter()
+            .chain([new_entry])
+            .for_each(hand_line_break_to_mapping);
     }
 
     /// Detect the indentation level (in spaces) used by entries in this mapping.
@@ -1298,7 +1309,7 @@ impl Mapping {
     }
 
     /// Helper to create a MAPPING_ENTRY node from key and value strings
-    pub(super) fn create_mapping_entry(
+    fn create_mapping_entry(
         &self,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
@@ -1493,6 +1504,7 @@ impl Mapping {
         };
 
         let mut new_elements = Vec::new();
+        let mut prev_entry = None;
 
         if insert_pos > 0 {
             // Give the previous entry its own trailing NEWLINE so
@@ -1513,6 +1525,7 @@ impl Mapping {
                 if let rowan::NodeOrToken::Node(prev) = prev_node {
                     if prev.kind() == SyntaxKind::MAPPING_ENTRY {
                         ensure_trailing_newline(prev);
+                        prev_entry = Some(prev.clone());
                     }
                 } else if let rowan::NodeOrToken::Token(t) = prev_node {
                     if t.kind() != SyntaxKind::NEWLINE {
@@ -1523,7 +1536,7 @@ impl Mapping {
         }
 
         // Add the new entry
-        new_elements.push(new_entry.0.into());
+        new_elements.push(new_entry.0.clone().into());
 
         // Inserting before an existing entry hands the new entry the indent
         // that already precedes it, so the displaced entry needs a fresh one.
@@ -1541,6 +1554,10 @@ impl Mapping {
 
         // Insert at the calculated position
         self.0.splice_children(insert_pos..insert_pos, new_elements);
+        prev_entry
+            .iter()
+            .chain([&new_entry.0])
+            .for_each(hand_line_break_to_mapping);
     }
 
     crate::nodes::ast_node_spans!("mapping");

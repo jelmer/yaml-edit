@@ -710,14 +710,7 @@ impl Mapping {
         };
 
         let mut new_elements = Vec::new();
-        // When the mapping's last line is a comment, the parser leaves that
-        // line's INDENT here (and the comment in the parent). It belongs to
-        // the comment line, so the new entry goes in front of it.
-        let insert_pos = if self
-            .0
-            .last_child_or_token()
-            .is_some_and(|c| c.kind() == SyntaxKind::INDENT)
-        {
+        let insert_pos = if self.ends_with_lifted_comment_indent() {
             count - 1
         } else {
             count
@@ -902,27 +895,36 @@ impl Mapping {
     /// Returns `0` for root-level mappings where entries have no leading indentation.
     pub fn detect_indentation_level(&self) -> usize {
         // Look for an INDENT token that precedes an entry inside this mapping.
-        // For a multi-entry mapping the parser stores that column here. An
-        // INDENT introducing a COMMENT says nothing about where keys sit, so
-        // skip those: comments may be indented arbitrarily.
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        for (i, child) in children.iter().enumerate() {
-            if let Some(token) = child.as_token() {
-                if token.kind() == SyntaxKind::INDENT {
-                    let introduces_comment = children[i + 1..]
-                        .iter()
-                        .find(|c| !matches!(c.kind(), SyntaxKind::WHITESPACE))
-                        .is_some_and(|c| c.kind() == SyntaxKind::COMMENT);
-                    if !introduces_comment {
-                        return token.text().len();
-                    }
-                }
-            }
-        }
-        // Single-entry mapping (or empty): the column of the first entry
-        // isn't stored here, it's the INDENT that precedes the MAPPING node
-        // in its parent's VALUE. Fall back to that.
-        crate::as_yaml::source_base_indent(&self.0)
+        // For a multi-entry mapping the parser stores that column here. INDENTs
+        // of comment or blank lines say nothing about where keys sit: those
+        // lines may be indented arbitrarily.
+        // For a single-entry (or empty) mapping the column isn't stored here,
+        // it's the INDENT that precedes the MAPPING node in its parent's
+        // VALUE. Fall back to that.
+        self.0
+            .children_with_tokens()
+            .filter_map(|c| c.into_token())
+            .find(|t| {
+                t.kind() == SyntaxKind::INDENT
+                    && t.next_sibling_or_token()
+                        .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+            })
+            .map_or_else(
+                || crate::as_yaml::source_base_indent(&self.0),
+                |t| t.text().len(),
+            )
+    }
+
+    /// Whether this mapping ends in the INDENT of a comment line.
+    ///
+    /// When a block mapping's last line is a comment, the parser leaves that
+    /// line's INDENT here and lifts the comment itself to an ancestor. The
+    /// INDENT may be wider than the keys' column. New entries go in front of
+    /// it, leaving it to the comment.
+    fn ends_with_lifted_comment_indent(&self) -> bool {
+        self.0
+            .last_child_or_token()
+            .is_some_and(|c| c.kind() == SyntaxKind::INDENT)
     }
 
     /// The child position of the entry whose key matches `entry`'s, if any.
@@ -1451,10 +1453,13 @@ impl Mapping {
         }
 
         // Determine where to insert
+        let child_count = self.0.children_with_tokens().count();
         let insert_pos = if actual_index < entry_positions.len() {
             entry_positions[actual_index]
+        } else if self.ends_with_lifted_comment_indent() {
+            child_count - 1
         } else {
-            self.0.children_with_tokens().count()
+            child_count
         };
 
         let mut new_elements = Vec::new();
@@ -1493,13 +1498,7 @@ impl Mapping {
         // Inserting before an existing entry hands the new entry the indent
         // that already precedes it, so the displaced entry needs a fresh one.
         // Appending at the end has no such donor: the indent goes in front.
-        // A trailing INDENT is a donor too: it belongs to a comment line
-        // that the parser lifted out of this mapping.
-        let displaces_entry = insert_pos < self.0.children_with_tokens().count()
-            || self
-                .0
-                .last_child_or_token()
-                .is_some_and(|c| c.kind() == SyntaxKind::INDENT);
+        let displaces_entry = actual_index < entry_positions.len();
         let indent_level = self.detect_indentation_level();
         if indent_level > 0 {
             let token = fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level));

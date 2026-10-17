@@ -1474,6 +1474,30 @@ mod tests {
     }
 
     #[test]
+    fn test_sequence_set_scalar_over_commented_block() {
+        use crate::debug::{roundtrip_ok, tree_to_string, validate_tree};
+        use crate::{AsYaml, Document};
+
+        for (src, expected) in [
+            ("-  # c\n  x: 1\n- 2\n", "-  # c\n  5\n- 2\n"),
+            ("- # c\n  - 1\n", "- # c\n  5\n"),
+        ] {
+            let doc = Document::from_str(src).unwrap();
+            assert!(doc.as_sequence().unwrap().set(0, 5));
+            let node = doc.as_node().unwrap();
+            validate_tree(node).unwrap();
+            roundtrip_ok(node).unwrap();
+            assert_eq!(doc.to_string(), expected, "{src:?}");
+            let reparsed = Document::from_str(expected).unwrap();
+            assert_eq!(
+                tree_to_string(node),
+                tree_to_string(reparsed.as_node().unwrap()),
+                "{src:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_sequence_set_block_mapping_adds_no_blank_line() {
         use crate::debug::{roundtrip_ok, validate_tree};
         use crate::{AsYaml, Document};

@@ -221,3 +221,14 @@ fn renaming_a_plain_key_stays_inline() {
     assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "z: 1\nb: 2\n");
 }
+
+#[test]
+fn scalar_over_commented_block_keeps_the_question_mark_separate() {
+    use std::str::FromStr;
+    use yaml_edit::YamlFile;
+
+    let doc = YamlFile::from_str("? a\n:  # c\n  x: 1\nb: 2\n").unwrap();
+    doc.document().unwrap().as_mapping().unwrap().set("a", 5);
+    assert_file_cst_ok(&doc);
+    assert_eq!(doc.to_string(), "? a\n: 5  # c\nb: 2\n");
+}

@@ -479,24 +479,26 @@ impl MappingEntry {
             return;
         };
 
-        // A key-line comment of the old block VALUE (`k:  # note\n  - block`)
-        // has the whitespace before it, and possibly the comment itself,
-        // before VALUE. Detach them: the new inline `new_value_node`
-        // already carries the rescued comment inside itself. Leaving the
-        // old tokens would duplicate the comment and - since comments
-        // extend to end of line - swallow the new value.
+        // Right after the COLON of an old block VALUE there is only trailing
+        // whitespace and possibly a key-line comment (`k:  # note\n  - block`),
+        // never a value separator. Detach them: the new inline
+        // `new_value_node` already carries the rescued comment inside
+        // itself. Leaving the old tokens would duplicate the comment and -
+        // since comments extend to end of line - swallow the new value.
+        // Whitespace before the COLON (after `?`, or in `k :`) stays.
         let stale: Vec<_> = self
             .0
             .children_with_tokens()
             .take(value_idx)
-            .filter_map(|c| c.into_token())
-            .filter(|t| matches!(t.kind(), SyntaxKind::WHITESPACE | SyntaxKind::COMMENT))
+            .skip_while(|c| c.kind() != SyntaxKind::COLON)
+            .skip(1)
+            .map_while(|c| {
+                c.into_token()
+                    .filter(|t| matches!(t.kind(), SyntaxKind::WHITESPACE | SyntaxKind::COMMENT))
+            })
             .collect();
-        if self.value_starts_with_comment() || stale.iter().any(|t| t.kind() == SyntaxKind::COMMENT)
-        {
-            for tok in stale {
-                tok.detach();
-            }
+        for tok in stale {
+            tok.detach();
         }
 
         // Swap VALUE (its index may have moved if we detached above).
@@ -523,6 +525,9 @@ impl MappingEntry {
 
         // Inline values don't own a trailing NEWLINE; ensure the entry has
         // one.
+        // TODO: for an explicit-key entry the parser keeps the line break,
+        // and a key-line comment with the whitespace before it, in the
+        // MAPPING after the entry rather than in it.
         if !self.ends_with_newline() {
             self.append(vec![fresh_token(SyntaxKind::NEWLINE, "\n")]);
         }

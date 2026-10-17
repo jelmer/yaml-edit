@@ -9,12 +9,15 @@
 //! - Binary (`0b1010`), signed hex (`-0x1F`), base 60 (`1:30`, `1:30.5`)
 //!   and numbers with underscores (`1_000`, `0x_1F`) were numbers, and are
 //!   now plain strings.
+//! - Leading-zero decimals with an 8 or 9 (`09`), `0o` octal (`0o17`) and
+//!   floats with an exponent but no `.` or no exponent sign (`1e3`,
+//!   `1.0e3`) were strings, and are now numbers.
 //!
 //! [`to_yaml_1_2`] rewrites them so the document keeps the value a YAML 1.1
 //! reader saw: `0755` becomes `0o755`, `yes` becomes `true`, `1:30`
-//! becomes `90` and `1_000` becomes `1000`. 1.2 has no signed octal, hex or
-//! binary, so `-0755` becomes the decimal `-493`. Everything else,
-//! formatting and comments included, is left alone.
+//! becomes `90`, `1_000` becomes `1000` and `09` becomes `'09'`. 1.2 has no
+//! signed octal, hex or binary, so `-0755` becomes the decimal `-493`.
+//! Everything else, formatting and comments included, is left alone.
 //!
 //! Mapping keys are rewritten too, so a 1.1 key `yes` becomes `true`.
 //!
@@ -26,6 +29,7 @@
 //! would rather decide per site.
 
 use crate::lex::SyntaxKind;
+use crate::scalar::{CoreScalarType, ScalarValue};
 use crate::yaml::{Document, SyntaxNode};
 use rowan::ast::AstNode;
 
@@ -46,6 +50,9 @@ pub struct Rewrite {
 /// still means 493. `flag: yes` meant true and becomes `flag: true`.
 ///
 /// A quoted scalar is already unambiguous, so it is never touched.
+///
+/// Run it once per document: the input is read as YAML 1.1, where the
+/// `0o755` it writes for `0755` is a string, so a second run quotes it.
 ///
 /// # Example
 ///
@@ -97,7 +104,7 @@ fn replacement_for(scalar: &SyntaxNode) -> Option<(String, SyntaxKind)> {
     }
     if !matches!(
         token.kind(),
-        SyntaxKind::INT | SyntaxKind::STRING | SyntaxKind::BOOL
+        SyntaxKind::INT | SyntaxKind::FLOAT | SyntaxKind::STRING | SyntaxKind::BOOL
     ) {
         return None;
     }
@@ -124,7 +131,33 @@ fn replacement_for(scalar: &SyntaxNode) -> Option<(String, SyntaxKind)> {
     match text {
         "yes" | "Yes" | "YES" | "on" | "On" | "ON" => Some(("true".into(), SyntaxKind::BOOL)),
         "no" | "No" | "NO" | "off" | "Off" | "OFF" => Some(("false".into(), SyntaxKind::BOOL)),
+        _ if yaml_1_1_string(text) => Some((format!("'{text}'"), SyntaxKind::STRING)),
         _ => None,
+    }
+}
+
+/// Whether a YAML 1.1 reader saw plain `text` as a string where the 1.2
+/// core schema resolves it to something else.
+///
+/// The 1.2 `!!bool` and `!!null` forms are all 1.1 booleans and nulls, and
+/// 1.2 hex, `.inf` and `.nan` are 1.1 numbers. That leaves, per the 1.1
+/// `!!int` and `!!float` regular expressions:
+///
+/// - a decimal with a leading zero and an 8 or 9 (`09`), which is not 1.1
+///   octal, while 1.1 decimal has no leading zero
+/// - `0o` octal, which 1.1 did not have
+/// - an exponent without a `.` (`1e3`) or without a sign (`1.0e3`), as 1.1
+///   floats need both
+fn yaml_1_1_string(text: &str) -> bool {
+    match ScalarValue::classify_plain(text) {
+        CoreScalarType::Integer => {
+            let body = text.strip_prefix(['+', '-']).unwrap_or(text);
+            body.starts_with("0o") || (body.starts_with('0') && body.contains(['8', '9']))
+        }
+        CoreScalarType::Float => text
+            .find(['e', 'E'])
+            .is_some_and(|i| !text[..i].contains('.') || !text[i + 1..].starts_with(['+', '-'])),
+        _ => false,
     }
 }
 

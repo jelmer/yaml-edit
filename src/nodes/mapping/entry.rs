@@ -12,7 +12,7 @@ use super::{key_content_matches, MappingEntry};
 use crate::as_yaml::{build_in, FlowQuoting};
 use crate::lex::SyntaxKind;
 use crate::nodes::replaced_value::{add_to_first_line, insert_comment_line_above};
-use crate::nodes::{entry_key, entry_value, fresh_token, Lang, SyntaxNode};
+use crate::nodes::{entry_key, entry_value, fresh_token, has_child_token, Lang, SyntaxNode};
 use crate::yaml::add_node_children_to;
 use rowan::GreenNodeBuilder;
 
@@ -312,6 +312,34 @@ impl MappingEntry {
             .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
     }
 
+    /// Give a block explicit key without a value (`? a`) the `:` line a
+    /// value goes on, at the column of the `?`.
+    fn add_explicit_value_indicator(&self) {
+        let has = |kind| has_child_token(&self.0, |k| k == kind);
+        if !has(SyntaxKind::QUESTION) || has(SyntaxKind::COLON) {
+            return;
+        }
+        let Some(value_idx) = self.value_index() else {
+            return;
+        };
+        // The key's line break, if it has one, now ends the `:` line.
+        let ends_line = self.0.text().to_string().ends_with('\n');
+        let mut tokens = Vec::new();
+        if !ends_line {
+            tokens.push(fresh_token(SyntaxKind::NEWLINE, "\n"));
+        }
+        let indent = self.indent_of_line();
+        if indent > 0 {
+            tokens.push(fresh_token(SyntaxKind::INDENT, &" ".repeat(indent)));
+        }
+        tokens.push(fresh_token(SyntaxKind::COLON, ":"));
+        tokens.push(fresh_token(SyntaxKind::WHITESPACE, " "));
+        self.insert_at(value_idx, tokens);
+        if ends_line {
+            self.append(vec![fresh_token(SyntaxKind::NEWLINE, "\n")]);
+        }
+    }
+
     /// Replace this entry's value with a block sequence or mapping from
     /// another CST. Emits the value on the line after the key, indented to
     /// this entry's nesting depth + 2, with the source's interior
@@ -433,6 +461,10 @@ impl MappingEntry {
 
     fn replace_value(&self, new_value: impl crate::AsYaml, flow_context: bool) {
         use crate::as_yaml::YamlKind;
+
+        if !flow_context {
+            self.add_explicit_value_indicator();
+        }
 
         // A block collection or block scalar coming from another CST goes
         // through set_block_value, which does targeted CST edits to swap

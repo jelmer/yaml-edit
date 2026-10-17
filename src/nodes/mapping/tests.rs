@@ -1750,3 +1750,53 @@ fn test_edit_single_pair_in_flow_sequence() {
         assert_edited(&yaml, expected);
     }
 }
+
+/// Giving a value to a block explicit key that has none adds the `:` line
+/// the value goes on.
+#[test]
+fn test_set_value_of_explicit_key_without_one() {
+    use crate::debug::assert_edited;
+    for (source, expected) in [
+        ("? a", "? a\n: 5"),
+        ("? a\n", "? a\n: 5\n"),
+        ("? a\nb: 1\n", "? a\n: 5\nb: 1\n"),
+        ("? a # c", "? a # c\n: 5"),
+        ("? a # c\nb: 1\n", "? a # c\n: 5\nb: 1\n"),
+    ] {
+        let yaml = YamlFile::from_str(source).unwrap();
+        yaml.document().unwrap().as_mapping().unwrap().set("a", 5);
+        assert_edited(&yaml, expected);
+    }
+    for (source, expected) in [
+        ("x:\n  ? a", "x:\n  ? a\n  : 5"),
+        ("x:\n  ? a\ny: 1\n", "x:\n  ? a\n  : 5\ny: 1\n"),
+    ] {
+        let yaml = YamlFile::from_str(source).unwrap();
+        let doc = yaml.document().unwrap();
+        doc.as_mapping()
+            .unwrap()
+            .get_mapping("x")
+            .unwrap()
+            .set("a", 5);
+        assert_edited(&yaml, expected);
+    }
+    let seq = || {
+        crate::Document::from_str("- 1\n- 2\n")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+    };
+    for (source, expected) in [
+        ("? a", "? a\n:\n  - 1\n  - 2\n"),
+        ("? a\n", "? a\n:\n  - 1\n  - 2\n"),
+        ("? a\nb: 1\n", "? a\n:\n  - 1\n  - 2\nb: 1\n"),
+    ] {
+        let yaml = YamlFile::from_str(source).unwrap();
+        yaml.document()
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .set("a", seq());
+        assert_edited(&yaml, expected);
+    }
+}

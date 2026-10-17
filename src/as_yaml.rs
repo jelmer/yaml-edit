@@ -91,186 +91,195 @@ pub trait AsYaml {
 
 /// Compare two [`AsYaml`] values for semantic equality.
 ///
-/// Semantic equality ignores formatting: `name`, `"name"`, and `'name'` all
-/// compare equal, as do mappings whose keys appear in a different order.
+/// Two nodes are equal when they have the same resolved tag and the same
+/// canonical value, as in the YAML 1.2 spec. Untagged plain scalars resolve
+/// through the core schema and quoted or block scalars are `!!str`, so
+/// `name`, `"name"`, `'name'` and `!!str name` all compare equal, as do
+/// `1`, `0x1` and `!!int 1`, while `1` and `'1'` do not. Mappings compare
+/// regardless of key order.
+///
 /// Both sides can be any combination of CST nodes and raw Rust values.
+/// Aliases are not resolved and never compare equal.
 pub fn yaml_eq<A, B>(a: &A, b: &B) -> bool
 where
     A: AsYaml + ?Sized,
     B: AsYaml + ?Sized,
 {
-    // If either side has a backing node, dispatch on its concrete kind. The
-    // node side goes first so the comparison stays symmetric.
-    if let Some(node) = a.as_node() {
-        return node_eq_rhs(node, b);
-    }
-    if let Some(node) = b.as_node() {
-        return node_eq_rhs(node, a);
-    }
-
-    // Both sides are raw - compare by kind, then decoded scalar string.
-    if a.kind() != b.kind() {
-        return false;
-    }
-    match (raw_scalar_str(a), raw_scalar_str(b)) {
-        (Some(sa), Some(sb)) => sa == sb,
+    match (to_syntax(a), to_syntax(b)) {
+        (Some(a), Some(b)) => node_eq(&a, &b),
         _ => false,
     }
 }
 
-/// Compare a CST node against any `AsYaml` right-hand side.
-fn node_eq_rhs<B: AsYaml + ?Sized>(node: &SyntaxNode, rhs: &B) -> bool {
+/// The node backing `v`, or for a raw value, the CST it builds.
+fn to_syntax<T: AsYaml + ?Sized>(v: &T) -> Option<SyntaxNode> {
     use crate::lex::SyntaxKind;
-    match node.kind() {
-        SyntaxKind::SCALAR => Scalar::cast(node.clone()).is_some_and(|s| scalar_eq_rhs(&s, rhs)),
-        SyntaxKind::MAPPING => Mapping::cast(node.clone()).is_some_and(|m| mapping_eq_rhs(&m, rhs)),
-        SyntaxKind::SEQUENCE => {
-            Sequence::cast(node.clone()).is_some_and(|s| sequence_eq_rhs(&s, rhs))
-        }
-        SyntaxKind::TAGGED_NODE => {
-            TaggedNode::cast(node.clone()).is_some_and(|t| tagged_eq_rhs(&t, rhs))
-        }
-        _ => false,
-    }
-}
-
-/// Extract the decoded scalar string from a raw (no-node) `AsYaml` value.
-fn raw_scalar_str<T: AsYaml + ?Sized>(v: &T) -> Option<String> {
-    if v.as_node().is_some() || v.kind() != YamlKind::Scalar {
-        return None;
+    if let Some(node) = v.as_node() {
+        return Some(node.clone());
     }
     let mut builder = rowan::GreenNodeBuilder::new();
-    v.build_content(&mut builder, 0, false);
-    let green = builder.finish();
-    let node = rowan::SyntaxNode::<crate::yaml::Lang>::new_root(green);
-    Scalar::cast(node.clone())
-        .map(|s| s.as_string())
-        .or_else(|| Some(node.text().to_string()))
+    builder.start_node(SyntaxKind::ROOT.into());
+    // Build in flow context: a multi-line string renders there as one
+    // double-quoted scalar rather than a literal block, whose trailing
+    // newline would otherwise make `"a\nb"` compare unequal to itself.
+    v.build_content(&mut builder, 0, true);
+    builder.finish_node();
+    SyntaxNode::new_root(builder.finish()).first_child()
 }
 
-/// Get the semantic type and normalized value of a scalar for YAML-level comparison.
-///
-/// Returns (type_kind, normalized_value) where normalized values are comparable:
-/// - Different integer formats (123, 0x7B, 0o173) normalize to same i64
-/// - Different null representations (null, ~, Null) all become "null"
-/// - Different boolean cases (true, True, TRUE) normalize to lowercase
-pub(crate) fn scalar_semantic_value(scalar: &Scalar) -> Option<(crate::lex::SyntaxKind, String)> {
+/// A node reduced to its resolved tag and the content the tag applies to.
+struct Resolved {
+    tag: String,
+    content: Content,
+}
+
+enum Content {
+    /// The canonical value of a scalar.
+    Scalar(String),
+    Mapping(Mapping),
+    Sequence(Sequence),
+}
+
+/// Spell `tag` in its `!!` shorthand when it is in the `tag:yaml.org,2002:`
+/// namespace, so both spellings compare equal.
+fn shorthand_tag(tag: &str) -> String {
+    match tag
+        .strip_prefix("!<tag:yaml.org,2002:")
+        .and_then(|t| t.strip_suffix('>'))
+    {
+        Some(name) => format!("!!{name}"),
+        None => tag.to_string(),
+    }
+}
+
+/// The resolved tag of a collection written with `tag`, if any.
+fn collection_tag(tag: Option<String>, default: &str) -> String {
+    match tag.as_deref() {
+        // The non-specific tag `!` resolves a collection by its kind.
+        None | Some("!") => default.to_string(),
+        Some(t) => shorthand_tag(t),
+    }
+}
+
+/// Resolve a scalar to its tag and canonical value.
+fn resolve_scalar(scalar: crate::scalar::ScalarValue) -> Resolved {
+    use crate::scalar::{ScalarType, ScalarValue};
+    let text = scalar.value();
+    let canonical = |parsed: Option<String>| parsed.unwrap_or_else(|| text.to_string());
+    let (tag, value) = match scalar.scalar_type() {
+        // TODO: integers outside the i64 range compare by spelling.
+        ScalarType::Integer => (
+            "!!int".to_string(),
+            canonical(ScalarValue::parse_integer(text).map(|i| i.to_string())),
+        ),
+        ScalarType::Float => (
+            "!!float".to_string(),
+            canonical(ScalarValue::parse_float(text).map(|f| f.to_string())),
+        ),
+        ScalarType::Boolean => (
+            "!!bool".to_string(),
+            canonical(ScalarValue::parse_bool(text).map(|b| b.to_string())),
+        ),
+        ScalarType::Null => ("!!null".to_string(), String::new()),
+        _ => {
+            // A scalar with the non-specific tag `!` is a string.
+            let tag = match scalar.tag().map(shorthand_tag) {
+                Some(t) if t != "!" => t,
+                _ => "!!str".to_string(),
+            };
+            (tag, text.to_string())
+        }
+    };
+    Resolved {
+        tag,
+        content: Content::Scalar(value),
+    }
+}
+
+/// Resolve a value node, or the KEY or VALUE wrapper holding one.
+fn resolve(node: &SyntaxNode) -> Option<Resolved> {
+    use crate::lex::SyntaxKind;
+    match node.kind() {
+        SyntaxKind::TAGGED_NODE => {
+            let tagged = TaggedNode::cast(node.clone())?;
+            match node.first_child() {
+                Some(content) => resolve_content(&content, tagged.tag()),
+                None => crate::scalar::ScalarValue::from_tagged(&tagged).map(resolve_scalar),
+            }
+        }
+        // A tag on an implicit block mapping key is a TAG token in the KEY
+        // itself rather than a TAGGED_NODE.
+        SyntaxKind::KEY | SyntaxKind::VALUE => {
+            let tag = node
+                .children_with_tokens()
+                .filter_map(|c| c.into_token())
+                .find(|t| t.kind() == SyntaxKind::TAG)
+                .map(|t| t.text().to_string());
+            let content = node.first_child()?;
+            match tag {
+                Some(_) => resolve_content(&content, tag),
+                None => resolve(&content),
+            }
+        }
+        _ => resolve_content(node, None),
+    }
+}
+
+/// Resolve an untagged node, or one whose tag `tag` was found outside it.
+fn resolve_content(node: &SyntaxNode, tag: Option<String>) -> Option<Resolved> {
     use crate::lex::SyntaxKind;
     use crate::scalar::ScalarValue;
-
-    // Get the first token to determine the lexical type
-    let token = scalar.0.first_token()?;
-    let mut kind = token.kind();
-    let text = token.text();
-
-    // A plain scalar can lex into multiple tokens when it starts with
-    // typed-looking content and then continues: `.999 a` becomes
-    // FLOAT(".999") + WHITESPACE + STRING("a"). The first token alone
-    // is not representative of the whole scalar's semantic type - the
-    // full text is `".999 a"`, which is a STRING. Classify the scalar
-    // by its combined text rather than the first token's kind when the
-    // scalar has more than one non-empty child token.
-    let extra_content = scalar
-        .0
-        .children_with_tokens()
-        .filter_map(|c| c.into_token())
-        .filter(|t| !t.text().is_empty())
-        .nth(1)
-        .is_some();
-    if extra_content {
-        kind = SyntaxKind::STRING;
+    match node.kind() {
+        SyntaxKind::SCALAR => {
+            let scalar = ScalarValue::from_scalar(&Scalar::cast(node.clone())?);
+            Some(resolve_scalar(match tag {
+                Some(tag) => scalar.with_resolved_tag(tag),
+                None => scalar,
+            }))
+        }
+        SyntaxKind::MAPPING => Some(Resolved {
+            tag: collection_tag(tag, "!!map"),
+            content: Content::Mapping(Mapping::cast(node.clone())?),
+        }),
+        SyntaxKind::SEQUENCE => Some(Resolved {
+            tag: collection_tag(tag, "!!seq"),
+            content: Content::Sequence(Sequence::cast(node.clone())?),
+        }),
+        _ => None,
     }
-
-    let normalized = match kind {
-        SyntaxKind::INT => {
-            // Normalize all integer representations to their numeric value
-            ScalarValue::parse_integer(text).map_or_else(|| text.to_string(), |v| v.to_string())
-        }
-        SyntaxKind::FLOAT => {
-            // Normalize float representations
-            ScalarValue::parse_float(text).map_or_else(|| text.to_string(), |v| v.to_string())
-        }
-        SyntaxKind::BOOL => {
-            // Normalize booleans to lowercase
-            text.to_lowercase()
-        }
-        SyntaxKind::NULL => {
-            // All null representations become "null"
-            "null".to_string()
-        }
-        SyntaxKind::STRING => {
-            // For strings, use the unescaped/unquoted value
-            scalar.as_string()
-        }
-        _ => {
-            // Block scalars, MERGE_KEY, etc. - use as_string()
-            scalar.as_string()
-        }
-    };
-
-    Some((kind, normalized))
 }
 
-fn scalar_eq_rhs<B: AsYaml + ?Sized>(lhs: &Scalar, rhs: &B) -> bool {
-    // Get or build the RHS scalar node
-    let rhs_scalar = if let Some(node) = rhs.as_node() {
-        let Some(scalar) = Scalar::cast(node.clone()) else {
-            return false;
-        };
-        scalar
-    } else {
-        // RHS is a raw AsYaml value (e.g., &str, &i64) - build it into a scalar
-        if rhs.kind() != YamlKind::Scalar {
-            return false;
-        }
-        // Build in flow context: a multi-line string renders there as one
-        // double-quoted scalar rather than a literal block, whose trailing
-        // newline would otherwise make `"a\nb"` compare unequal to itself.
-        let mut builder = rowan::GreenNodeBuilder::new();
-        rhs.build_content(&mut builder, 0, true);
-        let green = builder.finish();
-        let node = rowan::SyntaxNode::<crate::yaml::Lang>::new_root(green);
-        let Some(scalar) = Scalar::cast(node) else {
-            return false;
-        };
-        scalar
-    };
-
-    // Get semantic values for YAML-level comparison
-    let Some((lhs_kind, lhs_value)) = scalar_semantic_value(lhs) else {
-        return false;
-    };
-    let Some((rhs_kind, rhs_value)) = scalar_semantic_value(&rhs_scalar) else {
-        return false;
-    };
-
-    // For YAML semantic equality:
-    // - Types must match (STRING != INT even if text looks the same)
-    // - Normalized values must match (0x7B == 123, true == True)
-    lhs_kind == rhs_kind && lhs_value == rhs_value
+/// The resolved tag and canonical value of a scalar node, tagged or not,
+/// or of the scalar a KEY or VALUE wrapper holds.
+///
+/// Returns `None` for anything that is not a scalar.
+pub(crate) fn scalar_canonical(node: &SyntaxNode) -> Option<(String, String)> {
+    match resolve(node)? {
+        Resolved {
+            tag,
+            content: Content::Scalar(value),
+        } => Some((tag, value)),
+        _ => None,
+    }
 }
 
-fn mapping_eq_rhs<B: AsYaml + ?Sized>(lhs: &Mapping, rhs: &B) -> bool {
-    let Some(node) = rhs.as_node() else {
+/// Spec equality of two CST nodes.
+pub(crate) fn node_eq(a: &SyntaxNode, b: &SyntaxNode) -> bool {
+    let (Some(a), Some(b)) = (resolve(a), resolve(b)) else {
         return false;
     };
-    let Some(r) = Mapping::cast(node.clone()) else {
-        return false;
-    };
-    // pairs() yields raw KEY/VALUE wrapper nodes - peel them before comparing.
-    let peel = |m: &Mapping| -> Option<Vec<(YamlNode, YamlNode)>> {
-        m.pairs()
-            .map(|(k, v)| {
-                Some((
-                    YamlNode::from_syntax_peeled(k)?,
-                    YamlNode::from_syntax_peeled(v)?,
-                ))
-            })
-            .collect()
-    };
-    let (Some(lhs_pairs), Some(rhs_pairs)) = (peel(lhs), peel(&r)) else {
-        return false;
-    };
+    a.tag == b.tag
+        && match (&a.content, &b.content) {
+            (Content::Scalar(a), Content::Scalar(b)) => a == b,
+            (Content::Mapping(a), Content::Mapping(b)) => mapping_eq(a, b),
+            (Content::Sequence(a), Content::Sequence(b)) => sequence_eq(a, b),
+            _ => false,
+        }
+}
+
+fn mapping_eq(lhs: &Mapping, rhs: &Mapping) -> bool {
+    let lhs_pairs: Vec<_> = lhs.pairs().collect();
+    let rhs_pairs: Vec<_> = rhs.pairs().collect();
     if lhs_pairs.len() != rhs_pairs.len() {
         return false;
     }
@@ -281,41 +290,14 @@ fn mapping_eq_rhs<B: AsYaml + ?Sized>(lhs: &Mapping, rhs: &B) -> bool {
         let found = rhs_pairs
             .iter()
             .zip(&used)
-            .position(|((rk, rv), u)| !u && yaml_eq(lk, rk) && yaml_eq(lv, rv));
+            .position(|((rk, rv), u)| !u && node_eq(lk, rk) && node_eq(lv, rv));
         found.map(|i| used[i] = true).is_some()
     })
 }
 
-fn sequence_eq_rhs<B: AsYaml + ?Sized>(lhs: &Sequence, rhs: &B) -> bool {
-    let Some(node) = rhs.as_node() else {
-        return false;
-    };
-    let Some(r) = Sequence::cast(node.clone()) else {
-        return false;
-    };
-    let lhs_items: Vec<_> = lhs.items().collect();
-    let rhs_items: Vec<_> = r.items().collect();
-    if lhs_items.len() != rhs_items.len() {
-        return false;
-    }
+fn sequence_eq(lhs: &Sequence, rhs: &Sequence) -> bool {
     // items() already yields peeled content nodes.
-    lhs_items.iter().zip(rhs_items.iter()).all(|(l, r)| {
-        match (
-            YamlNode::from_syntax(l.clone()),
-            YamlNode::from_syntax(r.clone()),
-        ) {
-            (Some(l), Some(r)) => yaml_eq(&l, &r),
-            _ => false,
-        }
-    })
-}
-
-fn tagged_eq_rhs<B: AsYaml + ?Sized>(lhs: &TaggedNode, rhs: &B) -> bool {
-    let Some(node) = rhs.as_node() else {
-        return false;
-    };
-    TaggedNode::cast(node.clone())
-        .is_some_and(|r| lhs.tag() == r.tag() && lhs.as_string() == r.as_string())
+    lhs.len() == rhs.len() && lhs.items().zip(rhs.items()).all(|(l, r)| node_eq(&l, &r))
 }
 
 /// A type-erased handle to a CST node returned from navigation methods.
@@ -1636,5 +1618,137 @@ block_map:
         assert!(yaml_eq(&m.get("e").unwrap(), &m.get("f").unwrap()));
         assert!(!yaml_eq(&m.get("a").unwrap(), &m.get("e").unwrap()));
         assert!(yaml_eq(&m.get("b").unwrap(), &f64::INFINITY));
+    }
+
+    fn eq_values(yaml: &str, a: &str, b: &str) -> bool {
+        let doc = Document::from_str(yaml).unwrap();
+        let m = doc.as_mapping().unwrap();
+        let (a, b) = (m.get(a).unwrap(), m.get(b).unwrap());
+        let forward = yaml_eq(&a, &b);
+        assert_eq!(forward, yaml_eq(&b, &a));
+        forward
+    }
+
+    fn eq_docs(a: &str, b: &str) -> bool {
+        let (d1, d2) = (
+            Document::from_str(a).unwrap(),
+            Document::from_str(b).unwrap(),
+        );
+        let (m1, m2) = (d1.as_mapping().unwrap(), d2.as_mapping().unwrap());
+        let forward = yaml_eq(&m1, &m2);
+        assert_eq!(forward, yaml_eq(&m2, &m1));
+        forward
+    }
+
+    #[test]
+    fn test_yaml_eq_tagged_key() {
+        assert!(eq_docs("{a: 1}", "{!!str a: 1}"));
+        assert!(eq_docs("a: 1\n", "!!str a: 1\n"));
+        assert!(eq_docs("a: 1\n", "? !!str a\n: 1\n"));
+        assert!(!eq_docs("1: a\n", "!!str 1: a\n"));
+        assert!(eq_docs("'1': a\n", "!!str 1: a\n"));
+        assert!(eq_docs("1: a\n", "!!int 0x1: a\n"));
+    }
+
+    #[test]
+    fn test_yaml_eq_tagged_value() {
+        assert!(eq_docs("{a: 1}", "{a: !!int 1}"));
+        assert!(eq_docs("a: 1\n", "a: !!int\n  1\n"));
+        assert!(!eq_docs("a: 1\n", "a: !!str 1\n"));
+    }
+
+    #[test]
+    fn test_yaml_eq_tagged_scalars() {
+        let yaml = "hex: !!int 0x1\n\
+                    int: !!int 1\n\
+                    plain: 1\n\
+                    quoted: '1'\n\
+                    str: !!str 1\n\
+                    verbatim: !<tag:yaml.org,2002:int> 01\n\
+                    float: !!float 1\n\
+                    plainfloat: 1.0\n\
+                    nonspecific: ! 1\n\
+                    custom: !foo 1\n\
+                    custom2: !bar 1\n\
+                    bool: !!bool TRUE\n\
+                    plainbool: true\n\
+                    nulltag: !!null ~\n\
+                    plainnull:\n";
+        assert!(eq_values(yaml, "hex", "int"));
+        assert!(eq_values(yaml, "hex", "plain"));
+        assert!(eq_values(yaml, "verbatim", "plain"));
+        assert!(!eq_values(yaml, "plain", "quoted"));
+        assert!(eq_values(yaml, "str", "quoted"));
+        assert!(!eq_values(yaml, "str", "plain"));
+        assert!(eq_values(yaml, "float", "plainfloat"));
+        assert!(!eq_values(yaml, "float", "plain"));
+        assert!(eq_values(yaml, "nonspecific", "quoted"));
+        assert!(!eq_values(yaml, "custom", "quoted"));
+        assert!(!eq_values(yaml, "custom", "custom2"));
+        assert!(eq_values(yaml, "custom", "custom"));
+        assert!(eq_values(yaml, "bool", "plainbool"));
+        assert!(eq_values(yaml, "nulltag", "plainnull"));
+    }
+
+    #[test]
+    fn test_yaml_eq_tagged_scalar_raw() {
+        let doc = Document::from_str("a: !!int 0x1\nb: !!str 1\n").unwrap();
+        let m = doc.as_mapping().unwrap();
+        assert!(yaml_eq(&m.get("a").unwrap(), &1_i64));
+        assert!(!yaml_eq(&m.get("a").unwrap(), &"1"));
+        assert!(yaml_eq(&m.get("b").unwrap(), &"1"));
+        assert!(!yaml_eq(&m.get("b").unwrap(), &1_i64));
+    }
+
+    #[test]
+    fn test_yaml_eq_tagged_collections() {
+        let yaml = "map: !!map {a: 1}\n\
+                    plainmap: {a: 1}\n\
+                    custommap: !foo {a: 1}\n\
+                    set1: !!set {a, b}\n\
+                    set2: !!set {b, a}\n\
+                    set3: !!set {a, c}\n\
+                    seq: !!seq [1, 2]\n\
+                    plainseq: [1, 2]\n";
+        assert!(eq_values(yaml, "map", "plainmap"));
+        assert!(!eq_values(yaml, "custommap", "plainmap"));
+        assert!(eq_values(yaml, "set1", "set2"));
+        assert!(!eq_values(yaml, "set1", "set3"));
+        assert!(eq_values(yaml, "seq", "plainseq"));
+        assert!(!eq_values(yaml, "seq", "plainmap"));
+    }
+
+    #[test]
+    fn test_yaml_eq_cst_vs_raw_collections() {
+        use crate::value::YamlValue;
+        use crate::ScalarValue;
+        use std::collections::BTreeMap;
+
+        let doc = Document::from_str("{x: 1, y: 2}").unwrap();
+        let cst = doc.as_mapping().unwrap();
+        let raw = YamlValue::Mapping(BTreeMap::from([
+            ("x".to_string(), YamlValue::scalar(1_i64)),
+            ("y".to_string(), YamlValue::scalar(2_i64)),
+        ]));
+        assert!(yaml_eq(&cst, &raw));
+        assert!(yaml_eq(&raw, &cst));
+
+        let other = YamlValue::Mapping(BTreeMap::from([
+            ("x".to_string(), YamlValue::scalar(1_i64)),
+            ("y".to_string(), YamlValue::scalar("2")),
+        ]));
+        assert!(!yaml_eq(&cst, &other));
+        assert!(!yaml_eq(&raw, &other));
+        assert!(yaml_eq(&raw, &raw.clone()));
+
+        let doc = Document::from_str("[1, two]").unwrap();
+        let cst = doc.as_sequence().unwrap();
+        let raw = YamlValue::from_sequence(vec![
+            YamlValue::scalar(ScalarValue::parse("1")),
+            YamlValue::scalar("two"),
+        ]);
+        assert!(yaml_eq(&cst, &raw));
+        assert!(yaml_eq(&raw, &cst));
+        assert!(!yaml_eq(&cst, &YamlValue::from_sequence(vec![])));
     }
 }

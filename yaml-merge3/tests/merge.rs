@@ -646,3 +646,23 @@ fn changed_type_is_not_merged_by_line() {
     );
     assert_eq!(paths, vec![path(&["k"])]);
 }
+
+#[test]
+fn keys_added_at_the_same_place_ours_first() {
+    assert_eq!(
+        clean("a: 1\nz: 1\n", "a: 1\nb: 1\nz: 1\n", "a: 1\nc: 1\nz: 1\n"),
+        "a: 1\nb: 1\nc: 1\nz: 1\n"
+    );
+}
+
+#[test]
+fn keys_added_at_the_same_place_ours_first_in_theirs_order() {
+    assert_eq!(
+        clean(
+            "a: 1\nb: 1\nz: 1\n",
+            "a: 1\nx: 1\nb: 1\nz: 1\n",
+            "b: 1\na: 1\ny: 1\nz: 1\n"
+        ),
+        "b: 1\na: 1\nx: 1\ny: 1\nz: 1\n"
+    );
+}

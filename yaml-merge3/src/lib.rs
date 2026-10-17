@@ -610,16 +610,23 @@ fn key_order(slots: &[Slot]) -> Option<Vec<usize>> {
         return None;
     }
     Some(if order_t != order_b {
-        output_order(slots, |s| s.theirs, |s| s.ours)
+        output_order(slots, |s| s.theirs, |s| s.ours, false)
     } else {
-        output_order(slots, |s| s.ours, |s| s.theirs)
+        output_order(slots, |s| s.ours, |s| s.theirs, true)
     })
 }
 
 /// `primary`'s order, with keys only `secondary` has placed after the
 /// closest key preceding them in `secondary` that `primary` also has, or
-/// failing that before the closest following one, or at the end.
-fn output_order(slots: &[Slot], primary: SlotIndex, secondary: SlotIndex) -> Vec<usize> {
+/// failing that before the closest following one. Keys that only one side
+/// has and that end up between the same two shared keys come out with
+/// ours' first, as items both sides add to a sequence do.
+fn output_order(
+    slots: &[Slot],
+    primary: SlotIndex,
+    secondary: SlotIndex,
+    primary_is_ours: bool,
+) -> Vec<usize> {
     let mut primary_keys: Vec<usize> = (0..slots.len())
         .filter(|&k| primary(&slots[k]).is_some())
         .collect();
@@ -628,40 +635,50 @@ fn output_order(slots: &[Slot], primary: SlotIndex, secondary: SlotIndex) -> Vec
         .filter(|&k| primary(&slots[k]).is_none() && secondary(&slots[k]).is_some())
         .collect();
     secondary_only.sort_by_key(|&k| secondary(&slots[k]));
-
     let shared: Vec<usize> = primary_keys
         .iter()
         .copied()
         .filter(|&a| secondary(&slots[a]).is_some())
         .collect();
-    let mut after: Vec<Vec<usize>> = vec![Vec::new(); slots.len()];
-    let mut before: Vec<Vec<usize>> = vec![Vec::new(); slots.len()];
-    let mut end = Vec::new();
-    for k in secondary_only {
-        let pos = secondary(&slots[k]);
-        let preceding = shared
-            .iter()
-            .copied()
-            .filter(|&a| secondary(&slots[a]) < pos)
-            .max_by_key(|&a| secondary(&slots[a]));
-        let following = shared
-            .iter()
-            .copied()
-            .filter(|&a| secondary(&slots[a]) > pos)
-            .min_by_key(|&a| secondary(&slots[a]));
-        match (preceding, following) {
-            (Some(a), _) => after[a].push(k),
-            (None, Some(a)) => before[a].push(k),
-            (None, None) => end.push(k),
+
+    // The keys only primary has and the keys only secondary has, in each
+    // gap before, between and after the shared keys.
+    let mut gaps: Vec<(Vec<usize>, Vec<usize>)> = vec![Default::default(); shared.len() + 1];
+    let mut gap = 0;
+    for &k in &primary_keys {
+        if secondary(&slots[k]).is_some() {
+            gap += 1;
+        } else {
+            gaps[gap].0.push(k);
         }
     }
-    let mut order = Vec::new();
-    for k in primary_keys {
-        order.append(&mut before[k]);
-        order.push(k);
-        order.append(&mut after[k]);
+    for k in secondary_only {
+        let pos = secondary(&slots[k]);
+        let preceding = (0..shared.len())
+            .filter(|&i| secondary(&slots[shared[i]]) < pos)
+            .max_by_key(|&i| secondary(&slots[shared[i]]));
+        let following = (0..shared.len())
+            .filter(|&i| secondary(&slots[shared[i]]) > pos)
+            .min_by_key(|&i| secondary(&slots[shared[i]]));
+        let gap = match (preceding, following) {
+            (Some(i), _) => i + 1,
+            (None, Some(i)) => i,
+            (None, None) => shared.len(),
+        };
+        gaps[gap].1.push(k);
     }
-    order.append(&mut end);
+
+    let mut order = Vec::new();
+    for (i, (primary_only, secondary_only)) in gaps.into_iter().enumerate() {
+        let (first, second) = if primary_is_ours {
+            (primary_only, secondary_only)
+        } else {
+            (secondary_only, primary_only)
+        };
+        order.extend(first);
+        order.extend(second);
+        order.extend(shared.get(i));
+    }
     order
 }
 

@@ -4,7 +4,7 @@
 //! Split out of `parser/mod.rs` unchanged.
 
 use super::Parser;
-use crate::lex::SyntaxKind;
+use crate::lex::{block_scalar_header, SyntaxKind};
 use crate::ParseErrorKind;
 
 impl Parser {
@@ -653,83 +653,14 @@ impl Parser {
     /// Parse a block scalar's header, returning its explicit indentation
     /// indicator if it carries one (`|2`, `>2-`).
     fn parse_block_scalar_header(&mut self) -> Option<usize> {
-        let mut explicit_indent = None;
-        // Parse optional indentation indicator (1-9) and chomping indicator (+, -)
-        // Format: |<indent><chomp> or |<chomp><indent>
-        // Examples: |2, |-, |+, |2-, |-2, |2+, |+2
-
-        while let Some(kind) = self.current() {
-            match kind {
-                SyntaxKind::NEWLINE | SyntaxKind::COMMENT => break,
-                SyntaxKind::INT => {
-                    // Indentation indicator. The spec allows a single digit
-                    // 1-9, but the lexer hands us the whole run, so `|10`
-                    // arrives as "10". Take it as part of the header rather
-                    // than leaving it for the body, which would strand it.
-                    let Some(text) = self.current_text() else {
-                        break;
-                    };
-                    // A chomping indicator before the digit lexes into the
-                    // same token (`|-2` is INT("-2")), so allow one sign.
-                    let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
-                    if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
-                        // The spec allows a single digit 1-9; a longer run is
-                        // out of range, so keep only the first.
-                        explicit_indent = digits
-                            .chars()
-                            .next()
-                            .and_then(|c| c.to_digit(10))
-                            .filter(|d| *d > 0)
-                            .map(|d| d as usize);
-                        self.bump();
-                    } else {
-                        break;
-                    }
-                }
-                SyntaxKind::STRING => {
-                    // Could be a chomping indicator, or an indentation digit
-                    // and chomping indicator lexed together (`|3-`, `|-3`).
-                    let Some(text) = self.current_text() else {
-                        break;
-                    };
-                    // A header's indicators are ASCII, so compare characters
-                    // rather than bytes: `text.len()` is 2 for a single
-                    // no-break space, and splitting it at byte 1 panics.
-                    let mut chars = text.chars();
-                    let is_header = match (chars.next(), chars.next(), chars.next()) {
-                        (Some(a), None, _) => a == '+' || a == '-',
-                        (Some(a), Some(b), None) => {
-                            let digit = |c: char| c.is_ascii_digit() && c != '0';
-                            let chomp = |c: char| c == '+' || c == '-';
-                            (digit(a) && chomp(b)) || (chomp(a) && digit(b))
-                        }
-                        _ => false,
-                    };
-                    if !is_header {
-                        // Some other text, stop parsing header
-                        break;
-                    }
-                    explicit_indent = text
-                        .chars()
-                        .find_map(|c| c.to_digit(10))
-                        .filter(|d| *d > 0)
-                        .map(|d| d as usize);
-                    self.bump();
-                }
-                // A `+` straight after the header's `|` or `>` lexes as PLUS
-                // rather than STRING, but it is the same chomping indicator.
-                SyntaxKind::PLUS => {
-                    self.bump();
-                }
-                SyntaxKind::WHITESPACE => {
-                    // Whitespace before comment or newline
-                    self.bump();
-                }
-                _ => {
-                    // Unknown token, stop parsing header
-                    break;
-                }
-            }
+        let (explicit_indent, len) = block_scalar_header(
+            self.tokens
+                .iter()
+                .rev()
+                .map(|(kind, text)| (*kind, text.as_str())),
+        );
+        for _ in 0..len {
+            self.bump();
         }
 
         // Consume optional comment

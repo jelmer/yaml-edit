@@ -1216,7 +1216,7 @@ pub fn lex_with_validation_config<'a>(
 
                 tokens.push((NEWLINE, &input[token_start..start_idx + 1]));
                 current_line_start = start_idx + 1;
-                track_block_scalar_body(input, current_line_start, &mut block_scalar);
+                track_block_scalar_body(&tokens, input, current_line_start, &mut block_scalar);
             }
             '\r' => {
                 check_line_length(
@@ -1243,7 +1243,7 @@ pub fn lex_with_validation_config<'a>(
 
                 tokens.push((NEWLINE, &input[token_start..end_pos]));
                 current_line_start = end_pos;
-                track_block_scalar_body(input, current_line_start, &mut block_scalar);
+                track_block_scalar_body(&tokens, input, current_line_start, &mut block_scalar);
             }
 
             // Whitespace (spaces and tabs)
@@ -1543,11 +1543,16 @@ fn line_indent(input: &str, line_start: usize) -> usize {
 struct BlockScalarBody {
     /// Start of the line carrying the header; the body begins on the next.
     header_line_start: usize,
+    /// Index of the header's `|` or `>` token.
+    header_token: usize,
+    /// Column an explicit indentation indicator counts from.
+    parent_column: usize,
     /// Leftmost column a body line may start at. A document's root block
     /// scalar sits at indentation -1, so its body may start at column 0;
     /// any other body has to be indented past its header's line.
     min_indent: usize,
-    /// The body's own column, set by its first content line.
+    /// The body's own column, set by an explicit indentation indicator or
+    /// else by its first content line.
     indent: Option<usize>,
 }
 
@@ -1577,10 +1582,124 @@ impl BlockScalarBody {
         };
         Self {
             header_line_start: line_start,
+            header_token: tokens.len(),
+            parent_column: block_scalar_parent_column(tokens),
             min_indent,
             indent: None,
         }
     }
+}
+
+/// The column a block scalar's indentation indicator counts from, given
+/// the tokens lexed before its header.
+///
+/// This is the column of the collection the scalar is a node of, as the
+/// parser records it: the `-` or `?` introducing it, or for a mapping value
+/// the start of its key (the `:` itself when the key is empty or explicit).
+/// When the header opens its line, the collection is the one the previous
+/// line with content leaves open. With none, as at the document root, it
+/// is column 0, as for the parser and libyaml, although YAML 1.2 puts the
+/// root at -1.
+fn block_scalar_parent_column(tokens: &[(SyntaxKind, &str)]) -> usize {
+    use SyntaxKind::*;
+    for line in tokens.rsplit(|(kind, _)| matches!(kind, NEWLINE | BOM)) {
+        let Some(last) = line
+            .iter()
+            .rposition(|(kind, _)| !matches!(kind, WHITESPACE | INDENT | COMMENT | TAG | ANCHOR))
+        else {
+            continue;
+        };
+        let column = |index: usize| -> usize {
+            line[..index]
+                .iter()
+                .map(|(_, text)| text.chars().count())
+                .sum()
+        };
+        return match line[last].0 {
+            DASH | QUESTION => column(last),
+            COLON => {
+                let key_start = line[..last]
+                    .iter()
+                    .rposition(|(kind, _)| matches!(kind, DASH | QUESTION))
+                    .map_or(0, |indicator| indicator + 1);
+                let key = (key_start..last)
+                    .find(|&index| !matches!(line[index].0, WHITESPACE | INDENT))
+                    .unwrap_or(last);
+                column(key)
+            }
+            _ => 0,
+        };
+    }
+    0
+}
+
+/// Read a block scalar header's indicators from the tokens following its
+/// `|` or `>`, returning the indentation indicator if there is one, and how
+/// many tokens the indicators and the whitespace between them take up. The
+/// header's comment and line break are not counted.
+///
+/// Format: `|<indent><chomp>` or `|<chomp><indent>`, as in `|2`, `|-`,
+/// `|2-` and `|-2`.
+pub(crate) fn block_scalar_header<'a>(
+    tokens: impl IntoIterator<Item = (SyntaxKind, &'a str)>,
+) -> (Option<usize>, usize) {
+    let mut explicit_indent = None;
+    let mut len = 0;
+    for (kind, text) in tokens {
+        match kind {
+            SyntaxKind::INT => {
+                // The spec allows a single digit 1-9, but the lexer hands
+                // over the whole run, so `|10` arrives as "10". Take it as
+                // part of the header rather than leaving it for the body,
+                // which would strand it.
+                //
+                // A chomping indicator before the digit lexes into the same
+                // token (`|-2` is INT("-2")), so allow one sign.
+                let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
+                if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+                    break;
+                }
+                // A longer run is out of range, so keep only the first digit.
+                explicit_indent = digits
+                    .chars()
+                    .next()
+                    .and_then(|c| c.to_digit(10))
+                    .filter(|d| *d > 0)
+                    .map(|d| d as usize);
+            }
+            SyntaxKind::STRING => {
+                // Could be a chomping indicator, or an indentation digit and
+                // chomping indicator lexed together (`|3-`, `|-3`). A
+                // header's indicators are ASCII, so compare characters
+                // rather than bytes: `text.len()` is 2 for a single no-break
+                // space.
+                let mut chars = text.chars();
+                let is_header = match (chars.next(), chars.next(), chars.next()) {
+                    (Some(a), None, _) => a == '+' || a == '-',
+                    (Some(a), Some(b), None) => {
+                        let digit = |c: char| c.is_ascii_digit() && c != '0';
+                        let chomp = |c: char| c == '+' || c == '-';
+                        (digit(a) && chomp(b)) || (chomp(a) && digit(b))
+                    }
+                    _ => false,
+                };
+                if !is_header {
+                    break;
+                }
+                explicit_indent = text
+                    .chars()
+                    .find_map(|c| c.to_digit(10))
+                    .filter(|d| *d > 0)
+                    .map(|d| d as usize);
+            }
+            // A `+` straight after the `|` or `>` lexes as PLUS rather than
+            // STRING, but it is the same chomping indicator.
+            SyntaxKind::PLUS | SyntaxKind::WHITESPACE => {}
+            _ => break,
+        }
+        len += 1;
+    }
+    (explicit_indent, len)
 }
 
 /// Whether the line starting at `line_start` is a `---` or `...` marker.
@@ -1599,10 +1718,25 @@ fn line_is_document_marker(input: &str, line_start: usize) -> bool {
 /// every line ending, CRLF and lone CR included: left to the `\n` arm
 /// alone, a CRLF file kept the tracking set and read a later `[` as literal
 /// body text rather than a flow collection.
-fn track_block_scalar_body(input: &str, line_start: usize, body: &mut Option<BlockScalarBody>) {
+fn track_block_scalar_body(
+    tokens: &[(SyntaxKind, &str)],
+    input: &str,
+    line_start: usize,
+    body: &mut Option<BlockScalarBody>,
+) {
     let Some(current) = body else {
         return;
     };
+    // An explicit indentation indicator fixes the body's column, so a body
+    // line less indented than the first one still belongs to it:
+    // `- |2\n   x\n  y # z\n` holds the text `y # z`.
+    if current.indent.is_none() {
+        if let (Some(indicator), _) =
+            block_scalar_header(tokens[current.header_token + 1..].iter().copied())
+        {
+            current.indent = Some(current.parent_column + indicator);
+        }
+    }
     if line_is_blank(input, line_start) {
         return;
     }
@@ -2682,6 +2816,125 @@ double: "quoted""#;
         assert!(tokens
             .iter()
             .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "1.0.0-beta.1"));
+    }
+
+    #[test]
+    fn test_block_scalar_indentation_indicator_sets_body_column() {
+        use SyntaxKind::*;
+        // With `|2` the body sits at column 2, so the `y # z` and `[a` lines
+        // belong to it even though the first line is indented further.
+        assert_eq!(
+            lex("- |2\n   x\n  y # z\n  [a\n"),
+            vec![
+                (DASH, "-"),
+                (WHITESPACE, " "),
+                (PIPE, "|"),
+                (INT, "2"),
+                (NEWLINE, "\n"),
+                (INDENT, "   "),
+                (STRING, "x"),
+                (NEWLINE, "\n"),
+                (INDENT, "  "),
+                (STRING, "y"),
+                (WHITESPACE, " "),
+                (STRING, "# z"),
+                (NEWLINE, "\n"),
+                (INDENT, "  "),
+                (STRING, "[a"),
+                (NEWLINE, "\n"),
+            ]
+        );
+        assert_eq!(
+            lex("- |2\r\n   x\r\n  y # z\r\n  [a\r\n"),
+            vec![
+                (DASH, "-"),
+                (WHITESPACE, " "),
+                (PIPE, "|"),
+                (INT, "2"),
+                (NEWLINE, "\r\n"),
+                (INDENT, "   "),
+                (STRING, "x"),
+                (NEWLINE, "\r\n"),
+                (INDENT, "  "),
+                (STRING, "y"),
+                (WHITESPACE, " "),
+                (STRING, "# z"),
+                (NEWLINE, "\r\n"),
+                (INDENT, "  "),
+                (STRING, "[a"),
+                (NEWLINE, "\r\n"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_block_scalar_indentation_indicator_counts_from_parent() {
+        use SyntaxKind::*;
+        // The indicator counts from the key's column, 2 here, not from the
+        // line's indentation or the dash.
+        assert_eq!(
+            lex("- k: >-2\n     x\n    [a\n"),
+            vec![
+                (DASH, "-"),
+                (WHITESPACE, " "),
+                (STRING, "k"),
+                (COLON, ":"),
+                (WHITESPACE, " "),
+                (GREATER, ">"),
+                (INT, "-2"),
+                (NEWLINE, "\n"),
+                (INDENT, "     "),
+                (STRING, "x"),
+                (NEWLINE, "\n"),
+                (INDENT, "    "),
+                (STRING, "[a"),
+                (NEWLINE, "\n"),
+            ]
+        );
+        // A header on its own line counts from the key on the line before.
+        assert_eq!(
+            lex("k:\n  |1\n   x\n # z\n"),
+            vec![
+                (STRING, "k"),
+                (COLON, ":"),
+                (NEWLINE, "\n"),
+                (INDENT, "  "),
+                (PIPE, "|"),
+                (INT, "1"),
+                (NEWLINE, "\n"),
+                (INDENT, "   "),
+                (STRING, "x"),
+                (NEWLINE, "\n"),
+                (INDENT, " "),
+                (STRING, "# z"),
+                (NEWLINE, "\n"),
+            ]
+        );
+        // A line left of the indicated column ends the body.
+        assert_eq!(
+            lex("- k: |1\n   x\n  j: [a]\n"),
+            vec![
+                (DASH, "-"),
+                (WHITESPACE, " "),
+                (STRING, "k"),
+                (COLON, ":"),
+                (WHITESPACE, " "),
+                (PIPE, "|"),
+                (INT, "1"),
+                (NEWLINE, "\n"),
+                (INDENT, "   "),
+                (STRING, "x"),
+                (NEWLINE, "\n"),
+                (INDENT, "  "),
+                (STRING, "j"),
+                (COLON, ":"),
+                (WHITESPACE, " "),
+                (LEFT_BRACKET, "["),
+                (STRING, "a"),
+                (RIGHT_BRACKET, "]"),
+                (NEWLINE, "\n"),
+            ]
+        );
     }
 
     #[test]

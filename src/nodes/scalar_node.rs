@@ -11,7 +11,7 @@ ast_node!(Scalar, SCALAR, "A YAML scalar value");
 
 /// Chomping indicator for block scalars
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Chomping {
+pub(crate) enum Chomping {
     /// Strip final line breaks (indicator: -)
     Strip,
     /// Keep final line breaks (indicator: +)
@@ -43,6 +43,58 @@ impl fmt::Display for ScalarConversionError {
 }
 
 impl std::error::Error for ScalarConversionError {}
+
+/// The chomping and explicit indentation indicators in `header`, the
+/// first line of a block scalar. Only the run straight after `|` or `>`
+/// holds them; a comment may follow (`> # a-b`) and its text says nothing
+/// about either.
+fn header_indicators(header: &str) -> (Chomping, Option<usize>) {
+    let indicators: String = header
+        .chars()
+        .skip(1)
+        .take_while(|c| c.is_ascii_digit() || *c == '+' || *c == '-')
+        .collect();
+    let chomping = if indicators.contains('-') {
+        Chomping::Strip
+    } else if indicators.contains('+') {
+        Chomping::Keep
+    } else {
+        Chomping::Clip
+    };
+    let indent = indicators
+        .chars()
+        .find(|c| c.is_ascii_digit() && *c != '0')
+        .and_then(|c| c.to_digit(10))
+        .map(|d| d as usize);
+    (chomping, indent)
+}
+
+/// The chomping and explicit indentation indicators of `scalar`, a block
+/// scalar.
+pub(crate) fn block_scalar_indicators(scalar: &SyntaxNode) -> (Chomping, Option<usize>) {
+    let header: String = scalar
+        .children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .take_while(|t| t.kind() != SyntaxKind::NEWLINE)
+        .map(|t| t.text().to_string())
+        .collect();
+    header_indicators(&header)
+}
+
+/// The column a block scalar's indentation indicator counts from: that of
+/// the innermost collection entry holding `scalar`, or 0 at the document
+/// root.
+pub(crate) fn block_parent_column(scalar: &SyntaxNode) -> usize {
+    scalar
+        .ancestors()
+        .find(|n| {
+            matches!(
+                n.kind(),
+                SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+            )
+        })
+        .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry))
+}
 
 /// Replace `\r\n` and lone `\r` line breaks with `\n`, which
 /// `str::lines` does not split on.
@@ -106,7 +158,7 @@ impl Scalar {
                 unescaped
             }
         } else if self.is_block() {
-            Self::parse_block_scalar(&text, self.block_parent_column())
+            Self::parse_block_scalar(&text, block_parent_column(&self.0))
         } else {
             // Plain scalar - fold lines if multi-line
             if text.contains(['\n', '\r']) {
@@ -144,21 +196,6 @@ impl Scalar {
         }
     }
 
-    /// The column a block scalar's indentation indicator counts from: that
-    /// of the innermost collection entry holding it, or 0 at the document
-    /// root.
-    fn block_parent_column(&self) -> usize {
-        self.0
-            .ancestors()
-            .find(|n| {
-                matches!(
-                    n.kind(),
-                    SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
-                )
-            })
-            .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry))
-    }
-
     /// Parse a block scalar (literal `|` or folded `>`) into its string content
     ///
     /// `parent_column` is the column of the collection the scalar is a node
@@ -172,22 +209,7 @@ impl Scalar {
         };
 
         let is_literal = first_line.starts_with('|');
-
-        // Parse chomping indicator and indentation from header. Only the
-        // run straight after `|` or `>` holds them; a comment may follow
-        // (`> # a-b`) and its text says nothing about either.
-        let header: String = first_line
-            .chars()
-            .skip(1)
-            .take_while(|c| c.is_ascii_digit() || *c == '+' || *c == '-')
-            .collect();
-        let chomping = if header.contains('-') {
-            Chomping::Strip
-        } else if header.contains('+') {
-            Chomping::Keep
-        } else {
-            Chomping::Clip
-        };
+        let (chomping, explicit_indent) = header_indicators(first_line);
 
         // Collect content lines
         let content_lines: Vec<&str> = lines.collect();
@@ -200,11 +222,6 @@ impl Scalar {
         // Anything further right is part of the value: `|2` over a 4-space
         // body at the root is `"  x"`, not `"x"`. Without it, take the first
         // non-empty line's indentation as the base.
-        let explicit_indent = header
-            .chars()
-            .find(|c| c.is_ascii_digit() && *c != '0')
-            .and_then(|c| c.to_digit(10))
-            .map(|d| d as usize);
         let base_indent = match explicit_indent {
             Some(explicit) => parent_column + explicit,
             // With no content line at all, every line is empty however

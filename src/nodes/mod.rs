@@ -336,7 +336,7 @@ pub(crate) fn replace_children(
     range: std::ops::Range<usize>,
     mut children: Vec<rowan::NodeOrToken<SyntaxNode, SyntaxToken>>,
 ) {
-    match_line_breaks(parent, None, &mut children);
+    match_line_breaks(parent, &mut children);
     for i in range.clone().rev() {
         match parent
             .children_with_tokens()
@@ -372,11 +372,10 @@ pub(crate) fn append_children(
 ///
 /// Builders and fresh tokens always write `\n`; in a document using `\r\n`
 /// or `\r` they would mix line endings. The document's line break is its
-/// first one, as for the lexer's mixed line ending check, leaving out any
-/// inside `skip`. A document without one keeps `\n`.
+/// first one, as for the lexer's mixed line ending check. A document
+/// without one keeps `\n`.
 fn match_line_breaks(
     node: &SyntaxNode,
-    skip: Option<&SyntaxNode>,
     elements: &mut [rowan::NodeOrToken<SyntaxNode, SyntaxToken>],
 ) {
     let tokens = |e: &rowan::NodeOrToken<SyntaxNode, SyntaxToken>| {
@@ -397,14 +396,10 @@ fn match_line_breaks(
         return;
     }
     let root = node.ancestors().last().expect("a node is its own ancestor");
-    let skip = skip.map(|n| n.text_range());
     let Some(line_break) = root
         .descendants_with_tokens()
         .filter_map(|c| c.into_token())
-        .find(|t| {
-            t.kind() == SyntaxKind::NEWLINE
-                && !skip.is_some_and(|r| r.contains_range(t.text_range()))
-        })
+        .find(|t| t.kind() == SyntaxKind::NEWLINE)
         .map(|t| t.text().to_string())
         .filter(|b| b != "\n")
     else {
@@ -429,11 +424,6 @@ fn match_line_breaks(
 /// inserted, so that a block scalar its value ends in does not take them
 /// in.
 pub(crate) fn settle_lines_after_inserted_entry(entry: &SyntaxNode) {
-    // TODO: have sequence.rs insert through insert_children like the rest,
-    // so that this is not needed and the line breaks it adds elsewhere (in
-    // insert at the head, after a comment, extend_with, set) match too.
-    let mut elements = [rowan::NodeOrToken::Node(entry.clone())];
-    match_line_breaks(entry, Some(entry), &mut elements);
     move_blank_lines_ahead_of_kept_scalar(entry);
     replaced_value::settle_lines_after_block_scalar(entry);
 }

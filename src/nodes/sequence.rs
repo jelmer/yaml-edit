@@ -1,5 +1,8 @@
 use super::replaced_value;
-use super::{fresh_token, has_child_token, nth_entry_index, trivia, Lang, SyntaxNode};
+use super::{
+    fresh_token, has_child_token, insert_children, nth_entry_index, replace_children, trivia, Lang,
+    SyntaxNode,
+};
 use crate::as_yaml::{build_in, AsYaml, FlowQuoting, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::nodes::empty_collection::{self, render_empty};
@@ -36,38 +39,30 @@ pub(crate) fn must_render_flow(node: &SyntaxNode) -> bool {
 }
 
 /// If `node`'s tail token is a NEWLINE (optionally followed by an
-/// INDENT), return the concatenated text as `Some("\n" | "\n<indent>")`.
+/// INDENT), return the INDENT's text, or `""` if there is none.
 /// An omitted value at the end (`? a\n`) has no text and does not count.
 ///
 /// Used by [`Sequence::set`] to preserve the trailing separator of a
 /// multi-line value when swapping it out. Walking the CST directly is
 /// safer than `node.text().rfind('\n')` because a NEWLINE nested inside
 /// a block scalar's content would mislead a text-level search.
-fn trailing_newline_indent(node: &SyntaxNode) -> Option<String> {
+fn trailing_line_indent(node: &SyntaxNode) -> Option<String> {
     let tokens: Vec<_> = node
         .descendants_with_tokens()
         .filter_map(|el| el.into_token())
         .filter(|t| !t.text().is_empty())
         .collect();
-    let mut result = String::new();
     // Look at the last two tail tokens: [NEWLINE], [NEWLINE, INDENT], or
     // [.., NEWLINE], [.., NEWLINE, INDENT].
     let last = tokens.last()?;
     match last.kind() {
-        SyntaxKind::NEWLINE => {
-            result.push_str(last.text());
-        }
+        SyntaxKind::NEWLINE => Some(String::new()),
         SyntaxKind::INDENT => {
             let prev = tokens.iter().rev().nth(1)?;
-            if prev.kind() != SyntaxKind::NEWLINE {
-                return None;
-            }
-            result.push_str(prev.text());
-            result.push_str(last.text());
+            (prev.kind() == SyntaxKind::NEWLINE).then(|| last.text().to_string())
         }
-        _ => return None,
+        _ => None,
     }
-    Some(result)
 }
 
 /// True if `sequence`'s enclosing MAPPING_ENTRY is the last entry of
@@ -134,7 +129,7 @@ fn rebuild_entry_with_value(
 
     let mut value_inserted = false;
     let mut value_ends_with_newline = false;
-    let mut trailing_text: Option<String> = None;
+    let mut trailing_indent: Option<String> = None;
     let mut after_dash = false;
     // A value ending in NEWLINE terminates the entry itself, so the old
     // terminator after it, up to this index, is dropped.
@@ -161,7 +156,7 @@ fn rebuild_entry_with_value(
                 // A multi-line value (a nested mapping, say) ends with a
                 // NEWLINE and often an INDENT, which separate the entry
                 // from whatever follows and outlive the value itself.
-                trailing_text = trailing_newline_indent(n);
+                trailing_indent = trailing_line_indent(n);
                 if !value_inserted {
                     // A bare `-` item is DASH then a zero-width NULL
                     // scalar, so a written value needs the space that
@@ -193,27 +188,25 @@ fn rebuild_entry_with_value(
             rowan::NodeOrToken::Node(n) => {
                 // Copy other nodes as-is (like VALUE wrappers, etc.)
                 crate::yaml::copy_node_to_builder(&mut builder, n);
-                column = column_after(column, &n.text().to_string());
+                column = crate::column::column_after(column, &n.text().to_string());
                 after_dash = false;
             }
             rowan::NodeOrToken::Token(t) => {
                 // Copy tokens as-is
                 builder.token(t.kind().into(), t.text());
-                column = column_after(column, t.text());
+                column = crate::column::column_after(column, t.text());
                 after_dash = t.kind() == SyntaxKind::DASH;
             }
         }
     }
 
     // Restore trailing whitespace extracted from the old value
-    if let Some(trailing) = trailing_text {
-        if let Some(indent_part) = trailing.strip_prefix('\n') {
-            if !value_ends_with_newline {
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
-            }
-            if !indent_part.is_empty() {
-                builder.token(SyntaxKind::INDENT.into(), indent_part);
-            }
+    if let Some(indent) = trailing_indent {
+        if !value_ends_with_newline {
+            builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        }
+        if !indent.is_empty() {
+            builder.token(SyntaxKind::INDENT.into(), &indent);
         }
     }
 
@@ -251,14 +244,6 @@ fn block_entry(value: &impl crate::AsYaml, column: usize) -> SyntaxNode {
     }
     builder.finish_node();
     SyntaxNode::new_root_mut(builder.finish())
-}
-
-/// The column after writing `text` starting at `column`.
-fn column_after(column: usize, text: &str) -> usize {
-    match text.rfind('\n') {
-        Some(nl) => text[nl + 1..].chars().count(),
-        None => column + text.chars().count(),
-    }
 }
 
 /// Emit `value` as the item of an entry whose dash is at `dash_column`,
@@ -494,7 +479,7 @@ impl Sequence {
             trivia::unterminate_last(&last.expect("at least one entry is added"));
         }
         let at = trivia::index_after_line(&pushed);
-        self.0.splice_children(at..at, inserts);
+        insert_children(&self.0, at, inserts);
     }
 
     /// Add an item to the end of the sequence.
@@ -640,7 +625,7 @@ impl Sequence {
         let new_entry = rebuild_entry_with_value(node, value, flow, anchor);
 
         // Replace the old SEQUENCE_ENTRY with the new one
-        self.0.splice_children(i..i + 1, vec![new_entry.into()]);
+        replace_children(&self.0, i..i + 1, vec![new_entry.into()]);
         let new_entry = self
             .0
             .children_with_tokens()
@@ -2450,6 +2435,76 @@ scores:
                     seq.insert(0, "x");
                 }
                 crate::debug::assert_edited(&yaml, expected);
+            }
+        }
+    }
+
+    /// Sequence edits write the document's own line break, whichever it is.
+    #[test]
+    fn test_edits_write_document_line_breaks() {
+        type Edit = fn(&crate::Sequence);
+        let edits: [(&str, Edit, &str); 10] = [
+            ("- a\n", |s| s.push("b"), "- a\n- b\n"),
+            ("- a  # c\n", |s| s.push("b"), "- a  # c\n- b\n"),
+            ("- a\n", |s| s.insert(0, "b"), "- b\n- a\n"),
+            ("# h\n- a\n", |s| s.insert(0, "b"), "# h\n- b\n- a\n"),
+            (
+                "- a  # c\n- d\n",
+                |s| s.insert(1, "b"),
+                "- a  # c\n- b\n- d\n",
+            ),
+            ("- a\n", |s| s.extend_with("x", 3), "- a\n- x\n- x\n- x\n"),
+            (
+                "- a: 1\n  b: 2\n- c\n",
+                |s| assert!(s.set(0, 5)),
+                "- 5\n- c\n",
+            ),
+            (
+                "- a\n- c\n",
+                |s| {
+                    assert!(s.set(
+                        0,
+                        crate::Document::from_str("x: 1\ny: 2\n")
+                            .unwrap()
+                            .as_mapping()
+                            .unwrap()
+                    ))
+                },
+                "- x: 1\n  y: 2\n- c\n",
+            ),
+            (
+                "- &a\n  - x\n- c\n",
+                |s| {
+                    assert!(s.set(
+                        0,
+                        crate::Document::from_str("x: 1\ny: 2\n")
+                            .unwrap()
+                            .as_mapping()
+                            .unwrap()
+                    ))
+                },
+                "- &a\n  x: 1\n  y: 2\n- c\n",
+            ),
+            (
+                "-\n  # n\n  a\n- c\n",
+                |s| {
+                    assert!(s.set(
+                        0,
+                        crate::Document::from_str("x: 1\ny: 2\n")
+                            .unwrap()
+                            .as_mapping()
+                            .unwrap()
+                    ))
+                },
+                "-\n  # n\n  x: 1\n  y: 2\n- c\n",
+            ),
+        ];
+        for line_break in ["\n", "\r\n", "\r"] {
+            for (source, edit, expected) in &edits {
+                let source = source.replace('\n', line_break);
+                let yaml = YamlFile::from_str(&source).unwrap();
+                edit(&yaml.document().unwrap().as_sequence().unwrap());
+                crate::debug::assert_edited(&yaml, &expected.replace('\n', line_break));
             }
         }
     }

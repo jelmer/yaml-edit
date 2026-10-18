@@ -3186,6 +3186,21 @@ next: value"#;
     }
 
     #[test]
+    fn test_block_scalar_body_starting_with_tab_then_dedent() {
+        // The body's column is two, not three, so `]"` is body text rather
+        // than a dedent followed by an unterminated quoted scalar.
+        let yaml = "- |-\n  \t[\n  ]\"\n- b\n";
+        let file = YamlFile::from_str(yaml).unwrap();
+        let seq = file.document().unwrap().as_sequence().unwrap();
+        let items: Vec<String> = seq
+            .values()
+            .map(|v| v.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(items, vec!["\t[\n]\"".to_string(), "b".to_string()]);
+        assert_eq!(file.to_string(), yaml);
+    }
+
+    #[test]
     fn test_block_scalar_with_anchors_and_aliases() {
         let yaml = r#"template: &template |
   This is a template

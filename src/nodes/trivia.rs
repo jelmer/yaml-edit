@@ -173,14 +173,8 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
         // in the sequence.
     }
 
-    // A drained top-level collection is left empty here, so that entries
-    // added later are still written in block style; `clear` writes it as
-    // `{}` or `[]`.
-    // TODO: the empty document reads back as null rather than `{}`.
-    // Writing `{}` needs a way to keep later entries in block style
-    // that does not leave the tree unlike a re-parse.
     if drained {
-        render_empty(collection, end.is_terminated(), false);
+        render_empty(collection, end.is_terminated());
     }
     // The end of the input keeps its lack of a final line break.
     if is_last && !end.is_terminated() && !flow {

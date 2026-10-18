@@ -99,8 +99,18 @@ the same structure the parser produces: `MAPPING_ENTRY` with `KEY`, `COLON`
 and `VALUE`, `SEQUENCE_ENTRY` with `DASH`, entries owning their trailing
 `NEWLINE`, and so on. A built document must be indistinguishable from parsing
 its own text: `len`, `get`, `set` and the other accessors behave the same,
-and `debug::tree_to_string` gives the same output for both. String keys and
+and `debug::shape_to_string` gives the same output for both. String keys and
 values are quoted where a plain scalar would be read back as something else.
+
+There is one exception. YAML has no block syntax for an empty collection, so
+an empty one is written `{}` or `[]` whatever its style. One that is to be
+block style once it has entries (`Mapping::new_pending_block`, or a block
+collection whose last entry was removed or that was cleared) carries a
+zero-width `WHITESPACE ""` token between its brackets, so that adding an
+entry writes it as a block collection again. A `{}` or `[]` from the source
+has no such marker and stays flow. Re-parsing the text cannot recover the
+marker, so `debug::shape_to_string` leaves it out, and is what to compare an
+edited tree with a re-parse by; `debug::tree_to_string` shows it.
 
 ## `AsYaml` trait
 
@@ -477,8 +487,9 @@ These checks don't catch everything. A mutation can put a token in a
 different node than the parser would (a NEWLINE under `DOCUMENT` rather than
 in the last entry, a comment inside a `TAGGED_NODE`) and still pass both. For
 mutations that touch document structure or move trivia around, also compare
-`debug::tree_to_string` of the edited tree with that of a re-parse of its
-text, and assert the exact output text with `assert_eq!`.
+`debug::shape_to_string` of the edited tree with that of a re-parse of its
+text (see Builders for the one token it leaves out), and assert the exact
+output text with `assert_eq!`.
 
 Tests compare with `assert_eq!` against exact expected values, not
 `contains` or `matches!`.

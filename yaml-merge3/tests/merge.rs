@@ -752,3 +752,15 @@ fn flow_entry_key_and_value() {
         "{\"a\": 10, b: 2}\n"
     );
 }
+
+#[test]
+fn flow_comment_not_copied_to_new_separator() {
+    assert_eq!(
+        clean(
+            "l: [a, # c\n  b]\n",
+            "l: [a, # c\n  b, x]\n",
+            "l: [y, a, # c\n  b]\n"
+        ),
+        "l: [y, a, # c\n  b, x]\n"
+    );
+}

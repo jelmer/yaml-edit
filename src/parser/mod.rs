@@ -51,8 +51,6 @@ pub(super) struct Parser {
     pub(super) in_flow_context: bool,
     /// Error recovery context for better error messages
     pub(super) error_context: ErrorRecoveryContext,
-    /// Track if we're parsing a value (to prevent nested implicit mappings)
-    pub(super) in_value_context: bool,
     /// Track the current line's indentation level for plain scalar continuation
     pub(super) current_line_indent: usize,
     /// Whether an equally indented line continues a plain scalar here.
@@ -160,7 +158,6 @@ impl Parser {
             positioned_errors: Vec::new(),
             in_flow_context: false,
             error_context: ErrorRecoveryContext::new(text.to_string()),
-            in_value_context: false,
             equal_indent_continues_scalar: false,
             scalar_continuation_floor: None,
             annotation_in_value_position: false,
@@ -460,10 +457,7 @@ impl Parser {
                 // An anchor introducing a complex key belongs inside that
                 // key's KEY node, so let the mapping parser take it rather
                 // than emitting it as a sibling of the mapping.
-                if !self.in_flow_context
-                    && !self.in_value_context
-                    && self.is_complex_mapping_key_after_annotations()
-                {
+                if !self.in_flow_context && self.is_complex_mapping_key_after_annotations() {
                     self.parse_mapping_with_base_indent(base_indent);
                     self.nesting_depth -= 1;
                     return;
@@ -474,7 +468,7 @@ impl Parser {
                 // into the KEY. Emitting it here instead left it beside the
                 // mapping, where it looked like a second anchor on the same
                 // node (test suite 7BMT, U3XV).
-                if !self.in_flow_context && !self.in_value_context && self.is_mapping_key() {
+                if !self.in_flow_context && self.is_mapping_key() {
                     self.parse_mapping_with_base_indent(base_indent);
                     self.nesting_depth -= 1;
                     return;
@@ -516,7 +510,7 @@ impl Parser {
                 // An alias may be a mapping key (`*a : v`), as the YAML test
                 // suite's 26DV has it. Without this the alias became the
                 // value and the `: v` after it opened a null-key entry.
-                if !self.in_flow_context && !self.in_value_context && self.is_mapping_key() {
+                if !self.in_flow_context && self.is_mapping_key() {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_alias();
@@ -535,7 +529,6 @@ impl Parser {
                 // the tag shares the key's line, which a block mapping's
                 // own properties cannot.
                 if !self.in_flow_context
-                    && !self.in_value_context
                     && (self.is_mapping_key() || self.is_complex_mapping_key_after_annotations())
                 {
                     self.parse_mapping_with_base_indent(base_indent);
@@ -561,8 +554,7 @@ impl Parser {
             Some(kind) if is_plain_scalar_kind(kind) => {
                 // In flow context, always parse as scalar
                 // In block context, check if it's a mapping key
-                // But not if we're already in a value context (prevents implicit nested mappings)
-                if !self.in_flow_context && !self.in_value_context && self.is_mapping_key() {
+                if !self.in_flow_context && self.is_mapping_key() {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_scalar();
@@ -570,9 +562,7 @@ impl Parser {
             }
             Some(SyntaxKind::LEFT_BRACKET) => {
                 // Check if this is a complex key in a mapping
-                // But not if we're already in a value context
-                if !self.in_flow_context && !self.in_value_context && self.is_complex_mapping_key()
-                {
+                if !self.in_flow_context && self.is_complex_mapping_key() {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_flow_sequence();
@@ -581,9 +571,7 @@ impl Parser {
             }
             Some(SyntaxKind::LEFT_BRACE) => {
                 // Check if this is a complex key in a mapping
-                // But not if we're already in a value context
-                if !self.in_flow_context && !self.in_value_context && self.is_complex_mapping_key()
-                {
+                if !self.in_flow_context && self.is_complex_mapping_key() {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_flow_mapping();

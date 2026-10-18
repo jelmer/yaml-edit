@@ -107,3 +107,56 @@ fn reorder_nested_block_mapping() {
 fn reorder_unterminated_keeps_aliases() {
     check_reorder("a: &x 1\nb: *x", &["b", "a"], "b: &x 1\na: *x", root);
 }
+
+#[track_caller]
+fn check_move(source: &str, after: bool, expected: &str, mapping: impl Fn(&Document) -> Mapping) {
+    let doc = Document::from_str(source).unwrap();
+    let m = mapping(&doc);
+    let moved = if after {
+        m.move_after("b", "a", m.get("a").unwrap())
+    } else {
+        m.move_before("a", "b", m.get("b").unwrap())
+    };
+    assert!(moved);
+    assert_edited(&doc, expected);
+}
+
+#[test]
+fn move_in_flow_mapping() {
+    for (source, expected) in [
+        ("{a: 1, b: 2}\n", "{b: 2, a: 1}\n"),
+        ("{a: 1, b: 2, }\n", "{b: 2, a: 1, }\n"),
+        ("{a: 1, b: 2,}", "{b: 2, a: 1,}"),
+        ("{ a: 1, b: 2 }\n", "{ b: 2, a: 1 }\n"),
+    ] {
+        check_move(source, true, expected, root);
+        check_move(source, false, expected, root);
+    }
+}
+
+#[test]
+fn move_in_unterminated_block_mapping() {
+    for (source, expected) in [
+        ("a: 1\nb: 2", "b: 2\na: 1"),
+        ("a: 1\nb: 2\n", "b: 2\na: 1\n"),
+    ] {
+        check_move(source, true, expected, root);
+        check_move(source, false, expected, root);
+    }
+    check_move("top:\n  a: 1\n  b: 2", true, "top:\n  b: 2\n  a: 1", top);
+    check_move("top:\n  a: 1\n  b: 2", false, "top:\n  b: 2\n  a: 1", top);
+    check_move("a: &x 1\nb: *x", true, "b: &x 1\na: *x", root);
+}
+
+#[test]
+fn move_with_new_value() {
+    for (source, expected) in [
+        ("{a: 1, b: 2, }\n", "{b: 2, a: 9, }\n"),
+        ("{a: 1, b: 2,}", "{b: 2, a: 9,}"),
+        ("a: 1\nb: 2", "b: 2\na: 9"),
+    ] {
+        let doc = Document::from_str(source).unwrap();
+        assert!(root(&doc).move_after("b", "a", 9));
+        assert_edited(&doc, expected);
+    }
+}

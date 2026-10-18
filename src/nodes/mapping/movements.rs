@@ -204,7 +204,12 @@ impl Mapping {
         let key_indent = self.detect_indentation_level();
         let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
         let target = target.syntax().clone();
+        // Moving an entry is not appending one: the end of the mapping
+        // keeps its trailing comma, or its lack of a final line break.
+        let layout = self.slot_layout();
         // Given its own value, the entry moves as it is, anchor included.
+        // TODO: a comment on the entry's line (`a: 1  # c`) is lost, as
+        // the entry is rebuilt from its key and value nodes.
         let own_value = existing.filter(|e| {
             let value = e.value().and_then(|v| v.children().next());
             value.is_some() && value.as_ref() == new_value.as_node()
@@ -223,15 +228,19 @@ impl Mapping {
                 let entry = MappingEntry::new_in(&key, &value, flow, use_explicit_keys, key_indent);
                 self.insert_next_to(&entry.0, target, flow_context, after);
                 self.put_value(&entry, &value, anchor.as_deref());
+                self.restore_slot_layout(&layout);
                 Some(entry.0)
             });
             return true;
         }
         // Contract: move, not duplicate. Drop any prior entry with the
         // same key first.
-        self.remove(new_key);
+        let moved = self.remove(new_key).is_some();
         let entry = MappingEntry::new_in(new_key, new_value, flow, use_explicit_keys, key_indent);
         self.insert_next_to(&entry.0, target, flow_context, after);
+        if moved {
+            self.restore_slot_layout(&layout);
+        }
         true
     }
 

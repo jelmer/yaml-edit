@@ -763,9 +763,7 @@ fn holds_line_end(node: &SyntaxNode) -> bool {
             matches!(k, SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET)
         }),
         SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY => true,
-        SyntaxKind::SCALAR => has_child_token(node, |k| {
-            matches!(k, SyntaxKind::PIPE | SyntaxKind::GREATER)
-        }),
+        SyntaxKind::SCALAR => mapping::is_block_scalar(node),
         SyntaxKind::VALUE => node
             .last_child()
             .is_some_and(|last| last.text_range().is_empty() || holds_line_end(&last)),
@@ -1035,5 +1033,15 @@ mod tests {
             vec![fresh_token(SyntaxKind::STRING, "X").into()],
         );
         assert_eq!(root.to_string(), "aXe");
+    }
+
+    #[test]
+    fn test_terminate_plain_scalar_with_indicator_line() {
+        // The `>` token opening the plain scalar's second line is not a
+        // block scalar header, so the break goes after the scalar.
+        use std::str::FromStr;
+        let yaml = crate::yaml::YamlFile::from_str("a: b\n  > c").unwrap();
+        yaml.document().unwrap().as_mapping().unwrap().set("d", 1);
+        crate::debug::assert_edited(&yaml, "a: b\n  > c\nd: 1\n");
     }
 }

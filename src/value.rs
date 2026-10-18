@@ -625,6 +625,229 @@ where
     }
 }
 
+// AsYaml trait implementation for YamlValue
+use crate::as_yaml::{
+    build_in, build_mapping, build_sequence, build_tagged, AsYaml, FlowQuoting, YamlKind,
+};
+use crate::yaml::SyntaxNode;
+
+/// Emit a `!!omap` / `!!pairs` TAGGED_NODE wrapping a sequence of
+/// single-entry mappings. Returns whether the content ended with a newline.
+fn build_tagged_pair_seq(
+    builder: &mut rowan::GreenNodeBuilder,
+    tag: &str,
+    pairs: &[(String, YamlValue)],
+    indent: usize,
+    flow: Option<FlowQuoting>,
+) -> bool {
+    build_tagged(builder, tag, flow.is_none(), indent, |builder| {
+        let items = pairs
+            .iter()
+            .map(|(k, v)| YamlValue::Mapping(BTreeMap::from([(k.clone(), v.clone())])));
+        build_sequence(builder, items, indent + 2, flow)
+    })
+}
+
+/// Emit `value`, inside a flow collection quoting strings as `flow` says
+/// if it is set.
+fn build_value(
+    value: &YamlValue,
+    builder: &mut rowan::GreenNodeBuilder,
+    indent: usize,
+    flow: Option<FlowQuoting>,
+) -> bool {
+    match value {
+        YamlValue::Scalar(s) => build_in(s, builder, indent, flow),
+        YamlValue::Mapping(map) => build_mapping(builder, map.iter(), indent, flow),
+        YamlValue::Sequence(seq) => build_sequence(builder, seq.iter(), indent, flow),
+        YamlValue::Set(set) => crate::as_yaml::build_set_content(
+            builder,
+            set.iter().map(|m| ScalarValue::string(m.as_str())),
+            indent,
+            flow,
+        ),
+        YamlValue::OrderedMapping(pairs) => {
+            build_tagged_pair_seq(builder, "!!omap", pairs, indent, flow)
+        }
+        YamlValue::Pairs(pairs) => build_tagged_pair_seq(builder, "!!pairs", pairs, indent, flow),
+        YamlValue::Tagged(tag, value) => {
+            let block = value.is_block_collection() && flow.is_none();
+            let content_indent = if block { indent + 2 } else { indent };
+            build_tagged(builder, tag, block, indent, |builder| {
+                build_value(value, builder, content_indent, flow)
+            })
+        }
+    }
+}
+
+impl AsYaml for YamlValue {
+    fn as_node(&self) -> Option<&SyntaxNode> {
+        None
+    }
+
+    fn kind(&self) -> YamlKind {
+        match self {
+            YamlValue::Scalar(_) => YamlKind::Scalar,
+            YamlValue::Sequence(_) => YamlKind::Sequence,
+            YamlValue::Mapping(_) => YamlKind::Mapping,
+            YamlValue::Set(_) => YamlKind::Tagged(std::borrow::Cow::Borrowed("!!set")),
+            YamlValue::OrderedMapping(_) => YamlKind::Tagged(std::borrow::Cow::Borrowed("!!omap")),
+            YamlValue::Pairs(_) => YamlKind::Tagged(std::borrow::Cow::Borrowed("!!pairs")),
+            YamlValue::Tagged(tag, _) => YamlKind::Tagged(std::borrow::Cow::Owned(tag.clone())),
+        }
+    }
+
+    fn build_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        flow_context: bool,
+    ) -> bool {
+        build_value(
+            self,
+            builder,
+            indent,
+            flow_context.then_some(FlowQuoting::Minimal),
+        )
+    }
+
+    fn build_flow_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        quoting: FlowQuoting,
+    ) -> bool {
+        build_value(self, builder, indent, Some(quoting))
+    }
+
+    fn is_inline(&self) -> bool {
+        match self {
+            YamlValue::Scalar(_) => true,
+            YamlValue::Mapping(map) => map.is_empty(),
+            YamlValue::Sequence(seq) => seq.is_empty(),
+            // For programmatically created tagged collections, we use the common style:
+            // tag inline with key (e.g., "tags: !!set"), even when non-empty.
+            // Note: Parsed YAML may have tags on separate lines, which is also valid,
+            // but for YamlValue we choose this as the default formatting.
+            YamlValue::Set(_) => true,
+            YamlValue::OrderedMapping(_) => true,
+            YamlValue::Pairs(_) => true,
+            YamlValue::Tagged(_, _) => true,
+        }
+    }
+}
+
+impl AsYaml for BTreeMap<String, YamlValue> {
+    fn as_node(&self) -> Option<&SyntaxNode> {
+        None
+    }
+
+    fn kind(&self) -> YamlKind {
+        YamlKind::Mapping
+    }
+
+    fn build_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        flow_context: bool,
+    ) -> bool {
+        build_mapping(
+            builder,
+            self.iter(),
+            indent,
+            flow_context.then_some(FlowQuoting::Minimal),
+        )
+    }
+
+    fn build_flow_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        quoting: FlowQuoting,
+    ) -> bool {
+        build_mapping(builder, self.iter(), indent, Some(quoting))
+    }
+
+    fn is_inline(&self) -> bool {
+        self.is_empty()
+    }
+}
+
+impl AsYaml for Vec<YamlValue> {
+    fn as_node(&self) -> Option<&SyntaxNode> {
+        None
+    }
+
+    fn kind(&self) -> YamlKind {
+        YamlKind::Sequence
+    }
+
+    fn build_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        flow_context: bool,
+    ) -> bool {
+        build_sequence(
+            builder,
+            self.iter(),
+            indent,
+            flow_context.then_some(FlowQuoting::Minimal),
+        )
+    }
+
+    fn build_flow_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        quoting: FlowQuoting,
+    ) -> bool {
+        build_sequence(builder, self.iter(), indent, Some(quoting))
+    }
+
+    fn is_inline(&self) -> bool {
+        <&[YamlValue] as AsYaml>::is_inline(&self.as_slice())
+    }
+}
+
+impl AsYaml for &[YamlValue] {
+    fn as_node(&self) -> Option<&SyntaxNode> {
+        None
+    }
+
+    fn kind(&self) -> YamlKind {
+        YamlKind::Sequence
+    }
+
+    fn build_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        flow_context: bool,
+    ) -> bool {
+        build_sequence(
+            builder,
+            self.iter(),
+            indent,
+            flow_context.then_some(FlowQuoting::Minimal),
+        )
+    }
+
+    fn build_flow_content(
+        &self,
+        builder: &mut rowan::GreenNodeBuilder,
+        indent: usize,
+        quoting: FlowQuoting,
+    ) -> bool {
+        build_sequence(builder, self.iter(), indent, Some(quoting))
+    }
+
+    fn is_inline(&self) -> bool {
+        self.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1989,411 +2212,5 @@ ordered: !!omap [first: *list]
         // Float values are not booleans
         let float_val = YamlValue::Scalar(ScalarValue::parse("3.14"));
         assert_eq!(float_val.to_bool(), None);
-    }
-}
-
-// AsYaml trait implementation for YamlValue
-use crate::as_yaml::{build_in, AsYaml, FlowQuoting, YamlKind};
-use crate::yaml::SyntaxNode;
-
-/// Build a `!!omap` / `!!pairs` TAGGED_NODE wrapping a sequence of
-/// single-entry mappings. Returns whether the content ended with a newline.
-fn build_tagged_pair_seq(
-    builder: &mut rowan::GreenNodeBuilder,
-    tag: &str,
-    pairs: &[(String, YamlValue)],
-    indent: usize,
-    flow: Option<FlowQuoting>,
-) -> bool {
-    use crate::lex::SyntaxKind;
-
-    builder.start_node(SyntaxKind::TAGGED_NODE.into());
-    builder.token(SyntaxKind::TAG.into(), tag);
-    if flow.is_some() {
-        builder.token(SyntaxKind::WHITESPACE.into(), " ");
-    } else {
-        builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent + 2));
-    }
-
-    let seq: Vec<YamlValue> = pairs
-        .iter()
-        .map(|(k, v)| {
-            let mut map = BTreeMap::new();
-            map.insert(k.clone(), v.clone());
-            YamlValue::Mapping(map)
-        })
-        .collect();
-    let ends_with_newline = build_sequence(&seq, builder, indent + 2, flow);
-
-    builder.finish_node(); // TAGGED_NODE
-    ends_with_newline
-}
-
-/// Emit `value`, inside a flow collection quoting strings as `flow` says
-/// if it is set.
-fn build_value(
-    value: &YamlValue,
-    builder: &mut rowan::GreenNodeBuilder,
-    indent: usize,
-    flow: Option<FlowQuoting>,
-) -> bool {
-    use crate::lex::SyntaxKind;
-    match value {
-        YamlValue::Scalar(s) => build_in(s, builder, indent, flow),
-        YamlValue::Mapping(map) => build_mapping(map, builder, indent, flow),
-        YamlValue::Sequence(seq) => build_sequence(seq, builder, indent, flow),
-        YamlValue::Set(set) => crate::as_yaml::build_set_content(
-            builder,
-            set.iter().map(|m| ScalarValue::string(m.as_str())),
-            indent,
-            flow,
-        ),
-        YamlValue::OrderedMapping(pairs) => {
-            build_tagged_pair_seq(builder, "!!omap", pairs, indent, flow)
-        }
-        YamlValue::Pairs(pairs) => build_tagged_pair_seq(builder, "!!pairs", pairs, indent, flow),
-        YamlValue::Tagged(tag, value) => {
-            builder.start_node(SyntaxKind::TAGGED_NODE.into());
-            builder.token(SyntaxKind::TAG.into(), tag);
-            let ends_with_newline = if value.is_block_collection() && flow.is_none() {
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent + 2));
-                value.build_content(builder, indent + 2, false)
-            } else {
-                builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                build_value(value, builder, indent, flow)
-            };
-            builder.finish_node(); // TAGGED_NODE
-            ends_with_newline
-        }
-    }
-}
-
-impl AsYaml for YamlValue {
-    fn as_node(&self) -> Option<&SyntaxNode> {
-        None
-    }
-
-    fn kind(&self) -> YamlKind {
-        match self {
-            YamlValue::Scalar(_) => YamlKind::Scalar,
-            YamlValue::Sequence(_) => YamlKind::Sequence,
-            YamlValue::Mapping(_) => YamlKind::Mapping,
-            YamlValue::Set(_) => YamlKind::Tagged(std::borrow::Cow::Borrowed("!!set")),
-            YamlValue::OrderedMapping(_) => YamlKind::Tagged(std::borrow::Cow::Borrowed("!!omap")),
-            YamlValue::Pairs(_) => YamlKind::Tagged(std::borrow::Cow::Borrowed("!!pairs")),
-            YamlValue::Tagged(tag, _) => YamlKind::Tagged(std::borrow::Cow::Owned(tag.clone())),
-        }
-    }
-
-    fn build_content(
-        &self,
-        builder: &mut rowan::GreenNodeBuilder,
-        indent: usize,
-        flow_context: bool,
-    ) -> bool {
-        build_value(
-            self,
-            builder,
-            indent,
-            flow_context.then_some(FlowQuoting::Minimal),
-        )
-    }
-
-    fn build_flow_content(
-        &self,
-        builder: &mut rowan::GreenNodeBuilder,
-        indent: usize,
-        quoting: FlowQuoting,
-    ) -> bool {
-        build_value(self, builder, indent, Some(quoting))
-    }
-
-    fn is_inline(&self) -> bool {
-        match self {
-            YamlValue::Scalar(_) => true,
-            YamlValue::Mapping(map) => map.is_empty(),
-            YamlValue::Sequence(seq) => seq.is_empty(),
-            // For programmatically created tagged collections, we use the common style:
-            // tag inline with key (e.g., "tags: !!set"), even when non-empty.
-            // Note: Parsed YAML may have tags on separate lines, which is also valid,
-            // but for YamlValue we choose this as the default formatting.
-            YamlValue::Set(_) => true,
-            YamlValue::OrderedMapping(_) => true,
-            YamlValue::Pairs(_) => true,
-            YamlValue::Tagged(_, _) => true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum CollectionStyle {
-    Flow,
-    Block,
-}
-
-/// Emit `map`, inside a flow collection quoting strings as `flow` says if
-/// it is set.
-fn build_mapping(
-    map: &BTreeMap<String, YamlValue>,
-    builder: &mut rowan::GreenNodeBuilder,
-    indent: usize,
-    flow: Option<FlowQuoting>,
-) -> bool {
-    use crate::lex::SyntaxKind;
-
-    let quoting = flow.unwrap_or(FlowQuoting::Minimal);
-    let style = if map.is_empty() || flow.is_some() {
-        CollectionStyle::Flow
-    } else {
-        CollectionStyle::Block
-    };
-
-    builder.start_node(SyntaxKind::MAPPING.into());
-
-    match style {
-        CollectionStyle::Flow => {
-            builder.token(SyntaxKind::LEFT_BRACE.into(), "{");
-            for (i, (key, value)) in map.iter().enumerate() {
-                builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
-                builder.start_node(SyntaxKind::KEY.into());
-                ScalarValue::string(key).build_flow_content(builder, 0, quoting);
-                builder.finish_node(); // KEY
-                builder.token(SyntaxKind::COLON.into(), ":");
-                builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                builder.start_node(SyntaxKind::VALUE.into());
-                build_value(value, builder, indent, Some(quoting));
-                builder.finish_node(); // VALUE
-                if i + 1 < map.len() {
-                    builder.token(SyntaxKind::COMMA.into(), ",");
-                    builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                }
-                builder.finish_node(); // MAPPING_ENTRY
-            }
-            builder.token(SyntaxKind::RIGHT_BRACE.into(), "}");
-        }
-        CollectionStyle::Block => {
-            let indent_str = " ".repeat(indent);
-            let entries: Vec<_> = map.iter().collect();
-
-            for (i, (key, value)) in entries.iter().enumerate() {
-                if i > 0 && indent > 0 {
-                    // Previous entry's newline serves as separator, just add indent
-                    builder.token(SyntaxKind::INDENT.into(), &indent_str);
-                }
-
-                builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
-
-                builder.start_node(SyntaxKind::KEY.into());
-                crate::nodes::build_key_content(builder, &key.as_str(), indent, None);
-                builder.finish_node(); // KEY
-
-                builder.token(SyntaxKind::COLON.into(), ":");
-
-                let is_complex =
-                    value.kind() == YamlKind::Mapping || value.kind() == YamlKind::Sequence;
-
-                let value_ends_with_newline = if is_complex {
-                    builder.start_node(SyntaxKind::VALUE.into());
-                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                    builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent + 2));
-                    build_value(value, builder, indent + 2, None)
-                } else {
-                    builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                    builder.start_node(SyntaxKind::VALUE.into());
-                    // A block scalar's body has to clear the key's column.
-                    build_value(value, builder, indent, None)
-                };
-
-                builder.finish_node(); // VALUE
-
-                // Every MAPPING_ENTRY ends with newline
-                // Only add if value didn't already end with one
-                if !value_ends_with_newline {
-                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                }
-
-                builder.finish_node(); // MAPPING_ENTRY
-            }
-        }
-    }
-
-    builder.finish_node(); // MAPPING
-                           // Only block-style non-empty mappings end with newline (from last entry)
-    matches!(style, CollectionStyle::Block) && !map.is_empty()
-}
-
-impl AsYaml for BTreeMap<String, YamlValue> {
-    fn as_node(&self) -> Option<&SyntaxNode> {
-        None
-    }
-
-    fn kind(&self) -> YamlKind {
-        YamlKind::Mapping
-    }
-
-    fn build_content(
-        &self,
-        builder: &mut rowan::GreenNodeBuilder,
-        indent: usize,
-        flow_context: bool,
-    ) -> bool {
-        build_mapping(
-            self,
-            builder,
-            indent,
-            flow_context.then_some(FlowQuoting::Minimal),
-        )
-    }
-
-    fn build_flow_content(
-        &self,
-        builder: &mut rowan::GreenNodeBuilder,
-        indent: usize,
-        quoting: FlowQuoting,
-    ) -> bool {
-        build_mapping(self, builder, indent, Some(quoting))
-    }
-
-    fn is_inline(&self) -> bool {
-        self.is_empty()
-    }
-}
-
-impl AsYaml for Vec<YamlValue> {
-    fn as_node(&self) -> Option<&SyntaxNode> {
-        None
-    }
-
-    fn kind(&self) -> YamlKind {
-        YamlKind::Sequence
-    }
-
-    fn build_content(
-        &self,
-        builder: &mut rowan::GreenNodeBuilder,
-        indent: usize,
-        flow_context: bool,
-    ) -> bool {
-        build_sequence(
-            self,
-            builder,
-            indent,
-            flow_context.then_some(FlowQuoting::Minimal),
-        )
-    }
-
-    fn build_flow_content(
-        &self,
-        builder: &mut rowan::GreenNodeBuilder,
-        indent: usize,
-        quoting: FlowQuoting,
-    ) -> bool {
-        build_sequence(self, builder, indent, Some(quoting))
-    }
-
-    fn is_inline(&self) -> bool {
-        <&[YamlValue] as AsYaml>::is_inline(&self.as_slice())
-    }
-}
-
-/// Emit `items` as a sequence, inside a flow collection quoting strings as
-/// `flow` says if it is set.
-fn build_sequence(
-    items: &[YamlValue],
-    builder: &mut rowan::GreenNodeBuilder,
-    indent: usize,
-    flow: Option<FlowQuoting>,
-) -> bool {
-    use crate::lex::SyntaxKind;
-
-    let quoting = flow.unwrap_or(FlowQuoting::Minimal);
-    let style = if items.is_empty() || flow.is_some() {
-        CollectionStyle::Flow
-    } else {
-        CollectionStyle::Block
-    };
-
-    builder.start_node(SyntaxKind::SEQUENCE.into());
-
-    match style {
-        CollectionStyle::Flow => {
-            builder.token(SyntaxKind::LEFT_BRACKET.into(), "[");
-            for (i, item) in items.iter().enumerate() {
-                builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
-                build_value(item, builder, indent, Some(quoting));
-                if i + 1 < items.len() {
-                    builder.token(SyntaxKind::COMMA.into(), ",");
-                    builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                }
-                builder.finish_node(); // SEQUENCE_ENTRY
-            }
-            builder.token(SyntaxKind::RIGHT_BRACKET.into(), "]");
-        }
-        CollectionStyle::Block => {
-            let indent_str = " ".repeat(indent);
-
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 && indent > 0 {
-                    // Previous entry's newline serves as separator, just add indent
-                    builder.token(SyntaxKind::INDENT.into(), &indent_str);
-                }
-
-                builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
-                builder.token(SyntaxKind::DASH.into(), "-");
-                builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                let item_ends_with_newline = build_value(item, builder, indent + 2, None);
-
-                // Every block-style SEQUENCE_ENTRY ends with NEWLINE
-                // Only add if item didn't already end with one
-                if !item_ends_with_newline {
-                    builder.token(SyntaxKind::NEWLINE.into(), "\n");
-                }
-
-                builder.finish_node(); // SEQUENCE_ENTRY
-            }
-        }
-    }
-
-    builder.finish_node(); // SEQUENCE
-                           // Only block-style non-empty sequences end with newline (from last entry)
-    matches!(style, CollectionStyle::Block) && !items.is_empty()
-}
-
-impl AsYaml for &[YamlValue] {
-    fn as_node(&self) -> Option<&SyntaxNode> {
-        None
-    }
-
-    fn kind(&self) -> YamlKind {
-        YamlKind::Sequence
-    }
-
-    fn build_content(
-        &self,
-        builder: &mut rowan::GreenNodeBuilder,
-        indent: usize,
-        flow_context: bool,
-    ) -> bool {
-        build_sequence(
-            self,
-            builder,
-            indent,
-            flow_context.then_some(FlowQuoting::Minimal),
-        )
-    }
-
-    fn build_flow_content(
-        &self,
-        builder: &mut rowan::GreenNodeBuilder,
-        indent: usize,
-        quoting: FlowQuoting,
-    ) -> bool {
-        build_sequence(self, builder, indent, Some(quoting))
-    }
-
-    fn is_inline(&self) -> bool {
-        self.is_empty()
     }
 }

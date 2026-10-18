@@ -475,6 +475,9 @@ impl Mapping {
         crate::nodes::kept_aliases::keeping_aliases_moved(&self.0, None, || {
             crate::nodes::replace_children(&self.0, 0..all.len(), new_children);
             self.restore_slot_layout(&layout);
+            for entry in order {
+                super::replaced_value::settle_lines_after_block_scalar(entry);
+            }
             None
         });
     }

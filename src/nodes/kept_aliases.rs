@@ -710,9 +710,7 @@ fn tagged(tag: &str, node: &SyntaxNode) -> SyntaxNode {
     let token =
         |kind: SyntaxKind, text: &str| NodeOrToken::Token(GreenToken::new(kind.into(), text));
     let block_collection = matches!(node.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE)
-        && !node
-            .first_token()
-            .is_some_and(|t| matches!(t.kind(), SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET));
+        && !super::starts_a_flow_collection(node);
     let mut children = vec![token(SyntaxKind::TAG, tag)];
     if block_collection {
         // Its lines keep their indentation, which is shifted along with

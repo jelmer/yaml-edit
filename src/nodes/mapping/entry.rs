@@ -13,8 +13,8 @@ use crate::as_yaml::{build_in, FlowQuoting};
 use crate::lex::SyntaxKind;
 use crate::nodes::replaced_value::{add_to_first_line, insert_comment_line_above};
 use crate::nodes::{
-    entry_key, entry_value, fresh_token, has_child_token, insert_children, replace_children, Lang,
-    SyntaxNode,
+    entry_key, entry_value, fresh_token, has_child_token, insert_children, replace_children,
+    trivia, Lang, SyntaxNode,
 };
 use crate::yaml::add_node_children_to;
 use rowan::GreenNodeBuilder;
@@ -355,7 +355,7 @@ impl MappingEntry {
                 value_idx,
                 vec![colon.clone(), fresh_token(SyntaxKind::WHITESPACE, " ")],
             );
-            crate::nodes::trivia::separate_from_question(&colon);
+            trivia::separate_from_question(&colon);
         }
         // TODO: a block explicit key without a value (`? a` at the end of
         // the input) needs `\n:` before the value, not `: `.
@@ -364,25 +364,6 @@ impl MappingEntry {
     /// Append `tokens` at the end of `self.0`.
     fn append(&self, tokens: Vec<rowan::SyntaxToken<Lang>>) {
         super::super::append_children(&self.0, tokens.into_iter().map(Into::into).collect());
-    }
-
-    /// Detach the last child of `self.0` if it's a NEWLINE token.
-    fn detach_last_if_newline(&self) {
-        if let Some(last) = self.0.last_child_or_token() {
-            if last
-                .as_token()
-                .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
-            {
-                last.detach();
-            }
-        }
-    }
-
-    /// True if the entry ends with a NEWLINE (anywhere inside).
-    fn ends_with_newline(&self) -> bool {
-        self.0
-            .last_token()
-            .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
     }
 
     /// Give a block explicit key without a value (`? a`) the `:` line a
@@ -399,9 +380,7 @@ impl MappingEntry {
         // and the key's line gets one of its own. A block key ends its line
         // itself, and the entry then has none, so the `:` line gets one.
         let mut tokens = Vec::new();
-        let key_ends_line = self
-            .key()
-            .is_some_and(|k| crate::nodes::trivia::ends_with_line_break(&k));
+        let key_ends_line = self.key().is_some_and(|k| trivia::ends_with_line_break(&k));
         if !key_ends_line {
             tokens.push(fresh_token(SyntaxKind::NEWLINE, "\n"));
         }
@@ -488,18 +467,17 @@ impl MappingEntry {
         }
     }
 
-    /// Keep exactly one trailing NEWLINE on the entry once its VALUE has
-    /// been replaced, either inside VALUE (block content usually provides
-    /// one) or at MAPPING_ENTRY level.
+    /// Keep exactly one line break ending the entry once its VALUE has
+    /// been replaced: the value's own if it ends with one, else the entry's.
     fn settle_trailing_newline(&self, value_ends_with_newline: bool) {
-        if value_ends_with_newline {
-            // Drop the MAPPING_ENTRY-level trailing NEWLINE that was the
-            // OLD entry's terminator - the new VALUE has its own.
-            self.detach_last_if_newline();
-        } else if !self.ends_with_newline() {
-            // New value doesn't provide one and the entry doesn't have
-            // one - append so we don't glue onto the next entry.
-            self.append(vec![fresh_token(SyntaxKind::NEWLINE, "\n")]);
+        if !value_ends_with_newline {
+            trivia::terminate(&self.0);
+        } else if let Some(own) = self
+            .0
+            .last_child_or_token()
+            .filter(|c| c.kind() == SyntaxKind::NEWLINE)
+        {
+            own.detach();
         }
     }
 
@@ -542,7 +520,7 @@ impl MappingEntry {
         self.replace_value(new_value, flow_context, anchor);
         crate::nodes::replaced_value::settle_lines_after_block_scalar(&self.0);
         if let Some(content) = self.value().and_then(|v| v.last_child()) {
-            crate::nodes::trivia::drop_space_before_empty(&content);
+            trivia::drop_space_before_empty(&content);
         }
     }
 
@@ -658,8 +636,8 @@ impl MappingEntry {
         if let Some(value_idx) = self.value_index() {
             // A block scalar's body ends with the entry's line break.
             let old_ends_line = match crate::nodes::ending_block_scalar(&self.0) {
-                Some(scalar) => crate::nodes::trivia::ends_line(&scalar),
-                None => self.ends_with_newline(),
+                Some(scalar) => trivia::ends_line(&scalar),
+                None => trivia::ends_with_line_break(&self.0),
             };
             let old_omitted = self.value().is_some_and(|v| v.text_range().is_empty());
             let new_omitted = new_value_node.text_range().is_empty();
@@ -681,8 +659,8 @@ impl MappingEntry {
             if old_omitted && !new_omitted {
                 self.separate_filled_value(value_idx, flow_context);
             }
-            if old_ends_line && !self.ends_with_newline() {
-                self.append(vec![fresh_token(SyntaxKind::NEWLINE, "\n")]);
+            if old_ends_line {
+                trivia::terminate(&self.0);
             }
             return;
         }
@@ -762,9 +740,7 @@ impl MappingEntry {
 
         // Inline values don't own a trailing NEWLINE; ensure the entry has
         // one.
-        if !self.ends_with_newline() {
-            self.append(vec![fresh_token(SyntaxKind::NEWLINE, "\n")]);
-        }
+        trivia::terminate(&self.0);
     }
 
     /// Detach this entry from its parent mapping, effectively removing it.

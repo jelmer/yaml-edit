@@ -9,7 +9,7 @@ pub(crate) use helpers::{
 };
 
 use super::empty_collection::{self, render_empty};
-use super::trivia::{self, line_end, LineEnd, Slot};
+use super::trivia::{self, Slot};
 use super::{
     entry_key, entry_value, fresh_token, has_child_token, insert_children, replace_children, Lang,
     Sequence, SyntaxNode,
@@ -814,7 +814,7 @@ impl Mapping {
         } else {
             // The new entry brings its own line break, unless the old one
             // ended the input without one.
-            if line_end(old) == LineEnd::Open {
+            if !trivia::ends_with_line_break(old) {
                 let last = new_entry
                     .last_child_or_token()
                     .filter(|c| c.kind() == SyntaxKind::NEWLINE);
@@ -906,7 +906,7 @@ impl Mapping {
         let terminated = self
             .entries()
             .last()
-            .is_some_and(|e| line_end(e.syntax()).is_terminated());
+            .is_some_and(|e| trivia::ends_with_line_break(e.syntax()));
         // Entries are removed one by one, as keeping aliases resolving may
         // rewrite a later key.
         while let Some(entry) = self.entries().next() {

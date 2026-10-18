@@ -14,38 +14,6 @@ use super::{
 };
 use crate::lex::SyntaxKind;
 
-/// Where an entry's last line ends.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LineEnd {
-    /// A NEWLINE that is the entry's own last child.
-    Own,
-    /// A NEWLINE inside a child, such as a nested block value, possibly
-    /// followed by zero-width tokens.
-    Nested,
-    /// No line break: the entry ends unterminated input.
-    Open,
-}
-
-impl LineEnd {
-    pub(crate) fn is_terminated(self) -> bool {
-        self != LineEnd::Open
-    }
-}
-
-/// Where `entry`'s last line ends.
-pub(crate) fn line_end(entry: &SyntaxNode) -> LineEnd {
-    match last_non_empty_token(entry) {
-        Some(t) if t.kind() == SyntaxKind::NEWLINE => {
-            if t.parent().as_ref() == Some(entry) {
-                LineEnd::Own
-            } else {
-                LineEnd::Nested
-            }
-        }
-        _ => LineEnd::Open,
-    }
-}
-
 /// Does `node`'s text end in a NEWLINE, ignoring zero-width tokens such as
 /// an implicit null after it?
 pub(crate) fn ends_with_line_break(node: &SyntaxNode) -> bool {
@@ -158,7 +126,7 @@ pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNo
             (next.index(), elements)
         }
         Slot::After(prev) => {
-            open_end = !line_end(&prev).is_terminated();
+            open_end = !ends_with_line_break(&prev);
             terminate(&prev);
             let mut elements: Vec<_> = indent().into_iter().collect();
             elements.push(entry.clone().into());
@@ -229,7 +197,7 @@ fn end_line(collection: &SyntaxNode, at: usize) -> (usize, bool) {
                 SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
             ) =>
         {
-            let open = !line_end(&entry).is_terminated();
+            let open = !ends_with_line_break(&entry);
             terminate(&entry);
             (entry.index() + 1, open)
         }
@@ -319,18 +287,18 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
         .any(|n| n.kind() == kind);
     let prev = std::iter::successors(entry.prev_sibling(), |n| n.prev_sibling())
         .find(|n| n.kind() == kind);
-    let end = line_end(entry);
+    let terminated = ends_with_line_break(entry);
     let flow = has_child_token(collection, |k| {
         matches!(k, SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET)
     });
 
     let mut trivia = Vec::new();
-    if !flow || ends_with_line_break(entry) || is_last {
+    if !flow || terminated || is_last {
         // The entry's line goes, unless another entry shares it. In a flow
         // collection the next line joins the line the entry started on.
         match line_indentation_before(entry) {
             Some(indentation) => trivia.extend(indentation),
-            None if flow && ends_with_line_break(entry) => trivia.extend(
+            None if flow && terminated => trivia.extend(
                 std::iter::successors(entry.next_sibling_or_token(), |c| c.next_sibling_or_token())
                     .take_while(|c| {
                         matches!(c.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE)
@@ -380,10 +348,10 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
     }
 
     if drained {
-        render_empty(collection, end.is_terminated());
+        render_empty(collection, terminated);
     }
     // The end of the input keeps its lack of a final line break.
-    if is_last && !end.is_terminated() && !flow {
+    if is_last && !terminated && !flow {
         unterminate_last(collection);
     }
 }
@@ -485,7 +453,7 @@ fn blank_lines_before(entry: &SyntaxNode) -> Vec<rowan::SyntaxElement<super::Lan
 /// Give `entry`, an attached block collection entry, a line break ending
 /// its line if it has none, where the parser would put it.
 pub(crate) fn terminate(entry: &SyntaxNode) {
-    if !line_end(entry).is_terminated() {
+    if !ends_with_line_break(entry) {
         terminate_last_line(entry);
     }
 }

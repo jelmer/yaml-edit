@@ -426,7 +426,7 @@ impl Sequence {
             .last_child()
             .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             .expect("push added an entry");
-        let open = !trivia::line_end(&pushed).is_terminated();
+        let open = !trivia::ends_with_line_break(&pushed);
         trivia::terminate(&pushed);
         let column = trivia::entry_column(&self.0);
         let mut inserts: Vec<rowan::NodeOrToken<SyntaxNode, _>> = Vec::new();
@@ -663,7 +663,7 @@ impl Sequence {
             .children()
             .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             .last()
-            .is_some_and(|e| trivia::line_end(&e).is_terminated());
+            .is_some_and(|e| trivia::ends_with_line_break(&e));
         // Remove items from the beginning to avoid recalculating indices
         // Use a safety counter to prevent infinite loops
         let initial_len = self.len();

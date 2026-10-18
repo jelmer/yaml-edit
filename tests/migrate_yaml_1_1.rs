@@ -71,6 +71,8 @@ fn sexagesimal_numbers_become_decimal() {
     assert_eq!(migrated("t: 1:30.5\n"), "t: 90.5\n");
     assert_eq!(migrated("t: 0:30.\n"), "t: 30.0\n");
     assert_eq!(migrated("t: 190:20:30.15\n"), "t: 685230.15\n");
+    assert_eq!(migrated("t: 1:5\n"), "t: 65\n");
+    assert_eq!(migrated("t: 1:30.5_0\n"), "t: 90.50\n");
 }
 
 #[test]
@@ -126,6 +128,7 @@ fn near_misses_of_the_1_1_forms_are_left_alone() {
         "a: 1_0.5e+1x\n",
         "a: 1a:30\n",
         "a: 1:30.5x\n",
+        "a: 1_0.5x\n",
     ] {
         assert_eq!(migrated(src), src, "{src:?}");
     }

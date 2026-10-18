@@ -3512,4 +3512,29 @@ config:
             (Ok(()), "x: &x [1]\ns:\n- [1, 9]\n".to_string())
         );
     }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_deprecated_wrappers() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        assert_eq!(
+            parse_path("a[1].b"),
+            vec![
+                PathSegment::Key("a".to_string()),
+                PathSegment::Index(1),
+                PathSegment::Key("b".to_string()),
+            ]
+        );
+        let doc = Document::from_str("a:\n  b: 1\n").unwrap();
+        assert_eq!(doc.get_path("a.b").unwrap().to_string(), "1");
+        assert!(doc.get_path("a.c").is_none());
+        doc.set_path("a.c", 2);
+        doc.set_path("a.b.x", 3);
+        assert_eq!(doc.to_string(), "a:\n  b: 1\n  c: 2\n");
+        assert!(doc.remove_path("a.b"));
+        assert!(!doc.remove_path("a.b"));
+        assert_eq!(doc.to_string(), "a:\n  c: 2\n");
+    }
 }

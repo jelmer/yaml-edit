@@ -764,3 +764,101 @@ fn flow_comment_not_copied_to_new_separator() {
         "l: [y, a, # c\n  b, x]\n"
     );
 }
+
+#[test]
+fn clean_merges_of_respelling_reindenting_and_flow_changes() {
+    for (base, ours, theirs, expected) in [
+        // Both made the same change, spelled differently.
+        (
+            "a: 1\nb: 1\n",
+            "a: 0x2\nb: 1\n",
+            "a: 2\nb: 3\n",
+            "a: 0x2\nb: 3\n",
+        ),
+        (
+            "a: 1  # one\n",
+            "a: 1  # uno\n",
+            "a: 2  # one\n",
+            "a: 2  # uno\n",
+        ),
+        ("a: 1\n", "'a': 1\n", "a: 2\n", "'a': 2\n"),
+        (
+            "l: [a, b]\n",
+            "l: [a, 0x10]\n",
+            "l: [a, 16]\n",
+            "l: [a, 0x10]\n",
+        ),
+        // Ours reindented, theirs added.
+        (
+            "m:\n  a: 1\n",
+            "m:\n    a: 1\n",
+            "m:\n  a: 1\n  b: 2\n",
+            "m:\n    a: 1\n    b: 2\n",
+        ),
+        (
+            "m:\n    a: 1\n",
+            "m:\n  a: 1\n",
+            "m:\n    a: 1\n    b:\n      c: 2\n",
+            "m:\n  a: 1\n  b:\n    c: 2\n",
+        ),
+        (
+            "l:\n- a: 1\n",
+            "l:\n  - a: 1\n",
+            "l:\n- a: 1\n  b: 2\n",
+            "l:\n  - a: 1\n    b: 2\n",
+        ),
+        // Flow collections.
+        (
+            "l: [a, b, c]\n",
+            "l: [a, c]\n",
+            "l: [a, b, c, d]\n",
+            "l: [a, c, d]\n",
+        ),
+        (
+            "l: [a, b]\n",
+            "l: [ a, b ]\n",
+            "l: [a, b, c]\n",
+            "l: [ a, b, c ]\n",
+        ),
+        (
+            "l: [a, {x: 1, y: 2}]\n",
+            "l: [a, {x: 2, y: 2}]\n",
+            "l: [a, {x: 1, y: 3}]\n",
+            "l: [a, {x: 2, y: 3}]\n",
+        ),
+        (
+            "m: {a: 1, # c\n  b: 2}\n",
+            "m: {a: 1, # c\n  b: 2, x: 0}\n",
+            "m: {y: 9, a: 1, # c\n  b: 2}\n",
+            "m: {y: 9, a: 1, # c\n  b: 2, x: 0}\n",
+        ),
+        (
+            "l: [a,\n  b]\n",
+            "l: [a,\n  b,\n  c]\n",
+            "l: [z,\n  a,\n  b]\n",
+            "l: [z,\n  a,\n  b,\n  c]\n",
+        ),
+        ("l: []\n", "l: [a]\n", "l: [b]\n", "l: [a, b]\n"),
+        (
+            "a: !t {x: 1, y: 1}\n",
+            "a: !t {x: 2, y: 1}\n",
+            "a: !t {x: 1, y: 2}\n",
+            "a: !t {x: 2, y: 2}\n",
+        ),
+    ] {
+        assert_eq!(clean(base, ours, theirs), expected, "{ours:?} + {theirs:?}");
+    }
+}
+
+#[test]
+fn collections_changing_kind_conflict() {
+    for (base, ours, theirs, key) in [
+        ("l: [a, b]\n", "l: {a: 1}\n", "l: [a, b, c]\n", "l"),
+        ("l:\n  - a\n", "l: [a, b]\n", "l:\n  - a\n  - c\n", "l"),
+        ("m:\n  a: 1\n", "m:\n  - x\n", "m:\n  a: 2\n", "m"),
+        ("l: [a, b, c]\n", "l: [a, c]\n", "l: [a, x, c]\n", "l"),
+    ] {
+        let (_, paths) = conflicted(base, ours, theirs);
+        assert_eq!(paths, vec![path(&[key])], "{ours:?} + {theirs:?}");
+    }
+}

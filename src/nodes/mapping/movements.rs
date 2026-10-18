@@ -1,7 +1,7 @@
 //! `Mapping::move_after` / `move_before` -- pull a key out of its
 //! current position and re-insert it at a new position.
 
-use super::helpers::{held_anchor, FlowInsertPos};
+use super::helpers::{held_anchor, unterminate_last_line, FlowInsertPos};
 use super::{Mapping, MappingEntry};
 use crate::lex::SyntaxKind;
 use crate::nodes::{
@@ -41,27 +41,6 @@ fn insert_flow_comma(entry: &SyntaxNode) {
         tokens.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
     }
     entry.splice_children(at..at, tokens);
-}
-
-/// Remove the line break that ends `mapping`, a block mapping whose last
-/// line had none before its entries were moved around. One that is part
-/// of a block scalar's value stays, as removing it would change the value.
-fn unterminate_last_line(mapping: &SyntaxNode) {
-    let Some(last) = mapping
-        .descendants_with_tokens()
-        .filter_map(|c| c.into_token())
-        .filter(|t| !t.text().is_empty())
-        .last()
-    else {
-        return;
-    };
-    let in_scalar = last
-        .parent_ancestors()
-        .take_while(|n| n != mapping)
-        .any(|n| n.kind() == SyntaxKind::SCALAR);
-    if last.kind() == SyntaxKind::NEWLINE && !in_scalar {
-        last.detach();
-    }
 }
 
 impl Mapping {

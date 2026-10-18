@@ -720,3 +720,24 @@ impl FlowWriter {
         }
     }
 }
+
+/// Remove the line break that ends `mapping`, a block mapping whose last
+/// line had none before it was edited. One that is part
+/// of a block scalar's value stays, as removing it would change the value.
+pub(super) fn unterminate_last_line(mapping: &SyntaxNode) {
+    let Some(last) = mapping
+        .descendants_with_tokens()
+        .filter_map(|c| c.into_token())
+        .filter(|t| !t.text().is_empty())
+        .last()
+    else {
+        return;
+    };
+    let in_scalar = last
+        .parent_ancestors()
+        .take_while(|n| n != mapping)
+        .any(|n| n.kind() == SyntaxKind::SCALAR);
+    if last.kind() == SyntaxKind::NEWLINE && !in_scalar {
+        last.detach();
+    }
+}

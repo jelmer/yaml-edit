@@ -6,7 +6,7 @@ pub(crate) use helpers::build_block_value_node;
 pub(crate) use helpers::flow_form;
 use helpers::{
     append_comma_space_to_entry, ensure_top_level_empty_renders_as_flow, index_after_entry_line,
-    FlowInsertPos,
+    unterminate_last_line, FlowInsertPos,
 };
 pub(crate) use helpers::{
     block_scalar_body_shift, drop_tagged_anchor, held_anchor, held_anchor_token, is_block_scalar,
@@ -1215,9 +1215,7 @@ impl Mapping {
             c.as_node()
                 .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
         });
-        let removed_had_newline = removed
-            .last_token()
-            .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE);
+        let removed_terminated = entry_line_terminated(removed);
 
         // In a block mapping every entry but the first is preceded by an
         // INDENT token that puts it at the right column; the first
@@ -1307,23 +1305,10 @@ impl Mapping {
             collapse_empty_child_mapping_in_parent(&self.0);
         }
 
-        if !(is_last && i > 0 && !removed_had_newline) {
-            return;
+        // The end of the input keeps its lack of a final line break.
+        if is_last && !removed_terminated && !self.is_flow_style() {
+            unterminate_last_line(&self.0);
         }
-        let Some(prev_entry_node) = children[..i].iter().rev().find_map(|c| {
-            c.as_node()
-                .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-        }) else {
-            return;
-        };
-        if !prev_entry_node
-            .last_token()
-            .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
-        {
-            return;
-        }
-        let count = prev_entry_node.children_with_tokens().count();
-        prev_entry_node.splice_children((count - 1)..count, vec![]);
     }
 
     /// Remove the nth occurrence of a key, returning the removed entry.

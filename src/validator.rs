@@ -2239,11 +2239,18 @@ impl Validator {
     /// a `!!omap` or `!!pairs` a sequence.
     ///
     /// These are YAML 1.1 types rather than YAML 1.2 ones, so the wrong
-    /// content is only a warning.
+    /// content is only a warning. A tagged alias is left to
+    /// [`Self::check_tag_on_alias`].
     fn check_collection_tag_content(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         let Some(tagged) = crate::yaml::TaggedNode::cast(node.clone()) else {
             return;
         };
+        if node
+            .children()
+            .any(|child| child.kind() == crate::SyntaxKind::ALIAS)
+        {
+            return;
+        }
         let message = match tagged.tag().as_deref() {
             Some("!!set") if tagged.as_set().is_none() => "!!set content is not a mapping",
             Some("!!omap") if tagged.as_sequence().is_none() => "!!omap content is not a sequence",
@@ -2870,6 +2877,7 @@ fn in_flow_collection(node: &SyntaxNode) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rowan::ast::AstNode;
     use std::str::FromStr;
 
     #[test]
@@ -4162,6 +4170,33 @@ mod tests {
             assert_eq!(
                 Validator::new().validate_syntax(file.syntax()),
                 vec![],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tagged_alias_reported_once() {
+        for yaml in [
+            "a: &a [x]\nb: !!omap *a\n",
+            "a: &a [x]\nb: !!pairs *a\n",
+            "a: &a {x: }\nb: !!set *a\n",
+            "a: &a [x]\nb: !!set *a\n",
+        ] {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            let violations: Vec<_> = Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.severity, v.rule))
+                .collect();
+            assert_eq!(
+                violations,
+                vec![(
+                    "An alias cannot have a tag".to_string(),
+                    Some("2:4".to_string()),
+                    Severity::Error,
+                    Rule::InvalidTag
+                )],
                 "{yaml:?}"
             );
         }

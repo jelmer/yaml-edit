@@ -92,3 +92,13 @@ fn remove_entry_keeps_comment_lines() {
     check_edit("x: 1\na: 1\n# c\ny: 1\n", remove("a"), "x: 1\n# c\ny: 1\n");
     check_edit("x: 1\na: 1  # c\ny: 1\n", remove("a"), "x: 1\ny: 1\n");
 }
+
+#[test]
+fn remove_explicit_key_entry_with_comment_on_its_line() {
+    let remove = |d: &Document| {
+        assert!(d.as_mapping().unwrap().remove("b").is_some());
+    };
+    check_edit("? a\n: 1\n? b\n: 2 # t\nc: 3\n", remove, "? a\n: 1\nc: 3\n");
+    check_edit("? a\n: 1\n? b\n: 2 # t\n", remove, "? a\n: 1\n");
+    check_edit("? b\n: 2 # t\nc: 3\n", remove, "c: 3\n");
+}

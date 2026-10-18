@@ -111,3 +111,15 @@ fn test_remove_item_after_comment() {
         "- a  # k\n\n- c\n"
     );
 }
+
+#[test]
+fn test_remove_after_comment() {
+    assert_eq!(
+        remove("a: 1\n# c\nb: 2\n\nc: 3\n", &[], "b"),
+        "a: 1\n# c\n\nc: 3\n"
+    );
+    assert_eq!(
+        remove("a: 1\n# c\n\nb: 2\n\nc: 3\n", &[], "b"),
+        "a: 1\n# c\n\nc: 3\n"
+    );
+}

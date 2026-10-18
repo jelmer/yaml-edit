@@ -26,6 +26,14 @@ pub(crate) fn line_indent(node: &SyntaxNode) -> usize {
     space_indent(&line_prefix(token_before(node)))
 }
 
+/// The column after writing `text` starting at `column`.
+pub(crate) fn column_after(column: usize, text: &str) -> usize {
+    match text.rfind(['\n', '\r']) {
+        Some(i) => text[i + 1..].chars().count(),
+        None => column + text.chars().count(),
+    }
+}
+
 /// The number of spaces `text` starts with.
 ///
 /// Only spaces indent in YAML (s-indent), so a tab ends the indentation.
@@ -134,6 +142,16 @@ mod tests {
                 ("\n".to_string(), 3),
             ]
         );
+    }
+
+    #[test]
+    fn test_column_after() {
+        assert_eq!(column_after(2, "ab"), 4);
+        assert_eq!(column_after(2, "\u{e9}"), 3);
+        assert_eq!(column_after(2, "a\n  b"), 3);
+        assert_eq!(column_after(2, "a\r\n  b"), 3);
+        assert_eq!(column_after(2, "a\r  b"), 3);
+        assert_eq!(column_after(2, "\r"), 0);
     }
 
     #[test]

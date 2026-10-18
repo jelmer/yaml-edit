@@ -1323,7 +1323,7 @@ impl Mapping {
             .children()
             .any(|c| c.kind() == SyntaxKind::MAPPING_ENTRY)
         {
-            collapse_empty_child_mapping_in_parent(&self.0);
+            collapse_empty_child_mapping_in_parent(&self.0, removed_terminated);
         }
 
         // The end of the input keeps its lack of a final line break.

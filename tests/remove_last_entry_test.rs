@@ -56,3 +56,61 @@ fn remove_terminated_last_entry() {
     check_remove("a: 1\nb: |\n  x\n", "a: 1\n");
     check_remove("a:\n  x: 1\nb: 2\n", "a:\n  x: 1\n");
 }
+
+#[track_caller]
+fn check_edit(source: &str, edit: impl Fn(&Document), expected: &str) {
+    let doc = Document::from_str(source).unwrap();
+    edit(&doc);
+    assert_eq!(doc.to_string(), expected, "editing {source:?}");
+    common::assert_cst_ok(&doc);
+    let reparsed = Document::from_str(expected).unwrap();
+    assert_eq!(
+        debug::tree_to_string(doc.syntax()),
+        debug::tree_to_string(reparsed.syntax())
+    );
+}
+
+#[test]
+fn remove_only_entry_of_nested_mapping() {
+    check_remove("top:\n  b: 2", "top: {}");
+    check_remove("top:\n  b: 2\n", "top: {}\n");
+    check_remove("x: 1\ntop:\n  b: 2", "x: 1\ntop: {}");
+    check_remove("top: # k\n  b: 2", "top: {} # k");
+    check_remove("top: !t\n  b: 2", "top: !t {}");
+    check_remove("top: &a\n  b: 2", "top: &a {}");
+    check_remove("top:\n  # c\n  b: 2", "top:\n  # c\n  {}");
+    check_remove("top:\n  # c\n  b: 2\n", "top:\n  # c\n  {}\n");
+}
+
+#[test]
+fn clear_nested_mapping() {
+    let clear = |d: &Document| d.as_mapping().unwrap().get_mapping("top").unwrap().clear();
+    check_edit("top:\n  b: 2", clear, "top: {}");
+    check_edit("top:\n  a: 1\n  b: 2", clear, "top: {}");
+    check_edit("top:\n  a: 1\n  b: 2\n", clear, "top: {}\n");
+}
+
+#[test]
+fn remove_only_item_of_nested_sequence() {
+    let remove = |d: &Document| {
+        assert!(d
+            .as_mapping()
+            .unwrap()
+            .get_sequence("top")
+            .unwrap()
+            .remove(0)
+            .is_some());
+    };
+    check_edit("top:\n  - 2", remove, "top: []");
+    check_edit("top:\n- 2", remove, "top: []");
+    check_edit("top:\n  - 2\n", remove, "top: []\n");
+    check_edit("x: 1\ntop:\n  - 2", remove, "x: 1\ntop: []");
+}
+
+#[test]
+fn clear_nested_sequence() {
+    let clear = |d: &Document| d.as_mapping().unwrap().get_sequence("top").unwrap().clear();
+    check_edit("top:\n  - 2", clear, "top: []");
+    check_edit("top:\n  - 1\n  - 2", clear, "top: []");
+    check_edit("top:\n  - 1\n  - 2\n", clear, "top: []\n");
+}

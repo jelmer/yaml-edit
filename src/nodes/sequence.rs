@@ -1192,6 +1192,8 @@ impl Sequence {
             c.as_node()
                 .is_some_and(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
         });
+        let removed_terminated =
+            entry_line_terminated(children[i].as_node().expect("SEQUENCE_ENTRY"));
 
         // Remove the entry first, then the INDENT that
         // separated it from a sibling. Doing them as two
@@ -1243,7 +1245,7 @@ impl Sequence {
         // scaffold to `key: []` so re-parse still finds
         // the (now-empty) sequence at that key.
         if self.is_empty() {
-            collapse_empty_child_sequence_in_parent(&self.0);
+            collapse_empty_child_sequence_in_parent(&self.0, removed_terminated);
         }
     }
 

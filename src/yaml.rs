@@ -243,7 +243,11 @@ pub(crate) fn convert_placeholder_to_block(collection: &SyntaxNode) {
 /// Node properties, a trailing comment on the key line and comment
 /// lines before or inside the collection are kept. Skips flow
 /// collections, which already render correctly when empty.
-pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode) {
+///
+/// `terminated` says whether the collection's last line ended in a line
+/// break before it was drained. If not, the collection ended the input
+/// without one, and the entry is left without one too.
+pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode, terminated: bool) {
     let (open_kind, close_kind, open_txt, close_txt) = match collection.kind() {
         SyntaxKind::MAPPING => (SyntaxKind::LEFT_BRACE, SyntaxKind::RIGHT_BRACE, "{", "}"),
         SyntaxKind::SEQUENCE => (
@@ -362,7 +366,9 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
         replacement.push(new_collection.into());
         let index = collection.index();
         host.splice_children(index..index + 1, replacement);
-        crate::nodes::ensure_trailing_newline(&entry_node);
+        if terminated {
+            crate::nodes::ensure_trailing_newline(&entry_node);
+        }
         return;
     }
 
@@ -425,7 +431,9 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode)
     // The next sibling entry needs a NEWLINE separator inside this
     // entry (see the "entry termination" invariant in
     // src/nodes/mod.rs).
-    crate::nodes::ensure_trailing_newline(&entry_node);
+    if terminated {
+        crate::nodes::ensure_trailing_newline(&entry_node);
+    }
 }
 
 /// The byte order mark `node` starts with, if any.

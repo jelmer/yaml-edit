@@ -173,7 +173,7 @@ fn dedent_comment_line_after(entry: &SyntaxNode, scalar: &SyntaxNode) {
 }
 
 /// A line comment: the whitespace before it and its text.
-pub(crate) type LineComment = (String, String);
+type LineComment = (String, String);
 
 /// Detach and return the comment on the line of `entry`'s dash, which
 /// belongs to the entry even where the item nests a collection starting

@@ -335,7 +335,7 @@ pub(crate) fn separate_key_from_colon(entry: &SyntaxNode) {
 }
 
 /// The first direct child node of `parent` with the given `kind`, if any.
-pub(crate) fn child_of_kind(parent: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
+fn child_of_kind(parent: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
     parent.children().find(|n| n.kind() == kind)
 }
 

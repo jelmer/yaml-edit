@@ -657,7 +657,7 @@ impl FlowSeparator {
     /// included, and `last` gets the one between the entries before it, or
     /// `, ` if there is none. `before_last` is the entry before `last`.
     /// Returns the indentation to put before `new_entry`.
-    pub(crate) fn hand_over_end(
+    fn hand_over_end(
         last: &SyntaxNode,
         before_last: Option<&SyntaxNode>,
         new_entry: &SyntaxNode,

@@ -263,7 +263,7 @@ pub(crate) fn drop_tagged_anchor(holder: &SyntaxNode) {
 /// Find the content indent of a block scalar - the INDENT token right after
 /// the `|`/`>` indicator and its NEWLINE. Returns `None` if the scalar is
 /// empty (no content lines).
-pub(crate) fn block_scalar_content_indent(scalar: &SyntaxNode) -> Option<usize> {
+fn block_scalar_content_indent(scalar: &SyntaxNode) -> Option<usize> {
     let mut after_newline = false;
     for child in scalar.children_with_tokens() {
         if let Some(tok) = child.as_token() {

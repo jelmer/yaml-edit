@@ -505,3 +505,31 @@ fn blank_lines_after_new_block_scalar() {
         assert_eq!(scalar_string(&set), scalar_string(&source), "{src:?}");
     }
 }
+
+/// The parser keeps the blank lines after an empty value in it, where it
+/// looked for the value. They stay after a new value.
+#[test]
+fn blank_lines_after_empty_value() {
+    for (src, path, expected_scalar, expected_block) in [
+        ("a:\n\nb: 1\n", "", "a: 5\n\nb: 1\n", "a:\n  y: 2\n\nb: 1\n"),
+        (
+            "a:  # c\n\n\nb: 1\n",
+            "",
+            "a: 5  # c\n\n\nb: 1\n",
+            "a:  # c\n  y: 2\n\n\nb: 1\n",
+        ),
+        (
+            "x:\n  a:\n\n  b: 1\n",
+            "x",
+            "x:\n  a: 5\n\n  b: 1\n",
+            "x:\n  a:\n    y: 2\n\n  b: 1\n",
+        ),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        mapping_at(&file, path).set("a", 5);
+        assert_parser_shaped(&file, expected_scalar, src);
+        let file = YamlFile::from_str(src).unwrap();
+        mapping_at(&file, path).set("a", block_mapping());
+        assert_parser_shaped(&file, expected_block, src);
+    }
+}

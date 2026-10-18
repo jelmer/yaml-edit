@@ -339,12 +339,19 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode,
         panic!("unexpected {:?} left in an empty collection", t.kind());
     }
 
-    let mut inner_builder = rowan::GreenNodeBuilder::new();
-    inner_builder.start_node(collection.kind().into());
-    inner_builder.token(open_kind.into(), open_txt);
-    inner_builder.token(close_kind.into(), close_txt);
-    inner_builder.finish_node();
-    let new_collection = SyntaxNode::new_root_mut(inner_builder.finish());
+    // The collection itself becomes the flow-empty, rather than a new
+    // node, so handles to it stay attached and later edits through them
+    // still land in the document.
+    let count = collection.children_with_tokens().count();
+    crate::nodes::replace_children(
+        collection,
+        0..count,
+        vec![
+            crate::nodes::fresh_token(open_kind, open_txt).into(),
+            crate::nodes::fresh_token(close_kind, close_txt).into(),
+        ],
+    );
+    let new_collection = collection.clone();
 
     if comment_lines || !inner.is_empty() {
         let mut replacement: Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>> = inner
@@ -362,7 +369,7 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode,
         }
         replacement.push(new_collection.into());
         let index = collection.index();
-        host.splice_children(index..index + 1, replacement);
+        crate::nodes::replace_children(&host, index..index + 1, replacement);
         if terminated {
             crate::nodes::ensure_trailing_newline(&entry_node);
         }

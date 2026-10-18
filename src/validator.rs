@@ -979,8 +979,18 @@ fn check_legacy_yaml_1_1(node: &SyntaxNode, violations: &mut Vec<Violation>) {
     if is_quoted_scalar(&token) {
         return;
     }
-    let text = token.text();
+    if let Some(message) = legacy_yaml_1_1_reading(token.text()) {
+        violations.push(Violation::warning_at(
+            Rule::LegacyYaml11,
+            token.text_range(),
+            message,
+        ));
+    }
+}
 
+/// How YAML 1.1 reads the plain scalar `text` differently from YAML 1.2,
+/// or `None` if both read it the same.
+fn legacy_yaml_1_1_reading(text: &str) -> Option<String> {
     if crate::ScalarValue::is_legacy_octal(text) {
         let sign = if text.starts_with('-') { "-" } else { "" };
         let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
@@ -988,14 +998,9 @@ fn check_legacy_yaml_1_1(node: &SyntaxNode, violations: &mut Vec<Violation>) {
         let as_decimal = crate::scalar::digits_to_decimal(digits, 10);
         // The 1.2 spelling `0o755` is a string to a 1.1 reader; only the
         // decimal reads the same in both.
-        violations.push(Violation::warning_at(
-            Rule::LegacyYaml11,
-            token.text_range(),
-            format!(
-                "`{text}` is YAML 1.1 octal, read as {sign}{as_octal}; YAML 1.2 reads it as {sign}{as_decimal}. Write `{sign}{as_octal}` to keep the octal meaning",
-            ),
+        return Some(format!(
+            "`{text}` is YAML 1.1 octal, read as {sign}{as_octal}; YAML 1.2 reads it as {sign}{as_decimal}. Write `{sign}{as_octal}` to keep the octal meaning",
         ));
-        return;
     }
 
     if let Some((after, kind)) = crate::migrate::yaml_1_1_number(text) {
@@ -1011,28 +1016,18 @@ fn check_legacy_yaml_1_1(node: &SyntaxNode, violations: &mut Vec<Violation>) {
         } else {
             (after.clone(), after, "integer")
         };
-        violations.push(Violation::warning_at(
-            Rule::LegacyYaml11,
-            token.text_range(),
-            format!(
-                "`{text}` is the {kind} {value} in YAML 1.1; YAML 1.2 reads it as a string. Write `{suggestion}` to keep the {kind} meaning",
-            ),
+        return Some(format!(
+            "`{text}` is the {kind} {value} in YAML 1.1; YAML 1.2 reads it as a string. Write `{suggestion}` to keep the {kind} meaning",
         ));
-        return;
     }
 
     if crate::ScalarValue::is_leading_zero_decimal(text) {
         let minus = if text.starts_with('-') { "-" } else { "" };
         let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
         let as_decimal = crate::scalar::digits_to_decimal(digits, 10);
-        violations.push(Violation::warning_at(
-            Rule::LegacyYaml11,
-            token.text_range(),
-            format!(
-                "`{text}` is a string in YAML 1.1; YAML 1.2 reads it as the integer {minus}{as_decimal}. Write `'{text}'` to keep the string meaning",
-            ),
+        return Some(format!(
+            "`{text}` is a string in YAML 1.1; YAML 1.2 reads it as the integer {minus}{as_decimal}. Write `'{text}'` to keep the string meaning",
         ));
-        return;
     }
 
     if crate::migrate::yaml_1_1_string(text) {
@@ -1042,26 +1037,18 @@ fn check_legacy_yaml_1_1(node: &SyntaxNode, violations: &mut Vec<Violation>) {
             }
             None => "a float".to_string(),
         };
-        violations.push(Violation::warning_at(
-            Rule::LegacyYaml11,
-            token.text_range(),
-            format!(
-                "`{text}` is a string in YAML 1.1; YAML 1.2 reads it as {reading}. Write `'{text}'` to keep the string meaning",
-            ),
+        return Some(format!(
+            "`{text}` is a string in YAML 1.1; YAML 1.2 reads it as {reading}. Write `'{text}'` to keep the string meaning",
         ));
-        return;
     }
 
     if matches!(
         text,
         "yes" | "no" | "on" | "off" | "Yes" | "No" | "On" | "Off" | "YES" | "NO" | "ON" | "OFF"
     ) {
-        violations.push(Violation::warning_at(
-            Rule::LegacyYaml11,
-            token.text_range(),
-            format!("`{text}` is the string \"{text}\" in YAML 1.2, but a boolean to a YAML 1.1 reader; quote it or write true/false to be unambiguous"),
-        ));
+        return Some(format!("`{text}` is the string \"{text}\" in YAML 1.2, but a boolean to a YAML 1.1 reader; quote it or write true/false to be unambiguous"));
     }
+    None
 }
 
 /// Check for trailing content after quoted strings
@@ -1379,78 +1366,49 @@ fn check_block_mapping_entries_on_same_line(node: &SyntaxNode, violations: &mut 
         return; // Flow mappings can have entries on same line
     }
 
-    // Check for consecutive MAPPING_ENTRY nodes without NEWLINE between them
-    let mut prev_entry: Option<SyntaxNode> = None;
-
-    for child in node.children() {
-        if child.kind() == crate::SyntaxKind::MAPPING_ENTRY {
-            if let Some(prev) = prev_entry {
-                // Check if there's a NEWLINE between prev and current entry.
-                // The newline may be inside the previous entry (as its last
-                // token) or between entries as a sibling token.
-                let has_newline_between = {
-                    // First check if the previous entry ends with a newline.
-                    //
-                    // An explicit key's entry ends with the zero-width
-                    // implicit-null scalar of its VALUE, so look past
-                    // tokens that render as nothing: `? a\n? b\n` has its
-                    // newline inside the first entry, not between them.
-                    // In a nested mapping the next line's indentation
-                    // follows that newline (`k:\n  ? a\n  ? b\n`).
-                    let prev_ends_with_newline = prev
-                        .descendants_with_tokens()
-                        .filter_map(|c| c.into_token())
-                        .filter(|t| {
-                            !t.text().is_empty()
-                                && !matches!(
-                                    t.kind(),
-                                    crate::SyntaxKind::INDENT | crate::SyntaxKind::WHITESPACE
-                                )
-                        })
-                        .last()
-                        .is_some_and(|t| t.kind() == crate::SyntaxKind::NEWLINE);
-
-                    if prev_ends_with_newline {
-                        true
-                    } else {
-                        // Check sibling tokens between the entries
-                        let mut current_sibling = prev.next_sibling_or_token();
-                        let mut found_newline = false;
-
-                        while let Some(sibling) = current_sibling {
-                            if let rowan::NodeOrToken::Node(n) = &sibling {
-                                if n == &child {
-                                    break;
-                                }
-                            }
-
-                            if let rowan::NodeOrToken::Token(t) = &sibling {
-                                if t.kind() == crate::SyntaxKind::NEWLINE {
-                                    found_newline = true;
-                                    break;
-                                }
-                            }
-
-                            current_sibling = sibling.next_sibling_or_token();
-                        }
-
-                        found_newline
-                    }
-                };
-
-                if !has_newline_between {
-                    violations.push(Violation::error_at(
-                        Rule::Other,
-                        child.text_range(),
-                        "Block mapping entries must be on separate lines",
-                    ));
-                    return; // One violation is enough
-                }
-            }
-
-            prev_entry = Some(child);
-        }
+    let entries: Vec<SyntaxNode> = node
+        .children()
+        .filter(|c| c.kind() == crate::SyntaxKind::MAPPING_ENTRY)
+        .collect();
+    // One violation is enough.
+    if let Some(pair) = entries.windows(2).find(|w| !newline_between(&w[0], &w[1])) {
+        violations.push(Violation::error_at(
+            Rule::Other,
+            pair[1].text_range(),
+            "Block mapping entries must be on separate lines",
+        ));
     }
+}
+
+/// Whether a line break separates mapping entry `prev` from the entry
+/// `next` that follows it.
+///
+/// The newline may be inside `prev` (as its last token) or between the
+/// entries as a sibling token.
+fn newline_between(prev: &SyntaxNode, next: &SyntaxNode) -> bool {
+    // An explicit key's entry ends with the zero-width implicit-null
+    // scalar of its VALUE, so look past tokens that render as nothing:
+    // `? a\n? b\n` has its newline inside the first entry, not between
+    // them. In a nested mapping the next line's indentation follows that
+    // newline (`k:\n  ? a\n  ? b\n`).
+    let prev_ends_with_newline = prev
+        .descendants_with_tokens()
+        .filter_map(|c| c.into_token())
+        .filter(|t| {
+            !t.text().is_empty()
+                && !matches!(
+                    t.kind(),
+                    crate::SyntaxKind::INDENT | crate::SyntaxKind::WHITESPACE
+                )
+        })
+        .last()
+        .is_some_and(|t| t.kind() == crate::SyntaxKind::NEWLINE);
+    prev_ends_with_newline
+        || prev
+            .siblings_with_tokens(rowan::Direction::Next)
+            .skip(1)
+            .take_while(|el| el.as_node() != Some(next))
+            .any(|el| el.kind() == crate::SyntaxKind::NEWLINE)
 }
 
 /// Check that sibling MAPPING_ENTRY nodes inside a block mapping
@@ -1472,25 +1430,58 @@ fn check_mapping_entry_indentation(node: &SyntaxNode, violations: &mut Vec<Viola
         return;
     }
 
-    // Determine the expected indent for entries in this mapping.
-    //   - Nested mapping (parent VALUE has NEWLINE + INDENT before
-    //     us): use that INDENT's text.
-    //   - Otherwise (root, compact or explicit-entry mapping): the
-    //     column of its first entry.
-    //
-    // Then walk direct children. Every INDENT token that precedes a
-    // MAPPING_ENTRY (i.e. separates two entries) must equal the
-    // expected indent. Otherwise the parser has admitted a
-    // wrong-indented sibling that the YAML spec rejects (see
-    // yaml-test-suite EW3V / DMG6 / N4JP / U44R).
+    // Every INDENT token that precedes a MAPPING_ENTRY (i.e. separates
+    // two entries) must equal the expected indent. Otherwise the parser
+    // has admitted a wrong-indented sibling that the YAML spec rejects
+    // (see yaml-test-suite EW3V / DMG6 / N4JP / U44R).
+    let expected_indent = expected_entry_indent(node);
+
+    // Only an INDENT that introduces a sibling entry states that
+    // entry's indentation. One followed by a NEWLINE pads a blank
+    // line (H2RW), and a trailing one belongs to the enclosing
+    // construct rather than to this mapping (V9D5's explicit key).
+    let mut seen_entry = false;
+    let mut pending: Option<rowan::SyntaxToken<crate::Lang>> = None;
+    for child in node.children_with_tokens() {
+        match child {
+            rowan::NodeOrToken::Token(t) if t.kind() == crate::SyntaxKind::INDENT => {
+                pending = Some(t);
+            }
+            rowan::NodeOrToken::Node(n) if n.kind() == crate::SyntaxKind::MAPPING_ENTRY => {
+                if let Some(t) = pending.take() {
+                    if seen_entry && t.text() != expected_indent {
+                        violations.push(Violation::error_at(
+                            Rule::Other,
+                            t.text_range(),
+                            format!(
+                                "Sibling block mapping entries have inconsistent indentation (expected {expected_indent:?}, found {:?})",
+                                t.text()
+                            ),
+                        ));
+                    }
+                }
+                seen_entry = true;
+            }
+            _ => {
+                pending = None;
+            }
+        }
+    }
+}
+
+/// The indentation every entry of block mapping `node` should have.
+///
+/// For a nested mapping (its parent VALUE has NEWLINE + INDENT before it)
+/// that is the INDENT's text; otherwise (root, compact or explicit-entry
+/// mapping) the column of its first entry.
+fn expected_entry_indent(node: &SyntaxNode) -> String {
     // A mapping that is a sequence entry's value has its INDENT in the
     // SEQUENCE_ENTRY rather than a VALUE, in the same position relative
     // to the MAPPING. Without it the expected indent fell back to the
     // empty string and every entry of `-\n  a: 1\n  b: 2\n` looked
     // wrongly indented. A tagged mapping (`k: !t\n  a: 1\n`, C4HZ) has
     // it in the TAGGED_NODE.
-    let expected_indent: String = node
-        .parent()
+    node.parent()
         .filter(|p| {
             matches!(
                 p.kind(),
@@ -1534,32 +1525,7 @@ fn check_mapping_entry_indentation(node: &SyntaxNode, violations: &mut Vec<Viola
             }
             Some(" ".repeat(token_column(&node.first_token()?)))
         })
-        .unwrap_or_default();
-
-    // Only an INDENT that introduces a sibling entry states that
-    // entry's indentation. One followed by a NEWLINE pads a blank
-    // line (H2RW), and a trailing one belongs to the enclosing
-    // construct rather than to this mapping (V9D5's explicit key).
-    let mut seen_entry = false;
-    let mut pending: Option<rowan::SyntaxToken<crate::Lang>> = None;
-    for child in node.children_with_tokens() {
-        match child {
-            rowan::NodeOrToken::Token(t) if t.kind() == crate::SyntaxKind::INDENT => {
-                pending = Some(t);
-            }
-            rowan::NodeOrToken::Node(n) if n.kind() == crate::SyntaxKind::MAPPING_ENTRY => {
-                if let Some(t) = pending.take() {
-                    if seen_entry && t.text() != expected_indent {
-                        violations.push(Violation::error_at(Rule::Other, t.text_range(), format!( "Sibling block mapping entries have inconsistent indentation (expected {:?}, found {:?})", expected_indent, t.text() )));
-                    }
-                }
-                seen_entry = true;
-            }
-            _ => {
-                pending = None;
-            }
-        }
-    }
+        .unwrap_or_default()
 }
 
 /// Check that a multi-line flow collection indents its continuation lines.
@@ -2164,37 +2130,39 @@ fn check_implicit_key_multiline(entry_node: &SyntaxNode, violations: &mut Vec<Vi
         return;
     }
 
-    for child in entry_node.children() {
-        if child.kind() != crate::SyntaxKind::KEY {
-            continue;
-        }
-        let spans_lines = child.descendants_with_tokens().any(|el| match el {
-            rowan::NodeOrToken::Token(t) => {
-                t.kind() == crate::SyntaxKind::NEWLINE || t.text().contains(['\n', '\r'])
-            }
-            _ => false,
-        });
-        // A flow scalar may span lines, so a key inside a flow
-        // collection is allowed to: the test suite's 8KB6, 9BXH, 9SA2
-        // and NJ66 all key an entry with `{ multi\n  line: value}`. The
-        // restriction is on an implicit key in block context (7LBH).
-        // What matters is the collection this entry belongs to: a flow
-        // one lets its keys span lines (8KB6's `- { multi\n  line: v}`),
-        // a block one does not, even when the key is itself a flow
-        // collection (C2SP's `[23\n]: 42`, DK4H).
-        // A flow collection holds its own `{`/`[` as a direct child;
-        // first_token() would instead reach into the key's flow
-        // sequence, making C2SP's block mapping look like a flow one.
-        let in_flow = entry_node
-            .parent()
-            .is_some_and(|m| starts_a_flow_collection(&m));
-        if spans_lines && !in_flow {
+    // A flow scalar may span lines, so a key inside a flow
+    // collection is allowed to: the test suite's 8KB6, 9BXH, 9SA2
+    // and NJ66 all key an entry with `{ multi\n  line: value}`. The
+    // restriction is on an implicit key in block context (7LBH).
+    // What matters is the collection this entry belongs to: a flow
+    // one lets its keys span lines (8KB6's `- { multi\n  line: v}`),
+    // a block one does not, even when the key is itself a flow
+    // collection (C2SP's `[23\n]: 42`, DK4H).
+    // A flow collection holds its own `{`/`[` as a direct child;
+    // first_token() would instead reach into the key's flow
+    // sequence, making C2SP's block mapping look like a flow one.
+    let in_flow = entry_node
+        .parent()
+        .is_some_and(|m| starts_a_flow_collection(&m));
+    if !in_flow {
+        let multiline_key = entry_node
+            .children()
+            .filter(|c| c.kind() == crate::SyntaxKind::KEY)
+            .find(|key| {
+                key.descendants_with_tokens()
+                    .filter_map(|el| el.into_token())
+                    .any(|t| {
+                        t.kind() == crate::SyntaxKind::NEWLINE || t.text().contains(['\n', '\r'])
+                    })
+            });
+        if let Some(key) = multiline_key {
+            // Only report once per entry
             violations.push(Violation::error_at(
                 Rule::Other,
-                child.text_range(),
+                key.text_range(),
                 "Implicit key cannot span multiple lines",
             ));
-            return; // Only report once per entry
+            return;
         }
     }
 
@@ -2212,27 +2180,29 @@ fn check_implicit_key_multiline(entry_node: &SyntaxNode, violations: &mut Vec<Vi
     {
         return;
     }
-    let mut seen_key = false;
-    for el in entry_node.children_with_tokens() {
-        match el {
-            rowan::NodeOrToken::Node(n) if n.kind() == crate::SyntaxKind::KEY => {
-                seen_key = true;
-            }
-            rowan::NodeOrToken::Token(t) if seen_key => match t.kind() {
-                crate::SyntaxKind::NEWLINE => {
-                    violations.push(Violation::error_at(
-                        Rule::Other,
-                        entry_node.text_range(),
-                        "Implicit key cannot span multiple lines",
-                    ));
-                    return;
-                }
-                crate::SyntaxKind::COLON => return,
-                _ => {}
-            },
-            _ => {}
-        }
+    if line_break_before_colon(entry_node) {
+        violations.push(Violation::error_at(
+            Rule::Other,
+            entry_node.text_range(),
+            "Implicit key cannot span multiple lines",
+        ));
     }
+}
+
+/// Whether a line break separates the key of mapping entry `entry` from
+/// its `:`.
+fn line_break_before_colon(entry: &SyntaxNode) -> bool {
+    entry
+        .children_with_tokens()
+        .skip_while(|el| el.kind() != crate::SyntaxKind::KEY)
+        .filter_map(|el| el.into_token())
+        .find(|t| {
+            matches!(
+                t.kind(),
+                crate::SyntaxKind::NEWLINE | crate::SyntaxKind::COLON
+            )
+        })
+        .is_some_and(|t| t.kind() == crate::SyntaxKind::NEWLINE)
 }
 
 /// Check for block sequence or mapping starting on same line as mapping key
@@ -2246,17 +2216,14 @@ fn check_implicit_key_multiline(entry_node: &SyntaxNode, violations: &mut Vec<Vi
 fn check_collection_on_same_line_as_key(entry_node: &SyntaxNode, violations: &mut Vec<Violation>) {
     use crate::SyntaxKind;
 
-    // Find the KEY and VALUE nodes within the MAPPING_ENTRY
-    let mut key_node: Option<SyntaxNode> = None;
-    let mut value_node: Option<SyntaxNode> = None;
-
-    for child in entry_node.children() {
-        match child.kind() {
-            SyntaxKind::KEY => key_node = Some(child),
-            SyntaxKind::VALUE => value_node = Some(child),
-            _ => {}
-        }
-    }
+    let key_node = entry_node
+        .children()
+        .filter(|c| c.kind() == SyntaxKind::KEY)
+        .last();
+    let value_node = entry_node
+        .children()
+        .filter(|c| c.kind() == SyntaxKind::VALUE)
+        .last();
 
     // If there's no value, nothing to check
     let Some(value) = value_node else { return };
@@ -2285,54 +2252,7 @@ fn check_collection_on_same_line_as_key(entry_node: &SyntaxNode, violations: &mu
         return;
     }
 
-    // Check for a NEWLINE between key (or COLON) and the collection
-
-    // Find the COLON token that separates key and value
-    let mut found_colon = false;
-    let mut has_newline = false;
-
-    // The parser puts the line break inside the VALUE when the collection
-    // is indentless (`k:\n- a\n`), where the entries sit at the key's
-    // own column. That is valid YAML, so look there first; the scan
-    // below only sees tokens at the MAPPING_ENTRY level.
-    for child in value.children_with_tokens() {
-        match child {
-            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::NEWLINE => {
-                has_newline = true;
-                break;
-            }
-            rowan::NodeOrToken::Node(ref n) if n == &collection => break,
-            _ => {}
-        }
-    }
-
-    if let Some(key) = key_node.filter(|_| !has_newline) {
-        // Start from after the key
-        let mut current = key.next_sibling_or_token();
-
-        while let Some(element) = current {
-            if let rowan::NodeOrToken::Token(t) = &element {
-                if t.kind() == SyntaxKind::COLON {
-                    found_colon = true;
-                } else if found_colon && t.kind() == SyntaxKind::NEWLINE {
-                    has_newline = true;
-                    break;
-                }
-            }
-
-            // Stop if we reach the collection node
-            if let rowan::NodeOrToken::Node(n) = &element {
-                if n == &collection {
-                    break;
-                }
-            }
-
-            current = element.next_sibling_or_token();
-        }
-    }
-
-    // If there's no newline between the colon and the collection, it's invalid
-    if !has_newline {
+    if !line_break_before_collection(key_node.as_ref(), &value, &collection) {
         let what = if collection.kind() == SyntaxKind::MAPPING {
             "mapping"
         } else {
@@ -2344,6 +2264,31 @@ fn check_collection_on_same_line_as_key(entry_node: &SyntaxNode, violations: &mu
             format!("Block {what} cannot start on same line as mapping key"),
         ));
     }
+}
+
+/// Whether a line break separates the `:` after `key` from `collection`,
+/// the block collection held in the entry's `value`.
+fn line_break_before_collection(
+    key: Option<&SyntaxNode>,
+    value: &SyntaxNode,
+    collection: &SyntaxNode,
+) -> bool {
+    use crate::SyntaxKind;
+    // The parser puts the line break inside the VALUE when the collection
+    // is indentless (`k:\n- a\n`), where the entries sit at the key's
+    // own column. That is valid YAML, so look there first; the scan
+    // below only sees tokens at the MAPPING_ENTRY level.
+    let in_value = value
+        .children_with_tokens()
+        .take_while(|el| el.as_node() != Some(collection))
+        .any(|el| el.kind() == SyntaxKind::NEWLINE);
+    in_value
+        || key.is_some_and(|key| {
+            key.siblings_with_tokens(rowan::Direction::Next)
+                .filter_map(|el| el.into_token())
+                .skip_while(|t| t.kind() != SyntaxKind::COLON)
+                .any(|t| t.kind() == SyntaxKind::NEWLINE)
+        })
 }
 
 /// Check sequence items have consistent indentation (ZVH3)

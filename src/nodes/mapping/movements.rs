@@ -1,9 +1,9 @@
 //! `Mapping::move_after` / `move_before` -- pull a key out of its
 //! current position and re-insert it at a new position.
 
-use super::helpers::FlowInsertPos;
 use super::{Mapping, MappingEntry};
 use crate::lex::SyntaxKind;
+use crate::nodes::trivia::Slot;
 use crate::nodes::trivia::{self, line_end, FlowSeparator};
 use crate::nodes::{fresh_token, SyntaxNode, SyntaxToken};
 use rowan::ast::AstNode;
@@ -167,22 +167,16 @@ impl Mapping {
         // same key first.
         let moved = self.remove(new_key).is_some();
         let entry = MappingEntry::new_in(new_key, new_value, flow, use_explicit_keys, key_indent);
-        self.insert_next_to(&entry.0, target, flow_context, after);
+        let slot = if after {
+            Slot::After(target)
+        } else {
+            Slot::Before(target)
+        };
+        self.attach(&entry.0, slot);
         if moved {
             self.restore_slot_layout(&layout);
         }
         true
-    }
-
-    /// Insert `entry` after `target`, an entry of this mapping, if `after`
-    /// is set, and before it otherwise.
-    fn insert_next_to(&self, entry: &SyntaxNode, target: SyntaxNode, flow: bool, after: bool) {
-        match (flow, after) {
-            (true, true) => self.insert_flow_entry_cst_at(entry, FlowInsertPos::After(target)),
-            (true, false) => self.insert_flow_entry_cst_at(entry, FlowInsertPos::Before(target)),
-            (false, true) => self.insert_block_entry_after(entry, &target),
-            (false, false) => self.insert_block_entry_before(entry, &target),
-        }
     }
 
     /// Move a key-value pair to immediately after an existing key.

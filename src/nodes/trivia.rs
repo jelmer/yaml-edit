@@ -419,11 +419,10 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
         }
         if !drained {
             crate::yaml::move_leading_lines_out(collection);
+            if is_last {
+                move_trailing_comment_lines_out(collection);
+            }
         }
-        // TODO: comment lines now after the last entry of a nested
-        // collection belong after it in the parent, as the parser has them:
-        // `x:\n  - a\n  # c\n  - b\ny: 1\n` with `b` removed keeps `# c`
-        // in the sequence.
         if let Some(prev) = &prev {
             super::replaced_value::settle_lines_after_block_scalar(prev);
         }
@@ -436,6 +435,53 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
     if is_last && !end.is_terminated() && !flow {
         unterminate_last(collection);
     }
+}
+
+/// Move the comment lines ending `collection`, a block collection, out
+/// after the entry holding it in the collection that has an entry after
+/// that, where the parser puts comment lines before a dedented line. The
+/// blank lines and the INDENT before the first one stay. Lines with
+/// nothing after them stay too.
+fn move_trailing_comment_lines_out(collection: &SyntaxNode) {
+    let mut trailing: Vec<_> = std::iter::successors(collection.last_child_or_token(), |c| {
+        c.prev_sibling_or_token()
+    })
+    .map_while(|c| c.into_token())
+    .collect();
+    trailing.reverse();
+    let starts_line = |t: &SyntaxToken| {
+        t.kind() == SyntaxKind::COMMENT
+            && t.prev_sibling_or_token()
+                .is_some_and(|p| matches!(p.kind(), SyntaxKind::INDENT | SyntaxKind::NEWLINE))
+    };
+    let Some(first) = trailing.iter().position(starts_line) else {
+        return;
+    };
+    let holder = collection
+        .ancestors()
+        .skip(1)
+        .filter(|n| {
+            matches!(
+                n.kind(),
+                SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+            )
+        })
+        .find(|e| e.next_sibling().is_some_and(|n| n.kind() == e.kind()));
+    let Some(holder) = holder else {
+        return;
+    };
+    let lines = trailing.split_off(first);
+    for t in &lines {
+        t.detach();
+    }
+    insert_children(
+        &holder.parent().expect("an entry is in a collection"),
+        holder.index() + 1,
+        lines
+            .iter()
+            .map(|t| fresh_token(t.kind(), t.text()).into())
+            .collect(),
+    );
 }
 
 /// The blank lines directly before `entry`, past the INDENT leading it.

@@ -19,6 +19,7 @@
 //! [`Mapping::keys`](crate::yaml::Mapping::keys), etc.  It is always backed by a real
 //! CST node; match on it to get the concrete type.
 
+use crate::tag;
 use crate::yaml::{Alias, Mapping, Scalar, Sequence, SyntaxNode, TaggedNode};
 use rowan::ast::AstNode;
 use std::borrow::Cow;
@@ -209,7 +210,7 @@ impl NodeIdentity {
             }
         };
         match self {
-            NodeIdentity::Scalar { tag, value } if tag == "!!str" => {
+            NodeIdentity::Scalar { tag, value } if tag == tag::STR => {
                 ScalarValue::string(value.as_str()).to_flow_string()
             }
             NodeIdentity::Scalar { tag, value } => {
@@ -225,28 +226,16 @@ impl NodeIdentity {
             }
             NodeIdentity::Sequence { tag, items } => {
                 let items: Vec<_> = items.iter().map(Self::flow_text).collect();
-                tagged(tag, "!!seq", format!("[{}]", items.join(", ")))
+                tagged(tag, tag::SEQ, format!("[{}]", items.join(", ")))
             }
             NodeIdentity::Mapping { tag, entries } => {
                 let entries: Vec<_> = entries
                     .iter()
                     .map(|(k, v)| format!("{}: {}", k.flow_text(), v.flow_text()))
                     .collect();
-                tagged(tag, "!!map", format!("{{{}}}", entries.join(", ")))
+                tagged(tag, tag::MAP, format!("{{{}}}", entries.join(", ")))
             }
         }
-    }
-}
-
-/// Spell `tag` in its `!!` shorthand when it is in the `tag:yaml.org,2002:`
-/// namespace, so both spellings compare equal.
-fn shorthand_tag(tag: &str) -> String {
-    match tag
-        .strip_prefix("!<tag:yaml.org,2002:")
-        .and_then(|t| t.strip_suffix('>'))
-    {
-        Some(name) => format!("!!{name}"),
-        None => tag.to_string(),
     }
 }
 
@@ -255,7 +244,7 @@ fn collection_tag(tag: Option<String>, default: &str) -> String {
     match tag.as_deref() {
         // The non-specific tag `!` resolves a collection by its kind.
         None | Some("!") => default.to_string(),
-        Some(t) => shorthand_tag(t),
+        Some(t) => tag::normalize(t).into_owned(),
     }
 }
 
@@ -272,25 +261,25 @@ fn resolve_scalar(scalar: crate::scalar::ScalarValue) -> ResolvedScalar {
     let canonical = |parsed: Option<String>| parsed.unwrap_or_else(|| text.to_string());
     let (tag, value) = match scalar.scalar_type() {
         ScalarType::Integer => (
-            "!!int".to_string(),
+            tag::INT.to_string(),
             canonical(ScalarValue::canonical_integer(text)),
         ),
         ScalarType::Float => (
-            "!!float".to_string(),
+            tag::FLOAT.to_string(),
             canonical(
                 ScalarValue::parse_float(text).map(|f| ScalarValue::format_float(f.to_string())),
             ),
         ),
         ScalarType::Boolean => (
-            "!!bool".to_string(),
+            tag::BOOL.to_string(),
             canonical(ScalarValue::parse_bool(text).map(|b| b.to_string())),
         ),
-        ScalarType::Null => ("!!null".to_string(), "null".to_string()),
+        ScalarType::Null => (tag::NULL.to_string(), "null".to_string()),
         _ => {
             // A scalar with the non-specific tag `!` is a string.
-            let tag = match scalar.tag().map(shorthand_tag) {
-                Some(t) if t != "!" => t,
-                _ => "!!str".to_string(),
+            let tag = match scalar.tag() {
+                Some(t) if t != "!" => tag::normalize(t).into_owned(),
+                _ => tag::STR.to_string(),
             };
             (tag, text.to_string())
         }
@@ -389,7 +378,7 @@ fn identity_with_tag(
             }
             entries.sort();
             Ok(Some(NodeIdentity::Mapping {
-                tag: collection_tag(tag, "!!map"),
+                tag: collection_tag(tag, tag::MAP),
                 entries,
             }))
         }
@@ -405,7 +394,7 @@ fn identity_with_tag(
                 items.push(item);
             }
             Ok(Some(NodeIdentity::Sequence {
-                tag: collection_tag(tag, "!!seq"),
+                tag: collection_tag(tag, tag::SEQ),
                 items,
             }))
         }
@@ -1250,7 +1239,7 @@ pub(crate) fn build_set_content<T: AsYaml>(
     let flow = flow_context.is_some() || len == 0;
 
     builder.start_node(SyntaxKind::TAGGED_NODE.into());
-    builder.token(SyntaxKind::TAG.into(), "!!set");
+    builder.token(SyntaxKind::TAG.into(), tag::SET);
     if flow {
         builder.token(SyntaxKind::WHITESPACE.into(), " ");
     } else {
@@ -1303,7 +1292,7 @@ impl<T: AsYaml> AsYaml for std::collections::BTreeSet<T> {
     }
 
     fn kind(&self) -> YamlKind {
-        YamlKind::Tagged(Cow::Borrowed("!!set"))
+        YamlKind::Tagged(Cow::Borrowed(tag::SET))
     }
 
     fn build_content(

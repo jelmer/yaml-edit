@@ -76,10 +76,7 @@ pub(crate) const INDICATORS: &[char] = &[
 
 /// The non-string core schema type named by `tag`, if any.
 fn core_tag_type(tag: &str) -> Option<CoreScalarType> {
-    let name = tag
-        .strip_prefix("!!")
-        .or_else(|| tag.strip_prefix("!<tag:yaml.org,2002:")?.strip_suffix('>'))?;
-    match name {
+    match crate::tag::yaml_org_name(tag)? {
         "int" => Some(CoreScalarType::Integer),
         "float" => Some(CoreScalarType::Float),
         "bool" => Some(CoreScalarType::Boolean),

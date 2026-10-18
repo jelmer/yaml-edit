@@ -821,7 +821,8 @@ fn lookup_merged(
         | ResolveError::NonNullSetValue { .. }
         | ResolveError::InvalidPairsContent { .. }
         | ResolveError::InvalidPairsItem { .. }
-        | ResolveError::UnresolvedAlias { .. } => {
+        | ResolveError::UnresolvedAlias { .. }
+        | ResolveError::ExtraNode { .. } => {
             unreachable!("a merged view does not convert values to YamlValue")
         }
     })?;

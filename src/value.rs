@@ -127,10 +127,6 @@ impl YamlValue {
     ) -> Result<Self, crate::anchor_resolution::ResolveError> {
         use rowan::ast::AstNode;
         let registry = crate::anchor_resolution::AnchorRegistry::from_document(doc);
-        // TODO: a document, key, value or sequence entry holding more than
-        // one node (`a\nb: c\n`, `k: [q] x\n`), which the validator
-        // reports, is converted from its first node and the rest is dropped
-        // without an error.
         for child in doc.syntax().children() {
             let Some(node) = crate::as_yaml::YamlNode::from_syntax_peeled(child) else {
                 continue;
@@ -1113,6 +1109,55 @@ ordered: !!omap [first: *list]
             let doc = crate::Document::from_str(yaml).unwrap();
             assert_eq!(YamlValue::from_document(&doc), Err(expected), "{yaml:?}");
         }
+    }
+
+    /// A slot holding more than one node, which the parser keeps for the
+    /// validator to report, cannot be converted without losing a node.
+    #[test]
+    fn test_from_document_extra_node() {
+        use crate::anchor_resolution::{DocumentResolvedExt, ResolveError};
+        for (yaml, extra) in [
+            ("k: [q] x\n", "x"),
+            ("a: &a 1\nk: *a x\n", "x"),
+            ("a\nb: c\n", "b: c\n"),
+            ("[q] x\n", "x"),
+            ("- [q] x\n", "x"),
+            ("k: !t [q] x\n", "x"),
+            ("[q] x: v\n", "x"),
+            ("{[q] x: v}\n", "x"),
+            ("? a\n 5b: 1\n", "5b: 1\n"),
+            ("a: &x [q] y\nb: *x\n", "y"),
+        ] {
+            let expected = ResolveError::ExtraNode {
+                node: extra.to_string(),
+            };
+            let doc = crate::Document::from_str(yaml).unwrap();
+            assert_eq!(
+                YamlValue::from_document(&doc),
+                Err(expected.clone()),
+                "{yaml:?}"
+            );
+            match YamlValue::parse_raw(yaml) {
+                Err(crate::YamlError::Resolve(err)) => assert_eq!(err, expected, "{yaml:?}"),
+                other => panic!("{yaml:?}: {other:?}"),
+            }
+        }
+
+        let doc = crate::Document::from_str("k: [q] x\nj: 1\n").unwrap();
+        assert_eq!(
+            doc.get_resolved("k"),
+            Err(ResolveError::ExtraNode {
+                node: "x".to_string()
+            })
+        );
+        assert_eq!(doc.get_resolved("j"), Ok(Some(YamlValue::scalar(1))));
+        let value = doc.as_mapping().unwrap().get("k").unwrap();
+        assert_eq!(
+            YamlValue::cast(rowan::ast::AstNode::syntax(value.as_sequence().unwrap()).clone()),
+            Err(ResolveError::ExtraNode {
+                node: "x".to_string()
+            })
+        );
     }
 
     #[test]

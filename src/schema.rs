@@ -438,30 +438,15 @@ impl SchemaValidator {
     /// Validate a YAML document against the schema
     pub fn validate(&self, document: &Document) -> ValidationResult<()> {
         let mut errors = Vec::new();
-        self.validate_document(document, "root", &mut errors);
+        if let Some(root) = document.root_node() {
+            self.validate_node(&root, "root", &mut errors);
+        }
 
         if errors.is_empty() {
             Ok(())
         } else {
             Err(errors)
         }
-    }
-
-    /// Validate a document node
-    fn validate_document(
-        &self,
-        document: &Document,
-        path: &str,
-        errors: &mut Vec<ValidationError>,
-    ) {
-        if let Some(scalar) = document.as_scalar() {
-            self.validate_scalar(&scalar, path, errors);
-        } else if let Some(sequence) = document.as_sequence() {
-            self.validate_sequence(&sequence, path, errors);
-        } else if let Some(mapping) = document.as_mapping() {
-            self.validate_mapping(&mapping, path, errors);
-        }
-        // If none match, it might be empty or null - that's generally allowed
     }
 
     /// Validate a scalar value
@@ -606,50 +591,14 @@ impl SchemaValidator {
         }
 
         let mut errors = Vec::new();
-        self.check_coercion(document, "root", &mut errors);
+        if let Some(root) = document.root_node() {
+            self.check_coercion_node(&root, "root", &mut errors);
+        }
 
         if errors.is_empty() {
             Ok(())
         } else {
             Err(errors)
-        }
-    }
-
-    /// Check if a document can be coerced to match the schema
-    fn check_coercion(&self, document: &Document, path: &str, errors: &mut Vec<ValidationError>) {
-        if let Some(scalar) = document.as_scalar() {
-            let scalar_value = ScalarValue::from_scalar(&scalar);
-            let scalar_type = scalar_value.scalar_type();
-
-            if !self.schema.allows_scalar_type(scalar_type) {
-                // Try to coerce to an allowed type
-                let allowed_types = self.schema.allowed_scalar_types();
-                let coerced = allowed_types
-                    .into_iter()
-                    .any(|t| scalar_value.coerce_to_type(t).is_some());
-
-                if !coerced {
-                    errors.push(ValidationError::coercion_failed(
-                        path,
-                        self.schema.name(),
-                        scalar_type,
-                        self.schema.allowed_scalar_types(),
-                    ));
-                }
-            }
-        } else if let Some(sequence) = document.as_sequence() {
-            // Recursively check sequence items for coercion
-            for (i, item) in sequence.items().enumerate() {
-                let item_path = format!("{path}[{i}]");
-                self.check_coercion_node(&item, &item_path, errors);
-            }
-        } else if let Some(mapping) = document.as_mapping() {
-            // Recursively check mapping key-value pairs for coercion
-            for (key_node, value_node) in mapping.pairs() {
-                let key_name = key_node.text().to_string().trim().to_string();
-                let value_path = format!("{path}.{key_name}");
-                self.check_coercion_node(&value_node, &value_path, errors);
-            }
         }
     }
 
@@ -1586,5 +1535,25 @@ value: 42
             ),
             shorthand,
         );
+    }
+
+    fn json_types() -> Vec<ScalarType> {
+        Schema::Json.allowed_scalar_types()
+    }
+
+    #[test]
+    fn test_tagged_root_scalar_validated() {
+        let document = create_test_document("--- !!timestamp 2001-01-01\n");
+        let expected = Err(vec![ValidationError::type_not_allowed(
+            "root",
+            "json",
+            ScalarType::Timestamp,
+            json_types(),
+        )]);
+        assert_eq!(
+            SchemaValidator::json().strict().validate(&document),
+            expected
+        );
+        assert_eq!(SchemaValidator::json().can_coerce(&document), expected);
     }
 }

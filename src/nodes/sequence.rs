@@ -71,6 +71,7 @@ fn parent_value_has_leading_indent(seq: &SyntaxNode) -> bool {
 
 /// If `node`'s tail token is a NEWLINE (optionally followed by an
 /// INDENT), return the concatenated text as `Some("\n" | "\n<indent>")`.
+/// An omitted value at the end (`? a\n`) has no text and does not count.
 ///
 /// Used by [`Sequence::set`] to preserve the trailing separator of a
 /// multi-line value when swapping it out. Walking the CST directly is
@@ -80,6 +81,7 @@ fn trailing_newline_indent(node: &SyntaxNode) -> Option<String> {
     let tokens: Vec<_> = node
         .descendants_with_tokens()
         .filter_map(|el| el.into_token())
+        .filter(|t| !t.text().is_empty())
         .collect();
     let mut result = String::new();
     // Look at the last two tail tokens: [NEWLINE], [NEWLINE, INDENT], or

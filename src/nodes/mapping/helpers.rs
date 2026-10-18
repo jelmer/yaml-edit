@@ -29,16 +29,17 @@ pub(in crate::nodes) enum FlowInsertPos {
 /// flow like `[\n  a,\n  b\n]` -- keeps its NEWLINEs nested inside the
 /// flow SEQUENCE/MAPPING, so the VALUE has no direct-child NEWLINE.
 ///
-/// A TAG annotation (`k: !!seq\n  - old`) wraps the content in a
-/// TAGGED_NODE whose own children hold the NEWLINE; peel it before
-/// looking. An ANCHOR annotation (`k: &x\n  - old`) sits as a plain
-/// token alongside its NEWLINE inside VALUE, so no peeling is needed.
+/// A TAG annotation on the key line (`k: !!seq\n  - old`) wraps the
+/// content in a TAGGED_NODE whose own children hold the NEWLINE, so that
+/// is looked at too. One on the next line (`k:\n  !t old`) leaves it in
+/// VALUE, as does an ANCHOR annotation (`k: &x\n  - old`).
 pub(super) fn value_is_block(value: &SyntaxNode) -> bool {
-    let carrier = value
-        .children()
-        .find(|c| c.kind() == SyntaxKind::TAGGED_NODE)
-        .unwrap_or_else(|| value.clone());
-    has_child_token(&carrier, |k| k == SyntaxKind::NEWLINE)
+    let is_line_break = |k| k == SyntaxKind::NEWLINE;
+    has_child_token(value, is_line_break)
+        || value
+            .children()
+            .find(|c| c.kind() == SyntaxKind::TAGGED_NODE)
+            .is_some_and(|tagged| has_child_token(&tagged, is_line_break))
 }
 
 /// Inject a `{}` into a truly-orphan empty MAPPING (no entries, no

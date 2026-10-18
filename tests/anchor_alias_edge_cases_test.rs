@@ -352,3 +352,46 @@ fn test_alias_key_still_parses() {
         .collect::<Vec<_>>();
     assert_eq!(aliases, ["*a:"]);
 }
+
+/// The alias key of the second entry of `source`, read from another
+/// document so that only its name ties it to the entry.
+fn alias_key() -> yaml_edit::YamlNode {
+    let doc = yaml_edit::Document::from_str("- *a\n").unwrap();
+    let key = doc.as_sequence().unwrap().get(0).unwrap();
+    assert!(key.as_alias().is_some());
+    key
+}
+
+#[test]
+fn test_alias_key_lookup_matches_alias_of_same_name() {
+    let file = YamlFile::from_str("a: &a 1\n*a : 2\n").unwrap();
+    let m = file.document().unwrap().as_mapping().unwrap();
+    let own = m.keys().nth(1).unwrap();
+    for key in [&own, &alias_key()] {
+        assert_eq!(m.get(key).map(|v| v.to_string()), Some("2".to_string()));
+        assert!(m.contains_key(key));
+    }
+    // A string is not an alias, nor is the node the alias refers to.
+    assert_eq!(m.get("*a"), None);
+    assert_eq!(m.get(1), None);
+    assert_eq!(m.get("a").map(|v| v.to_string()), Some("1".to_string()));
+
+    m.set(&own, "xval");
+    assert_eq!(file.to_string(), "a: &a 1\n*a : xval\n");
+    common::assert_file_cst_ok(&file);
+
+    let file = YamlFile::from_str("a: &a 1\n*a : 2\nc: 3\n").unwrap();
+    let m = file.document().unwrap().as_mapping().unwrap();
+    assert!(m.rename_key(alias_key(), "b"));
+    assert_eq!(file.to_string(), "a: &a 1\nb : 2\nc: 3\n");
+    common::assert_file_cst_ok(&file);
+
+    let file = YamlFile::from_str("a: &a 1\n*a : 2\nc: 3\n").unwrap();
+    let m = file.document().unwrap().as_mapping().unwrap();
+    assert!(m.move_after("c", alias_key(), "xval"));
+    assert_eq!(m.len(), 3);
+    assert_eq!(
+        m.get(alias_key()).map(|v| v.to_string()),
+        Some("xval".to_string())
+    );
+}

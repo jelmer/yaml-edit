@@ -149,6 +149,11 @@ explicit style and scalar nodes, which keep the style they were written in.
 The choice is passed down as `FlowQuoting` through the hidden
 `AsYaml::build_flow_content`.
 
+After a quoted key or a flow collection the value may follow the `:`
+directly (`{"a":b}`). A key that is renamed to something else, which would
+then run on into the value as one plain scalar, gets a space after the
+`:` instead of different quoting: `{"a":b}` renamed to `z` gives `{z: b}`.
+
 ## `ScalarValue` and scalar typing
 
 Constructors with explicit intent:
@@ -397,6 +402,10 @@ its name comes between. An alias that ends up after another anchor with
 its name becomes a copy, with the anchor only if later aliases need it.
 `move_after`/`move_before` given another value remove the old entry as
 `remove` does. Sequences have no reordering methods.
+
+Looking up a key that is an alias (`get`, `set`, `rename_key`, ...)
+matches an alias key of the same name, not the node it refers to, and
+the string `"*a"` matches neither.
 
 An alias resolves to the closest preceding definition of its anchor in the
 same document, as the spec requires. In `<<` merge keys only alias nodes are

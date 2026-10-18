@@ -388,10 +388,11 @@ impl Parser {
             // the same attachment question we just answered and
             // leaves a dedented sibling entry alone.
             None => {
-                let outer = self.annotation_in_value_position;
-                self.annotation_in_value_position = as_mapping_value;
-                self.parse_value_with_base_indent(base_indent);
-                self.annotation_in_value_position = outer;
+                let ctx = BlockCtx {
+                    annotation_in_value_position: as_mapping_value,
+                    ..self.ctx
+                };
+                self.scoped(ctx, |p| p.parse_value_with_base_indent(base_indent));
             }
         }
 

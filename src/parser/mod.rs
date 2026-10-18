@@ -92,6 +92,15 @@ pub(super) struct BlockCtx {
     /// Column of the `:` whose explicit value is being parsed, if any, the
     /// counterpart of `explicit_key_column`.
     pub(super) explicit_value_column: Option<usize>,
+    /// Whether the node being parsed sits in a block mapping's value
+    /// position, where a block body has to clear the key's column.
+    ///
+    /// A tag hands this to the anchor that may follow it: `k: !!str &a` runs
+    /// the tag arm, which declines to adopt a dedented sibling, and then
+    /// falls through to the anchor arm. Without the flag that arm asks the
+    /// same question as a document-level anchor and answers it differently,
+    /// adopting the sibling the tag arm just refused.
+    pub(super) annotation_in_value_position: bool,
 }
 
 /// Internal parser state
@@ -112,15 +121,6 @@ pub(super) struct Parser {
     pub(super) current_line_indent: usize,
     /// Context of the block node being parsed; see [`BlockCtx`].
     pub(super) ctx: BlockCtx,
-    /// Whether the node being parsed sits in a block mapping's value
-    /// position, where a block body has to clear the key's column.
-    ///
-    /// A tag hands this to the anchor that may follow it: `k: !!str &a` runs
-    /// the tag arm, which declines to adopt a dedented sibling, and then
-    /// falls through to the anchor arm. Without the flag that arm asks the
-    /// same question as a document-level anchor and answers it differently,
-    /// adopting the sibling the tag arm just refused.
-    pub(super) annotation_in_value_position: bool,
     /// Whether the node being parsed is the document's own, with no
     /// enclosing collection.
     ///
@@ -170,7 +170,6 @@ impl Parser {
             in_flow_context: false,
             error_context: ErrorRecoveryContext::new(text.to_string()),
             ctx: BlockCtx::default(),
-            annotation_in_value_position: false,
             node_is_document_root: false,
             current_line_indent: 0,
             flow_depth: 0,
@@ -491,8 +490,8 @@ impl Parser {
                     self.nesting_depth -= 1;
                     return;
                 }
-                let body_indent =
-                    self.tagged_block_node_indent(base_indent, self.annotation_in_value_position);
+                let body_indent = self
+                    .tagged_block_node_indent(base_indent, self.ctx.annotation_in_value_position);
                 self.bump(); // consume and emit anchor token to CST
                 let empty_flow_node = self.annotates_empty_flow_node();
                 if !empty_flow_node {

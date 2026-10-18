@@ -387,11 +387,12 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
 /// SEQUENCE_ENTRY ends with a STRING, then WHITESPACE, COMMENT, and
 /// NEWLINE follow at the SEQUENCE level. That's still a well-formed
 /// terminated entry.
+///
+/// A NEWLINE followed only by an implicit null's zero-width token counts
+/// too: `- a:\n- b\n` ends its first entry with the `VALUE { NEWLINE,
+/// SCALAR { NULL "" } }` of `a`.
 fn entry_is_terminated(entry: &SyntaxNode) -> bool {
-    if entry
-        .last_token()
-        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
-    {
+    if crate::nodes::trailing_newline_reachable(entry) {
         return true;
     }
     let mut sib = entry.next_sibling_or_token();
@@ -534,6 +535,33 @@ mod tests {
     use crate::yaml::YamlFile;
     use rowan::ast::AstNode;
     use std::str::FromStr;
+
+    #[test]
+    fn test_validate_tree_implicit_null_ending_sequence_entry() {
+        for yaml in [
+            "- a:\n- c\n",
+            "-\n  a: &b\n- c\n",
+            "- &c : &a\n- c\n",
+            "- &a\n- a\n-\n  &a : a\n  b: &b\n-\n  &c : &a\n",
+        ] {
+            let file = YamlFile::from_str(yaml).unwrap();
+            assert_eq!(validate_tree(file.syntax()), Ok(()), "{yaml:?}");
+        }
+        let file = YamlFile::from_str("- a: 1\n- c\n").unwrap();
+        let entry = file
+            .syntax()
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            .unwrap();
+        entry.last_token().unwrap().detach();
+        assert_eq!(
+            validate_tree(file.syntax()),
+            Err(
+                "Block-style SEQUENCE_ENTRY not terminated by a NEWLINE (last token: Some(INT))"
+                    .to_string()
+            )
+        );
+    }
 
     #[test]
     fn test_print_tree() {

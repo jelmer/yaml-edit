@@ -4,6 +4,8 @@ use crate::scalar::{ScalarStyle, ScalarValue};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+pub(crate) mod convert;
+
 /// Represents any YAML value - scalar, sequence, mapping, or special collections.
 ///
 /// **Deprecated:** Prefer using syntax tree types (`Mapping`, `Sequence`,
@@ -72,7 +74,7 @@ impl YamlValue {
         node: rowan::SyntaxNode<crate::yaml::Lang>,
     ) -> Result<Option<Self>, crate::anchor_resolution::ResolveError> {
         crate::as_yaml::YamlNode::from_syntax_peeled(node).map_or(Ok(None), |node| {
-            crate::anchor_resolution::resolved_value(node, None, &mut Vec::new())
+            convert::resolved_value(node, None, &mut Vec::new())
         })
     }
 
@@ -137,9 +139,7 @@ impl YamlValue {
             let Some(node) = crate::as_yaml::YamlNode::from_syntax_peeled(child) else {
                 continue;
             };
-            if let Some(value) =
-                crate::anchor_resolution::resolved_value(node, Some(&registry), &mut Vec::new())?
-            {
+            if let Some(value) = convert::resolved_value(node, Some(&registry), &mut Vec::new())? {
                 return Ok(value);
             }
         }

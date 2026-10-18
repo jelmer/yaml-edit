@@ -13,6 +13,7 @@ pub(crate) const SEQ: &str = "!!seq";
 pub(crate) const SET: &str = "!!set";
 pub(crate) const OMAP: &str = "!!omap";
 pub(crate) const PAIRS: &str = "!!pairs";
+#[cfg(feature = "base64")]
 pub(crate) const BINARY: &str = "!!binary";
 pub(crate) const TIMESTAMP: &str = "!!timestamp";
 pub(crate) const REGEX: &str = "!!regex";

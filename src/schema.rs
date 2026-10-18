@@ -546,18 +546,18 @@ impl SchemaValidator {
         path: &str,
         errors: &mut Vec<ValidationError>,
     ) {
-        // Handle custom schema validation
+        let Some(scalar_value) = tagged_scalar_value(tagged_node) else {
+            return;
+        };
+
         if let Schema::Custom(custom_schema) = &self.schema {
-            let content = tagged_node.to_string();
-            if let Err(error) = custom_schema.validate_scalar(&content, path) {
+            if let Err(error) = custom_schema.validate_scalar_value(&scalar_value, path) {
                 errors.push(error);
             }
             return;
         }
 
-        // Standard tagged scalar validation
-        let scalar_type = self.get_tagged_node_type(tagged_node);
-
+        let scalar_type = scalar_value.scalar_type();
         if !self.schema.allows_scalar_type(scalar_type) {
             // For tagged scalars, we can't coerce them to other types since they have explicit type information
             errors.push(ValidationError::type_not_allowed(
@@ -566,21 +566,6 @@ impl SchemaValidator {
                 scalar_type,
                 self.schema.allowed_scalar_types(),
             ));
-        }
-    }
-
-    /// Determine the scalar type from a tagged scalar
-    fn get_tagged_node_type(&self, tagged_node: &TaggedNode) -> ScalarType {
-        match tagged_node.normalized_tag().as_deref() {
-            Some(crate::tag::TIMESTAMP) => ScalarType::Timestamp,
-            Some(crate::tag::REGEX) => ScalarType::Regex,
-            Some(crate::tag::BINARY) => {
-                #[cfg(feature = "base64")]
-                return ScalarType::Binary;
-                #[cfg(not(feature = "base64"))]
-                return ScalarType::String;
-            }
-            _ => ScalarType::String,
         }
     }
 
@@ -632,7 +617,10 @@ impl SchemaValidator {
                 }
             }
         } else if let Some(tagged_node) = extract_tagged_node(node) {
-            let scalar_type = self.get_tagged_node_type(&tagged_node);
+            let Some(scalar_type) = tagged_scalar_value(&tagged_node).map(|v| v.scalar_type())
+            else {
+                return;
+            };
 
             if !self.schema.allows_scalar_type(scalar_type) {
                 // Tagged scalars generally can't be coerced since they have explicit type info
@@ -656,6 +644,19 @@ impl SchemaValidator {
             }
         }
     }
+}
+
+/// The value of a tagged scalar, typed by its tag.
+fn tagged_scalar_value(tagged_node: &TaggedNode) -> Option<ScalarValue> {
+    let value = ScalarValue::from_tagged(tagged_node)?;
+    let scalar_type = match tagged_node.normalized_tag().as_deref() {
+        Some(crate::tag::TIMESTAMP) => ScalarType::Timestamp,
+        Some(crate::tag::REGEX) => ScalarType::Regex,
+        #[cfg(feature = "base64")]
+        Some(crate::tag::BINARY) => ScalarType::Binary,
+        _ => return Some(value),
+    };
+    Some(value.with_type(scalar_type))
 }
 
 #[cfg(test)]
@@ -1555,5 +1556,48 @@ value: 42
             expected
         );
         assert_eq!(SchemaValidator::json().can_coerce(&document), expected);
+    }
+    #[test]
+    fn test_core_tag_sets_scalar_type() {
+        let document = create_test_document("a: !!int 5\n");
+        let expected = Err(vec![ValidationError::type_not_allowed(
+            "root.a",
+            "failsafe",
+            ScalarType::Integer,
+            vec![ScalarType::String],
+        )]);
+        assert_eq!(
+            SchemaValidator::failsafe().strict().validate(&document),
+            expected
+        );
+        assert_eq!(SchemaValidator::failsafe().can_coerce(&document), expected);
+        let document = create_test_document("a: !!str 5\n");
+        assert_eq!(
+            SchemaValidator::failsafe().strict().validate(&document),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn test_custom_schema_tagged_scalar_uses_content() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_in = seen.clone();
+        let custom_schema = CustomSchema::new("ints")
+            .allow_type(ScalarType::Integer)
+            .with_validator(ScalarType::Integer, move |value, path| {
+                seen_in
+                    .lock()
+                    .unwrap()
+                    .push((value.to_string(), path.to_string()));
+                CustomValidationResult::Valid
+            })
+            .strict();
+        let validator = SchemaValidator::custom(custom_schema);
+        let document = create_test_document("a: !!int 42\n");
+        assert_eq!(validator.validate(&document), Ok(()));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![("42".to_string(), "root.a".to_string())]
+        );
     }
 }

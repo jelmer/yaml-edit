@@ -926,6 +926,14 @@ impl ScalarValue {
         }
     }
 
+    /// Set the type, for a tag that names one outside the core schema.
+    pub(crate) fn with_type(self, scalar_type: ScalarType) -> Self {
+        Self {
+            scalar_type,
+            ..self
+        }
+    }
+
     /// Basic timestamp format validation
     fn is_valid_timestamp(&self, value: &str) -> bool {
         Self::is_valid_timestamp_static(value)

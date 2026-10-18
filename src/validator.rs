@@ -797,12 +797,8 @@ impl Validator {
     /// Only chomping indicators (+/-) and indentation indicators (1-9) are allowed
     /// on the same line as the block scalar indicator.
     fn check_block_scalar_indicator(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        // Check if this scalar has a GREATER (folded) or PIPE (literal) indicator
-        let has_block_indicator = has_child_token(node, |k| {
-            matches!(k, crate::SyntaxKind::GREATER | crate::SyntaxKind::PIPE)
-        });
-
-        if !has_block_indicator {
+        // A plain scalar may hold a `|` or `>` token on a continuation line.
+        if !crate::nodes::mapping::is_block_scalar(node) {
             return;
         }
 
@@ -880,14 +876,10 @@ impl Validator {
     /// as a block scalar, is not valid YAML. The YAML test suite's M5C3 has
     /// the header two columns left of its tag, which is still past the key.
     fn check_block_scalar_header_indent(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        let Some(header) = node.children_with_tokens().find_map(|c| {
-            c.into_token().filter(|t| {
-                matches!(
-                    t.kind(),
-                    crate::SyntaxKind::PIPE | crate::SyntaxKind::GREATER
-                )
-            })
-        }) else {
+        if !crate::nodes::mapping::is_block_scalar(node) {
+            return;
+        }
+        let Some(header) = node.first_token() else {
             return;
         };
         let Some(min_indent) = continuation_indent(node) else {
@@ -914,10 +906,7 @@ impl Validator {
         node: &SyntaxNode,
         violations: &mut Vec<Violation>,
     ) {
-        let has_block_indicator = has_child_token(node, |k| {
-            matches!(k, crate::SyntaxKind::GREATER | crate::SyntaxKind::PIPE)
-        });
-        if !has_block_indicator {
+        if !crate::nodes::mapping::is_block_scalar(node) {
             return;
         }
         // An indentation indicator fixes the body's column, so a deeper
@@ -4637,6 +4626,14 @@ mod tests {
                 vec!["Tabs are not allowed for indentation in YAML".to_string()],
                 "{yaml:?}"
             );
+        }
+    }
+
+    #[test]
+    fn test_block_indicator_in_plain_scalar_continuation() {
+        // A `|` or `>` opening a continuation line is plain scalar content.
+        for yaml in ["a: b\n  > c\n", "a: b\n  | c\n", "- x\n  | y\n"] {
+            assert_eq!(messages(yaml), Vec::<String>::new(), "{yaml:?}");
         }
     }
 }

@@ -1039,8 +1039,20 @@ impl Mapping {
     /// flow collection does `"a":b` read as a key and a value, while `a:b`
     /// is one plain scalar.
     fn separate_adjacent_value(key: &SyntaxNode) {
+        let trivia = |k: SyntaxKind| {
+            matches!(
+                k,
+                SyntaxKind::WHITESPACE
+                    | SyntaxKind::INDENT
+                    | SyntaxKind::NEWLINE
+                    | SyntaxKind::COMMENT
+            )
+        };
+        // The `:` may be on a later line, after a comment.
         let Some(colon) = key
-            .next_sibling_or_token()
+            .siblings_with_tokens(rowan::Direction::Next)
+            .skip(1)
+            .find(|c| !trivia(c.kind()))
             .and_then(|c| c.into_token())
             .filter(|t| t.kind() == SyntaxKind::COLON)
         else {
@@ -1049,16 +1061,7 @@ impl Mapping {
         let json_like = key
             .descendants_with_tokens()
             .filter_map(|c| c.into_token())
-            .filter(|t| {
-                !t.text().is_empty()
-                    && !matches!(
-                        t.kind(),
-                        SyntaxKind::WHITESPACE
-                            | SyntaxKind::INDENT
-                            | SyntaxKind::NEWLINE
-                            | SyntaxKind::COMMENT
-                    )
-            })
+            .filter(|t| !t.text().is_empty() && !trivia(t.kind()))
             .last()
             .is_some_and(|t| {
                 matches!(

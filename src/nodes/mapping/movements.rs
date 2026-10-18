@@ -1,12 +1,12 @@
 //! `Mapping::move_after` / `move_before` -- pull a key out of its
 //! current position and re-insert it at a new position.
 
-use super::helpers::{held_anchor, FlowInsertPos};
+use super::helpers::{held_anchor, unterminate_last_line, FlowInsertPos};
 use super::{Mapping, MappingEntry};
 use crate::lex::SyntaxKind;
 use crate::nodes::{
-    ensure_trailing_newline, entry_line_terminated, fresh_token, hand_line_break_to_mapping,
-    has_child_token, strip_flow_separator, SyntaxNode, SyntaxToken,
+    ensure_trailing_newline, entry_line_terminated, flow_separator, fresh_token,
+    hand_line_break_to_mapping, has_child_token, strip_flow_separator, SyntaxNode,
 };
 use rowan::ast::AstNode;
 
@@ -20,46 +20,6 @@ pub(super) struct SlotLayout {
     last_has_comma: bool,
     /// Whether the last entry of a block mapping ends its line.
     last_terminated: bool,
-}
-
-/// The tokens a flow mapping entry ends with that separate it from what
-/// follows: its comma, if any, and the white space around it. `None` if a
-/// comment comes before the comma or ends the entry, since a comma can't
-/// go after one on its line.
-fn flow_separator(entry: &SyntaxNode) -> Option<Vec<SyntaxToken>> {
-    let children: Vec<_> = entry.children_with_tokens().collect();
-    let start = children
-        .iter()
-        .rposition(|c| {
-            !matches!(
-                c.kind(),
-                SyntaxKind::COMMA
-                    | SyntaxKind::WHITESPACE
-                    | SyntaxKind::NEWLINE
-                    | SyntaxKind::INDENT
-            ) || c.as_node().is_some()
-        })
-        .map_or(0, |i| i + 1);
-    let separator: Vec<SyntaxToken> = children[start..]
-        .iter()
-        .filter_map(|c| c.as_token().cloned())
-        .collect();
-    let comma_in_separator = separator.iter().any(|t| t.kind() == SyntaxKind::COMMA);
-    if comma_in_separator != has_child_token(entry, |k| k == SyntaxKind::COMMA) {
-        return None;
-    }
-    let before = children[..start]
-        .iter()
-        .rev()
-        .filter_map(|c| match c {
-            rowan::NodeOrToken::Node(n) => n.last_token(),
-            rowan::NodeOrToken::Token(t) => Some(t.clone()),
-        })
-        .next();
-    if before.is_some_and(|t| t.kind() == SyntaxKind::COMMENT) {
-        return None;
-    }
-    Some(separator)
 }
 
 /// Put a comma right after the content of `entry`, a flow mapping entry
@@ -81,27 +41,6 @@ fn insert_flow_comma(entry: &SyntaxNode) {
         tokens.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
     }
     entry.splice_children(at..at, tokens);
-}
-
-/// Remove the line break that ends `mapping`, a block mapping whose last
-/// line had none before its entries were moved around. One that is part
-/// of a block scalar's value stays, as removing it would change the value.
-fn unterminate_last_line(mapping: &SyntaxNode) {
-    let Some(last) = mapping
-        .descendants_with_tokens()
-        .filter_map(|c| c.into_token())
-        .filter(|t| !t.text().is_empty())
-        .last()
-    else {
-        return;
-    };
-    let in_scalar = last
-        .parent_ancestors()
-        .take_while(|n| n != mapping)
-        .any(|n| n.kind() == SyntaxKind::SCALAR);
-    if last.kind() == SyntaxKind::NEWLINE && !in_scalar {
-        last.detach();
-    }
 }
 
 impl Mapping {

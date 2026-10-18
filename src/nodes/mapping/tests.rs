@@ -94,9 +94,8 @@ fn test_set_into_flow_mapping_inserts_inside_braces() {
     let cases = [
         ("outer: {}", "a", "outer: {a: X}"),
         ("outer: {a: 1}", "b", "outer: {a: 1, b: X}"),
-        // Trailing-comma style: the existing `,` is reused as the
-        // separator instead of stacking a second one.
-        ("outer: {a: 1,}", "b", "outer: {a: 1,b: X}"),
+        // The trailing comma stays at the end.
+        ("outer: {a: 1,}", "b", "outer: {a: 1, b: X,}"),
         // Update-in-place stays inside the braces.
         ("outer: {a: 1}", "a", "outer: {a: X}"),
     ];

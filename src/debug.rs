@@ -1009,11 +1009,11 @@ fn write_indented(f: &mut fmt::Formatter<'_>, text: &str, indent: usize) -> fmt:
 fn format_node(f: &mut fmt::Formatter<'_>, node: &YamlNode, indent: usize) -> fmt::Result {
     let indent_str = "  ".repeat(indent);
 
+    let write_scalar = |f: &mut fmt::Formatter<'_>, sv: crate::scalar::ScalarValue| {
+        write!(f, "{:?} (type: {:?})", sv.value(), sv.scalar_type())
+    };
     match node {
-        YamlNode::Scalar(s) => {
-            let sv = crate::scalar::ScalarValue::from_scalar(s);
-            write!(f, "{:?} (type: {:?})", sv.value(), sv.scalar_type())?;
-        }
+        YamlNode::Scalar(s) => write_scalar(f, crate::scalar::ScalarValue::from_scalar(s))?,
         YamlNode::Mapping(m) => {
             writeln!(f, "Mapping {{")?;
             for (k, v) in m.iter() {
@@ -1038,7 +1038,22 @@ fn format_node(f: &mut fmt::Formatter<'_>, node: &YamlNode, indent: usize) -> fm
             write!(f, "Alias(*{})", a.name())?;
         }
         YamlNode::TaggedNode(t) => {
-            write!(f, "Tagged({:?})", t.tag().unwrap_or_default())?;
+            write!(f, "Tagged({:?}, ", t.tag().unwrap_or_default())?;
+            let content = rowan::ast::AstNode::syntax(t)
+                .children()
+                .find_map(YamlNode::from_syntax);
+            match content {
+                Some(YamlNode::Scalar(s)) => {
+                    let sv = crate::scalar::ScalarValue::from_tagged(t);
+                    write_scalar(
+                        f,
+                        sv.unwrap_or_else(|| crate::scalar::ScalarValue::from_scalar(&s)),
+                    )?;
+                }
+                Some(content) => format_node(f, &content, indent)?,
+                None => {}
+            }
+            write!(f, ")")?;
         }
     }
 
@@ -1282,6 +1297,25 @@ mod new_debug_tests {
                 "        [0]: \"y\" (type: String)\n",
                 "      ]\n",
                 "    ]\n",
+                "  ]\n",
+                "}\n",
+            )
+        );
+    }
+
+    #[test]
+    fn test_pretty_debug_shows_tagged_content() {
+        let doc = Document::from_str("a: !!int 5\nb: !t [x, *y]\n").unwrap();
+        assert_eq!(
+            PrettyDebug(&doc).to_string(),
+            concat!(
+                "Document {\n",
+                "  Mapping [\n",
+                "    \"a\" (type: String): Tagged(\"!!int\", \"5\" (type: Integer))\n",
+                "    \"b\" (type: String): Tagged(\"!t\", Sequence [\n",
+                "      [0]: \"x\" (type: String)\n",
+                "      [1]: Alias(*y)\n",
+                "    ])\n",
                 "  ]\n",
                 "}\n",
             )

@@ -1,7 +1,8 @@
 use super::replaced_value;
 use super::{
     append_children, ensure_trailing_newline, entry_indices, entry_line_terminated, fresh_token,
-    has_child_token, nth_entry_index, strip_flow_separator, Lang, SyntaxNode,
+    has_child_token, nth_entry_index, strip_flow_separator, unterminate_last_line, Lang,
+    SyntaxNode,
 };
 use crate::as_yaml::{build_in, AsYaml, FlowQuoting, YamlKind};
 use crate::lex::SyntaxKind;
@@ -348,62 +349,6 @@ fn terminator_end(children: &[rowan::SyntaxElement<Lang>], start: usize) -> usiz
         .map_while(blank_or_newline)
         .position(|k| k == SyntaxKind::NEWLINE)
         .map_or(start, |offset| start + offset + 1)
-}
-
-/// Drop the run of blank tokens (newline, indent, whitespace) that ends
-/// `entry`, so removing the entry after it leaves no stray blank line.
-fn strip_trailing_blank_tokens(entry: &SyntaxNode) {
-    let children: Vec<_> = entry.children_with_tokens().collect();
-    let blanks = children
-        .iter()
-        .rev()
-        .take_while(|c| {
-            c.as_token().is_some_and(|t| {
-                matches!(
-                    t.kind(),
-                    SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE
-                )
-            })
-        })
-        .count();
-    if blanks > 0 {
-        let total = children.len();
-        crate::nodes::replace_children(entry, (total - blanks)..total, vec![]);
-    }
-}
-
-fn mapping_entry_is_last_in_mapping(sequence: &SyntaxNode) -> bool {
-    let Some(value) = sequence.parent() else {
-        return false;
-    };
-    if value.kind() != SyntaxKind::VALUE {
-        return false;
-    }
-    let Some(entry) = value.parent() else {
-        return false;
-    };
-    if entry.kind() != SyntaxKind::MAPPING_ENTRY {
-        return false;
-    }
-    let Some(parent_mapping) = entry.parent() else {
-        return false;
-    };
-    if parent_mapping.kind() != SyntaxKind::MAPPING {
-        return false;
-    }
-    // Any MAPPING_ENTRY sibling *after* this one means we must keep
-    // whatever separator is currently in place.
-    let mut seen_self = false;
-    for child in parent_mapping.children() {
-        if child == entry {
-            seen_self = true;
-            continue;
-        }
-        if seen_self && child.kind() == SyntaxKind::MAPPING_ENTRY {
-            return false;
-        }
-    }
-    true
 }
 
 // The collapse helper is shared with Mapping; it lives in yaml.rs
@@ -1222,23 +1167,9 @@ impl Sequence {
             }
         }
 
-        if !self.is_flow_style() && is_last && i > 0 && mapping_entry_is_last_in_mapping(&self.0) {
-            // Removed the last entry of a block sequence
-            // that itself terminates its enclosing mapping.
-            // Strip trailing whitespace/newline off the new
-            // last entry so we don't emit a stray blank
-            // line at the end of the document.
-            //
-            // When the enclosing MAPPING_ENTRY has a
-            // following sibling, the new-last-entry's
-            // NEWLINE is still needed as the separator
-            // between mapping entries -- do not touch it.
-            if let Some(prev_entry) = children[..i].iter().rev().find_map(|c| {
-                c.as_node()
-                    .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-            }) {
-                strip_trailing_blank_tokens(prev_entry);
-            }
+        // The end of the input keeps its lack of a final line break.
+        if is_last && !removed_terminated && !self.is_flow_style() {
+            unterminate_last_line(&self.0);
         }
         // If we just drained the last entry from a block
         // sequence under a key, collapse the placeholder

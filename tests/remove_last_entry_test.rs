@@ -127,3 +127,53 @@ fn remove_entry_after_blank_line() {
     // With blank lines on both sides, only one gap is kept.
     check_remove("a: 1\n\nb: 2\n\nc: 3", "a: 1\n\nc: 3");
 }
+
+#[test]
+fn remove_last_item_of_sequence() {
+    let top = |d: &Document| {
+        assert!(d.as_sequence().unwrap().remove(1).is_some());
+    };
+    check_edit("- 1\n- 2\n", top, "- 1\n");
+    check_edit("- 1\n- 2", top, "- 1");
+    check_edit("- 1 # c\n- 2", top, "- 1 # c");
+    check_edit("- a:\n    x: 1\n- 2", top, "- a:\n    x: 1");
+    // The line break is part of the scalar's value, so it stays.
+    check_edit("- |\n  t\n- 2", top, "- |\n  t\n");
+
+    let nested = |d: &Document| {
+        assert!(d
+            .as_mapping()
+            .unwrap()
+            .get_sequence("top")
+            .unwrap()
+            .remove(1)
+            .is_some());
+    };
+    check_edit("top:\n  - 1\n  - 2\n", nested, "top:\n  - 1\n");
+    check_edit("top:\n  - 1\n  - 2", nested, "top:\n  - 1");
+    check_edit("top:\n- 1\n- 2\n", nested, "top:\n- 1\n");
+    check_edit("top:\n  - 1\n  - 2\nx: 1\n", nested, "top:\n  - 1\nx: 1\n");
+    check_edit("top:\n  - 1\n\n  - 2\n", nested, "top:\n  - 1\n\n");
+
+    let deeper = |d: &Document| {
+        assert!(d
+            .as_mapping()
+            .unwrap()
+            .get_mapping("o")
+            .unwrap()
+            .get_sequence("top")
+            .unwrap()
+            .remove(1)
+            .is_some());
+    };
+    check_edit(
+        "o:\n  top:\n    - 1\n    - 2\n",
+        deeper,
+        "o:\n  top:\n    - 1\n",
+    );
+    check_edit(
+        "o:\n  top:\n    - 1\n    - 2\nx: 1\n",
+        deeper,
+        "o:\n  top:\n    - 1\nx: 1\n",
+    );
+}

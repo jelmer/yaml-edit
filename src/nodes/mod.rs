@@ -471,6 +471,27 @@ pub(crate) fn trailing_newline_reachable(node: &SyntaxNode) -> bool {
     last_non_empty.is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
 }
 
+/// Remove the line break that ends `collection`, a block collection whose
+/// last line had none before it was edited. One that is part of a block
+/// scalar's value stays, as removing it would change the value.
+pub(crate) fn unterminate_last_line(collection: &SyntaxNode) {
+    let Some(last) = collection
+        .descendants_with_tokens()
+        .filter_map(|c| c.into_token())
+        .filter(|t| !t.text().is_empty())
+        .last()
+    else {
+        return;
+    };
+    let in_scalar = last
+        .parent_ancestors()
+        .take_while(|n| n != collection)
+        .any(|n| n.kind() == SyntaxKind::SCALAR);
+    if last.kind() == SyntaxKind::NEWLINE && !in_scalar {
+        last.detach();
+    }
+}
+
 /// Does `entry`'s line already end in a NEWLINE, counting the sibling one
 /// that explicit-key entries carry instead of owning it themselves?
 pub(crate) fn entry_line_terminated(entry: &SyntaxNode) -> bool {

@@ -1,12 +1,13 @@
 //! `Mapping::move_after` / `move_before` -- pull a key out of its
 //! current position and re-insert it at a new position.
 
-use super::helpers::{unterminate_last_line, FlowInsertPos};
+use super::helpers::FlowInsertPos;
 use super::{Mapping, MappingEntry};
 use crate::lex::SyntaxKind;
 use crate::nodes::{
     ensure_trailing_newline, entry_line_terminated, flow_separator, fresh_token,
-    hand_line_break_to_mapping, has_child_token, strip_flow_separator, SyntaxNode,
+    hand_line_break_to_mapping, has_child_token, strip_flow_separator, unterminate_last_line,
+    SyntaxNode,
 };
 use rowan::ast::AstNode;
 

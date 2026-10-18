@@ -423,6 +423,77 @@ fn indent_past_question(collection: &SyntaxNode) {
     }
 }
 
+/// Move the comment and blank lines at the start of a block collection out
+/// in front of it, where the parser puts the lines before a collection's
+/// first entry. They are left there when the first entry is removed.
+///
+/// A collection that started on the line of a `- ` or `? ` indicator then
+/// starts on the line after it, so that the lines do not join the
+/// indicator's: `- a: 1\n  # c\n  b: 2\n` with `a` removed gives
+/// `-\n  # c\n  b: 2\n`.
+pub(crate) fn move_leading_lines_out(collection: &SyntaxNode) {
+    let leading: Vec<_> = collection
+        .children_with_tokens()
+        .map_while(|el| el.into_token())
+        .take_while(|t| {
+            matches!(
+                t.kind(),
+                SyntaxKind::COMMENT
+                    | SyntaxKind::INDENT
+                    | SyntaxKind::WHITESPACE
+                    | SyntaxKind::NEWLINE
+            )
+        })
+        .collect();
+    if leading.is_empty() {
+        return;
+    }
+    // A detached collection has nothing to move the lines into.
+    let Some(parent) = collection.parent() else {
+        return;
+    };
+    if parent.kind() == SyntaxKind::DOCUMENT
+        && leading.iter().any(|t| t.kind() == SyntaxKind::COMMENT)
+        && !has_child_token(&parent, |k| k == SyntaxKind::DOC_START)
+    {
+        // TODO: the parser puts comment lines before the content of a
+        // document without `---` at stream level, outside the DOCUMENT.
+        return;
+    }
+    let starts_with_comment = leading[0].kind() == SyntaxKind::COMMENT;
+    let mut lines: Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>> = Vec::new();
+    match leading[0].prev_token() {
+        // The space after a `- ` or `? ` indicator.
+        Some(space) if space.kind() == SyntaxKind::WHITESPACE => {
+            space.detach();
+            lines.push(crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into());
+            // A comment that ended the removed entry's line has no indent
+            // of its own; it takes the entries' column.
+            let column = leading
+                .iter()
+                .rev()
+                .find(|t| t.kind() == SyntaxKind::INDENT)
+                .filter(|_| starts_with_comment);
+            if let Some(column) = column {
+                lines.push(crate::nodes::fresh_token(SyntaxKind::INDENT, column.text()).into());
+            }
+        }
+        // The first line has an indent of its own, or is blank.
+        Some(indent) if indent.kind() == SyntaxKind::INDENT && !starts_with_comment => {
+            indent.detach();
+        }
+        _ => {}
+    }
+    lines.extend(
+        leading
+            .iter()
+            .map(|t| crate::nodes::fresh_token(t.kind(), t.text()).into()),
+    );
+    crate::nodes::replace_children(collection, 0..leading.len(), vec![]);
+    let at = collection.index();
+    parent.splice_children(at..at, lines);
+}
+
 /// Whether `indent` starts a comment line.
 pub(crate) fn indents_comment_line(indent: &rowan::SyntaxToken<Lang>) -> bool {
     indent

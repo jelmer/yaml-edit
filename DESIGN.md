@@ -338,6 +338,12 @@ are. In a flow mapping the commas stay with their positions, and one
 that has to follow an entry whose comment ends its line goes before
 that comment.
 
+Removing an entry leaves the comment and blank lines after it. If it was
+the first entry of a collection that starts on the line of a `- ` or
+`? ` indicator, those lines cannot join that line, so the collection
+starts on the next one: `- a: 1\n  # c\n  b: 2\n` with `a` removed gives
+`-\n  # c\n  b: 2\n`.
+
 ## Paths, anchors and aliases
 
 Paths look like `server.hosts[0].name`, with `\` escapes for keys that

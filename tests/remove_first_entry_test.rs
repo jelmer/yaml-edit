@@ -193,3 +193,15 @@ fn edit_after_removing_first_entry() {
         "-\n  # c\n  {}\n- 3\n",
     );
 }
+
+#[test]
+fn remove_first_entry_of_multiline_flow_mapping() {
+    check_edit(
+        "a: {\n    x: 1,\n    y: 2\n  }\n",
+        |d| {
+            let a = d.as_mapping().unwrap().get_mapping("a").unwrap();
+            assert!(a.remove("x").is_some());
+        },
+        "a: {\n    y: 2\n  }\n",
+    );
+}

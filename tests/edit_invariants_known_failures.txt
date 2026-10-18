@@ -238,8 +238,6 @@ V9D5 d0 map1 set-new shape
 V9D5 d0 map1 set-new validator
 VJP3/01 d0 map0 remove[0] semantic
 VJP3/01 d0 map0 remove[0] shape
-VJP3/01 d0 map1 clear validator
-VJP3/01 d0 map1 remove[0] validator
 X38W d0 map0 move-after-last[0] validator
 X38W d0 map0 move-before-first[1] validator
 X38W d0 map0 reorder-reversed validator
@@ -256,5 +254,3 @@ Y79Y/010 d0 seq0 remove[0] semantic
 Y79Y/010 d0 seq0 remove[0] shape
 Z9M4 d0 seq0 remove[0] semantic
 Z9M4 d0 seq0 remove[0] shape
-ZF4X d0 map2 clear validator
-ZF4X d0 map2 remove[0] validator

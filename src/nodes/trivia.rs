@@ -167,6 +167,10 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
         if !drained {
             crate::yaml::move_leading_lines_out(collection);
         }
+        // TODO: comment lines now after the last entry of a nested
+        // collection belong after it in the parent, as the parser has them:
+        // `x:\n  - a\n  # c\n  - b\ny: 1\n` with `b` removed keeps `# c`
+        // in the sequence.
     }
 
     // A drained top-level collection is left empty here, so that entries

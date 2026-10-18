@@ -188,3 +188,89 @@ fn clear_explicit_key_collection() {
         "? []\n: v\n",
     );
 }
+
+#[test]
+fn drain_sequence_item_keeps_comment_lines_after_it() {
+    let remove_entry = |d: &Document| {
+        assert!(item_mapping(d).remove("b").is_some());
+    };
+    check_edit("- b: 2\n  # c\n- 3\n", remove_entry, "- {}\n  # c\n- 3\n");
+    check_edit("- b: 2\n  # c\n", remove_entry, "- {}\n  # c\n");
+    check_edit("- b: 2\n  # c", remove_entry, "- {}\n  # c");
+    check_edit(
+        "- b: 2\n  # c\n\n  # d\n- 3\n",
+        remove_entry,
+        "- {}\n  # c\n\n  # d\n- 3\n",
+    );
+    check_edit(
+        "- a: 1\n  b: 2\n  # c\n- 3\n",
+        |d| item_mapping(d).clear(),
+        "- {}\n  # c\n- 3\n",
+    );
+    let remove_item = |d: &Document| {
+        assert!(item_sequence(d).remove(0).is_some());
+    };
+    check_edit("- - 1\n  # c\n- 3\n", remove_item, "- []\n  # c\n- 3\n");
+    check_edit("- - 1\n  # c\n", remove_item, "- []\n  # c\n");
+    check_edit(
+        "- &a\n  b: 2\n  # c\n- 3\n",
+        remove_entry,
+        "- &a\n  {}\n  # c\n- 3\n",
+    );
+    check_edit(
+        "x:\n  - - 2\n    # c\ny: 1\n",
+        |d| {
+            let s = d.as_mapping().unwrap().get_sequence("x").unwrap();
+            s.get(0).unwrap().as_sequence().unwrap().remove(0);
+        },
+        "x:\n  - []\n    # c\ny: 1\n",
+    );
+    check_edit(
+        "- - 1\n  - 2\n  # c\n- 3\n",
+        |d| item_sequence(d).clear(),
+        "- []\n  # c\n- 3\n",
+    );
+}
+
+#[test]
+fn drain_mapping_value_keeps_comment_line_indent() {
+    let remove = |d: &Document| {
+        let v = d.as_mapping().unwrap().get("top").unwrap();
+        match v.as_mapping() {
+            Some(m) => assert!(m.remove("b").is_some()),
+            None => assert!(v.as_sequence().unwrap().remove(0).is_some()),
+        }
+    };
+    check_edit(
+        "top:\n  b: 2\n  # c\nx: 1\n",
+        remove,
+        "top: {}\n  # c\nx: 1\n",
+    );
+    check_edit(
+        "top:\n  - 2\n  # c\nx: 1\n",
+        remove,
+        "top: []\n  # c\nx: 1\n",
+    );
+    check_edit(
+        "top:\n  # a\n  b: 2\n  # c\nx: 1\n",
+        remove,
+        "top:\n  # a\n  {}\n  # c\nx: 1\n",
+    );
+    check_edit(
+        "a:\n  top:\n    b: 2\n    # c\nx: 1\n",
+        |d| {
+            let a = d.as_mapping().unwrap().get_mapping("a").unwrap();
+            a.get_mapping("top").unwrap().remove("b");
+        },
+        "a:\n  top: {}\n    # c\nx: 1\n",
+    );
+}
+
+#[test]
+fn drain_removed_sequence_item_with_comment_line() {
+    let doc = Document::from_str("- b: 2\n  # c\n").unwrap();
+    let item = doc.as_sequence().unwrap().remove(0).unwrap();
+    let m = item.as_mapping().unwrap();
+    assert!(m.remove("b").is_some());
+    assert_eq!(m.to_string(), "{}");
+}

@@ -1087,8 +1087,14 @@ impl Sequence {
         } else {
             (children.get(i + 1), i..(i + 1))
         };
-        let is_indent =
-            neighbour.is_some_and(|c| c.as_token().is_some_and(|t| t.kind() == SyntaxKind::INDENT));
+        // In a drained sequence the parent's indent goes away with the
+        // collapse, so a comment line's INDENT stays for it to keep.
+        let drained = self.is_empty();
+        let is_indent = neighbour.is_some_and(|c| {
+            c.as_token().is_some_and(|t| {
+                t.kind() == SyntaxKind::INDENT && !(drained && crate::yaml::indents_comment_line(t))
+            })
+        });
         if is_indent {
             self.0.splice_children(range, vec![]);
         }

@@ -708,3 +708,40 @@ fn test_set_flow_value_keeps_trailing_comment_once() {
         );
     }
 }
+
+/// Set the first value of `source` (by key, or index 0 in a sequence) to
+/// `xval`, check the result is shaped as the parser would shape it and
+/// validates, and return its text.
+#[track_caller]
+fn set_first(source: &str) -> String {
+    let file = YamlFile::from_str(source).unwrap();
+    let doc = file.document().unwrap();
+    match doc.as_mapping() {
+        Some(m) => m.set(m.keys().next().unwrap(), "xval"),
+        None => assert!(doc.as_sequence().unwrap().set(0, "xval")),
+    }
+    assert_file_cst_ok(&file);
+    let text = file.to_string();
+    let reparsed = YamlFile::from_str(&text).unwrap();
+    assert_eq!(
+        debug::tree_to_string(file.syntax()),
+        debug::tree_to_string(reparsed.syntax())
+    );
+    assert_eq!(
+        yaml_edit::validator::Validator::new().validate_syntax(reparsed.syntax()),
+        vec![],
+        "{text:?}"
+    );
+    text
+}
+
+#[test]
+fn test_set_tagged_value_on_next_line() {
+    assert_eq!(set_first("a:\n  !t b\n"), "a: xval\n");
+    assert_eq!(
+        set_first("\"a\":\n  !!str b\nc: d\n"),
+        "\"a\": xval\nc: d\n"
+    );
+    assert_eq!(set_first("a:\n  &x !t b\nc: d\n"), "a: &x xval\nc: d\n");
+    assert_eq!(set_first("a:\n  !t\nb: c\n"), "a: xval\nb: c\n");
+}

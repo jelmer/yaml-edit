@@ -286,3 +286,79 @@ ref3: *l3"#;
     let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
     assert!(reparsed.document().is_some());
 }
+
+/// An alias is a complete node, so `*a x: v` has no implicit key: the colon
+/// follows `x`. The parser used to take `*a` as the key and then fail on the
+/// `x`. It now treats the alias like any other complete flow node followed
+/// by more content (`[q] x: v`), and the validator reports it.
+#[test]
+fn test_alias_followed_by_content_is_not_a_key() {
+    use yaml_edit::validator::Validator;
+    let parse = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).ok()?;
+        assert_eq!(file.to_string(), yaml);
+        // TODO: assert_file_cst_ok fails here, as it does for `[q] x: v`:
+        // the entry before `x: v` ends in WHITESPACE rather than a NEWLINE.
+        let root = <YamlFile as rowan::ast::AstNode>::syntax(&file).clone();
+        assert!(
+            !root
+                .descendants()
+                .any(|n| n.kind() == yaml_edit::SyntaxKind::KEY
+                    && n.descendants()
+                        .any(|d| d.kind() == yaml_edit::SyntaxKind::ALIAS)),
+            "{yaml:?}"
+        );
+        let violations = Validator::new().validate_syntax(&root);
+        Some(
+            violations
+                .into_iter()
+                .map(|v| (v.message, v.location.unwrap()))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let separate = "Block mapping entries must be on separate lines".to_string();
+    for (yaml, flow_form, expected) in [
+        ("a: &a 1\n*a x: v\n", "a: &a 1\n[q] x: v\n", None),
+        ("- *a x: v\n", "- [q] x: v\n", None),
+        (
+            "a: &a 1\nk:\n  *a x: v\n",
+            "a: &a 1\nk:\n  [q] x: v\n",
+            Some(vec![(separate.clone(), "3:6".to_string())]),
+        ),
+        (
+            "a: &a 1\nb:\n- *a x: v\n",
+            "a: &a 1\nb:\n- [q] x: v\n",
+            Some(vec![(separate.clone(), "3:6".to_string())]),
+        ),
+    ] {
+        assert_eq!(parse(yaml), expected, "{yaml:?}");
+        assert_eq!(
+            YamlFile::from_str(flow_form).is_ok(),
+            expected.is_some(),
+            "{flow_form:?}"
+        );
+    }
+}
+
+/// An alias followed only by the colon is still a key, and `*a:` is an alias
+/// named `a:`, as in the YAML test suite's 2SXE.
+#[test]
+fn test_alias_key_still_parses() {
+    let file = YamlFile::from_str("a: &a 1\n*a : v\n").unwrap();
+    let root = <YamlFile as rowan::ast::AstNode>::syntax(&file).clone();
+    let keys = root
+        .descendants()
+        .filter(|n| n.kind() == yaml_edit::SyntaxKind::KEY)
+        .map(|n| n.text().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(keys, ["a", "*a"]);
+
+    let file = YamlFile::from_str("foo:\n  *a:\n").unwrap();
+    let root = <YamlFile as rowan::ast::AstNode>::syntax(&file).clone();
+    let aliases = root
+        .descendants()
+        .filter(|n| n.kind() == yaml_edit::SyntaxKind::ALIAS)
+        .map(|n| n.text().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(aliases, ["*a:"]);
+}

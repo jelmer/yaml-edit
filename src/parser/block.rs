@@ -905,6 +905,16 @@ impl Parser {
             return true;
         }
 
+        // An alias is a whole key by itself: in `*a x: v` the colon follows
+        // `x`, so `*a` is not a key. The scan below never looks at the
+        // current token, so it would accept this.
+        if self.current() == Some(SyntaxKind::REFERENCE) {
+            return self
+                .upcoming_tokens()
+                .find(|kind| *kind != SyntaxKind::WHITESPACE)
+                == Some(SyntaxKind::COLON);
+        }
+
         // Look ahead to see if there's a colon after the current token.
         // Plain scalars can contain spaces, so a key may span multiple scalar
         // tokens separated by whitespace before the terminating colon

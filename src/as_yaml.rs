@@ -163,17 +163,79 @@ fn to_syntax<T: AsYaml + ?Sized>(v: &T) -> Option<SyntaxNode> {
     SyntaxNode::new_root(builder.finish()).first_child()
 }
 
-/// A node reduced to its resolved tag and the content the tag applies to.
-struct Resolved {
-    tag: String,
-    content: Content,
+/// The identity of a node under YAML node equality: its resolved tag and
+/// canonical content, with aliases followed. Two nodes are equal, and so
+/// the same mapping key, exactly when their identities are.
+///
+/// Mapping entries are kept sorted, since mappings are unordered.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum NodeIdentity {
+    Scalar {
+        tag: String,
+        value: String,
+    },
+    Sequence {
+        tag: String,
+        items: Vec<NodeIdentity>,
+    },
+    Mapping {
+        tag: String,
+        entries: Vec<(NodeIdentity, NodeIdentity)>,
+    },
 }
 
-enum Content {
-    /// The canonical value of a scalar.
-    Scalar(String),
-    Mapping(Mapping),
-    Sequence(Sequence),
+impl NodeIdentity {
+    /// The string form of a node with this identity as a key of a
+    /// [`YamlValue`](crate::YamlValue) mapping: the canonical value of a
+    /// scalar, without its tag, and a flow rendering of a collection.
+    ///
+    /// Equal nodes have the same string form, however they are written.
+    pub(crate) fn key_string(&self) -> String {
+        match self {
+            NodeIdentity::Scalar { value, .. } => value.clone(),
+            collection => collection.flow_text(),
+        }
+    }
+
+    /// Flow YAML text for a node with this identity, which reads back as an
+    /// equal node.
+    fn flow_text(&self) -> String {
+        use crate::scalar::ScalarValue;
+        let tagged = |tag: &str, default: &str, content: String| {
+            if tag == default {
+                content
+            } else {
+                format!("{tag} {content}")
+            }
+        };
+        match self {
+            NodeIdentity::Scalar { tag, value } if tag == "!!str" => {
+                ScalarValue::string(value.as_str()).to_flow_string()
+            }
+            NodeIdentity::Scalar { tag, value } => {
+                let plain = resolve_scalar(ScalarValue::parse(value.as_str()));
+                if !value.is_empty() && plain.tag == *tag && plain.value == *value {
+                    value.clone()
+                } else {
+                    format!(
+                        "{tag} {}",
+                        ScalarValue::string(value.as_str()).to_flow_string()
+                    )
+                }
+            }
+            NodeIdentity::Sequence { tag, items } => {
+                let items: Vec<_> = items.iter().map(Self::flow_text).collect();
+                tagged(tag, "!!seq", format!("[{}]", items.join(", ")))
+            }
+            NodeIdentity::Mapping { tag, entries } => {
+                let entries: Vec<_> = entries
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", k.flow_text(), v.flow_text()))
+                    .collect();
+                tagged(tag, "!!map", format!("{{{}}}", entries.join(", ")))
+            }
+        }
+    }
 }
 
 /// Spell `tag` in its `!!` shorthand when it is in the `tag:yaml.org,2002:`
@@ -197,8 +259,14 @@ fn collection_tag(tag: Option<String>, default: &str) -> String {
     }
 }
 
+/// A scalar's resolved tag and canonical value.
+struct ResolvedScalar {
+    tag: String,
+    value: String,
+}
+
 /// Resolve a scalar to its tag and canonical value.
-fn resolve_scalar(scalar: crate::scalar::ScalarValue) -> Resolved {
+fn resolve_scalar(scalar: crate::scalar::ScalarValue) -> ResolvedScalar {
     use crate::scalar::{ScalarType, ScalarValue};
     let text = scalar.value();
     let canonical = |parsed: Option<String>| parsed.unwrap_or_else(|| text.to_string());
@@ -209,13 +277,15 @@ fn resolve_scalar(scalar: crate::scalar::ScalarValue) -> Resolved {
         ),
         ScalarType::Float => (
             "!!float".to_string(),
-            canonical(ScalarValue::parse_float(text).map(|f| f.to_string())),
+            canonical(
+                ScalarValue::parse_float(text).map(|f| ScalarValue::format_float(f.to_string())),
+            ),
         ),
         ScalarType::Boolean => (
             "!!bool".to_string(),
             canonical(ScalarValue::parse_bool(text).map(|b| b.to_string())),
         ),
-        ScalarType::Null => ("!!null".to_string(), String::new()),
+        ScalarType::Null => ("!!null".to_string(), "null".to_string()),
         _ => {
             // A scalar with the non-specific tag `!` is a string.
             let tag = match scalar.tag().map(shorthand_tag) {
@@ -225,49 +295,133 @@ fn resolve_scalar(scalar: crate::scalar::ScalarValue) -> Resolved {
             (tag, text.to_string())
         }
     };
-    Resolved {
-        tag,
-        content: Content::Scalar(value),
-    }
+    ResolvedScalar { tag, value }
 }
 
-/// Resolve a value node, or the KEY or VALUE wrapper holding one.
-fn resolve(node: &SyntaxNode) -> Option<Resolved> {
-    use crate::lex::SyntaxKind;
-    match node.kind() {
-        SyntaxKind::TAGGED_NODE => {
-            let tagged = TaggedNode::cast(node.clone())?;
-            match node.first_child() {
-                Some(content) => resolve_content(&content, tagged.tag()),
-                None => crate::scalar::ScalarValue::from_tagged(&tagged).map(resolve_scalar),
-            }
-        }
-        SyntaxKind::KEY | SyntaxKind::VALUE => resolve(&node.first_child()?),
-        _ => resolve_content(node, None),
-    }
+/// The identity of `node`, a value node or the KEY or VALUE wrapper holding
+/// one.
+///
+/// Aliases are followed through `registry`; without one an alias is a
+/// [`ResolveError::UnresolvedAlias`](crate::anchor_resolution::ResolveError::UnresolvedAlias).
+/// Returns `Ok(None)` if `node` is not a value node.
+pub(crate) fn node_identity(
+    node: &SyntaxNode,
+    registry: Option<&crate::anchor_resolution::AnchorRegistry>,
+) -> Result<Option<NodeIdentity>, crate::anchor_resolution::ResolveError> {
+    identity_with_tag(node, None, registry, &mut Vec::new())
 }
 
-/// Resolve an untagged node, or one whose tag `tag` was found outside it.
-fn resolve_content(node: &SyntaxNode, tag: Option<String>) -> Option<Resolved> {
+/// The identity of `node` with `tag`, if set, in place of its own tag.
+///
+/// `expanding` holds the anchored nodes whose aliases are being followed,
+/// so an alias within its own anchored node is reported as recursive.
+fn identity_with_tag(
+    node: &SyntaxNode,
+    tag: Option<String>,
+    registry: Option<&crate::anchor_resolution::AnchorRegistry>,
+    expanding: &mut Vec<SyntaxNode>,
+) -> Result<Option<NodeIdentity>, crate::anchor_resolution::ResolveError> {
+    use crate::anchor_resolution::ResolveError;
     use crate::lex::SyntaxKind;
     use crate::scalar::ScalarValue;
+
+    let with_tag = |scalar: ScalarValue, tag: Option<String>| match tag {
+        Some(tag) => scalar.with_resolved_tag(tag),
+        None => scalar,
+    };
     match node.kind() {
-        SyntaxKind::SCALAR => {
-            let scalar = ScalarValue::from_scalar(&Scalar::cast(node.clone())?);
-            Some(resolve_scalar(match tag {
-                Some(tag) => scalar.with_resolved_tag(tag),
-                None => scalar,
+        SyntaxKind::KEY | SyntaxKind::VALUE => match node.first_child() {
+            Some(content) => identity_with_tag(&content, tag, registry, expanding),
+            None => Ok(None),
+        },
+        SyntaxKind::TAGGED_NODE => {
+            let Some(tagged) = TaggedNode::cast(node.clone()) else {
+                return Ok(None);
+            };
+            // A tag passed in is that of an alias to this node, which takes
+            // the place of the node's own.
+            let tag = tag.or_else(|| tagged.tag());
+            match node.first_child() {
+                Some(content) => identity_with_tag(&content, tag, registry, expanding),
+                None => Ok(ScalarValue::from_tagged(&tagged).map(|scalar| {
+                    let ResolvedScalar { tag, value } = resolve_scalar(with_tag(scalar, tag));
+                    NodeIdentity::Scalar { tag, value }
+                })),
+            }
+        }
+        SyntaxKind::ALIAS => {
+            let Some(alias) = Alias::cast(node.clone()) else {
+                return Ok(None);
+            };
+            let Some(registry) = registry else {
+                return Err(ResolveError::UnresolvedAlias {
+                    alias: alias.name(),
+                });
+            };
+            let target = registry.resolve_alias_through(&alias)?;
+            if expanding.contains(target) {
+                return Err(ResolveError::RecursiveAlias {
+                    alias: alias.name(),
+                });
+            }
+            expanding.push(target.clone());
+            let identity = identity_with_tag(target, tag, Some(registry), expanding);
+            expanding.pop();
+            identity
+        }
+        SyntaxKind::SCALAR => Ok(Scalar::cast(node.clone()).map(|scalar| {
+            let ResolvedScalar { tag, value } =
+                resolve_scalar(with_tag(ScalarValue::from_scalar(&scalar), tag));
+            NodeIdentity::Scalar { tag, value }
+        })),
+        SyntaxKind::MAPPING => {
+            let Some(mapping) = Mapping::cast(node.clone()) else {
+                return Ok(None);
+            };
+            let mut entries = Vec::new();
+            for (key, value) in mapping.pairs() {
+                let key = identity_with_tag(&key, None, registry, expanding)?;
+                let value = identity_with_tag(&value, None, registry, expanding)?;
+                let (Some(key), Some(value)) = (key, value) else {
+                    return Ok(None);
+                };
+                entries.push((key, value));
+            }
+            entries.sort();
+            Ok(Some(NodeIdentity::Mapping {
+                tag: collection_tag(tag, "!!map"),
+                entries,
             }))
         }
-        SyntaxKind::MAPPING => Some(Resolved {
-            tag: collection_tag(tag, "!!map"),
-            content: Content::Mapping(Mapping::cast(node.clone())?),
-        }),
-        SyntaxKind::SEQUENCE => Some(Resolved {
-            tag: collection_tag(tag, "!!seq"),
-            content: Content::Sequence(Sequence::cast(node.clone())?),
-        }),
-        _ => None,
+        SyntaxKind::SEQUENCE => {
+            let Some(sequence) = Sequence::cast(node.clone()) else {
+                return Ok(None);
+            };
+            let mut items = Vec::new();
+            for item in sequence.items() {
+                let Some(item) = identity_with_tag(&item, None, registry, expanding)? else {
+                    return Ok(None);
+                };
+                items.push(item);
+            }
+            Ok(Some(NodeIdentity::Sequence {
+                tag: collection_tag(tag, "!!seq"),
+                items,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The identity of `v`, as [`node_identity`] gives it for the node backing
+/// `v` or, for a raw value, the CST it builds.
+pub(crate) fn identity_of<T: AsYaml + ?Sized>(
+    v: &T,
+    registry: Option<&crate::anchor_resolution::AnchorRegistry>,
+) -> Result<Option<NodeIdentity>, crate::anchor_resolution::ResolveError> {
+    match to_syntax(v) {
+        Some(node) => node_identity(&node, registry),
+        None => Ok(None),
     }
 }
 
@@ -276,50 +430,19 @@ fn resolve_content(node: &SyntaxNode, tag: Option<String>) -> Option<Resolved> {
 ///
 /// Returns `None` for anything that is not a scalar.
 pub(crate) fn scalar_canonical(node: &SyntaxNode) -> Option<(String, String)> {
-    match resolve(node)? {
-        Resolved {
-            tag,
-            content: Content::Scalar(value),
-        } => Some((tag, value)),
+    match node_identity(node, None) {
+        Ok(Some(NodeIdentity::Scalar { tag, value })) => Some((tag, value)),
         _ => None,
     }
 }
 
-/// Spec equality of two CST nodes.
+/// Spec equality of two CST nodes. An alias equals nothing, as it cannot
+/// be followed here.
 pub(crate) fn node_eq(a: &SyntaxNode, b: &SyntaxNode) -> bool {
-    let (Some(a), Some(b)) = (resolve(a), resolve(b)) else {
-        return false;
-    };
-    a.tag == b.tag
-        && match (&a.content, &b.content) {
-            (Content::Scalar(a), Content::Scalar(b)) => a == b,
-            (Content::Mapping(a), Content::Mapping(b)) => mapping_eq(a, b),
-            (Content::Sequence(a), Content::Sequence(b)) => sequence_eq(a, b),
-            _ => false,
-        }
-}
-
-fn mapping_eq(lhs: &Mapping, rhs: &Mapping) -> bool {
-    let lhs_pairs: Vec<_> = lhs.pairs().collect();
-    let rhs_pairs: Vec<_> = rhs.pairs().collect();
-    if lhs_pairs.len() != rhs_pairs.len() {
-        return false;
+    match (node_identity(a, None), node_identity(b, None)) {
+        (Ok(Some(a)), Ok(Some(b))) => a == b,
+        _ => false,
     }
-    // Mappings are unordered, so match each pair against a not yet used pair
-    // on the other side.
-    let mut used = vec![false; rhs_pairs.len()];
-    lhs_pairs.iter().all(|(lk, lv)| {
-        let found = rhs_pairs
-            .iter()
-            .zip(&used)
-            .position(|((rk, rv), u)| !u && node_eq(lk, rk) && node_eq(lv, rv));
-        found.map(|i| used[i] = true).is_some()
-    })
-}
-
-fn sequence_eq(lhs: &Sequence, rhs: &Sequence) -> bool {
-    // items() already yields peeled content nodes.
-    lhs.len() == rhs.len() && lhs.items().zip(rhs.items()).all(|(l, r)| node_eq(&l, &r))
 }
 
 /// A type-erased handle to a CST node returned from navigation methods.

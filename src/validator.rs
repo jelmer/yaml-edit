@@ -2373,7 +2373,7 @@ impl Validator {
     /// may repeat a key.
     ///
     /// Like other content that does not suit a YAML 1.1 type, a repeated
-    /// key is only a warning. An alias equals nothing here, as in
+    /// key is only a warning. Keys compare as in
     /// [`Self::check_duplicate_keys`].
     fn check_omap_keys(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         use crate::SyntaxKind;
@@ -2402,9 +2402,12 @@ impl Validator {
             let key = entry.children().find(|n| n.kind() == SyntaxKind::KEY)?;
             Some((key, entry.text_range()))
         });
-        let mut seen: Vec<SyntaxNode> = Vec::new();
+        let mut seen: Vec<(crate::as_yaml::NodeIdentity, SyntaxNode)> = Vec::new();
         for (key, range) in keys {
-            if let Some(first) = seen.iter().find(|k| crate::as_yaml::node_eq(k, &key)) {
+            let Some(identity) = key_identity(&key) else {
+                continue;
+            };
+            if let Some((_, first)) = seen.iter().find(|(k, _)| *k == identity) {
                 violations.push(Violation::warning_at(
                     Rule::DuplicateKeys,
                     range,
@@ -2415,7 +2418,7 @@ impl Validator {
                     ),
                 ));
             }
-            seen.push(key);
+            seen.push((identity, key));
         }
     }
 
@@ -2765,6 +2768,7 @@ impl Validator {
     /// - `"1"` and `1` are NOT duplicates (different types: string vs int)
     /// - `null`, `~`, and empty key are all duplicates (all null)
     /// - Works with complex keys (sequences, mappings) as well
+    /// - A key that is or holds an alias equals nothing
     fn check_duplicate_keys(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         use crate::SyntaxKind;
         use std::collections::HashMap;
@@ -2787,10 +2791,6 @@ impl Validator {
             })
             .collect();
 
-        // Compare semantically, but bucket scalar keys by their normalized
-        // value first so the common all-scalar mapping costs one hash per key
-        // instead of a pairwise sweep. Collection keys are rare and have no
-        // cheap normal form, so they keep the pairwise comparison.
         let format_key = |s: &str| {
             if s.is_empty() {
                 "\"\"".to_string()
@@ -2810,35 +2810,30 @@ impl Validator {
             ));
         };
 
-        // (resolved tag, canonical value) -> index of the first key with it
-        let mut seen_scalars: HashMap<(String, String), usize> = HashMap::new();
-        let mut collection_keys: Vec<usize> = Vec::new();
-
-        for i in 0..keys.len() {
-            match crate::as_yaml::scalar_canonical(&keys[i].0) {
-                Some(norm) => match seen_scalars.entry(norm) {
-                    std::collections::hash_map::Entry::Occupied(first) => {
-                        let first_idx = *first.get();
-                        report(&keys[first_idx].1, &keys[i].1, keys[i].2);
-                    }
-                    std::collections::hash_map::Entry::Vacant(slot) => {
-                        slot.insert(i);
-                    }
-                },
-                None => {
-                    // A collection key (or an alias, which equals nothing).
-                    let dup = collection_keys
-                        .iter()
-                        .copied()
-                        .find(|&j| crate::as_yaml::node_eq(&keys[j].0, &keys[i].0));
-                    if let Some(j) = dup {
-                        report(&keys[j].1, &keys[i].1, keys[i].2);
-                    }
-                    collection_keys.push(i);
+        // Key identity -> index of the first key with it
+        let mut seen: HashMap<crate::as_yaml::NodeIdentity, usize> = HashMap::new();
+        for (i, (key, text, range)) in keys.iter().enumerate() {
+            let Some(identity) = key_identity(key) else {
+                continue;
+            };
+            match seen.entry(identity) {
+                std::collections::hash_map::Entry::Occupied(first) => {
+                    report(&keys[*first.get()].1, text, *range);
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(i);
                 }
             }
         }
     }
+}
+
+/// The identity of mapping key `key`, or `None` if it is or holds an alias.
+///
+/// Such a key is compared with nothing: the YAML test suite has
+/// `{&a [a]: 1, *a : 2}` as valid (X38W).
+fn key_identity(key: &SyntaxNode) -> Option<crate::as_yaml::NodeIdentity> {
+    crate::as_yaml::node_identity(key, None).ok().flatten()
 }
 
 impl Default for Validator {

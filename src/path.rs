@@ -801,17 +801,17 @@ fn lookup_merged(
     let at = segment_display(segment);
     let registry = registry_for(rowan::ast::AstNode::syntax(mapping));
     let merged = mapping.merged(&registry).map_err(|e| match e {
-        ResolveError::UndefinedAlias { alias } => PathError::UndefinedAlias {
-            at: at.clone(),
-            alias,
-        },
+        // A key holding an alias within its own anchored node is recursive.
+        ResolveError::UndefinedAlias { alias } | ResolveError::RecursiveAlias { alias } => {
+            PathError::UndefinedAlias {
+                at: at.clone(),
+                alias,
+            }
+        }
         ResolveError::InvalidMergeOperand { operand } => PathError::InvalidMergeOperand {
             at: at.clone(),
             operand,
         },
-        ResolveError::RecursiveAlias { .. } => {
-            unreachable!("collecting merge sources does not expand aliases")
-        }
         ResolveError::KeyCollision { .. } => {
             unreachable!("a merged view keeps keys as YAML nodes, not strings")
         }

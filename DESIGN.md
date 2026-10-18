@@ -409,6 +409,13 @@ has: with `a: &a !u 1`, `k: !t *a` reads as `k: !t 1`. An anchor on an
 alias names the node the alias refers to, so `*b` in `b: &b *a\nc: *b\n`
 resolves, on reads and through paths, to what `*a` does.
 
+Mapping keys are compared everywhere by `as_yaml::NodeIdentity`: the
+resolved tag and canonical content of the key, with aliases followed where
+there is a registry to follow them. A `YamlValue` mapping holds each key by
+the string form of its identity, so `? [a,b]` and `? - a\n  - b` give the
+same key, `[a, b]`. The validator compares a key that is or holds an alias
+with nothing, as the YAML test suite has `{&a [a]: 1, *a : 2}` as valid.
+
 ## Error handling
 
 The primary error type is `YamlError`, with variants for I/O, parse errors

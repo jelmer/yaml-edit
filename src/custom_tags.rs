@@ -293,7 +293,7 @@ impl CustomTagRegistry {
         if !Self::is_valid_tag_name(&tag) {
             return Err(CustomTagError::new(
                 &tag,
-                "Invalid tag name: must start with '!' or '!!'",
+                "Invalid tag name: must be a YAML tag such as '!name', '!!name' or '!<uri>'",
             ));
         }
 
@@ -348,15 +348,52 @@ impl CustomTagRegistry {
         self.with_handler(tag, |h| h.validate(content))
     }
 
-    /// Check if a tag name is valid (follows YAML tag naming conventions)
+    /// Check whether `tag` is a tag property as YAML 1.2 spells it
+    /// (`c-ns-tag-property`): a verbatim tag (`!<...>`) or a shorthand
+    /// (`!local`, `!!str`, `!e!foo`). The non-specific `!` names no type.
     fn is_valid_tag_name(tag: &str) -> bool {
-        // YAML tags must start with ! and contain valid characters
-        tag.len() >= 2
-            && tag.starts_with('!')
-            && tag[1..]
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '/'))
+        let Some(rest) = tag.strip_prefix('!') else {
+            return false;
+        };
+        if let Some(uri) = rest.strip_prefix('<') {
+            return uri
+                .strip_suffix('>')
+                .is_some_and(|uri| is_uri_run(uri, |_| true));
+        }
+        // c-named-tag-handle is `!` ns-word-char+ `!`, and `!!` the
+        // secondary handle; anything else uses the primary `!`.
+        let suffix = match rest.split_once('!') {
+            Some((name, suffix)) if name.chars().all(is_word_char) => suffix,
+            Some(_) => return false,
+            None => rest,
+        };
+        is_uri_run(suffix, |c| !matches!(c, '!' | ',' | '[' | ']' | '{' | '}'))
     }
+}
+
+/// `ns-word-char`: an ASCII letter, digit or `-`.
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-'
+}
+
+/// Whether `s` is one or more `ns-uri-char`s accepted by `allowed`: `%`
+/// escapes, word characters and URI punctuation.
+fn is_uri_run(s: &str, allowed: impl Fn(char) -> bool) -> bool {
+    let mut chars = s.chars();
+    let mut empty = true;
+    while let Some(c) = chars.next() {
+        empty = false;
+        let ok = if c == '%' {
+            chars.next().is_some_and(|c| c.is_ascii_hexdigit())
+                && chars.next().is_some_and(|c| c.is_ascii_hexdigit())
+        } else {
+            (is_word_char(c) || "#;/?:@&=+$,_.!~*'()[]".contains(c)) && allowed(c)
+        };
+        if !ok {
+            return false;
+        }
+    }
+    !empty
 }
 
 impl Clone for CustomTagRegistry {
@@ -1046,10 +1083,39 @@ mod tests {
         assert!(CustomTagRegistry::is_valid_tag_name("!my-custom-tag"));
         assert!(CustomTagRegistry::is_valid_tag_name("!domain.com/type"));
 
-        assert!(!CustomTagRegistry::is_valid_tag_name("json")); // Missing !
-        assert!(!CustomTagRegistry::is_valid_tag_name("!")); // Too short
-        assert!(!CustomTagRegistry::is_valid_tag_name("!invalid space")); // Space not allowed
-        assert!(!CustomTagRegistry::is_valid_tag_name("!invalid@char")); // @ not allowed
+        for tag in [
+            "!!binary",
+            "!e!foo",
+            "!at@char",
+            "!a%21b",
+            "!<tag:yaml.org,2002:str>",
+            "!<!>",
+            "!~*'()",
+        ] {
+            assert!(CustomTagRegistry::is_valid_tag_name(tag), "{tag:?}");
+        }
+
+        for tag in [
+            "json",
+            // The non-specific tag names no type.
+            "!",
+            "!!",
+            "!invalid space",
+            "!a,b",
+            "!a{b}",
+            "!a!",
+            "!e!",
+            "!e!f!g",
+            "!a%2",
+            "!a%zz",
+            "!a\"b",
+            "!<>",
+            "!<a b>",
+            "!<a",
+            "!naïve",
+        ] {
+            assert!(!CustomTagRegistry::is_valid_tag_name(tag), "{tag:?}");
+        }
     }
 
     #[test]

@@ -176,7 +176,10 @@ fn test_registry_errors() {
     // Invalid tag name (missing !)
     match registry.register("timestamp", TimestampHandler::new("%Y-%m-%d")) {
         Ok(_) => panic!("Should have failed"),
-        Err(e) => assert_eq!(e.message, "Invalid tag name: must start with '!' or '!!'"),
+        Err(e) => assert_eq!(
+            e.message,
+            "Invalid tag name: must be a YAML tag such as '!name', '!!name' or '!<uri>'"
+        ),
     }
 
     // Valid tag name

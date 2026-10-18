@@ -24,6 +24,9 @@ pub(crate) enum LineEnd {
     /// A NEWLINE right after an explicit-key entry in its parent. After
     /// any other entry, that is a blank line.
     Sibling,
+    /// A NEWLINE after a comment that ends the entry's line but which the
+    /// parser put after the entry in its parent, as after a sequence item.
+    AfterComment,
     /// No line break: the entry ends unterminated input.
     Open,
 }
@@ -51,8 +54,23 @@ pub(crate) fn line_end(entry: &SyntaxNode) -> LineEnd {
         {
             LineEnd::Sibling
         }
+        _ if comment_line_end(entry) => LineEnd::AfterComment,
         _ => LineEnd::Open,
     }
+}
+
+/// Is `entry` followed in its parent by a comment on its last line and the
+/// NEWLINE ending that?
+fn comment_line_end(entry: &SyntaxNode) -> bool {
+    let mut after =
+        std::iter::successors(entry.next_sibling_or_token(), |s| s.next_sibling_or_token())
+            .skip_while(|s| s.kind() == SyntaxKind::WHITESPACE);
+    after
+        .next()
+        .is_some_and(|s| s.kind() == SyntaxKind::COMMENT)
+        && after
+            .next()
+            .is_some_and(|s| s.kind() == SyntaxKind::NEWLINE)
 }
 
 /// Does `node`'s text end in a NEWLINE, ignoring zero-width tokens such as

@@ -241,10 +241,6 @@ VJP3/01 d0 map0 remove[0] semantic
 VJP3/01 d0 map0 remove[0] shape
 VJP3/01 d0 map1 clear validator
 VJP3/01 d0 map1 remove[0] validator
-W42U d0 seq1 clear semantic
-W42U d0 seq1 clear shape
-W42U d0 seq1 remove[1] cst
-W42U d0 seq1 remove[1] semantic
 W42U d0 seq1 remove[1] shape
 X38W d0 map0 move-after-last[0] validator
 X38W d0 map0 move-before-first[1] validator

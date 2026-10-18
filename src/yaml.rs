@@ -123,14 +123,6 @@ impl ValueNode for TaggedNode {
     }
 }
 
-// Helper functions for newline management
-
-/// Check if a syntax node ends with a newline token
-pub(crate) fn ends_with_newline(node: &SyntaxNode) -> bool {
-    node.last_token()
-        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
-}
-
 /// Detach the trailing NEWLINE on `empty_collection`'s enclosing
 /// MAPPING_ENTRY when it was serving as a `key:\n    \n` placeholder.
 ///
@@ -141,7 +133,7 @@ pub(crate) fn detach_empty_collection_placeholder_newline(
     empty_collection: &SyntaxNode,
     new_entry: &SyntaxNode,
 ) {
-    if !ends_with_newline(new_entry) {
+    if !crate::nodes::trivia::line_end(new_entry).is_terminated() {
         return;
     }
     let Some(parent_value) = empty_collection.parent() else {
@@ -686,7 +678,7 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode,
         let index = collection.index();
         crate::nodes::replace_children(&host, index..index + 1, replacement);
         if terminated {
-            crate::nodes::ensure_trailing_newline(&entry_node);
+            crate::nodes::trivia::terminate(&entry_node);
         }
         return;
     }
@@ -751,7 +743,7 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode,
     // entry (see the "entry termination" invariant in
     // src/nodes/mod.rs).
     if terminated {
-        crate::nodes::ensure_trailing_newline(&entry_node);
+        crate::nodes::trivia::terminate(&entry_node);
     }
 }
 
@@ -1124,10 +1116,10 @@ impl YamlFile {
             .0
             .children()
             .any(|n| matches!(n.kind(), SyntaxKind::DOCUMENT | SyntaxKind::DIRECTIVE));
-        if !self.0.text_range().is_empty() && !crate::nodes::trailing_newline_reachable(&self.0) {
+        if !self.0.text_range().is_empty() && !crate::nodes::trivia::ends_with_line_break(&self.0) {
             match self.0.last_child_or_token() {
                 Some(rowan::NodeOrToken::Node(last)) if last.kind() == SyntaxKind::DOCUMENT => {
-                    crate::nodes::terminate_last_line(&last)
+                    crate::nodes::trivia::terminate_last_line(&last)
                 }
                 _ => crate::nodes::append_children(
                     &self.0,

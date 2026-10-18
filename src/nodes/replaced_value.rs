@@ -109,14 +109,7 @@ pub(crate) fn restore_trailing_lines(entry: &SyntaxNode, lines: Vec<SyntaxToken>
         .map(|t| fresh_token(t.kind(), t.text()).into())
         .collect();
     let (parent, after) = match entry.parent() {
-        Some(parent) => {
-            // An explicit-key entry leaves its line break to the mapping.
-            let handed_off = !super::trailing_newline_reachable(entry)
-                && entry
-                    .next_sibling_or_token()
-                    .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE);
-            (parent, entry.index() + 1 + usize::from(handed_off))
-        }
+        Some(parent) => (parent, super::trivia::index_after_line(entry)),
         None => (entry.clone(), entry.children_with_tokens().count()),
     };
     parent.splice_children(after..after, elements);

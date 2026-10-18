@@ -4,11 +4,8 @@
 use super::helpers::FlowInsertPos;
 use super::{Mapping, MappingEntry};
 use crate::lex::SyntaxKind;
-use crate::nodes::{
-    ensure_trailing_newline, entry_line_terminated, flow_separator, fresh_token,
-    hand_line_break_to_mapping, has_child_token, strip_flow_separator, unterminate_last_line,
-    SyntaxNode, SyntaxToken,
-};
+use crate::nodes::trivia::{self, line_end, FlowSeparator};
+use crate::nodes::{fresh_token, SyntaxNode, SyntaxToken};
 use rowan::ast::AstNode;
 
 /// The layout that belongs to a position in a mapping rather than to the
@@ -16,7 +13,7 @@ use rowan::ast::AstNode;
 pub(super) struct SlotLayout {
     /// For each entry of a flow mapping, the separator it ends with, if
     /// that can be swapped for another entry's.
-    flow_separators: Vec<Option<Vec<(SyntaxKind, String)>>>,
+    flow_separators: Vec<Option<FlowSeparator>>,
     /// For each entry of a flow mapping that ends its line, the
     /// indentation of the line that follows.
     flow_line_indents: Vec<Option<Vec<(SyntaxKind, String)>>>,
@@ -41,27 +38,6 @@ fn flow_line_indent(entry: &SyntaxNode) -> Option<Vec<SyntaxToken>> {
     })
 }
 
-/// Put a comma right after the content of `entry`, a flow mapping entry
-/// that lacks one, ahead of any comment that follows it.
-fn insert_flow_comma(entry: &SyntaxNode) {
-    let at = entry
-        .children_with_tokens()
-        .filter(|c| c.as_node().is_some())
-        .last()
-        .map_or(0, |n| n.index() + 1);
-    let mut tokens = vec![fresh_token(SyntaxKind::COMMA, ",").into()];
-    let spaced = entry.children_with_tokens().nth(at).is_some_and(|c| {
-        matches!(
-            c.kind(),
-            SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
-        )
-    });
-    if !spaced {
-        tokens.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
-    }
-    entry.splice_children(at..at, tokens);
-}
-
 impl Mapping {
     /// Take note of the layout of this mapping that belongs to positions
     /// rather than entries, for [`restore_slot_layout`](Self::restore_slot_layout).
@@ -76,7 +52,7 @@ impl Mapping {
         let (flow_separators, flow_line_indents) = if self.is_flow_style() {
             entries
                 .iter()
-                .map(|e| (flow_separator(e).map(texts), flow_line_indent(e).map(texts)))
+                .map(|e| (FlowSeparator::of(e), flow_line_indent(e).map(texts)))
                 .unzip()
         } else {
             (Vec::new(), Vec::new())
@@ -85,8 +61,8 @@ impl Mapping {
         SlotLayout {
             flow_separators,
             flow_line_indents,
-            last_has_comma: last.is_some_and(|e| has_child_token(e, |k| k == SyntaxKind::COMMA)),
-            last_terminated: last.map_or(true, entry_line_terminated),
+            last_has_comma: last.is_some_and(trivia::has_comma),
+            last_terminated: last.map_or(true, |e| line_end(e).is_terminated()),
         }
     }
 
@@ -99,13 +75,12 @@ impl Mapping {
         };
         if !self.is_flow_style() {
             for entry in rest {
-                if !entry_line_terminated(entry) {
-                    ensure_trailing_newline(entry);
-                    hand_line_break_to_mapping(entry);
+                if !line_end(entry).is_terminated() {
+                    trivia::terminate(entry);
                 }
             }
             if !layout.last_terminated {
-                unterminate_last_line(&self.0);
+                trivia::unterminate_last(&self.0);
             }
             return;
         }
@@ -116,20 +91,10 @@ impl Mapping {
         );
         for (entry, slot) in entries.iter().zip(&layout.flow_separators) {
             let is_last = entry == last;
-            match (flow_separator(entry), slot) {
-                (Some(own), Some(slot)) => {
-                    let end = entry.children_with_tokens().count();
-                    let tokens: Vec<_> = slot
-                        .iter()
-                        .map(|(kind, text)| rowan::NodeOrToken::Token(fresh_token(*kind, text)))
-                        .collect();
-                    crate::nodes::replace_children(entry, end - own.len()..end, tokens);
-                }
-                _ if is_last && !layout.last_has_comma => strip_flow_separator(entry),
-                _ if !has_child_token(entry, |k| k == SyntaxKind::COMMA) => {
-                    insert_flow_comma(entry)
-                }
-                _ => {}
+            match slot {
+                Some(slot) if FlowSeparator::swap(entry, slot) => {}
+                _ if is_last && !layout.last_has_comma => FlowSeparator::strip(entry),
+                _ => FlowSeparator::insert_comma(entry),
             }
         }
         // The line after an entry that ends its line, after its comment,
@@ -212,12 +177,11 @@ impl Mapping {
     /// Insert `entry` after `target`, an entry of this mapping, if `after`
     /// is set, and before it otherwise.
     fn insert_next_to(&self, entry: &SyntaxNode, target: SyntaxNode, flow: bool, after: bool) {
-        let children: Vec<_> = self.0.children_with_tokens().collect();
         match (flow, after) {
             (true, true) => self.insert_flow_entry_cst_at(entry, FlowInsertPos::After(target)),
             (true, false) => self.insert_flow_entry_cst_at(entry, FlowInsertPos::Before(target)),
-            (false, true) => self.insert_block_entry_after(&children, entry, &target),
-            (false, false) => self.insert_block_entry_before(&children, entry, &target),
+            (false, true) => self.insert_block_entry_after(entry, &target),
+            (false, false) => self.insert_block_entry_before(entry, &target),
         }
     }
 

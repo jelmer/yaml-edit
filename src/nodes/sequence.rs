@@ -1,13 +1,12 @@
 use super::replaced_value;
 use super::{
-    append_children, ensure_trailing_newline, entry_indices, entry_line_terminated, fresh_token,
-    has_child_token, nth_entry_index, strip_flow_separator, unterminate_last_line, Lang,
-    SyntaxNode,
+    entry_indices, fresh_token, has_child_token, nth_entry_index, trivia, Lang, SyntaxNode,
 };
 use crate::as_yaml::{build_in, AsYaml, FlowQuoting, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::nodes::flow_quoting;
 use crate::nodes::mapping::{drop_tagged_anchor, held_anchor};
+use crate::nodes::trivia::FlowSeparator;
 use crate::yaml::ValueNode;
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
@@ -746,8 +745,8 @@ impl Sequence {
                 .last_child()
                 .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             {
-                last_entry_has_newline = entry_line_terminated(&node);
-                ensure_trailing_newline(&node);
+                last_entry_has_newline = trivia::line_end(&node).is_terminated();
+                trivia::terminate(&node);
             }
         }
 
@@ -837,13 +836,10 @@ impl Sequence {
             return;
         };
 
-        let comma = fresh_token(SyntaxKind::COMMA, ",");
-        let sep_ws = fresh_token(SyntaxKind::WHITESPACE, " ");
-
         if index >= entry_positions.len() {
             let entry = |pos: &usize| children[*pos].as_node().expect("SEQUENCE_ENTRY");
             if let Some((last, rest)) = entry_positions.split_last() {
-                crate::nodes::hand_over_flow_end(entry(last), rest.last().map(entry), &new_entry);
+                FlowSeparator::hand_over_end(entry(last), rest.last().map(entry), &new_entry);
             }
             self.0
                 .splice_children(right_bracket_pos..right_bracket_pos, vec![new_entry.into()]);
@@ -853,7 +849,7 @@ impl Sequence {
         // Insert before the entry at `index`; the new entry carries
         // its own `, ` tail to keep the displaced entry separated.
         let target_pos = entry_positions[index];
-        append_children(&new_entry, vec![comma.into(), sep_ws.into()]);
+        FlowSeparator::ensure(&new_entry);
         self.0
             .splice_children(target_pos..target_pos, vec![new_entry.into()]);
     }
@@ -954,7 +950,7 @@ impl Sequence {
                 c.as_node()
                     .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             }) {
-                ensure_trailing_newline(prev_entry);
+                trivia::terminate(prev_entry);
             }
         }
 
@@ -1148,7 +1144,7 @@ impl Sequence {
                 .is_some_and(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
         });
         let removed_terminated =
-            entry_line_terminated(children[i].as_node().expect("SEQUENCE_ENTRY"));
+            trivia::line_end(children[i].as_node().expect("SEQUENCE_ENTRY")).is_terminated();
 
         // Remove the entry first, then the INDENT that
         // separated it from a sibling. Doing them as two
@@ -1165,21 +1161,20 @@ impl Sequence {
         self.detach_orphaned_indent(children, i);
 
         let removed = children[i].as_node().expect("SEQUENCE_ENTRY");
-        if is_last && self.is_flow_style() && !has_child_token(removed, |k| k == SyntaxKind::COMMA)
-        {
+        if is_last && self.is_flow_style() && !trivia::has_comma(removed) {
             if let Some(prev) = self
                 .0
                 .children()
                 .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
                 .last()
             {
-                strip_flow_separator(&prev);
+                FlowSeparator::strip(&prev);
             }
         }
 
         // The end of the input keeps its lack of a final line break.
         if is_last && !removed_terminated && !self.is_flow_style() {
-            unterminate_last_line(&self.0);
+            trivia::unterminate_last(&self.0);
         }
         // If we just drained the last entry from a block
         // sequence under a key or in a sequence item, collapse
@@ -1227,7 +1222,7 @@ impl Sequence {
             .children()
             .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             .last()
-            .is_some_and(|e| entry_line_terminated(&e));
+            .is_some_and(|e| trivia::line_end(&e).is_terminated());
         // Remove items from the beginning to avoid recalculating indices
         // Use a safety counter to prevent infinite loops
         let initial_len = self.len();

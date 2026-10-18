@@ -324,3 +324,15 @@ fn drain_indented_collection_in_explicit_key() {
         "?\n  []\n: b\n",
     );
 }
+
+#[test]
+fn drain_value_of_explicit_key_entry() {
+    check_edit(
+        "? a\n:\n  - x\nb: 1\n",
+        |d| {
+            let s = d.as_mapping().unwrap().get_sequence("a").unwrap();
+            s.remove(0);
+        },
+        "? a\n: []\nb: 1\n",
+    );
+}

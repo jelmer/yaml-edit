@@ -5,10 +5,7 @@
 //! Split out of `nodes/mapping/mod.rs` unchanged.
 
 use crate::lex::SyntaxKind;
-use crate::nodes::{
-    append_children, fresh_token, has_child_token, is_block_scalar, trailing_newline_reachable,
-    Scalar, SyntaxNode,
-};
+use crate::nodes::{has_child_token, is_block_scalar, Scalar, SyntaxNode};
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
 
@@ -41,65 +38,6 @@ pub(super) fn value_is_block(value: &SyntaxNode) -> bool {
             .children()
             .find(|c| c.kind() == SyntaxKind::TAGGED_NODE)
             .is_some_and(|tagged| has_child_token(&tagged, is_line_break))
-}
-
-/// Index just past `entry`'s line terminator among its siblings.
-///
-/// Entries normally own their trailing NEWLINE, so the slot after the entry
-/// is the start of the next line. Explicit-key entries (`? k` / `: v`) are
-/// parsed without one: theirs sits beside them as a sibling, and inserting
-/// at the entry's own index would split it from its line break. A NEWLINE
-/// beside an entry that owns its own is a blank line, and stays below.
-pub(super) fn index_after_entry_line(parent: &SyntaxNode, idx: usize) -> usize {
-    let entry = parent
-        .children_with_tokens()
-        .nth(idx)
-        .and_then(|c| c.into_node())
-        .expect("idx is the position of an entry");
-    if trailing_newline_reachable(&entry) {
-        return idx + 1;
-    }
-    let follows_newline = entry
-        .next_sibling_or_token()
-        .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE);
-    if follows_newline {
-        idx + 2
-    } else {
-        idx + 1
-    }
-}
-
-/// Append a `, ` pair to the end of a MAPPING_ENTRY: the separator between
-/// two entries inside a flow mapping. Idempotent: if the entry already ends
-/// with a COMMA (possibly followed by whitespace), do nothing (avoids
-/// stacking separators when inserting next to an entry that already had a
-/// trailing comma).
-///
-/// The parser stores flow separators (COMMA and any following WHITESPACE /
-/// NEWLINE / INDENT) as siblings of KEY / VALUE inside the *previous*
-/// MAPPING_ENTRY, not inside its VALUE.
-pub(super) fn append_comma_space_to_entry(entry: &SyntaxNode) {
-    let ends_with_comma = entry
-        .children_with_tokens()
-        .filter_map(|c| c.into_token())
-        .filter(|t| {
-            !matches!(
-                t.kind(),
-                SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
-            )
-        })
-        .last()
-        .is_some_and(|t| t.kind() == SyntaxKind::COMMA);
-    if ends_with_comma {
-        return;
-    }
-    append_children(
-        entry,
-        vec![
-            fresh_token(SyntaxKind::COMMA, ",").into(),
-            fresh_token(SyntaxKind::WHITESPACE, " ").into(),
-        ],
-    );
 }
 
 /// Walk `entry`'s tokens in document order (descending into child nodes)

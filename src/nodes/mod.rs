@@ -70,7 +70,7 @@
 //!
 //! An explicit-key entry (`? key\n: value\n`) never owns the NEWLINE
 //! ending its value line: the parser leaves it to the MAPPING, right
-//! after the entry. See [`hand_line_break_to_mapping`].
+//! after the entry. See [`trivia`].
 //!
 //! Two carve-outs:
 //! - The **last** entry of a block collection may lack a terminator
@@ -107,7 +107,7 @@
 //!
 //! When inserting a new sibling entry after an existing one, mutation
 //! helpers must first ensure the predecessor is terminated
-//! (`ensure_trailing_newline` in this module).
+//! ([`trivia::terminate`]).
 //!
 //! ## Document-level trivia
 //!
@@ -192,7 +192,7 @@
 //! trailing siblings of the *previous* entry's KEY / VALUE / SCALAR,
 //! not inside the entry it precedes. Inserters that append a new entry
 //! must add a `, ` suffix to the entry they follow, not a `,` prefix on
-//! themselves.
+//! themselves. See [`trivia::FlowSeparator`].
 //!
 //! ## Prefer targeted splices over whole-node rebuilds
 //!
@@ -321,124 +321,6 @@ pub(crate) fn has_child_token(parent: &SyntaxNode, pred: impl Fn(SyntaxKind) -> 
         .any(|el| el.as_token().is_some_and(|t| pred(t.kind())))
 }
 
-/// The tokens a flow collection entry ends with that separate it from what
-/// follows: its comma, if any, and the white space around it. `None` if a
-/// comment comes before the comma or ends the entry, since a comma can't
-/// go after one on its line.
-pub(crate) fn flow_separator(entry: &SyntaxNode) -> Option<Vec<SyntaxToken>> {
-    let children: Vec<_> = entry.children_with_tokens().collect();
-    let start = children
-        .iter()
-        .rposition(|c| {
-            !matches!(
-                c.kind(),
-                SyntaxKind::COMMA
-                    | SyntaxKind::WHITESPACE
-                    | SyntaxKind::NEWLINE
-                    | SyntaxKind::INDENT
-            ) || c.as_node().is_some()
-        })
-        .map_or(0, |i| i + 1);
-    let separator: Vec<SyntaxToken> = children[start..]
-        .iter()
-        .filter_map(|c| c.as_token().cloned())
-        .collect();
-    let comma_in_separator = separator.iter().any(|t| t.kind() == SyntaxKind::COMMA);
-    if comma_in_separator != has_child_token(entry, |k| k == SyntaxKind::COMMA) {
-        return None;
-    }
-    let before = children[..start]
-        .iter()
-        .rev()
-        .filter_map(|c| match c {
-            rowan::NodeOrToken::Node(n) => n.last_token(),
-            rowan::NodeOrToken::Token(t) => Some(t.clone()),
-        })
-        .next();
-    if before.is_some_and(|t| t.kind() == SyntaxKind::COMMENT) {
-        return None;
-    }
-    Some(separator)
-}
-
-/// Make room for `new_entry` after `last`, the last entry of a flow
-/// collection, keeping the layout of the end of the collection:
-/// `new_entry` takes over the separator `last` ends with, trailing comma
-/// included, and `last` gets the one between the entries before it, or
-/// `, ` if there is none. `before_last` is the entry before `last`.
-pub(crate) fn hand_over_flow_end(
-    last: &SyntaxNode,
-    before_last: Option<&SyntaxNode>,
-    new_entry: &SyntaxNode,
-) {
-    let has_comma = |e: &SyntaxNode| has_child_token(e, |k| k == SyntaxKind::COMMA);
-    let Some(separator) = flow_separator(last) else {
-        // A comment ends the line of `last`, which keeps its separator;
-        // the new entry goes on the next line.
-        let comma = fresh_token(SyntaxKind::COMMA, ",").into();
-        if has_comma(last) {
-            append_children(new_entry, vec![comma]);
-        } else {
-            let space = fresh_token(SyntaxKind::WHITESPACE, " ").into();
-            append_children(last, vec![comma, space]);
-        }
-        return;
-    };
-    let usual: Vec<rowan::NodeOrToken<SyntaxNode, SyntaxToken>> = before_last
-        .filter(|e| has_comma(e))
-        .and_then(flow_separator)
-        .map(|tokens| {
-            tokens
-                .iter()
-                .map(|t| fresh_token(t.kind(), t.text()).into())
-                .collect()
-        })
-        .unwrap_or_else(|| {
-            vec![
-                fresh_token(SyntaxKind::COMMA, ",").into(),
-                fresh_token(SyntaxKind::WHITESPACE, " ").into(),
-            ]
-        });
-    for t in &separator {
-        t.detach();
-    }
-    append_children(new_entry, separator.into_iter().map(Into::into).collect());
-    append_children(last, usual);
-}
-
-/// Drop the `,` separator at the end of a flow collection entry that has
-/// become the last one. Whitespace and line breaks after the comma go too,
-/// unless a comment follows it.
-pub(crate) fn strip_flow_separator(entry: &SyntaxNode) {
-    let Some(comma) = entry
-        .children_with_tokens()
-        .filter_map(|c| c.into_token())
-        .filter(|t| t.kind() == SyntaxKind::COMMA)
-        .last()
-    else {
-        return;
-    };
-    let mut tail = vec![comma.clone()];
-    let mut next = comma.next_sibling_or_token();
-    while let Some(c) = next {
-        let Some(t) = c.into_token() else { break };
-        next = t.next_sibling_or_token();
-        tail.push(t);
-    }
-    let only_whitespace = tail[1..].iter().all(|t| {
-        matches!(
-            t.kind(),
-            SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
-        )
-    });
-    if !only_whitespace {
-        tail.truncate(1);
-    }
-    for t in tail {
-        t.detach();
-    }
-}
-
 /// Replace the children of `parent` in `range` with `children`.
 ///
 /// rowan 0.16's `SyntaxNode::splice_children` detaches the range while
@@ -469,130 +351,6 @@ pub(crate) fn append_children(
 ) {
     let end = parent.children_with_tokens().count();
     parent.splice_children(end..end, children);
-}
-
-/// Does this subtree end with a NEWLINE leaf, or with any run of
-/// zero-width tokens (like an implicit-null NULL "") whose last
-/// non-empty predecessor is a NEWLINE?
-///
-/// `last_token()` alone can't answer this: it returns the deepest tail
-/// leaf, which may be a zero-width NULL sitting after a NEWLINE inside
-/// the same KEY subtree (`? b\n` under a tagged mapping). Walk `node`'s
-/// own token stream backwards, skipping empty tokens, and check what's
-/// there. The walk is strictly bounded to `node`'s subtree; callers
-/// don't need to worry about escaping into siblings.
-pub(crate) fn trailing_newline_reachable(node: &SyntaxNode) -> bool {
-    // rowan's descendants_with_tokens isn't DoubleEndedIterator, so
-    // materialise the (usually short) tail slice; the walk is still
-    // bounded to `node`'s subtree, avoiding prev_token()'s tree-wide
-    // reach.
-    let mut last_non_empty = None;
-    for el in node.descendants_with_tokens() {
-        if let Some(t) = el.into_token() {
-            if !t.text().is_empty() {
-                last_non_empty = Some(t);
-            }
-        }
-    }
-    last_non_empty.is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
-}
-
-/// Remove the line break that ends `collection`, a block collection whose
-/// last line had none before it was edited. One that is part of a block
-/// scalar's value stays, as removing it would change the value.
-pub(crate) fn unterminate_last_line(collection: &SyntaxNode) {
-    let Some(last) = collection
-        .descendants_with_tokens()
-        .filter_map(|c| c.into_token())
-        .filter(|t| !t.text().is_empty())
-        .last()
-    else {
-        return;
-    };
-    let in_scalar = last
-        .parent_ancestors()
-        .take_while(|n| n != collection)
-        .any(|n| n.kind() == SyntaxKind::SCALAR);
-    if last.kind() == SyntaxKind::NEWLINE && !in_scalar {
-        last.detach();
-    }
-}
-
-/// Does `entry`'s line already end in a NEWLINE, counting the sibling one
-/// that explicit-key entries carry instead of owning it themselves?
-pub(crate) fn entry_line_terminated(entry: &SyntaxNode) -> bool {
-    trailing_newline_reachable(entry)
-        || (has_child_token(entry, |k| k == SyntaxKind::QUESTION)
-            && entry
-                .next_sibling_or_token()
-                .is_some_and(|s| s.kind() == SyntaxKind::NEWLINE))
-}
-
-/// Append a trailing NEWLINE token to `entry` if its line doesn't already end
-/// with one. Used when a block-style entry is about to have a new sibling
-/// appended after it (its trailing newline separates the two entries
-/// visually).
-///
-/// The new sibling must be going in immediately after `entry`: an explicit-key
-/// entry is treated as terminated by a NEWLINE that follows it as a sibling,
-/// which only separates the two if nothing is spliced in between.
-pub(crate) fn ensure_trailing_newline(entry: &SyntaxNode) {
-    if entry_line_terminated(entry) {
-        return;
-    }
-    // Callers splice the new sibling right after an explicit-key entry and
-    // then hand its break to the mapping (`hand_line_break_to_mapping`).
-    if has_child_token(entry, |k| k == SyntaxKind::QUESTION) {
-        append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
-    } else {
-        terminate_last_line(entry);
-    }
-}
-
-/// Move the NEWLINE that `entry` ends with out to follow it in its mapping,
-/// if `entry` is an explicit-key entry: the parser leaves the break after
-/// such an entry's value line to the mapping, along with a comment on that
-/// line and the whitespace before it. Entries built standalone carry the
-/// break themselves, so call this once one is attached.
-pub(crate) fn hand_line_break_to_mapping(entry: &SyntaxNode) {
-    if entry.kind() != SyntaxKind::MAPPING_ENTRY
-        || !has_child_token(entry, |k| k == SyntaxKind::QUESTION)
-    {
-        return;
-    }
-    let Some(parent) = entry.parent() else {
-        return;
-    };
-    let Some(newline) = entry
-        .last_child_or_token()
-        .and_then(|c| c.into_token())
-        .filter(|t| t.kind() == SyntaxKind::NEWLINE)
-    else {
-        return;
-    };
-    let value = entry_value(entry);
-    let mut line_end: Vec<SyntaxToken> =
-        std::iter::successors(newline.prev_token(), |t| t.prev_token())
-            .take_while(|t| {
-                matches!(t.kind(), SyntaxKind::WHITESPACE | SyntaxKind::COMMENT)
-                    && t.parent()
-                        .is_some_and(|p| p == *entry || Some(&p) == value.as_ref())
-            })
-            .collect();
-    if !line_end.iter().any(|t| t.kind() == SyntaxKind::COMMENT) {
-        line_end.clear();
-    }
-    line_end.reverse();
-    line_end.push(newline);
-    let moved: Vec<_> = line_end
-        .into_iter()
-        .map(|t| {
-            t.detach();
-            fresh_token(t.kind(), t.text()).into()
-        })
-        .collect();
-    let at = entry.index() + 1;
-    parent.splice_children(at..at, moved);
 }
 
 /// Lay out the lines after `entry`, a block collection entry just
@@ -714,66 +472,6 @@ pub(crate) fn ending_block_scalar(entry: &SyntaxNode) -> Option<SyntaxNode> {
                 .first_token()
                 .is_some_and(|t| t.text().starts_with(['|', '>']))
         })
-}
-
-/// Add the line break that ends the last line of `node`, where the parser
-/// puts it when another document follows.
-///
-/// The parser hands the break to the innermost construct still open at the
-/// end of the line: the last block entry, a block scalar, the collection
-/// holding a trailing comment line, or the spot in front of an empty value
-/// it went looking for on the next line. `node` must not already end in a
-/// NEWLINE.
-pub(crate) fn terminate_last_line(node: &SyntaxNode) {
-    let newline = || vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()];
-    let insert_before = |n: &SyntaxNode| {
-        let parent = n.parent().expect("a descendant has a parent");
-        parent.splice_children(n.index()..n.index(), newline());
-    };
-
-    let mut cur = node.clone();
-    while let Some(rowan::NodeOrToken::Node(last)) = cur.last_child_or_token() {
-        if last.text_range().is_empty() {
-            match cur.kind() {
-                SyntaxKind::MAPPING_ENTRY if has_child_token(&cur, |k| k == SyntaxKind::COLON) => {}
-                SyntaxKind::MAPPING_ENTRY | SyntaxKind::VALUE => {
-                    insert_before(&last);
-                    return;
-                }
-                _ => break,
-            }
-        } else if !holds_line_end(&last) {
-            break;
-        }
-        cur = last;
-    }
-
-    // An explicit-key entry leaves the break to its mapping.
-    if cur.kind() == SyntaxKind::MAPPING_ENTRY
-        && has_child_token(&cur, |k| k == SyntaxKind::QUESTION)
-    {
-        let parent = cur.parent().expect("a mapping entry has a mapping");
-        let after = cur.index() + 1;
-        parent.splice_children(after..after, newline());
-    } else {
-        append_children(&cur, newline());
-    }
-}
-
-/// Does the parser put the line break after `node`'s last line inside it?
-fn holds_line_end(node: &SyntaxNode) -> bool {
-    match node.kind() {
-        SyntaxKind::MAPPING | SyntaxKind::SEQUENCE => !has_child_token(node, |k| {
-            matches!(k, SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET)
-        }),
-        SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY => true,
-        SyntaxKind::SCALAR => is_block_scalar(node),
-        SyntaxKind::VALUE => node
-            .last_child()
-            .is_some_and(|last| last.text_range().is_empty() || holds_line_end(&last)),
-        SyntaxKind::TAGGED_NODE => node.last_child().is_some_and(|last| holds_line_end(&last)),
-        _ => false,
-    }
 }
 
 /// The `children_with_tokens()` indices of `parent`'s direct child nodes of
@@ -1006,6 +704,7 @@ mod replaced_value;
 pub mod scalar_node;
 pub mod sequence;
 pub mod tagged_node;
+pub(crate) mod trivia;
 
 pub(crate) use predicates::{
     in_flow_collection, is_block_scalar, is_quoted_scalar, starts_a_flow_collection,

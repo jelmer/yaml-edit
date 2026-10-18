@@ -12,6 +12,7 @@ use super::{key_content_matches, MappingEntry};
 use crate::as_yaml::{build_in, FlowQuoting};
 use crate::lex::SyntaxKind;
 use crate::nodes::replaced_value::{add_to_first_line, insert_comment_line_above};
+use crate::nodes::trivia::{line_end, LineEnd};
 use crate::nodes::{entry_key, entry_value, fresh_token, has_child_token, Lang, SyntaxNode};
 use crate::yaml::add_node_children_to;
 use rowan::GreenNodeBuilder;
@@ -424,11 +425,9 @@ impl MappingEntry {
         let block = build_block_value_node(source, self.indent_of_line() + 2, anchor);
         let value_ends_with_newline = block.ends_with_newline;
 
-        // For explicit-key entries the parser sometimes stores the entry's
-        // terminating NEWLINE at the MAPPING level (as a sibling of this
-        // MAPPING_ENTRY) rather than inside it. Track this so we can drop
-        // the sibling NEWLINE below if the new block value provides its own.
-        let old_entry_owned_trailing_nl = self.ends_with_newline();
+        // An explicit-key entry leaves its line break to the mapping, which
+        // goes if the new block value brings its own.
+        let old_entry_owned_trailing_nl = line_end(&self.0) != LineEnd::Sibling;
 
         let Some(value_idx) = self.value_index() else {
             return;
@@ -567,7 +566,7 @@ impl MappingEntry {
             _ => Vec::new(),
         };
         self.replace_value(new_value, flow_context, anchor);
-        crate::nodes::hand_line_break_to_mapping(&self.0);
+        crate::nodes::trivia::hand_line_break_to_mapping(&self.0);
         restore_trailing_lines(&self.0, trailing_lines);
     }
 
@@ -626,7 +625,7 @@ impl MappingEntry {
         let trailing_comment = (old_was_block || self.value().is_some_and(|v| has_comment(&v)))
             .then(|| find_key_line_comment(&self.0))
             .flatten();
-        let old_entry_owned_trailing_nl = self.ends_with_newline();
+        let old_entry_owned_trailing_nl = line_end(&self.0) != LineEnd::Sibling;
         let mut value_builder = GreenNodeBuilder::new();
         value_builder.start_node(SyntaxKind::VALUE.into());
         if let Some(a) = anchor.as_deref() {
@@ -695,7 +694,7 @@ impl MappingEntry {
             }
             if old_ends_line && !self.ends_with_newline() {
                 self.append(vec![fresh_token(SyntaxKind::NEWLINE, "\n")]);
-                crate::nodes::hand_line_break_to_mapping(&self.0);
+                crate::nodes::trivia::hand_line_break_to_mapping(&self.0);
             }
             return;
         }
@@ -775,7 +774,7 @@ impl MappingEntry {
         // one.
         if !self.ends_with_newline() {
             self.append(vec![fresh_token(SyntaxKind::NEWLINE, "\n")]);
-            crate::nodes::hand_line_break_to_mapping(&self.0);
+            crate::nodes::trivia::hand_line_break_to_mapping(&self.0);
         }
     }
 

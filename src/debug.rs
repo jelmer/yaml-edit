@@ -410,7 +410,7 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
 /// too: `- a:\n- b\n` ends its first entry with the `VALUE { NEWLINE,
 /// SCALAR { NULL "" } }` of `a`.
 fn entry_is_terminated(entry: &SyntaxNode) -> bool {
-    if crate::nodes::trailing_newline_reachable(entry) {
+    if crate::nodes::trivia::ends_with_line_break(entry) {
         return true;
     }
     let mut sib = entry.next_sibling_or_token();

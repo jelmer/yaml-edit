@@ -218,7 +218,7 @@ pub(crate) fn token_column(token: &crate::nodes::SyntaxToken) -> usize {
             break;
         }
         let text = t.text();
-        if let Some(i) = text.rfind('\n') {
+        if let Some(i) = text.rfind(['\n', '\r']) {
             col += text[i + 1..].chars().count();
             return col;
         }
@@ -3533,6 +3533,12 @@ mod tests {
                 "{yaml:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_indentation_with_cr_line_breaks() {
+        assert_eq!(located("-\r  name: a\r  hr: 1\r-\r  name: b\r"), vec![]);
+        assert_eq!(located("a:\r  b: 1\r  c: 2\r"), vec![]);
     }
 
     #[test]

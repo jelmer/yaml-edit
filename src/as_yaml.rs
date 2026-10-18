@@ -954,9 +954,13 @@ pub(crate) fn source_base_indent(node: &SyntaxNode) -> usize {
     loop {
         while let Some(item) = cursor {
             match item {
+                // A byte order mark is not part of the line's content.
+                rowan::NodeOrToken::Token(t) if t.kind() == crate::SyntaxKind::BOM => {
+                    return column
+                }
                 rowan::NodeOrToken::Token(t) => {
                     let text = t.text();
-                    if let Some(nl) = text.rfind('\n') {
+                    if let Some(nl) = text.rfind(['\n', '\r']) {
                         column += text[nl + 1..].chars().count();
                         return column;
                     }
@@ -968,7 +972,7 @@ pub(crate) fn source_base_indent(node: &SyntaxNode) -> usize {
                     // character count (bytes lie for multi-byte input);
                     // materialize.
                     let text = n.text().to_string();
-                    if let Some(nl) = text.rfind('\n') {
+                    if let Some(nl) = text.rfind(['\n', '\r']) {
                         column += text[nl + 1..].chars().count();
                         return column;
                     }
@@ -993,7 +997,7 @@ pub(crate) fn source_line_indent(node: &SyntaxNode) -> usize {
     let mut prefix = Vec::new();
     let mut cursor = node.first_token().and_then(|t| t.prev_token());
     while let Some(token) = cursor {
-        match token.text().rfind('\n') {
+        match token.text().rfind(['\n', '\r']) {
             Some(nl) => {
                 prefix.push(token.text()[nl + 1..].to_string());
                 break;

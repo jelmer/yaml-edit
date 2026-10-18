@@ -2097,3 +2097,20 @@ fn test_set_plain_scalar_with_indicator_line() {
         .push(scalar);
     crate::debug::assert_edited(&file, "k:\n  - 1\n  - b\n    > c\n");
 }
+
+#[test]
+fn test_set_after_bom_lines_up_with_first_key() {
+    // A BOM is not content, so the first key is at column 0.
+    let doc = crate::yaml::Document::from_str("\u{FEFF}a: 1\n").unwrap();
+    doc.as_mapping().unwrap().set("c", 3);
+    assert_cst_ok(&doc);
+    assert_eq!(doc.to_string(), "\u{FEFF}a: 1\nc: 3\n");
+}
+
+#[test]
+fn test_set_nested_with_cr_line_breaks() {
+    let doc = crate::yaml::Document::from_str("x: 1\ra:\r  b: 1\r").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    mapping.get_mapping("a").unwrap().set("d", 4);
+    assert_eq!(doc.to_string(), "x: 1\ra:\r  b: 1\r  d: 4\n");
+}

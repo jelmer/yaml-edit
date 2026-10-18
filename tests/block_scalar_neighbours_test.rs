@@ -30,8 +30,8 @@ fn check_parser_shaped(file: &YamlFile, expected: &str, path: &str, value: &str)
     check(file, expected, path, value);
     let reparsed = YamlFile::from_str(expected).unwrap();
     assert_eq!(
-        debug::tree_to_string(file.syntax()),
-        debug::tree_to_string(reparsed.syntax())
+        debug::shape_to_string(file.syntax()),
+        debug::shape_to_string(reparsed.syntax())
     );
 }
 

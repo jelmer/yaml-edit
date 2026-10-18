@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_tagged_block_value_is_reindented() {
-        use crate::debug::{roundtrip_ok, tree_to_string, validate_tree};
+        use crate::debug::{roundtrip_ok, shape_to_string, validate_tree};
         use crate::{AsYaml, Document, Sequence};
 
         let src = Document::from_str(
@@ -341,8 +341,8 @@ mod tests {
             roundtrip_ok(node).unwrap();
             let reparsed = Document::from_str(&doc.to_string()).unwrap();
             assert_eq!(
-                tree_to_string(node),
-                tree_to_string(reparsed.as_node().unwrap()),
+                shape_to_string(node),
+                shape_to_string(reparsed.as_node().unwrap()),
                 "{input:?}"
             );
         }
@@ -358,8 +358,8 @@ mod tests {
         roundtrip_ok(node).unwrap();
         let reparsed = Document::from_str(expected).unwrap();
         assert_eq!(
-            tree_to_string(node),
-            tree_to_string(reparsed.as_node().unwrap())
+            shape_to_string(node),
+            shape_to_string(reparsed.as_node().unwrap())
         );
     }
 

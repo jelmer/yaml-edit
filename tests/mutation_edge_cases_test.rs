@@ -656,8 +656,8 @@ fn test_set_omitted_flow_value_before_line_break() {
         assert_eq!(yaml.to_string(), expected, "input: {input:?}");
         assert_file_cst_ok(&yaml);
         assert_eq!(
-            debug::tree_to_string(yaml.syntax()),
-            debug::tree_to_string(YamlFile::from_str(expected).unwrap().syntax())
+            debug::shape_to_string(yaml.syntax()),
+            debug::shape_to_string(YamlFile::from_str(expected).unwrap().syntax())
         );
     }
 }
@@ -672,8 +672,8 @@ fn test_set_omitted_implicit_flow_pair_value_before_line_break() {
         assert_eq!(yaml.to_string(), expected, "input: {input:?}");
         assert_file_cst_ok(&yaml);
         assert_eq!(
-            debug::tree_to_string(yaml.syntax()),
-            debug::tree_to_string(YamlFile::from_str(expected).unwrap().syntax())
+            debug::shape_to_string(yaml.syntax()),
+            debug::shape_to_string(YamlFile::from_str(expected).unwrap().syntax())
         );
     }
 }
@@ -703,8 +703,8 @@ fn test_set_flow_value_keeps_trailing_comment_once() {
         assert_eq!(yaml.to_string(), expected, "input: {input:?}");
         assert_file_cst_ok(&yaml);
         assert_eq!(
-            debug::tree_to_string(yaml.syntax()),
-            debug::tree_to_string(YamlFile::from_str(expected).unwrap().syntax())
+            debug::shape_to_string(yaml.syntax()),
+            debug::shape_to_string(YamlFile::from_str(expected).unwrap().syntax())
         );
     }
 }

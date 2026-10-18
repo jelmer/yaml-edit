@@ -561,8 +561,8 @@ fn check_op(
         }
     };
     check("shape", &|| {
-        let edited = debug::tree_to_string(file.syntax());
-        let fresh = debug::tree_to_string(reparsed.syntax());
+        let edited = debug::shape_to_string(file.syntax());
+        let fresh = debug::shape_to_string(reparsed.syntax());
         if edited == fresh {
             Ok(())
         } else {

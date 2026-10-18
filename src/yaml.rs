@@ -835,8 +835,8 @@ mod tests {
         crate::debug::roundtrip_ok(yaml.syntax()).unwrap();
         let reparsed = YamlFile::from_str(&yaml.to_string()).unwrap();
         assert_eq!(
-            crate::debug::tree_to_string(yaml.syntax()),
-            crate::debug::tree_to_string(reparsed.syntax())
+            crate::debug::shape_to_string(yaml.syntax()),
+            crate::debug::shape_to_string(reparsed.syntax())
         );
     }
 
@@ -1001,8 +1001,8 @@ mod tests {
                 crate::debug::roundtrip_ok(file.syntax()).unwrap();
                 let reparsed = YamlFile::from_str(expected).unwrap();
                 assert_eq!(
-                    crate::debug::tree_to_string(file.syntax()),
-                    crate::debug::tree_to_string(reparsed.syntax()),
+                    crate::debug::shape_to_string(file.syntax()),
+                    crate::debug::shape_to_string(reparsed.syntax()),
                     "{src:?}"
                 );
             }

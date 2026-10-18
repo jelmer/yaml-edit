@@ -15,8 +15,8 @@ fn assert_edited(doc: &Document, expected: &str) {
     common::assert_cst_ok(doc);
     let reparsed = Document::from_str(expected).unwrap();
     assert_eq!(
-        debug::tree_to_string(doc.syntax()),
-        debug::tree_to_string(reparsed.syntax())
+        debug::shape_to_string(doc.syntax()),
+        debug::shape_to_string(reparsed.syntax())
     );
 }
 

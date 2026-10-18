@@ -60,7 +60,7 @@ pub fn print_tree(node: &SyntaxNode) {
 /// Prints the CST structure with a custom starting indentation.
 pub fn print_tree_indent(node: &SyntaxNode, indent: usize) {
     let mut out = String::new();
-    tree_to_string_indent(node, indent, &mut out);
+    tree_to_string_indent(node, indent, &mut out, false);
     print!("{out}");
 }
 
@@ -83,18 +83,40 @@ pub fn print_tree_indent(node: &SyntaxNode, indent: usize) {
 /// ```
 pub fn tree_to_string(node: &SyntaxNode) -> String {
     let mut result = String::new();
-    tree_to_string_indent(node, 0, &mut result);
+    tree_to_string_indent(node, 0, &mut result, false);
     result
 }
 
-fn tree_to_string_indent(node: &SyntaxNode, indent: usize, result: &mut String) {
+/// Like [`tree_to_string`], but leaving out the zero-width marker that an
+/// empty `{}` or `[]` carries when it is to become a block collection once
+/// it has an entry (see [`Mapping::new_pending_block`]). Re-parsing the
+/// text cannot recover that marker, so this is what to compare between an
+/// edited tree and a re-parse of its text.
+///
+/// [`Mapping::new_pending_block`]: crate::Mapping::new_pending_block
+pub fn shape_to_string(node: &SyntaxNode) -> String {
+    let mut result = String::new();
+    tree_to_string_indent(node, 0, &mut result, true);
+    result
+}
+
+fn is_pending_block_marker(token: &rowan::SyntaxToken<crate::yaml::Lang>) -> bool {
+    token.kind() == SyntaxKind::WHITESPACE
+        && token.text().is_empty()
+        && token
+            .parent()
+            .is_some_and(|p| matches!(p.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE))
+}
+
+fn tree_to_string_indent(node: &SyntaxNode, indent: usize, result: &mut String, skip_marker: bool) {
     for child in node.children_with_tokens() {
         let prefix = "  ".repeat(indent);
         match child {
             rowan::NodeOrToken::Node(n) => {
                 result.push_str(&format!("{}{:?}\n", prefix, n.kind()));
-                tree_to_string_indent(&n, indent + 1, result);
+                tree_to_string_indent(&n, indent + 1, result, skip_marker);
             }
+            rowan::NodeOrToken::Token(t) if skip_marker && is_pending_block_marker(&t) => {}
             rowan::NodeOrToken::Token(t) => {
                 let text = t.text().replace('\n', "\\n").replace('\r', "\\r");
                 result.push_str(&format!("{}{:?}: {:?}\n", prefix, t.kind(), text));
@@ -268,8 +290,8 @@ pub(crate) fn assert_edited(yaml: &crate::yaml::YamlFile, expected: &str) {
     assert_eq!(yaml.to_string(), expected);
     let reparsed = crate::yaml::YamlFile::from_str(expected).unwrap();
     assert_eq!(
-        tree_to_string(yaml.syntax()),
-        tree_to_string(reparsed.syntax())
+        shape_to_string(yaml.syntax()),
+        shape_to_string(reparsed.syntax())
     );
     let violations: Vec<String> = yaml
         .documents()
@@ -297,7 +319,11 @@ pub(crate) fn assert_parser_shaped(node: &impl rowan::ast::AstNode<Language = cr
         .descendants()
         .find(|n| n.kind() == root.kind())
         .unwrap_or_else(|| panic!("re-parse of {text:?} has no {:?}", root.kind()));
-    assert_eq!(tree_to_string(&root), tree_to_string(&reparsed), "{text:?}");
+    assert_eq!(
+        shape_to_string(&root),
+        shape_to_string(&reparsed),
+        "{text:?}"
+    );
 }
 
 fn validate_node(node: &SyntaxNode) -> Result<(), String> {

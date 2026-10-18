@@ -16,8 +16,8 @@ fn check_edit(source: &str, edit: impl Fn(&Document), expected: &str) {
     common::assert_cst_ok(&doc);
     let reparsed = Document::from_str(expected).unwrap();
     assert_eq!(
-        debug::tree_to_string(doc.syntax()),
-        debug::tree_to_string(reparsed.syntax())
+        debug::shape_to_string(doc.syntax()),
+        debug::shape_to_string(reparsed.syntax())
     );
 }
 
@@ -163,8 +163,8 @@ fn remove_first_entry_of_document_root() {
         assert_eq!(file.to_string(), expected);
         let reparsed = YamlFile::from_str(expected).unwrap();
         assert_eq!(
-            debug::tree_to_string(file.syntax()),
-            debug::tree_to_string(reparsed.syntax())
+            debug::shape_to_string(file.syntax()),
+            debug::shape_to_string(reparsed.syntax())
         );
     };
     check("---\na: 1\n# c\nb: 2\n", "---\n# c\nb: 2\n");

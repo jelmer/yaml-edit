@@ -93,7 +93,9 @@ fn last_non_empty_token(node: &SyntaxNode) -> Option<SyntaxToken> {
 }
 
 /// The index in `entry`'s parent just past the line break ending its line,
-/// where an entry on the next line goes.
+/// where an entry on the next line goes. If there is no line break, it is
+/// the index past the comment ending the line, if the parser put that
+/// beside the entry.
 pub(crate) fn index_after_line(entry: &SyntaxNode) -> usize {
     match line_end(entry) {
         LineEnd::Sibling => entry.index() + 2,
@@ -103,7 +105,8 @@ pub(crate) fn index_after_line(entry: &SyntaxNode) -> usize {
                 .index()
                 + 2
         }
-        LineEnd::Own | LineEnd::Nested | LineEnd::Open => entry.index() + 1,
+        LineEnd::Open => comment_after(entry).map_or(entry.index(), |c| c.index()) + 1,
+        LineEnd::Own | LineEnd::Nested => entry.index() + 1,
     }
 }
 

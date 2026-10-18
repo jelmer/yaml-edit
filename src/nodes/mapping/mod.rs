@@ -241,6 +241,9 @@ impl Mapping {
     /// when the first entry arrives; a `{}` that came from the source has no
     /// such marker and keeps its flow style.
     ///
+    /// A block mapping that loses its last entry to `remove` or `clear` is
+    /// written the same way, marker included.
+    ///
     /// The marker lives only in the tree. Serializing and re-parsing yields
     /// an ordinary `{}`, which stays flow, since YAML has nowhere to record
     /// the intent.
@@ -1287,7 +1290,7 @@ impl Mapping {
         while let Some(entry) = self.entries().next() {
             self.remove_entry(entry.syntax());
         }
-        render_empty(&self.0, terminated, true);
+        render_empty(&self.0, terminated);
     }
 
     /// Rename a key while preserving its value and formatting.

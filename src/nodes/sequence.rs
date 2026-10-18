@@ -15,15 +15,8 @@ use rowan::GreenNodeBuilder;
 ast_node!(Sequence, SEQUENCE, "A YAML sequence (list)");
 
 /// True if `node` cannot be rendered as a block collection: any
-/// flow ancestor forbids it, and so does sitting inline after a `- `
-/// (no NEWLINE + INDENT scaffold to hang a block entry off).
+/// flow ancestor forbids it.
 pub(crate) fn must_render_flow(node: &SyntaxNode) -> bool {
-    if node
-        .parent()
-        .is_some_and(|p| p.kind() == SyntaxKind::SEQUENCE_ENTRY)
-    {
-        return true;
-    }
     let mut cur = node.parent();
     while let Some(p) = cur {
         let opener = match p.kind() {
@@ -65,6 +58,20 @@ fn parent_value_has_leading_indent(seq: &SyntaxNode) -> bool {
         }
     }
     false
+}
+
+/// Is the column of `seq`'s first entry set outside it: by the INDENT in
+/// its parent VALUE, or by sitting on the line of a `- ` or `? `?
+fn column_set_outside(seq: &SyntaxNode) -> bool {
+    let Some(parent) = seq.parent() else {
+        return false;
+    };
+    match parent.kind() {
+        SyntaxKind::VALUE => parent_value_has_leading_indent(seq),
+        SyntaxKind::SEQUENCE_ENTRY => true,
+        SyntaxKind::KEY => !has_child_token(&parent, |k| k == SyntaxKind::NEWLINE),
+        _ => false,
+    }
 }
 
 /// If `node`'s tail token is a NEWLINE (optionally followed by an
@@ -452,6 +459,9 @@ impl Sequence {
     /// form when the first item arrives; a `[]` that came from the source has
     /// no such marker and keeps its flow style.
     ///
+    /// A block sequence that loses its last item to `remove` or `clear` is
+    /// written the same way, marker included.
+    ///
     /// The marker lives only in the tree. Serializing and re-parsing yields
     /// an ordinary `[]`, which stays flow, since YAML has nowhere to record
     /// the intent.
@@ -758,7 +768,7 @@ impl Sequence {
         // entries carry an INDENT as a separator after the previous entry's
         // NEWLINE. Match that when pushing.
         let entry_is_first = last_entry_index.is_none();
-        let parent_supplies_indent = entry_is_first && parent_value_has_leading_indent(&self.0);
+        let parent_supplies_indent = entry_is_first && column_set_outside(&self.0);
 
         let mut inserts: Vec<rowan::NodeOrToken<SyntaxNode, _>> = Vec::new();
         if !parent_supplies_indent {
@@ -844,6 +854,10 @@ impl Sequence {
         empty_collection::convert_placeholder_to_block(&self.0);
         if self.is_flow_style() {
             self.insert_flow(index, value);
+            return;
+        }
+        if self.is_empty() {
+            self.push(value);
             return;
         }
 
@@ -941,12 +955,7 @@ impl Sequence {
                 c.as_node()
                     .map_or(true, |n| n.kind() != SyntaxKind::SEQUENCE_ENTRY)
             });
-        let column_set_outside = parent_value_has_leading_indent(&self.0)
-            || self
-                .0
-                .parent()
-                .is_some_and(|p| p.kind() == SyntaxKind::SEQUENCE_ENTRY);
-        if inserting_at_head && column_set_outside {
+        if inserting_at_head && column_set_outside(&self.0) {
             let mut inserts = vec![new_entry.into()];
             inserts.extend(indent_token(&indentation));
             self.0.splice_children(insert_at..insert_at, inserts);
@@ -1118,7 +1127,7 @@ impl Sequence {
                 "clear() invariant: remove(0) did not reduce length"
             );
         }
-        render_empty(&self.0, terminated, true);
+        render_empty(&self.0, terminated);
     }
 
     crate::nodes::ast_node_spans!("sequence");
@@ -1532,7 +1541,7 @@ mod tests {
 
     #[test]
     fn test_sequence_set_scalar_over_commented_block() {
-        use crate::debug::{roundtrip_ok, tree_to_string, validate_tree};
+        use crate::debug::{roundtrip_ok, shape_to_string, validate_tree};
         use crate::{AsYaml, Document};
 
         for (src, expected) in [
@@ -1547,8 +1556,8 @@ mod tests {
             assert_eq!(doc.to_string(), expected, "{src:?}");
             let reparsed = Document::from_str(expected).unwrap();
             assert_eq!(
-                tree_to_string(node),
-                tree_to_string(reparsed.as_node().unwrap()),
+                shape_to_string(node),
+                shape_to_string(reparsed.as_node().unwrap()),
                 "{src:?}"
             );
         }
@@ -1583,7 +1592,7 @@ mod tests {
 
     #[test]
     fn test_block_collection_values_take_the_entry_indent() {
-        use crate::debug::{roundtrip_ok, tree_to_string, validate_tree};
+        use crate::debug::{roundtrip_ok, shape_to_string, validate_tree};
         use crate::{AsYaml, Document, Sequence, YamlNode};
 
         let map_doc = Document::from_str("k: 1\nj: 2\n").unwrap();
@@ -1659,8 +1668,8 @@ mod tests {
             roundtrip_ok(node).unwrap();
             let reparsed = Document::from_str(&doc.to_string()).unwrap();
             assert_eq!(
-                tree_to_string(node),
-                tree_to_string(reparsed.as_node().unwrap()),
+                shape_to_string(node),
+                shape_to_string(reparsed.as_node().unwrap()),
                 "{src:?}"
             );
         }

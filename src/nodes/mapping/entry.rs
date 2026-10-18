@@ -725,17 +725,15 @@ impl MappingEntry {
 
         // Ensure a single WHITESPACE sits between COLON and VALUE - the
         // old block VALUE typically had none.
-        if let Some(idx) = self.value_index() {
-            let prev_is_ws = idx.checked_sub(1).is_some_and(|p| {
-                self.0
-                    .children_with_tokens()
-                    .nth(p)
-                    .and_then(|c| c.into_token())
-                    .is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE)
-            });
-            if !prev_is_ws {
-                self.insert_at(idx, vec![fresh_token(SyntaxKind::WHITESPACE, " ")]);
-            }
+        let prev_is_ws = value_idx.checked_sub(1).is_some_and(|p| {
+            self.0
+                .children_with_tokens()
+                .nth(p)
+                .and_then(|c| c.into_token())
+                .is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE)
+        });
+        if !prev_is_ws {
+            self.insert_at(value_idx, vec![fresh_token(SyntaxKind::WHITESPACE, " ")]);
         }
 
         // Inline values don't own a trailing NEWLINE; ensure the entry has

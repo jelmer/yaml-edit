@@ -152,11 +152,10 @@ fn rebuild_entry_with_value(
                 }
                 after_dash = false;
             }
+            // A SEQUENCE_ENTRY holds no other node; see the implicit-null
+            // invariant in nodes/mod.rs.
             rowan::NodeOrToken::Node(n) => {
-                // Copy other nodes as-is (like VALUE wrappers, etc.)
-                crate::yaml::copy_node_to_builder(&mut builder, n);
-                column = crate::column::column_after(column, &n.text().to_string());
-                after_dash = false;
+                panic!("unexpected {:?} in a SEQUENCE_ENTRY", n.kind())
             }
             rowan::NodeOrToken::Token(t) => {
                 // Copy tokens as-is

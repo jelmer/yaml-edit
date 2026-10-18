@@ -1085,12 +1085,14 @@ impl Sequence {
         } else {
             (children.get(i + 1), i..(i + 1))
         };
-        // In a drained sequence the parent's indent goes away with the
-        // collapse, so a comment line's INDENT stays for it to keep.
+        // An INDENT that starts a comment line after the first entry is
+        // that line's own. In a drained sequence the parent's indent goes
+        // away with the collapse, so a comment line's INDENT stays too.
         let drained = self.is_empty();
         let is_indent = neighbour.is_some_and(|c| {
             c.as_token().is_some_and(|t| {
-                t.kind() == SyntaxKind::INDENT && !(drained && crate::yaml::indents_comment_line(t))
+                t.kind() == SyntaxKind::INDENT
+                    && !((drained || i == 0) && crate::yaml::indents_comment_line(t))
             })
         });
         if is_indent {
@@ -1183,6 +1185,8 @@ impl Sequence {
         // re-parse still finds the (now-empty) sequence there.
         if self.is_empty() {
             collapse_empty_child_sequence_in_parent(&self.0, removed_terminated);
+        } else if !self.is_flow_style() {
+            crate::yaml::move_leading_lines_out(&self.0);
         }
     }
 

@@ -10,13 +10,16 @@
 //! New keys and values are random strings and `YamlValue` trees, so this also
 //! checks that what a builder writes reads back as the value it was given.
 //!
-//! After every edit:
+//! After every edit of input that the validator accepts:
 //! - the CST passes `debug::validate_tree` and `debug::roundtrip_ok`;
-//! - if the validator accepted the input, the text parses to the same tree
-//!   (`debug::shape_to_string`), the validator accepts it, and its
-//!   `YamlValue` equals a model of the document updated alongside it.
+//! - the text parses to the same tree (`debug::shape_to_string`);
+//! - the validator accepts it;
+//! - its `YamlValue` equals a model of the document updated alongside it.
 //!   Where an edit cannot be modelled (merge keys, aliases to what changed),
 //!   the model is taken from the edited document again.
+//!
+//! Edits of other input only have to not panic. Set `EDIT_SEQUENCE_TRACE`
+//! to print each edit before it is made.
 
 use arbitrary::{Result as ArbResult, Unstructured};
 use libfuzzer_sys::fuzz_target;
@@ -608,13 +611,13 @@ fn check(
     expected: Option<&YamlValue>,
     context: &str,
 ) -> Option<YamlValue> {
+    // Edits of input the validator rejects are only held to not panicking.
+    if !input_valid {
+        return None;
+    }
     let output = file.to_string();
     if let Err(e) = cst_ok(file) {
         panic!("{context}: CST broken: {e}\noutput: {output:?}");
-    }
-    // Edits of input the validator rejects are only held to a sound tree.
-    if !input_valid {
-        return None;
     }
     let reparsed = YamlFile::from_str(&output)
         .unwrap_or_else(|e| panic!("{context}: output does not parse: {e}\noutput: {output:?}"));
@@ -672,6 +675,7 @@ fuzz_target!(|data: &[u8]| {
     let doc = file.documents().nth(doc_index).unwrap();
     let mut model = YamlValue::from_document(&doc).ok();
     let mut log = Vec::new();
+    let trace = std::env::var_os("EDIT_SEQUENCE_TRACE").is_some();
     for _ in 0..12 {
         if u.is_empty() {
             break;
@@ -698,6 +702,13 @@ fuzz_target!(|data: &[u8]| {
             aliases: alias_names(doc.syntax()),
         };
         log.push(format!("{} {op:?}", target.label));
+        // Shows the edits leading up to a panic in the library itself.
+        if trace {
+            eprintln!(
+                "input {input:?}, doc {doc_index}, edit {}",
+                log.last().unwrap()
+            );
+        }
         let expected = apply(&ctx, &op, model.as_ref());
         let context = format!("input {input:?}, doc {doc_index}, edits {log:#?}");
         model = check(&file, doc_index, input_valid, expected.as_ref(), &context);

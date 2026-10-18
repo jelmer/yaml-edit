@@ -29,7 +29,7 @@ fn assert_same_values(doc: &Document, source: &str) {
 
 #[test]
 fn reorder_fields_moves_anchor_to_first_alias() {
-    let cases: [(&str, &[&str], &str); 12] = [
+    let cases: [(&str, &[&str], &str); 13] = [
         (
             "a: &x 1\nb: *x\nc: 2\n",
             &["b", "a"],
@@ -61,6 +61,7 @@ fn reorder_fields_moves_anchor_to_first_alias() {
             "b: &x\n  k: v\na: *x\n",
         ),
         ("a: &x !t 1\nb: *x\n", &["b", "a"], "b: &x !t 1\na: *x\n"),
+        ("a: !t &x 1\nb: *x\n", &["b", "a"], "b: !t &x 1\na: *x\n"),
         ("a: &x 1\nb: [*x]\n", &["b", "a"], "b: [&x 1]\na: *x\n"),
         (
             "{a: &x 1, b: *x, c: 2}\n",

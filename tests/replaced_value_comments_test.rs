@@ -160,6 +160,26 @@ fn sequence_set_over_commented_value() {
     }
 }
 
+/// The spaces of a last line with no line break are part of the block
+/// scalar they end, and go with it.
+#[test]
+fn set_over_block_scalar_ending_in_spaces() {
+    for (src, expected) in [
+        ("- |+\n   ", "- 5\n"),
+        ("- |\n  a\n   ", "- 5\n"),
+        ("- |\n  a\n  ", "- 5\n"),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        sequence_at(&file, "").set(0, 5);
+        assert_parser_shaped(&file, expected, src);
+    }
+    for (src, expected) in [("a: |+\n   ", "a: 5\n"), ("a: |\n  a\n   ", "a: 5\n")] {
+        let file = YamlFile::from_str(src).unwrap();
+        mapping_at(&file, "").set("a", 5);
+        assert_parser_shaped(&file, expected, src);
+    }
+}
+
 #[test]
 fn nested_sequence_set_over_commented_value() {
     for (src, expected) in [

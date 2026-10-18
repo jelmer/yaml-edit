@@ -7,7 +7,6 @@
 6KGN d0 map0 move-before-first[1] shape
 6KGN d0 map0 remove[0] shape
 6KGN d0 map0 reorder-reversed shape
-JEF9/02 d0 seq0 set[0] shape
 K3WX d0 map0 rename[0] semantic
 K3WX d0 map0 rename[0] shape
 K3WX d0 map0 rename[0] validator

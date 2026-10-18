@@ -686,7 +686,10 @@ impl MappingEntry {
         // surrounding tokens (comments, alignment WS) survive untouched.
         if let Some(value_idx) = self.value_index() {
             // A block scalar's body ends with the entry's line break.
-            let old_ends_line = self.ends_with_newline();
+            let old_ends_line = match crate::nodes::ending_block_scalar(&self.0) {
+                Some(scalar) => crate::nodes::trivia::ends_line(&scalar),
+                None => self.ends_with_newline(),
+            };
             let old_omitted = self.value().is_some_and(|v| v.text_range().is_empty());
             let new_omitted = new_value_node.text_range().is_empty();
             replace_children(

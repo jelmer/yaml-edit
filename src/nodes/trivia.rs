@@ -82,6 +82,19 @@ pub(crate) fn ends_with_line_break(node: &SyntaxNode) -> bool {
     last_non_empty_token(node).is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
 }
 
+/// Does `node` end its last line: does it end with a line break, perhaps
+/// followed by the spaces of a last line that has none? Those belong to a
+/// block scalar's body.
+pub(crate) fn ends_line(node: &SyntaxNode) -> bool {
+    last_non_empty_token(node).is_some_and(|t| match t.kind() {
+        SyntaxKind::NEWLINE => true,
+        SyntaxKind::INDENT => t
+            .prev_token()
+            .is_some_and(|p| p.kind() == SyntaxKind::NEWLINE),
+        _ => false,
+    })
+}
+
 /// The last token in `node`'s subtree that has text.
 fn last_non_empty_token(node: &SyntaxNode) -> Option<SyntaxToken> {
     // descendants_with_tokens isn't double-ended; prev_token() would walk

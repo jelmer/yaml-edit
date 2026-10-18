@@ -800,3 +800,35 @@ fn flow_key_followed_by_content() {
         assert_eq!(violations, expected, "{yaml:?}");
     }
 }
+
+/// A mapping line after the document's own node can be neither part of it
+/// nor a document of its own. The parser keeps the mapping as a second node
+/// of the document, and the validator reports it.
+#[test]
+fn mapping_after_root_node() {
+    use yaml_edit::validator::Validator;
+    const TWO_NODES: &str = "Document holds more than one node";
+    for (yaml, expected) in [
+        ("a\n[x]: z\n", vec![(TWO_NODES, "2:1")]),
+        ("a\nb: z\nc: d\n", vec![(TWO_NODES, "2:1")]),
+        ("a\n# c\n&x b: z\n", vec![(TWO_NODES, "3:1")]),
+        ("\"a\"\nb: z\n", vec![(TWO_NODES, "2:1")]),
+        ("- a\nb: z\n", vec![(TWO_NODES, "2:1")]),
+        ("--- a\nb: z\n...\n", vec![(TWO_NODES, "2:1")]),
+        ("this\n is\n  invalid: x\n", vec![(TWO_NODES, "3:3")]),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
+        assert_eq!(file.to_string(), yaml);
+        assert_file_cst_ok(&file);
+        let violations: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| (v.message, v.location.unwrap()))
+            .collect();
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|(message, at)| (message.to_string(), at.to_string()))
+            .collect();
+        assert_eq!(violations, expected, "{yaml:?}");
+    }
+}

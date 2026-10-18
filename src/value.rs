@@ -127,6 +127,10 @@ impl YamlValue {
     ) -> Result<Self, crate::anchor_resolution::ResolveError> {
         use rowan::ast::AstNode;
         let registry = crate::anchor_resolution::AnchorRegistry::from_document(doc);
+        // TODO: a document, key, value or sequence entry holding more than
+        // one node (`a\nb: c\n`, `k: [q] x\n`), which the validator
+        // reports, is converted from its first node and the rest is dropped
+        // without an error.
         for child in doc.syntax().children() {
             let Some(node) = crate::as_yaml::YamlNode::from_syntax_peeled(child) else {
                 continue;
@@ -1123,8 +1127,8 @@ ordered: !!omap [first: *list]
         for (yaml, expected) in [
             ("key: \"x", "Parse error at line 1, column 6: Unterminated quoted string"),
             (
-                "- a\n b: c\n",
-                "Parse error at line 2, column 2: Content after the document could not be parsed: \"b\"",
+                "- a\nb\n",
+                "Parse error at line 2, column 1: Content after the document could not be parsed: \"b\"",
             ),
         ] {
             let err = YamlValue::parse_raw(yaml).unwrap_err();

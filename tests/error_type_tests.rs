@@ -136,17 +136,27 @@ still_broken: value"#;
 fn test_plain_scalar_with_spaces_valid() {
     // A plain scalar may contain spaces, so `key1 value` is the document's
     // own scalar rather than a key. A mapping entry cannot follow one, which
-    // both saphyr and PyYAML reject, so the entry is reported rather than
-    // dropped.
+    // both saphyr and PyYAML reject. The parser keeps the mapping as a
+    // second node of the document, which the validator reports.
     let yaml = "key1 value\nkey2: value";
 
     let parsed = YamlFile::parse(yaml);
-    assert_eq!(parsed.errors().len(), 1);
+    assert_eq!(parsed.errors(), Vec::<String>::new());
 
-    // The scalar itself still parses, and the text survives.
     let tree = parsed.tree();
-    assert!(tree.document().is_some());
     assert_eq!(tree.to_string(), yaml);
+    let violations: Vec<_> = yaml_edit::validator::Validator::new()
+        .validate_syntax(rowan::ast::AstNode::syntax(&tree))
+        .into_iter()
+        .map(|v| (v.message, v.location.unwrap()))
+        .collect();
+    assert_eq!(
+        violations,
+        [(
+            "Document holds more than one node".to_string(),
+            "2:1".to_string()
+        )]
+    );
 }
 
 /// A plain scalar with spaces is a perfectly good mapping key.

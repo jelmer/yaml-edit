@@ -306,8 +306,26 @@ impl Parser {
                 self.scalar_continuation_floor = Some(0);
             }
             self.parse_value();
-            self.node_is_document_root = outer_root;
             self.scalar_continuation_floor = outer_floor;
+
+            // A line opening a mapping after the root node, as in
+            // `a\n[x]: z\n`, neither continues that node nor starts a
+            // document of its own. Keep the mapping as a second node of the
+            // document, which the validator reports, rather than leaving it
+            // after the document.
+            loop {
+                self.skip_ws_and_newlines();
+                if !self.opens_block_mapping() {
+                    break;
+                }
+                let tokens_before = self.tokens.len();
+                let base_indent = self.current_line_indent;
+                self.parse_value_with_base_indent(base_indent);
+                if self.tokens.len() == tokens_before {
+                    break;
+                }
+            }
+            self.node_is_document_root = outer_root;
             self.equal_indent_continues_scalar = false;
         }
 
@@ -372,6 +390,26 @@ impl Parser {
 
     pub(super) fn parse_value(&mut self) {
         self.parse_value_with_base_indent(0);
+    }
+
+    /// Whether the current token starts the first key of a block mapping.
+    fn opens_block_mapping(&self) -> bool {
+        match self.current() {
+            Some(SyntaxKind::LEFT_BRACKET | SyntaxKind::LEFT_BRACE) => {
+                self.is_complex_mapping_key()
+            }
+            Some(SyntaxKind::TAG | SyntaxKind::ANCHOR) => {
+                self.is_mapping_key() || self.is_complex_mapping_key_after_annotations()
+            }
+            Some(
+                SyntaxKind::REFERENCE
+                | SyntaxKind::QUESTION
+                | SyntaxKind::COLON
+                | SyntaxKind::MERGE_KEY,
+            ) => self.is_mapping_key(),
+            Some(kind) => is_plain_scalar_kind(kind) && self.is_mapping_key(),
+            None => false,
+        }
     }
 
     pub(super) fn parse_value_with_base_indent(&mut self, base_indent: usize) {

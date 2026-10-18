@@ -864,9 +864,10 @@ mod tests {
         // ERROR node. from_str returned only the first DOCUMENT, so that
         // text vanished from the output rather than being reported.
         //
-        // A mapping entry cannot follow the document's own scalar, which
-        // PyYAML rejects too, so there is nothing to attach these to.
-        for src in ["a\nx: 1\n", "- a\nx: 1\n"] {
+        // A scalar cannot follow the document's own node, which PyYAML
+        // rejects too, so there is nothing to attach these to. A mapping
+        // can, as a second node of the document that the validator reports.
+        for src in ["- a\nx\n", "[a]\n[b]\n"] {
             let err = Document::from_str(src).expect_err("stranded content must not be dropped");
             let message = err.to_string();
             assert!(
@@ -886,6 +887,8 @@ mod tests {
             "&b\nJ",
             "&b\nx: 1\n",
             "&b\n- a\n",
+            "a\nx: 1\n",
+            "- a\nx: 1\n",
         ] {
             let doc = Document::from_str(src).expect("valid document");
             assert_eq!(doc.to_string(), src, "{src:?}");

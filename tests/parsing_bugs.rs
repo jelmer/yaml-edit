@@ -240,10 +240,26 @@ fn test_no_plain_continuation_at_mapping_column() {
         "- a: b\n  c\n",
         "-\n   a: b\n  c\n",
         "a: \"b\"\n  c\n",
-        "- x\n  &a k: v\n",
     ] {
         assert!(YamlFile::from_str(src).is_err(), "{src:?}");
     }
+    // A mapping there is kept as a second node of the document, which the
+    // validator reports.
+    let src = "- x\n  &a k: v\n";
+    let file = YamlFile::from_str(src).unwrap();
+    assert_eq!(file.to_string(), src);
+    let violations: Vec<_> = yaml_edit::validator::Validator::new()
+        .validate_syntax(rowan::ast::AstNode::syntax(&file))
+        .into_iter()
+        .map(|v| (v.message, v.location.unwrap()))
+        .collect();
+    assert_eq!(
+        violations,
+        [(
+            "Document holds more than one node".to_string(),
+            "2:3".to_string()
+        )]
+    );
 }
 
 #[test]

@@ -2136,3 +2136,25 @@ fn test_set_without_line_breaks_writes_lf() {
     // The input's last line stays unterminated.
     crate::debug::assert_edited(&file, "a: 1\nb: 2");
 }
+
+#[test]
+fn test_set_copied_multi_line_scalar_with_cr_line_breaks() {
+    let source = crate::yaml::Document::from_str("k: 'x\r y\r\r z'\r").unwrap();
+    let value = source.as_mapping().unwrap().get("k").unwrap();
+    let file = YamlFile::from_str("a:\r  b:\r    c: 1\r").unwrap();
+    let doc = file.document().unwrap();
+    let a = doc.as_mapping().unwrap().get_mapping("a").unwrap();
+    a.get_mapping("b").unwrap().set("c", &value);
+    crate::debug::assert_edited(&file, "a:\r  b:\r    c: 'x\r     y\r\r     z'\r");
+}
+
+#[test]
+fn test_set_copied_flow_sequence_with_cr_line_breaks() {
+    let source = crate::yaml::Document::from_str("[a,\rb]\r").unwrap();
+    let value = source.as_sequence().unwrap();
+    let file = YamlFile::from_str("a:\r  b:\r    c: 1\r").unwrap();
+    let doc = file.document().unwrap();
+    let a = doc.as_mapping().unwrap().get_mapping("a").unwrap();
+    a.get_mapping("b").unwrap().set("c", &value);
+    crate::debug::assert_edited(&file, "a:\r  b:\r    c: [a,\r     b]\r");
+}

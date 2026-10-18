@@ -925,7 +925,7 @@ pub(crate) fn clear_parent_column(node: &SyntaxNode, parent: usize, delta: isize
     let shallowest = node
         .text()
         .to_string()
-        .split('\n')
+        .split(['\n', '\r'])
         .skip(1)
         .filter(|line| !line.trim().is_empty())
         .map(crate::column::space_indent)
@@ -949,13 +949,14 @@ pub(crate) fn shift_line_start(text: &str, delta: isize) -> String {
 /// `text` with the indentation of each line after the first moved by
 /// `delta` columns, leaving empty lines empty.
 pub(crate) fn shift_inner_lines(text: &str, delta: isize) -> Cow<'_, str> {
-    let Some((first, rest)) = text.split_once('\n').filter(|_| delta != 0) else {
+    if delta == 0 || !text.contains(['\n', '\r']) {
         return Cow::Borrowed(text);
-    };
-    let mut shifted = first.to_string();
-    for line in rest.split('\n') {
-        shifted.push('\n');
-        if line.trim_end_matches('\r').is_empty() {
+    }
+    // A `\r\n` splits into a line ending in `\r` and an empty one.
+    let mut lines = text.split_inclusive(['\n', '\r']);
+    let mut shifted = lines.next().unwrap_or_default().to_string();
+    for line in lines {
+        if line.trim_end_matches(['\n', '\r']).is_empty() {
             shifted.push_str(line);
         } else {
             shifted.push_str(&shift_line_start(line, delta));

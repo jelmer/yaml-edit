@@ -29,7 +29,7 @@ fn assert_same_values(doc: &Document, source: &str) {
 
 #[test]
 fn reorder_fields_moves_anchor_to_first_alias() {
-    let cases: [(&str, &[&str], &str); 17] = [
+    let cases: [(&str, &[&str], &str); 18] = [
         (
             "a: &x 1\nb: *x\nc: 2\n",
             &["b", "a"],
@@ -74,6 +74,12 @@ fn reorder_fields_moves_anchor_to_first_alias() {
             "a: &x {k: &y 1}\nb: *x\nc: *y\n",
             &["b", "a", "c"],
             "b: &x {k: 1}\na: &x {k: &y 1}\nc: *y\n",
+        ),
+        // With them in the copy, it can.
+        (
+            "a: &x [&y 1]\nb: [*x, *y]\n",
+            &["b", "a"],
+            "b: [&x [&y 1], *y]\na: *x\n",
         ),
         (
             "base: &x {a: 1}\nderived:\n  <<: *x\n  b: 2\n",
@@ -286,4 +292,25 @@ fn move_with_new_value_keeps_alias_key_resolving() {
     let mapping = doc.as_mapping().unwrap();
     assert!(mapping.move_after("b", "a", 5));
     assert_edited(&doc, "&a 1 : 2\nb: *a\na: 5\n");
+}
+
+#[test]
+fn moving_alias_key_before_key_with_anchors_inside() {
+    // X38W from the YAML test suite: `*b` after the old key still resolves
+    // once that key becomes an alias, to the `&b` in the copy. Both keys
+    // are `[a, b]`, so the values cannot be compared.
+    let source = "{ &a [a, &b b]: *b, *a : [c, *b, d]}\n";
+    let expected = "{ &a [a, &b b] : [c, *b, d], *a : *b}\n";
+
+    let doc = Document::from_str(source).unwrap();
+    let keys: Vec<_> = doc.as_mapping().unwrap().keys().collect();
+    assert!(doc.reorder_fields(keys.into_iter().rev()));
+    assert_edited(&doc, expected);
+
+    let doc = Document::from_str(source).unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let keys: Vec<_> = mapping.keys().collect();
+    let value = mapping.get(&keys[0]).unwrap();
+    assert!(mapping.move_after(&keys[1], &keys[0], value));
+    assert_edited(&doc, expected);
 }

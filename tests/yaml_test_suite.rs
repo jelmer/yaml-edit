@@ -591,6 +591,7 @@ const FUZZ_FOUND_VALUES: &[(&str, &str, &str)] = &[
         ":o [d: f\n",
         r#"{":o [d": "f"}"#,
     ),
+    ("plain-key-with-pipe-plus", "i:|+: 1\n", r#"{"i:|+": 1}"#),
     ("single-quoted-cr-line-break", "' a\r b'\n", r#"" a b""#),
     (
         "tab-line-after-block-scalar",

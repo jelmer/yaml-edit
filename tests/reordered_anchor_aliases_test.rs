@@ -187,16 +187,8 @@ fn reorder_fields_copies_alias_with_properties() {
 }
 
 #[test]
-fn failed_reorder_leaves_document_unchanged() {
-    // An alias with a tag of its own cannot take a copy of a tagged node.
-    let source = "a: &x !u 1\nb: !t *x\n";
-    let doc = Document::from_str(source).unwrap();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        doc.reorder_fields(["b", "a"]);
-    }));
-    assert_eq!(
-        result.unwrap_err().downcast_ref::<String>().unwrap(),
-        "cannot keep alias *x resolving: it has a tag, and the node it refers to has one too"
-    );
-    assert_edited(&doc, source);
+fn reorder_fields_copies_tagged_alias_to_tagged_node() {
+    let doc = Document::from_str("a: &x !u 1\nb: !t *x\n").unwrap();
+    assert!(doc.reorder_fields(["b", "a"]));
+    assert_edited(&doc, "b: !t 1\na: &x !u 1\n");
 }

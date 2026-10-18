@@ -368,8 +368,9 @@ YAML does not, passes them on to its copy, which then goes without the
 anchor it was copied with: a tag would change what later aliases to that
 anchor refer to, and a node has room for one anchor only. Later aliases get
 copies of their own. `k: !t *a` gives `k: !t 1` and `k: &b *a` gives
-`k: &b 1`. Where that cannot be done, because the alias is a key or both it
-and the copied node have a tag, the edit panics before changing anything.
+`k: &b 1`. The tag of the alias, being what was written at its place, also
+takes the place of any tag the node has: with `a: &a !u 1`, `k: !t *a`
+gives `k: !t 1`.
 
 Moving entries (`reorder_fields`, and `move_after`/`move_before` given the
 entry's own value) keeps every alias resolving to the node it did. An alias
@@ -379,11 +380,8 @@ the node becomes an alias to the copy: `a: &x 1\nb: *x\n` reordered to
 own anchor, if it is a key, holds other anchors, or another anchor with
 its name comes between. An alias that ends up after another anchor with
 its name becomes a copy, with the anchor only if later aliases need it.
-An alias that cannot be
-replaced with a copy (see above) makes the edit panic, after putting the
-document back as it was. `move_after`/`move_before` given another value
-remove the old entry as `remove` does. Sequences have no reordering
-methods.
+`move_after`/`move_before` given another value remove the old entry as
+`remove` does. Sequences have no reordering methods.
 
 An alias resolves to the closest preceding definition of its anchor in the
 same document, as the spec requires. In `<<` merge keys only alias nodes are

@@ -2314,4 +2314,47 @@ block_map:
         assert!(yaml_eq(&raw, &cst));
         assert!(!yaml_eq(&cst, &YamlValue::from_sequence(vec![])));
     }
+
+    #[test]
+    fn test_yaml_node_helpers() {
+        use std::str::FromStr;
+        let doc = crate::Document::from_str("a: 'x'\nb: [1, 2]\nd: &q x\ne: *q\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let a = mapping.get("a").unwrap();
+        assert!(a == "x");
+        assert!(a == *"x");
+        let owned = String::from("x");
+        assert!(a == owned);
+        assert!(a.yaml_eq(&"x"));
+        assert!(a != "y");
+        let b = mapping.get("b").unwrap();
+        assert_eq!(b.get_item(1).unwrap().to_string(), "2");
+        assert_eq!(b.get_item(2), None);
+        assert_eq!(a.get_item(0), None);
+        let e = mapping.get("e").unwrap();
+        assert_eq!(
+            e.as_alias().map(|alias| alias.name()),
+            Some("q".to_string())
+        );
+        assert_eq!(a.as_alias(), None);
+        // Aliases are not resolved, so they are not even equal to themselves.
+        assert!(!yaml_eq(&e, &e));
+    }
+
+    #[test]
+    fn test_option_values() {
+        use std::str::FromStr;
+        for (src, expected) in [
+            ("{a: 1}", "{a: 1, k: null, j: \"p, q\"}"),
+            ("{\"a\": 1}", "{\"a\": 1, \"k\": null, \"j\": \"p, q\"}"),
+            ("a: 1\n", "a: 1\nk: null\nj: p, q\n"),
+        ] {
+            let doc = crate::Document::from_str(src).unwrap();
+            let mapping = doc.as_mapping().unwrap();
+            mapping.set("k", None::<i64>);
+            mapping.set("j", Some("p, q"));
+            assert_eq!(doc.to_string(), expected, "{src:?}");
+            crate::debug::assert_cst_ok(&doc);
+        }
+    }
 }

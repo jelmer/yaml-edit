@@ -753,3 +753,25 @@ fn test_set_item_ending_in_omitted_value() {
     assert_eq!(set_first("- a:\n- c\n"), "- xval\n- c\n");
     assert_eq!(set_first("-\n  - a\n  -\n- c\n"), "-\n  xval\n- c\n");
 }
+
+/// A block collection set as an item starts on the dash's line, indented
+/// by the white space after the dash, where a tab is not allowed.
+#[test]
+fn test_set_block_collection_after_dash_and_tab() {
+    let file = YamlFile::from_str("-\tb\n").unwrap();
+    let seq = file.document().unwrap().as_sequence().unwrap();
+    seq.set(0, yaml_edit::YamlValue::from(vec![1i64, 2]));
+    assert_eq!(file.to_string(), "- - 1\n  - 2\n");
+    assert_file_cst_ok(&file);
+    assert_eq!(
+        yaml_edit::validator::Validator::new().validate_syntax(file.syntax()),
+        vec![]
+    );
+
+    let file = YamlFile::from_str("-\tb\n").unwrap();
+    let seq = file.document().unwrap().as_sequence().unwrap();
+    let map = YamlFile::from_str("x: 1\ny: 2\n").unwrap();
+    seq.set(0, map.document().unwrap().as_mapping().unwrap());
+    assert_eq!(file.to_string(), "- x: 1\n  y: 2\n");
+    assert_file_cst_ok(&file);
+}

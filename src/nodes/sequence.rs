@@ -158,9 +158,19 @@ fn rebuild_entry_with_value(
                 panic!("unexpected {:?} in a SEQUENCE_ENTRY", n.kind())
             }
             rowan::NodeOrToken::Token(t) => {
-                // Copy tokens as-is
-                builder.token(t.kind().into(), t.text());
-                column = crate::column::column_after(column, t.text());
+                // A block collection on the dash's line is indented by the
+                // white space after the dash, where a tab is not allowed.
+                let text = if after_dash
+                    && t.kind() == SyntaxKind::WHITESPACE
+                    && block_collection
+                    && anchor.is_none()
+                {
+                    t.text().replace('\t', " ")
+                } else {
+                    t.text().to_string()
+                };
+                builder.token(t.kind().into(), &text);
+                column = crate::column::column_after(column, &text);
                 after_dash = t.kind() == SyntaxKind::DASH;
             }
         }

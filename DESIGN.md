@@ -231,7 +231,9 @@ ending a nested collection separate it from what follows, so they stay
 after the new entry: `a:\n  x: 1\n\nb: 2\n` with `y` set in `a` gives
 `a:\n  x: 1\n  y: 3\n\nb: 2\n`. Those ending the root collection stay
 where they are, and the new entry goes after them: `- x\n\n` with `y`
-pushed gives `- x\n\n- y\n`.
+pushed gives `- x\n\n- y\n`. Input that has no final line break
+still has none after a new last entry, whichever method adds it:
+`a: 1` with `b` set gives `a: 1\nb: 2`.
 
 A kept (`|+`, `>+`) block scalar takes every blank line after it into its
 value. A new entry whose value ends in one therefore goes after any blank

@@ -157,7 +157,7 @@ fn sequence_insert_past_end_without_trailing_newline() {
     let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
     seq.insert(2, "c");
     assert_cst_ok(&doc);
-    assert_eq!(doc.to_string(), "items:\n  - a\n  - b\n  - c\n");
+    assert_eq!(doc.to_string(), "items:\n  - a\n  - b\n  - c");
 }
 
 #[test]

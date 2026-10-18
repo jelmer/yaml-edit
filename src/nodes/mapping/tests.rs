@@ -740,8 +740,7 @@ features:
   - auth
 license: MIT
 published: true
-downloads: 1000
-"#;
+downloads: 1000"#;
     assert_eq!(yaml.to_string(), expected);
 }
 
@@ -1817,9 +1816,9 @@ fn test_set_value_of_explicit_key_without_one() {
 fn test_set_after_unterminated_nested_value() {
     use crate::debug::assert_edited;
     for (source, expected) in [
-        ("a:\n  - 1", "a:\n  - 1\nb: 2\n"),
-        ("a:\n  x: 1", "a:\n  x: 1\nb: 2\n"),
-        ("a: |\n  x", "a: |\n  x\nb: 2\n"),
+        ("a:\n  - 1", "a:\n  - 1\nb: 2"),
+        ("a:\n  x: 1", "a:\n  x: 1\nb: 2"),
+        ("a: |\n  x", "a: |\n  x\nb: 2"),
     ] {
         let yaml = YamlFile::from_str(source).unwrap();
         yaml.document().unwrap().as_mapping().unwrap().set("b", 2);
@@ -1835,7 +1834,7 @@ fn test_insert_after_nested_value_with_line_comment() {
     use rowan::ast::AstNode;
     let cases = [
         ("x:\n  - 1 # c\n", "x:\n  - 1 # c\ny: 2\n"),
-        ("x:\n  - 1 # c", "x:\n  - 1 # c\ny: 2\n"),
+        ("x:\n  - 1 # c", "x:\n  - 1 # c\ny: 2"),
         ("x:\n  - 1 # c\nz: 3\n", "x:\n  - 1 # c\ny: 2\nz: 3\n"),
         ("x:\n- 1 # c\nz: 3\n", "x:\n- 1 # c\ny: 2\nz: 3\n"),
         ("x:\n  - - 1 # c\n", "x:\n  - - 1 # c\ny: 2\n"),

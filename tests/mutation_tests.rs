@@ -124,8 +124,7 @@ fn test_nested_mapping_add_new_key() {
     let expected = r#"database:
   name: dev_db
   user: admin
-  password: secret123
-"#;
+  password: secret123"#;
     assert_eq!(yaml.to_string(), expected);
 
     // Verify output is valid YAML
@@ -176,8 +175,7 @@ fn test_add_new_root_key() {
     assert_file_cst_ok(&yaml);
 
     let expected = r#"existing: value
-new_key: new_value
-"#;
+new_key: new_value"#;
     assert_eq!(yaml.to_string(), expected);
 
     // Verify output is valid YAML
@@ -209,8 +207,7 @@ server:
 server:
   host: 0.0.0.0  # Default host
   port: 8080
-  timeout: 30
-"#;
+  timeout: 30"#;
     assert_eq!(yaml.to_string(), expected);
 
     // Verify output is valid YAML
@@ -245,7 +242,7 @@ fn test_nested_mapping_mutations_propagate() {
     assert_file_cst_ok(&yaml);
 
     let expected =
-        "database:\n  name: prod_db\n  user: admin\n  max_connections: 50\n  password: secret123\n";
+        "database:\n  name: prod_db\n  user: admin\n  max_connections: 50\n  password: secret123";
 
     assert_eq!(yaml.to_string(), expected);
 
@@ -280,7 +277,7 @@ fn test_deeply_nested_mutations() {
     }
     assert_file_cst_ok(&yaml);
 
-    let expected = "server:\n  database:\n    primary:\n      host: prod.example.com\n      port: 5432\n      ssl: true\n";
+    let expected = "server:\n  database:\n    primary:\n      host: prod.example.com\n      port: 5432\n      ssl: true";
 
     assert_eq!(yaml.to_string(), expected);
 

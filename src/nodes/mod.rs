@@ -737,6 +737,6 @@ mod tests {
         use std::str::FromStr;
         let yaml = crate::yaml::YamlFile::from_str("a: b\n  > c").unwrap();
         yaml.document().unwrap().as_mapping().unwrap().set("d", 1);
-        crate::debug::assert_edited(&yaml, "a: b\n  > c\nd: 1\n");
+        crate::debug::assert_edited(&yaml, "a: b\n  > c\nd: 1");
     }
 }

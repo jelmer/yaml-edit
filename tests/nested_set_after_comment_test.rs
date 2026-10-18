@@ -84,7 +84,7 @@ fn test_set_two_entries_before_deeper_trailing_comment() {
 fn set_after_comment_ending_the_input() {
     assert_eq!(
         edit_src("x:\n  a: 1\n  # end", |m| m.set("b", 2)),
-        "x:\n  a: 1\n  # end\n  b: 2\n"
+        "x:\n  a: 1\n  # end\n  b: 2"
     );
 }
 
@@ -94,5 +94,5 @@ fn root_set_after_comment_ending_the_input() {
     let root = file.document().unwrap().as_mapping().unwrap();
     root.set("b", 2);
     assert_file_cst_ok(&file);
-    assert_eq!(file.to_string(), "a: 1\n# end\nb: 2\n");
+    assert_eq!(file.to_string(), "a: 1\n# end\nb: 2");
 }

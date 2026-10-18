@@ -518,11 +518,7 @@ impl Sequence {
     /// [`insert`](Self::insert) and [`remove`](Self::remove) are likewise
     /// linear per call, and rather more costly than `push`.
     pub fn push(&self, value: impl crate::AsYaml) {
-        if let Some(entry) = self.attach(Slot::End, value) {
-            // The end of the input keeps its lack of a final line break.
-            // TODO: `insert` and `Mapping::set` add one.
-            trivia::unterminate_last(&entry);
-        }
+        self.attach(Slot::End, value);
     }
 
     /// Insert an item at a specific position.
@@ -541,9 +537,8 @@ impl Sequence {
         self.attach(slot, value);
     }
 
-    /// Add an item holding `value` at `slot`. Returns the new block entry
-    /// if it went after the end of input that had no final line break.
-    fn attach(&self, slot: Slot, value: impl crate::AsYaml) -> Option<SyntaxNode> {
+    /// Add an item holding `value` at `slot`.
+    fn attach(&self, slot: Slot, value: impl crate::AsYaml) {
         // A placeholder from `Sequence::new_pending_block` turns into a real
         // block sequence now that it has an item. A `[]` from the source is
         // not marked and keeps its flow style; a placeholder nested inside a
@@ -551,10 +546,10 @@ impl Sequence {
         empty_collection::convert_placeholder_to_block(&self.0);
         if self.is_flow_style() {
             trivia::attach_flow_entry(&self.0, slot, &self.flow_entry(value));
-            return None;
+            return;
         }
         let entry = block_entry(&value, trivia::entry_column(&self.0));
-        trivia::attach_entry(&self.0, slot, &entry).then_some(entry)
+        trivia::attach_entry(&self.0, slot, &entry);
     }
 
     /// A flow sequence entry holding `value`, for this sequence.
@@ -2282,9 +2277,9 @@ scores:
             crate::debug::assert_edited(&yaml, expected);
         }
         let cases = [
-            ("- - 1", "- - 1\n- x\n"),
-            ("- a: 1", "- a: 1\n- x\n"),
-            ("- - |\n    x", "- - |\n    x\n- x\n"),
+            ("- - 1", "- - 1\n- x"),
+            ("- a: 1", "- a: 1\n- x"),
+            ("- - |\n    x", "- - |\n    x\n- x"),
         ];
         for (source, expected) in cases {
             let yaml = YamlFile::from_str(source).unwrap();
@@ -2300,7 +2295,7 @@ scores:
     fn test_append_after_trailing_comment() {
         let cases: &[(&str, &str, &str)] = &[
             ("- 1\n  # c\n", "- 1\n  # c\n- x\n", "- 1\n  # c\n- x\n"),
-            ("- 1\n  # c", "- 1\n  # c\n- x", "- 1\n  # c\n- x\n"),
+            ("- 1\n  # c", "- 1\n  # c\n- x", "- 1\n  # c\n- x"),
             ("- 1\n# c\n", "- 1\n# c\n- x\n", "- 1\n# c\n- x\n"),
             (
                 "- 1\n  # c\n  # d\n",
@@ -2308,7 +2303,7 @@ scores:
                 "- 1\n  # c\n  # d\n- x\n",
             ),
             ("- 1 # c\n", "- 1 # c\n- x\n", "- 1 # c\n- x\n"),
-            ("- 1 # c", "- 1 # c\n- x", "- 1 # c\n- x\n"),
+            ("- 1 # c", "- 1 # c\n- x", "- 1 # c\n- x"),
             (
                 "- 1 # c\n  # d\n",
                 "- 1 # c\n  # d\n- x\n",
@@ -2322,7 +2317,7 @@ scores:
             (
                 "a:\n  - 1\n    # c",
                 "a:\n  - 1\n    # c\n  - x",
-                "a:\n  - 1\n    # c\n  - x\n",
+                "a:\n  - 1\n    # c\n  - x",
             ),
             (
                 "a:\n- 1\n  # c\n",
@@ -2337,7 +2332,7 @@ scores:
             (
                 "a:\n  - 1 # c",
                 "a:\n  - 1 # c\n  - x",
-                "a:\n  - 1 # c\n  - x\n",
+                "a:\n  - 1 # c\n  - x",
             ),
             (
                 "a:\n  - 1 # c\nb: 1\n",

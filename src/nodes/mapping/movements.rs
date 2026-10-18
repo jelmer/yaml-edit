@@ -10,6 +10,17 @@ use rowan::ast::AstNode;
 
 type Element = rowan::SyntaxElement<Lang>;
 
+/// An entry being moved, with what goes along with it.
+struct Group {
+    /// The comment lines before it, with any blank lines among and after
+    /// them.
+    lines_before: Vec<Element>,
+    entry: SyntaxNode,
+    /// The rest of its line that the parser put beside it, and in a flow
+    /// mapping anything else up to the next entry.
+    line: Vec<Element>,
+}
+
 /// The layout that belongs to a position in a mapping rather than to the
 /// entry at it, so that it stays put when entries are moved around.
 struct SlotLayout {
@@ -42,10 +53,10 @@ fn flow_line_indent(entry: &SyntaxNode) -> Option<Vec<SyntaxToken>> {
 
 impl Mapping {
     /// Put the entries of this mapping in the order of `order`, which holds
-    /// each of them once. An entry takes along the rest of its line and the
-    /// comment lines that follow it up to the next entry; the layout that
-    /// belongs to positions, including the blank lines between entries,
-    /// stays put.
+    /// each of them once. An entry takes along the rest of its line and, in
+    /// a block mapping, the comment lines before it back to the previous
+    /// entry or the blank lines after that; the layout that belongs to
+    /// positions, including those blank lines, stays put.
     pub(super) fn arrange_entries(&self, order: &[SyntaxNode]) {
         let all: Vec<Element> = self.0.children_with_tokens().collect();
         let starts: Vec<usize> = all
@@ -67,14 +78,19 @@ impl Mapping {
 
         // What moves with each entry, and for each position the blank lines
         // after it and the INDENT starting the next entry's line.
-        let mut groups: Vec<Vec<Element>> = Vec::new();
+        let mut groups: Vec<Group> = Vec::new();
         let mut gaps: Vec<Vec<Element>> = Vec::new();
         let mut line_indents = Vec::new();
         let mut trailing = Vec::new();
+        let mut lines_before = Vec::new();
         for (i, &at) in starts.iter().enumerate() {
             let entry = all[at].as_node().expect("an entry is a node");
             let line_end = trivia::index_after_line(entry);
-            let mut group = all[at..line_end].to_vec();
+            groups.push(Group {
+                lines_before: std::mem::take(&mut lines_before),
+                entry: entry.clone(),
+                line: all[at + 1..line_end].to_vec(),
+            });
             let Some(&next) = starts.get(i + 1) else {
                 trailing = all[line_end..].to_vec();
                 let gap_end = if flow {
@@ -83,7 +99,6 @@ impl Mapping {
                     leading_blank_lines_end(&trailing)
                 };
                 gaps.push(trailing.drain(..gap_end).collect());
-                groups.push(group);
                 break;
             };
             let mut between = all[line_end..next].to_vec();
@@ -93,22 +108,24 @@ impl Mapping {
                 .then(|| between.pop())
                 .flatten();
             line_indents.push(indent);
-            let gap_start = if flow {
-                between.len()
+            if flow {
+                // TODO: the parser puts the comment lines between the
+                // entries of a flow mapping in the entry above, and they go
+                // with that rather than with the entry below.
+                groups.last_mut().expect("just pushed").line.extend(between);
+                gaps.push(Vec::new());
             } else {
-                blank_lines_start(&between)
-            };
-            gaps.push(between.split_off(gap_start));
-            group.extend(between);
-            groups.push(group);
+                lines_before = between.split_off(leading_blank_lines_end(&between));
+                gaps.push(between);
+            }
         }
 
-        let ordered: Vec<Vec<Element>> = order
+        let ordered: Vec<Group> = order
             .iter()
             .map(|wanted| {
                 let pos = groups
                     .iter()
-                    .position(|group| group[0].as_node() == Some(wanted))
+                    .position(|group| group.entry == *wanted)
                     .expect("the order names entries of this mapping");
                 groups.remove(pos)
             })
@@ -120,11 +137,8 @@ impl Mapping {
         let ends_in_block_scalar: Vec<bool> = ordered
             .iter()
             .map(|group| {
-                group[1..].iter().all(is_blank)
-                    && crate::nodes::ending_block_scalar(
-                        group[0].as_node().expect("an entry is a node"),
-                    )
-                    .is_some()
+                group.line.iter().all(is_blank)
+                    && crate::nodes::ending_block_scalar(&group.entry).is_some()
             })
             .collect();
         for i in 0..gaps.len() {
@@ -139,20 +153,38 @@ impl Mapping {
             gaps[home].extend(moved);
         }
 
+        // Comment lines now before the first entry go where the parser
+        // puts them, ahead of the mapping.
+        let lines_lead = !ordered[0].lines_before.is_empty();
         let mut new_children = all[..first].to_vec();
         let last_gap = gaps.pop().expect("there is an entry");
         for (i, group) in ordered.into_iter().enumerate() {
-            if let Some(i) = i.checked_sub(1) {
-                new_children.append(&mut gaps[i]);
-                new_children.extend(line_indents[i].clone());
-            }
-            new_children.extend(group);
+            let indent = match i.checked_sub(1) {
+                Some(i) => {
+                    new_children.append(&mut gaps[i]);
+                    line_indents[i].clone()
+                }
+                // The first entry's line is indented outside the mapping,
+                // unless lines go before it.
+                None if lines_lead => line_indents[0]
+                    .as_ref()
+                    .and_then(|c| c.as_token())
+                    .map(|t| fresh_token(t.kind(), t.text()).into()),
+                None => None,
+            };
+            new_children.extend(group.lines_before);
+            new_children.extend(indent);
+            new_children.push(group.entry.into());
+            new_children.extend(group.line);
         }
         new_children.extend(last_gap);
         new_children.extend(trailing);
 
         crate::nodes::kept_aliases::keeping_aliases_moved(&self.0, None, || {
             crate::nodes::replace_children(&self.0, 0..all.len(), new_children);
+            if lines_lead {
+                crate::yaml::move_leading_lines_out(&self.0);
+            }
             self.restore_slot_layout(&layout);
             for entry in order {
                 crate::nodes::replaced_value::settle_lines_after_block_scalar(entry);
@@ -346,19 +378,6 @@ fn is_blank(element: &Element) -> bool {
         element.kind(),
         SyntaxKind::NEWLINE | SyntaxKind::WHITESPACE | SyntaxKind::INDENT
     )
-}
-
-/// Where the blank lines in `elements`, which start at the start of a line,
-/// start: after the line break that ends the last line with anything else
-/// on it.
-fn blank_lines_start(elements: &[Element]) -> usize {
-    let Some(last) = elements.iter().rposition(|e| !is_blank(e)) else {
-        return 0;
-    };
-    elements[last..]
-        .iter()
-        .position(|e| e.kind() == SyntaxKind::NEWLINE)
-        .map_or(elements.len(), |i| last + i + 1)
 }
 
 /// Where the blank lines that start `elements` end: after the last line

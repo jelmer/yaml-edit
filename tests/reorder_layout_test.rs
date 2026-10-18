@@ -6,13 +6,21 @@ mod common;
 
 use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, Document, Mapping};
+use yaml_edit::{debug, Document, Mapping, YamlFile};
 
 #[track_caller]
 fn assert_edited(doc: &Document, expected: &str) {
     assert_eq!(doc.to_string(), expected);
     common::assert_cst_ok(doc);
-    let reparsed = Document::from_str(expected).unwrap();
+    // A document without `---` that starts with a comment line is only
+    // accepted as part of a file.
+    let reparsed = Document::from_str(expected).unwrap_or_else(|_| {
+        YamlFile::from_str(expected)
+            .unwrap()
+            .documents()
+            .next()
+            .unwrap()
+    });
     assert_eq!(
         debug::shape_to_string(doc.syntax()),
         debug::shape_to_string(reparsed.syntax())
@@ -90,7 +98,7 @@ fn reorder_unterminated_block_mapping() {
         ("a: 1\nb: 2", &["b", "a"][..], "b: 2\na: 1"),
         ("a: 1\nb: 2\nc: 3", &["c", "a"], "c: 3\na: 1\nb: 2"),
         ("a: 1  # c\nb: 2  # d", &["b", "a"], "b: 2  # d\na: 1  # c"),
-        ("a: 1\n# c\nb: 2", &["b", "a"], "b: 2\na: 1\n# c"),
+        ("a: 1\n# c\nb: 2", &["b", "a"], "# c\nb: 2\na: 1"),
         ("a: 1\nb:\n  x: 1", &["b", "a"], "b:\n  x: 1\na: 1"),
         ("a: 1\nb: 2\n", &["b", "a"], "b: 2\na: 1\n"),
         ("? a\n: 1\nb: 2", &["b", "a"], "b: 2\n? a\n: 1"),
@@ -114,7 +122,7 @@ fn reorder_nested_block_mapping() {
         ),
         (
             "top:\n  a: 1  # c\n  # between\n  b: 2  # d\n",
-            "top:\n  b: 2  # d\n  a: 1  # c\n  # between\n",
+            "top:\n  # between\n  b: 2  # d\n  a: 1  # c\n",
         ),
         ("top:\n  a: 1\n\n  b: 2\n", "top:\n  b: 2\n\n  a: 1\n"),
     ] {
@@ -174,8 +182,8 @@ fn move_keeps_comments() {
         ("a: 1  # c\nb: 2  # d\n", "b: 2  # d\na: 1  # c\n"),
         ("a:  # c\n  x: 1\nb: 2\n", "b: 2\na:  # c\n  x: 1\n"),
         ("? a  # c\n: 1  # e\nb: 2\n", "b: 2\n? a  # c\n: 1  # e\n"),
-        // A comment line goes with the entry above it, as in reorder_fields.
-        ("a: 1\n# c\nb: 2\n", "b: 2\na: 1\n# c\n"),
+        // A comment line goes with the entry below it, as in reorder_fields.
+        ("a: 1\n# c\nb: 2\n", "# c\nb: 2\na: 1\n"),
         ("{a: 1, # c\n b: 2 # d\n}", "{b: 2, # d\n a: 1 # c\n}"),
         ("{a: 1 # c\n, b: 2 # d\n}\n", "{b: 2, # d\na: 1 # c\n}\n"),
         ("{a: 1, b: 2 # d\n}\n", "{b: 2, # d\na: 1}\n"),
@@ -187,7 +195,7 @@ fn move_keeps_comments() {
         check_move(
             "top:\n  # e\n  a: 1  # c\n  # f\n  b: 2  # d\n",
             after,
-            "top:\n  # e\n  b: 2  # d\n  a: 1  # c\n  # f\n",
+            "top:\n  # e\n  # f\n  b: 2  # d\n  a: 1  # c\n",
             top,
         );
     }
@@ -208,16 +216,17 @@ fn reorder_keeps_blank_lines_in_place() {
             &["c", "b", "a"],
             "c: 3\n\nb: 2\na: 1\n",
         ),
-        // Blank lines among the comment lines after an entry go with them.
+        // Blank lines among and after the comment lines before an entry go
+        // with them.
         (
             "a: 1\n\n# c\n\nb: 2\n",
             &["b", "a"],
-            "b: 2\n\na: 1\n\n# c\n",
+            "# c\n\nb: 2\n\na: 1\n",
         ),
         (
             "a: 1\n# c\n\nb: 2\nc: 3\n",
             &["b", "a", "c"],
-            "b: 2\n\na: 1\n# c\nc: 3\n",
+            "# c\n\nb: 2\na: 1\nc: 3\n",
         ),
         // A block scalar would take the blank lines after it into its
         // value, so they go after the next entry that can have them.
@@ -231,7 +240,7 @@ fn reorder_keeps_blank_lines_in_place() {
         (
             "a: 1\n\nb: |\n  x\n# c\nc: 3\n",
             &["b", "a", "c"],
-            "b: |\n  x\n# c\n\na: 1\nc: 3\n",
+            "b: |\n  x\na: 1\n\n# c\nc: 3\n",
         ),
     ] {
         check_reorder(source, order, expected, root);
@@ -251,7 +260,7 @@ fn reorder_keeps_comments() {
     check_reorder(
         "a: 1  # c\n# e\nb: 2  # d\nc: 3\n",
         &["b", "c", "a"],
-        "b: 2  # d\nc: 3\na: 1  # c\n# e\n",
+        "# e\nb: 2  # d\nc: 3\na: 1  # c\n",
         root,
     );
     check_reorder(
@@ -282,7 +291,7 @@ fn move_with_new_value_keeps_position_layout() {
     for (source, expected) in [
         (
             "a: 1\n# before b\nb: 2\nc: 3\n",
-            "b: 2\nc: 3\na: 5\n# before b\n",
+            "# before b\nb: 2\nc: 3\na: 5\n",
         ),
         ("a: 1\n\nb: 2\n\nc: 3\n", "b: 2\n\nc: 3\n\na: 5\n"),
         ("a: 1  # c\nb: 2\nc: 3", "b: 2\nc: 3\na: 5"),
@@ -312,4 +321,76 @@ fn reorder_keeps_comment_line_out_of_block_scalar_before() {
         "b: 1\nc: |\n  x\n# t\n",
         root,
     );
+}
+
+fn first_item(doc: &Document) -> Mapping {
+    let item = doc.as_sequence().unwrap().get(0).unwrap();
+    item.as_mapping().unwrap().clone()
+}
+
+#[test]
+fn reorder_moves_comment_lines_with_entry_below() {
+    check_reorder(
+        "---\na: 1\n# about b\nb: 2\n",
+        &["b", "a"],
+        "---\n# about b\nb: 2\na: 1\n",
+        root,
+    );
+    check_reorder(
+        "a: 1\n# about b\nb: 2\n# about c\nc: 3\n",
+        &["c", "a", "b"],
+        "# about c\nc: 3\na: 1\n# about b\nb: 2\n",
+        root,
+    );
+    // Lines after the last entry stay at the end.
+    check_reorder(
+        "a: 1\n# about b\nb: 2\n# end\n",
+        &["b", "a"],
+        "# about b\nb: 2\na: 1\n# end\n",
+        root,
+    );
+    check_reorder(
+        "top:\n  a: 1\n  # about b\n\n  b: 2\nz: 3\n",
+        &["b", "a"],
+        "top:\n  # about b\n\n  b: 2\n  a: 1\nz: 3\n",
+        top,
+    );
+    // A mapping that starts on the line of a `- ` indicator starts on the
+    // next one, as the comment line can't join that.
+    check_reorder(
+        "- a: 1\n  # about b\n  b: 2\n",
+        &["b", "a"],
+        "-\n  # about b\n  b: 2\n  a: 1\n",
+        first_item,
+    );
+    for after in [true, false] {
+        check_move(
+            "---\na: 1\n# about b\nb: 2\n",
+            after,
+            "---\n# about b\nb: 2\na: 1\n",
+            root,
+        );
+    }
+}
+
+#[test]
+fn reorder_comment_line_to_front_of_file() {
+    for (source, expected) in [
+        ("a: 1\n# about b\nb: 2\n", "# about b\nb: 2\na: 1\n"),
+        (
+            "\u{feff}\na: 1\n# about b\nb: 2\n",
+            "\u{feff}\n# about b\nb: 2\na: 1\n",
+        ),
+    ] {
+        let file = YamlFile::from_str(source).unwrap();
+        let doc = file.documents().next().unwrap();
+        doc.as_mapping().unwrap().reorder_fields(["b", "a"]);
+        assert_eq!(file.to_string(), expected);
+        common::assert_file_cst_ok(&file);
+        let reparsed = YamlFile::from_str(expected).unwrap();
+        assert_eq!(
+            debug::shape_to_string(file.syntax()),
+            debug::shape_to_string(reparsed.syntax())
+        );
+    }
 }

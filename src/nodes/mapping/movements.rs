@@ -3,10 +3,179 @@
 
 use super::helpers::{held_anchor, FlowInsertPos};
 use super::{Mapping, MappingEntry};
-use crate::nodes::SyntaxNode;
+use crate::lex::SyntaxKind;
+use crate::nodes::{
+    ensure_trailing_newline, entry_line_terminated, fresh_token, hand_line_break_to_mapping,
+    has_child_token, strip_flow_separator, SyntaxNode, SyntaxToken,
+};
 use rowan::ast::AstNode;
 
+/// The layout that belongs to a position in a mapping rather than to the
+/// entry at it, so that it stays put when entries are moved around.
+pub(super) struct SlotLayout {
+    /// For each entry of a flow mapping, the separator it ends with, if
+    /// that can be swapped for another entry's.
+    flow_separators: Vec<Option<Vec<(SyntaxKind, String)>>>,
+    /// Whether the last entry of a flow mapping has a trailing comma.
+    last_has_comma: bool,
+    /// Whether the last entry of a block mapping ends its line.
+    last_terminated: bool,
+}
+
+/// The tokens a flow mapping entry ends with that separate it from what
+/// follows: its comma, if any, and the white space around it. `None` if a
+/// comment comes before the comma or ends the entry, since a comma can't
+/// go after one on its line.
+fn flow_separator(entry: &SyntaxNode) -> Option<Vec<SyntaxToken>> {
+    let children: Vec<_> = entry.children_with_tokens().collect();
+    let start = children
+        .iter()
+        .rposition(|c| {
+            !matches!(
+                c.kind(),
+                SyntaxKind::COMMA
+                    | SyntaxKind::WHITESPACE
+                    | SyntaxKind::NEWLINE
+                    | SyntaxKind::INDENT
+            ) || c.as_node().is_some()
+        })
+        .map_or(0, |i| i + 1);
+    let separator: Vec<SyntaxToken> = children[start..]
+        .iter()
+        .filter_map(|c| c.as_token().cloned())
+        .collect();
+    let comma_in_separator = separator.iter().any(|t| t.kind() == SyntaxKind::COMMA);
+    if comma_in_separator != has_child_token(entry, |k| k == SyntaxKind::COMMA) {
+        return None;
+    }
+    let before = children[..start]
+        .iter()
+        .rev()
+        .filter_map(|c| match c {
+            rowan::NodeOrToken::Node(n) => n.last_token(),
+            rowan::NodeOrToken::Token(t) => Some(t.clone()),
+        })
+        .next();
+    if before.is_some_and(|t| t.kind() == SyntaxKind::COMMENT) {
+        return None;
+    }
+    Some(separator)
+}
+
+/// Put a comma right after the content of `entry`, a flow mapping entry
+/// that lacks one, ahead of any comment that follows it.
+fn insert_flow_comma(entry: &SyntaxNode) {
+    let at = entry
+        .children_with_tokens()
+        .filter(|c| c.as_node().is_some())
+        .last()
+        .map_or(0, |n| n.index() + 1);
+    let mut tokens = vec![fresh_token(SyntaxKind::COMMA, ",").into()];
+    let spaced = entry.children_with_tokens().nth(at).is_some_and(|c| {
+        matches!(
+            c.kind(),
+            SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
+        )
+    });
+    if !spaced {
+        tokens.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
+    }
+    entry.splice_children(at..at, tokens);
+}
+
+/// Remove the line break that ends `mapping`, a block mapping whose last
+/// line had none before its entries were moved around. One that is part
+/// of a block scalar's value stays, as removing it would change the value.
+fn unterminate_last_line(mapping: &SyntaxNode) {
+    let Some(last) = mapping
+        .descendants_with_tokens()
+        .filter_map(|c| c.into_token())
+        .filter(|t| !t.text().is_empty())
+        .last()
+    else {
+        return;
+    };
+    let in_scalar = last
+        .parent_ancestors()
+        .take_while(|n| n != mapping)
+        .any(|n| n.kind() == SyntaxKind::SCALAR);
+    if last.kind() == SyntaxKind::NEWLINE && !in_scalar {
+        last.detach();
+    }
+}
+
 impl Mapping {
+    /// Take note of the layout of this mapping that belongs to positions
+    /// rather than entries, for [`restore_slot_layout`](Self::restore_slot_layout).
+    pub(super) fn slot_layout(&self) -> SlotLayout {
+        let entries: Vec<SyntaxNode> = self.entries().map(|e| e.0).collect();
+        let flow_separators = if self.is_flow_style() {
+            entries
+                .iter()
+                .map(|e| {
+                    flow_separator(e).map(|tokens| {
+                        tokens
+                            .iter()
+                            .map(|t| (t.kind(), t.text().to_string()))
+                            .collect()
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let last = entries.last();
+        SlotLayout {
+            flow_separators,
+            last_has_comma: last.is_some_and(|e| has_child_token(e, |k| k == SyntaxKind::COMMA)),
+            last_terminated: last.map_or(true, entry_line_terminated),
+        }
+    }
+
+    /// Give each position of this mapping, whose entries have been moved
+    /// around since `layout` was taken, the layout it had then.
+    pub(super) fn restore_slot_layout(&self, layout: &SlotLayout) {
+        let entries: Vec<SyntaxNode> = self.entries().map(|e| e.0).collect();
+        let Some((last, rest)) = entries.split_last() else {
+            return;
+        };
+        if !self.is_flow_style() {
+            for entry in rest {
+                if !entry_line_terminated(entry) {
+                    ensure_trailing_newline(entry);
+                    hand_line_break_to_mapping(entry);
+                }
+            }
+            if !layout.last_terminated {
+                unterminate_last_line(&self.0);
+            }
+            return;
+        }
+        assert_eq!(
+            entries.len(),
+            layout.flow_separators.len(),
+            "moving entries keeps their number"
+        );
+        for (entry, slot) in entries.iter().zip(&layout.flow_separators) {
+            let is_last = entry == last;
+            match (flow_separator(entry), slot) {
+                (Some(own), Some(slot)) => {
+                    let end = entry.children_with_tokens().count();
+                    let tokens: Vec<_> = slot
+                        .iter()
+                        .map(|(kind, text)| rowan::NodeOrToken::Token(fresh_token(*kind, text)))
+                        .collect();
+                    crate::nodes::replace_children(entry, end - own.len()..end, tokens);
+                }
+                _ if is_last && !layout.last_has_comma => strip_flow_separator(entry),
+                _ if !has_child_token(entry, |k| k == SyntaxKind::COMMA) => {
+                    insert_flow_comma(entry)
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Move-or-insert `new_key: new_value` next to the entry for `ref_key`:
     /// after it if `after` is set, before it otherwise. Returns `false` if
     /// `ref_key` is not present (nothing to anchor on).
@@ -35,7 +204,12 @@ impl Mapping {
         let key_indent = self.detect_indentation_level();
         let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
         let target = target.syntax().clone();
+        // Moving an entry is not appending one: the end of the mapping
+        // keeps its trailing comma, or its lack of a final line break.
+        let layout = self.slot_layout();
         // Given its own value, the entry moves as it is, anchor included.
+        // TODO: a comment on the entry's line (`a: 1  # c`) is lost, as
+        // the entry is rebuilt from its key and value nodes.
         let own_value = existing.filter(|e| {
             let value = e.value().and_then(|v| v.children().next());
             value.is_some() && value.as_ref() == new_value.as_node()
@@ -54,15 +228,19 @@ impl Mapping {
                 let entry = MappingEntry::new_in(&key, &value, flow, use_explicit_keys, key_indent);
                 self.insert_next_to(&entry.0, target, flow_context, after);
                 self.put_value(&entry, &value, anchor.as_deref());
+                self.restore_slot_layout(&layout);
                 Some(entry.0)
             });
             return true;
         }
         // Contract: move, not duplicate. Drop any prior entry with the
         // same key first.
-        self.remove(new_key);
+        let moved = self.remove(new_key).is_some();
         let entry = MappingEntry::new_in(new_key, new_value, flow, use_explicit_keys, key_indent);
         self.insert_next_to(&entry.0, target, flow_context, after);
+        if moved {
+            self.restore_slot_layout(&layout);
+        }
         true
     }
 

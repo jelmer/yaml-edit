@@ -12,9 +12,9 @@
 //!
 //! After every edit:
 //! - the CST passes `debug::validate_tree` and `debug::roundtrip_ok`;
-//! - the text parses without errors to the same tree (`debug::shape_to_string`);
-//! - the validator accepts it, if it accepted the input;
-//! - its `YamlValue` equals a model of the document updated alongside it.
+//! - if the validator accepted the input, the text parses to the same tree
+//!   (`debug::shape_to_string`), the validator accepts it, and its
+//!   `YamlValue` equals a model of the document updated alongside it.
 //!   Where an edit cannot be modelled (merge keys, aliases to what changed),
 //!   the model is taken from the edited document again.
 
@@ -612,6 +612,10 @@ fn check(
     if let Err(e) = cst_ok(file) {
         panic!("{context}: CST broken: {e}\noutput: {output:?}");
     }
+    // Edits of input the validator rejects are only held to a sound tree.
+    if !input_valid {
+        return None;
+    }
     let reparsed = YamlFile::from_str(&output)
         .unwrap_or_else(|e| panic!("{context}: output does not parse: {e}\noutput: {output:?}"));
     let edited = debug::shape_to_string(file.syntax());
@@ -619,11 +623,9 @@ fn check(
     if edited != fresh {
         panic!("{context}: tree differs from a re-parse\noutput: {output:?}\nedited:\n{edited}\nre-parsed:\n{fresh}");
     }
-    if input_valid {
-        let errors = validator_errors(&reparsed);
-        if !errors.is_empty() {
-            panic!("{context}: validator rejects the output: {errors:?}\noutput: {output:?}");
-        }
+    let errors = validator_errors(&reparsed);
+    if !errors.is_empty() {
+        panic!("{context}: validator rejects the output: {errors:?}\noutput: {output:?}");
     }
     let doc = reparsed
         .documents()

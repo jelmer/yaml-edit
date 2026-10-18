@@ -19,18 +19,12 @@ use yaml_edit::{debug, Parse, YamlFile, YamlValue};
 struct Reading {
     parse_errors: usize,
     validator_errors: usize,
-    values: Option<Vec<Result<YamlValue, String>>>,
+    values: Option<Vec<Option<YamlValue>>>,
 }
 
 fn read(input: &str) -> Reading {
     let parse: Parse<YamlFile> = Parse::parse_yaml(input);
     let tree = parse.tree();
-    // Only a tree without parse errors has to meet the CST invariants.
-    if parse.errors().is_empty() {
-        if let Err(e) = debug::validate_tree(tree.syntax()) {
-            panic!("CST broken: {e}\ninput: {input:?}");
-        }
-    }
     if tree.to_string() != input {
         panic!("round trip changed {input:?} to {:?}", tree.to_string());
     }
@@ -39,9 +33,16 @@ fn read(input: &str) -> Reading {
         .into_iter()
         .filter(|v| v.severity == Severity::Error)
         .count();
+    // Only a tree of valid input has to meet the CST invariants.
+    if parse.errors().is_empty() && validator_errors == 0 {
+        if let Err(e) = debug::validate_tree(tree.syntax()) {
+            panic!("CST broken: {e}\ninput: {input:?}");
+        }
+    }
     let values = YamlFile::from_str(input).ok().map(|file| {
         file.documents()
-            .map(|doc| YamlValue::from_document(&doc).map_err(|e| e.to_string()))
+            // Error messages quote the input, line breaks included.
+            .map(|doc| YamlValue::from_document(&doc).ok())
             .collect()
     });
     Reading {

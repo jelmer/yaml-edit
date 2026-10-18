@@ -209,7 +209,7 @@ fn has_content(node: &SyntaxNode) -> bool {
 /// Walks back through preceding tokens to the last line break rather than
 /// serializing the document: this runs for many tokens, and rebuilding the
 /// whole text each time made validation quadratic in the file size.
-fn token_column(token: &crate::nodes::SyntaxToken) -> usize {
+pub(crate) fn token_column(token: &crate::nodes::SyntaxToken) -> usize {
     let mut col = 0;
     let mut cur = token.prev_token();
     while let Some(t) = cur {

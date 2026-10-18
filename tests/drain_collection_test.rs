@@ -151,6 +151,14 @@ fn key_mapping(d: &Document) -> yaml_edit::Mapping {
     }
 }
 
+fn key_sequence(d: &Document) -> yaml_edit::Sequence {
+    let key = key_node(d);
+    match key.as_tagged() {
+        Some(t) => t.as_sequence().unwrap(),
+        None => key.as_sequence().cloned().unwrap(),
+    }
+}
+
 #[test]
 fn remove_only_entry_of_explicit_key_mapping() {
     let remove = |d: &Document| {
@@ -273,4 +281,46 @@ fn drain_removed_sequence_item_with_comment_line() {
     let m = item.as_mapping().unwrap();
     assert!(m.remove("b").is_some());
     assert_eq!(m.to_string(), "{}");
+}
+
+#[test]
+fn drain_compact_sequence_in_explicit_key() {
+    let remove = |d: &Document| {
+        assert!(key_sequence(d).remove(0).is_some());
+    };
+    let clear = |d: &Document| key_sequence(d).clear();
+    for edit in [&remove as &dyn Fn(&Document), &clear] {
+        check_edit("?\n- a\n: b\n", edit, "?\n  []\n: b\n");
+        check_edit("?\n- a\n", edit, "?\n  []\n");
+        check_edit("? &x\n- a\n: b\n", edit, "? &x\n  []\n: b\n");
+        check_edit("? !t\n- a\n: b\n", edit, "? !t\n  []\n: b\n");
+        check_edit("? # c\n- a\n: b\n", edit, "? # c\n  []\n: b\n");
+    }
+    check_edit(
+        "x:\n  ?\n  - a\n  : b\n",
+        |d| {
+            let m = d.as_mapping().unwrap().get_mapping("x").unwrap();
+            let k = m.keys().next().unwrap();
+            k.as_sequence().unwrap().remove(0);
+        },
+        "x:\n  ?\n    []\n  : b\n",
+    );
+}
+
+#[test]
+fn drain_indented_collection_in_explicit_key() {
+    check_edit(
+        "?\n  a: 1\n: b\n",
+        |d| {
+            assert!(key_mapping(d).remove("a").is_some());
+        },
+        "?\n  {}\n: b\n",
+    );
+    check_edit(
+        "?\n  - a\n: b\n",
+        |d| {
+            assert!(key_sequence(d).remove(0).is_some());
+        },
+        "?\n  []\n: b\n",
+    );
 }

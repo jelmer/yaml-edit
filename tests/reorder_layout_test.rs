@@ -116,7 +116,7 @@ fn reorder_nested_block_mapping() {
             "top:\n  a: 1  # c\n  # between\n  b: 2  # d\n",
             "top:\n  b: 2  # d\n  a: 1  # c\n  # between\n",
         ),
-        ("top:\n  a: 1\n\n  b: 2\n", "top:\n  b: 2\n  a: 1\n\n"),
+        ("top:\n  a: 1\n\n  b: 2\n", "top:\n  b: 2\n\n  a: 1\n"),
     ] {
         check_reorder(source, &["b", "a"], expected, top);
     }
@@ -191,6 +191,59 @@ fn move_keeps_comments() {
             top,
         );
     }
+}
+
+#[test]
+fn reorder_keeps_blank_lines_in_place() {
+    for (source, order, expected) in [
+        (
+            "a: 1  # c\n\nb: 2  # d\n\n",
+            &["b", "a"][..],
+            "b: 2  # d\n\na: 1  # c\n\n",
+        ),
+        ("a: 1\n\nb: 2", &["b", "a"], "b: 2\n\na: 1"),
+        ("a: 1\n  \nb: 2\n", &["b", "a"], "b: 2\n  \na: 1\n"),
+        (
+            "a: 1\n\nb: 2\nc: 3\n",
+            &["c", "b", "a"],
+            "c: 3\n\nb: 2\na: 1\n",
+        ),
+        // Blank lines among the comment lines after an entry go with them.
+        (
+            "a: 1\n\n# c\n\nb: 2\n",
+            &["b", "a"],
+            "b: 2\n\na: 1\n\n# c\n",
+        ),
+        (
+            "a: 1\n# c\n\nb: 2\nc: 3\n",
+            &["b", "a", "c"],
+            "b: 2\n\na: 1\n# c\nc: 3\n",
+        ),
+        // A block scalar would take the blank lines after it into its
+        // value, so they go after the next entry that can have them.
+        (
+            "a: 1\n\nb: |\n  x\nc: 3\n",
+            &["b", "a", "c"],
+            "b: |\n  x\na: 1\n\nc: 3\n",
+        ),
+        ("a: 1\n\nb: |+\n  x\n", &["b", "a"], "b: |+\n  x\na: 1\n\n"),
+        ("b: |+\n  x\na: 1\n\n", &["a", "b"], "a: 1\n\nb: |+\n  x\n"),
+        (
+            "a: 1\n\nb: |\n  x\n# c\nc: 3\n",
+            &["b", "a", "c"],
+            "b: |\n  x\n# c\n\na: 1\nc: 3\n",
+        ),
+    ] {
+        check_reorder(source, order, expected, root);
+    }
+    check_reorder(
+        "top:\n  a: 1\n\n  b: 2\n  c: 3\nz: 4\n",
+        &["c", "b", "a"],
+        "top:\n  c: 3\n\n  b: 2\n  a: 1\nz: 4\n",
+        top,
+    );
+    check_move("a: 1\n\nb: 2\n", true, "b: 2\n\na: 1\n", root);
+    check_move("a: 1\n\nb: 2\n", false, "b: 2\n\na: 1\n", root);
 }
 
 #[test]

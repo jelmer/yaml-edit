@@ -496,9 +496,10 @@ pub(crate) fn unterminate_last_line(collection: &SyntaxNode) {
 /// that explicit-key entries carry instead of owning it themselves?
 pub(crate) fn entry_line_terminated(entry: &SyntaxNode) -> bool {
     trailing_newline_reachable(entry)
-        || entry
-            .next_sibling_or_token()
-            .is_some_and(|s| s.kind() == SyntaxKind::NEWLINE)
+        || (has_child_token(entry, |k| k == SyntaxKind::QUESTION)
+            && entry
+                .next_sibling_or_token()
+                .is_some_and(|s| s.kind() == SyntaxKind::NEWLINE))
 }
 
 /// Append a trailing NEWLINE token to `entry` if its line doesn't already end

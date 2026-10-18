@@ -1062,6 +1062,24 @@ ordered: !!omap [first: *list]
     }
 
     #[test]
+    fn test_from_document_keeps_tagged_alias() {
+        let doc = crate::Document::from_str("x: &x 1\na: !t *x\n").unwrap();
+        let expected = crate::Document::from_str("x: 1\na: !t 1\n").unwrap();
+        assert_eq!(
+            YamlValue::from_document(&doc),
+            YamlValue::from_document(&expected)
+        );
+        assert_eq!(
+            YamlValue::from_document(&doc)
+                .unwrap()
+                .as_mapping()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
     fn test_from_document_alias_errors() {
         use crate::anchor_resolution::ResolveError;
         for (yaml, expected) in [

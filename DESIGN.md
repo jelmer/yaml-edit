@@ -387,6 +387,11 @@ An alias resolves to the closest preceding definition of its anchor in the
 same document, as the spec requires. In `<<` merge keys only alias nodes are
 merge operands; a quoted `'*a'` is a string.
 
+Resolving aliases (`get_resolved`, `YamlValue::from_document`) reads an
+alias with a tag of its own as its copy would read: `k: !t *a` as
+`k: !t 1`. The tag of the alias also takes the place of any tag the node
+has: with `a: &a !u 1`, `k: !t *a` reads as `k: !t 1`.
+
 ## Error handling
 
 The primary error type is `YamlError`, with variants for I/O, parse errors

@@ -4911,3 +4911,36 @@ fn test_explicit_key_entry_in_a_flow_pair_matches_a_flow_mapping() {
         );
     }
 }
+
+/// An alias with properties of its own is invalid YAML, but the parser
+/// accepts it, with the alias where a scalar key would be, and leaves the
+/// error to the validator. `a: &a 1\n&b *a : v\n` used to fail to parse.
+#[test]
+fn test_annotated_alias_key_parses_like_a_scalar_key() {
+    let tree = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        assert_file_cst_ok(&file);
+        yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file))
+    };
+    for key in ["&b", "!t", "&b !t", "!t &b"] {
+        for (alias_form, scalar_form) in [
+            ("a: &a 1\nKEY *a : v\n", "a: &a 1\nKEY xx : v\n"),
+            ("KEY *a : v\n", "KEY xx : v\n"),
+            ("k:\n  KEY *a : v\n", "k:\n  KEY xx : v\n"),
+            ("- KEY *a : v\n", "- KEY xx : v\n"),
+            ("a: &a 1\nb: {KEY *a : v}\n", "a: &a 1\nb: {KEY xx : v}\n"),
+            ("a: &a 1\nb: [KEY *a : v]\n", "a: &a 1\nb: [KEY xx : v]\n"),
+        ] {
+            let alias_form = alias_form.replace("KEY", key);
+            let scalar_form = scalar_form.replace("KEY", key);
+            assert_eq!(
+                tree(&alias_form)
+                    .replace("ALIAS", "SCALAR")
+                    .replace("REFERENCE: \"*a\"", "STRING: \"xx\""),
+                tree(&scalar_form),
+                "{alias_form:?}"
+            );
+        }
+    }
+}

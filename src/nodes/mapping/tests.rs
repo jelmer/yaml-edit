@@ -2013,3 +2013,52 @@ fn test_set_block_scalar_beside_comment() {
         );
     }
 }
+
+/// A `:` right after an alias would be read as part of its name (`*a:`),
+/// so an alias key is followed by a space.
+#[test]
+fn test_alias_key_is_separated_from_colon() {
+    use crate::debug::assert_edited;
+    use crate::yaml::Alias;
+
+    let edits: [(&str, fn(&crate::Mapping), &str); 6] = [
+        (
+            "x: &a k\n",
+            |m| m.set(Alias::new("a"), 1),
+            "x: &a k\n*a : 1\n",
+        ),
+        (
+            "{x: &a k}\n",
+            |m| m.set(Alias::new("a"), 1),
+            "{x: &a k, *a : 1}\n",
+        ),
+        (
+            "x: &a k\ny: 1\n",
+            |m| assert!(m.rename_key("y", Alias::new("a"))),
+            "x: &a k\n*a : 1\n",
+        ),
+        (
+            "{x: &a k, y: 1}\n",
+            |m| assert!(m.rename_key("y", Alias::new("a"))),
+            "{x: &a k, *a : 1}\n",
+        ),
+        (
+            "x: &a k\ny: 1\n",
+            |m| assert!(m.insert_after("x", Alias::new("a"), 2)),
+            "x: &a k\n*a : 2\ny: 1\n",
+        ),
+        (
+            "x: &a k\nb: [1]\nc:\n  *a : 1\n",
+            |m| {
+                let c = m.get("c").unwrap();
+                m.get_sequence("b").unwrap().push(c);
+            },
+            "x: &a k\nb: [1, {*a : 1}]\nc:\n  *a : 1\n",
+        ),
+    ];
+    for (source, edit, expected) in edits {
+        let file = YamlFile::from_str(source).unwrap();
+        edit(&file.document().unwrap().as_mapping().unwrap());
+        assert_edited(&file, expected);
+    }
+}

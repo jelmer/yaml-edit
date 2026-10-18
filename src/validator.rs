@@ -1371,12 +1371,7 @@ impl Validator {
                 // whitespace (6CA3's `\t[\n\t]`). Nested in a block
                 // collection it still has to clear that block's column, as
                 // Y79Y/003's `- [\n\tfoo,` does not.
-                let is_flow = node.first_token().is_some_and(|t| {
-                    matches!(
-                        t.kind(),
-                        crate::SyntaxKind::LEFT_BRACKET | crate::SyntaxKind::LEFT_BRACE
-                    )
-                });
+                let is_flow = starts_a_flow_collection(node);
                 let inside_a_block = node.ancestors().skip(1).any(|a| {
                     matches!(
                         a.kind(),
@@ -1386,10 +1381,11 @@ impl Validator {
                 if is_flow && !inside_a_block {
                     continue;
                 }
-                // A tab may separate an indicator from a scalar (`- \tx`),
-                // but a block collection after it needs `s-indent`, which
-                // forbids tabs: `-\t-` and `?\t-` are errors the test suite
-                // expects (Y79Y), while `-\t-1` is the scalar `-1`.
+                // A tab may separate an indicator from a scalar (`- \tx`) or a
+                // flow collection (`seq:\t[]`), but a block collection after
+                // it needs `s-indent`, which forbids tabs: `-\t-` and `?\t-`
+                // are errors the test suite expects (Y79Y), while `-\t-1` is
+                // the scalar `-1`.
                 // The tab has to separate the indicator from the node on
                 // the same line; trailing whitespace before a line break
                 // (DC7X's `seq:\t`) indents nothing.
@@ -1404,17 +1400,17 @@ impl Validator {
                         .next_sibling_or_token()
                         .and_then(|n| n.into_node())
                         .is_some_and(|n| {
-                            let opens_a_block = |k| {
+                            let opens_a_block = |n: &SyntaxNode| {
                                 matches!(
-                                    k,
+                                    n.kind(),
                                     crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-                                )
+                                ) && !starts_a_flow_collection(n)
                             };
-                            opens_a_block(n.kind())
+                            opens_a_block(&n)
                                 || (matches!(
                                     n.kind(),
                                     crate::SyntaxKind::VALUE | crate::SyntaxKind::KEY
-                                ) && n.children().any(|c| opens_a_block(c.kind())))
+                                ) && n.children().any(|c| opens_a_block(&c)))
                         })
                 {
                     violations.push(Violation::error_at(
@@ -1449,13 +1445,7 @@ impl Validator {
                             crate::SyntaxKind::MAPPING_ENTRY
                             | crate::SyntaxKind::SEQUENCE_ENTRY => true,
                             crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE => {
-                                !n.as_node().and_then(|n| n.first_token()).is_some_and(|t| {
-                                    matches!(
-                                        t.kind(),
-                                        crate::SyntaxKind::LEFT_BRACKET
-                                            | crate::SyntaxKind::LEFT_BRACE
-                                    )
-                                })
+                                !n.as_node().is_some_and(starts_a_flow_collection)
                             }
                             _ => false,
                         });
@@ -1494,24 +1484,13 @@ impl Validator {
 
     /// Check for missing commas in flow collections
     fn check_flow_collection_commas(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        // Check first token to see if this is a flow collection - avoid full serialization
-        let first_token = node.first_token();
-        let is_flow_mapping = first_token
-            .as_ref()
-            .is_some_and(|t| t.kind() == crate::SyntaxKind::LEFT_BRACE);
-        let is_flow_sequence = first_token
-            .as_ref()
-            .is_some_and(|t| t.kind() == crate::SyntaxKind::LEFT_BRACKET);
-
-        if !is_flow_mapping && !is_flow_sequence {
+        if !starts_a_flow_collection(node) {
             return;
         }
-
-        // Count entries and commas
-        let entry_kind = if is_flow_mapping {
-            crate::SyntaxKind::MAPPING_ENTRY
-        } else {
-            crate::SyntaxKind::SEQUENCE_ENTRY
+        let entry_kind = match node.kind() {
+            crate::SyntaxKind::MAPPING => crate::SyntaxKind::MAPPING_ENTRY,
+            crate::SyntaxKind::SEQUENCE => crate::SyntaxKind::SEQUENCE_ENTRY,
+            _ => return,
         };
 
         // A flow separator is stored inside the entry it follows (see the
@@ -1714,11 +1693,7 @@ impl Validator {
     /// leading indent tokens between block entries.
     fn check_mapping_entry_indentation(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // Flow mappings ({...}) don't have INDENT tokens between entries.
-        let first_token = node.first_token();
-        let is_flow_mapping = first_token
-            .as_ref()
-            .is_some_and(|t| t.kind() == crate::SyntaxKind::LEFT_BRACE);
-        if is_flow_mapping {
+        if starts_a_flow_collection(node) {
             return;
         }
 
@@ -1824,29 +1799,12 @@ impl Validator {
     /// content would be read as a new block node instead (yaml-test-suite
     /// 9C9N).
     fn check_flow_continuation_indent(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        let first = node.first_token();
-        let is_flow = first.as_ref().is_some_and(|t| {
-            matches!(
-                t.kind(),
-                crate::SyntaxKind::LEFT_BRACE | crate::SyntaxKind::LEFT_BRACKET
-            )
-        });
-        if !is_flow {
+        if !starts_a_flow_collection(node) {
             return;
         }
         // Only the outermost flow collection needs checking; a nested one
         // shares its lines.
-        if node.ancestors().skip(1).any(|a| {
-            matches!(
-                a.kind(),
-                crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-            ) && a.first_token().is_some_and(|t| {
-                matches!(
-                    t.kind(),
-                    crate::SyntaxKind::LEFT_BRACE | crate::SyntaxKind::LEFT_BRACKET
-                )
-            })
-        }) {
+        if in_flow_collection(node) {
             return;
         }
 
@@ -2104,12 +2062,7 @@ impl Validator {
                     // line, so `--- a`, `--- >`, `--- {a: 1}` and a tagged
                     // node are all valid, as PyYAML reads them; a block
                     // mapping or sequence (`--- key: v`, `--- - a`) is not.
-                    let is_flow = n.first_token().is_some_and(|t| {
-                        matches!(
-                            t.kind(),
-                            crate::SyntaxKind::LEFT_BRACKET | crate::SyntaxKind::LEFT_BRACE
-                        )
-                    });
+                    let is_flow = starts_a_flow_collection(n);
                     match n.kind() {
                         crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE if !is_flow => {
                             found_content = true;
@@ -4615,5 +4568,75 @@ mod tests {
                     .to_string()
             ]
         );
+    }
+
+    #[test]
+    fn test_block_mapping_with_flow_collection_key() {
+        // The mapping's first token is the key's `{` or `[`, which made it
+        // look like a flow collection.
+        for yaml in [
+            "{ a: b }:\n  hr: 65\nx: y\n",
+            "{ a: b }: c\nx: y\n",
+            "{ a: b }:\n- 1\nx: y\n",
+            "- { a: b }:\n    hr: 65\n  x: y\n",
+            "k:\n  { a: b }:\n    hr: 65\n  x: y\n",
+            "[ a ]:\n  hr: 65\nx: y\n",
+            "[a]: 1\n[b]: 2\n",
+        ] {
+            assert_eq!(messages(yaml), Vec::<String>::new(), "{yaml:?}");
+        }
+        for (yaml, expected) in [
+            (
+                "{a: b}:\n  hr: 65\n x: y\n",
+                "Sibling block mapping entries have inconsistent indentation (expected \"\", found \" \")",
+            ),
+            (
+                "[a]: 1\nb: [x,\ny]\n",
+                "Flow collection continuation line must be indented",
+            ),
+            (
+                "{a: b}: 1\nb: [x,\ny]\n",
+                "Flow collection continuation line must be indented",
+            ),
+            (
+                "a:\n \t{x: y}: z\n",
+                "Tabs are not allowed for indentation in YAML",
+            ),
+            (
+                "--- {a: b}: c\n",
+                "Content on same line as document start marker",
+            ),
+            (
+                "--- [a]: c\n",
+                "Content on same line as document start marker",
+            ),
+        ] {
+            assert_eq!(messages(yaml), vec![expected.to_string()], "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn test_tab_before_flow_collection_is_separation() {
+        // Only a block collection needs `s-indent` after an indicator; a flow
+        // collection is separated from it like a scalar.
+        for yaml in [
+            "a: b\nseq:\t[]\n",
+            "a: b\nseq:\t[1]\n",
+            "seq:\t{}\n",
+            "k:\n  seq:\t[]\n  x: 1\n",
+            "- a\n-\t[]\n",
+            "-\t{a: b}\n",
+            "?\t[a]\n:\t{b: c}\n",
+            "seq:\t&a [x]\n",
+        ] {
+            assert_eq!(messages(yaml), Vec::<String>::new(), "{yaml:?}");
+        }
+        for yaml in ["-\t{a: b}: c\n", "-\t[a]: c\n"] {
+            assert_eq!(
+                messages(yaml),
+                vec!["Tabs are not allowed for indentation in YAML".to_string()],
+                "{yaml:?}"
+            );
+        }
     }
 }

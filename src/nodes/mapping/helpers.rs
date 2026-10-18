@@ -648,6 +648,9 @@ impl FlowWriter {
         }
         crate::yaml::add_node_children_to(&mut self.builder, &written);
         self.builder.finish_node();
+        if crate::nodes::ends_in_property_name(&written) {
+            self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
+        }
     }
 
     fn colon(&mut self) {

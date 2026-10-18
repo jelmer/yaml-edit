@@ -1623,6 +1623,7 @@ impl Mapping {
         if make_explicit {
             hand_line_break_to_mapping(node);
         }
+        crate::nodes::separate_key_from_colon(node);
         new_key
     }
 

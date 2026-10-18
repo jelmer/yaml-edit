@@ -285,7 +285,9 @@ impl MappingEntry {
         }
 
         builder.finish_node(); // MAPPING_ENTRY
-        MappingEntry(SyntaxNode::new_root_mut(builder.finish()))
+        let entry = SyntaxNode::new_root_mut(builder.finish());
+        crate::nodes::separate_key_from_colon(&entry);
+        MappingEntry(entry)
     }
 
     /// Column at which this entry's key sits on its line.

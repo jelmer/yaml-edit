@@ -279,6 +279,28 @@ pub(crate) fn insert_header_comment(value: &SyntaxNode, ws: &str, comment: &str)
     );
 }
 
+/// Whether `key` ends in an anchor or alias name, which would take in a
+/// `:` written right after it: `*a:` is an alias to `a:`.
+pub(crate) fn ends_in_property_name(key: &SyntaxNode) -> bool {
+    key.last_token()
+        .is_some_and(|t| matches!(t.kind(), SyntaxKind::ANCHOR | SyntaxKind::REFERENCE))
+}
+
+/// Put a space between the key of `entry` and the `:` right after it if
+/// the key [ends in a property name](ends_in_property_name).
+pub(crate) fn separate_key_from_colon(entry: &SyntaxNode) {
+    let Some(key) = entry_key(entry).filter(ends_in_property_name) else {
+        return;
+    };
+    if key
+        .next_sibling_or_token()
+        .is_some_and(|n| n.kind() == SyntaxKind::COLON)
+    {
+        let i = key.index() + 1;
+        entry.splice_children(i..i, vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()]);
+    }
+}
+
 /// The first direct child node of `parent` with the given `kind`, if any.
 pub(crate) fn child_of_kind(parent: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
     parent.children().find(|n| n.kind() == kind)

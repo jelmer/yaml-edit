@@ -1794,18 +1794,27 @@ fn is_yaml_special_except(ch: char, exclude: &str) -> bool {
     YAML_SPECIAL_CHARS.contains(ch) && !exclude.contains(ch)
 }
 
-/// Check whether `name` is a well-formed anchor/alias name for this lexer.
+/// Check whether `name` is a well-formed anchor/alias name (`ns-anchor-name`).
 ///
-/// The lexer reads an anchor (`&name`) or alias (`*name`) to the first
-/// whitespace or flow indicator (see [`read_anchor_name_from`]), so a name
-/// holding one of those would be silently truncated on round-trip. This
-/// check is deliberately stricter than the lexer: it also rejects the
-/// [`YAML_SPECIAL_CHARS`], which are legal in a name but easy to misread.
+/// Per YAML 1.2 that is one or more `ns-anchor-char`s: printable characters
+/// other than whitespace, line breaks, the byte order mark and the flow
+/// indicators. The lexer reads a name up to whitespace or a flow
+/// indicator (see [`read_anchor_name_from`]), so such a name round-trips.
 pub(crate) fn is_valid_anchor_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name
-            .chars()
-            .any(|c| c.is_whitespace() || is_yaml_special(c))
+    !name.is_empty() && name.chars().all(is_anchor_char)
+}
+
+/// `ns-anchor-char`: `ns-char` minus the flow indicators.
+fn is_anchor_char(ch: char) -> bool {
+    // c-printable, less s-white, b-char and the byte order mark.
+    let ns_char = matches!(ch,
+        '\u{21}'..='\u{7E}'
+        | '\u{85}'
+        | '\u{A0}'..='\u{D7FF}'
+        | '\u{E000}'..='\u{FFFD}'
+        | '\u{10000}'..='\u{10FFFF}')
+        && ch != '\u{FEFF}';
+    ns_char && !matches!(ch, ',' | '[' | ']' | '{' | '}')
 }
 
 #[cfg(test)]
@@ -1818,16 +1827,43 @@ mod tests {
         assert!(is_valid_anchor_name("shared_1"));
         assert!(is_valid_anchor_name("anchor.dotted"));
         assert!(is_valid_anchor_name("naïve"));
+        // Only the flow indicators are excluded from the indicators.
+        for name in [
+            "a:",
+            "colon:name",
+            "*star",
+            "&amp",
+            "-",
+            "x?y",
+            "#",
+            "!t",
+            "|>",
+            "%'\"",
+            "@`",
+            "no\u{A0}break",
+            "nel\u{85}",
+        ] {
+            assert!(is_valid_anchor_name(name), "{name:?}");
+        }
 
-        assert!(!is_valid_anchor_name(""));
-        assert!(!is_valid_anchor_name("has space"));
-        assert!(!is_valid_anchor_name("has\ttab"));
-        assert!(!is_valid_anchor_name("has\nnewline"));
-        assert!(!is_valid_anchor_name("*star"));
-        assert!(!is_valid_anchor_name("&amp"));
-        assert!(!is_valid_anchor_name("comma,name"));
-        assert!(!is_valid_anchor_name("bracket]name"));
-        assert!(!is_valid_anchor_name("colon:name"));
+        for name in [
+            "",
+            "has space",
+            "has\ttab",
+            "has\nnewline",
+            "has\rreturn",
+            "comma,name",
+            "bracket]name",
+            "[",
+            "{",
+            "}",
+            "bom\u{FEFF}",
+            "bell\u{7}",
+            "del\u{7F}",
+            "c1\u{80}",
+        ] {
+            assert!(!is_valid_anchor_name(name), "{name:?}");
+        }
     }
 
     #[test]
@@ -1847,7 +1883,16 @@ mod tests {
     /// in agreement.
     #[test]
     fn test_valid_anchor_names_round_trip_through_lexer() {
-        for name in ["shared", "shared_1", "anchor.dotted", "naïve"] {
+        for name in [
+            "shared",
+            "shared_1",
+            "anchor.dotted",
+            "naïve",
+            "a:",
+            "*star",
+            "x#y",
+            "no\u{A0}break",
+        ] {
             let input = format!("*{name}");
             let tokens = lex(&input);
             assert_eq!(

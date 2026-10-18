@@ -1,4 +1,4 @@
-//! Removing a mapping entry that sits between blank lines.
+//! Removing a collection entry that sits between blank lines.
 
 use std::str::FromStr;
 use yaml_edit::YamlFile;
@@ -61,4 +61,53 @@ fn test_remove_explicit_key_after_blank_line() {
 fn test_remove_explicit_key_takes_its_line_break() {
     let out = remove("? a\n: 1\n? b\n: 2\n? c\n: 3\n", &[], "b");
     assert_eq!(out, "? a\n: 1\n? c\n: 3\n");
+}
+
+fn remove_item(yaml: &str, path: &[&str], index: usize) -> String {
+    let file = YamlFile::from_str(yaml).unwrap();
+    let doc = file.document().unwrap();
+    let seq = match path.split_last() {
+        None => doc.as_sequence().unwrap(),
+        Some((last, init)) => {
+            let mut m = doc.as_mapping().unwrap();
+            for p in init {
+                m = m.get_mapping(p).unwrap();
+            }
+            m.get_sequence(last).unwrap()
+        }
+    };
+    seq.remove(index).unwrap();
+    assert_file_cst_ok(&file);
+    file.to_string()
+}
+
+#[test]
+fn test_remove_item_between_blank_lines() {
+    assert_eq!(remove_item("- a\n\n- b\n\n- c\n", &[], 1), "- a\n\n- c\n");
+    assert_eq!(
+        remove_item("x:\n  - a\n\n  - b\n\n  - c\ny: 1\n", &["x"], 1),
+        "x:\n  - a\n\n  - c\ny: 1\n"
+    );
+}
+
+#[test]
+fn test_remove_item_keeps_single_blank_line_side() {
+    assert_eq!(remove_item("- a\n\n- b\n- c\n", &[], 1), "- a\n\n- c\n");
+    assert_eq!(remove_item("- a\n- b\n\n- c\n", &[], 1), "- a\n\n- c\n");
+}
+
+#[test]
+fn test_remove_item_after_comment() {
+    assert_eq!(
+        remove_item("- a\n# c\n- b\n\n- c\n", &[], 1),
+        "- a\n# c\n\n- c\n"
+    );
+    assert_eq!(
+        remove_item("- a\n# c\n\n- b\n\n- c\n", &[], 1),
+        "- a\n# c\n\n- c\n"
+    );
+    assert_eq!(
+        remove_item("- a  # k\n\n- b\n\n- c\n", &[], 1),
+        "- a  # k\n\n- c\n"
+    );
 }

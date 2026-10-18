@@ -1215,7 +1215,8 @@ impl ScalarValue {
     /// # Panics
     ///
     /// For a block scalar, if `indent` is 0, or above 9 when the value
-    /// needs an indentation indicator (its lines all start with spaces).
+    /// needs an indentation indicator (its first non-empty line starts
+    /// with a space).
     pub fn to_yaml_string_with_indent(&self, parent_column: usize, indent: usize) -> String {
         self.render(parent_column, indent, None)
     }
@@ -3470,5 +3471,11 @@ mod tests {
         let string = |key: &str| mapping.get(key).unwrap().as_scalar().unwrap().as_string();
         assert_eq!(string("k"), "a b\nc");
         assert_eq!(string("q"), "x y");
+    }
+
+    #[test]
+    #[should_panic(expected = "does not fit in one digit")]
+    fn test_block_indent_indicator_from_first_line_only() {
+        ScalarValue::literal("\n  x\ny").to_literal_with_indent(0, 10);
     }
 }

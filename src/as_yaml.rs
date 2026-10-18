@@ -2357,4 +2357,29 @@ block_map:
             crate::debug::assert_cst_ok(&doc);
         }
     }
+
+    #[test]
+    fn test_yaml_node_kind_predicates() {
+        let doc = Document::from_str("s: x\nm: {a: 1}\nl: [1]\nt: !t x\nr: &r 1\na: *r\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let kinds = |key: &str| {
+            let node = mapping.get(key).unwrap();
+            [
+                node.is_scalar(),
+                node.is_mapping(),
+                node.is_sequence(),
+                node.is_tagged(),
+                node.is_alias(),
+            ]
+        };
+        assert_eq!(kinds("s"), [true, false, false, false, false]);
+        assert_eq!(kinds("m"), [false, true, false, false, false]);
+        assert_eq!(kinds("l"), [false, false, true, false, false]);
+        assert_eq!(kinds("t"), [false, false, false, true, false]);
+        assert_eq!(kinds("a"), [false, false, false, false, true]);
+        assert_eq!(
+            mapping.get("m").unwrap().byte_range(),
+            crate::TextPosition::new(8, 14)
+        );
+    }
 }

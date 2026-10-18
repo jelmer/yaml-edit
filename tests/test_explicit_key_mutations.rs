@@ -827,3 +827,27 @@ fn comment_before_explicit_key_kept_on_rename() {
         );
     }
 }
+
+#[test]
+fn entry_inserted_after_comment_ending_a_line() {
+    assert_eq!(
+        edit_root("? a\n: b  # c\nz: 1\n", |m| {
+            assert!(m.insert_after("a", "k", 1));
+        }),
+        "? a\n: b  # c\n? k\n: 1\nz: 1\n"
+    );
+}
+
+#[test]
+fn entry_added_after_comment_ending_the_input() {
+    assert_eq!(
+        edit_root("? a\n: b  # c", |m| m.set("k", 1)),
+        "? a\n: b  # c\n? k\n: 1\n"
+    );
+    assert_eq!(
+        edit_root("? a\n: b  # c", |m| {
+            assert!(m.insert_after("a", "k", 1));
+        }),
+        "? a\n: b  # c\n? k\n: 1\n"
+    );
+}

@@ -4,15 +4,15 @@ mod movements;
 
 pub(crate) use helpers::build_block_value_node;
 pub(crate) use helpers::flow_form;
-use helpers::{append_comma_space_to_entry, FlowInsertPos};
+use helpers::FlowInsertPos;
 pub(crate) use helpers::{
     block_scalar_body_shift, drop_tagged_anchor, held_anchor, held_anchor_token, source_anchor_text,
 };
 
-use super::trivia::{self, hand_line_break_to_mapping, line_end, LineEnd};
+use super::trivia::{self, hand_line_break_to_mapping, line_end, FlowSeparator, LineEnd};
 use super::{
     entry_key, entry_value, fresh_token, has_child_token, is_block_scalar,
-    settle_lines_after_inserted_entry, strip_flow_separator, Lang, Sequence, SyntaxNode,
+    settle_lines_after_inserted_entry, Lang, Sequence, SyntaxNode,
 };
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
@@ -881,11 +881,11 @@ impl Mapping {
             // The new entry separates from the next one with `, `, and
             // one before it gets the same if it lacked a separator.
             if let Some(prev) = entries_before.last() {
-                append_comma_space_to_entry(prev);
+                FlowSeparator::ensure(prev);
             }
-            append_comma_space_to_entry(new_entry);
+            FlowSeparator::ensure(new_entry);
         } else if let Some(last) = entries_before.pop() {
-            crate::nodes::hand_over_flow_end(&last, entries_before.last(), new_entry);
+            FlowSeparator::hand_over_end(&last, entries_before.last(), new_entry);
         }
 
         self.0
@@ -1336,10 +1336,9 @@ impl Mapping {
         }
         // In a flow mapping the new last entry still carries the separator
         // that led to the removed one, unless that one had its own.
-        if is_last && self.is_flow_style() && !has_child_token(removed, |k| k == SyntaxKind::COMMA)
-        {
+        if is_last && self.is_flow_style() && !trivia::has_comma(removed) {
             if let Some(prev) = self.entries().last() {
-                strip_flow_separator(prev.syntax());
+                FlowSeparator::strip(prev.syntax());
             }
         }
         // Removing the first entry promotes the next one, but the parent

@@ -5,9 +5,7 @@
 //! Split out of `nodes/mapping/mod.rs` unchanged.
 
 use crate::lex::SyntaxKind;
-use crate::nodes::{
-    append_children, fresh_token, has_child_token, is_block_scalar, Scalar, SyntaxNode,
-};
+use crate::nodes::{has_child_token, is_block_scalar, Scalar, SyntaxNode};
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
 
@@ -40,39 +38,6 @@ pub(super) fn value_is_block(value: &SyntaxNode) -> bool {
             .children()
             .find(|c| c.kind() == SyntaxKind::TAGGED_NODE)
             .is_some_and(|tagged| has_child_token(&tagged, is_line_break))
-}
-
-/// Append a `, ` pair to the end of a MAPPING_ENTRY: the separator between
-/// two entries inside a flow mapping. Idempotent: if the entry already ends
-/// with a COMMA (possibly followed by whitespace), do nothing (avoids
-/// stacking separators when inserting next to an entry that already had a
-/// trailing comma).
-///
-/// The parser stores flow separators (COMMA and any following WHITESPACE /
-/// NEWLINE / INDENT) as siblings of KEY / VALUE inside the *previous*
-/// MAPPING_ENTRY, not inside its VALUE.
-pub(super) fn append_comma_space_to_entry(entry: &SyntaxNode) {
-    let ends_with_comma = entry
-        .children_with_tokens()
-        .filter_map(|c| c.into_token())
-        .filter(|t| {
-            !matches!(
-                t.kind(),
-                SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
-            )
-        })
-        .last()
-        .is_some_and(|t| t.kind() == SyntaxKind::COMMA);
-    if ends_with_comma {
-        return;
-    }
-    append_children(
-        entry,
-        vec![
-            fresh_token(SyntaxKind::COMMA, ",").into(),
-            fresh_token(SyntaxKind::WHITESPACE, " ").into(),
-        ],
-    );
 }
 
 /// Walk `entry`'s tokens in document order (descending into child nodes)

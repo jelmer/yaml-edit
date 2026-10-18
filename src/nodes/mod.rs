@@ -192,7 +192,7 @@
 //! trailing siblings of the *previous* entry's KEY / VALUE / SCALAR,
 //! not inside the entry it precedes. Inserters that append a new entry
 //! must add a `, ` suffix to the entry they follow, not a `,` prefix on
-//! themselves.
+//! themselves. See [`trivia::FlowSeparator`].
 //!
 //! ## Prefer targeted splices over whole-node rebuilds
 //!
@@ -319,124 +319,6 @@ pub(crate) fn has_child_token(parent: &SyntaxNode, pred: impl Fn(SyntaxKind) -> 
     parent
         .children_with_tokens()
         .any(|el| el.as_token().is_some_and(|t| pred(t.kind())))
-}
-
-/// The tokens a flow collection entry ends with that separate it from what
-/// follows: its comma, if any, and the white space around it. `None` if a
-/// comment comes before the comma or ends the entry, since a comma can't
-/// go after one on its line.
-pub(crate) fn flow_separator(entry: &SyntaxNode) -> Option<Vec<SyntaxToken>> {
-    let children: Vec<_> = entry.children_with_tokens().collect();
-    let start = children
-        .iter()
-        .rposition(|c| {
-            !matches!(
-                c.kind(),
-                SyntaxKind::COMMA
-                    | SyntaxKind::WHITESPACE
-                    | SyntaxKind::NEWLINE
-                    | SyntaxKind::INDENT
-            ) || c.as_node().is_some()
-        })
-        .map_or(0, |i| i + 1);
-    let separator: Vec<SyntaxToken> = children[start..]
-        .iter()
-        .filter_map(|c| c.as_token().cloned())
-        .collect();
-    let comma_in_separator = separator.iter().any(|t| t.kind() == SyntaxKind::COMMA);
-    if comma_in_separator != has_child_token(entry, |k| k == SyntaxKind::COMMA) {
-        return None;
-    }
-    let before = children[..start]
-        .iter()
-        .rev()
-        .filter_map(|c| match c {
-            rowan::NodeOrToken::Node(n) => n.last_token(),
-            rowan::NodeOrToken::Token(t) => Some(t.clone()),
-        })
-        .next();
-    if before.is_some_and(|t| t.kind() == SyntaxKind::COMMENT) {
-        return None;
-    }
-    Some(separator)
-}
-
-/// Make room for `new_entry` after `last`, the last entry of a flow
-/// collection, keeping the layout of the end of the collection:
-/// `new_entry` takes over the separator `last` ends with, trailing comma
-/// included, and `last` gets the one between the entries before it, or
-/// `, ` if there is none. `before_last` is the entry before `last`.
-pub(crate) fn hand_over_flow_end(
-    last: &SyntaxNode,
-    before_last: Option<&SyntaxNode>,
-    new_entry: &SyntaxNode,
-) {
-    let has_comma = |e: &SyntaxNode| has_child_token(e, |k| k == SyntaxKind::COMMA);
-    let Some(separator) = flow_separator(last) else {
-        // A comment ends the line of `last`, which keeps its separator;
-        // the new entry goes on the next line.
-        let comma = fresh_token(SyntaxKind::COMMA, ",").into();
-        if has_comma(last) {
-            append_children(new_entry, vec![comma]);
-        } else {
-            let space = fresh_token(SyntaxKind::WHITESPACE, " ").into();
-            append_children(last, vec![comma, space]);
-        }
-        return;
-    };
-    let usual: Vec<rowan::NodeOrToken<SyntaxNode, SyntaxToken>> = before_last
-        .filter(|e| has_comma(e))
-        .and_then(flow_separator)
-        .map(|tokens| {
-            tokens
-                .iter()
-                .map(|t| fresh_token(t.kind(), t.text()).into())
-                .collect()
-        })
-        .unwrap_or_else(|| {
-            vec![
-                fresh_token(SyntaxKind::COMMA, ",").into(),
-                fresh_token(SyntaxKind::WHITESPACE, " ").into(),
-            ]
-        });
-    for t in &separator {
-        t.detach();
-    }
-    append_children(new_entry, separator.into_iter().map(Into::into).collect());
-    append_children(last, usual);
-}
-
-/// Drop the `,` separator at the end of a flow collection entry that has
-/// become the last one. Whitespace and line breaks after the comma go too,
-/// unless a comment follows it.
-pub(crate) fn strip_flow_separator(entry: &SyntaxNode) {
-    let Some(comma) = entry
-        .children_with_tokens()
-        .filter_map(|c| c.into_token())
-        .filter(|t| t.kind() == SyntaxKind::COMMA)
-        .last()
-    else {
-        return;
-    };
-    let mut tail = vec![comma.clone()];
-    let mut next = comma.next_sibling_or_token();
-    while let Some(c) = next {
-        let Some(t) = c.into_token() else { break };
-        next = t.next_sibling_or_token();
-        tail.push(t);
-    }
-    let only_whitespace = tail[1..].iter().all(|t| {
-        matches!(
-            t.kind(),
-            SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
-        )
-    });
-    if !only_whitespace {
-        tail.truncate(1);
-    }
-    for t in tail {
-        t.detach();
-    }
 }
 
 /// Replace the children of `parent` in `range` with `children`.

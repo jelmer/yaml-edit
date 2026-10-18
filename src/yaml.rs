@@ -249,8 +249,8 @@ fn flow_brackets(kind: SyntaxKind) -> Option<(SyntaxKind, SyntaxKind, &'static s
 }
 
 /// Write an empty block MAPPING or SEQUENCE that is not a mapping value,
-/// such as a document's root or a sequence item, as `{}` or `[]`, so that
-/// it does not render as empty text. The counterpart for a mapping value
+/// such as a document's root, a sequence item or an explicit key, as `{}`
+/// or `[]`, so that it does not render as empty text. The counterpart for a mapping value
 /// is [`collapse_empty_child_collection_in_parent`].
 ///
 /// `terminated` says whether the collection's last line ended in a line
@@ -301,19 +301,23 @@ pub(crate) fn render_empty_collection_as_flow(collection: &SyntaxNode, terminate
         return;
     }
     // The line break follows the node, properties included, as a parsed
-    // flow-empty line has it.
+    // flow-empty line has it; for an explicit key, it follows the KEY.
     let node = collection
         .parent()
         .filter(|p| p.kind() == SyntaxKind::TAGGED_NODE)
         .unwrap_or_else(|| collection.clone());
-    let Some(parent) = node
+    let node = node
         .parent()
-        .filter(|p| matches!(p.kind(), SyntaxKind::DOCUMENT | SyntaxKind::SEQUENCE_ENTRY))
-    else {
-        // TODO: keep the line break of a drained collection elsewhere, such
-        // as an explicit key.
+        .filter(|p| p.kind() == SyntaxKind::KEY)
+        .unwrap_or(node);
+    let Some(parent) = node.parent() else {
         return;
     };
+    match (parent.kind(), node.kind()) {
+        (SyntaxKind::DOCUMENT | SyntaxKind::SEQUENCE_ENTRY, _)
+        | (SyntaxKind::MAPPING_ENTRY, SyntaxKind::KEY) => {}
+        (kind, _) => panic!("unexpected {kind:?} holding an empty block collection"),
+    }
     let at = node.index() + 1;
     parent.splice_children(
         at..at,
@@ -348,15 +352,16 @@ pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode,
         return;
     }
 
-    // A sequence item has no line of its own to fall back to: emptied, it
-    // would leave a bare `- ` (a null) or merge into the next item.
-    let in_sequence_item = collection
+    // A sequence item or explicit key has no line of its own to fall back
+    // to: emptied, it would leave a bare `- ` or `? ` (a null) or merge
+    // into what follows.
+    let in_item_or_key = collection
         .parent()
         .filter(|p| p.kind() == SyntaxKind::TAGGED_NODE)
         .or_else(|| Some(collection.clone()))
         .and_then(|n| n.parent())
-        .is_some_and(|p| p.kind() == SyntaxKind::SEQUENCE_ENTRY);
-    if in_sequence_item {
+        .is_some_and(|p| matches!(p.kind(), SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::KEY));
+    if in_item_or_key {
         render_empty_collection_as_flow(collection, terminated);
         return;
     }

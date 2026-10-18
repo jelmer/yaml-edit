@@ -138,3 +138,53 @@ fn edit_through_handle_to_drained_sequence_item() {
         "- [2]\n- 3\n",
     );
 }
+
+fn key_node(d: &Document) -> yaml_edit::YamlNode {
+    d.as_mapping().unwrap().keys().next().unwrap()
+}
+
+fn key_mapping(d: &Document) -> yaml_edit::Mapping {
+    let key = key_node(d);
+    match key.as_tagged() {
+        Some(t) => t.as_mapping().unwrap(),
+        None => key.as_mapping().cloned().unwrap(),
+    }
+}
+
+#[test]
+fn remove_only_entry_of_explicit_key_mapping() {
+    let remove = |d: &Document| {
+        assert!(key_mapping(d).remove("a").is_some());
+    };
+    check_edit("? a: 1\n: v\n", remove, "? {}\n: v\n");
+    check_edit("? a: 1\n: v\nz: 2\n", remove, "? {}\n: v\nz: 2\n");
+    check_edit("? a: 1\n", remove, "? {}\n");
+    check_edit("? a: 1", remove, "? {}");
+    check_edit("? &x\n  a: 1\n: v\n", remove, "? &x\n  {}\n: v\n");
+    check_edit("? !t\n  a: 1\n: v\n", remove, "? !t\n  {}\n: v\n");
+}
+
+#[test]
+fn remove_only_item_of_explicit_key_sequence() {
+    let remove = |d: &Document| {
+        assert!(key_node(d).as_sequence().unwrap().remove(0).is_some());
+    };
+    check_edit("? - 1\n: v\n", remove, "? []\n: v\n");
+    check_edit("? - 1\n: v\nz: 2\n", remove, "? []\n: v\nz: 2\n");
+    check_edit("? - 1\n", remove, "? []\n");
+    check_edit("? - 1", remove, "? []");
+}
+
+#[test]
+fn clear_explicit_key_collection() {
+    check_edit(
+        "? a: 1\n  b: 2\n: v\n",
+        |d| key_mapping(d).clear(),
+        "? {}\n: v\n",
+    );
+    check_edit(
+        "? - 1\n  - 2\n: v\n",
+        |d| key_node(d).as_sequence().unwrap().clear(),
+        "? []\n: v\n",
+    );
+}

@@ -498,6 +498,7 @@ fn test_set_tagged_node_value_keeps_properties_and_comments() {
 #[test]
 fn test_set_implicitly_tagged_scalar_value() {
     use yaml_edit::{ScalarValue, YamlValue};
+    #[cfg_attr(not(feature = "base64"), allow(unused_mut))]
     let mut cases = vec![
         (
             ScalarValue::timestamp("2001-12-14"),

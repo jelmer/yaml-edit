@@ -149,6 +149,11 @@ explicit style and scalar nodes, which keep the style they were written in.
 The choice is passed down as `FlowQuoting` through the hidden
 `AsYaml::build_flow_content`.
 
+After a quoted key or a flow collection the value may follow the `:`
+directly (`{"a":b}`). A key that is renamed to something else, which would
+then run on into the value as one plain scalar, gets a space after the
+`:` instead of different quoting: `{"a":b}` renamed to `z` gives `{z: b}`.
+
 ## `ScalarValue` and scalar typing
 
 Constructors with explicit intent:

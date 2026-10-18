@@ -273,3 +273,78 @@ fn test_explicit_style_kept_in_double_quoted_flow_collection() {
     assert_eq!(doc.to_string(), "x: [\"a\", plain]\n");
     assert_eq!(reparsed_scalars(&doc), ["x", "a", "plain"]);
 }
+
+#[test]
+fn test_rename_json_like_key_before_adjacent_colon() {
+    let plain_node = Document::from_str("p\n").unwrap();
+    let plain_node = plain_node.as_scalar().unwrap();
+    for (source, old, new, expected, scalars) in [
+        (
+            "{\"a\":b}\n",
+            "a",
+            YamlValue::from("z"),
+            "{z: b}\n",
+            vec!["z", "b"],
+        ),
+        (
+            "{'a':b}\n",
+            "a",
+            YamlValue::from("z"),
+            "{z: b}\n",
+            vec!["z", "b"],
+        ),
+        (
+            "{\"a\":b}\n",
+            "a",
+            YamlValue::from(1),
+            "{1: b}\n",
+            vec!["1", "b"],
+        ),
+        (
+            "{\"a\":\"b\"}\n",
+            "a",
+            YamlValue::from("z"),
+            "{\"z\":\"b\"}\n",
+            vec!["z", "b"],
+        ),
+        (
+            "[\"a\":b]\n",
+            "a",
+            YamlValue::from("z"),
+            "[z: b]\n",
+            vec!["z", "b"],
+        ),
+        (
+            "{\"a\":, c: d}\n",
+            "a",
+            YamlValue::from("z"),
+            "{z:, c: d}\n",
+            vec!["z", "", "c", "d"],
+        ),
+        (
+            "{\"a\":b, \"c\":d}\n",
+            "a",
+            YamlValue::from("z"),
+            "{z: b, \"c\":d}\n",
+            vec!["z", "b", "c", "d"],
+        ),
+    ] {
+        let doc = Document::from_str(source).unwrap();
+        let m = doc.as_mapping().unwrap_or_else(|| {
+            doc.as_sequence()
+                .unwrap()
+                .get(0)
+                .unwrap()
+                .as_mapping()
+                .unwrap()
+                .clone()
+        });
+        assert!(m.rename_key(old, new), "{source:?}");
+        assert_eq!(doc.to_string(), expected, "{source:?}");
+        assert_eq!(reparsed_scalars(&doc), scalars, "{source:?}");
+    }
+    let doc = Document::from_str("{\"a\":b}\n").unwrap();
+    assert!(doc.as_mapping().unwrap().rename_key("a", &plain_node));
+    assert_eq!(doc.to_string(), "{p: b}\n");
+    assert_eq!(reparsed_scalars(&doc), ["p", "b"]);
+}

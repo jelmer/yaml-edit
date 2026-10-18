@@ -1627,8 +1627,55 @@ impl Mapping {
         if has_child_token(node, |k| k == SyntaxKind::QUESTION) {
             Self::settle_explicit_key_line(&new_key, old_ended_line);
         }
+        if self.is_flow_style() {
+            Self::separate_adjacent_value(&new_key);
+        }
         crate::nodes::separate_key_from_colon(node);
         new_key
+    }
+
+    /// Put a space after the `:` following `key` if the value starts right
+    /// after it and `key` is not JSON-like: only after a quoted scalar or a
+    /// flow collection does `"a":b` read as a key and a value, while `a:b`
+    /// is one plain scalar.
+    fn separate_adjacent_value(key: &SyntaxNode) {
+        let Some(colon) = key
+            .next_sibling_or_token()
+            .and_then(|c| c.into_token())
+            .filter(|t| t.kind() == SyntaxKind::COLON)
+        else {
+            return;
+        };
+        let json_like = key
+            .descendants_with_tokens()
+            .filter_map(|c| c.into_token())
+            .filter(|t| {
+                !t.text().is_empty()
+                    && !matches!(
+                        t.kind(),
+                        SyntaxKind::WHITESPACE
+                            | SyntaxKind::INDENT
+                            | SyntaxKind::NEWLINE
+                            | SyntaxKind::COMMENT
+                    )
+            })
+            .last()
+            .is_some_and(|t| {
+                matches!(
+                    t.kind(),
+                    SyntaxKind::RIGHT_BRACKET | SyntaxKind::RIGHT_BRACE
+                ) || (t.kind() == SyntaxKind::STRING && t.text().starts_with(['"', '\'']))
+            });
+        let value_adjacent = std::iter::successors(colon.next_token(), |t| t.next_token())
+            .find_map(|t| t.text().chars().next())
+            .is_some_and(|c| !c.is_whitespace() && !matches!(c, ',' | ']' | '}'));
+        if !json_like && value_adjacent {
+            let i = colon.index() + 1;
+            colon
+                .parent()
+                .expect("a COLON is in an entry")
+                .splice_children(i..i, vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()]);
+        }
     }
 
     /// Fix up the line of a block explicit key whose content was replaced.

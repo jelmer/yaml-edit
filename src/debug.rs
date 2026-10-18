@@ -1631,4 +1631,47 @@ mod new_debug_tests {
             )
         );
     }
+
+    #[test]
+    fn test_shape_to_string_hoists_leading_comments() {
+        let file = YamlFile::from_str("a: 1\n# c\nb: 2\n").unwrap();
+        file.document().unwrap().as_mapping().unwrap().remove("a");
+        assert_eq!(file.to_string(), "# c\nb: 2\n");
+        let entry = "    MAPPING_ENTRY\n      KEY\n        SCALAR\n          STRING: \"b\"\n      COLON: \":\"\n      WHITESPACE: \" \"\n      VALUE\n        SCALAR\n          INT: \"2\"\n      NEWLINE: \"\\\\n\"\n";
+        assert_eq!(
+            tree_to_string(file.syntax()),
+            format!("DOCUMENT\n  MAPPING\n    COMMENT: \"# c\"\n    NEWLINE: \"\\\\n\"\n{entry}")
+        );
+        assert_eq!(
+            shape_to_string(file.syntax()),
+            format!("COMMENT: \"# c\"\nNEWLINE: \"\\\\n\"\nDOCUMENT\n  MAPPING\n{entry}")
+        );
+        let reparsed = YamlFile::from_str(&file.to_string()).unwrap();
+        assert_eq!(
+            shape_to_string(file.syntax()),
+            shape_to_string(reparsed.syntax())
+        );
+    }
+
+    #[test]
+    fn test_shape_to_string_leaves_out_pending_block_marker() {
+        let mapping = crate::Mapping::new_pending_block();
+        assert_eq!(
+            tree_to_string(mapping.syntax()),
+            "LEFT_BRACE: \"{\"\nWHITESPACE: \"\"\nRIGHT_BRACE: \"}\"\n"
+        );
+        assert_eq!(
+            shape_to_string(mapping.syntax()),
+            "LEFT_BRACE: \"{\"\nRIGHT_BRACE: \"}\"\n"
+        );
+    }
+
+    #[test]
+    fn test_key_string() {
+        let doc = Document::from_str("0x10: a\n'x': b\n*a : c\n").unwrap();
+        let keys: Vec<_> = doc.as_mapping().unwrap().keys().collect();
+        assert_eq!(key_string(&keys[0]), Some("16".to_string()));
+        assert_eq!(key_string(&keys[1]), Some("x".to_string()));
+        assert_eq!(key_string(&keys[2]), None);
+    }
 }

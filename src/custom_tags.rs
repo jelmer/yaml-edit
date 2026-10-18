@@ -137,16 +137,10 @@
 //! let mut registry = CustomTagRegistry::new();
 //! registry.register("!timestamp", TimestampHandler::new("%Y-%m-%d"))?;
 //!
-//! match registry.validate("!timestamp", "invalid-date") {
-//!     Ok(_) => println!("Valid"),
-//!     Err(e) => {
-//!         println!("Tag: {}", e.tag);
-//!         println!("Message: {}", e.message);
-//!         if let Some(content) = e.content {
-//!             println!("Content: {}", content);
-//!         }
-//!     }
-//! }
+//! let e = registry.validate("!timestamp", "invalid-date").unwrap_err();
+//! assert_eq!(e.tag, "!timestamp");
+//! assert_eq!(e.message, "Expected format: %Y-%m-%d");
+//! assert_eq!(e.content.as_deref(), Some("invalid-date"));
 //! # Ok(())
 //! # }
 //! ```
@@ -543,16 +537,14 @@ impl CustomTagHandler for TimestampHandler {
     }
 
     fn validate(&self, content: &str) -> Result<(), CustomTagError> {
-        // Basic validation - check if it's not empty
         if content.trim().is_empty() {
-            Err(CustomTagError::with_content(
+            return Err(CustomTagError::with_content(
                 "!timestamp",
                 "Timestamp cannot be empty",
                 content,
-            ))
-        } else {
-            Ok(())
+            ));
         }
+        self.deserialize(content).map(|_| ())
     }
 }
 
@@ -1681,5 +1673,18 @@ mod tests {
             format!("{}", error_with_content),
             "Custom tag '!test' error: Test error (content: bad content)"
         );
+    }
+
+    #[test]
+    fn test_timestamp_validate_checks_format() {
+        let handler = TimestampHandler::new("%Y-%m-%d");
+        let expected = Err(CustomTagError::with_content(
+            "!timestamp",
+            "Expected format: %Y-%m-%d",
+            "invalid-date",
+        ));
+        assert_eq!(handler.deserialize("invalid-date").map(|_| ()), expected);
+        assert_eq!(handler.validate("invalid-date"), expected);
+        assert_eq!(handler.validate("2024-01-15"), Ok(()));
     }
 }

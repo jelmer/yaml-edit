@@ -2232,4 +2232,50 @@ ordered: !!omap [first: *list]
             Ok(YamlValue::Scalar(ScalarValue::null()))
         );
     }
+
+    #[test]
+    fn test_tagged_alias_to_tagged_alias() {
+        use std::str::FromStr;
+        let doc = crate::Document::from_str("b: &b 1\na: &a !u *b\nk: !t *a\n").unwrap();
+        let value = YamlValue::from_document(&doc).unwrap();
+        let YamlValue::Mapping(map) = value else {
+            panic!("expected a mapping");
+        };
+        assert_eq!(
+            map["k"],
+            YamlValue::Scalar(ScalarValue::parse("1").with_resolved_tag("!t".to_string()))
+        );
+        assert_eq!(map["k"].tag(), Some("!t"));
+    }
+
+    #[test]
+    fn test_omap_items_tagged_map() {
+        use std::str::FromStr;
+        let doc = crate::Document::from_str("o: !!omap [!!map {a: 1}, {b: 2}]\n").unwrap();
+        let expected = YamlValue::OrderedMapping(vec![
+            ("a".to_string(), YamlValue::from(1i64)),
+            ("b".to_string(), YamlValue::from(2i64)),
+        ]);
+        let o = doc.as_mapping().unwrap().get("o").unwrap();
+        assert_eq!(
+            YamlValue::cast(o.syntax().clone()),
+            Ok(Some(expected.clone()))
+        );
+        assert_eq!(
+            YamlValue::from_document(&doc),
+            Ok(YamlValue::from_mapping(BTreeMap::from([(
+                "o".to_string(),
+                expected
+            )])))
+        );
+
+        let doc = crate::Document::from_str("o: !!omap [!!map [a]]\n").unwrap();
+        assert_eq!(
+            YamlValue::from_document(&doc),
+            Err(crate::anchor_resolution::ResolveError::InvalidPairsItem {
+                tag: "!!omap".to_string(),
+                item: "!!map [a]".to_string(),
+            })
+        );
+    }
 }

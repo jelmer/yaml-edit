@@ -189,6 +189,7 @@ pub mod debug;
 mod error;
 pub mod error_recovery;
 mod lex;
+mod line_index;
 pub mod migrate;
 mod nodes;
 mod parse;
@@ -332,7 +333,8 @@ impl std::fmt::Display for LineColumn {
 /// Convert a byte offset to line and column numbers in the given text.
 ///
 /// Line and column numbers are 1-indexed. Column numbers count Unicode scalar values,
-/// not bytes or grapheme clusters.
+/// not bytes or grapheme clusters. As in YAML 1.2, `\n`, `\r` and `\r\n` each end a
+/// line, and a byte order mark at the start of a line takes no column.
 ///
 /// # Arguments
 ///
@@ -341,7 +343,8 @@ impl std::fmt::Display for LineColumn {
 ///
 /// # Returns
 ///
-/// `LineColumn` with 1-indexed line and column numbers, or line 1, column 1 if offset is out of bounds.
+/// `LineColumn` with 1-indexed line and column numbers. An offset past the end of
+/// the text gives the position of the end of the text.
 ///
 /// # Examples
 ///
@@ -354,30 +357,7 @@ impl std::fmt::Display for LineColumn {
 /// assert_eq!(pos.column, 1);
 /// ```
 pub fn byte_offset_to_line_column(text: &str, byte_offset: usize) -> LineColumn {
-    let mut line = 1;
-    let mut column = 1;
-
-    let mut chars = text.char_indices().peekable();
-    while let Some((i, ch)) = chars.next() {
-        if i >= byte_offset {
-            break;
-        }
-
-        // A lone `\r` is a line break too; in `\r\n` only the `\n` counts.
-        let is_break = match ch {
-            '\n' => true,
-            '\r' => !matches!(chars.peek(), Some((_, '\n'))),
-            _ => false,
-        };
-        if is_break {
-            line += 1;
-            column = 1;
-        } else {
-            column += 1;
-        }
-    }
-
-    LineColumn { line, column }
+    line_index::LineIndex::new(text).line_column(byte_offset)
 }
 
 impl From<rowan::TextRange> for TextPosition {
@@ -546,6 +526,31 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "Parse error at line 2, column 8: Unexpected token in flow sequence: \"}\""
+        );
+    }
+
+    #[test]
+    fn test_byte_offset_to_line_column_bom() {
+        // A BOM is a document prefix, not content, so it takes no column.
+        let text = "\u{FEFF}a: 1\n\u{FEFF}b: 2";
+        assert_eq!(byte_offset_to_line_column(text, 3), LineColumn::new(1, 1));
+        assert_eq!(byte_offset_to_line_column(text, 4), LineColumn::new(1, 2));
+        assert_eq!(byte_offset_to_line_column(text, 8), LineColumn::new(2, 1));
+        assert_eq!(byte_offset_to_line_column(text, 11), LineColumn::new(2, 1));
+        assert_eq!(byte_offset_to_line_column(text, 12), LineColumn::new(2, 2));
+        // Inside a line it is an ordinary character.
+        assert_eq!(
+            byte_offset_to_line_column("a\u{FEFF}b", 4),
+            LineColumn::new(1, 3)
+        );
+    }
+
+    #[test]
+    fn test_parse_error_position_after_bom() {
+        let err = YamlFile::from_str("\u{FEFF}b: [a, }\n").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Parse error at line 1, column 8: Unexpected token in flow sequence: \"}\""
         );
     }
 

@@ -258,18 +258,12 @@ fn entry_is_empty(entry: &SyntaxNode) -> bool {
 /// text of the tree `node` belongs to.
 fn fill_locations(node: &SyntaxNode, violations: &mut [Violation]) {
     let tree = node.ancestors().last().unwrap_or_else(|| node.clone());
-    let text = tree.text().to_string();
-    let line_starts: Vec<usize> = std::iter::once(0)
-        .chain(text.match_indices('\n').map(|(i, _)| i + 1))
-        .collect();
+    let index = crate::line_index::LineIndex::new(tree.text().to_string());
     for v in violations.iter_mut() {
         let Some(range) = v.text_range else {
             continue;
         };
-        let offset = range.start as usize;
-        let line = line_starts.partition_point(|&s| s <= offset) - 1;
-        let column = text[line_starts[line]..offset].chars().count();
-        v.location = Some(crate::LineColumn::new(line + 1, column + 1).to_string());
+        v.location = Some(index.line_column(range.start as usize).to_string());
     }
 }
 
@@ -3520,6 +3514,25 @@ mod tests {
             .into_iter()
             .map(|v| (v.message, v.location.unwrap()))
             .collect()
+    }
+
+    #[test]
+    fn test_location_line_breaks_and_bom() {
+        for (yaml, location) in [
+            ("a: 1\nb: {x: 1, x: 2}\n", "2:11"),
+            ("a: 1\rb: {x: 1, x: 2}\r", "2:11"),
+            ("a: 1\r\nb: {x: 1, x: 2}\r\n", "2:11"),
+            ("\u{FEFF}b: {x: 1, x: 2}\n", "1:11"),
+        ] {
+            assert_eq!(
+                located(yaml),
+                vec![(
+                    "Duplicate key: \"x\" (semantically equal to \"x\")".to_string(),
+                    location.to_string()
+                )],
+                "{yaml:?}"
+            );
+        }
     }
 
     #[test]

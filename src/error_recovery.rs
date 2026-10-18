@@ -5,6 +5,7 @@
 //! - Recovery strategies to continue parsing after errors
 //! - Detailed error messages with context
 
+use crate::line_index::LineIndex;
 use crate::{lex::SyntaxKind, PositionedParseError};
 use rowan::{TextRange, TextSize};
 
@@ -25,13 +26,9 @@ pub enum RecoveryStrategy {
 #[derive(Clone)]
 pub struct ErrorRecoveryContext {
     /// The original text being parsed
-    text: String,
+    index: LineIndex<String>,
     /// Current position in the text
     position: usize,
-    /// Line number (1-based)
-    line: usize,
-    /// Column number (1-based)
-    column: usize,
     /// Stack of recovery points for nested structures
     recovery_stack: Vec<RecoveryPoint>,
 }
@@ -72,10 +69,8 @@ impl ErrorRecoveryContext {
     /// Create a new error recovery context
     pub fn new(text: String) -> Self {
         Self {
-            text,
+            index: LineIndex::new(text),
             position: 0,
-            line: 1,
-            column: 1,
             recovery_stack: vec![RecoveryPoint {
                 context: ParseContext::Document,
                 start_position: 0,
@@ -85,42 +80,16 @@ impl ErrorRecoveryContext {
         }
     }
 
-    /// Update position and line/column tracking
+    /// Move the current position forward by `bytes`
     pub fn advance(&mut self, bytes: usize) {
-        let end = (self.position + bytes).min(self.text.len());
-        let advanced_text = &self.text[self.position..end];
-
-        // YAML 1.2 `b-char` is a line feed or a carriage return, so a bare
-        // `\r` ends a line too. Counting only `\n` left line and column
-        // climbing across a whole CR-delimited file.
-        let mut chars = advanced_text.chars().peekable();
-        while let Some(ch) = chars.next() {
-            match ch {
-                '\r' => {
-                    // A `\r\n` pair is one line break.
-                    if chars.peek() == Some(&'\n') {
-                        chars.next();
-                    }
-                    self.line += 1;
-                    self.column = 1;
-                }
-                '\n' => {
-                    self.line += 1;
-                    self.column = 1;
-                }
-                // A BOM opening a line is a document prefix, not content, so
-                // it takes no column: in `\u{FEFF}- x` the dash is at column 1.
-                '\u{FEFF}' if self.column == 1 => {}
-                _ => self.column += 1,
-            }
-        }
-
-        self.position = end;
+        self.position = (self.position + bytes).min(self.index.text().len());
     }
 
-    /// Get current line and column
+    /// Get current line and column (both 1-based, the column counting
+    /// characters)
     pub fn current_location(&self) -> (usize, usize) {
-        (self.line, self.column)
+        let lc = self.index.line_column(self.position);
+        (lc.line, lc.column)
     }
 
     /// Get a text range for the current position
@@ -132,11 +101,12 @@ impl ErrorRecoveryContext {
 
     /// Push a new parsing context
     pub fn push_context(&mut self, context: ParseContext) {
+        let (start_line, start_column) = self.current_location();
         self.recovery_stack.push(RecoveryPoint {
             context,
             start_position: self.position,
-            start_line: self.line,
-            start_column: self.column,
+            start_line,
+            start_column,
         });
     }
 
@@ -280,14 +250,13 @@ impl ErrorRecoveryContext {
         let start = range.start().into();
         let end = range.end().into();
 
-        // Find line boundaries
-        let line_start = self.text[..start].rfind('\n').map_or(0, |i| i + 1);
+        let text = self.index.text();
+        let line_start = self.index.line_start(start);
+        let line_end = text[end..]
+            .find(['\n', '\r'])
+            .map_or(text.len(), |i| end + i);
 
-        let line_end = self.text[end..]
-            .find('\n')
-            .map_or(self.text.len(), |i| end + i);
-
-        let line = &self.text[line_start..line_end];
+        let line = &text[line_start..line_end];
         let error_start = start - line_start;
         let error_len = (end - start).min(line_end - start);
 
@@ -412,6 +381,30 @@ mod tests {
 
         let snippet = ctx.get_context_snippet(range);
         assert_eq!(snippet, "baz qux\n    ^^^");
+    }
+
+    #[test]
+    fn test_context_snippet_cr_line_breaks() {
+        let ctx = ErrorRecoveryContext::new("foo: bar\rbaz qux\r\nend".to_string());
+        let range = TextRange::new(TextSize::from(13), TextSize::from(16)); // "qux"
+
+        let snippet = ctx.get_context_snippet(range);
+        assert_eq!(snippet, "baz qux\n    ^^^");
+    }
+
+    #[test]
+    fn test_current_location_line_breaks_and_bom() {
+        let mut ctx = ErrorRecoveryContext::new("\u{FEFF}a\rb\r\nc".to_string());
+        ctx.advance(3);
+        let mut locations = vec![ctx.current_location()];
+        for _ in 0..6 {
+            ctx.advance(1);
+            locations.push(ctx.current_location());
+        }
+        assert_eq!(
+            locations,
+            vec![(1, 1), (1, 2), (2, 1), (2, 2), (2, 3), (3, 1), (3, 2)]
+        );
     }
 
     #[test]

@@ -608,7 +608,6 @@ const KNOWN_FUZZ_FOUND_FAILURES: &[&str] = &[
     "flow-explicit-key-on-next-line",
     "flow-indicator-in-plain-before-document-marker",
     "flow-indicator-in-plain-key-after-colon",
-    "single-quoted-cr-line-break",
     "tab-line-after-block-scalar",
 ];
 

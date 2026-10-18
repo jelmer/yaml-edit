@@ -125,13 +125,11 @@ impl Scalar {
             let content = &text[1..text.len() - 1];
             let unescaped = content.replace("''", "'");
             // Only fold lines if actually multi-line
-            if unescaped.contains('\n') {
+            if unescaped.contains(['\n', '\r']) {
                 // A line break folds to a space, or to one newline per empty
                 // line after it, and takes the white space around it along.
-                let lines: Vec<&str> = unescaped
-                    .split('\n')
-                    .map(|line| line.strip_suffix('\r').unwrap_or(line))
-                    .collect();
+                let unescaped = normalize_line_breaks(&unescaped);
+                let lines: Vec<&str> = unescaped.split('\n').collect();
                 let last = lines.len() - 1;
                 let mut result = lines[0].trim_end_matches([' ', '\t']).to_string();
                 let mut empty_lines = 0;

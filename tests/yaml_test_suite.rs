@@ -556,3 +556,78 @@ fn yaml_test_suite_values() {
         problems.join("\n")
     );
 }
+
+/// Inputs on which fuzzing found yaml-edit reading other values than the
+/// YAML spec gives, as `(name, input, expected)`, `expected` holding one JSON
+/// value per document.
+const FUZZ_FOUND_VALUES: &[(&str, &str, &str)] = &[
+    (
+        "anchor-on-own-line",
+        "a:\n &x\nb: 1\n",
+        r#"{"a": null, "b": 1}"#,
+    ),
+    (
+        "bom-before-indented-sequence",
+        "\u{feff} - &a\n - b\n",
+        r#"[null, "b"]"#,
+    ),
+    (
+        "comment-after-plain-continuation",
+        "1\n|x\n  # t\n",
+        r#""1 |x""#,
+    ),
+    (
+        "flow-explicit-key-on-next-line",
+        "[?\n1 ]\n",
+        r#"[{"1": null}]"#,
+    ),
+    (
+        "flow-indicator-in-plain-before-document-marker",
+        "f\n[\n---\n",
+        r#""f [" null"#,
+    ),
+    (
+        "flow-indicator-in-plain-key-after-colon",
+        ":o [d: f\n",
+        r#"{":o [d": "f"}"#,
+    ),
+    ("single-quoted-cr-line-break", "' a\r b'\n", r#"" a b""#),
+    (
+        "tab-line-after-block-scalar",
+        "foo: |\n  x\n \t\nbr: 1\n",
+        r#"{"foo": "x\n", "br": 1}"#,
+    ),
+];
+
+/// Names in `FUZZ_FOUND_VALUES` that are not read correctly yet. Once one
+/// is fixed, `fuzz_found_values` fails until it is removed from here.
+const KNOWN_FUZZ_FOUND_FAILURES: &[&str] = &[
+    "anchor-on-own-line",
+    "bom-before-indented-sequence",
+    "comment-after-plain-continuation",
+    "flow-explicit-key-on-next-line",
+    "flow-indicator-in-plain-before-document-marker",
+    "flow-indicator-in-plain-key-after-colon",
+    "single-quoted-cr-line-break",
+    "tab-line-after-block-scalar",
+];
+
+#[test]
+fn fuzz_found_values() {
+    let mut problems = Vec::new();
+    for (name, input, expected_json) in FUZZ_FOUND_VALUES {
+        let expected = serde_json::Deserializer::from_str(expected_json)
+            .into_iter()
+            .collect::<Result<Vec<Value>, _>>()
+            .unwrap_or_else(|err| panic!("{name}: invalid JSON: {err}"));
+        let known = KNOWN_FUZZ_FOUND_FAILURES.contains(name);
+        match (check_values(input, &expected), known) {
+            (Ok(()), false) | (Err(_), true) => {}
+            (Ok(()), true) => problems.push(format!(
+                "{name}: unexpectedly passed, remove from KNOWN_FUZZ_FOUND_FAILURES"
+            )),
+            (Err(detail), false) => problems.push(format!("{name} {input:?}: {detail}")),
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}

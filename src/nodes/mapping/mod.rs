@@ -387,6 +387,19 @@ impl Mapping {
         // followed.
         let all: Vec<_> = self.0.children_with_tokens().collect();
         let (leading, mut groups, trailing) = self.slice_into_entry_groups(&all);
+        let layout = self.slot_layout();
+        // The INDENT that starts an entry's line in a nested block mapping
+        // belongs to that line, not to the entry before it.
+        let line_indents: Vec<_> = groups
+            .iter_mut()
+            .map(|(_, postscript)| {
+                postscript
+                    .last()
+                    .is_some_and(|c| c.kind() == SyntaxKind::INDENT)
+                    .then(|| postscript.pop())
+                    .flatten()
+            })
+            .collect();
 
         // Take each named key's group in the order given; anything the
         // caller did not name keeps its relative position at the end.
@@ -408,7 +421,10 @@ impl Mapping {
         ordered.extend(groups);
 
         let mut new_children = leading;
-        for (entry, postscript) in ordered {
+        for (i, (entry, postscript)) in ordered.into_iter().enumerate() {
+            if let Some(indent) = i.checked_sub(1).and_then(|i| line_indents[i].clone()) {
+                new_children.push(indent);
+            }
             new_children.push(entry.into());
             new_children.extend(postscript);
         }
@@ -416,6 +432,7 @@ impl Mapping {
 
         crate::nodes::kept_aliases::keeping_aliases_moved(&self.0, None, || {
             crate::nodes::replace_children(&self.0, 0..all.len(), new_children);
+            self.restore_slot_layout(&layout);
             None
         });
     }

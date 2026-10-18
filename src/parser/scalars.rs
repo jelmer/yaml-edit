@@ -1007,7 +1007,7 @@ pub(super) fn is_plain_scalar_kind(kind: SyntaxKind) -> bool {
 /// clear the enclosing column make the line invalid as body; the parser
 /// leniently counts its tabs as indentation then.
 fn body_indent(indent: &str, enclosing_column: usize) -> usize {
-    let spaces = indent.bytes().take_while(|b| *b == b' ').count();
+    let spaces = crate::column::space_indent(indent);
     if spaces > enclosing_column {
         spaces
     } else {

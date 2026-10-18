@@ -184,6 +184,7 @@ pub mod mapping_view;
 pub use mapping_view::MappingView;
 mod as_yaml;
 mod builder;
+mod column;
 pub mod custom_tags;
 pub mod debug;
 mod error;

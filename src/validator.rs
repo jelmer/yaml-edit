@@ -22,6 +22,7 @@
 //! }
 //! ```
 
+use crate::column::{space_indent, token_column};
 use crate::nodes::{
     has_child_token, in_flow_collection, is_block_scalar, is_quoted_scalar,
     starts_a_flow_collection,
@@ -202,30 +203,6 @@ fn has_content(node: &SyntaxNode) -> bool {
                 | crate::SyntaxKind::TAGGED_NODE
         )
     })
-}
-
-/// The zero-based column `token` starts at.
-///
-/// Walks back through preceding tokens to the last line break rather than
-/// serializing the document: this runs for many tokens, and rebuilding the
-/// whole text each time made validation quadratic in the file size.
-pub(crate) fn token_column(token: &crate::nodes::SyntaxToken) -> usize {
-    let mut col = 0;
-    let mut cur = token.prev_token();
-    while let Some(t) = cur {
-        // A byte order mark is not part of the line's content.
-        if t.kind() == crate::SyntaxKind::BOM {
-            break;
-        }
-        let text = t.text();
-        if let Some(i) = text.rfind(['\n', '\r']) {
-            col += text[i + 1..].chars().count();
-            return col;
-        }
-        col += text.chars().count();
-        cur = t.prev_token();
-    }
-    col
 }
 
 /// The least indentation a continuation line of `node` needs: one more
@@ -919,9 +896,6 @@ impl Validator {
         // Indentation is spaces only (s-indent), so a tab in an INDENT
         // token starts the line's content: R4YG's " \t" line is indented
         // one, not two, and its expected events keep the tab.
-        fn space_indent(token: &rowan::SyntaxToken<crate::Lang>) -> usize {
-            token.text().chars().take_while(|c| *c == ' ').count()
-        }
 
         let mut past_first_newline = false;
         let mut max_blank_indent = 0usize;
@@ -947,7 +921,7 @@ impl Validator {
                     // line non-blank, so it carries no indentation claim.
                     if let Some(ind) = pending_indent.take() {
                         if !ind.text().contains('\t') {
-                            max_blank_indent = max_blank_indent.max(space_indent(&ind));
+                            max_blank_indent = max_blank_indent.max(space_indent(ind.text()));
                         }
                     }
                 }
@@ -961,7 +935,7 @@ impl Validator {
                     // content, is 5LLU's error.
                     if let Some(ind) = pending_indent.take() {
                         if body_indent.is_none() {
-                            let indent = space_indent(&ind);
+                            let indent = space_indent(ind.text());
                             body_indent = Some(indent);
                             if indent < max_blank_indent {
                                 violations.push(Violation::error_at(Rule::Other, ind.text_range(), format!( "Block scalar content under-indented ({indent} spaces) relative to preceding blank line ({max_blank_indent} spaces)" )));
@@ -1661,7 +1635,7 @@ impl Validator {
             match t.kind() {
                 crate::SyntaxKind::NEWLINE => indent = Some(0),
                 crate::SyntaxKind::INDENT | crate::SyntaxKind::WHITESPACE if indent.is_some() => {
-                    indent = Some(t.text().chars().take_while(|c| *c == ' ').count());
+                    indent = Some(space_indent(t.text()));
                 }
                 crate::SyntaxKind::COMMENT => indent = None,
                 _ if indent.take().is_some_and(|i| i < required) => {
@@ -2517,7 +2491,7 @@ impl Validator {
                 }
 
                 // A line opening with a tab is left to check_tab_usage.
-                let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
+                let leading_spaces = space_indent(line);
                 if leading_spaces < required && !line.trim().is_empty() && !line.starts_with('\t') {
                     violations.push(Violation::error_at(
                         Rule::InvalidIndentation,

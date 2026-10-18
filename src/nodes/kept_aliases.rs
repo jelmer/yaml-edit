@@ -718,7 +718,7 @@ fn tagged(tag: &str, node: &SyntaxNode) -> SyntaxNode {
         // Its lines keep their indentation, which is shifted along with
         // the first one's when the copy is put in place.
         children.push(token(SyntaxKind::NEWLINE, "\n"));
-        let column = crate::as_yaml::source_base_indent(node);
+        let column = crate::column::node_column(node);
         if column > 0 {
             children.push(token(SyntaxKind::INDENT, &" ".repeat(column)));
         }

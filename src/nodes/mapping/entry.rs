@@ -227,7 +227,7 @@ impl MappingEntry {
             .filter(|src| {
                 key_indent > 0
                     || src.kind() != SyntaxKind::SEQUENCE
-                    || crate::as_yaml::source_base_indent(src) > 0
+                    || crate::column::node_column(src) > 0
                     || src.children().next().is_none()
             });
 
@@ -295,7 +295,7 @@ impl MappingEntry {
     /// Returns 0 for root-level entries or entries that share a line with
     /// something else (an explicit-key form, a flow-style parent, etc.).
     fn indent_of_line(&self) -> usize {
-        crate::as_yaml::source_base_indent(&self.0)
+        crate::column::node_column(&self.0)
     }
 
     /// Index of the entry's VALUE child in its own children list, if any.

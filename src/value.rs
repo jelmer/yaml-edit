@@ -1632,6 +1632,22 @@ ordered: !!omap [first: *list]
     }
 
     #[test]
+    fn test_set_sequence_of_indented_block_scalar() {
+        use std::str::FromStr;
+        let literal = YamlValue::Scalar(ScalarValue::literal(" a\n"));
+        let doc = crate::yaml::Document::from_str("a: 1\n").unwrap();
+        doc.set("k", YamlValue::Sequence(vec![literal.clone()]));
+        assert_cst_ok(&doc);
+        crate::debug::assert_parser_shaped(&doc);
+        assert_eq!(doc.to_string(), "a: 1\nk:\n- |2\n   a\n");
+        let v = YamlValue::parse_raw(&doc.to_string()).unwrap();
+        assert_eq!(
+            v.as_mapping().unwrap().get("k"),
+            Some(&YamlValue::Sequence(vec![literal]))
+        );
+    }
+
+    #[test]
     fn test_set_nested_empty_collections() {
         use std::str::FromStr;
         let mut m = BTreeMap::new();

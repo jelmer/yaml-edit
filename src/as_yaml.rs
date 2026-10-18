@@ -1335,7 +1335,10 @@ pub(crate) fn build_sequence<T: AsYaml>(
         if block {
             builder.token(SyntaxKind::DASH.into(), "-");
             builder.token(SyntaxKind::WHITESPACE.into(), " ");
-            if !build_in(&item, builder, indent + 2, None) {
+            // An inline item, such as a block scalar, indents its body past
+            // the dash; a block collection aligns with its first entry.
+            let item_indent = if item.is_inline() { indent } else { indent + 2 };
+            if !build_in(&item, builder, item_indent, None) {
                 builder.token(SyntaxKind::NEWLINE.into(), "\n");
             }
         } else {

@@ -3424,4 +3424,51 @@ mod tests {
             assert!(ScalarValue::matches_iso8601_pattern(text), "{text}");
         }
     }
+
+    #[test]
+    fn test_coerce_to_special_types() {
+        let coerce = |value: &str, target: ScalarType| {
+            ScalarValue::string(value)
+                .coerce_to_type(target)
+                .map(|s| (s.scalar_type(), s.value().to_string()))
+        };
+        #[cfg(feature = "base64")]
+        {
+            assert_eq!(
+                coerce("aGk=", ScalarType::Binary),
+                Some((ScalarType::Binary, "aGk=".to_string()))
+            );
+            assert_eq!(coerce("!!", ScalarType::Binary), None);
+            assert_eq!(ScalarValue::string("aGk=").as_binary(), None);
+            assert_eq!(
+                ScalarValue::binary(b"hi").as_binary(),
+                Some(Ok(b"hi".to_vec()))
+            );
+        }
+        assert_eq!(
+            coerce("2001-12-14", ScalarType::Timestamp),
+            Some((ScalarType::Timestamp, "2001-12-14".to_string()))
+        );
+        assert_eq!(coerce("x", ScalarType::Timestamp), None);
+        assert_eq!(
+            coerce("a+", ScalarType::Regex),
+            Some((ScalarType::Regex, "a+".to_string()))
+        );
+        assert_eq!(
+            coerce("~", ScalarType::Null),
+            Some((ScalarType::Null, "null".to_string()))
+        );
+        assert_eq!(coerce("x", ScalarType::Null), None);
+    }
+
+    #[test]
+    fn test_plain_scalar_folding_with_crlf() {
+        use std::str::FromStr;
+        let doc =
+            crate::Document::from_str("k: a\r\n  b\r\n\r\n  c\r\nq: \"x\r\n  y\"\r\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let string = |key: &str| mapping.get(key).unwrap().as_scalar().unwrap().as_string();
+        assert_eq!(string("k"), "a b\nc");
+        assert_eq!(string("q"), "x y");
+    }
 }

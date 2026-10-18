@@ -64,15 +64,16 @@ pub(crate) fn line_end(entry: &SyntaxNode) -> LineEnd {
 /// Is `entry` followed in its parent by a comment on its last line and the
 /// NEWLINE ending that?
 fn comment_line_end(entry: &SyntaxNode) -> bool {
-    let mut after =
-        std::iter::successors(entry.next_sibling_or_token(), |s| s.next_sibling_or_token())
-            .skip_while(|s| s.kind() == SyntaxKind::WHITESPACE);
-    after
-        .next()
-        .is_some_and(|s| s.kind() == SyntaxKind::COMMENT)
-        && after
-            .next()
-            .is_some_and(|s| s.kind() == SyntaxKind::NEWLINE)
+    comment_after(entry)
+        .and_then(|c| c.next_sibling_or_token())
+        .is_some_and(|s| s.kind() == SyntaxKind::NEWLINE)
+}
+
+/// The comment after `entry` in its parent, on its last line.
+fn comment_after(entry: &SyntaxNode) -> Option<rowan::SyntaxElement<super::Lang>> {
+    std::iter::successors(entry.next_sibling_or_token(), |s| s.next_sibling_or_token())
+        .find(|s| s.kind() != SyntaxKind::WHITESPACE)
+        .filter(|s| s.kind() == SyntaxKind::COMMENT)
 }
 
 /// Does `node`'s text end in a NEWLINE, ignoring zero-width tokens such as
@@ -94,7 +95,16 @@ fn last_non_empty_token(node: &SyntaxNode) -> Option<SyntaxToken> {
 /// The index in `entry`'s parent just past the line break ending its line,
 /// where an entry on the next line goes.
 pub(crate) fn index_after_line(entry: &SyntaxNode) -> usize {
-    entry.index() + 1 + usize::from(line_end(entry) == LineEnd::Sibling)
+    match line_end(entry) {
+        LineEnd::Sibling => entry.index() + 2,
+        LineEnd::AfterComment => {
+            comment_after(entry)
+                .expect("a comment ends the line")
+                .index()
+                + 2
+        }
+        LineEnd::Own | LineEnd::Nested | LineEnd::Open => entry.index() + 1,
+    }
 }
 
 /// Where a new entry goes in its collection.
@@ -352,7 +362,11 @@ pub(crate) fn terminate(entry: &SyntaxNode) {
         // An explicit-key entry gets it at its end, from where
         // hand_line_break_to_mapping moves it out with the comment ending
         // its line, if any.
-        if has_child_token(entry, |k| k == SyntaxKind::QUESTION) {
+        if let Some(comment) = comment_after(entry) {
+            let parent = entry.parent().expect("an attached entry has a parent");
+            let at = comment.index() + 1;
+            parent.splice_children(at..at, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+        } else if has_child_token(entry, |k| k == SyntaxKind::QUESTION) {
             append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
         } else {
             terminate_last_line(entry);

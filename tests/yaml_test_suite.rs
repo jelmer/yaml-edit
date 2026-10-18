@@ -603,7 +603,6 @@ const FUZZ_FOUND_VALUES: &[(&str, &str, &str)] = &[
 /// is fixed, `fuzz_found_values` fails until it is removed from here.
 const KNOWN_FUZZ_FOUND_FAILURES: &[&str] = &[
     "anchor-on-own-line",
-    "bom-before-indented-sequence",
     "comment-after-plain-continuation",
     "flow-indicator-in-plain-before-document-marker",
     "flow-indicator-in-plain-key-after-colon",

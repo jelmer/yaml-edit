@@ -1295,7 +1295,8 @@ impl<'a, 'c> LexState<'a, 'c> {
 
         // Determine if this is structural indentation
         // Check for any line break: \n, \r\n (already consumed \n), or \r alone
-        let is_indentation = start_idx == 0
+        // A line also starts after a BOM, which takes no column.
+        let is_indentation = start_idx == self.line_start
             || (start_idx > 0
                 && (self.input.as_bytes()[start_idx - 1] == b'\n'
                     || self.input.as_bytes()[start_idx - 1] == b'\r'));

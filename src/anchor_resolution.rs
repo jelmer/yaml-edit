@@ -681,8 +681,10 @@ fn collect_merge_sources(
         if !is_merge_key(&key) {
             continue;
         }
-        let sequence = match &value {
-            YamlNode::Sequence(seq) => Some(seq.clone()),
+        // An alias stands for its node, so it can name a sequence of
+        // mappings too.
+        let sequence = match resolve_alias_node(value.clone(), registry)? {
+            YamlNode::Sequence(seq) => Some(seq),
             YamlNode::TaggedNode(tagged) => tagged.as_sequence(),
             _ => None,
         };
@@ -1593,6 +1595,32 @@ m:
             assert_eq!(
                 d.get_resolved("b"),
                 doc("b: !!str 1\n").get_resolved("b"),
+                "{src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_key_alias_to_sequence() {
+        for src in [
+            "a: &a {x: 1}\nb: &b {x: 2, y: 2}\nl: &l [*a, *b]\nm:\n  <<: *l\n",
+            "a: &a {x: 1}\nb: &b {x: 2, y: 2}\nm:\n  <<: !!seq [*a, *b]\n",
+        ] {
+            let d = doc(src);
+            let view = d.merged().unwrap().unwrap();
+            let m = view.as_mapping().get_merged("m").unwrap().unwrap();
+            assert_eq!(m.get("x").unwrap().to_i64(), Some(1), "{src:?}");
+            assert_eq!(m.get("y").unwrap().to_i64(), Some(2), "{src:?}");
+            let value = crate::value::YamlValue::from_document(&d).unwrap();
+            let crate::value::YamlValue::Mapping(map) = value else {
+                panic!("expected a mapping");
+            };
+            assert_eq!(
+                map["m"],
+                crate::value::YamlValue::from_mapping(std::collections::BTreeMap::from([
+                    ("x".to_string(), crate::value::YamlValue::from(1i64)),
+                    ("y".to_string(), crate::value::YamlValue::from(2i64)),
+                ])),
                 "{src:?}"
             );
         }

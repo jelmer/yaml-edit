@@ -107,9 +107,7 @@ impl Parser {
         // continuation has to clear the mapping's column, which in a sequence
         // entry is right of the line's indent: `- a: b\n  c\n` puts `a` at
         // column 2, so `c` cannot continue `b`.
-        let scalar_indent = self
-            .current_line_indent
-            .max(self.mapping_value_column.unwrap_or(0));
+        let scalar_indent = self.plain_scalar_indent();
 
         while let Some(kind) = self.current() {
             if kind == SyntaxKind::COMMENT {
@@ -169,6 +167,13 @@ impl Parser {
 
             self.bump();
         }
+    }
+
+    /// The indentation a block plain scalar starting on the current line
+    /// has to clear to continue on the next.
+    pub(super) fn plain_scalar_indent(&self) -> usize {
+        self.current_line_indent
+            .max(self.mapping_value_column.unwrap_or(0))
     }
 
     /// Consume a plain scalar inside a flow collection.
@@ -756,7 +761,7 @@ impl Parser {
     /// This looks ahead to see if the next line has content at greater indentation
     ///
     /// The NEWLINE sits `offset` tokens after the current one.
-    fn is_plain_scalar_continuation(&self, offset: usize, scalar_indent: usize) -> bool {
+    pub(super) fn is_plain_scalar_continuation(&self, offset: usize, scalar_indent: usize) -> bool {
         // Peek ahead to see what follows the NEWLINE. Tokens are in reverse
         // order, so we look at earlier indices (closer to front)
         let Some(current_idx) = self.tokens.len().checked_sub(offset + 1) else {

@@ -832,3 +832,56 @@ fn mapping_after_root_node() {
         assert_eq!(violations, expected, "{yaml:?}");
     }
 }
+
+/// As above, with the content continuing on, or only starting on, a more
+/// indented line. It is read as the plain scalar it would be in place of
+/// the node.
+#[test]
+fn node_followed_by_content_on_later_lines() {
+    use yaml_edit::validator::Validator;
+    for (yaml, expected) in [
+        (
+            "k:\n  [q] x\n  y\n",
+            ("Value holds more than one node", "2:7"),
+        ),
+        ("k: [q] x\n  y\n", ("Value holds more than one node", "1:8")),
+        (
+            "k:\n  [q]\n  y\n",
+            ("Value holds more than one node", "3:3"),
+        ),
+        ("k: [q] \n  y\n", ("Value holds more than one node", "2:3")),
+        (
+            "k: {a: 1}\n\n  y\n",
+            ("Value holds more than one node", "3:3"),
+        ),
+        (
+            "- [q] x\n  y\n",
+            ("Sequence entry holds more than one node", "1:7"),
+        ),
+        (
+            "- [q]\n  y\n",
+            ("Sequence entry holds more than one node", "2:3"),
+        ),
+        ("[q] x\n y\n", ("Document holds more than one node", "1:5")),
+        ("[q]\n y\n", ("Document holds more than one node", "2:2")),
+        (
+            "k: !t [q]\n  y\n",
+            ("Tagged node holds more than one node", "2:3"),
+        ),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
+        assert_eq!(file.to_string(), yaml);
+        assert_file_cst_ok(&file);
+        let violations: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| (v.message, v.location.unwrap()))
+            .collect();
+        let (message, at) = expected;
+        assert_eq!(
+            violations,
+            [(message.to_string(), at.to_string())],
+            "{yaml:?}"
+        );
+    }
+}

@@ -2180,4 +2180,56 @@ ordered: !!omap [first: *list]
         let float_val = YamlValue::Scalar(ScalarValue::parse("3.14"));
         assert_eq!(float_val.to_bool(), None);
     }
+
+    #[test]
+    fn test_raw_collections_as_values() {
+        use std::str::FromStr;
+        let mut map = BTreeMap::new();
+        map.insert("a".to_string(), YamlValue::from(1i64));
+        map.insert("b c".to_string(), YamlValue::from(vec!["x,y", "z"]));
+        let items: Vec<YamlValue> = vec![
+            YamlValue::from("p, q"),
+            YamlValue::from(2.5f64),
+            YamlValue::from(BTreeSet::from(["s"])),
+        ];
+        for (src, expected) in [
+            (
+                "k: 0\n",
+                "k: 0\nm:\n  a: 1\n  b c:\n    - x,y\n    - z\nv:\n- p, q\n- 2.5\n- !!set\n  s: null\ns:\n- p, q\n- 2.5\n- !!set\n  s: null\ne: []\nf: {}\ng: true\nh: 1.5\n",
+            ),
+            (
+                "{k: 0}",
+                "{k: 0, m: {a: 1, b c: [\"x,y\", z]}, v: [\"p, q\", 2.5, !!set {s: null}], s: [\"p, q\", 2.5, !!set {s: null}], e: [], f: {}, g: true, h: 1.5}",
+            ),
+            (
+                "{\"k\": 0}",
+                "{\"k\": 0, \"m\": {\"a\": 1, \"b c\": [\"x,y\", \"z\"]}, \"v\": [\"p, q\", 2.5, !!set {\"s\": null}], \"s\": [\"p, q\", 2.5, !!set {\"s\": null}], \"e\": [], \"f\": {}, \"g\": true, \"h\": 1.5}",
+            ),
+        ] {
+            let doc = crate::Document::from_str(src).unwrap();
+            let mapping = doc.as_mapping().unwrap();
+            mapping.set("m", map.clone());
+            mapping.set("v", items.clone());
+            mapping.set("s", items.as_slice());
+            mapping.set("e", Vec::<YamlValue>::new());
+            mapping.set("f", BTreeMap::<String, YamlValue>::new());
+            mapping.set("g", YamlValue::from(&YamlValue::from(true)));
+            mapping.set("h", YamlValue::from(1.5f32));
+            assert_eq!(doc.to_string(), expected, "{src:?}");
+            crate::debug::assert_cst_ok(&doc);
+        }
+    }
+
+    #[test]
+    fn test_from_document_without_content_is_null() {
+        use std::str::FromStr;
+        assert_eq!(
+            YamlValue::from_document(&crate::Document::new()),
+            Ok(YamlValue::Scalar(ScalarValue::null()))
+        );
+        assert_eq!(
+            YamlValue::from_document(&crate::Document::from_str("--- # c\n").unwrap()),
+            Ok(YamlValue::Scalar(ScalarValue::null()))
+        );
+    }
 }

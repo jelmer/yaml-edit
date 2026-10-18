@@ -38,11 +38,6 @@ pub(crate) fn must_render_flow(node: &SyntaxNode) -> bool {
     false
 }
 
-/// True if `sequence`'s enclosing MAPPING_ENTRY is the last entry of
-/// its MAPPING. Callers use this to know whether trimming trailing
-/// whitespace off the sequence would strand a following mapping entry
-/// that relied on the separator NEWLINE. Conservative `false` when
-/// the sequence isn't under a MAPPING_ENTRY at all.
 /// Rebuild `entry` with `value` in place of the node it currently holds,
 /// keeping everything else the entry carried.
 fn rebuild_entry_with_value(

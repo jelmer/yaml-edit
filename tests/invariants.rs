@@ -41,6 +41,16 @@ fn parsed_document_is_valid() {
     }
 }
 
+/// A single pair in a flow sequence is a flow mapping entry, which may
+/// have no `:`, even though its mapping has no braces.
+#[test]
+fn parsed_flow_single_pair_without_colon_is_valid() {
+    for input in ["[? a]\n", "[? ]\n", "[x, ? a, y]\n"] {
+        let file = YamlFile::from_str(input).unwrap();
+        assert_eq!(debug::validate_tree(file.syntax()), Ok(()), "{input:?}");
+    }
+}
+
 #[test]
 fn mapping_set_new_key() {
     let doc = Document::from_str("a: 1\n").unwrap();

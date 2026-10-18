@@ -583,3 +583,25 @@ fn blank_lines_after_empty_value() {
         assert_parser_shaped(&file, expected_block, src);
     }
 }
+
+/// A comment ending the last line of a value that spans lines goes with
+/// it, wherever the parser keeps it.
+#[test]
+fn comment_after_multi_line_value_goes_with_it() {
+    for (src, expected) in [
+        ("a: [x,\n  y]  # c\nb: 1\n", "a: 5\nb: 1\n"),
+        ("? a\n: [x,\n  y]  # c\nb: 1\n", "? a\n: 5\nb: 1\n"),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        mapping_at(&file, "").set("a", 5);
+        assert_parser_shaped(&file, expected, src);
+    }
+    for (src, expected) in [
+        ("- [x,\n  y]  # c\n- 1\n", "- 5\n- 1\n"),
+        ("- a: [x,\n    y]  # c\n- 1\n", "- 5\n- 1\n"),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        sequence_at(&file, "").set(0, 5);
+        assert_parser_shaped(&file, expected, src);
+    }
+}

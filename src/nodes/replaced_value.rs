@@ -306,8 +306,8 @@ pub(crate) type LineComment = (String, String);
 /// Detach and return the comment on the line of `entry`'s dash, which
 /// belongs to the entry even where the item nests a collection starting
 /// on that line. The parser keeps it before the item when the item starts
-/// on a later line, inside the item, or, after a single-line item, after
-/// the entry.
+/// on a later line, inside the item, or, after a single-line item, at the
+/// end of the entry.
 pub(crate) fn take_dash_line_comment(entry: &SyntaxNode) -> Option<LineComment> {
     let dash = entry
         .children_with_tokens()
@@ -329,31 +329,25 @@ pub(crate) fn take_dash_line_comment(entry: &SyntaxNode) -> Option<LineComment> 
     let ws = spaces
         .last()
         .map_or_else(|| "  ".to_string(), |t| t.text().to_string());
-    let inside = entry.text_range().contains_range(comment.text_range());
-    let line_break = comment
-        .next_token()
-        .filter(|t| t.kind() == SyntaxKind::NEWLINE);
+    // The item starts on the next line if the line break after the
+    // comment is not the one ending the entry: join it to the dash line.
+    let line_break = comment.next_token().filter(|t| {
+        t.kind() == SyntaxKind::NEWLINE
+            && t.parent().as_ref() == Some(entry)
+            && t.next_sibling_or_token().is_some()
+    });
     comment.detach();
     if let Some(last) = spaces.last() {
         last.detach();
     }
     if let Some(line_break) = line_break {
-        if inside && line_break.parent().as_ref() == Some(entry) {
-            // The item starts on the next line: join it to the dash line.
-            let indent = line_break
-                .next_sibling_or_token()
-                .and_then(|c| c.into_token())
-                .filter(|t| t.kind() == SyntaxKind::INDENT);
-            line_break.detach();
-            if let Some(indent) = indent {
-                indent.detach();
-            }
-        } else if !inside {
-            line_break.detach();
-            append_children(
-                entry,
-                vec![fresh_token(SyntaxKind::NEWLINE, line_break.text()).into()],
-            );
+        let indent = line_break
+            .next_sibling_or_token()
+            .and_then(|c| c.into_token())
+            .filter(|t| t.kind() == SyntaxKind::INDENT);
+        line_break.detach();
+        if let Some(indent) = indent {
+            indent.detach();
         }
     }
     Some((ws, comment.text().to_string()))
@@ -423,21 +417,17 @@ pub(crate) fn add_dash_line_comment(entry: &SyntaxNode, comment: LineComment) {
         }
         _ => None,
     };
-    // After a single-line item the parser keeps the comment and its line
-    // break out of the entry, before whatever comes next.
-    let line_break = line_break.map(|nl| {
-        let text = nl.text().to_string();
-        nl.detach();
-        text
-    });
-    append_children(entry, vec![fresh_token(SyntaxKind::WHITESPACE, &ws).into()]);
-    let mut elements = vec![fresh_token(SyntaxKind::COMMENT, &text).into()];
-    if let Some(line_break) = line_break {
-        elements.push(fresh_token(SyntaxKind::NEWLINE, &line_break).into());
-    }
-    let parent = entry.parent().expect("an entry is attached");
-    let at = entry.index() + 1;
-    insert_children(&parent, at, elements);
+    // After a single-line item the comment goes before the entry's line
+    // break.
+    let at = line_break.map_or_else(|| entry.children_with_tokens().count(), |nl| nl.index());
+    insert_children(
+        entry,
+        at,
+        vec![
+            fresh_token(SyntaxKind::WHITESPACE, &ws).into(),
+            fresh_token(SyntaxKind::COMMENT, &text).into(),
+        ],
+    );
 }
 
 /// Put `comment` on a line of its own directly above `entry`, at the

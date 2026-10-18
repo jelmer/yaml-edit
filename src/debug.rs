@@ -490,11 +490,10 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
 /// meaningful content (another entry, or something that isn't a
 /// trailing WHITESPACE/COMMENT)?
 ///
-/// The parser sometimes lifts an entry's terminating NEWLINE out to
-/// the parent when a trailing comment sits between them -- the
-/// SEQUENCE_ENTRY ends with a STRING, then WHITESPACE, COMMENT, and
-/// NEWLINE follow at the SEQUENCE level. That's still a well-formed
-/// terminated entry.
+/// The parser leaves an explicit-key entry's terminating NEWLINE, and a
+/// comment before it, to the mapping: `? a\n: b  # c\n` ends its entry
+/// with the STRING `b`, and WHITESPACE, COMMENT and NEWLINE follow at the
+/// MAPPING level. That's still a well-formed terminated entry.
 ///
 /// A NEWLINE followed only by an implicit null's zero-width token counts
 /// too: in `? - a\n` the line break ends the key's sequence, and the

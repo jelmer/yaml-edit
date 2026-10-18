@@ -27,7 +27,8 @@ pub(crate) enum LineEnd {
     /// any other entry, that is a blank line.
     Sibling,
     /// A NEWLINE after a comment that ends the entry's line but which the
-    /// parser put after the entry in its parent, as after a sequence item.
+    /// parser put after the entry in its parent, as after an explicit-key
+    /// entry's value.
     AfterComment,
     /// No line break: the entry ends unterminated input.
     Open,

@@ -51,26 +51,25 @@
 //! ## Entry termination
 //!
 //! Block-style MAPPING_ENTRY and SEQUENCE_ENTRY nodes are terminated by
-//! a NEWLINE. That terminator normally lives as the entry's own last
-//! token, but the parser sometimes lifts it out when a trailing comment
-//! separates it from the next sibling:
+//! a NEWLINE, the entry's own last token, after the comment ending its
+//! line if there is one. A mapping entry keeps that comment in its VALUE,
+//! a sequence entry after its item:
 //!
 //! ```text
-//! # SEQUENCE_ENTRY ends with STRING; the NEWLINE lives at the SEQUENCE
-//! # level after the following COMMENT.
 //! SEQUENCE
 //!   SEQUENCE_ENTRY
 //!     DASH "-"
+//!     WHITESPACE " "
 //!     SCALAR ("a")
-//!   WHITESPACE "  "
-//!   COMMENT "# note"
-//!   NEWLINE "\n"
+//!     WHITESPACE "  "
+//!     COMMENT "# note"
+//!     NEWLINE "\n"
 //!   SEQUENCE_ENTRY ...
 //! ```
 //!
 //! An explicit-key entry (`? key\n: value\n`) never owns the NEWLINE
-//! ending its value line: the parser leaves it to the MAPPING, right
-//! after the entry. See [`trivia`].
+//! ending its value line, nor the comment before it: the parser leaves
+//! them to the MAPPING, right after the entry. See [`trivia`].
 //!
 //! Two carve-outs:
 //! - The **last** entry of a block collection may lack a terminator

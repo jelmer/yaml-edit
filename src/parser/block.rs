@@ -245,8 +245,18 @@ impl Parser<'_> {
             });
 
             // Trailing whitespace the entry's scalar left behind belongs to
-            // the entry, as does its NEWLINE terminator (DESIGN.md)
+            // the entry, as do a comment ending its line and its NEWLINE
+            // terminator (DESIGN.md). After a block value the line has
+            // ended already, and a comment is a line of the sequence.
             self.skip_whitespace();
+            if self.current() == Some(SyntaxKind::COMMENT)
+                && !matches!(
+                    self.previous_kind,
+                    Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
+                )
+            {
+                self.bump();
+            }
             if self.current() == Some(SyntaxKind::NEWLINE) {
                 self.bump();
             }
@@ -1377,6 +1387,20 @@ mod tests {
         assert_eq!(entry_texts("? a\n:\n\n# c\nb: 1\n"), ["? a\n:", "b: 1\n"]);
         assert_eq!(entry_texts("? a  # c\n\nb: 1\n"), ["? a  # c", "b: 1\n"]);
         assert_eq!(entry_texts("- ? a\n  b: 1\n"), ["? a", "b: 1\n"]);
+    }
+
+    /// A sequence entry owns the comment ending its line, and the line
+    /// break after it, as a mapping entry does. A comment line after a
+    /// block item is the sequence's.
+    #[test]
+    fn test_sequence_entry_owns_line_comment() {
+        let file = YamlFile::from_str("- a  # c\n- |\n  x\n# d\n- b # e").unwrap();
+        let entries: Vec<String> = rowan::ast::AstNode::syntax(&file)
+            .descendants()
+            .filter(|n| n.kind() == crate::lex::SyntaxKind::SEQUENCE_ENTRY)
+            .map(|n| n.to_string())
+            .collect();
+        assert_eq!(entries, ["- a  # c\n", "- |\n  x\n", "- b # e"]);
     }
 
     // Regression: a nested explicit-key block (`? k` / `: v`) used to swallow

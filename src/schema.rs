@@ -1038,6 +1038,7 @@ users:
         let core_types = Schema::Core.allowed_scalar_types();
         // Core includes at minimum: String, Integer, Float, Boolean, Null, Timestamp, Regex
         // (plus Binary if the base64 feature is enabled)
+        #[cfg_attr(not(feature = "base64"), allow(unused_mut))]
         let mut expected_core = vec![
             ScalarType::String,
             ScalarType::Integer,

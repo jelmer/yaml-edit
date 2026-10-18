@@ -390,7 +390,7 @@ pub(crate) fn detach_empty_collection_placeholder_newline(
     empty_collection: &SyntaxNode,
     new_entry: &SyntaxNode,
 ) {
-    if !trivia::line_end(new_entry).is_terminated() {
+    if !trivia::ends_with_line_break(new_entry) {
         return;
     }
     let node = line_node(empty_collection);

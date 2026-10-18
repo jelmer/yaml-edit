@@ -2,7 +2,8 @@ mod common;
 
 use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{Mapping, YamlFile};
+use yaml_edit::validator::Validator;
+use yaml_edit::{Mapping, SyntaxKind, YamlFile, YamlValue};
 
 fn assert_metadata_edits(file: &YamlFile, mapping: &Mapping, yaml: &str) {
     assert_eq!(file.to_string(), yaml);
@@ -884,6 +885,57 @@ fn test_question_mark_with_a_space_still_opens_an_explicit_key() {
         mapping.get("key").unwrap().as_scalar().unwrap().as_string(),
         "value"
     );
+}
+
+/// In a flow collection a `?` right before a flow indicator cannot start a
+/// plain scalar, as `ns-plain-first` needs a safe character after it. It
+/// is read as an explicit key with an empty key, as PyYAML reads it, and
+/// the validator reports the missing space after it.
+#[test]
+fn test_question_mark_before_a_flow_indicator_opens_an_explicit_key() {
+    for (yaml, spaced) in [
+        ("{?, a}", "{? , a}"),
+        ("{a, ?}", "{a, ? }"),
+        ("{?}", "{? }"),
+        ("[?]", "[? ]"),
+        ("[?, a]", "[? , a]"),
+        ("[a, ?]", "[a, ? ]"),
+        ("{?[a]: b}", "{? [a]: b}"),
+        ("{?{a: 1}: b}", "{? {a: 1}: b}"),
+    ] {
+        let question = yaml.find('?').unwrap();
+        let mut offset = 0;
+        let kind = yaml_edit::lex(yaml).into_iter().find_map(|(kind, text)| {
+            let at = offset;
+            offset += text.len();
+            (at == question).then_some(kind)
+        });
+        assert_eq!(kind, Some(SyntaxKind::QUESTION), "{yaml:?}");
+
+        let parsed = YamlFile::parse(yaml);
+        assert_eq!(parsed.errors(), Vec::<String>::new(), "{yaml:?}");
+        let file = parsed.tree();
+        assert_eq!(file.to_string(), yaml);
+        let value = |file: &YamlFile| YamlValue::from_document(&file.document().unwrap()).unwrap();
+        assert_eq!(
+            value(&file),
+            value(&YamlFile::from_str(spaced).unwrap()),
+            "{yaml:?}"
+        );
+        let violations: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| (v.message, v.location.unwrap()))
+            .collect();
+        assert_eq!(
+            violations,
+            [(
+                "Explicit key indicator '?' must be followed by white space".to_string(),
+                format!("1:{}", question + 1)
+            )],
+            "{yaml:?}"
+        );
+    }
 }
 
 /// A quote no longer opens a quoted scalar once a plain one has begun, so

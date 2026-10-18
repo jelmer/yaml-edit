@@ -4,7 +4,7 @@
 use super::{Mapping, MappingEntry};
 use crate::lex::SyntaxKind;
 use crate::nodes::trivia::Slot;
-use crate::nodes::trivia::{self, line_end, FlowSeparator};
+use crate::nodes::trivia::{self, ends_with_line_break, FlowSeparator};
 use crate::nodes::{fresh_token, Lang, SyntaxNode};
 use rowan::ast::AstNode;
 
@@ -193,7 +193,7 @@ impl Mapping {
         SlotLayout {
             flow_separators,
             last_has_comma: last.is_some_and(trivia::has_comma),
-            last_terminated: last.map_or(true, |e| line_end(e).is_terminated()),
+            last_terminated: last.map_or(true, ends_with_line_break),
         }
     }
 
@@ -206,7 +206,7 @@ impl Mapping {
         };
         if !self.is_flow_style() {
             for entry in rest {
-                if !line_end(entry).is_terminated() {
+                if !ends_with_line_break(entry) {
                     trivia::terminate(entry);
                 }
             }

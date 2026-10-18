@@ -261,13 +261,12 @@ impl Scalar {
             // case every line break is kept.
             let spaced = stripped.starts_with([' ', '\t']);
             let breaks = match prev_spaced {
-                None => empty_lines,
                 Some(prev) if is_literal || prev || spaced => empty_lines + 1,
                 Some(_) if empty_lines == 0 => {
                     result.push(' ');
                     0
                 }
-                Some(_) => empty_lines,
+                _ => empty_lines,
             };
             result.push_str(&"\n".repeat(breaks));
             result.push_str(stripped);

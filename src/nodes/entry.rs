@@ -198,7 +198,7 @@ impl<'a> OccupiedEntry<'a> {
     /// [`YamlNode`].
     ///
     /// Panics if the entry has no value node (indicates malformed input).
-    pub(crate) fn into_value(self) -> YamlNode {
+    fn into_value(self) -> YamlNode {
         self.entry
             .value_node()
             .expect("occupied entry has no value node")

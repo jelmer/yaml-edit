@@ -152,11 +152,10 @@ fn rebuild_entry_with_value(
                 }
                 after_dash = false;
             }
+            // A SEQUENCE_ENTRY holds no other node; see the implicit-null
+            // invariant in nodes/mod.rs.
             rowan::NodeOrToken::Node(n) => {
-                // Copy other nodes as-is (like VALUE wrappers, etc.)
-                crate::yaml::copy_node_to_builder(&mut builder, n);
-                column = crate::column::column_after(column, &n.text().to_string());
-                after_dash = false;
+                panic!("unexpected {:?} in a SEQUENCE_ENTRY", n.kind())
             }
             rowan::NodeOrToken::Token(t) => {
                 // Copy tokens as-is
@@ -426,7 +425,7 @@ impl Sequence {
             .last_child()
             .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             .expect("push added an entry");
-        let open = !trivia::line_end(&pushed).is_terminated();
+        let open = !trivia::ends_with_line_break(&pushed);
         trivia::terminate(&pushed);
         let column = trivia::entry_column(&self.0);
         let mut inserts: Vec<rowan::NodeOrToken<SyntaxNode, _>> = Vec::new();
@@ -663,7 +662,7 @@ impl Sequence {
             .children()
             .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             .last()
-            .is_some_and(|e| trivia::line_end(&e).is_terminated());
+            .is_some_and(|e| trivia::ends_with_line_break(&e));
         // Remove items from the beginning to avoid recalculating indices
         // Use a safety counter to prevent infinite loops
         let initial_len = self.len();

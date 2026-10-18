@@ -122,6 +122,10 @@ fn near_misses_of_the_1_1_forms_are_left_alone() {
         "a: yy\n",
         // 1.1 floats need a signed exponent.
         "a: 1_0.5e5\n",
+        "a: 1_0.5e+\n",
+        "a: 1_0.5e+1x\n",
+        "a: 1a:30\n",
+        "a: 1:30.5x\n",
     ] {
         assert_eq!(migrated(src), src, "{src:?}");
     }

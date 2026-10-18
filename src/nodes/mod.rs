@@ -474,20 +474,6 @@ pub(crate) fn ending_block_scalar(entry: &SyntaxNode) -> Option<SyntaxNode> {
         })
 }
 
-/// The `children_with_tokens()` indices of `parent`'s direct child nodes of
-/// the given kind, in order.
-///
-/// `splice_children` indexes by `children_with_tokens()`, so mutation helpers
-/// need entry positions in that numbering rather than `children()`'s.
-pub(crate) fn entry_indices(parent: &SyntaxNode, kind: SyntaxKind) -> Vec<usize> {
-    parent
-        .children_with_tokens()
-        .enumerate()
-        .filter(|(_, c)| c.as_node().is_some_and(|n| n.kind() == kind))
-        .map(|(i, _)| i)
-        .collect()
-}
-
 /// The `children_with_tokens()` index of `parent`'s `index`-th child node of
 /// the given kind.
 pub(crate) fn nth_entry_index(

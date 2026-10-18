@@ -147,12 +147,16 @@ pub(crate) fn entry_column(collection: &SyntaxNode) -> usize {
 /// entry's line break goes to the collection. Should the new entry end in
 /// a block scalar, the lines after it are laid out so that it does not
 /// take them in.
-pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNode) {
+///
+/// Returns whether `entry` went after the end of input that had no final
+/// line break.
+pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNode) -> bool {
     let kind = entry.kind();
     let column = entry_column(collection);
     let indent =
         || (column > 0).then(|| fresh_token(SyntaxKind::INDENT, &" ".repeat(column)).into());
     let mut first = false;
+    let mut open_end = false;
     let (at, elements) = match slot {
         Slot::Before(next) => {
             let prev = next
@@ -175,13 +179,27 @@ pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNo
         }
         Slot::End => {
             let mut elements = Vec::new();
-            if last_entry(collection, kind).is_some() {
-                elements.extend(indent());
-            } else {
-                first = true;
-            }
+            let at = match last_entry(collection, kind) {
+                Some(last) => {
+                    elements.extend(indent());
+                    // TODO: sequences and mappings disagree on whether the
+                    // blank lines ending a collection go before or after a
+                    // new last entry.
+                    if kind == SyntaxKind::SEQUENCE_ENTRY {
+                        index_after_last_line(collection, &last)
+                    } else {
+                        end_slot_index(collection)
+                    }
+                }
+                None => {
+                    first = true;
+                    end_slot_index(collection)
+                }
+            };
             elements.push(entry.clone().into());
-            (end_line(collection, end_slot_index(collection)), elements)
+            let (at, opened) = end_line(collection, at);
+            open_end = opened;
+            (at, elements)
         }
     };
     collection.splice_children(at..at, elements);
@@ -190,6 +208,7 @@ pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNo
     }
     hand_line_break_to_mapping(entry);
     super::settle_lines_after_inserted_entry(entry);
+    open_end
 }
 
 /// The last entry of kind `kind` in `collection`.
@@ -219,9 +238,22 @@ fn child_at(node: &SyntaxNode, i: usize) -> Option<rowan::SyntaxElement<super::L
     }
 }
 
+/// The index in `collection` just past the line of `last`, its last entry,
+/// or past the last comment line after it.
+fn index_after_last_line(collection: &SyntaxNode, last: &SyntaxNode) -> usize {
+    std::iter::successors(collection.last_child_or_token(), |c| {
+        c.prev_sibling_or_token()
+    })
+    .take_while(|c| c.as_node() != Some(last))
+    .find(|c| c.kind() == SyntaxKind::COMMENT)
+    .map_or_else(|| last.index(), |c| c.index())
+        + 1
+}
+
 /// End the line that the child of `collection` before index `at` is on,
-/// if it is open, and return the index of the start of the next line.
-fn end_line(collection: &SyntaxNode, at: usize) -> usize {
+/// if it is open. Returns the index of the start of the next line, and
+/// whether the line was open.
+fn end_line(collection: &SyntaxNode, at: usize) -> (usize, bool) {
     let before = at.checked_sub(1).and_then(|i| child_at(collection, i));
     match before {
         Some(rowan::NodeOrToken::Node(entry))
@@ -230,14 +262,20 @@ fn end_line(collection: &SyntaxNode, at: usize) -> usize {
                 SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
             ) =>
         {
+            let open = !line_end(&entry).is_terminated();
             terminate(&entry);
-            index_after_line(&entry)
+            (index_after_line(&entry), open)
         }
         Some(rowan::NodeOrToken::Token(t)) if t.kind() == SyntaxKind::COMMENT => {
+            if t.next_sibling_or_token()
+                .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE)
+            {
+                return (at + 1, false);
+            }
             collection.splice_children(at..at, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
-            at + 1
+            (at + 1, true)
         }
-        _ => at,
+        _ => (at, false),
     }
 }
 
@@ -411,16 +449,17 @@ pub(crate) fn terminate(entry: &SyntaxNode) {
     hand_line_break_to_mapping(entry);
 }
 
-/// Remove the line break that ends `collection`, a block collection whose
-/// last line had none before it was edited. One that is part of a block
-/// scalar's value stays, as removing it would change the value.
-pub(crate) fn unterminate_last(collection: &SyntaxNode) {
-    let Some(last) = last_non_empty_token(collection) else {
+/// Remove the line break that ends `node`, a block collection or entry
+/// ending input whose last line had none before it was edited. One that is
+/// part of a block scalar's value stays, as removing it would change the
+/// value.
+pub(crate) fn unterminate_last(node: &SyntaxNode) {
+    let Some(last) = last_non_empty_token(node) else {
         return;
     };
     let in_scalar = last
         .parent_ancestors()
-        .take_while(|n| n != collection)
+        .take_while(|n| n != node)
         .any(|n| n.kind() == SyntaxKind::SCALAR);
     if last.kind() == SyntaxKind::NEWLINE && !in_scalar {
         last.detach();

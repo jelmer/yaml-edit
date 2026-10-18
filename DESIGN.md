@@ -217,6 +217,14 @@ scalar or flow root, are children of `DOCUMENT`. Comments and directives
 before the first document are children of the file root instead. Mutations
 that add documents or directives must keep a BOM first in the stream.
 
+A new entry at the end of a collection (`set` with a new key, `push`)
+goes after its last entry and any comment lines after that. Blank lines
+ending a nested collection separate it from what follows, so they stay
+after the new entry: `a:\n  x: 1\n\nb: 2\n` with `y` set in `a` gives
+`a:\n  x: 1\n  y: 3\n\nb: 2\n`. Those ending the root collection stay
+where they are, and the new entry goes after them: `- x\n\n` with `y`
+pushed gives `- x\n\n- y\n`.
+
 A kept (`|+`, `>+`) block scalar takes every blank line after it into its
 value. A new entry whose value ends in one therefore goes after any blank
 lines at the place it is inserted rather than before them:

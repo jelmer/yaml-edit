@@ -24,6 +24,9 @@ use rowan::ast::AstNode;
 use saphyr::{LoadableYamlNode, Yaml};
 use yaml_edit::{Parse, SyntaxKind, YamlFile};
 
+#[path = "common/saphyr_input.rs"]
+mod saphyr_input;
+
 fn first_error_node(node: &rowan::SyntaxNode<yaml_edit::Lang>) -> Option<String> {
     if node.kind() == SyntaxKind::ERROR {
         return Some(node.text().to_string());
@@ -38,50 +41,7 @@ fuzz_target!(|data: &[u8]| {
     if input.len() > 100_000 {
         return;
     }
-    // C0 controls other than tab and newline are not valid YAML 1.2 and
-    // parsers handle them inconsistently.
-    if input.bytes().any(|b| b < 0x20 && b != b'\t' && b != b'\n') {
-        return;
-    }
-
-    // A `:` straight after an anchor or alias name is another grey area:
-    // saphyr reads `k: &a: v` as `k: v` and drops the anchor, PyYAML
-    // rejects it as "mapping values are not allowed here". With the
-    // reference parsers split there is no answer to hold yaml-edit to.
-    if input.lines().any(|line| {
-        line.split_whitespace()
-            .any(|word| word.starts_with(['&', '*']) && word.contains(':'))
-    }) {
-        return;
-    }
-
-    // saphyr 0.0.12 hangs forever on a reserved directive: a `%` starting
-    // any line, followed by a name other than YAML or TAG (`%FOO`, `%!!`).
-    // It need not be the first line -- `%TAG ! tag:e\n%!! v` wedges it too.
-    // Reported upstream; skip so the oracle cannot hang the run. yaml-edit
-    // parses these in microseconds.
-    // The name has to be delimited to count as YAML or TAG: `%TAG!!x` is a
-    // reserved directive named `TAG!!x`, and hangs saphyr just as `%FOO`
-    // does.
-    if input.lines().any(|line| {
-        let Some(rest) = line.strip_prefix('%') else {
-            return false;
-        };
-        // YAML delimits a directive name with a space or tab, not with
-        // whatever char::is_whitespace admits: `%TAG\u{a0}x` names the
-        // reserved directive `TAG\u{a0}x`, and wedges saphyr as `%FOO` does.
-        let name = rest
-            .split([' ', '\t'])
-            .next()
-            .unwrap_or(rest);
-        if name != "YAML" && name != "TAG" {
-            return true;
-        }
-        // Even a well-named directive wedges saphyr when nothing follows it
-        // on the line: `%TAG` alone asks for a 2GB allocation and aborts, as
-        // `%YAML` does. Anything after the name avoids it.
-        rest[name.len()..].trim_matches([' ', '\t']).is_empty()
-    }) {
+    if saphyr_input::unsuitable(input) {
         return;
     }
 
@@ -108,4 +68,3 @@ fuzz_target!(|data: &[u8]| {
         );
     }
 });
-

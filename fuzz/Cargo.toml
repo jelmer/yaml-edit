@@ -60,3 +60,24 @@ path = "fuzz_targets/cross_parser_attachment.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "edit_sequence"
+path = "fuzz_targets/edit_sequence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "value_saphyr"
+path = "fuzz_targets/value_saphyr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "line_endings"
+path = "fuzz_targets/line_endings.rs"
+test = false
+doc = false
+bench = false

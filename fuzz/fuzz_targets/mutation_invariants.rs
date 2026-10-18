@@ -267,7 +267,6 @@ fn apply(doc: &Document, op: &Op) {
     }
 }
 
-
 fn assert_ok(doc: &Document) {
     let syntax = doc.syntax();
     if let Err(e) = debug::validate_tree(syntax) {

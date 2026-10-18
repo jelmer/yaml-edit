@@ -1684,6 +1684,9 @@ impl Mapping {
     /// any tokens after the key's content. The line break before block
     /// content (`?\n- a`) goes, as the new key is written inline.
     ///
+    /// A comment before the old content stays on its line, or follows the
+    /// new KEY if the content was on that line too.
+    ///
     /// The old key's anchor stays; failing that the key takes `anchor`, or
     /// the anchor before a `new_key` node where it was copied from.
     fn rebuild_key(
@@ -1697,13 +1700,34 @@ impl Mapping {
         let indent = old
             .parent()
             .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry));
-        let mut leading = old.children_with_tokens().map_while(|c| c.into_token());
-        if let Some(question) = leading.next().filter(|t| t.kind() == SyntaxKind::QUESTION) {
+        let leading: Vec<_> = old
+            .children_with_tokens()
+            .map_while(|c| c.into_token())
+            .collect();
+        let mut rest = &leading[..];
+        if let Some((question, after)) = rest
+            .split_first()
+            .filter(|(t, _)| t.kind() == SyntaxKind::QUESTION)
+        {
             builder.token(question.kind().into(), question.text());
-            for ws in leading.take_while(|t| t.kind() == SyntaxKind::WHITESPACE) {
-                builder.token(ws.kind().into(), ws.text());
+            let ws = after
+                .iter()
+                .take_while(|t| t.kind() == SyntaxKind::WHITESPACE)
+                .count();
+            for t in &after[..ws] {
+                builder.token(t.kind().into(), t.text());
             }
+            rest = &after[ws..];
         }
+        // A comment on the `?` line stays there if the content starts on a
+        // later line, and otherwise goes after the new key.
+        let comment = rest.iter().position(|t| t.kind() == SyntaxKind::COMMENT);
+        let comment_lines = comment
+            .filter(|&i| rest[i..].iter().any(|t| t.kind() == SyntaxKind::NEWLINE))
+            .map(|i| &rest[i..]);
+        let comment_after = comment
+            .filter(|_| comment_lines.is_none())
+            .map(|i| rest[i].text().to_string());
         let (old_anchor, tag) = key_annotations(old);
         let anchor = old_anchor
             .or_else(|| anchor.map(str::to_string))
@@ -1711,6 +1735,9 @@ impl Mapping {
         if let Some(anchor) = anchor {
             builder.token(SyntaxKind::ANCHOR.into(), &anchor);
             builder.token(SyntaxKind::WHITESPACE.into(), " ");
+        }
+        for t in comment_lines.into_iter().flatten() {
+            builder.token(t.kind().into(), t.text());
         }
         match tag.and_then(|tag| retagged_key(&tag, new_key, flow)) {
             Some(tagged) => super::build_key_content(builder, &tagged, indent, flow),
@@ -1725,6 +1752,10 @@ impl Mapping {
             builder.token(trailing.kind().into(), trailing.text());
         }
         builder.finish_node();
+        if let Some(comment) = comment_after {
+            builder.token(SyntaxKind::WHITESPACE.into(), "  ");
+            builder.token(SyntaxKind::COMMENT.into(), &comment);
+        }
     }
 
     /// Insert a key-value pair immediately after an existing key.

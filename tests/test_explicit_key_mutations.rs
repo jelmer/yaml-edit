@@ -804,3 +804,26 @@ fn explicit_block_or_empty_key_renamed_keeps_colon_line() {
         );
     }
 }
+
+#[test]
+fn comment_before_explicit_key_kept_on_rename() {
+    for (source, expected) in [
+        ("? # c\n  a\n: b\n", "? # c\n  z\n: b\n"),
+        ("? &x # c\n  a\n: b\n", "? &x # c\n  z\n: b\n"),
+        ("? # c\n  - a\n: b\n", "? # c\n  z\n: b\n"),
+        ("?  # c\n: b\n", "?  z  # c\n: b\n"),
+        ("{? # c\n  a : b}\n", "{? # c\n  z : b}\n"),
+    ] {
+        let file = YamlFile::from_str(source).unwrap();
+        let m = file.document().unwrap().as_mapping().unwrap();
+        let key = m.keys().next().unwrap();
+        assert!(m.rename_key(&key, "z"), "{source:?}");
+        assert_parser_shaped(&file);
+        assert_eq!(file.to_string(), expected, "{source:?}");
+        let doc = yaml_edit::Document::from_str(expected).unwrap();
+        assert_eq!(
+            yaml_edit::validator::Validator::new().validate(&doc),
+            vec![]
+        );
+    }
+}

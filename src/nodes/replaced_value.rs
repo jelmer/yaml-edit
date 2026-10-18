@@ -13,54 +13,25 @@ fn is_block_collection(node: &SyntaxNode) -> bool {
         && !super::starts_a_flow_collection(node)
 }
 
-/// Does `value` reach past the line its entry starts on, or open a block
-/// collection there whose entries own whatever follows on that line?
-fn owns_line_end(value: &SyntaxNode) -> bool {
-    is_block_collection(value)
-        || value
-            .descendants_with_tokens()
-            .any(|c| c.kind() == SyntaxKind::NEWLINE)
-}
-
-/// Remove the comment that ends the last line of `value`, `entry`'s value,
-/// where the parser keeps it after the value rather than in it, unless it
-/// is on the entry's own first line, where it belongs to the entry. Its
-/// line break becomes `entry`'s.
-pub(crate) fn remove_lifted_comment(entry: &SyntaxNode, value: &SyntaxNode) {
-    if !owns_line_end(value) {
+/// Remove the comment that ends the last line of `item`, a sequence item
+/// spanning lines, which its entry holds after it. It goes with the item;
+/// one on the dash line belongs to the entry.
+pub(crate) fn remove_comment_after_item(item: &SyntaxNode) {
+    if !item
+        .descendants_with_tokens()
+        .any(|c| c.kind() == SyntaxKind::NEWLINE)
+    {
         return;
     }
-    let mut next = value
-        .last_token()
-        .filter(|t| t.kind() != SyntaxKind::NEWLINE)
-        .and_then(|t| t.next_token());
-    let mut spaces = Vec::new();
-    while let Some(t) = next.clone().filter(|t| t.kind() == SyntaxKind::WHITESPACE) {
-        next = t.next_token();
-        spaces.push(t);
-    }
-    let Some(comment) = next.filter(|t| t.kind() == SyntaxKind::COMMENT) else {
-        return;
-    };
-    let on_first_line = !entry.descendants_with_tokens().any(|c| {
-        c.kind() == SyntaxKind::NEWLINE && c.text_range().end() <= comment.text_range().start()
-    });
-    if on_first_line {
-        return;
-    }
-    let line_break = comment
-        .next_token()
-        .filter(|t| t.kind() == SyntaxKind::NEWLINE);
-    for t in spaces {
-        t.detach();
-    }
-    comment.detach();
-    if let Some(line_break) = line_break {
-        line_break.detach();
-        append_children(
-            entry,
-            vec![fresh_token(SyntaxKind::NEWLINE, line_break.text()).into()],
-        );
+    let after: Vec<_> = item
+        .siblings_with_tokens(rowan::Direction::Next)
+        .skip(1)
+        .take_while(|c| matches!(c.kind(), SyntaxKind::WHITESPACE | SyntaxKind::COMMENT))
+        .collect();
+    if after.iter().any(|c| c.kind() == SyntaxKind::COMMENT) {
+        for c in after {
+            c.detach();
+        }
     }
 }
 
@@ -109,7 +80,7 @@ pub(crate) fn restore_trailing_lines(entry: &SyntaxNode, lines: Vec<SyntaxToken>
         .map(|t| fresh_token(t.kind(), t.text()).into())
         .collect();
     let (parent, after) = match entry.parent() {
-        Some(parent) => (parent, super::trivia::index_after_line(entry)),
+        Some(parent) => (parent, entry.index() + 1),
         None => (entry.clone(), entry.children_with_tokens().count()),
     };
     insert_children(&parent, after, elements);

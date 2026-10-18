@@ -446,10 +446,8 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 ));
             }
 
-            // Block MAPPING_ENTRYs must be terminated by a NEWLINE
-            // *somewhere* between themselves and the next sibling entry --
-            // usually inside the entry, sometimes as a trailing
-            // comment+newline at the parent level.
+            // Block MAPPING_ENTRYs must be terminated by a NEWLINE of
+            // their own, or one in the block node they end with.
             //
             // The last entry of a mapping is allowed to lack a
             // terminator: an unterminated source doc (`a: 1\nb: 2`)
@@ -461,6 +459,28 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 return Err(format!(
                     "Block-style MAPPING_ENTRY not terminated by a NEWLINE (last token: {:?})",
                     node.last_token().map(|t| t.kind())
+                ));
+            }
+        }
+        // A comment directly in a block collection is a line of its own:
+        // one ending an entry's line belongs to that entry.
+        SyntaxKind::MAPPING | SyntaxKind::SEQUENCE
+            if !crate::nodes::starts_a_flow_collection(node) =>
+        {
+            let stray = node
+                .children_with_tokens()
+                .filter_map(|c| c.into_token())
+                .filter(|t| t.kind() == SyntaxKind::COMMENT)
+                .find(|t| {
+                    t.prev_token().is_some_and(|p| {
+                        !matches!(p.kind(), SyntaxKind::NEWLINE | SyntaxKind::INDENT)
+                    })
+                });
+            if let Some(comment) = stray {
+                return Err(format!(
+                    "{:?} holds the comment {:?} ending an entry's line",
+                    node.kind(),
+                    comment.text()
                 ));
             }
         }
@@ -485,34 +505,16 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
     Ok(())
 }
 
-/// Is this entry terminated by a NEWLINE, either as its own last
-/// token or somewhere between itself and the next sibling that starts
-/// meaningful content (another entry, or something that isn't a
-/// trailing WHITESPACE/COMMENT)?
-///
-/// The parser leaves an explicit-key entry's terminating NEWLINE, and a
-/// comment before it, to the mapping: `? a\n: b  # c\n` ends its entry
-/// with the STRING `b`, and WHITESPACE, COMMENT and NEWLINE follow at the
-/// MAPPING level. That's still a well-formed terminated entry.
+/// Is this entry terminated by a NEWLINE of its own, along with the
+/// comment ending its line, if any?
 ///
 /// A NEWLINE followed only by an implicit null's zero-width token counts
 /// too: in `? - a\n` the line break ends the key's sequence, and the
-/// entry's empty value comes after it.
+/// entry's empty value comes after it. So does one followed by the INDENT
+/// of a comment line indented past the collection, which the parser
+/// leaves at the end of the collection the entry ends in.
 fn entry_is_terminated(entry: &SyntaxNode) -> bool {
-    if crate::nodes::trivia::ends_with_line_break(entry) {
-        return true;
-    }
-    let mut sib = entry.next_sibling_or_token();
-    while let Some(el) = sib {
-        match el.as_token().map(|t| t.kind()) {
-            Some(SyntaxKind::NEWLINE) => return true,
-            Some(SyntaxKind::WHITESPACE | SyntaxKind::COMMENT) => {
-                sib = el.next_sibling_or_token();
-            }
-            _ => return false,
-        }
-    }
-    false
+    crate::nodes::trivia::ends_line(entry)
 }
 
 /// Is this entry the last MAPPING_ENTRY / SEQUENCE_ENTRY child of its
@@ -628,6 +630,33 @@ mod tests {
     use crate::yaml::YamlFile;
     use rowan::ast::AstNode;
     use std::str::FromStr;
+
+    /// A comment ending an entry's line belongs to the entry, not to the
+    /// collection beside it.
+    #[test]
+    fn test_validate_tree_line_end_comment_outside_entry() {
+        let file = YamlFile::from_str("- a  # c\n- b\n").unwrap();
+        assert_eq!(validate_tree(file.syntax()), Ok(()));
+        let entry = file
+            .syntax()
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            .unwrap();
+        let line_end: Vec<_> = entry
+            .children_with_tokens()
+            .skip_while(|c| c.kind() != SyntaxKind::COMMENT)
+            .collect();
+        for c in &line_end {
+            c.detach();
+        }
+        let sequence = entry.parent().unwrap();
+        crate::nodes::insert_children(&sequence, entry.index() + 1, line_end);
+        assert_eq!(file.syntax().to_string(), "- a  # c\n- b\n");
+        assert_eq!(
+            validate_tree(file.syntax()),
+            Err("SEQUENCE holds the comment \"# c\" ending an entry's line".to_string())
+        );
+    }
 
     #[test]
     fn test_validate_tree_implicit_null_ending_sequence_entry() {

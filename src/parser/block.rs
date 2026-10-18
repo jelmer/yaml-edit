@@ -244,22 +244,7 @@ impl Parser<'_> {
                 p.parse_sequence_entry_value(dash_column, item_indent)
             });
 
-            // Trailing whitespace the entry's scalar left behind belongs to
-            // the entry, as do a comment ending its line and its NEWLINE
-            // terminator (DESIGN.md). After a block value the line has
-            // ended already, and a comment is a line of the sequence.
-            self.skip_whitespace();
-            if self.current() == Some(SyntaxKind::COMMENT)
-                && !matches!(
-                    self.previous_kind,
-                    Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
-                )
-            {
-                self.bump();
-            }
-            if self.current() == Some(SyntaxKind::NEWLINE) {
-                self.bump();
-            }
+            self.skip_entry_line_end();
 
             // Finish SEQUENCE_ENTRY node
             self.builder.finish_node();
@@ -469,6 +454,7 @@ impl Parser<'_> {
                 // No value, just a key - create explicit null value
                 self.emit_implicit_null_value();
             }
+            self.skip_entry_line_end();
 
             // Finish the MAPPING_ENTRY node
             self.builder.finish_node();
@@ -638,6 +624,7 @@ impl Parser<'_> {
                 p.emit_implicit_null_value();
             }
         });
+        self.skip_entry_line_end();
         self.builder.finish_node();
     }
 
@@ -1184,19 +1171,6 @@ impl Parser<'_> {
                 };
                 self.scoped(ctx, |p| p.parse_mapping_value(column));
                 has_value = true;
-
-                // Capture any trailing whitespace and comment on the same line (before NEWLINE)
-                // This keeps inline comments like "value  # comment" together in the VALUE node.
-                // A block scalar ends at a line break, after which a comment
-                // is a line of the mapping.
-                if self.previous_kind != Some(SyntaxKind::NEWLINE) {
-                    if self.current() == Some(SyntaxKind::WHITESPACE) {
-                        self.bump(); // emit whitespace inside VALUE
-                    }
-                    if self.current() == Some(SyntaxKind::COMMENT) {
-                        self.bump(); // emit inline comment inside VALUE
-                    }
-                }
             } else if self.current() == Some(SyntaxKind::NEWLINE) {
                 // Look for the value before stepping over the lines in
                 // between: without one, those lines are the mapping's, not
@@ -1295,8 +1269,12 @@ impl Parser<'_> {
                 // follows is a sibling entry.
             }
 
-            // If no value present, create an implicit null scalar
-            if !has_value {
+            // If no value present, create an implicit null scalar. A
+            // comment ending the value's last line goes in the VALUE, as
+            // in `value  # comment`.
+            if has_value {
+                self.skip_line_end_trivia();
+            } else {
                 self.emit_implicit_null();
             }
 
@@ -1310,18 +1288,7 @@ impl Parser<'_> {
             self.add_error_and_recover(error_msg, SyntaxKind::COLON, ParseErrorKind::Other);
         }
 
-        // Consume any trailing inline whitespace before closing MAPPING_ENTRY
-        // Note: Inline comments are consumed within the VALUE node itself.
-        // Any COMMENT token here would be on a separate line and should not
-        // be consumed as part of this entry (it may be dedented).
-        while self.current() == Some(SyntaxKind::WHITESPACE) {
-            self.bump();
-        }
-
-        // Block-style entries own their NEWLINE terminator (DESIGN.md)
-        if self.current() == Some(SyntaxKind::NEWLINE) {
-            self.bump();
-        }
+        self.skip_entry_line_end();
 
         // Finish MAPPING_ENTRY node
         self.builder.finish_node();
@@ -1384,9 +1351,25 @@ mod tests {
             entry_texts("x:\n  a:  # c\n  b: 1\n"),
             ["x:\n  a:  # c\n  b: 1\n", "a:  # c\n", "b: 1\n"]
         );
-        assert_eq!(entry_texts("? a\n:\n\n# c\nb: 1\n"), ["? a\n:", "b: 1\n"]);
-        assert_eq!(entry_texts("? a  # c\n\nb: 1\n"), ["? a  # c", "b: 1\n"]);
-        assert_eq!(entry_texts("- ? a\n  b: 1\n"), ["? a", "b: 1\n"]);
+        assert_eq!(entry_texts("? a\n:\n\n# c\nb: 1\n"), ["? a\n:\n", "b: 1\n"]);
+        assert_eq!(entry_texts("? a  # c\n\nb: 1\n"), ["? a  # c\n", "b: 1\n"]);
+        assert_eq!(entry_texts("- ? a\n  b: 1\n"), ["? a\n", "b: 1\n"]);
+    }
+
+    /// A mapping entry owns the comment ending its last line, and the line
+    /// break after it, whether its key is explicit or its value on a later
+    /// line.
+    #[test]
+    fn test_mapping_entry_owns_line_end() {
+        assert_eq!(
+            entry_texts("? a\n: b  # c\nd: 1\n"),
+            ["? a\n: b  # c\n", "d: 1\n"]
+        );
+        assert_eq!(
+            entry_texts("a:\n  b  # c\nd: 1\n"),
+            ["a:\n  b  # c\n", "d: 1\n"]
+        );
+        assert_eq!(entry_texts("? - a\n# c\nd: 1\n"), ["? - a\n", "d: 1\n"]);
     }
 
     /// A sequence entry owns the comment ending its line, and the line

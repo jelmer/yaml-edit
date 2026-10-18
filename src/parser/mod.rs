@@ -826,10 +826,35 @@ impl Parser<'_> {
         ]);
     }
 
-    /// Step over the white space and comment ending the current line.
+    /// Step over the white space and comment ending the current line,
+    /// unless the node just parsed has ended its line, as a block node does:
+    /// a comment then is a line of its own.
     pub(super) fn skip_line_end_trivia(&mut self) {
+        if matches!(
+            self.previous_kind,
+            Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
+        ) {
+            return;
+        }
         self.skip_whitespace();
         if self.current() == Some(SyntaxKind::COMMENT) {
+            self.bump();
+        }
+    }
+
+    /// Step over the end of the line of the block entry just parsed: white
+    /// space, a comment and the line break, which the entry owns (see the
+    /// CST invariants in `nodes/mod.rs`). An entry ending in a block node
+    /// has ended its line already.
+    pub(super) fn skip_entry_line_end(&mut self) {
+        if matches!(
+            self.previous_kind,
+            Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
+        ) {
+            return;
+        }
+        self.skip_line_end_trivia();
+        if self.current() == Some(SyntaxKind::NEWLINE) {
             self.bump();
         }
     }
@@ -936,6 +961,9 @@ impl Parser<'_> {
             // sibling entry, which is left to the mapping.
             self.emit_implicit_null();
         }
+        // A comment ending the value's last line goes in the VALUE, as in
+        // a mapping entry with an implicit key.
+        self.skip_line_end_trivia();
         self.builder.finish_node();
     }
 

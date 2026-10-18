@@ -204,8 +204,12 @@ summary here is a quick reference.
 
 YAML newlines are terminators, not separators. Every block-style
 `MAPPING_ENTRY` and `SEQUENCE_ENTRY` owns its trailing `NEWLINE` token as a
-direct child. The parent `MAPPING`/`SEQUENCE` node does not own any newlines
-itself, except for blank lines and comment lines between entries.
+direct child, explicit-key entries (`? k\n: v\n`) included, and so does the
+comment ending its line: a mapping entry has it in its `VALUE`, a sequence
+entry after its item. An entry ending in a nested block collection or a
+block scalar has its line ended by that instead. The parent
+`MAPPING`/`SEQUENCE` node does not own any newlines itself, except for blank
+lines and comment lines between entries.
 
 ```
 MAPPING_ENTRY
@@ -508,8 +512,9 @@ the alias text or skipping it.
 Every test that mutates a tree checks the result after each mutation:
 
 - `debug::validate_tree` checks the structural invariants from the `nodes`
-  module docs: entries terminated by a NEWLINE, no stacked INDENTs, no
-  doubled trailing NEWLINEs, one value node per KEY/VALUE/entry.
+  module docs: entries terminated by a NEWLINE of their own, no comment
+  ending an entry's line outside it, no stacked INDENTs, no doubled
+  trailing NEWLINEs, one value node per KEY/VALUE/entry.
 - `debug::roundtrip_ok` re-parses the text and checks that it parses without
   errors and renders back to the same text.
 - In integration tests, the shared `assert_cst_ok(&doc)` and

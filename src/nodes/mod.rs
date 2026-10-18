@@ -67,9 +67,12 @@
 //!   SEQUENCE_ENTRY ...
 //! ```
 //!
-//! An explicit-key entry (`? key\n: value\n`) never owns the NEWLINE
-//! ending its value line, nor the comment before it: the parser leaves
-//! them to the MAPPING, right after the entry. See [`trivia`].
+//! An explicit-key entry (`? key\n: value  # c\n`) is no different: its
+//! VALUE holds the comment and the entry the NEWLINE ending the value's
+//! line. One without a `:` line (`? key  # c\n`) has the comment after
+//! its KEY, then its empty VALUE and the NEWLINE. An entry that ends in a
+//! block node, a nested block collection or a block scalar, has its line
+//! ended by that node. See [`trivia`].
 //!
 //! Two carve-outs:
 //! - The **last** entry of a block collection may lack a terminator
@@ -143,8 +146,8 @@
 //!                                                 COMMA }
 //! {: v}      (flow mapping)       KEY { SCALAR { NULL "" } }, COLON, VALUE ...
 //! ? key\n    (explicit key)       MAPPING_ENTRY { QUESTION, KEY ...,
-//!                                                 VALUE { SCALAR { NULL "" } } },
-//!                                 NEWLINE
+//!                                                 VALUE { SCALAR { NULL "" } },
+//!                                                 NEWLINE }
 //! {? : v}    (flow explicit key)  KEY { QUESTION, WHITESPACE,
 //!                                       SCALAR { NULL "" } }, COLON, ...
 //! - \n       (block sequence)     SEQUENCE_ENTRY { DASH, WHITESPACE,
@@ -444,16 +447,9 @@ fn move_blank_lines_ahead_of_kept_scalar(entry: &SyntaxNode) {
     if !ends_with_kept_block_scalar(entry) {
         return;
     }
-    // An explicit-key entry leaves the break ending its line to the mapping.
     let Some(line_end) = entry
         .last_token()
         .filter(|t| t.kind() == SyntaxKind::NEWLINE)
-        .or_else(|| {
-            entry
-                .next_sibling_or_token()
-                .and_then(|c| c.into_token())
-                .filter(|t| t.kind() == SyntaxKind::NEWLINE)
-        })
     else {
         return;
     };

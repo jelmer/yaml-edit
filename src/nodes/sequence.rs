@@ -442,7 +442,7 @@ impl Sequence {
         if open {
             trivia::unterminate_last(&last.expect("at least one entry is added"));
         }
-        let at = trivia::index_after_line(&pushed);
+        let at = pushed.index() + 1;
         insert_children(&self.0, at, inserts);
     }
 
@@ -581,7 +581,7 @@ impl Sequence {
         let (trailing_lines, dash_comment) = match entry_item(node) {
             Some(old) if flow.is_none() => {
                 let lines = replaced_value::take_trailing_lines(&old);
-                replaced_value::remove_lifted_comment(node, &old);
+                replaced_value::remove_comment_after_item(&old);
                 (lines, replaced_value::take_dash_line_comment(node))
             }
             _ => (Vec::new(), None),

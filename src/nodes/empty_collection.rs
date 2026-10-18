@@ -4,8 +4,8 @@
 //! placeholder turns back into a block collection when it gets its first.
 
 use super::{
-    fresh_token, has_child_token, insert_children, replace_children, trivia, SyntaxNode,
-    SyntaxToken,
+    append_children, fresh_token, has_child_token, insert_children, replace_children, trivia,
+    SyntaxNode, SyntaxToken,
 };
 use crate::lex::SyntaxKind;
 use rowan::ast::AstNode;
@@ -113,11 +113,9 @@ fn copies(tokens: &[SyntaxToken]) -> Vec<Element> {
 /// [`render_empty`] for a collection that is a sequence item, explicit key,
 /// document root or detached.
 fn render_in_place(collection: &SyntaxNode, terminated: bool) {
-    // Entries normally take their trailing NEWLINE with them when removed.
-    // An explicit-key entry's line break is a sibling, so it outlives the
-    // entry and would otherwise leave the mapping rendering as bare
-    // whitespace instead of `{}`. Comment lines that followed an entry
-    // stay after the flow-empty line, indented as they were.
+    // Entries take their trailing NEWLINE with them when removed. Comment
+    // lines that followed an entry stay after the flow-empty line,
+    // indented as they were.
     let leftovers = replace_with_brackets(collection);
     let tail_start = leftovers
         .iter()
@@ -138,8 +136,17 @@ fn render_in_place(collection: &SyntaxNode, terminated: bool) {
         return;
     }
     // The line break follows the node, properties included, as a parsed
-    // flow-empty line has it.
+    // flow-empty line has it. It ends an explicit-key entry without a `:`,
+    // and its comment lines follow that in the mapping.
     let node = line_node(collection);
+    if node.kind() == SyntaxKind::MAPPING_ENTRY {
+        append_children(&node, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+        match node.parent() {
+            Some(mapping) => insert_children(&mapping, node.index() + 1, tail),
+            None => append_children(&node, tail),
+        }
+        return;
+    }
     let Some(parent) = node.parent() else {
         // A detached collection has no line of its own; it keeps its
         // comment lines at its end.
@@ -432,16 +439,10 @@ pub(crate) fn detach_empty_collection_placeholder_newline(
             .parent()
             .filter(|e| e.kind() == SyntaxKind::MAPPING_ENTRY)
             .expect("a VALUE is in a MAPPING_ENTRY");
-        // An explicit-key entry leaves the break ending its line to the
-        // mapping.
-        let line_break = if has_child_token(&entry, |k| k == SyntaxKind::QUESTION) {
-            entry.next_sibling_or_token()
-        } else {
-            entry.last_child_or_token()
-        };
+        let line_break = entry.last_child_or_token();
         (entry, line_break)
     } else if node.kind() == SyntaxKind::MAPPING_ENTRY {
-        (node.clone(), node.next_sibling_or_token())
+        (node.clone(), node.last_child_or_token())
     } else {
         (parent, node.next_sibling_or_token())
     };

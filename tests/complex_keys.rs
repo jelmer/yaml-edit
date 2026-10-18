@@ -788,7 +788,7 @@ fn test_comment_after_explicit_indicator_leaves_next_entry_alone() {
       VALUE
         SCALAR
           NULL: ""
-    NEWLINE: "\\n"
+      NEWLINE: "\\n"
     MAPPING_ENTRY
       KEY
         SCALAR
@@ -912,7 +912,7 @@ fn test_lone_annotation_in_explicit_entry_leaves_next_entry_alone() {
       VALUE
         SCALAR
           NULL: ""
-    NEWLINE: "\\n"
+      NEWLINE: "\\n"
     MAPPING_ENTRY
       KEY
         SCALAR

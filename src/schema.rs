@@ -5,6 +5,7 @@
 
 use crate::scalar::{ScalarType, ScalarValue};
 use crate::yaml::{Document, Mapping, Scalar, Sequence, TaggedNode};
+use rowan::ast::AstNode;
 
 /// Specific type of validation error that occurred
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -546,6 +547,12 @@ impl SchemaValidator {
         path: &str,
         errors: &mut Vec<ValidationError>,
     ) {
+        if let Some(sequence) = tagged_node.as_sequence() {
+            return self.validate_sequence(&sequence, path, errors);
+        }
+        if let Some(mapping) = tagged_node.as_mapping() {
+            return self.validate_mapping(&mapping, path, errors);
+        }
         let Some(scalar_value) = tagged_scalar_value(tagged_node) else {
             return;
         };
@@ -617,6 +624,13 @@ impl SchemaValidator {
                 }
             }
         } else if let Some(tagged_node) = extract_tagged_node(node) {
+            if let Some(content) = tagged_node
+                .as_sequence()
+                .map(|s| s.syntax().clone())
+                .or_else(|| tagged_node.as_mapping().map(|m| m.syntax().clone()))
+            {
+                return self.check_coercion_node(&content, path, errors);
+            }
             let Some(scalar_type) = tagged_scalar_value(&tagged_node).map(|v| v.scalar_type())
             else {
                 return;
@@ -663,7 +677,6 @@ fn tagged_scalar_value(tagged_node: &TaggedNode) -> Option<ScalarValue> {
 mod tests {
     use super::*;
     use crate::yaml::Document;
-    use rowan::ast::AstNode;
 
     #[test]
     fn test_schema_names() {
@@ -1598,6 +1611,31 @@ value: 42
         assert_eq!(
             *seen.lock().unwrap(),
             vec![("42".to_string(), "root.a".to_string())]
+        );
+    }
+    #[test]
+    fn test_tagged_collection_contents_validated() {
+        let document = create_test_document("a: !foo [x, !!timestamp 2001-01-01]\n");
+        let expected = Err(vec![ValidationError::type_not_allowed(
+            "root.a[1]",
+            "json",
+            ScalarType::Timestamp,
+            json_types(),
+        )]);
+        assert_eq!(
+            SchemaValidator::json().strict().validate(&document),
+            expected
+        );
+        assert_eq!(SchemaValidator::json().can_coerce(&document), expected);
+        let document = create_test_document("a: !foo {b: !!timestamp 2001-01-01}\n");
+        assert_eq!(
+            SchemaValidator::json().strict().validate(&document),
+            Err(vec![ValidationError::type_not_allowed(
+                "root.a.b",
+                "json",
+                ScalarType::Timestamp,
+                json_types(),
+            )])
         );
     }
 }

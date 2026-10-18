@@ -567,7 +567,7 @@ impl YamlFile {
         if !self.0.text_range().is_empty() && !crate::nodes::trivia::ends_with_line_break(&self.0) {
             match self.0.last_child_or_token() {
                 Some(rowan::NodeOrToken::Node(last)) if last.kind() == SyntaxKind::DOCUMENT => {
-                    crate::nodes::trivia::terminate_last_line(&last)
+                    crate::nodes::trivia::terminate_last_line(&last, "\n")
                 }
                 _ => crate::nodes::append_children(
                     &self.0,

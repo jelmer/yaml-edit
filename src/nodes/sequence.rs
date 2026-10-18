@@ -657,12 +657,12 @@ impl Sequence {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn clear(&self) {
-        let terminated = self
+        let line_break = self
             .0
             .children()
             .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             .last()
-            .is_some_and(|e| trivia::ends_with_line_break(&e));
+            .and_then(|e| trivia::line_break(&e));
         // Remove items from the beginning to avoid recalculating indices
         // Use a safety counter to prevent infinite loops
         let initial_len = self.len();
@@ -683,7 +683,7 @@ impl Sequence {
                 "clear() invariant: remove(0) did not reduce length"
             );
         }
-        render_empty(&self.0, terminated);
+        render_empty(&self.0, line_break.as_deref());
     }
 
     crate::nodes::ast_node_spans!("sequence");

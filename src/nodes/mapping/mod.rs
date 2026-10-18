@@ -903,16 +903,16 @@ impl Mapping {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn clear(&self) {
-        let terminated = self
+        let line_break = self
             .entries()
             .last()
-            .is_some_and(|e| trivia::ends_with_line_break(e.syntax()));
+            .and_then(|e| trivia::line_break(e.syntax()));
         // Entries are removed one by one, as keeping aliases resolving may
         // rewrite a later key.
         while let Some(entry) = self.entries().next() {
             self.remove_entry(entry.syntax());
         }
-        render_empty(&self.0, terminated);
+        render_empty(&self.0, line_break.as_deref());
     }
 
     /// Rename a key while preserving its value and formatting.

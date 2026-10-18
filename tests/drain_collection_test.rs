@@ -483,6 +483,33 @@ fn refill_drained_top_level_collection_with_lines_after_it() {
     );
 }
 
+/// The line break after a drained collection is the document's own.
+#[test]
+fn drained_collection_keeps_crlf_line_breaks() {
+    let top = |d: &Document| d.as_mapping().unwrap();
+    let seq = |d: &Document| d.as_sequence().unwrap();
+    check_edit("a: 1\r\nb: 2\r\n", |d| top(d).clear(), "{}\r\n");
+    check_edit("- a\r\n# c\r\n", |d| seq(d).clear(), "[]\r\n# c\r\n");
+    check_edit(
+        "k:\r\n  - 1\r\n",
+        |d| top(d).get_sequence("k").unwrap().clear(),
+        "k: []\r\n",
+    );
+    check_edit(
+        "- - 1\r\n",
+        |d| seq(d).get(0).unwrap().as_sequence().unwrap().clear(),
+        "- []\r\n",
+    );
+    check_edit(
+        "? - 1\r\n",
+        |d| {
+            let key = top(d).keys().next().unwrap();
+            key.as_sequence().unwrap().clear();
+        },
+        "? []\r\n",
+    );
+}
+
 #[test]
 fn refill_drained_mapping_value() {
     let refill = |d: &Document| {

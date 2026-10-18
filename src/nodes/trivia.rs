@@ -14,6 +14,13 @@ use super::{
 };
 use crate::lex::SyntaxKind;
 
+/// The line break ending `entry`'s last line, if it has one.
+pub(crate) fn line_break(entry: &SyntaxNode) -> Option<String> {
+    last_non_empty_token(entry)
+        .filter(|t| t.kind() == SyntaxKind::NEWLINE)
+        .map(|t| t.text().to_string())
+}
+
 /// Does `node`'s text end in a NEWLINE, ignoring zero-width tokens such as
 /// an implicit null after it?
 pub(crate) fn ends_with_line_break(node: &SyntaxNode) -> bool {
@@ -348,7 +355,7 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
     }
 
     if drained {
-        render_empty(collection, terminated);
+        render_empty(collection, line_break(entry).as_deref());
     }
     // The end of the input keeps its lack of a final line break.
     if is_last && !terminated && !flow {
@@ -441,8 +448,14 @@ fn blank_lines_before(entry: &SyntaxNode) -> Vec<rowan::SyntaxElement<super::Lan
 /// Give `entry`, an attached block collection entry, a line break ending
 /// its line if it has none, where the parser would put it.
 pub(crate) fn terminate(entry: &SyntaxNode) {
+    terminate_with(entry, "\n");
+}
+
+/// [`terminate`] with `line_break`, which a document without line breaks
+/// left keeps rather than `\n`.
+pub(crate) fn terminate_with(entry: &SyntaxNode, line_break: &str) {
     if !ends_with_line_break(entry) {
-        terminate_last_line(entry);
+        terminate_last_line(entry, line_break);
     }
 }
 
@@ -470,8 +483,8 @@ pub(crate) fn unterminate_last(node: &SyntaxNode) {
 /// end of the line: the last block entry, a block scalar or the collection
 /// holding a trailing comment line. `node` must not already end in a
 /// NEWLINE.
-pub(crate) fn terminate_last_line(node: &SyntaxNode) {
-    let newline = || vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()];
+pub(crate) fn terminate_last_line(node: &SyntaxNode, line_break: &str) {
+    let newline = || vec![fresh_token(SyntaxKind::NEWLINE, line_break).into()];
     let mut cur = node.clone();
     while let Some(rowan::NodeOrToken::Node(last)) = cur.last_child_or_token() {
         if !holds_line_end(&last) {

@@ -18,8 +18,8 @@ fn check_remove(source: &str, expected: &str) {
     common::assert_cst_ok(&doc);
     let reparsed = Document::from_str(expected).unwrap();
     assert_eq!(
-        debug::tree_to_string(doc.syntax()),
-        debug::tree_to_string(reparsed.syntax())
+        debug::shape_to_string(doc.syntax()),
+        debug::shape_to_string(reparsed.syntax())
     );
 }
 
@@ -65,8 +65,8 @@ fn check_edit(source: &str, edit: impl Fn(&Document), expected: &str) {
     common::assert_cst_ok(&doc);
     let reparsed = Document::from_str(expected).unwrap();
     assert_eq!(
-        debug::tree_to_string(doc.syntax()),
-        debug::tree_to_string(reparsed.syntax())
+        debug::shape_to_string(doc.syntax()),
+        debug::shape_to_string(reparsed.syntax())
     );
 }
 
@@ -136,6 +136,7 @@ fn remove_last_item_of_sequence() {
     check_edit("- 1\n- 2\n", top, "- 1\n");
     check_edit("- 1\n- 2", top, "- 1");
     check_edit("- 1 # c\n- 2", top, "- 1 # c");
+    check_edit("- 1\n- 2  # c\n", top, "- 1\n");
     check_edit("- a:\n    x: 1\n- 2", top, "- a:\n    x: 1");
     // The line break is part of the scalar's value, so it stays.
     check_edit("- |\n  t\n- 2", top, "- |\n  t\n");

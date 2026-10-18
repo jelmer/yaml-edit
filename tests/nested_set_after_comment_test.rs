@@ -24,8 +24,8 @@ fn edit_src(src: &str, f: impl FnOnce(&Mapping)) -> String {
     let out = file.to_string();
     let reparsed = YamlFile::from_str(&out).unwrap();
     assert_eq!(
-        debug::tree_to_string(file.syntax()),
-        debug::tree_to_string(reparsed.syntax())
+        debug::shape_to_string(file.syntax()),
+        debug::shape_to_string(reparsed.syntax())
     );
     out
 }

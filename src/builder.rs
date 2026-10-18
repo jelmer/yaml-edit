@@ -512,8 +512,8 @@ mod tests {
         debug::roundtrip_ok(syntax).unwrap();
         let reparsed = YamlFile::from_str(&file.to_string()).unwrap();
         assert_eq!(
-            debug::tree_to_string(syntax),
-            debug::tree_to_string(reparsed.syntax())
+            debug::shape_to_string(syntax),
+            debug::shape_to_string(reparsed.syntax())
         );
     }
 

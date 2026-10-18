@@ -9,6 +9,7 @@ pub(crate) use helpers::{
     block_scalar_body_shift, drop_tagged_anchor, held_anchor, held_anchor_token, source_anchor_text,
 };
 
+use super::empty_collection::{self, render_empty};
 use super::trivia::{self, hand_line_break_to_mapping, line_end, FlowSeparator, LineEnd};
 use super::{
     entry_key, entry_value, fresh_token, has_child_token, is_block_scalar,
@@ -16,10 +17,7 @@ use super::{
 };
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
-use crate::yaml::{
-    collapse_empty_child_collection_in_parent as collapse_empty_child_mapping_in_parent,
-    dump_cst_to_string, ValueNode,
-};
+use crate::yaml::{dump_cst_to_string, ValueNode};
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
 
@@ -243,6 +241,9 @@ impl Mapping {
     /// when the first entry arrives; a `{}` that came from the source has no
     /// such marker and keeps its flow style.
     ///
+    /// A block mapping that loses its last entry to `remove` or `clear` is
+    /// written the same way, marker included.
+    ///
     /// The marker lives only in the tree. Serializing and re-parsing yields
     /// an ordinary `{}`, which stays flow, since YAML has nowhere to record
     /// the intent.
@@ -266,20 +267,6 @@ impl Mapping {
         builder.token(SyntaxKind::RIGHT_BRACE.into(), close);
         builder.finish_node();
         Mapping(SyntaxNode::new_root_mut(builder.finish()))
-    }
-
-    /// Is this an empty mapping awaiting its first entry? See
-    /// [`Mapping::new_pending_block`].
-    pub(crate) fn is_block_placeholder(&self) -> bool {
-        !self
-            .0
-            .children()
-            .any(|c| c.kind() == SyntaxKind::MAPPING_ENTRY)
-            && self
-                .0
-                .children_with_tokens()
-                .filter_map(|c| c.into_token())
-                .any(|t| t.kind() == SyntaxKind::WHITESPACE && t.text().is_empty())
     }
 
     /// Wrap a flow pair in braces, so that it reads as one mapping however
@@ -623,7 +610,8 @@ impl Mapping {
         // Flow-style mappings start with LEFT_BRACE token. A block
         // placeholder is `{}` in the text but is destined to become block, so
         // it does not count as flow.
-        (has_child_token(&self.0, |k| k == SyntaxKind::LEFT_BRACE) && !self.is_block_placeholder())
+        (has_child_token(&self.0, |k| k == SyntaxKind::LEFT_BRACE)
+            && !empty_collection::is_block_placeholder(&self.0))
             || is_flow_pair(&self.0)
     }
 
@@ -802,9 +790,7 @@ impl Mapping {
         // A placeholder from `Mapping::new_pending_block` turns into a real block
         // mapping now that it has an entry to hold. This runs before the
         // flow_context check below so the entry is laid out as block.
-        if self.is_block_placeholder() && !crate::nodes::sequence::must_render_flow(&self.0) {
-            crate::yaml::convert_placeholder_to_block(&self.0);
-        }
+        empty_collection::convert_placeholder_to_block(&self.0);
 
         // Detect if this mapping is in flow style (JSON format)
         let flow_context = self.is_flow_style();
@@ -932,7 +918,7 @@ impl Mapping {
         // placeholder, strip the outer MAPPING_ENTRY's trailing NEWLINE
         // that acted as the placeholder marker (see issue #18).
         if count == 0 {
-            crate::yaml::detach_empty_collection_placeholder_newline(&self.0, new_entry);
+            empty_collection::detach_empty_collection_placeholder_newline(&self.0, new_entry);
         }
         hand_line_break_to_mapping(new_entry);
         settle_lines_after_inserted_entry(new_entry);
@@ -1194,14 +1180,15 @@ impl Mapping {
             crate::nodes::append_children(&new_entry, separator);
         } else {
             // The old line break goes, whether beside the entry or missing
-            // at the end of the input, and the new entry brings its own.
+            // at the end of the input, and the new entry brings its own. One
+            // after a comment ending the line stays, for the new entry.
             match line_end(old) {
                 LineEnd::Sibling => {
                     if let Some(newline) = old.next_sibling_or_token() {
                         newline.detach();
                     }
                 }
-                LineEnd::Open => {
+                LineEnd::Open | LineEnd::AfterComment => {
                     let last = new_entry
                         .last_child_or_token()
                         .filter(|c| c.kind() == SyntaxKind::NEWLINE);
@@ -1231,170 +1218,22 @@ impl Mapping {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn remove(&self, key: impl crate::AsYaml) -> Option<MappingEntry> {
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-
-        for (i, child) in children.iter().enumerate() {
-            let Some(node) = child.as_node() else {
-                continue;
-            };
-            if node.kind() != SyntaxKind::MAPPING_ENTRY {
-                continue;
-            }
-            let Some(entry) = MappingEntry::cast(node.clone()) else {
-                continue;
-            };
-            if !entry.key_matches(&key) {
-                continue;
-            }
-            self.remove_entry_at(&children, i, node);
-            return Some(entry);
-        }
-        None
+        let entry = self.entries().find(|e| e.key_matches(&key))?;
+        self.remove_entry(entry.syntax());
+        Some(entry)
     }
 
-    /// Splice the entry at child index `i` out of this mapping, and
-    /// restore the tail-newline convention on the new last entry.
-    ///
-    /// Shared by [`Mapping::remove`] and [`Mapping::remove_nth_occurrence`].
-    /// The rule is: if we're removing the last MAPPING_ENTRY and it had
-    /// no trailing NEWLINE (an unterminated source), strip the trailing
-    /// NEWLINE from the new last entry too so the doc's terminator
-    /// character is preserved. Otherwise leave the previous entry's
-    /// NEWLINE in place.
-    fn remove_entry_at(
-        &self,
-        children: &[rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>],
-        i: usize,
-        removed: &SyntaxNode,
-    ) {
+    /// Splice `removed`, an entry of this mapping, out of it with the
+    /// trivia that belongs to it.
+    fn remove_entry(&self, removed: &SyntaxNode) {
         // Without its pair, a flow pair would leave `[]`, an empty sequence.
         if is_flow_pair(&self.0) {
             self.brace_flow_pair();
-            let children: Vec<_> = self.0.children_with_tokens().collect();
-            return self.remove_entry_at(&children, removed.index(), removed);
         }
         crate::nodes::kept_aliases::keeping_aliases(removed, None, || {
-            self.splice_out_entry(children, i, removed);
+            trivia::detach_entry(&self.0, removed);
             None
         });
-    }
-
-    /// The edit of [`remove_entry_at`](Self::remove_entry_at).
-    pub(super) fn splice_out_entry(
-        &self,
-        children: &[rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>],
-        i: usize,
-        removed: &SyntaxNode,
-    ) {
-        let is_last = !children.iter().skip(i + 1).any(|c| {
-            c.as_node()
-                .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-        });
-        let removed_terminated = line_end(removed).is_terminated();
-
-        // In a block mapping every entry but the first is preceded by an
-        // INDENT token that puts it at the right column; the first
-        // entry's indent sits outside, on the parent VALUE. That token
-        // belongs to the entry, so it goes with it -- otherwise it
-        // orphans onto the following entry, over-indenting it, or is
-        // left dangling as trailing whitespace when the entry was last.
-        let indent_before = i.checked_sub(1).and_then(|p| {
-            children[p]
-                .as_token()
-                .filter(|t| t.kind() == SyntaxKind::INDENT)
-                .cloned()
-        });
-
-        // Blank lines on both sides of the entry would merge into a double
-        // gap; keep only the ones after it. An explicit-key entry's line
-        // break sits beside it rather than inside, and is not a blank line.
-        let mut before = std::iter::successors(removed.prev_sibling_or_token(), |c| {
-            c.prev_sibling_or_token()
-        })
-        .skip_while(|c| c.kind() == SyntaxKind::INDENT)
-        .peekable();
-        let mut blank_lines_before = Vec::new();
-        while let Some(newline) = before.next_if(|c| c.kind() == SyntaxKind::NEWLINE) {
-            blank_lines_before.push(newline);
-        }
-        if before
-            .peek()
-            .and_then(|c| c.as_node())
-            .is_some_and(|n| line_end(n) == LineEnd::Sibling)
-        {
-            blank_lines_before.pop();
-        }
-        let mut after = std::iter::successors(removed.next_sibling_or_token(), |c| {
-            c.next_sibling_or_token()
-        })
-        .take_while(|c| c.kind() == SyntaxKind::NEWLINE);
-        let own_line_break = if line_end(removed) == LineEnd::Sibling {
-            after.next()
-        } else {
-            None
-        };
-        let blank_line_after = after.next().is_some();
-
-        self.0.splice_children(i..(i + 1), vec![]);
-        if let Some(newline) = own_line_break {
-            newline.detach();
-        }
-        if blank_line_after {
-            for newline in blank_lines_before {
-                newline.detach();
-            }
-        }
-        // In a flow mapping the new last entry still carries the separator
-        // that led to the removed one, unless that one had its own.
-        if is_last && self.is_flow_style() && !trivia::has_comma(removed) {
-            if let Some(prev) = self.entries().last() {
-                FlowSeparator::strip(prev.syntax());
-            }
-        }
-        // Removing the first entry promotes the next one, but the parent
-        // VALUE already supplies its indent, so the INDENT now leading
-        // this mapping would double it. Drop whichever applies. An INDENT
-        // that starts a comment line after the first entry is that line's
-        // own. In a drained mapping the parent's indent goes away with the
-        // collapse below, so a comment line's INDENT stays too.
-        let drained = !self
-            .0
-            .children()
-            .any(|c| c.kind() == SyntaxKind::MAPPING_ENTRY);
-        let orphaned_indent = match indent_before {
-            Some(indent) => {
-                Some(indent).filter(|t| !(drained && crate::yaml::indents_comment_line(t)))
-            }
-            None => self
-                .0
-                .children_with_tokens()
-                .next()
-                .and_then(|c| c.into_token())
-                .filter(|t| {
-                    t.kind() == SyntaxKind::INDENT && !crate::yaml::indents_comment_line(t)
-                }),
-        };
-        if let Some(indent) = orphaned_indent {
-            indent.detach();
-        }
-        if !drained && !self.is_flow_style() {
-            crate::yaml::move_leading_lines_out(&self.0);
-        }
-
-        // Nested mapping drained by remove: collapse to `key: {}` or
-        // `- {}` so `set_path("a.b.c", v) + remove_path(...)` doesn't
-        // leave a dangling indent scaffold. Top-level drain is left alone here
-        // -- callers may add more entries and injecting `{}` would
-        // poison subsequent block-style `set`s; `Mapping::clear`
-        // handles the explicit-empty case.
-        if drained {
-            collapse_empty_child_mapping_in_parent(&self.0, removed_terminated);
-        }
-
-        // The end of the input keeps its lack of a final line break.
-        if is_last && !removed_terminated && !self.is_flow_style() {
-            trivia::unterminate_last(&self.0);
-        }
     }
 
     /// Remove the nth occurrence of a key, returning the removed entry.
@@ -1433,30 +1272,9 @@ impl Mapping {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn remove_nth_occurrence(&self, key: impl crate::AsYaml, n: usize) -> Option<MappingEntry> {
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-
-        let mut occurrence_count = 0;
-        for (i, child) in children.iter().enumerate() {
-            let Some(node) = child.as_node() else {
-                continue;
-            };
-            if node.kind() != SyntaxKind::MAPPING_ENTRY {
-                continue;
-            }
-            let Some(entry) = MappingEntry::cast(node.clone()) else {
-                continue;
-            };
-            if !entry.key_matches(&key) {
-                continue;
-            }
-            if occurrence_count != n {
-                occurrence_count += 1;
-                continue;
-            }
-            self.remove_entry_at(&children, i, node);
-            return Some(entry);
-        }
-        None
+        let entry = self.entries().filter(|e| e.key_matches(&key)).nth(n)?;
+        self.remove_entry(entry.syntax());
+        Some(entry)
     }
 
     /// Remove all key-value pairs from this mapping.
@@ -1469,22 +1287,10 @@ impl Mapping {
             .is_some_and(|e| line_end(e.syntax()).is_terminated());
         // Entries are removed one by one, as keeping aliases resolving may
         // rewrite a later key.
-        while let Some((i, entry)) = self
-            .0
-            .children_with_tokens()
-            .enumerate()
-            .find_map(|(i, c)| {
-                Some((
-                    i,
-                    c.into_node()
-                        .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)?,
-                ))
-            })
-        {
-            let children: Vec<_> = self.0.children_with_tokens().collect();
-            self.remove_entry_at(&children, i, &entry);
+        while let Some(entry) = self.entries().next() {
+            self.remove_entry(entry.syntax());
         }
-        crate::yaml::render_empty_collection_as_flow(&self.0, terminated);
+        render_empty(&self.0, terminated);
     }
 
     /// Rename a key while preserving its value and formatting.
@@ -1684,17 +1490,8 @@ impl Mapping {
 
     /// Remove every entry other than `keep` whose key matches `key`.
     fn remove_other_entries(&self, keep: &SyntaxNode, key: &impl crate::AsYaml) {
-        while let Some((i, other)) = self
-            .0
-            .children_with_tokens()
-            .enumerate()
-            .find_map(|(i, c)| {
-                let entry = MappingEntry::cast(c.into_node()?)?;
-                (entry.0 != *keep && entry.key_matches(key)).then_some((i, entry.0))
-            })
-        {
-            let children: Vec<_> = self.0.children_with_tokens().collect();
-            self.remove_entry_at(&children, i, &other);
+        while let Some(other) = self.entries().find(|e| e.0 != *keep && e.key_matches(key)) {
+            self.remove_entry(other.syntax());
         }
     }
 
@@ -1872,9 +1669,7 @@ impl Mapping {
     ) {
         // As in `set_as_yaml`: a pending-block placeholder becomes a real
         // block mapping before its first entry is laid out.
-        if self.is_block_placeholder() && !crate::nodes::sequence::must_render_flow(&self.0) {
-            crate::yaml::convert_placeholder_to_block(&self.0);
-        }
+        empty_collection::convert_placeholder_to_block(&self.0);
 
         // Create the new mapping entry
         let flow_context = self.is_flow_style();

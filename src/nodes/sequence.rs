@@ -4,6 +4,7 @@ use super::{
 };
 use crate::as_yaml::{build_in, AsYaml, FlowQuoting, YamlKind};
 use crate::lex::SyntaxKind;
+use crate::nodes::empty_collection::{self, render_empty};
 use crate::nodes::flow_quoting;
 use crate::nodes::mapping::{drop_tagged_anchor, held_anchor};
 use crate::nodes::trivia::FlowSeparator;
@@ -14,15 +15,8 @@ use rowan::GreenNodeBuilder;
 ast_node!(Sequence, SEQUENCE, "A YAML sequence (list)");
 
 /// True if `node` cannot be rendered as a block collection: any
-/// flow ancestor forbids it, and so does sitting inline after a `- `
-/// (no NEWLINE + INDENT scaffold to hang a block entry off).
+/// flow ancestor forbids it.
 pub(crate) fn must_render_flow(node: &SyntaxNode) -> bool {
-    if node
-        .parent()
-        .is_some_and(|p| p.kind() == SyntaxKind::SEQUENCE_ENTRY)
-    {
-        return true;
-    }
     let mut cur = node.parent();
     while let Some(p) = cur {
         let opener = match p.kind() {
@@ -34,9 +28,7 @@ pub(crate) fn must_render_flow(node: &SyntaxNode) -> bool {
             // A pending-block placeholder is `{}` in the text but is headed
             // for block style, so it does not force flow on what nests inside
             // it (see `Mapping::new_pending_block`).
-            let pending =
-                crate::nodes::Mapping::cast(p.clone()).is_some_and(|m| m.is_block_placeholder());
-            if has_child_token(&p, |k| k == open) && !pending {
+            if has_child_token(&p, |k| k == open) && !empty_collection::is_block_placeholder(&p) {
                 return true;
             }
         }
@@ -66,6 +58,20 @@ fn parent_value_has_leading_indent(seq: &SyntaxNode) -> bool {
         }
     }
     false
+}
+
+/// Is the column of `seq`'s first entry set outside it: by the INDENT in
+/// its parent VALUE, or by sitting on the line of a `- ` or `? `?
+fn column_set_outside(seq: &SyntaxNode) -> bool {
+    let Some(parent) = seq.parent() else {
+        return false;
+    };
+    match parent.kind() {
+        SyntaxKind::VALUE => parent_value_has_leading_indent(seq),
+        SyntaxKind::SEQUENCE_ENTRY => true,
+        SyntaxKind::KEY => !has_child_token(&parent, |k| k == SyntaxKind::NEWLINE),
+        _ => false,
+    }
 }
 
 /// If `node`'s tail token is a NEWLINE (optionally followed by an
@@ -355,10 +361,6 @@ fn terminator_end(children: &[rowan::SyntaxElement<Lang>], start: usize) -> usiz
         .map_or(start, |offset| start + offset + 1)
 }
 
-// The collapse helper is shared with Mapping; it lives in yaml.rs
-// as `collapse_empty_child_collection_in_parent`.
-use crate::yaml::collapse_empty_child_collection_in_parent as collapse_empty_child_sequence_in_parent;
-
 impl Sequence {
     /// Iterate over items in this sequence as raw syntax nodes.
     ///
@@ -460,6 +462,9 @@ impl Sequence {
     /// form when the first item arrives; a `[]` that came from the source has
     /// no such marker and keeps its flow style.
     ///
+    /// A block sequence that loses its last item to `remove` or `clear` is
+    /// written the same way, marker included.
+    ///
     /// The marker lives only in the tree. Serializing and re-parsing yields
     /// an ordinary `[]`, which stays flow, since YAML has nowhere to record
     /// the intent.
@@ -474,20 +479,6 @@ impl Sequence {
         builder.token(SyntaxKind::RIGHT_BRACKET.into(), "]");
         builder.finish_node();
         Sequence(SyntaxNode::new_root_mut(builder.finish()))
-    }
-
-    /// Is this an empty sequence awaiting its first item? See
-    /// [`Sequence::new_pending_block`].
-    pub(crate) fn is_block_placeholder(&self) -> bool {
-        !self
-            .0
-            .children()
-            .any(|c| c.kind() == SyntaxKind::SEQUENCE_ENTRY)
-            && self
-                .0
-                .children_with_tokens()
-                .filter_map(|c| c.into_token())
-                .any(|t| t.kind() == SyntaxKind::WHITESPACE && t.text().is_empty())
     }
 
     /// Indentation string used by entries in this sequence: a
@@ -652,9 +643,7 @@ impl Sequence {
         // block sequence now that it has an item. A `[]` from the source is
         // not marked and keeps its flow style; a placeholder nested inside a
         // flow container stays flow to avoid mixed output.
-        if self.is_block_placeholder() && !must_render_flow(&self.0) {
-            crate::yaml::convert_placeholder_to_block(&self.0);
-        }
+        empty_collection::convert_placeholder_to_block(&self.0);
         if self.is_flow_style() {
             self.insert_flow(usize::MAX, value);
             return;
@@ -782,7 +771,7 @@ impl Sequence {
         // entries carry an INDENT as a separator after the previous entry's
         // NEWLINE. Match that when pushing.
         let entry_is_first = last_entry_index.is_none();
-        let parent_supplies_indent = entry_is_first && parent_value_has_leading_indent(&self.0);
+        let parent_supplies_indent = entry_is_first && column_set_outside(&self.0);
 
         let mut inserts: Vec<rowan::NodeOrToken<SyntaxNode, _>> = Vec::new();
         if !parent_supplies_indent {
@@ -795,7 +784,7 @@ impl Sequence {
         // Strip the outer MAPPING_ENTRY's placeholder NEWLINE if this was
         // the first entry (see issue #18).
         if entry_is_first {
-            crate::yaml::detach_empty_collection_placeholder_newline(&self.0, &new_entry);
+            empty_collection::detach_empty_collection_placeholder_newline(&self.0, &new_entry);
         }
         crate::nodes::settle_lines_after_inserted_entry(&new_entry);
     }
@@ -865,11 +854,13 @@ impl Sequence {
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn insert(&self, index: usize, value: impl crate::AsYaml) {
         // Same rule as `push`; see there for the "why".
-        if self.is_block_placeholder() && !must_render_flow(&self.0) {
-            crate::yaml::convert_placeholder_to_block(&self.0);
-        }
+        empty_collection::convert_placeholder_to_block(&self.0);
         if self.is_flow_style() {
             self.insert_flow(index, value);
+            return;
+        }
+        if self.is_empty() {
+            self.push(value);
             return;
         }
 
@@ -967,12 +958,7 @@ impl Sequence {
                 c.as_node()
                     .map_or(true, |n| n.kind() != SyntaxKind::SEQUENCE_ENTRY)
             });
-        let column_set_outside = parent_value_has_leading_indent(&self.0)
-            || self
-                .0
-                .parent()
-                .is_some_and(|p| p.kind() == SyntaxKind::SEQUENCE_ENTRY);
-        if inserting_at_head && column_set_outside {
+        if inserting_at_head && column_set_outside(&self.0) {
             let mut inserts = vec![new_entry.into()];
             inserts.extend(indent_token(&indentation));
             self.0.splice_children(insert_at..insert_at, inserts);
@@ -1065,42 +1051,6 @@ impl Sequence {
         new_entry
     }
 
-    /// Drop the INDENT that separated the entry just removed at child
-    /// position `i` from its sibling.
-    ///
-    /// For a non-first entry that INDENT sits before it, left over from the
-    /// previous entry's NEWLINE. For the first, the one *after* it would
-    /// become a leading INDENT inside the SEQUENCE and stack with the parent
-    /// VALUE's (`  ` + `  ` -> `    `), shifting the new first entry a level
-    /// in. A flow sequence has no such separators.
-    fn detach_orphaned_indent(
-        &self,
-        children: &[rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>],
-        i: usize,
-    ) {
-        if self.is_flow_style() {
-            return;
-        }
-        let (neighbour, range) = if i > 0 {
-            (children.get(i - 1), (i - 1)..i)
-        } else {
-            (children.get(i + 1), i..(i + 1))
-        };
-        // An INDENT that starts a comment line after the first entry is
-        // that line's own. In a drained sequence the parent's indent goes
-        // away with the collapse, so a comment line's INDENT stays too.
-        let drained = self.is_empty();
-        let is_indent = neighbour.is_some_and(|c| {
-            c.as_token().is_some_and(|t| {
-                t.kind() == SyntaxKind::INDENT
-                    && !((drained || i == 0) && crate::yaml::indents_comment_line(t))
-            })
-        });
-        if is_indent {
-            self.0.splice_children(range, vec![]);
-        }
-    }
-
     /// Remove the item at `index`, returning its value.
     ///
     /// Returns `Some(value)` if the index was in bounds, `None` otherwise.
@@ -1112,82 +1062,16 @@ impl Sequence {
     pub fn remove(&self, index: usize) -> Option<crate::as_yaml::YamlNode> {
         // Capture the value before removing so we can return it
         let removed_value = self.get(index);
-
-        // Use children_with_tokens() since splice_children() expects those indices
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-
-        // The child position of the entry at `index`, which is not the index
-        // itself: INDENT tokens sit between entries.
-        let i = children
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| {
-                c.as_node()
-                    .is_some_and(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-            })
-            .map(|(i, _)| i)
+        let removed = self
+            .0
+            .children()
+            .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             .nth(index)?;
-        let removed = children[i].as_node().expect("SEQUENCE_ENTRY");
-        crate::nodes::kept_aliases::keeping_aliases(removed, None, || {
-            self.remove_entry_at(&children, i);
+        crate::nodes::kept_aliases::keeping_aliases(&removed, None, || {
+            trivia::detach_entry(&self.0, &removed);
             None
         });
         removed_value
-    }
-
-    /// Splice the entry at child index `i` out of this sequence, tidying
-    /// up the separators and line breaks around it.
-    fn remove_entry_at(
-        &self,
-        children: &[rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>],
-        i: usize,
-    ) {
-        let is_last = !children.iter().skip(i + 1).any(|c| {
-            c.as_node()
-                .is_some_and(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-        });
-        let removed_terminated =
-            trivia::line_end(children[i].as_node().expect("SEQUENCE_ENTRY")).is_terminated();
-
-        // Remove the entry first, then the INDENT that
-        // separated it from a sibling. Doing them as two
-        // separate single-child splices sidesteps a
-        // rowan iteration quirk where a multi-child
-        // splice can skip elements mid-iteration.
-        //
-        // For non-first entries the INDENT sits right
-        // before this entry (the separator after the
-        // previous entry's NEWLINE); for the first
-        // entry any INDENT is a top-level formatting
-        // one we leave alone.
-        self.0.splice_children(i..(i + 1), vec![]);
-        self.detach_orphaned_indent(children, i);
-
-        let removed = children[i].as_node().expect("SEQUENCE_ENTRY");
-        if is_last && self.is_flow_style() && !trivia::has_comma(removed) {
-            if let Some(prev) = self
-                .0
-                .children()
-                .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-                .last()
-            {
-                FlowSeparator::strip(&prev);
-            }
-        }
-
-        // The end of the input keeps its lack of a final line break.
-        if is_last && !removed_terminated && !self.is_flow_style() {
-            trivia::unterminate_last(&self.0);
-        }
-        // If we just drained the last entry from a block
-        // sequence under a key or in a sequence item, collapse
-        // the placeholder scaffold to `key: []` or `- []` so
-        // re-parse still finds the (now-empty) sequence there.
-        if self.is_empty() {
-            collapse_empty_child_sequence_in_parent(&self.0, removed_terminated);
-        } else if !self.is_flow_style() {
-            crate::yaml::move_leading_lines_out(&self.0);
-        }
     }
 
     /// Check if this sequence is in flow style [item1, item2]
@@ -1246,7 +1130,7 @@ impl Sequence {
                 "clear() invariant: remove(0) did not reduce length"
             );
         }
-        crate::yaml::render_empty_collection_as_flow(&self.0, terminated);
+        render_empty(&self.0, terminated);
     }
 
     crate::nodes::ast_node_spans!("sequence");
@@ -1660,7 +1544,7 @@ mod tests {
 
     #[test]
     fn test_sequence_set_scalar_over_commented_block() {
-        use crate::debug::{roundtrip_ok, tree_to_string, validate_tree};
+        use crate::debug::{roundtrip_ok, shape_to_string, validate_tree};
         use crate::{AsYaml, Document};
 
         for (src, expected) in [
@@ -1675,8 +1559,8 @@ mod tests {
             assert_eq!(doc.to_string(), expected, "{src:?}");
             let reparsed = Document::from_str(expected).unwrap();
             assert_eq!(
-                tree_to_string(node),
-                tree_to_string(reparsed.as_node().unwrap()),
+                shape_to_string(node),
+                shape_to_string(reparsed.as_node().unwrap()),
                 "{src:?}"
             );
         }
@@ -1711,7 +1595,7 @@ mod tests {
 
     #[test]
     fn test_block_collection_values_take_the_entry_indent() {
-        use crate::debug::{roundtrip_ok, tree_to_string, validate_tree};
+        use crate::debug::{roundtrip_ok, shape_to_string, validate_tree};
         use crate::{AsYaml, Document, Sequence, YamlNode};
 
         let map_doc = Document::from_str("k: 1\nj: 2\n").unwrap();
@@ -1787,8 +1671,8 @@ mod tests {
             roundtrip_ok(node).unwrap();
             let reparsed = Document::from_str(&doc.to_string()).unwrap();
             assert_eq!(
-                tree_to_string(node),
-                tree_to_string(reparsed.as_node().unwrap()),
+                shape_to_string(node),
+                shape_to_string(reparsed.as_node().unwrap()),
                 "{src:?}"
             );
         }

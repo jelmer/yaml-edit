@@ -16,8 +16,8 @@ fn check_edit(source: &str, edit: impl Fn(&Document), expected: &str) {
     common::assert_cst_ok(&doc);
     let reparsed = Document::from_str(expected).unwrap();
     assert_eq!(
-        debug::tree_to_string(doc.syntax()),
-        debug::tree_to_string(reparsed.syntax())
+        debug::shape_to_string(doc.syntax()),
+        debug::shape_to_string(reparsed.syntax())
     );
 }
 
@@ -98,12 +98,11 @@ fn remove_first_item_of_sequence_in_sequence_item() {
         remove_first_from_item,
         "-\n\n  - 2\n- 3\n",
     );
-    // The comment on the removed item's line is kept, as Sequence::remove
-    // does elsewhere.
+    // The comment on the removed item's line goes with it.
     check_edit(
         "- - 1  # k\n  - 2\n- 3\n",
         remove_first_from_item,
-        "-\n  # k\n  - 2\n- 3\n",
+        "- - 2\n- 3\n",
     );
 }
 
@@ -139,7 +138,7 @@ fn remove_first_entry_of_mapping_value() {
             let top = d.as_mapping().unwrap().get_sequence("top").unwrap();
             assert!(top.remove(0).is_some());
         },
-        "top:\n# k\n- 2\n",
+        "top:\n- 2\n",
     );
 }
 
@@ -164,8 +163,8 @@ fn remove_first_entry_of_document_root() {
         assert_eq!(file.to_string(), expected);
         let reparsed = YamlFile::from_str(expected).unwrap();
         assert_eq!(
-            debug::tree_to_string(file.syntax()),
-            debug::tree_to_string(reparsed.syntax())
+            debug::shape_to_string(file.syntax()),
+            debug::shape_to_string(reparsed.syntax())
         );
     };
     check("---\na: 1\n# c\nb: 2\n", "---\n# c\nb: 2\n");
@@ -192,5 +191,17 @@ fn edit_after_removing_first_entry() {
             assert!(m.remove("b").is_some());
         },
         "-\n  # c\n  {}\n- 3\n",
+    );
+}
+
+#[test]
+fn remove_first_entry_of_multiline_flow_mapping() {
+    check_edit(
+        "a: {\n    x: 1,\n    y: 2\n  }\n",
+        |d| {
+            let a = d.as_mapping().unwrap().get_mapping("a").unwrap();
+            assert!(a.remove("x").is_some());
+        },
+        "a: {\n    y: 2\n  }\n",
     );
 }

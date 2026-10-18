@@ -272,8 +272,8 @@ fn scalar_over_block_scalar_keeps_line_break() {
         assert_eq!(tf.to_string(), expected, "{src:?}");
         let reparsed = YamlFile::from_str(expected).unwrap();
         assert_eq!(
-            debug::tree_to_string(tf.syntax()),
-            debug::tree_to_string(reparsed.syntax()),
+            debug::shape_to_string(tf.syntax()),
+            debug::shape_to_string(reparsed.syntax()),
             "{src:?}"
         );
     }
@@ -307,8 +307,8 @@ fn scalar_over_block_on_key_line() {
         assert_eq!(tf.to_string(), expected, "{src:?}");
         let reparsed = YamlFile::from_str(expected).unwrap();
         assert_eq!(
-            debug::tree_to_string(tf.syntax()),
-            debug::tree_to_string(reparsed.syntax()),
+            debug::shape_to_string(tf.syntax()),
+            debug::shape_to_string(reparsed.syntax()),
             "{src:?}"
         );
     }
@@ -397,8 +397,8 @@ fn block_yaml_values_in_mappings() {
             assert_eq!(file.to_string(), expected);
             let reparsed = YamlFile::from_str(expected).unwrap();
             assert_eq!(
-                debug::tree_to_string(file.syntax()),
-                debug::tree_to_string(reparsed.syntax()),
+                debug::shape_to_string(file.syntax()),
+                debug::shape_to_string(reparsed.syntax()),
                 "{expected:?}"
             );
         }

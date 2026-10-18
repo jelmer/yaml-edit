@@ -24,8 +24,8 @@ fn assert_parser_shaped(file: &YamlFile, expected: &str) {
     assert_file_cst_ok(file);
     let reparsed = YamlFile::from_str(expected).unwrap();
     assert_eq!(
-        debug::tree_to_string(file.syntax()),
-        debug::tree_to_string(reparsed.syntax())
+        debug::shape_to_string(file.syntax()),
+        debug::shape_to_string(reparsed.syntax())
     );
 }
 
@@ -178,8 +178,8 @@ fn test_builder_pair_block_value_node() {
         assert_eq!(doc.to_string(), expected);
         let reparsed = yaml_edit::Document::from_str(&expected).unwrap();
         assert_eq!(
-            debug::tree_to_string(doc.syntax()),
-            debug::tree_to_string(reparsed.syntax())
+            debug::shape_to_string(doc.syntax()),
+            debug::shape_to_string(reparsed.syntax())
         );
     }
 }

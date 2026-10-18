@@ -87,6 +87,7 @@
 //!
 //! // Remove a field
 //! mapping.remove("age");
+//! assert_eq!(yaml.to_string(), "name: Bob");
 //! ```
 //!
 //! ## Path-based Access
@@ -237,16 +238,16 @@ pub use yaml::{
 ///
 /// ```rust
 /// use yaml_edit::{Document, advanced};
+/// use rowan::ast::AstNode;
 /// use std::str::FromStr;
 ///
 /// let doc = Document::from_str("key: value").unwrap();
-/// let mapping = doc.as_mapping().unwrap();
+/// let value = doc.as_mapping().unwrap().get("key").unwrap();
 ///
-/// // Get a value node
-/// if let Some(value) = mapping.get("key") {
-///     // YamlNode provides access to the underlying structure
-///     println!("Found value: {}", value.to_string());
-/// }
+/// // The range of text a node spans
+/// let scalar = value.as_scalar().unwrap();
+/// let range = advanced::syntax_node_range(scalar.syntax());
+/// assert_eq!(&doc.to_string()[range], "value");
 /// ```
 pub mod advanced {
     pub use rowan::TextRange;

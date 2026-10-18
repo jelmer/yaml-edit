@@ -1067,7 +1067,10 @@ mod tests {
 /// use std::str::FromStr;
 ///
 /// let doc = Document::from_str("name: Alice\nage: 30").unwrap();
-/// println!("{}", PrettyDebug(&doc));
+/// assert_eq!(
+///     PrettyDebug(&doc).to_string(),
+///     "Document {\n  Mapping [\n    \"name\" (type: String): \"Alice\" (type: String)\n    \"age\" (type: String): \"30\" (type: Integer)\n  ]\n}\n"
+/// );
 /// ```
 pub struct PrettyDebug<'a, T>(pub &'a T);
 
@@ -1203,7 +1206,10 @@ fn format_node(f: &mut fmt::Formatter<'_>, node: &YamlNode, indent: usize) -> fm
 /// let mapping = doc.as_mapping().unwrap();
 /// let value = mapping.get("port").unwrap();
 ///
-/// println!("{}", ValueInspector(&value));
+/// assert_eq!(
+///     ValueInspector(&value).to_string(),
+///     "Value Inspector:\n===============\nType: Scalar\n  Value: \"8080\"\n\nCoercion Capabilities:\n  to_i64: Some(8080)\n  to_f64: None\n  to_bool: None\n"
+/// );
 /// ```
 pub struct ValueInspector<'a>(pub &'a crate::as_yaml::YamlNode);
 
@@ -1256,10 +1262,12 @@ impl<'a> fmt::Display for ValueInspector<'a> {
 /// let before = Document::from_str("name: Alice\nage: 30").unwrap();
 /// let after = Document::from_str("name: Bob\nage: 30").unwrap();
 ///
-/// println!("{}", VisualDiff {
+/// let diff = VisualDiff {
 ///     before: &before,
 ///     after: &after,
-/// });
+/// }
+/// .to_string();
+/// assert!(diff.ends_with("Changes:\n--------\nLine 1: \"name: Alice\" -> \"name: Bob\"\n"));
 /// ```
 pub struct VisualDiff<'a> {
     /// The original document
@@ -1328,6 +1336,7 @@ impl<'a> fmt::Display for VisualDiff<'a> {
 ///
 /// let yaml = YamlFile::from_str("name: Alice").unwrap();
 /// let dot = graphviz_dot(yaml.syntax());
+/// assert!(dot.starts_with("digraph CST {\n"));
 /// // Save to file and render with: dot -Tpng output.dot -o output.png
 /// ```
 pub fn graphviz_dot(node: &SyntaxNode) -> String {

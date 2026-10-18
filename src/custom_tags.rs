@@ -113,16 +113,11 @@
 //!
 //! let doc = Document::from_str(yaml_str)?;
 //!
-//! if let Some(mapping) = doc.as_mapping() {
-//!     if let Some(email_node) = mapping.get("email") {
-//!         if let Some(tagged) = email_node.as_tagged() {
-//!             println!("Tag: {:?}", tagged.tag());
-//!             if let Some(scalar) = tagged.value() {
-//!                 println!("Email value: {}", scalar.to_string());
-//!             }
-//!         }
-//!     }
-//! }
+//! let mapping = doc.as_mapping().unwrap();
+//! let email_node = mapping.get("email").unwrap();
+//! let tagged = email_node.as_tagged().unwrap();
+//! assert_eq!(tagged.tag().as_deref(), Some("!email"));
+//! assert_eq!(tagged.value().unwrap().to_string(), "user@example.com");
 //! # Ok(())
 //! # }
 //! ```

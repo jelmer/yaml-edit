@@ -715,7 +715,7 @@ impl YamlNode {
 
     /// If this node is a scalar, try to parse it as an `f64`.
     ///
-    /// Returns `None` if this is not a scalar or cannot be parsed as a float.
+    /// Returns `None` if this is not a float scalar, such as for an integer.
     pub fn to_f64(&self) -> Option<f64> {
         crate::scalar::ScalarValue::from_scalar(self.as_scalar()?).to_f64()
     }

@@ -687,3 +687,25 @@ fn test_set_sequence_item_to_root_flow_sequence_continued_at_column_zero() {
     seq.push(root("[c,\nd]\n").as_sequence().unwrap());
     assert_valid_copy(&file, "m:\n  - [a,\n   b]\n  - [c,\n   d]\n");
 }
+
+/// A block collection copied from the end of unterminated input ends its
+/// last line in its last entry, as the parser has it.
+#[test]
+fn test_set_value_to_unterminated_block_collection() {
+    for (source, expected) in [
+        ("a: 1", "a:\n  - x\n"),
+        ("a: 1\n", "a:\n  - x\n"),
+        ("a: 1\nb: 2\n", "a:\n  - x\nb: 2\n"),
+    ] {
+        let file = YamlFile::from_str(source).unwrap();
+        let seq = YamlFile::from_str("- x").unwrap();
+        let seq = seq.document().unwrap().as_sequence().unwrap();
+        file.document().unwrap().as_mapping().unwrap().set("a", seq);
+        assert_valid_copy(&file, expected);
+    }
+    let file = YamlFile::from_str("a: 1\n").unwrap();
+    let map = YamlFile::from_str("k: v").unwrap();
+    let map = map.document().unwrap().as_mapping().unwrap();
+    file.document().unwrap().as_mapping().unwrap().set("a", map);
+    assert_valid_copy(&file, "a:\n  k: v\n");
+}

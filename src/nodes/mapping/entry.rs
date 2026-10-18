@@ -482,14 +482,18 @@ impl MappingEntry {
     /// Keep exactly one line break ending the entry once its VALUE has
     /// been replaced: the value's own if it ends with one, else the entry's.
     fn settle_trailing_newline(&self, value_ends_with_newline: bool) {
-        if !value_ends_with_newline {
-            trivia::terminate(&self.0);
-        } else if let Some(own) = self
+        // The old terminator at the entry's level goes: a value ending in a
+        // line break has its own, and otherwise the line break goes where
+        // the parser puts it, in the last entry of a block value.
+        if let Some(own) = self
             .0
             .last_child_or_token()
             .filter(|c| c.kind() == SyntaxKind::NEWLINE)
         {
             own.detach();
+        }
+        if !value_ends_with_newline {
+            trivia::terminate(&self.0);
         }
     }
 

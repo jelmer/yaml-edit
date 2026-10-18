@@ -688,8 +688,10 @@ fn navigate_path(
     segments: &[PathSegment],
     policy: AliasPolicy,
 ) -> Result<crate::as_yaml::YamlNode, PathError> {
+    let mut holder = None;
     for segment in segments {
-        current = descend_one(current, segment, policy)?;
+        current = descend_one(current, holder, segment, policy)?;
+        holder = Some(segment);
     }
     Ok(current)
 }
@@ -712,8 +714,7 @@ fn registry_for(node: &crate::yaml::SyntaxNode) -> crate::anchor_resolution::Anc
 /// Resolve `current` if it is an alias, according to `policy`.
 ///
 /// `segment` is only used to label errors: it is the segment that
-/// produced `current`, i.e. the one the caller is about to descend
-/// through.
+/// produced `current`.
 fn resolve_for_read(
     current: crate::as_yaml::YamlNode,
     segment: &PathSegment,
@@ -810,17 +811,22 @@ fn lookup_merged(
         .ok_or(PathError::NotFound { at })
 }
 
+/// Apply `segment` to `current`, the value of segment `holder` (`None`
+/// for the root, whose errors name `segment` instead).
 fn descend_one(
     current: crate::as_yaml::YamlNode,
+    holder: Option<&PathSegment>,
     segment: &PathSegment,
     policy: AliasPolicy,
 ) -> Result<crate::as_yaml::YamlNode, PathError> {
-    let current = resolve_for_read(current, segment, policy)?;
+    let holder = holder.unwrap_or(segment);
+    let current = resolve_for_read(current, holder, policy)?;
+    let mismatch = || PathError::TypeMismatch {
+        at: segment_display(holder),
+    };
     match segment {
         PathSegment::Key(key) => {
-            let mapping = node_as_mapping(&current).ok_or_else(|| PathError::TypeMismatch {
-                at: segment_display(segment),
-            })?;
+            let mapping = node_as_mapping(&current).ok_or_else(mismatch)?;
             lookup_merged(&mapping, key, segment)
         }
         PathSegment::Index(index) => {
@@ -832,9 +838,7 @@ fn descend_one(
                 // Fallback: numeric segment used as a mapping key.
                 lookup_merged(&map, &index.to_string(), segment)
             } else {
-                Err(PathError::TypeMismatch {
-                    at: segment_display(segment),
-                })
+                Err(mismatch())
             }
         }
     }
@@ -903,7 +907,7 @@ impl YamlPath for crate::yaml::Document {
             return Err(PathError::NoRoot);
         };
 
-        remove_path_impl(root, &segments, policy)
+        remove_path_impl(root, None, &segments, policy)
     }
 }
 
@@ -916,52 +920,44 @@ impl YamlPath for crate::yaml::Document {
 /// `PathError::TypeMismatch` at that segment.
 fn remove_path_impl(
     root: crate::as_yaml::YamlNode,
+    holder: Option<&PathSegment>,
     segments: &[PathSegment],
     policy: AliasPolicy,
 ) -> Result<crate::as_yaml::YamlNode, PathError> {
     debug_assert!(!segments.is_empty(), "caller must reject empty paths");
+    let seg = &segments[0];
+    if segments.len() > 1 {
+        let nested = descend_one(root, holder, seg, policy)?;
+        return remove_path_impl(nested, Some(seg), &segments[1..], policy);
+    }
 
     // The node we were handed may itself be an alias (e.g. `a: *shared`
     // then removing `a.timeout`). Resolving here means the final
     // container lookup below sees the anchored mapping.
-    let root = resolve_for_read(root, &segments[0], policy)?;
-
-    if segments.len() == 1 {
-        let seg = &segments[0];
-        let key = match seg {
-            PathSegment::Key(key) => key.clone(),
-            PathSegment::Index(index) => {
-                // Numeric segment on a mapping falls back to the
-                // stringified key. On a sequence, index removal is
-                // unsupported.
-                if node_as_mapping(&root).is_none() {
-                    return Err(PathError::TypeMismatch {
-                        at: segment_display(seg),
-                    });
-                }
-                index.to_string()
-            }
-        };
-        let mapping = node_as_mapping(&root).ok_or_else(|| PathError::TypeMismatch {
-            at: segment_display(seg),
-        })?;
-        let not_found = || PathError::NotFound {
-            at: segment_display(seg),
-        };
-        // Grab the value before removal so we can return it.
-        if let Some(value) = mapping.get(key.as_str()) {
-            mapping.remove(key.as_str());
-            return Ok(value);
+    let holder = holder.unwrap_or(seg);
+    let root = resolve_for_read(root, holder, policy)?;
+    let mapping = node_as_mapping(&root).ok_or_else(|| {
+        // A numeric segment on a mapping is a stringified key; on a
+        // sequence, index removal is unsupported.
+        let index_on_sequence =
+            matches!(seg, PathSegment::Index(_)) && node_as_sequence(&root).is_some();
+        PathError::TypeMismatch {
+            at: segment_display(if index_on_sequence { seg } else { holder }),
         }
-        let key = spelled_key(mapping.keys(), &key).ok_or_else(not_found)?;
-        let value = mapping.get(&key).ok_or_else(not_found)?;
-        mapping.remove(&key);
+    })?;
+    let key = segment_key(seg);
+    let not_found = || PathError::NotFound {
+        at: segment_display(seg),
+    };
+    // Grab the value before removal so we can return it.
+    if let Some(value) = mapping.get(key.as_str()) {
+        mapping.remove(key.as_str());
         return Ok(value);
     }
-
-    // Descend one level and recurse.
-    let nested = descend_one(root, &segments[0], policy)?;
-    remove_path_impl(nested, &segments[1..], policy)
+    let key = spelled_key(mapping.keys(), &key).ok_or_else(not_found)?;
+    let value = mapping.get(&key).ok_or_else(not_found)?;
+    mapping.remove(&key);
+    Ok(value)
 }
 
 // Implementation for Mapping
@@ -997,6 +993,7 @@ impl YamlPath for Mapping {
         let segments = path_segments_required(path)?;
         remove_path_impl(
             crate::as_yaml::YamlNode::Mapping(self.clone()),
+            None,
             &segments,
             policy,
         )
@@ -2673,7 +2670,7 @@ config:
         assert_eq!(
             doc.try_get_path_with("service.timeout", AliasPolicy::Refuse),
             Err(PathError::AliasRefused {
-                at: "timeout".to_string(),
+                at: "service".to_string(),
                 alias: "shared".to_string()
             })
         );
@@ -2692,7 +2689,7 @@ config:
         assert_eq!(
             doc.try_get_path("service.timeout"),
             Err(PathError::UndefinedAlias {
-                at: "timeout".to_string(),
+                at: "service".to_string(),
                 alias: "missing".to_string()
             })
         );
@@ -2727,7 +2724,7 @@ config:
         assert_eq!(
             doc.try_get_path("b.k"),
             Err(PathError::UndefinedAlias {
-                at: "k".to_string(),
+                at: "b".to_string(),
                 alias: "x".to_string()
             })
         );
@@ -2752,7 +2749,7 @@ config:
         assert_eq!(
             second.try_get_path("b.k"),
             Err(PathError::UndefinedAlias {
-                at: "k".to_string(),
+                at: "b".to_string(),
                 alias: "x".to_string()
             })
         );
@@ -2978,7 +2975,7 @@ config:
         assert_eq!(
             doc.try_remove_path("service.timeout"),
             Err(PathError::AliasRefused {
-                at: "timeout".to_string(),
+                at: "service".to_string(),
                 alias: "shared".to_string()
             })
         );
@@ -3059,7 +3056,7 @@ config:
         assert_eq!(
             doc.try_get_path("c.k"),
             Err(PathError::UndefinedAlias {
-                at: "k".to_string(),
+                at: "c".to_string(),
                 alias: "b".to_string()
             })
         );
@@ -3231,5 +3228,69 @@ config:
                 "{path} on {src:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_errors_name_the_segment_holding_the_value() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("x: &x {a: 1}\nfoo: 1\ns: [a]\nb: *x\nu: *nope\n").unwrap();
+        let mismatch = |at: &str| PathError::TypeMismatch { at: at.to_string() };
+        for (path, expected) in [
+            ("foo.bar", mismatch("foo")),
+            ("foo.bar.baz", mismatch("foo")),
+            ("foo[0]", mismatch("foo")),
+            ("s.k", mismatch("s")),
+            ("s[0].k", mismatch("[0]")),
+            ("s[0][0]", mismatch("[0]")),
+            (
+                "b.a",
+                PathError::AliasRefused {
+                    at: "b".to_string(),
+                    alias: "x".to_string(),
+                },
+            ),
+            (
+                "u.a",
+                PathError::AliasRefused {
+                    at: "u".to_string(),
+                    alias: "nope".to_string(),
+                },
+            ),
+        ] {
+            assert_eq!(
+                doc.try_get_path_with(path, AliasPolicy::Refuse),
+                Err(expected.clone()),
+                "get {path}"
+            );
+            assert_eq!(
+                doc.try_remove_path(path).map(|_| ()),
+                Err(expected.clone()),
+                "remove {path}"
+            );
+            assert_eq!(doc.try_set_path(path, 1), Err(expected), "set {path}");
+        }
+        let undefined = PathError::UndefinedAlias {
+            at: "u".to_string(),
+            alias: "nope".to_string(),
+        };
+        assert_eq!(
+            doc.try_get_path_with("u.a", AliasPolicy::Follow),
+            Err(undefined.clone())
+        );
+        assert_eq!(
+            doc.try_remove_path_with("u.a", AliasPolicy::Follow)
+                .map(|_| ()),
+            Err(undefined.clone())
+        );
+        assert_eq!(
+            doc.try_set_path_with("u.a", 1, AliasPolicy::Follow),
+            Err(undefined)
+        );
+        // At the root no segment holds the value, so the one applied to it
+        // is named.
+        let doc = Document::from_str("5\n").unwrap();
+        assert_eq!(doc.try_get_path("a"), Err(mismatch("a")));
     }
 }

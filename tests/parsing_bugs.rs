@@ -4960,3 +4960,47 @@ fn test_annotated_alias_key_parses_like_a_scalar_key() {
         }
     }
 }
+
+#[test]
+fn test_block_sequence_on_document_start_line() {
+    // A block collection may not start on the `---` line, which the
+    // validator reports, but `--- - 1` still has to read as the sequence it
+    // looks like, just as `--- a: 1` reads as a mapping. It used to be the
+    // plain scalar `- 1`, and `--- - 1\n- 2\n` the scalar `- 1 - 2`.
+    let text = "--- - 1\n- 2\n";
+    let file = YamlFile::from_str(text).unwrap();
+    assert_file_cst_ok(&file);
+    assert_eq!(
+        yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file)),
+        concat!(
+            "DOCUMENT\n",
+            "  DOC_START: \"---\"\n",
+            "  WHITESPACE: \" \"\n",
+            "  SEQUENCE\n",
+            "    SEQUENCE_ENTRY\n",
+            "      DASH: \"-\"\n",
+            "      WHITESPACE: \" \"\n",
+            "      SCALAR\n",
+            "        INT: \"1\"\n",
+            "      NEWLINE: \"\\\\n\"\n",
+            "    SEQUENCE_ENTRY\n",
+            "      DASH: \"-\"\n",
+            "      WHITESPACE: \" \"\n",
+            "      SCALAR\n",
+            "        INT: \"2\"\n",
+            "      NEWLINE: \"\\\\n\"\n",
+        )
+    );
+    let doc = file.document().unwrap();
+    let seq = doc.as_sequence().unwrap();
+    assert_eq!(seq.len(), 2);
+    assert_eq!(
+        yaml_edit::YamlValue::from_document(&doc).unwrap(),
+        yaml_edit::YamlValue::from(vec![1i64, 2])
+    );
+    assert_eq!(file.to_string(), text);
+
+    let file = YamlFile::from_str("--- -\n").unwrap();
+    let seq = file.document().unwrap().as_sequence().unwrap();
+    assert_eq!(seq.len(), 1);
+}

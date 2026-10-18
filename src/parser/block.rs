@@ -187,7 +187,9 @@ impl Parser {
             // look indented past their own sequence.
             let dash_column = self.error_context.current_location().1.saturating_sub(1);
             if first_entry {
-                base_indent = base_indent.max(dash_column);
+                if self.marker_line_node != Some(self.tokens.len()) {
+                    base_indent = base_indent.max(dash_column);
+                }
                 first_entry = false;
             }
 

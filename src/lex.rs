@@ -698,7 +698,9 @@ pub fn lex_with_validation_config<'a>(
                         .iter()
                         .rev()
                         .find(|(kind, _)| !matches!(kind, WHITESPACE | INDENT))
-                        .is_some_and(|(kind, _)| matches!(kind, QUESTION | COLON | DASH));
+                        .is_some_and(|(kind, _)| {
+                            matches!(kind, QUESTION | COLON | DASH | DOC_START)
+                        });
 
                     // Check if followed by whitespace or end of input
                     let followed_by_whitespace_or_end = chars

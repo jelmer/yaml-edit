@@ -936,8 +936,7 @@ impl CustomTagHandler for CompressedBinaryHandler {
         if let Some(scalar) = value.as_scalar() {
             let data = scalar.value();
 
-            // For demonstration: higher compression levels result in a marker prefix
-            // In a real implementation, this would use a compression library
+            // TODO: compress the data; for now only the marker records the level
             let output = if self.compression_level > 0 {
                 // Add a compression marker that indicates the level
                 format!("COMPRESSED[{}]:{}", self.compression_level, data)
@@ -953,32 +952,17 @@ impl CustomTagHandler for CompressedBinaryHandler {
     }
 
     fn deserialize(&self, content: &str) -> Result<YamlValue, CustomTagError> {
-        // Check if content has compression marker
-        if let Some(rest) = content.strip_prefix("COMPRESSED[") {
-            // Parse compression level and extract data
-            if let Some(bracket_pos) = rest.find("]:") {
-                let _level_str = &rest[..bracket_pos];
-                let data = &rest[bracket_pos + 2..];
-                // In a real implementation, would decompress based on level
-                Ok(YamlValue::scalar(data))
-            } else {
-                Ok(YamlValue::scalar(content))
-            }
-        } else {
-            // No compression marker - return as-is
-            Ok(YamlValue::scalar(content))
-        }
+        // TODO: decompress according to the level in the marker
+        Ok(YamlValue::scalar(compressed_payload(content)))
     }
 
     fn description(&self) -> &str {
-        // The trait requires a static string, but we use compression_level
-        // in serialize/deserialize to control the compression behavior
         "Compressed binary data"
     }
 
     fn validate(&self, content: &str) -> Result<(), CustomTagError> {
         // Basic base64 validation
-        if content
+        if compressed_payload(content)
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
         {
@@ -991,6 +975,14 @@ impl CustomTagHandler for CompressedBinaryHandler {
             ))
         }
     }
+}
+
+/// `content` without the `COMPRESSED[level]:` marker, if it has one.
+fn compressed_payload(content: &str) -> &str {
+    content
+        .strip_prefix("COMPRESSED[")
+        .and_then(|rest| rest.split_once("]:"))
+        .map_or(content, |(_level, data)| data)
 }
 
 /// A simple environment variable handler
@@ -1686,5 +1678,21 @@ mod tests {
         assert_eq!(handler.deserialize("invalid-date").map(|_| ()), expected);
         assert_eq!(handler.validate("invalid-date"), expected);
         assert_eq!(handler.validate("2024-01-15"), Ok(()));
+    }
+
+    #[test]
+    fn test_compressed_binary_validates_own_output() {
+        let handler = CompressedBinaryHandler::new(6);
+        let serialized = handler.serialize(&YamlValue::scalar("SGk=")).unwrap();
+        assert_eq!(serialized, "COMPRESSED[6]:SGk=");
+        assert_eq!(handler.validate(&serialized), Ok(()));
+        assert_eq!(
+            handler.validate("COMPRESSED[6]:no base64"),
+            Err(CustomTagError::with_content(
+                "!compressed",
+                "Invalid base64 content",
+                "COMPRESSED[6]:no base64",
+            ))
+        );
     }
 }

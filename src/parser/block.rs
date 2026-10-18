@@ -912,8 +912,11 @@ impl Parser {
         //
         // Any number of leading TAG / ANCHOR tokens annotate the key
         // (`!!str &a1 "foo":`); skip past them and any WHITESPACE, then
-        // apply the usual scan.
+        // apply the usual scan. The annotated key may also be an alias
+        // (`&b *a :`), which YAML does not allow; the validator reports it.
+        let annotated = matches!(self.current(), Some(SyntaxKind::TAG | SyntaxKind::ANCHOR));
         let mut saw_scalar = false;
+        let mut saw_alias = false;
         for kind in self.upcoming_tokens() {
             if kind == SyntaxKind::COLON {
                 return true;
@@ -921,7 +924,12 @@ impl Parser {
             if !saw_scalar && matches!(kind, SyntaxKind::TAG | SyntaxKind::ANCHOR) {
                 continue;
             }
-            if is_plain_scalar_kind(kind) {
+            if annotated && !saw_scalar && kind == SyntaxKind::REFERENCE {
+                saw_scalar = true;
+                saw_alias = true;
+                continue;
+            }
+            if is_plain_scalar_kind(kind) && !saw_alias {
                 saw_scalar = true;
                 continue;
             }

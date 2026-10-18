@@ -4002,6 +4002,15 @@ mod tests {
                 vec![(both, "2:5", Rule::Other)],
             ),
             ("a: &a 1\n? &b *a\n: v\n", vec![(both, "2:3", Rule::Other)]),
+            ("a: &a 1\n&b *a : v\n", vec![(both, "2:1", Rule::Other)]),
+            (
+                "a: &a 1\nb:\n- &b *a : v\n",
+                vec![(both, "3:3", Rule::Other)],
+            ),
+            (
+                "a: &a 1\nk:\n  &b *a : v\n",
+                vec![(both, "3:3", Rule::Other)],
+            ),
             ("a: &a 1\n? x\n: &b *a\n", vec![(both, "3:3", Rule::Other)]),
             ("a: &a 1\nk: &b\n  *a\n", vec![(both, "2:4", Rule::Other)]),
             (
@@ -4065,6 +4074,18 @@ mod tests {
             ),
             (
                 "a: &a 1\nb: {!!str *a : v}\n",
+                vec![("An alias cannot have a tag", "2:5", Rule::InvalidTag)],
+            ),
+            (
+                "a: &a 1\n!t *a : v\n",
+                vec![("An alias cannot have a tag", "2:1", Rule::InvalidTag)],
+            ),
+            (
+                "a: &a 1\nb:\n- !t *a : v\n",
+                vec![("An alias cannot have a tag", "3:3", Rule::InvalidTag)],
+            ),
+            (
+                "a: &a 1\nb: {!t *a : v}\n",
                 vec![("An alias cannot have a tag", "2:5", Rule::InvalidTag)],
             ),
             (

@@ -38,38 +38,6 @@ pub(crate) fn must_render_flow(node: &SyntaxNode) -> bool {
     false
 }
 
-/// If `node`'s tail token is a NEWLINE (optionally followed by an
-/// INDENT), return the INDENT's text, or `""` if there is none.
-/// An omitted value at the end (`? a\n`) has no text and does not count.
-///
-/// Used by [`Sequence::set`] to preserve the trailing separator of a
-/// multi-line value when swapping it out. Walking the CST directly is
-/// safer than `node.text().rfind('\n')` because a NEWLINE nested inside
-/// a block scalar's content would mislead a text-level search.
-fn trailing_line_indent(node: &SyntaxNode) -> Option<String> {
-    let tokens: Vec<_> = node
-        .descendants_with_tokens()
-        .filter_map(|el| el.into_token())
-        .filter(|t| !t.text().is_empty())
-        .collect();
-    // Look at the last two tail tokens: [NEWLINE], [NEWLINE, INDENT], or
-    // [.., NEWLINE], [.., NEWLINE, INDENT].
-    let last = tokens.last()?;
-    match last.kind() {
-        SyntaxKind::NEWLINE => Some(String::new()),
-        SyntaxKind::INDENT => {
-            let prev = tokens.iter().rev().nth(1)?;
-            (prev.kind() == SyntaxKind::NEWLINE).then(|| last.text().to_string())
-        }
-        _ => None,
-    }
-}
-
-/// True if `sequence`'s enclosing MAPPING_ENTRY is the last entry of
-/// its MAPPING. Callers use this to know whether trimming trailing
-/// whitespace off the sequence would strand a following mapping entry
-/// that relied on the separator NEWLINE. Conservative `false` when
-/// the sequence isn't under a MAPPING_ENTRY at all.
 /// Rebuild `entry` with `value` in place of the node it currently holds,
 /// keeping everything else the entry carried.
 fn rebuild_entry_with_value(
@@ -129,7 +97,7 @@ fn rebuild_entry_with_value(
 
     let mut value_inserted = false;
     let mut value_ends_with_newline = false;
-    let mut trailing_indent: Option<String> = None;
+    let mut old_ended_line = false;
     let mut after_dash = false;
     // A value ending in NEWLINE terminates the entry itself, so the old
     // terminator after it, up to this index, is dropped.
@@ -153,10 +121,9 @@ fn rebuild_entry_with_value(
                         | SyntaxKind::TAGGED_NODE
                 ) =>
             {
-                // A multi-line value (a nested mapping, say) ends with a
-                // NEWLINE and often an INDENT, which separate the entry
-                // from whatever follows and outlive the value itself.
-                trailing_indent = trailing_line_indent(n);
+                // A multi-line value (a nested mapping, say) ends the
+                // entry's line, which the new value has to as well.
+                old_ended_line = crate::nodes::trivia::ends_line(n);
                 if !value_inserted {
                     // A bare `-` item is DASH then a zero-width NULL
                     // scalar, so a written value needs the space that
@@ -200,14 +167,8 @@ fn rebuild_entry_with_value(
         }
     }
 
-    // Restore trailing whitespace extracted from the old value
-    if let Some(indent) = trailing_indent {
-        if !value_ends_with_newline {
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        if !indent.is_empty() {
-            builder.token(SyntaxKind::INDENT.into(), &indent);
-        }
+    if old_ended_line && !value_ends_with_newline {
+        builder.token(SyntaxKind::NEWLINE.into(), "\n");
     }
 
     builder.finish_node();
@@ -481,7 +442,7 @@ impl Sequence {
         if open {
             trivia::unterminate_last(&last.expect("at least one entry is added"));
         }
-        let at = trivia::index_after_line(&pushed);
+        let at = pushed.index() + 1;
         insert_children(&self.0, at, inserts);
     }
 
@@ -620,7 +581,7 @@ impl Sequence {
         let (trailing_lines, dash_comment) = match entry_item(node) {
             Some(old) if flow.is_none() => {
                 let lines = replaced_value::take_trailing_lines(&old);
-                replaced_value::remove_lifted_comment(node, &old);
+                replaced_value::remove_comment_after_item(&old);
                 (lines, replaced_value::take_dash_line_comment(node))
             }
             _ => (Vec::new(), None),
@@ -638,6 +599,9 @@ impl Sequence {
         replaced_value::restore_trailing_lines(&new_entry, trailing_lines);
         if let Some(comment) = dash_comment {
             replaced_value::add_dash_line_comment(&new_entry, comment);
+        }
+        if let Some(item) = entry_item(&new_entry) {
+            crate::nodes::trivia::drop_space_before_empty(&item);
         }
         new_entry
     }

@@ -426,11 +426,13 @@ fn mapping_drain_keeps_inner_comment_lines() {
 fn mapping_drain_keeps_inner_comment_lines_after_anchor() {
     let doc = Document::from_str("a: &a\n  x: 1\n  # d\n\n  # e\n  y: 2\nb: 2\n").unwrap();
     let inner = doc.as_mapping().unwrap().get_mapping("a").unwrap();
+    // Once `y` is gone, the comment lines end the mapping, which the
+    // parser leaves to the one holding `b`.
     inner.remove("y");
     assert_cst_ok(&doc);
     inner.remove("x");
     assert_cst_ok(&doc);
-    assert_eq!(doc.to_string(), "a: &a\n  # d\n\n  # e\n  {}\nb: 2\n");
+    assert_eq!(doc.to_string(), "a: &a {}\n  # d\n\n  # e\nb: 2\n");
 }
 
 #[test]

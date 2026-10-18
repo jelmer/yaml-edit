@@ -2,15 +2,14 @@
 //! collection entry's line, and the separator after a flow collection entry,
 //! and adding or removing an entry along with the trivia that belongs to it.
 //!
-//! A block entry normally owns the NEWLINE ending its last line, but the
-//! parser puts it deeper when the entry ends in a nested block value, leaves
-//! it to the mapping after an explicit-key entry (`? k\n: v\n`), and there
-//! is none at the end of unterminated input. A flow entry owns the comma
-//! after it and the white space around that.
+//! A block entry owns the NEWLINE ending its last line, and the comment
+//! before it, but the parser puts it deeper when the entry ends in a nested
+//! block node, and there is none at the end of unterminated input. A flow
+//! entry owns the comma after it and the white space around that.
 
 use super::empty_collection::{detach_empty_collection_placeholder_newline, render_empty};
 use super::{
-    append_children, entry_value, fresh_token, has_child_token, insert_children, is_block_scalar,
+    append_children, fresh_token, has_child_token, insert_children, is_block_scalar,
     replace_children, SyntaxNode, SyntaxToken,
 };
 use crate::lex::SyntaxKind;
@@ -23,12 +22,6 @@ pub(crate) enum LineEnd {
     /// A NEWLINE inside a child, such as a nested block value, possibly
     /// followed by zero-width tokens.
     Nested,
-    /// A NEWLINE right after an explicit-key entry in its parent. After
-    /// any other entry, that is a blank line.
-    Sibling,
-    /// A NEWLINE after a comment that ends the entry's line but which the
-    /// parser put after the entry in its parent, as after a sequence item.
-    AfterComment,
     /// No line break: the entry ends unterminated input.
     Open,
 }
@@ -49,37 +42,46 @@ pub(crate) fn line_end(entry: &SyntaxNode) -> LineEnd {
                 LineEnd::Nested
             }
         }
-        _ if has_child_token(entry, |k| k == SyntaxKind::QUESTION)
-            && entry
-                .next_sibling_or_token()
-                .is_some_and(|s| s.kind() == SyntaxKind::NEWLINE) =>
-        {
-            LineEnd::Sibling
-        }
-        _ if comment_line_end(entry) => LineEnd::AfterComment,
         _ => LineEnd::Open,
     }
-}
-
-/// Is `entry` followed in its parent by a comment on its last line and the
-/// NEWLINE ending that?
-fn comment_line_end(entry: &SyntaxNode) -> bool {
-    comment_after(entry)
-        .and_then(|c| c.next_sibling_or_token())
-        .is_some_and(|s| s.kind() == SyntaxKind::NEWLINE)
-}
-
-/// The comment after `entry` in its parent, on its last line.
-fn comment_after(entry: &SyntaxNode) -> Option<rowan::SyntaxElement<super::Lang>> {
-    std::iter::successors(entry.next_sibling_or_token(), |s| s.next_sibling_or_token())
-        .find(|s| s.kind() != SyntaxKind::WHITESPACE)
-        .filter(|s| s.kind() == SyntaxKind::COMMENT)
 }
 
 /// Does `node`'s text end in a NEWLINE, ignoring zero-width tokens such as
 /// an implicit null after it?
 pub(crate) fn ends_with_line_break(node: &SyntaxNode) -> bool {
     last_non_empty_token(node).is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
+}
+
+/// Does `node` end its last line: does it end with a line break, perhaps
+/// followed by the spaces of a last line that has none? Those belong to a
+/// block scalar's body.
+pub(crate) fn ends_line(node: &SyntaxNode) -> bool {
+    last_non_empty_token(node).is_some_and(|t| match t.kind() {
+        SyntaxKind::NEWLINE => true,
+        SyntaxKind::INDENT => t
+            .prev_token()
+            .is_some_and(|p| p.kind() == SyntaxKind::NEWLINE),
+        _ => false,
+    })
+}
+
+/// Drop the space before `content`, a value or item just written, if it
+/// is empty and ends its line, where the space would trail.
+pub(crate) fn drop_space_before_empty(content: &SyntaxNode) {
+    if !content.text().is_empty() {
+        return;
+    }
+    let ends_line = content
+        .last_token()
+        .and_then(|t| t.next_token())
+        .map_or(true, |t| t.kind() == SyntaxKind::NEWLINE);
+    let space = content
+        .first_token()
+        .and_then(|t| t.prev_token())
+        .filter(|t| t.kind() == SyntaxKind::WHITESPACE);
+    if let Some(space) = space.filter(|_| ends_line) {
+        space.detach();
+    }
 }
 
 /// The last token in `node`'s subtree that has text.
@@ -90,24 +92,6 @@ fn last_non_empty_token(node: &SyntaxNode) -> Option<SyntaxToken> {
         .filter_map(|c| c.into_token())
         .filter(|t| !t.text().is_empty())
         .last()
-}
-
-/// The index in `entry`'s parent just past the line break ending its line,
-/// where an entry on the next line goes. If there is no line break, it is
-/// the index past the comment ending the line, if the parser put that
-/// beside the entry.
-pub(crate) fn index_after_line(entry: &SyntaxNode) -> usize {
-    match line_end(entry) {
-        LineEnd::Sibling => entry.index() + 2,
-        LineEnd::AfterComment => {
-            comment_after(entry)
-                .expect("a comment ends the line")
-                .index()
-                + 2
-        }
-        LineEnd::Open => comment_after(entry).map_or(entry.index(), |c| c.index()) + 1,
-        LineEnd::Own | LineEnd::Nested => entry.index() + 1,
-    }
 }
 
 /// Where a new entry goes in its collection.
@@ -144,11 +128,10 @@ pub(crate) fn entry_column(collection: &SyntaxNode) -> usize {
 /// Splice `entry`, a block collection entry built standalone, into
 /// `collection` at `slot`, on a line of its own.
 ///
-/// The entry before it gets a line break if it lacks one, the new entry
+/// The entry before it gets a line break if it lacks one, and the new entry
 /// an INDENT at the collection's column (unless it comes first, where the
-/// parser has the column outside the collection), and an explicit-key
-/// entry's line break goes to the collection. Should the new entry end in
-/// a block scalar, the lines after it are laid out so that it does not
+/// parser has the column outside the collection). Should the new entry end
+/// in a block scalar, the lines after it are laid out so that it does not
 /// take them in.
 ///
 /// Should `entry` go after the end of input that had no final line
@@ -179,7 +162,7 @@ pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNo
             terminate(&prev);
             let mut elements: Vec<_> = indent().into_iter().collect();
             elements.push(entry.clone().into());
-            (index_after_line(&prev), elements)
+            (prev.index() + 1, elements)
         }
         Slot::End => {
             let mut elements = Vec::new();
@@ -210,16 +193,9 @@ pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNo
     if first {
         detach_empty_collection_placeholder_newline(collection, entry);
     }
-    hand_line_break_to_mapping(entry);
     super::settle_lines_after_inserted_entry(entry);
     if open_end {
-        match line_end(entry) {
-            LineEnd::Sibling => {
-                let newline = entry.next_sibling_or_token().expect("a line break follows");
-                newline.detach();
-            }
-            _ => unterminate_last(entry),
-        }
+        unterminate_last(entry);
     }
 }
 
@@ -287,7 +263,7 @@ fn end_line(collection: &SyntaxNode, at: usize) -> (usize, bool) {
         {
             let open = !line_end(&entry).is_terminated();
             terminate(&entry);
-            (index_after_line(&entry), open)
+            (entry.index() + 1, open)
         }
         Some(rowan::NodeOrToken::Token(t)) if t.kind() == SyntaxKind::COMMENT => {
             if t.next_sibling_or_token()
@@ -351,10 +327,9 @@ pub(crate) fn attach_flow_entry(collection: &SyntaxNode, slot: Slot, entry: &Syn
 /// Splice `entry` out of `collection`, a block or flow collection, with
 /// the trivia that belongs to it.
 ///
-/// In a block collection that is the INDENT before it, the comment ending
-/// its line and the line break after that when the parser put those beside
-/// it, and blank lines before it when there are blank lines after it too,
-/// so that the gap doesn't double. Comment lines around it stay. In a flow
+/// In a block collection that is the INDENT before it, and blank lines
+/// before it when there are blank lines after it too, so that the gap
+/// doesn't double. Comment lines around it stay. In a flow
 /// collection, the entry already holds its separator; the new last entry
 /// loses the one leading to the removed one, unless that had its own.
 pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
@@ -375,20 +350,8 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
                 .prev_sibling_or_token()
                 .filter(|c| c.kind() == SyntaxKind::INDENT),
         );
-        let mut after =
-            std::iter::successors(entry.next_sibling_or_token(), |c| c.next_sibling_or_token())
-                .peekable();
-        if matches!(end, LineEnd::Sibling | LineEnd::AfterComment) {
-            for c in after.by_ref() {
-                let newline = c.kind() == SyntaxKind::NEWLINE;
-                trivia.push(c);
-                if newline {
-                    break;
-                }
-            }
-        }
-        if after
-            .peek()
+        if entry
+            .next_sibling_or_token()
             .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE)
         {
             trivia.extend(blank_lines_before(entry));
@@ -419,11 +382,10 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
         }
         if !drained {
             crate::yaml::move_leading_lines_out(collection);
+            if is_last {
+                move_trailing_comment_lines_out(collection);
+            }
         }
-        // TODO: comment lines now after the last entry of a nested
-        // collection belong after it in the parent, as the parser has them:
-        // `x:\n  - a\n  # c\n  - b\ny: 1\n` with `b` removed keeps `# c`
-        // in the sequence.
         if let Some(prev) = &prev {
             super::replaced_value::settle_lines_after_block_scalar(prev);
         }
@@ -438,6 +400,53 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
     }
 }
 
+/// Move the comment lines ending `collection`, a block collection, out
+/// after the entry holding it in the collection that has an entry after
+/// that, where the parser puts comment lines before a dedented line. The
+/// blank lines and the INDENT before the first one stay. Lines with
+/// nothing after them stay too.
+fn move_trailing_comment_lines_out(collection: &SyntaxNode) {
+    let mut trailing: Vec<_> = std::iter::successors(collection.last_child_or_token(), |c| {
+        c.prev_sibling_or_token()
+    })
+    .map_while(|c| c.into_token())
+    .collect();
+    trailing.reverse();
+    let starts_line = |t: &SyntaxToken| {
+        t.kind() == SyntaxKind::COMMENT
+            && t.prev_sibling_or_token()
+                .is_some_and(|p| matches!(p.kind(), SyntaxKind::INDENT | SyntaxKind::NEWLINE))
+    };
+    let Some(first) = trailing.iter().position(starts_line) else {
+        return;
+    };
+    let holder = collection
+        .ancestors()
+        .skip(1)
+        .filter(|n| {
+            matches!(
+                n.kind(),
+                SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+            )
+        })
+        .find(|e| e.next_sibling().is_some_and(|n| n.kind() == e.kind()));
+    let Some(holder) = holder else {
+        return;
+    };
+    let lines = trailing.split_off(first);
+    for t in &lines {
+        t.detach();
+    }
+    insert_children(
+        &holder.parent().expect("an entry is in a collection"),
+        holder.index() + 1,
+        lines
+            .iter()
+            .map(|t| fresh_token(t.kind(), t.text()).into())
+            .collect(),
+    );
+}
+
 /// The blank lines directly before `entry`, past the INDENT leading it.
 fn blank_lines_before(entry: &SyntaxNode) -> Vec<rowan::SyntaxElement<super::Lang>> {
     let mut before =
@@ -449,7 +458,7 @@ fn blank_lines_before(entry: &SyntaxNode) -> Vec<rowan::SyntaxElement<super::Lan
         newlines.push(newline);
     }
     // The first line break ends a line with content, unless that content
-    // holds its own: a comment line, or an explicit-key entry.
+    // holds its own, as an entry does.
     let ends_line = match before.next() {
         Some(rowan::NodeOrToken::Node(n)) => !ends_with_line_break(&n),
         Some(rowan::NodeOrToken::Token(_)) => true,
@@ -465,24 +474,8 @@ fn blank_lines_before(entry: &SyntaxNode) -> Vec<rowan::SyntaxElement<super::Lan
 /// its line if it has none, where the parser would put it.
 pub(crate) fn terminate(entry: &SyntaxNode) {
     if !line_end(entry).is_terminated() {
-        // An explicit-key entry gets it at its end, from where
-        // hand_line_break_to_mapping moves it out with the comment ending
-        // its line, if any.
-        if let Some(comment) = comment_after(entry) {
-            let parent = entry.parent().expect("an attached entry has a parent");
-            let at = comment.index() + 1;
-            insert_children(
-                &parent,
-                at,
-                vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
-            );
-        } else if has_child_token(entry, |k| k == SyntaxKind::QUESTION) {
-            append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
-        } else {
-            terminate_last_line(entry);
-        }
+        terminate_last_line(entry);
     }
-    hand_line_break_to_mapping(entry);
 }
 
 /// Remove the line break that ends `node`, a block collection or entry
@@ -502,94 +495,23 @@ pub(crate) fn unterminate_last(node: &SyntaxNode) {
     }
 }
 
-/// Move the NEWLINE that `entry` ends with out to follow it in its mapping,
-/// if `entry` is an explicit-key entry: the parser leaves the break after
-/// such an entry's value line to the mapping, along with a comment on that
-/// line and the whitespace before it. Entries built standalone carry the
-/// break themselves, so call this once one is attached.
-pub(crate) fn hand_line_break_to_mapping(entry: &SyntaxNode) {
-    if entry.kind() != SyntaxKind::MAPPING_ENTRY
-        || !has_child_token(entry, |k| k == SyntaxKind::QUESTION)
-    {
-        return;
-    }
-    let Some(parent) = entry.parent() else {
-        return;
-    };
-    let Some(newline) = entry
-        .last_child_or_token()
-        .and_then(|c| c.into_token())
-        .filter(|t| t.kind() == SyntaxKind::NEWLINE)
-    else {
-        return;
-    };
-    let value = entry_value(entry);
-    let mut line_end: Vec<SyntaxToken> =
-        std::iter::successors(newline.prev_token(), |t| t.prev_token())
-            .take_while(|t| {
-                matches!(t.kind(), SyntaxKind::WHITESPACE | SyntaxKind::COMMENT)
-                    && t.parent()
-                        .is_some_and(|p| p == *entry || Some(&p) == value.as_ref())
-            })
-            .collect();
-    if !line_end.iter().any(|t| t.kind() == SyntaxKind::COMMENT) {
-        line_end.clear();
-    }
-    line_end.reverse();
-    line_end.push(newline);
-    let moved: Vec<_> = line_end
-        .into_iter()
-        .map(|t| {
-            t.detach();
-            fresh_token(t.kind(), t.text()).into()
-        })
-        .collect();
-    let at = entry.index() + 1;
-    insert_children(&parent, at, moved);
-}
-
 /// Add the line break that ends the last line of `node`, where the parser
 /// puts it when another document follows.
 ///
 /// The parser hands the break to the innermost construct still open at the
-/// end of the line: the last block entry, a block scalar, the collection
-/// holding a trailing comment line, or the spot in front of an empty value
-/// it went looking for on the next line. `node` must not already end in a
+/// end of the line: the last block entry, a block scalar or the collection
+/// holding a trailing comment line. `node` must not already end in a
 /// NEWLINE.
 pub(crate) fn terminate_last_line(node: &SyntaxNode) {
     let newline = || vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()];
-    let insert_before = |n: &SyntaxNode| {
-        let parent = n.parent().expect("a descendant has a parent");
-        insert_children(&parent, n.index(), newline());
-    };
-
     let mut cur = node.clone();
     while let Some(rowan::NodeOrToken::Node(last)) = cur.last_child_or_token() {
-        if last.text_range().is_empty() {
-            match cur.kind() {
-                SyntaxKind::MAPPING_ENTRY if has_child_token(&cur, |k| k == SyntaxKind::COLON) => {}
-                SyntaxKind::MAPPING_ENTRY | SyntaxKind::VALUE => {
-                    insert_before(&last);
-                    return;
-                }
-                _ => break,
-            }
-        } else if !holds_line_end(&last) {
+        if !holds_line_end(&last) {
             break;
         }
         cur = last;
     }
-
-    // An explicit-key entry leaves the break to its mapping.
-    if cur.kind() == SyntaxKind::MAPPING_ENTRY
-        && has_child_token(&cur, |k| k == SyntaxKind::QUESTION)
-    {
-        let parent = cur.parent().expect("a mapping entry has a mapping");
-        let after = cur.index() + 1;
-        insert_children(&parent, after, newline());
-    } else {
-        append_children(&cur, newline());
-    }
+    append_children(&cur, newline());
 }
 
 /// Does the parser put the line break after `node`'s last line inside it?
@@ -600,9 +522,7 @@ fn holds_line_end(node: &SyntaxNode) -> bool {
         }),
         SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY => true,
         SyntaxKind::SCALAR => is_block_scalar(node),
-        SyntaxKind::VALUE => node
-            .last_child()
-            .is_some_and(|last| last.text_range().is_empty() || holds_line_end(&last)),
+        SyntaxKind::VALUE => node.last_child().is_some_and(|last| holds_line_end(&last)),
         SyntaxKind::TAGGED_NODE => node.last_child().is_some_and(|last| holds_line_end(&last)),
         _ => false,
     }

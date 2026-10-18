@@ -13,71 +13,36 @@ fn is_block_collection(node: &SyntaxNode) -> bool {
         && !super::starts_a_flow_collection(node)
 }
 
-/// Does `value` reach past the line its entry starts on, or open a block
-/// collection there whose entries own whatever follows on that line?
-fn owns_line_end(value: &SyntaxNode) -> bool {
-    is_block_collection(value)
-        || value
-            .descendants_with_tokens()
-            .any(|c| c.kind() == SyntaxKind::NEWLINE)
-}
-
-/// Remove the comment that ends the last line of `value`, `entry`'s value,
-/// where the parser keeps it after the value rather than in it, unless it
-/// is on the entry's own first line, where it belongs to the entry. Its
-/// line break becomes `entry`'s.
-pub(crate) fn remove_lifted_comment(entry: &SyntaxNode, value: &SyntaxNode) {
-    if !owns_line_end(value) {
+/// Remove the comment that ends the last line of `item`, a sequence item
+/// spanning lines, which its entry holds after it. It goes with the item;
+/// one on the dash line belongs to the entry.
+pub(crate) fn remove_comment_after_item(item: &SyntaxNode) {
+    if !item
+        .descendants_with_tokens()
+        .any(|c| c.kind() == SyntaxKind::NEWLINE)
+    {
         return;
     }
-    let mut next = value
-        .last_token()
-        .filter(|t| t.kind() != SyntaxKind::NEWLINE)
-        .and_then(|t| t.next_token());
-    let mut spaces = Vec::new();
-    while let Some(t) = next.clone().filter(|t| t.kind() == SyntaxKind::WHITESPACE) {
-        next = t.next_token();
-        spaces.push(t);
-    }
-    let Some(comment) = next.filter(|t| t.kind() == SyntaxKind::COMMENT) else {
-        return;
-    };
-    let on_first_line = !entry.descendants_with_tokens().any(|c| {
-        c.kind() == SyntaxKind::NEWLINE && c.text_range().end() <= comment.text_range().start()
-    });
-    if on_first_line {
-        return;
-    }
-    let line_break = comment
-        .next_token()
-        .filter(|t| t.kind() == SyntaxKind::NEWLINE);
-    for t in spaces {
-        t.detach();
-    }
-    comment.detach();
-    if let Some(line_break) = line_break {
-        line_break.detach();
-        append_children(
-            entry,
-            vec![fresh_token(SyntaxKind::NEWLINE, line_break.text()).into()],
-        );
+    let after: Vec<_> = item
+        .siblings_with_tokens(rowan::Direction::Next)
+        .skip(1)
+        .take_while(|c| matches!(c.kind(), SyntaxKind::WHITESPACE | SyntaxKind::COMMENT))
+        .collect();
+    if after.iter().any(|c| c.kind() == SyntaxKind::COMMENT) {
+        for c in after {
+            c.detach();
+        }
     }
 }
 
 /// Detach and return the blank lines, and the indentation of a comment
 /// line, that the parser keeps at the end of the innermost collection
-/// `value` ends with, or in front of an empty value, where it looked for
-/// one. They belong to the lines after the value.
+/// `value` ends with. They belong to the lines after the value.
 pub(crate) fn take_trailing_lines(value: &SyntaxNode) -> Vec<SyntaxToken> {
     let mut lines = Vec::new();
     let mut token = value.last_token();
-    while let Some(t) = token.clone().filter(|t| t.text().is_empty()) {
-        token = t.prev_token();
-    }
     while let Some(t) = token.filter(|t| {
-        t.parent()
-            .is_some_and(|p| is_block_collection(&p) || p.kind() == SyntaxKind::VALUE)
-            && starts_or_is_blank_line(t)
+        t.parent().is_some_and(|p| is_block_collection(&p)) && starts_or_is_blank_line(t)
     }) {
         token = t.prev_token();
         lines.push(t);
@@ -115,7 +80,7 @@ pub(crate) fn restore_trailing_lines(entry: &SyntaxNode, lines: Vec<SyntaxToken>
         .map(|t| fresh_token(t.kind(), t.text()).into())
         .collect();
     let (parent, after) = match entry.parent() {
-        Some(parent) => (parent, super::trivia::index_after_line(entry)),
+        Some(parent) => (parent, entry.index() + 1),
         None => (entry.clone(), entry.children_with_tokens().count()),
     };
     insert_children(&parent, after, elements);
@@ -312,8 +277,8 @@ pub(crate) type LineComment = (String, String);
 /// Detach and return the comment on the line of `entry`'s dash, which
 /// belongs to the entry even where the item nests a collection starting
 /// on that line. The parser keeps it before the item when the item starts
-/// on a later line, inside the item, or, after a single-line item, after
-/// the entry.
+/// on a later line, inside the item, or, after a single-line item, at the
+/// end of the entry.
 pub(crate) fn take_dash_line_comment(entry: &SyntaxNode) -> Option<LineComment> {
     let dash = entry
         .children_with_tokens()
@@ -335,31 +300,25 @@ pub(crate) fn take_dash_line_comment(entry: &SyntaxNode) -> Option<LineComment> 
     let ws = spaces
         .last()
         .map_or_else(|| "  ".to_string(), |t| t.text().to_string());
-    let inside = entry.text_range().contains_range(comment.text_range());
-    let line_break = comment
-        .next_token()
-        .filter(|t| t.kind() == SyntaxKind::NEWLINE);
+    // The item starts on the next line if the line break after the
+    // comment is not the one ending the entry: join it to the dash line.
+    let line_break = comment.next_token().filter(|t| {
+        t.kind() == SyntaxKind::NEWLINE
+            && t.parent().as_ref() == Some(entry)
+            && t.next_sibling_or_token().is_some()
+    });
     comment.detach();
     if let Some(last) = spaces.last() {
         last.detach();
     }
     if let Some(line_break) = line_break {
-        if inside && line_break.parent().as_ref() == Some(entry) {
-            // The item starts on the next line: join it to the dash line.
-            let indent = line_break
-                .next_sibling_or_token()
-                .and_then(|c| c.into_token())
-                .filter(|t| t.kind() == SyntaxKind::INDENT);
-            line_break.detach();
-            if let Some(indent) = indent {
-                indent.detach();
-            }
-        } else if !inside {
-            line_break.detach();
-            append_children(
-                entry,
-                vec![fresh_token(SyntaxKind::NEWLINE, line_break.text()).into()],
-            );
+        let indent = line_break
+            .next_sibling_or_token()
+            .and_then(|c| c.into_token())
+            .filter(|t| t.kind() == SyntaxKind::INDENT);
+        line_break.detach();
+        if let Some(indent) = indent {
+            indent.detach();
         }
     }
     Some((ws, comment.text().to_string()))
@@ -429,21 +388,17 @@ pub(crate) fn add_dash_line_comment(entry: &SyntaxNode, comment: LineComment) {
         }
         _ => None,
     };
-    // After a single-line item the parser keeps the comment and its line
-    // break out of the entry, before whatever comes next.
-    let line_break = line_break.map(|nl| {
-        let text = nl.text().to_string();
-        nl.detach();
-        text
-    });
-    append_children(entry, vec![fresh_token(SyntaxKind::WHITESPACE, &ws).into()]);
-    let mut elements = vec![fresh_token(SyntaxKind::COMMENT, &text).into()];
-    if let Some(line_break) = line_break {
-        elements.push(fresh_token(SyntaxKind::NEWLINE, &line_break).into());
-    }
-    let parent = entry.parent().expect("an entry is attached");
-    let at = entry.index() + 1;
-    insert_children(&parent, at, elements);
+    // After a single-line item the comment goes before the entry's line
+    // break.
+    let at = line_break.map_or_else(|| entry.children_with_tokens().count(), |nl| nl.index());
+    insert_children(
+        entry,
+        at,
+        vec![
+            fresh_token(SyntaxKind::WHITESPACE, &ws).into(),
+            fresh_token(SyntaxKind::COMMENT, &text).into(),
+        ],
+    );
 }
 
 /// Put `comment` on a line of its own directly above `entry`, at the

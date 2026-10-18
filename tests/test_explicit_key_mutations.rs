@@ -704,6 +704,22 @@ fn flow_explicit_key_renamed() {
 }
 
 #[test]
+fn flow_empty_explicit_key_renamed() {
+    for (source, expected) in [
+        ("{a: 1, ? }\n", "{a: 1, ? z}\n"),
+        ("{a: 1,\n?\n}\n", "{a: 1,\n? z\n}\n"),
+        ("{? : 1}\n", "{? z: 1}\n"),
+        ("{?\n  a : 1}\n", "{? z : 1}\n"),
+    ] {
+        let text = edit_root_valid(source, |m| {
+            let key = m.keys().last().unwrap();
+            assert!(m.rename_key(&key, "z"));
+        });
+        assert_eq!(text, expected, "{source:?}");
+    }
+}
+
+#[test]
 fn renamed_key_keeps_its_anchor() {
     for (source, expected) in [
         ("&x a: 1\nb: *x\n", "&x z: 1\nb: *x\n"),

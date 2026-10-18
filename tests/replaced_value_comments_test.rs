@@ -160,6 +160,38 @@ fn sequence_set_over_commented_value() {
     }
 }
 
+/// The spaces of a last line with no line break are part of the block
+/// scalar they end, and go with it.
+#[test]
+fn set_over_block_scalar_ending_in_spaces() {
+    for (src, expected) in [
+        ("- |+\n   ", "- 5\n"),
+        ("- |\n  a\n   ", "- 5\n"),
+        ("- |\n  a\n  ", "- 5\n"),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        sequence_at(&file, "").set(0, 5);
+        assert_parser_shaped(&file, expected, src);
+    }
+    for (src, expected) in [("a: |+\n   ", "a: 5\n"), ("a: |\n  a\n   ", "a: 5\n")] {
+        let file = YamlFile::from_str(src).unwrap();
+        mapping_at(&file, "").set("a", 5);
+        assert_parser_shaped(&file, expected, src);
+    }
+}
+
+#[test]
+fn set_to_empty_node_leaves_no_trailing_space() {
+    let null = value_of("v:\n");
+    let file = YamlFile::from_str("- 1\n- 2\n").unwrap();
+    sequence_at(&file, "").set(0, &null);
+    assert_parser_shaped(&file, "-\n- 2\n", "- 1\n- 2\n");
+
+    let file = YamlFile::from_str("a: 1\nb: 2\n").unwrap();
+    mapping_at(&file, "").set("a", &null);
+    assert_parser_shaped(&file, "a:\nb: 2\n", "a: 1\nb: 2\n");
+}
+
 #[test]
 fn nested_sequence_set_over_commented_value() {
     for (src, expected) in [
@@ -549,5 +581,27 @@ fn blank_lines_after_empty_value() {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, path).set("a", block_mapping());
         assert_parser_shaped(&file, expected_block, src);
+    }
+}
+
+/// A comment ending the last line of a value that spans lines goes with
+/// it, wherever the parser keeps it.
+#[test]
+fn comment_after_multi_line_value_goes_with_it() {
+    for (src, expected) in [
+        ("a: [x,\n  y]  # c\nb: 1\n", "a: 5\nb: 1\n"),
+        ("? a\n: [x,\n  y]  # c\nb: 1\n", "? a\n: 5\nb: 1\n"),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        mapping_at(&file, "").set("a", 5);
+        assert_parser_shaped(&file, expected, src);
+    }
+    for (src, expected) in [
+        ("- [x,\n  y]  # c\n- 1\n", "- 5\n- 1\n"),
+        ("- a: [x,\n    y]  # c\n- 1\n", "- 5\n- 1\n"),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        sequence_at(&file, "").set(0, 5);
+        assert_parser_shaped(&file, expected, src);
     }
 }

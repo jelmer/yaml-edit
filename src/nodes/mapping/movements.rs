@@ -16,8 +16,8 @@ struct Group {
     /// them.
     lines_before: Vec<Element>,
     entry: SyntaxNode,
-    /// The rest of its line that the parser put beside it, and in a flow
-    /// mapping anything else up to the next entry.
+    /// In a flow mapping, what the parser put between it and the next
+    /// entry.
     line: Vec<Element>,
 }
 
@@ -85,14 +85,13 @@ impl Mapping {
         let mut lines_before = Vec::new();
         for (i, &at) in starts.iter().enumerate() {
             let entry = all[at].as_node().expect("an entry is a node");
-            let line_end = trivia::index_after_line(entry);
             groups.push(Group {
                 lines_before: std::mem::take(&mut lines_before),
                 entry: entry.clone(),
-                line: all[at + 1..line_end].to_vec(),
+                line: Vec::new(),
             });
             let Some(&next) = starts.get(i + 1) else {
-                trailing = all[line_end..].to_vec();
+                trailing = all[at + 1..].to_vec();
                 let gap_end = if flow {
                     0
                 } else {
@@ -101,7 +100,7 @@ impl Mapping {
                 gaps.push(trailing.drain(..gap_end).collect());
                 break;
             };
-            let mut between = all[line_end..next].to_vec();
+            let mut between = all[at + 1..next].to_vec();
             let indent = between
                 .last()
                 .is_some_and(|c| c.kind() == SyntaxKind::INDENT)

@@ -9,7 +9,7 @@ pub(crate) use helpers::{
 };
 
 use super::empty_collection::{self, render_empty};
-use super::trivia::{self, hand_line_break_to_mapping, line_end, LineEnd, Slot};
+use super::trivia::{self, line_end, LineEnd, Slot};
 use super::{
     entry_key, entry_value, fresh_token, has_child_token, insert_children, replace_children, Lang,
     Sequence, SyntaxNode,
@@ -805,29 +805,19 @@ impl Mapping {
             }
             crate::nodes::append_children(&new_entry, separator);
         } else {
-            // The old line break goes, whether beside the entry or missing
-            // at the end of the input, and the new entry brings its own. One
-            // after a comment ending the line stays, for the new entry.
-            match line_end(old) {
-                LineEnd::Sibling => {
-                    if let Some(newline) = old.next_sibling_or_token() {
-                        newline.detach();
-                    }
+            // The new entry brings its own line break, unless the old one
+            // ended the input without one.
+            if line_end(old) == LineEnd::Open {
+                let last = new_entry
+                    .last_child_or_token()
+                    .filter(|c| c.kind() == SyntaxKind::NEWLINE);
+                if let Some(last) = last {
+                    last.detach();
                 }
-                LineEnd::Open | LineEnd::AfterComment => {
-                    let last = new_entry
-                        .last_child_or_token()
-                        .filter(|c| c.kind() == SyntaxKind::NEWLINE);
-                    if let Some(last) = last {
-                        last.detach();
-                    }
-                }
-                LineEnd::Own | LineEnd::Nested => {}
             }
         }
         let i = old.index();
         replace_children(&self.0, i..i + 1, vec![new_entry.clone().into()]);
-        hand_line_break_to_mapping(&new_entry);
         new_entry
     }
 
@@ -1030,14 +1020,23 @@ impl Mapping {
             i..i + 1,
             built.children_with_tokens().collect::<Vec<_>>(),
         );
-        if make_explicit {
-            hand_line_break_to_mapping(node);
-        }
         if has_child_token(node, |k| k == SyntaxKind::QUESTION) {
             Self::settle_explicit_key_line(&new_key, old_ended_line);
         }
         if self.is_flow_style() {
             Self::separate_adjacent_value(&new_key);
+            // An omitted value directly follows its key, ahead of any line
+            // break the key was given.
+            let omitted = new_key
+                .siblings_with_tokens(rowan::Direction::Next)
+                .skip(1)
+                .find(|c| !matches!(c.kind(), SyntaxKind::NEWLINE | SyntaxKind::INDENT))
+                .and_then(|c| c.into_node())
+                .filter(|v| v.kind() == SyntaxKind::VALUE && v.text().is_empty());
+            if let Some(value) = omitted {
+                value.detach();
+                insert_children(node, new_key.index() + 1, vec![value.into()]);
+            }
         }
         crate::nodes::separate_key_from_colon(node);
         new_key
@@ -1108,21 +1107,29 @@ impl Mapping {
                 vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()],
             );
         }
+        // Without a `:` line, the key's line is the entry's.
+        let has_colon = has_child_token(&entry, |k| k == SyntaxKind::COLON);
         let ends_line = trivia::ends_with_line_break(key);
-        let after = key.next_sibling_or_token();
-        let newline_after = after.as_ref().filter(|c| c.kind() == SyntaxKind::NEWLINE);
+        let newline_after = if has_colon {
+            key.next_sibling_or_token()
+        } else {
+            entry.last_child_or_token()
+        }
+        .filter(|c| c.kind() == SyntaxKind::NEWLINE);
         if ends_line {
             if let Some(newline) = newline_after {
-                let i = newline.index();
-                entry.splice_children(i..i + 1, vec![]);
+                newline.detach();
             }
         } else if old_ended_line && newline_after.is_none() {
-            let i = key.index() + 1;
-            insert_children(
-                &entry,
-                i,
-                vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
-            );
+            if has_colon {
+                insert_children(
+                    &entry,
+                    key.index() + 1,
+                    vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
+                );
+            } else {
+                trivia::terminate(&entry);
+            }
         }
     }
 
@@ -1138,7 +1145,8 @@ impl Mapping {
     ///
     /// In a flow mapping the `?` sits inside KEY, so it carries over, as do
     /// any tokens after the key's content. The line break before block
-    /// content (`?\n- a`) goes, as the new key is written inline.
+    /// content (`?\n- a`) goes, as the new key is written inline, and the
+    /// one after an empty key (`?\n}`) follows the new key.
     ///
     /// A comment before the old content stays on its line, or follows the
     /// new KEY if the content was on that line too.
@@ -1172,6 +1180,9 @@ impl Mapping {
                 .count();
             for t in &after[..ws] {
                 builder.token(t.kind().into(), t.text());
+            }
+            if ws == 0 {
+                builder.token(SyntaxKind::WHITESPACE.into(), " ");
             }
             rest = &after[ws..];
         }
@@ -1211,6 +1222,16 @@ impl Mapping {
         if let Some(comment) = comment_after {
             builder.token(SyntaxKind::WHITESPACE.into(), "  ");
             builder.token(SyntaxKind::COMMENT.into(), &comment);
+        }
+        // The line break after an empty key now follows the new one.
+        let old_empty = old.children().next().is_some_and(|n| n.text().is_empty());
+        if old_empty && comment.is_none() {
+            for t in rest
+                .iter()
+                .filter(|t| matches!(t.kind(), SyntaxKind::NEWLINE | SyntaxKind::INDENT))
+            {
+                builder.token(t.kind().into(), t.text());
+            }
         }
     }
 

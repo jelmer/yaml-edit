@@ -82,6 +82,43 @@ fn remove_item_keeps_comment_lines() {
 }
 
 #[test]
+fn remove_last_nested_item_after_comment_lines() {
+    // The comment lines now end the sequence, which the parser leaves to
+    // the collection holding the next entry.
+    check_edit(
+        "x:\n  - a\n  # c\n  - b\ny: 1\n",
+        remove_from_x(1),
+        "x:\n  - a\n  # c\ny: 1\n",
+    );
+    check_edit(
+        "x:\n  - a\n\n  # c\n  # d\n\n  - b\ny: 1\n",
+        remove_from_x(1),
+        "x:\n  - a\n\n  # c\n  # d\n\ny: 1\n",
+    );
+    check_edit(
+        "m:\n  x:\n    - a\n    # c\n    - b\n  y: 1\n",
+        |d| {
+            let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+            assert!(m.get_sequence("x").unwrap().remove(1).is_some());
+        },
+        "m:\n  x:\n    - a\n    # c\n  y: 1\n",
+    );
+    check_edit(
+        "x:\n  - a\n  # c\n  - b\n",
+        remove_from_x(1),
+        "x:\n  - a\n  # c\n",
+    );
+    check_edit(
+        "x:\n  a: 1\n  # c\n  b: 2\ny: 1\n",
+        |d| {
+            let x = d.as_mapping().unwrap().get_mapping("x").unwrap();
+            assert!(x.remove("b").is_some());
+        },
+        "x:\n  a: 1\n  # c\ny: 1\n",
+    );
+}
+
+#[test]
 fn remove_entry_keeps_comment_lines() {
     let remove = |key: &'static str| {
         move |d: &Document| {

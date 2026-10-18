@@ -304,6 +304,17 @@ fn sequence_edits_keep_anchors() {
 }
 
 #[test]
+fn copy_of_empty_node_leaves_no_trailing_space() {
+    let doc = Document::from_str("- &x\n- *x\n").unwrap();
+    doc.as_sequence().unwrap().remove(0);
+    assert_edited(&doc, "- &x\n");
+
+    let doc = Document::from_str("a: &x\nb: *x\n").unwrap();
+    doc.as_mapping().unwrap().remove("a");
+    assert_edited(&doc, "b: &x\n");
+}
+
+#[test]
 fn path_edits_keep_anchors() {
     let doc = Document::from_str("a:\n  b: {c: &y 1}\nd: *y\n").unwrap();
     doc.try_set_path("a.b", 2).unwrap();

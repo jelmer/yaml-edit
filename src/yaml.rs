@@ -157,9 +157,8 @@ pub(crate) fn move_leading_lines_out(collection: &SyntaxNode) {
         && !has_child_token(&parent, |k| k == SyntaxKind::DOC_START)
     {
         // The parser puts them at stream level, outside the DOCUMENT, but
-        // there they would drop out of the document's text. For a mapping
+        // there they would drop out of the document's text.
         // debug::shape_to_string allows for this.
-        // TODO: so should it for a sequence.
         return;
     }
     let starts_with_comment = leading[0].kind() == SyntaxKind::COMMENT;

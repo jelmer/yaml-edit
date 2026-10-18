@@ -103,6 +103,28 @@ pub(super) struct BlockCtx {
     pub(super) annotation_in_value_position: bool,
 }
 
+/// The parser's remaining tokens in source order, the current one at 0.
+///
+/// [`Parser::tokens`] holds them reversed, so that `bump` can pop.
+#[derive(Clone, Copy)]
+pub(super) struct Lookahead<'a>(&'a [(SyntaxKind, String)]);
+
+impl<'a> Lookahead<'a> {
+    pub(super) fn len(self) -> usize {
+        self.0.len()
+    }
+
+    /// The token `n` places after the current one.
+    pub(super) fn get(self, n: usize) -> Option<&'a (SyntaxKind, String)> {
+        self.0.get(self.0.len().checked_sub(n + 1)?)
+    }
+
+    /// The kind of the token `n` places after the current one.
+    pub(super) fn kind(self, n: usize) -> Option<SyntaxKind> {
+        self.get(n).map(|(kind, _)| *kind)
+    }
+}
+
 /// Internal parser state
 ///
 /// Fields are `pub(super)` so the topic sub-modules
@@ -413,6 +435,10 @@ impl Parser {
         let result = f(self);
         self.ctx = outer;
         result
+    }
+
+    pub(super) fn lookahead(&self) -> Lookahead<'_> {
+        Lookahead(&self.tokens)
     }
 
     pub(super) fn parse_value(&mut self) {

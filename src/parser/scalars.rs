@@ -3,7 +3,7 @@
 //!
 //! Split out of `parser/mod.rs` unchanged.
 
-use super::{BlockCtx, Parser};
+use super::{BlockCtx, Lookahead, Parser};
 use crate::lex::{block_scalar_header, SyntaxKind};
 use crate::ParseErrorKind;
 
@@ -314,8 +314,7 @@ impl Parser {
     /// `self.tokens` is a stack popped from the end, so the current token
     /// sits on top.
     pub(super) fn peek_kind(&self, n: usize) -> Option<SyntaxKind> {
-        let index = self.tokens.len().checked_sub(n + 1)?;
-        Some(self.tokens[index].0)
+        self.lookahead().kind(n)
     }
 
     /// Is the token `n` places after the cursor a COLON separating a flow
@@ -768,164 +767,115 @@ impl Parser {
     ///
     /// The NEWLINE sits `offset` tokens after the current one.
     pub(super) fn is_plain_scalar_continuation(&self, offset: usize, scalar_indent: usize) -> bool {
-        // Peek ahead to see what follows the NEWLINE. Tokens are in reverse
-        // order, so we look at earlier indices (closer to front)
-        let Some(current_idx) = self.tokens.len().checked_sub(offset + 1) else {
-            return false;
-        };
-
-        if current_idx == 0 {
+        let ahead = self.lookahead();
+        if offset + 1 >= ahead.len() {
             return false; // No more tokens
         }
+        let (line_indent, content) = next_content_line(ahead, offset + 1);
+        ahead
+            .kind(content)
+            .is_some_and(|kind| self.continues_plain_scalar(kind, line_indent, scalar_indent))
+            && self.indented_to_continue(line_indent, scalar_indent)
+            && !opens_mapping_entry(ahead, content)
+    }
 
-        // Look at tokens after the NEWLINE
-        // Since tokens are reversed, indices before current_idx are "ahead" in the stream
-        let mut peek_idx = current_idx.saturating_sub(1);
-
-        // A blank line does not end a plain scalar; it folds to a line break
-        // and the scalar continues on the next line with content. Step over
-        // any run of blank lines (an INDENT holds a line's leading
-        // whitespace, so a line is blank when a NEWLINE follows it directly).
-        loop {
-            let mut after_blank = peek_idx;
-            if self
-                .tokens
-                .get(after_blank)
-                .is_some_and(|(kind, _)| *kind == SyntaxKind::INDENT)
-            {
-                after_blank = after_blank.saturating_sub(1);
-            }
-            if after_blank > 0
-                && self
-                    .tokens
-                    .get(after_blank)
-                    .is_some_and(|(kind, _)| *kind == SyntaxKind::NEWLINE)
-            {
-                peek_idx = after_blank.saturating_sub(1);
-                continue;
-            }
-            break;
-        }
-
-        // Skip INDENT token if present and extract indentation level
-        let next_line_indent = self
-            .tokens
-            .get(peek_idx)
-            .and_then(|(kind, text)| {
-                if *kind == SyntaxKind::INDENT {
-                    peek_idx = peek_idx.saturating_sub(1);
-                    Some(text.len())
-                } else {
-                    None
+    /// Whether a line starting with `kind` at `line_indent` holds content
+    /// that continues a plain scalar at `scalar_indent`.
+    ///
+    /// A TAG, ANCHOR or REFERENCE counts: the lexer reads `!x`, `&a` and
+    /// `*a` as node properties because a newline precedes them, but a
+    /// property only applies at the start of a node, and a continuation
+    /// line is inside one already. `- a\n !\n` is the scalar `a !`, and `k:#foo\n &a !t s`
+    /// the scalar `k:#foo &a !t s`, as both saphyr and PyYAML read them.
+    ///
+    /// PIPE and GREATER count for the same reason. They open a block
+    /// scalar only at the start of a node, which in block context means
+    /// straight after a `-` or `:`; a line that merely continues a scalar
+    /// is inside a node already. `" a\n|\n"` is the scalar `a |`, as both
+    /// saphyr and PyYAML read it.
+    ///
+    /// The flow indicators count outside a flow collection, where they
+    /// are ordinary scalar content: `a\n}` is the scalar `a }`, as both
+    /// saphyr and PyYAML read it. Inside one they delimit, so they end
+    /// the scalar as before.
+    ///
+    /// A QUESTION counts only where it cannot open the next explicit
+    /// key of the mapping or sequence we may sit in: past the scalar's
+    /// own column, or in a root scalar that has no such collection. So
+    /// `? a\n: 1\n? b\n: 2\n` still has two entries, while `k: v\n  ?\n`
+    /// is the single value `v ?`, as saphyr and PyYAML both read it.
+    ///
+    /// A DASH counts only when the line is indented past the scalar's own,
+    /// where it cannot be the next entry of the sequence we sit in:
+    /// `a:\n- x\n  - y\n` is the single item `x - y`, as both saphyr and
+    /// PyYAML read it. At or left of the scalar's column it opens an entry
+    /// and ends the scalar, as before.
+    fn continues_plain_scalar(
+        &self,
+        kind: SyntaxKind,
+        line_indent: usize,
+        scalar_indent: usize,
+    ) -> bool {
+        match kind {
+            _ if is_plain_scalar_kind(kind) => true,
+            SyntaxKind::UNTERMINATED_STRING
+            | SyntaxKind::TAG
+            | SyntaxKind::ANCHOR
+            | SyntaxKind::REFERENCE
+            // A bare `&` or `*` with no name is punctuation the lexer could
+            // not make a property of, so it is content. A lone `+`
+            // likewise: it is an indicator only as a block-scalar chomping
+            // suffix, so `a\n+\n` is `a +`.
+            | SyntaxKind::AMPERSAND
+            | SyntaxKind::ASTERISK
+            | SyntaxKind::PLUS
+            | SyntaxKind::PIPE
+            | SyntaxKind::GREATER
+            // A `%` introduces a directive only at the start of a document,
+            // so on a continuation line it is content: `v\n%\n[\n` is the
+            // scalar `v % [`, as saphyr and PyYAML both read it. Without
+            // this the scalar ended at the directive and the `[` opened a
+            // flow sequence that never closed.
+            | SyntaxKind::DIRECTIVE => true,
+            SyntaxKind::LEFT_BRACKET
+            | SyntaxKind::RIGHT_BRACKET
+            | SyntaxKind::LEFT_BRACE
+            | SyntaxKind::RIGHT_BRACE
+            | SyntaxKind::COMMA => self.flow_depth == 0,
+            // `?` opens an explicit key only at the start of a node. On a
+            // line that merely continues a scalar it is content:
+            // `- x\n  ?\n- y\n` is the two entries `x ?` and `y`, as saphyr
+            // and PyYAML both read it.
+            SyntaxKind::QUESTION => {
+                match self.ctx.mapping_value_column.or(self.ctx.sequence_entry_column) {
+                    // Inside a mapping's value, or a sequence entry: only past
+                    // that collection's own column, where the `?` cannot start
+                    // its next node.
+                    Some(column) => line_indent > column,
+                    // No sequence to open an entry of, so the mapping is what a
+                    // `?` could start a node of. Past the scalar's own column it
+                    // cannot: `k: v\n  ?\n` is the value `v ?`. A root scalar has
+                    // no mapping either way.
+                    None => {
+                        line_indent > scalar_indent
+                            || self.ctx.scalar_continuation_floor == Some(0)
+                    }
                 }
-            })
-            .unwrap_or(0);
-
-        // Skip WHITESPACE tokens
-        while self
-            .tokens
-            .get(peek_idx)
-            .is_some_and(|(kind, _)| *kind == SyntaxKind::WHITESPACE)
-        {
-            peek_idx = peek_idx.saturating_sub(1);
+            }
+            SyntaxKind::DASH => match self.ctx.sequence_entry_column {
+                // Inside a sequence: only past our own dash, where it cannot
+                // be the next entry.
+                Some(column) => line_indent > column,
+                // No sequence to open an entry of, so it is content.
+                None => true,
+            },
+            _ => false,
         }
+    }
 
-        // Check if we have content token using safe get()
-        //
-        // A TAG, ANCHOR or REFERENCE counts: the lexer reads `!x`, `&a` and
-        // `*a` as node properties because a newline precedes them, but a
-        // property only applies at the start of a node, and a continuation
-        // line is inside one already. `- a\n !\n` is the scalar `a !`, and `k:#foo\n &a !t s`
-        // the scalar `k:#foo &a !t s`, as both saphyr and PyYAML read them.
-        //
-        // PIPE and GREATER count for the same reason. They open a block
-        // scalar only at the start of a node, which in block context means
-        // straight after a `-` or `:`; a line that merely continues a scalar
-        // is inside a node already. `" a\n|\n"` is the scalar `a |`, as both
-        // saphyr and PyYAML read it.
-        //
-        // The flow indicators count outside a flow collection, where they
-        // are ordinary scalar content: `a\n}` is the scalar `a }`, as both
-        // saphyr and PyYAML read it. Inside one they delimit, so they end
-        // the scalar as before.
-        //
-        // A QUESTION counts only where it cannot open the next explicit
-        // key of the mapping or sequence we may sit in: past the scalar's
-        // own column, or in a root scalar that has no such collection. So
-        // `? a\n: 1\n? b\n: 2\n` still has two entries, while `k: v\n  ?\n`
-        // is the single value `v ?`, as saphyr and PyYAML both read it.
-        //
-        // A DASH counts only when the line is indented past the scalar's own,
-        // where it cannot be the next entry of the sequence we sit in:
-        // `a:\n- x\n  - y\n` is the single item `x - y`, as both saphyr and
-        // PyYAML read it. At or left of the scalar's column it opens an entry
-        // and ends the scalar, as before.
-        let has_content = self.tokens.get(peek_idx).is_some_and(|(kind, _)| {
-            matches!(
-                kind,
-                SyntaxKind::STRING
-                    | SyntaxKind::INT
-                    | SyntaxKind::FLOAT
-                    | SyntaxKind::BOOL
-                    | SyntaxKind::NULL
-                    | SyntaxKind::UNTERMINATED_STRING
-                    | SyntaxKind::TAG
-                    | SyntaxKind::ANCHOR
-                    | SyntaxKind::REFERENCE
-                    // A bare `&` or `*` with no name is punctuation the
-                    // lexer could not make a property of, so it is content.
-                    // A lone `+` likewise: it is an indicator only as a
-                    // block-scalar chomping suffix, so `a\n+\n` is `a +`.
-                    | SyntaxKind::AMPERSAND
-                    | SyntaxKind::ASTERISK
-                    | SyntaxKind::PLUS
-                    | SyntaxKind::PIPE
-                    | SyntaxKind::GREATER
-                    // A `%` introduces a directive only at the start of a
-                    // document, so on a continuation line it is content:
-                    // `v\n%\n[\n` is the scalar `v % [`, as saphyr and
-                    // PyYAML both read it. Without this the scalar ended at
-                    // the directive and the `[` opened a flow sequence that
-                    // never closed.
-                    | SyntaxKind::DIRECTIVE
-            ) || (matches!(
-                kind,
-                SyntaxKind::LEFT_BRACKET
-                    | SyntaxKind::RIGHT_BRACKET
-                    | SyntaxKind::LEFT_BRACE
-                    | SyntaxKind::RIGHT_BRACE
-                    | SyntaxKind::COMMA
-            ) && self.flow_depth == 0)
-                // `?` opens an explicit key only at the start of a node.
-                // On a line that merely continues a scalar it is content:
-                // `- x\n  ?\n- y\n` is the two entries `x ?` and `y`, as
-                // saphyr and PyYAML both read it.
-                || (*kind == SyntaxKind::QUESTION
-                    && match self.ctx.mapping_value_column.or(self.ctx.sequence_entry_column) {
-                        // Inside a mapping's value, or a sequence entry: only
-                        // past that collection's own column, where the `?`
-                        // cannot start its next node.
-                        Some(column) => next_line_indent > column,
-                        // No sequence to open an entry of, so the mapping
-                        // is what a `?` could start a node of. Past the
-                        // scalar's own column it cannot: `k: v\n  ?\n` is
-                        // the value `v ?`. A root scalar has no mapping
-                        // either way.
-                        None => {
-                            next_line_indent > scalar_indent
-                                || self.ctx.scalar_continuation_floor == Some(0)
-                        }
-                    })
-                || (*kind == SyntaxKind::DASH
-                    && match self.ctx.sequence_entry_column {
-                        // Inside a sequence: only past our own dash, where it
-                        // cannot be the next entry.
-                        Some(column) => next_line_indent > column,
-                        // No sequence to open an entry of, so it is content.
-                        None => true,
-                    })
-        });
-
+    /// Whether a line at `line_indent` is indented far enough to continue a
+    /// plain scalar at `scalar_indent`.
+    fn indented_to_continue(&self, line_indent: usize, scalar_indent: usize) -> bool {
         // A continuation has to be indented past the scalar's own line, so it
         // cannot be mistaken for the next entry of an enclosing mapping.
         // Where there is no such mapping to confuse it with, an equally
@@ -938,92 +888,102 @@ impl Parser {
             .ctx
             .scalar_continuation_floor
             .map_or(scalar_indent, |floor| floor.min(scalar_indent));
-        let deep_enough = if self.ctx.equal_indent_continues_scalar {
-            next_line_indent >= floor
+        if self.ctx.equal_indent_continues_scalar {
+            line_indent >= floor
         } else {
-            next_line_indent > floor
-        };
-        if !has_content || !deep_enough {
-            return false;
+            line_indent > floor
         }
-
-        // Check if the next line is a mapping key (has a COLON after the content)
-        // If so, it's not a continuation - it's a new mapping key
-        //
-        // Tags and anchors in front annotate that key (`&x c: d`), so look
-        // past them to the content they cover.
-        while peek_idx > 0
-            && self
-                .tokens
-                .get(peek_idx)
-                .is_some_and(|(kind, _)| matches!(kind, SyntaxKind::TAG | SyntaxKind::ANCHOR))
-        {
-            peek_idx -= 1;
-            while peek_idx > 0
-                && self
-                    .tokens
-                    .get(peek_idx)
-                    .is_some_and(|(kind, _)| *kind == SyntaxKind::WHITESPACE)
-            {
-                peek_idx -= 1;
-            }
-        }
-        if peek_idx > 0 {
-            let mut check_idx = peek_idx.saturating_sub(1);
-
-            // A `:` inside a flow collection separates that collection's own
-            // entries, so step over a balanced one before looking: in
-            // `a\n[:]\n` the colon is the flow mapping's, and the line
-            // continues the scalar `a [:]`. Only the colon after the closing
-            // bracket would make the line a key of ours.
-            let after_flow = self.tokens.get(peek_idx).is_some_and(|(kind, _)| {
-                matches!(kind, SyntaxKind::LEFT_BRACKET | SyntaxKind::LEFT_BRACE)
-            });
-            if after_flow {
-                let mut depth = 0usize;
-                // `tokens` is in reverse order, so walking the index down
-                // reads the line forwards. An unbalanced collection runs out
-                // of tokens, which leaves the scan where it started.
-                while let Some(kind) = self.tokens.get(check_idx + 1).map(|(kind, _)| *kind) {
-                    match kind {
-                        SyntaxKind::LEFT_BRACKET | SyntaxKind::LEFT_BRACE => depth += 1,
-                        SyntaxKind::RIGHT_BRACKET | SyntaxKind::RIGHT_BRACE => {
-                            depth = depth.saturating_sub(1)
-                        }
-                        _ => {}
-                    }
-                    if depth == 0 || check_idx == 0 {
-                        break;
-                    }
-                    check_idx -= 1;
-                }
-            }
-
-            // Skip any whitespace after the content. After a flow
-            // collection, also skip the plain scalar content that the key
-            // keeps before its colon (`[x] y: z`), as is_complex_mapping_key
-            // does.
-            while self.tokens.get(check_idx).is_some_and(|(kind, _)| {
-                *kind == SyntaxKind::WHITESPACE || (after_flow && is_plain_scalar_kind(*kind))
-            }) {
-                if check_idx == 0 {
-                    break;
-                }
-                check_idx = check_idx.saturating_sub(1);
-            }
-
-            // If we find a COLON, this is a mapping key, not a scalar continuation
-            if self
-                .tokens
-                .get(check_idx)
-                .is_some_and(|(kind, _)| *kind == SyntaxKind::COLON)
-            {
-                return false;
-            }
-        }
-
-        true
     }
+}
+
+/// The indentation of the next line holding content, and the position of
+/// its first token, for a line starting `pos` tokens ahead.
+///
+/// A blank line does not end a plain scalar; it folds to a line break and
+/// the scalar continues on the next line with content. So step over any run
+/// of blank lines (an INDENT holds a line's leading whitespace, so a line is
+/// blank when a NEWLINE follows it directly).
+fn next_content_line(ahead: Lookahead, mut pos: usize) -> (usize, usize) {
+    let last = ahead.len() - 1;
+    loop {
+        let mut after_blank = pos;
+        if ahead.kind(after_blank) == Some(SyntaxKind::INDENT) {
+            after_blank = (after_blank + 1).min(last);
+        }
+        if after_blank < last && ahead.kind(after_blank) == Some(SyntaxKind::NEWLINE) {
+            pos = after_blank + 1;
+            continue;
+        }
+        break;
+    }
+
+    let mut indent = 0;
+    if let Some((SyntaxKind::INDENT, text)) = ahead.get(pos) {
+        indent = text.len();
+        pos = (pos + 1).min(last);
+    }
+    while pos < last && ahead.kind(pos) == Some(SyntaxKind::WHITESPACE) {
+        pos += 1;
+    }
+    (indent, pos)
+}
+
+/// Whether the line whose content starts `pos` tokens ahead is a mapping
+/// key, with a COLON after its content, rather than a scalar continuation.
+fn opens_mapping_entry(ahead: Lookahead, mut pos: usize) -> bool {
+    let last = ahead.len() - 1;
+    // Tags and anchors in front annotate that key (`&x c: d`), so look
+    // past them to the content they cover.
+    while pos < last && matches!(ahead.kind(pos), Some(SyntaxKind::TAG | SyntaxKind::ANCHOR)) {
+        pos += 1;
+        while pos < last && ahead.kind(pos) == Some(SyntaxKind::WHITESPACE) {
+            pos += 1;
+        }
+    }
+    if pos == last {
+        return false;
+    }
+    let mut check = pos + 1;
+
+    // A `:` inside a flow collection separates that collection's own
+    // entries, so step over a balanced one before looking: in `a\n[:]\n`
+    // the colon is the flow mapping's, and the line continues the scalar
+    // `a [:]`. Only the colon after the closing bracket would make the line
+    // a key of ours. An unbalanced collection runs out of tokens, which
+    // leaves the scan at the last one.
+    let after_flow = matches!(
+        ahead.kind(pos),
+        Some(SyntaxKind::LEFT_BRACKET | SyntaxKind::LEFT_BRACE)
+    );
+    if after_flow {
+        let mut depth = 0usize;
+        loop {
+            match ahead.kind(check - 1) {
+                Some(SyntaxKind::LEFT_BRACKET | SyntaxKind::LEFT_BRACE) => depth += 1,
+                Some(SyntaxKind::RIGHT_BRACKET | SyntaxKind::RIGHT_BRACE) => {
+                    depth = depth.saturating_sub(1)
+                }
+                _ => {}
+            }
+            if depth == 0 || check == last {
+                break;
+            }
+            check += 1;
+        }
+    }
+
+    // Skip any whitespace after the content. After a flow collection, also
+    // skip the plain scalar content that the key keeps before its colon
+    // (`[x] y: z`), as is_complex_mapping_key does.
+    while check < last
+        && ahead.kind(check).is_some_and(|kind| {
+            kind == SyntaxKind::WHITESPACE || (after_flow && is_plain_scalar_kind(kind))
+        })
+    {
+        check += 1;
+    }
+
+    ahead.kind(check) == Some(SyntaxKind::COLON)
 }
 
 /// Kinds emitted by the lexer for plain (unquoted) scalar content.

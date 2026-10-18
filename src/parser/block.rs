@@ -511,22 +511,21 @@ impl Parser {
 
         // A scalar key may continue on an indented line. Sequences and
         // mappings have consumed theirs already.
-        let n = self.tokens.len();
-        if self.current() != Some(SyntaxKind::NEWLINE)
-            || n < 3
-            || self.tokens[n - 2].0 != SyntaxKind::INDENT
-        {
+        let ahead = self.lookahead();
+        let (Some(SyntaxKind::NEWLINE), Some((SyntaxKind::INDENT, indent)), Some(after_indent)) =
+            (ahead.kind(0), ahead.get(1), ahead.kind(2))
+        else {
             return;
-        }
+        };
         // The key's own content has to clear the `?`; a line at the
         // indicator's column opens the next entry instead (`- ?\n  j: 1\n` is
         // two entries, as saphyr reads it).
-        let key_indent = self.tokens[n - 2].1.len();
+        let key_indent = indent.len();
         // A dash line is a sequence continuation, which
         // parse_explicit_key_node already handled. A comment line is the
         // entry's trivia, as after any other node: reading it as key content
         // left an empty SCALAR in the KEY (`? a\n  # c\n: v\n`).
-        if matches!(self.tokens[n - 3].0, SyntaxKind::DASH | SyntaxKind::COMMENT)
+        if matches!(after_indent, SyntaxKind::DASH | SyntaxKind::COMMENT)
             || key_indent <= question_column
         {
             return;

@@ -161,3 +161,13 @@ fn test_insert_before_flow_sequence_item() {
         assert_edited(&file, expected);
     }
 }
+
+#[test]
+fn test_insert_into_flow_mapping_after_comment() {
+    let source = "{a: 1, # x\n b: 2}\n";
+    let expected = "{a: 1, # x\n c: 9, b: 2}\n";
+    let file = YamlFile::from_str(source).unwrap();
+    flow_mapping(&file).insert_at_index(1, "c", 9);
+    assert_eq!(file.to_string(), expected);
+    assert_edited(&file, expected);
+}

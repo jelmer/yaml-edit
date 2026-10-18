@@ -102,3 +102,50 @@ fn remove_explicit_key_entry_with_comment_on_its_line() {
     check_edit("? a\n: 1\n? b\n: 2 # t\n", remove, "? a\n: 1\n");
     check_edit("? b\n: 2 # t\nc: 3\n", remove, "c: 3\n");
 }
+
+#[test]
+fn remove_keeps_comment_line_out_of_block_scalar_before() {
+    // A comment line indented as far as the body of a block scalar now
+    // before it would be read as part of that.
+    check_edit(
+        "c: |\n  x\nb: 1\n  # t\n",
+        |d| assert!(d.as_mapping().unwrap().remove("b").is_some()),
+        "c: |\n  x\n# t\n",
+    );
+    check_edit("- |\n  x\n- 1\n  # t\n", remove_top(1), "- |\n  x\n# t\n");
+}
+
+#[test]
+fn remove_first_root_entry_before_comment_line() {
+    // The comment line stays in the mapping rather than at stream level,
+    // where the parser has it; debug::shape_to_string allows for that.
+    let source = "a: 1\n# c\nb: 2\n";
+    let file = yaml_edit::YamlFile::from_str(source).unwrap();
+    let doc = file.documents().next().unwrap();
+    assert!(doc.as_mapping().unwrap().remove("a").is_some());
+    assert_eq!(file.to_string(), "# c\nb: 2\n");
+    assert_eq!(doc.to_string(), "# c\nb: 2\n");
+    common::assert_file_cst_ok(&file);
+    let reparsed = yaml_edit::YamlFile::from_str("# c\nb: 2\n").unwrap();
+    assert_eq!(
+        debug::shape_to_string(file.syntax()),
+        debug::shape_to_string(reparsed.syntax())
+    );
+}
+
+#[test]
+fn remove_first_root_item_before_comment_line() {
+    // As for a root mapping, the comment line stays in the sequence.
+    let source = "- a\n# c\n- b\n";
+    let file = yaml_edit::YamlFile::from_str(source).unwrap();
+    let doc = file.documents().next().unwrap();
+    assert!(doc.as_sequence().unwrap().remove(0).is_some());
+    assert_eq!(file.to_string(), "# c\n- b\n");
+    assert_eq!(doc.to_string(), "# c\n- b\n");
+    common::assert_file_cst_ok(&file);
+    let reparsed = yaml_edit::YamlFile::from_str("# c\n- b\n").unwrap();
+    assert_eq!(
+        debug::shape_to_string(file.syntax()),
+        debug::shape_to_string(reparsed.syntax())
+    );
+}

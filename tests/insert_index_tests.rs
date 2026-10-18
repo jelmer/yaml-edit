@@ -252,7 +252,7 @@ fn test_insert_special_characters() {
 
     // Verify exact output (keys are sorted alphabetically)
     let output = yaml.to_string();
-    let expected = "key with spaces: value with spaces\nkey1: value1\nkey@symbol: value#hash\nspecial:key: value:with:colons\n";
+    let expected = "key with spaces: value with spaces\nkey1: value1\nkey@symbol: value#hash\nspecial:key: value:with:colons";
     assert_eq!(output, expected);
 }
 
@@ -367,4 +367,15 @@ fn test_insert_at_index_root_mapping_has_no_indent() {
         assert_file_cst_ok(&yaml);
         assert_eq!(yaml.to_string(), expected, "index {index}");
     }
+}
+
+#[test]
+fn test_insert_at_index_into_pending_block_mapping() {
+    let doc = Document::from_str("x: 1\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    mapping.set("k", yaml_edit::Mapping::new_pending_block());
+    let nested = mapping.get_mapping("k").unwrap();
+    nested.insert_at_index(0, "a", 1);
+    assert_cst_ok(&doc);
+    assert_eq!(doc.to_string(), "x: 1\nk:\n  a: 1\n");
 }

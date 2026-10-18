@@ -13,7 +13,10 @@ use crate::as_yaml::{build_in, FlowQuoting};
 use crate::lex::SyntaxKind;
 use crate::nodes::replaced_value::{add_to_first_line, insert_comment_line_above};
 use crate::nodes::trivia::{line_end, LineEnd};
-use crate::nodes::{entry_key, entry_value, fresh_token, has_child_token, Lang, SyntaxNode};
+use crate::nodes::{
+    entry_key, entry_value, fresh_token, has_child_token, insert_children, replace_children, Lang,
+    SyntaxNode,
+};
 use crate::yaml::add_node_children_to;
 use rowan::GreenNodeBuilder;
 
@@ -317,7 +320,7 @@ impl MappingEntry {
     /// Insert `tokens` at position `at` in `self.0`.
     fn insert_at(&self, at: usize, tokens: Vec<rowan::SyntaxToken<Lang>>) {
         let elems: Vec<_> = tokens.into_iter().map(Into::into).collect();
-        self.0.splice_children(at..at, elems);
+        insert_children(&self.0, at, elems);
     }
 
     /// Give a value that took the place of an omitted one, at child
@@ -395,7 +398,7 @@ impl MappingEntry {
             return;
         };
         // The key's line break, if it has one, now ends the `:` line.
-        let ends_line = self.0.text().to_string().ends_with('\n');
+        let ends_line = self.0.text().to_string().ends_with(['\n', '\r']);
         let mut tokens = Vec::new();
         if !ends_line {
             tokens.push(fresh_token(SyntaxKind::NEWLINE, "\n"));
@@ -453,8 +456,9 @@ impl MappingEntry {
         let mut displaced_comment = None;
         let separator = match find_key_line_comment(&self.0) {
             Some((ws, comment)) if !block.on_key_line => {
-                block.node.splice_children(
-                    0..0,
+                insert_children(
+                    &block.node,
+                    0,
                     vec![fresh_token(SyntaxKind::COMMENT, &comment).into()],
                 );
                 Some(ws)
@@ -478,7 +482,7 @@ impl MappingEntry {
             replacement.push(fresh_token(SyntaxKind::WHITESPACE, &ws).into());
         }
         replacement.push(block.node.into());
-        crate::nodes::replace_children(&self.0, start..value_idx + 1, replacement);
+        replace_children(&self.0, start..value_idx + 1, replacement);
 
         self.settle_trailing_newline(value_ends_with_newline, old_entry_owned_trailing_nl);
         if let Some(comment) = displaced_comment {
@@ -685,7 +689,8 @@ impl MappingEntry {
             let old_ends_line = self.ends_with_newline();
             let old_omitted = self.value().is_some_and(|v| v.text_range().is_empty());
             let new_omitted = new_value_node.text_range().is_empty();
-            self.0.splice_children(
+            replace_children(
+                &self.0,
                 value_idx..value_idx + 1,
                 vec![new_value_node.clone().into()],
             );
@@ -708,8 +713,9 @@ impl MappingEntry {
         {
             let insert_at = colon_idx + 1;
             let ws = fresh_token(SyntaxKind::WHITESPACE, " ");
-            self.0.splice_children(
-                insert_at..insert_at,
+            insert_children(
+                &self.0,
+                insert_at,
                 vec![ws.into(), new_value_node.clone().into()],
             );
         }
@@ -750,7 +756,8 @@ impl MappingEntry {
 
         // Swap VALUE (its index may have moved if we detached above).
         let value_idx = self.value_index().expect("VALUE was here a moment ago");
-        self.0.splice_children(
+        replace_children(
+            &self.0,
             value_idx..value_idx + 1,
             vec![new_value_node.clone().into()],
         );

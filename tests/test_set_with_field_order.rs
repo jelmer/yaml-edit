@@ -117,8 +117,7 @@ version: 1.0"#;
     let result = yaml.to_string();
     let expected = r#"name: my-app
 version: 1.0
-description: A test app
-"#;
+description: A test app"#;
     assert_eq!(result, expected);
 }
 
@@ -140,8 +139,7 @@ version: 1.0"#;
     let result = yaml.to_string();
     let expected = r#"name: my-app
 version: 1.0
-author: John Doe
-"#;
+author: John Doe"#;
     assert_eq!(result, expected);
 }
 
@@ -322,8 +320,7 @@ c: value_c"#;
     let expected = r#"a: value_a
 b: value_b
 c: value_c
-d: value_d
-"#;
+d: value_d"#;
 
     assert_eq!(result, expected);
 }
@@ -648,8 +645,7 @@ version: 1.0"#;
         result,
         r#"name: my-app
 version: 1.0
-author: Alice
-"#
+author: Alice"#
     );
 }
 
@@ -758,8 +754,7 @@ description: test"#;
         r#"name: my-app
 version: 1.0
 description: test
-author: Solo
-"#
+author: Solo"#
     );
 }
 

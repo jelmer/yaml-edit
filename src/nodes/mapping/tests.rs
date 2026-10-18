@@ -740,8 +740,7 @@ features:
   - auth
 license: MIT
 published: true
-downloads: 1000
-"#;
+downloads: 1000"#;
     assert_eq!(yaml.to_string(), expected);
 }
 
@@ -1817,9 +1816,9 @@ fn test_set_value_of_explicit_key_without_one() {
 fn test_set_after_unterminated_nested_value() {
     use crate::debug::assert_edited;
     for (source, expected) in [
-        ("a:\n  - 1", "a:\n  - 1\nb: 2\n"),
-        ("a:\n  x: 1", "a:\n  x: 1\nb: 2\n"),
-        ("a: |\n  x", "a: |\n  x\nb: 2\n"),
+        ("a:\n  - 1", "a:\n  - 1\nb: 2"),
+        ("a:\n  x: 1", "a:\n  x: 1\nb: 2"),
+        ("a: |\n  x", "a: |\n  x\nb: 2"),
     ] {
         let yaml = YamlFile::from_str(source).unwrap();
         yaml.document().unwrap().as_mapping().unwrap().set("b", 2);
@@ -1835,7 +1834,7 @@ fn test_insert_after_nested_value_with_line_comment() {
     use rowan::ast::AstNode;
     let cases = [
         ("x:\n  - 1 # c\n", "x:\n  - 1 # c\ny: 2\n"),
-        ("x:\n  - 1 # c", "x:\n  - 1 # c\ny: 2\n"),
+        ("x:\n  - 1 # c", "x:\n  - 1 # c\ny: 2"),
         ("x:\n  - 1 # c\nz: 3\n", "x:\n  - 1 # c\ny: 2\nz: 3\n"),
         ("x:\n- 1 # c\nz: 3\n", "x:\n- 1 # c\ny: 2\nz: 3\n"),
         ("x:\n  - - 1 # c\n", "x:\n  - - 1 # c\ny: 2\n"),
@@ -2112,5 +2111,67 @@ fn test_set_nested_with_cr_line_breaks() {
     let doc = crate::yaml::Document::from_str("x: 1\ra:\r  b: 1\r").unwrap();
     let mapping = doc.as_mapping().unwrap();
     mapping.get_mapping("a").unwrap().set("d", 4);
-    assert_eq!(doc.to_string(), "x: 1\ra:\r  b: 1\r  d: 4\n");
+    assert_eq!(doc.to_string(), "x: 1\ra:\r  b: 1\r  d: 4\r");
+}
+
+#[test]
+fn test_set_writes_crlf_line_breaks() {
+    use crate::builder::MappingBuilder;
+    let file = YamlFile::from_str("a: 1\r\n").unwrap();
+    let doc = file.document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    mapping.set("b", MappingBuilder::new().pair("c", 1).build_document());
+    mapping.set("d", ScalarValue::literal("x\ny\n"));
+    mapping.set("e", ScalarValue::single_quoted("x\ny"));
+    crate::debug::assert_edited(
+        &file,
+        "a: 1\r\nb:\r\n  c: 1\r\nd: |\r\n  x\r\n  y\r\ne: 'x\r\n\r\n  y'\r\n",
+    );
+}
+
+#[test]
+fn test_set_without_line_breaks_writes_lf() {
+    let file = YamlFile::from_str("a: 1").unwrap();
+    file.document().unwrap().as_mapping().unwrap().set("b", 2);
+    // The input's last line stays unterminated.
+    crate::debug::assert_edited(&file, "a: 1\nb: 2");
+}
+
+#[test]
+fn test_set_copied_multi_line_scalar_with_cr_line_breaks() {
+    let source = crate::yaml::Document::from_str("k: 'x\r y\r\r z'\r").unwrap();
+    let value = source.as_mapping().unwrap().get("k").unwrap();
+    let file = YamlFile::from_str("a:\r  b:\r    c: 1\r").unwrap();
+    let doc = file.document().unwrap();
+    let a = doc.as_mapping().unwrap().get_mapping("a").unwrap();
+    a.get_mapping("b").unwrap().set("c", &value);
+    crate::debug::assert_edited(&file, "a:\r  b:\r    c: 'x\r     y\r\r     z'\r");
+}
+
+#[test]
+fn test_set_copied_flow_sequence_with_cr_line_breaks() {
+    let source = crate::yaml::Document::from_str("[a,\rb]\r").unwrap();
+    let value = source.as_sequence().unwrap();
+    let file = YamlFile::from_str("a:\r  b:\r    c: 1\r").unwrap();
+    let doc = file.document().unwrap();
+    let a = doc.as_mapping().unwrap().get_mapping("a").unwrap();
+    a.get_mapping("b").unwrap().set("c", &value);
+    crate::debug::assert_edited(&file, "a:\r  b:\r    c: [a,\r     b]\r");
+}
+
+#[test]
+fn test_set_explicit_key_value_with_cr_line_breaks() {
+    let file = YamlFile::from_str("? a\r? b\r").unwrap();
+    file.document().unwrap().as_mapping().unwrap().set("a", "x");
+    crate::debug::assert_edited(&file, "? a\r: x\r? b\r");
+}
+
+#[test]
+fn test_set_block_scalar_before_blank_line_with_cr_line_breaks() {
+    let file = YamlFile::from_str("a: 1\r    \rb: 2\r").unwrap();
+    let doc = file.document().unwrap();
+    doc.as_mapping()
+        .unwrap()
+        .set("a", ScalarValue::literal("x\n"));
+    crate::debug::assert_edited(&file, "a: |\r  x\r\rb: 2\r");
 }

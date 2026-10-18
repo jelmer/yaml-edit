@@ -5,7 +5,7 @@
 //! lines after the value inside it, so the replacement has to sort these
 //! out first.
 
-use super::{append_children, fresh_token, SyntaxNode, SyntaxToken};
+use super::{append_children, fresh_token, insert_children, SyntaxNode, SyntaxToken};
 use crate::lex::SyntaxKind;
 
 fn is_block_collection(node: &SyntaxNode) -> bool {
@@ -66,12 +66,18 @@ pub(crate) fn remove_lifted_comment(entry: &SyntaxNode, value: &SyntaxNode) {
 
 /// Detach and return the blank lines, and the indentation of a comment
 /// line, that the parser keeps at the end of the innermost collection
-/// `value` ends with. They belong to the lines after the value.
+/// `value` ends with, or in front of an empty value, where it looked for
+/// one. They belong to the lines after the value.
 pub(crate) fn take_trailing_lines(value: &SyntaxNode) -> Vec<SyntaxToken> {
     let mut lines = Vec::new();
     let mut token = value.last_token();
+    while let Some(t) = token.clone().filter(|t| t.text().is_empty()) {
+        token = t.prev_token();
+    }
     while let Some(t) = token.filter(|t| {
-        t.parent().is_some_and(|p| is_block_collection(&p)) && starts_or_is_blank_line(t)
+        t.parent()
+            .is_some_and(|p| is_block_collection(&p) || p.kind() == SyntaxKind::VALUE)
+            && starts_or_is_blank_line(t)
     }) {
         token = t.prev_token();
         lines.push(t);
@@ -112,7 +118,7 @@ pub(crate) fn restore_trailing_lines(entry: &SyntaxNode, lines: Vec<SyntaxToken>
         Some(parent) => (parent, super::trivia::index_after_line(entry)),
         None => (entry.clone(), entry.children_with_tokens().count()),
     };
-    parent.splice_children(after..after, elements);
+    insert_children(&parent, after, elements);
 
     if super::ending_block_scalar(entry).is_some() {
         settle_lines_after_block_scalar(entry);
@@ -168,7 +174,7 @@ fn block_scalar_body_column(scalar: &SyntaxNode) -> Option<usize> {
         return Some(crate::nodes::scalar_node::block_parent_column(scalar) + indent);
     }
     let text = scalar.text().to_string();
-    text.lines()
+    text.split(['\n', '\r'])
         .skip(1)
         .find(|line| !line.trim().is_empty())
         .map(crate::column::space_indent)
@@ -279,8 +285,9 @@ fn dedent_comment_line_after(entry: &SyntaxNode, scalar: &SyntaxNode) {
     let at = indent.index();
     indent.detach();
     if column > 0 {
-        parent.splice_children(
-            at..at,
+        insert_children(
+            &parent,
+            at,
             vec![fresh_token(SyntaxKind::INDENT, &" ".repeat(column)).into()],
         );
     }
@@ -388,8 +395,9 @@ pub(crate) fn add_dash_line_comment(entry: &SyntaxNode, comment: LineComment) {
             space.detach();
         }
         let at = item.index();
-        entry.splice_children(
-            at..at,
+        insert_children(
+            entry,
+            at,
             vec![
                 fresh_token(SyntaxKind::WHITESPACE, &ws).into(),
                 fresh_token(SyntaxKind::COMMENT, &text).into(),
@@ -409,8 +417,9 @@ pub(crate) fn add_dash_line_comment(entry: &SyntaxNode, comment: LineComment) {
             // indicator, tag or anchor: the comment goes with them.
             let parent = last.parent().expect("a token has a parent");
             let at = last.index() + 1;
-            parent.splice_children(
-                at..at,
+            insert_children(
+                &parent,
+                at,
                 vec![
                     fresh_token(SyntaxKind::WHITESPACE, &ws).into(),
                     fresh_token(SyntaxKind::COMMENT, &text).into(),
@@ -434,7 +443,7 @@ pub(crate) fn add_dash_line_comment(entry: &SyntaxNode, comment: LineComment) {
     }
     let parent = entry.parent().expect("an entry is attached");
     let at = entry.index() + 1;
-    parent.splice_children(at..at, elements);
+    insert_children(&parent, at, elements);
 }
 
 /// Put `comment` on a line of its own directly above `entry`, at the
@@ -460,9 +469,9 @@ pub(crate) fn insert_comment_line_above(entry: &SyntaxNode, comment: &str) {
     match node.parent() {
         Some(parent) => {
             let at = node.index();
-            parent.splice_children(at..at, elements);
+            insert_children(&parent, at, elements);
         }
-        None => node.splice_children(0..0, elements),
+        None => insert_children(&node, 0, elements),
     }
 }
 
@@ -483,8 +492,9 @@ pub(crate) fn add_to_first_line(value: &SyntaxNode, comment: LineComment) -> boo
         .expect("a value on the key line starts with a token");
     let parent = last.parent().expect("a token has a parent");
     let at = last.index() + 1;
-    parent.splice_children(
-        at..at,
+    insert_children(
+        &parent,
+        at,
         vec![
             fresh_token(SyntaxKind::WHITESPACE, &comment.0).into(),
             fresh_token(SyntaxKind::COMMENT, &comment.1).into(),

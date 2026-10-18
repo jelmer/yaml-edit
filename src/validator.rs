@@ -2202,7 +2202,7 @@ impl Validator {
             }
             let spans_lines = child.descendants_with_tokens().any(|el| match el {
                 rowan::NodeOrToken::Token(t) => {
-                    t.kind() == crate::SyntaxKind::NEWLINE || t.text().contains('\n')
+                    t.kind() == crate::SyntaxKind::NEWLINE || t.text().contains(['\n', '\r'])
                 }
                 _ => false,
             });
@@ -2444,7 +2444,7 @@ impl Validator {
             return; // Not a quoted string
         }
 
-        if !text.contains('\n') {
+        if !text.contains(['\n', '\r']) {
             return; // Single line, no indentation to check
         }
 
@@ -2459,12 +2459,12 @@ impl Validator {
         // in one token, so no document-marker rule sees it.
         // The marker has to be followed by whitespace or the line's end:
         // `---x` and `---"` are content (9MQT/00).
-        if text.split('\n').skip(1).any(|line| {
+        if text.split(['\n', '\r']).skip(1).any(|line| {
             (line.starts_with("---") || line.starts_with("..."))
                 && line[3..]
                     .chars()
                     .next()
-                    .map_or(true, |c| matches!(c, ' ' | '\t' | '\r'))
+                    .map_or(true, |c| matches!(c, ' ' | '\t'))
         }) {
             violations.push(Violation::error_at(
                 Rule::InvalidDocumentMarker,
@@ -2480,7 +2480,7 @@ impl Validator {
         };
 
         // Check each line after the first
-        let lines: Vec<&str> = text.split('\n').collect();
+        let lines: Vec<&str> = text.split(['\n', '\r']).collect();
         if lines.len() > 1 {
             // Continuation lines (between opening and closing quote) should have consistent indentation
             // In YAML, they should be indented at least as much as the opening line
@@ -2628,7 +2628,7 @@ fn quoted_scalar_tab_indent(node: &SyntaxNode) -> Option<crate::nodes::SyntaxTok
         .find(|t| {
             is_quoted_scalar(t)
                 && t.text()
-                    .split('\n')
+                    .split(['\n', '\r'])
                     .skip(1)
                     .any(|line| line.starts_with('\t') && !line.trim().is_empty())
         })
@@ -3513,6 +3513,34 @@ mod tests {
     fn test_indentation_with_cr_line_breaks() {
         assert_eq!(located("-\r  name: a\r  hr: 1\r-\r  name: b\r"), vec![]);
         assert_eq!(located("a:\r  b: 1\r  c: 2\r"), vec![]);
+    }
+
+    #[test]
+    fn test_quoted_scalar_lines_with_cr_line_breaks() {
+        let marker = "Document marker inside a quoted scalar";
+        let wrong_indent = "Wrong indented multiline quoted scalar";
+        for (yaml, expected) in [
+            ("---\r\"\r---\r\"\r", vec![(marker, "2:1")]),
+            ("---\r'\r...\r'\r", vec![(marker, "2:1")]),
+            (
+                "- - \"bar\rbar\": x\r",
+                vec![
+                    ("Implicit key cannot span multiple lines", "1:5"),
+                    (wrong_indent, "1:5"),
+                ],
+            ),
+            ("---\rquoted: \"a\rb\rc\"\r", vec![(wrong_indent, "2:9")]),
+            (
+                "foo: \"bar\r\tbaz\"\r",
+                vec![("Tabs are not allowed for indentation in YAML", "1:6")],
+            ),
+        ] {
+            let expected: Vec<_> = expected
+                .into_iter()
+                .map(|(m, l)| (m.to_string(), l.to_string()))
+                .collect();
+            assert_eq!(located(yaml), expected, "{yaml:?}");
+        }
     }
 
     #[test]

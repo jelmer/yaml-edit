@@ -102,7 +102,7 @@ its own text: `len`, `get`, `set` and the other accessors behave the same,
 and `debug::shape_to_string` gives the same output for both. String keys and
 values are quoted where a plain scalar would be read back as something else.
 
-There is one exception. YAML has no block syntax for an empty collection, so
+There are two exceptions. YAML has no block syntax for an empty collection, so
 an empty one is written `{}` or `[]` whatever its style. One that is to be
 block style once it has entries (`Mapping::new_pending_block`, or a block
 collection whose last entry was removed or that was cleared) carries a
@@ -111,6 +111,14 @@ entry writes it as a block collection again. A `{}` or `[]` from the source
 has no such marker and stays flow. Re-parsing the text cannot recover the
 marker, so `debug::shape_to_string` leaves it out, and is what to compare an
 edited tree with a re-parse by; `debug::tree_to_string` shows it.
+
+The other is comment lines that an edit leaves at the front of the root
+block collection of a document without `---`, such as those before an entry
+moved to the front, or after a removed first entry. The parser puts such
+lines before the document, at stream level, where they would no longer be
+part of the `Document`'s text, so they stay in the collection.
+`debug::shape_to_string` shows them before the document, together with
+anything ahead of them in it, as the parser has them.
 
 ## `AsYaml` trait
 
@@ -216,6 +224,16 @@ and blank lines before the root, and the newline and blank lines after a
 scalar or flow root, are children of `DOCUMENT`. Comments and directives
 before the first document are children of the file root instead. Mutations
 that add documents or directives must keep a BOM first in the stream.
+
+A new entry at the end of a collection (`set` with a new key, `push`)
+goes after its last entry and any comment lines after that. Blank lines
+ending a nested collection separate it from what follows, so they stay
+after the new entry: `a:\n  x: 1\n\nb: 2\n` with `y` set in `a` gives
+`a:\n  x: 1\n  y: 3\n\nb: 2\n`. Those ending the root collection stay
+where they are, and the new entry goes after them: `- x\n\n` with `y`
+pushed gives `- x\n\n- y\n`. Input that has no final line break
+still has none after a new last entry, whichever method adds it:
+`a: 1` with `b` set gives `a: 1\nb: 2`.
 
 A kept (`|+`, `>+`) block scalar takes every blank line after it into its
 value. A new entry whose value ends in one therefore goes after any blank
@@ -346,15 +364,25 @@ lines that would follow it go at its end.
 
 Moving an entry (`reorder_fields`, and `move_after`/`move_before` given
 the entry's own value) takes along the comments on its lines and the
-comment lines after it, up to the next entry, with any blank lines
-among them: `a: 1  # c\n# d\nb: 2\n` reordered to `b, a` gives
-`b: 2\na: 1  # c\n# d\n`. The blank lines after those belong to the
-position, so `a: 1\n\nb: 2\n` reordered gives `b: 2\n\na: 1\n`. A block
+comment lines before it, back to the previous entry, with any blank
+lines among and after them: a comment line between two entries
+describes the one below it. `a: 1\n# about b\nb: 2\n` with `a` moved
+after `b` gives `# about b\nb: 2\na: 1\n`. The blank lines before those
+comment lines belong to the position, so `a: 1\n\nb: 2\n` reordered
+gives `b: 2\n\na: 1\n`. Lines before the first entry and after the last
+stay where they are. Comment lines that end up before the first entry
+go where the parser puts them, ahead of the mapping, so
+`top:\n  a: 1\n  # c\n  b: 2\n` reordered gives
+`top:\n  # c\n  b: 2\n  a: 1\n` with `# c` outside the mapping. A block
 scalar takes the blank lines after it into its value, so those of a
 position whose entry now ends in one go after the next entry that does
-not, or failing that the one before. Lines before the first entry stay
-where they are. In a flow mapping the commas stay with their positions, and one
-that has to follow an entry whose comment ends its line goes before
+not, or failing that the one before. `move_after`/`move_before` given
+another value remove the old entry as `remove` does, leaving its comment
+lines where they were.
+
+In a flow mapping the parser puts a comment line in the entry above it,
+and it goes with that entry. The commas stay with their positions, and
+one that has to follow an entry whose comment ends its line goes before
 that comment. So does the indentation of the line after such a
 comment: `{a: 1, # c\n b: 2 # d\n}` reordered gives
 `{b: 2, # d\n a: 1 # c\n}`.
@@ -362,8 +390,8 @@ comment: `{a: 1, # c\n b: 2 # d\n}` reordered gives
 Removing an entry or item takes along the comment at the end of its
 line, and leaves the comment lines before and after it: `- x\n# c\n- a  # d\n- y\n`
 with `a` removed gives `- x\n# c\n- y\n`. A comment line above an entry
-usually describes it, but removing it too would drop text the caller
-did not ask to remove. Blank lines on both sides of the entry would
+usually describes it, and goes with it when it is moved, but removing it
+too would drop text the caller did not ask to remove. Blank lines on both sides of the entry would
 merge into a double gap, so only those after it are kept:
 `a: 1\n\nb: 2\n\nc: 3\n` with `b` removed gives `a: 1\n\nc: 3\n`.
 

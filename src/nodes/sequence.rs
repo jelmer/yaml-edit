@@ -1,13 +1,14 @@
 use super::replaced_value;
 use super::{
-    entry_indices, fresh_token, has_child_token, nth_entry_index, trivia, Lang, SyntaxNode,
+    fresh_token, has_child_token, insert_children, nth_entry_index, replace_children, trivia, Lang,
+    SyntaxNode,
 };
 use crate::as_yaml::{build_in, AsYaml, FlowQuoting, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::nodes::empty_collection::{self, render_empty};
 use crate::nodes::flow_quoting;
 use crate::nodes::mapping::{drop_tagged_anchor, held_anchor};
-use crate::nodes::trivia::FlowSeparator;
+use crate::nodes::trivia::Slot;
 use crate::yaml::ValueNode;
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
@@ -37,76 +38,31 @@ pub(crate) fn must_render_flow(node: &SyntaxNode) -> bool {
     false
 }
 
-/// Does the SEQUENCE's parent VALUE carry the leading INDENT for this
-/// sequence? True for the block-under-key shape (`key:\n  - a`): the
-/// first entry's indentation lives in VALUE, not inside SEQUENCE, so
-/// mutation helpers must not emit their own leading INDENT for it.
-fn parent_value_has_leading_indent(seq: &SyntaxNode) -> bool {
-    let Some(parent) = seq.parent() else {
-        return false;
-    };
-    if parent.kind() != SyntaxKind::VALUE {
-        return false;
-    }
-    let mut saw_indent = false;
-    for child in parent.children_with_tokens() {
-        match &child {
-            rowan::NodeOrToken::Node(n) if n == seq => return saw_indent,
-            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INDENT => saw_indent = true,
-            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::NEWLINE => {}
-            _ => saw_indent = false,
-        }
-    }
-    false
-}
-
-/// Is the column of `seq`'s first entry set outside it: by the INDENT in
-/// its parent VALUE, or by sitting on the line of a `- ` or `? `?
-fn column_set_outside(seq: &SyntaxNode) -> bool {
-    let Some(parent) = seq.parent() else {
-        return false;
-    };
-    match parent.kind() {
-        SyntaxKind::VALUE => parent_value_has_leading_indent(seq),
-        SyntaxKind::SEQUENCE_ENTRY => true,
-        SyntaxKind::KEY => !has_child_token(&parent, |k| k == SyntaxKind::NEWLINE),
-        _ => false,
-    }
-}
-
 /// If `node`'s tail token is a NEWLINE (optionally followed by an
-/// INDENT), return the concatenated text as `Some("\n" | "\n<indent>")`.
+/// INDENT), return the INDENT's text, or `""` if there is none.
 /// An omitted value at the end (`? a\n`) has no text and does not count.
 ///
 /// Used by [`Sequence::set`] to preserve the trailing separator of a
 /// multi-line value when swapping it out. Walking the CST directly is
 /// safer than `node.text().rfind('\n')` because a NEWLINE nested inside
 /// a block scalar's content would mislead a text-level search.
-fn trailing_newline_indent(node: &SyntaxNode) -> Option<String> {
+fn trailing_line_indent(node: &SyntaxNode) -> Option<String> {
     let tokens: Vec<_> = node
         .descendants_with_tokens()
         .filter_map(|el| el.into_token())
         .filter(|t| !t.text().is_empty())
         .collect();
-    let mut result = String::new();
     // Look at the last two tail tokens: [NEWLINE], [NEWLINE, INDENT], or
     // [.., NEWLINE], [.., NEWLINE, INDENT].
     let last = tokens.last()?;
     match last.kind() {
-        SyntaxKind::NEWLINE => {
-            result.push_str(last.text());
-        }
+        SyntaxKind::NEWLINE => Some(String::new()),
         SyntaxKind::INDENT => {
             let prev = tokens.iter().rev().nth(1)?;
-            if prev.kind() != SyntaxKind::NEWLINE {
-                return None;
-            }
-            result.push_str(prev.text());
-            result.push_str(last.text());
+            (prev.kind() == SyntaxKind::NEWLINE).then(|| last.text().to_string())
         }
-        _ => return None,
+        _ => None,
     }
-    Some(result)
 }
 
 /// True if `sequence`'s enclosing MAPPING_ENTRY is the last entry of
@@ -125,7 +81,7 @@ fn rebuild_entry_with_value(
     let entry_children: Vec<_> = entry.children_with_tokens().collect();
     // Track the column while copying the entry, so the new value's later
     // lines line up under its first.
-    let dash_column = crate::as_yaml::source_base_indent(entry);
+    let dash_column = crate::column::node_column(entry);
     let mut column = dash_column;
 
     // Build a new SEQUENCE_ENTRY with the new value using AsYaml
@@ -173,7 +129,7 @@ fn rebuild_entry_with_value(
 
     let mut value_inserted = false;
     let mut value_ends_with_newline = false;
-    let mut trailing_text: Option<String> = None;
+    let mut trailing_indent: Option<String> = None;
     let mut after_dash = false;
     // A value ending in NEWLINE terminates the entry itself, so the old
     // terminator after it, up to this index, is dropped.
@@ -200,7 +156,7 @@ fn rebuild_entry_with_value(
                 // A multi-line value (a nested mapping, say) ends with a
                 // NEWLINE and often an INDENT, which separate the entry
                 // from whatever follows and outlive the value itself.
-                trailing_text = trailing_newline_indent(n);
+                trailing_indent = trailing_line_indent(n);
                 if !value_inserted {
                     // A bare `-` item is DASH then a zero-width NULL
                     // scalar, so a written value needs the space that
@@ -232,27 +188,25 @@ fn rebuild_entry_with_value(
             rowan::NodeOrToken::Node(n) => {
                 // Copy other nodes as-is (like VALUE wrappers, etc.)
                 crate::yaml::copy_node_to_builder(&mut builder, n);
-                column = column_after(column, &n.text().to_string());
+                column = crate::column::column_after(column, &n.text().to_string());
                 after_dash = false;
             }
             rowan::NodeOrToken::Token(t) => {
                 // Copy tokens as-is
                 builder.token(t.kind().into(), t.text());
-                column = column_after(column, t.text());
+                column = crate::column::column_after(column, t.text());
                 after_dash = t.kind() == SyntaxKind::DASH;
             }
         }
     }
 
     // Restore trailing whitespace extracted from the old value
-    if let Some(trailing) = trailing_text {
-        if let Some(indent_part) = trailing.strip_prefix('\n') {
-            if !value_ends_with_newline {
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
-            }
-            if !indent_part.is_empty() {
-                builder.token(SyntaxKind::INDENT.into(), indent_part);
-            }
+    if let Some(indent) = trailing_indent {
+        if !value_ends_with_newline {
+            builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        }
+        if !indent.is_empty() {
+            builder.token(SyntaxKind::INDENT.into(), &indent);
         }
     }
 
@@ -278,18 +232,18 @@ fn entry_item(entry: &SyntaxNode) -> Option<SyntaxNode> {
     })
 }
 
-/// An INDENT token for `indentation`, or none at column 0, where the
-/// parser emits none.
-fn indent_token(indentation: &str) -> Option<rowan::SyntaxElement<Lang>> {
-    (!indentation.is_empty()).then(|| fresh_token(SyntaxKind::INDENT, indentation).into())
-}
-
-/// The column after writing `text` starting at `column`.
-fn column_after(column: usize, text: &str) -> usize {
-    match text.rfind('\n') {
-        Some(nl) => text[nl + 1..].chars().count(),
-        None => column + text.chars().count(),
+/// A block sequence entry holding `value`, its dash at `column`, ending
+/// in a line break.
+fn block_entry(value: &impl crate::AsYaml, column: usize) -> SyntaxNode {
+    let mut builder = GreenNodeBuilder::new();
+    builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
+    builder.token(SyntaxKind::DASH.into(), "-");
+    builder.token(SyntaxKind::WHITESPACE.into(), " ");
+    if !build_entry_value(&mut builder, value, column, column + 2, None) {
+        builder.token(SyntaxKind::NEWLINE.into(), "\n");
     }
+    builder.finish_node();
+    SyntaxNode::new_root_mut(builder.finish())
 }
 
 /// Emit `value` as the item of an entry whose dash is at `dash_column`,
@@ -481,89 +435,6 @@ impl Sequence {
         Sequence(SyntaxNode::new_root_mut(builder.finish()))
     }
 
-    /// Indentation string used by entries in this sequence: a
-    /// top-level INDENT before an entry if present, else WHITESPACE before
-    /// DASH inside an entry, else the parent VALUE's INDENT (the parser's
-    /// storage for single-entry block sequences under a key), else the
-    /// column of a sequence on its parent's dash line. Defaults to two
-    /// spaces.
-    fn detect_indentation(&self) -> String {
-        // INDENTs of blank or comment lines say nothing about the entries'
-        // column: those lines may be indented anyhow.
-        if let Some(ind) = self.0.children_with_tokens().find_map(|child| {
-            child
-                .into_token()
-                .filter(|t| {
-                    t.kind() == SyntaxKind::INDENT
-                        && t.next_sibling_or_token()
-                            .is_some_and(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-                })
-                .map(|t| t.text().to_string())
-        }) {
-            return ind;
-        }
-
-        // Fall back: look for WHITESPACE before DASH inside entry nodes
-        if let Some(indent) = self
-            .0
-            .children()
-            .filter(|c| c.kind() == SyntaxKind::SEQUENCE_ENTRY)
-            .find_map(|entry| {
-                let tokens: Vec<_> = entry.children_with_tokens().collect();
-                tokens.windows(2).find_map(|pair| {
-                    let ws = pair[0].as_token()?;
-                    let dash = pair[1].as_token()?;
-                    if ws.kind() == SyntaxKind::WHITESPACE && dash.kind() == SyntaxKind::DASH {
-                        Some(ws.text().to_string())
-                    } else {
-                        None
-                    }
-                })
-            })
-        {
-            return indent;
-        }
-
-        // For a block sequence under a key, the parser stores the entry
-        // column as an INDENT in the parent VALUE (right before the SEQUENCE).
-        // A line break with no INDENT after it puts the entries at column 0,
-        // the key's own column (`a:\n- 1`).
-        if let Some(parent) = self.0.parent().filter(|p| p.kind() == SyntaxKind::VALUE) {
-            let mut line_indent = None;
-            for child in parent.children_with_tokens() {
-                match &child {
-                    rowan::NodeOrToken::Node(n) if n == &self.0 => break,
-                    rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INDENT => {
-                        line_indent = Some(t.text().to_string());
-                    }
-                    rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::NEWLINE => {
-                        line_indent = Some(String::new());
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(indent) = line_indent {
-                return indent;
-            }
-        }
-
-        // A sequence that is the document's own node starts at column 0, so
-        // there is nothing to indent by. Guessing two spaces here made
-        // `push` write the new entry as a nested sequence inside the last
-        // one, where as_sequence could no longer reach it.
-        match self.0.parent() {
-            None => return String::new(),
-            Some(parent) if parent.kind() == SyntaxKind::DOCUMENT => return String::new(),
-            // `- - 1`: the entries sit at the column the sequence starts at.
-            Some(parent) if parent.kind() == SyntaxKind::SEQUENCE_ENTRY => {
-                return " ".repeat(crate::as_yaml::source_base_indent(&self.0));
-            }
-            Some(_) => {}
-        }
-
-        "  ".to_string()
-    }
-
     /// Append `count` copies of `value` to the end of the sequence.
     ///
     /// Equivalent to calling [`push`](Self::push) `count` times, but splices
@@ -576,9 +447,8 @@ impl Sequence {
             return;
         }
         // The first entry settles the questions push answers about style and
-        // scaffolding -- flow vs block, the indent string, whether the parent
-        // supplies the indent, the placeholder newline. Let it, then append
-        // the rest alongside it in one splice.
+        // scaffolding -- flow vs block, the column, the placeholder newline.
+        // Let it, then add the rest after it in one splice.
         self.push(value.clone());
         let Some(remaining) = count.checked_sub(1).filter(|n| *n > 0) else {
             return;
@@ -590,32 +460,29 @@ impl Sequence {
             return;
         }
 
-        // Mirror the entry push just made: same indent, and a trailing
-        // NEWLINE since it is no longer last.
-        let indentation = self.detect_indentation();
+        let pushed = self
+            .0
+            .last_child()
+            .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            .expect("push added an entry");
+        let open = !trivia::line_end(&pushed).is_terminated();
+        trivia::terminate(&pushed);
+        let column = trivia::entry_column(&self.0);
         let mut inserts: Vec<rowan::NodeOrToken<SyntaxNode, _>> = Vec::new();
+        let mut last = None;
         for _ in 0..remaining {
-            let mut builder = GreenNodeBuilder::new();
-            builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
-            builder.token(SyntaxKind::DASH.into(), "-");
-            builder.token(SyntaxKind::WHITESPACE.into(), " ");
-            let ends_with_newline = build_entry_value(
-                &mut builder,
-                &value,
-                indentation.len(),
-                indentation.len() + 2,
-                None,
-            );
-            if !ends_with_newline {
-                builder.token(SyntaxKind::NEWLINE.into(), "\n");
+            if column > 0 {
+                inserts.push(fresh_token(SyntaxKind::INDENT, &" ".repeat(column)).into());
             }
-            builder.finish_node();
-            inserts.extend(indent_token(&indentation));
-            inserts.push(SyntaxNode::new_root_mut(builder.finish()).into());
+            let entry = block_entry(&value, column);
+            inserts.push(entry.clone().into());
+            last = Some(entry);
         }
-
-        let end = self.0.green().children().len();
-        self.0.splice_children(end..end, inserts);
+        if open {
+            trivia::unterminate_last(&last.expect("at least one entry is added"));
+        }
+        let at = trivia::index_after_line(&pushed);
+        insert_children(&self.0, at, inserts);
     }
 
     /// Add an item to the end of the sequence.
@@ -639,162 +506,42 @@ impl Sequence {
     /// [`insert`](Self::insert) and [`remove`](Self::remove) are likewise
     /// linear per call, and rather more costly than `push`.
     pub fn push(&self, value: impl crate::AsYaml) {
+        self.attach(Slot::End, value);
+    }
+
+    /// Insert an item at a specific position.
+    ///
+    /// If `index` is out of bounds, the item is appended at the end.
+    /// This method always succeeds; it never returns an error.
+    ///
+    /// Mutates in place despite `&self` (see crate docs on interior mutability).
+    pub fn insert(&self, index: usize, value: impl crate::AsYaml) {
+        let slot = self
+            .0
+            .children()
+            .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            .nth(index)
+            .map_or(Slot::End, Slot::Before);
+        self.attach(slot, value);
+    }
+
+    /// Add an item holding `value` at `slot`.
+    fn attach(&self, slot: Slot, value: impl crate::AsYaml) {
         // A placeholder from `Sequence::new_pending_block` turns into a real
         // block sequence now that it has an item. A `[]` from the source is
         // not marked and keeps its flow style; a placeholder nested inside a
         // flow container stays flow to avoid mixed output.
         empty_collection::convert_placeholder_to_block(&self.0);
         if self.is_flow_style() {
-            self.insert_flow(usize::MAX, value);
+            trivia::attach_flow_entry(&self.0, slot, &self.flow_entry(value));
             return;
         }
-
-        let indentation = self.detect_indentation();
-        // Locate the last SEQUENCE_ENTRY and the insert position by walking
-        // back from the end of the child list.
-        //
-        // Both this scan and `splice_children` cost O(len) if done naively,
-        // which makes building a sequence O(len^2). The green child list is
-        // a DoubleEndedIterator, so walking back from the end reads only the
-        // few trailing elements; and since `splice_children` has to fix up
-        // every *live* SyntaxNode handle, take the measurements and fix the
-        // previous entry before creating the handles the splice needs.
-        let green = self.0.green();
-        let mut tail = green.children();
-        let child_count = tail.len();
-
-        // Walk back over the trailing tokens the parser leaves after the
-        // last entry. A NEWLINE there is a blank line belonging to the
-        // enclosing mapping, so the new entry goes before it; an INDENT is a
-        // separator, so the new entry goes after it. The last comment, on
-        // the last entry's line or a line of its own, stays in front of the
-        // new entry, which goes after the comment's line break.
-        let mut last_entry_index = None;
-        let mut last_comment = None;
-        let mut insert_pos = child_count;
-        let mut idx = child_count;
-        while idx > 0 {
-            idx -= 1;
-            match tail.next_back() {
-                Some(rowan::NodeOrToken::Node(n))
-                    if n.kind() == SyntaxKind::SEQUENCE_ENTRY.into() =>
-                {
-                    last_entry_index = Some(idx);
-                    if insert_pos == child_count {
-                        insert_pos = idx + 1;
-                    }
-                    break;
-                }
-                Some(rowan::NodeOrToken::Token(tok))
-                    if tok.kind() == SyntaxKind::COMMENT.into() =>
-                {
-                    last_comment.get_or_insert(idx);
-                }
-                Some(rowan::NodeOrToken::Token(tok)) if last_comment.is_some() => {
-                    debug_assert!(
-                        [
-                            SyntaxKind::INDENT,
-                            SyntaxKind::NEWLINE,
-                            SyntaxKind::WHITESPACE
-                        ]
-                        .iter()
-                        .any(|k| tok.kind() == (*k).into()),
-                        "unexpected token between sequence entry and comment"
-                    );
-                }
-                Some(rowan::NodeOrToken::Token(tok)) if tok.kind() == SyntaxKind::INDENT.into() => {
-                    insert_pos = idx + 1;
-                }
-                Some(rowan::NodeOrToken::Token(tok))
-                    if tok.kind() == SyntaxKind::NEWLINE.into() =>
-                {
-                    insert_pos = idx;
-                }
-                _ => break,
-            }
-        }
-
-        let mut last_entry_has_newline = true;
-        if let Some(comment) = last_comment.filter(|_| last_entry_index.is_some()) {
-            // The comment's line ends the previous entry's lines.
-            let terminated = green
-                .children()
-                .nth(comment + 1)
-                .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE.into());
-            if !terminated {
-                let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
-                self.0
-                    .splice_children(comment + 1..comment + 1, vec![nl.into()]);
-                last_entry_has_newline = false;
-            }
-            insert_pos = comment + 2;
-        } else if last_entry_index.is_some() {
-            // Ensure the previous last entry has a trailing newline (it won't
-            // be last anymore). `last_child` reaches it without walking the
-            // list.
-            if let Some(node) = self
-                .0
-                .last_child()
-                .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-            {
-                last_entry_has_newline = trivia::line_end(&node).is_terminated();
-                trivia::terminate(&node);
-            }
-        }
-
-        // Build the SEQUENCE_ENTRY node using AsYaml trait
-        let mut builder = GreenNodeBuilder::new();
-        builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
-        builder.token(SyntaxKind::DASH.into(), "-");
-        builder.token(SyntaxKind::WHITESPACE.into(), " ");
-
-        // Build the value content directly using AsYaml
-        let value_ends_with_newline = build_entry_value(
-            &mut builder,
-            &value,
-            indentation.len(),
-            indentation.len() + 2,
-            None,
-        );
-
-        // Add trailing newline only if the value doesn't already end with one
-        // and if the last entry had one (preserves document style)
-        if last_entry_has_newline && !value_ends_with_newline {
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        builder.finish_node(); // SEQUENCE_ENTRY
-        let new_entry = SyntaxNode::new_root_mut(builder.finish());
-
-        // Parser convention: the first entry in a SEQUENCE has no leading
-        // INDENT inside the SEQUENCE; its indentation comes from the parent
-        // VALUE (`NEWLINE INDENT` right before the SEQUENCE). Only later
-        // entries carry an INDENT as a separator after the previous entry's
-        // NEWLINE. Match that when pushing.
-        let entry_is_first = last_entry_index.is_none();
-        let parent_supplies_indent = entry_is_first && column_set_outside(&self.0);
-
-        let mut inserts: Vec<rowan::NodeOrToken<SyntaxNode, _>> = Vec::new();
-        if !parent_supplies_indent {
-            inserts.extend(indent_token(&indentation));
-        }
-        inserts.push(new_entry.clone().into());
-
-        self.0.splice_children(insert_pos..insert_pos, inserts);
-
-        // Strip the outer MAPPING_ENTRY's placeholder NEWLINE if this was
-        // the first entry (see issue #18).
-        if entry_is_first {
-            empty_collection::detach_empty_collection_placeholder_newline(&self.0, &new_entry);
-        }
-        crate::nodes::settle_lines_after_inserted_entry(&new_entry);
+        let entry = block_entry(&value, trivia::entry_column(&self.0));
+        trivia::attach_entry(&self.0, slot, &entry);
     }
 
-    /// Splice a new flow entry at `index` (or append when
-    /// `index >= len`), wiring up `, ` separators. The flow separator
-    /// convention is that every entry except the last carries a
-    /// trailing `, ` as its own tail (see the flow-separator note in
-    /// [`crate::nodes`]).
-    fn insert_flow(&self, index: usize, value: impl crate::AsYaml) {
+    /// A flow sequence entry holding `value`, for this sequence.
+    fn flow_entry(&self, value: impl crate::AsYaml) -> SyntaxNode {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
         // Should the value need several lines (to keep comments), they are
@@ -808,167 +555,11 @@ impl Sequence {
                     SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
                 )
             })
-            .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry));
+            .map_or(0, |entry| crate::column::node_column(&entry));
         let flow = Some(flow_quoting(&self.0));
         build_entry_value(&mut builder, &value, base, base + 2, flow);
         builder.finish_node();
-        let new_entry = SyntaxNode::new_root_mut(builder.finish());
-
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        let entry_positions = entry_indices(&self.0, SyntaxKind::SEQUENCE_ENTRY);
-        let Some(right_bracket_pos) = children.iter().position(|c| {
-            c.as_token()
-                .is_some_and(|t| t.kind() == SyntaxKind::RIGHT_BRACKET)
-        }) else {
-            // Callers check `is_flow_style()` first, which requires
-            // a LEFT_BRACKET; the matching RIGHT_BRACKET is a parser
-            // invariant. Bail defensively on malformed CSTs rather
-            // than corrupting the tree further.
-            debug_assert!(false, "flow SEQUENCE missing RIGHT_BRACKET");
-            return;
-        };
-
-        if index >= entry_positions.len() {
-            let entry = |pos: &usize| children[*pos].as_node().expect("SEQUENCE_ENTRY");
-            if let Some((last, rest)) = entry_positions.split_last() {
-                FlowSeparator::hand_over_end(entry(last), rest.last().map(entry), &new_entry);
-            }
-            self.0
-                .splice_children(right_bracket_pos..right_bracket_pos, vec![new_entry.into()]);
-            return;
-        }
-
-        // Insert before the entry at `index`; the new entry carries
-        // its own `, ` tail to keep the displaced entry separated.
-        let target_pos = entry_positions[index];
-        FlowSeparator::ensure(&new_entry);
-        self.0
-            .splice_children(target_pos..target_pos, vec![new_entry.into()]);
-    }
-
-    /// Insert an item at a specific position.
-    ///
-    /// If `index` is out of bounds, the item is appended at the end.
-    /// This method always succeeds; it never returns an error.
-    ///
-    /// Mutates in place despite `&self` (see crate docs on interior mutability).
-    pub fn insert(&self, index: usize, value: impl crate::AsYaml) {
-        // Same rule as `push`; see there for the "why".
-        empty_collection::convert_placeholder_to_block(&self.0);
-        if self.is_flow_style() {
-            self.insert_flow(index, value);
-            return;
-        }
-        if self.is_empty() {
-            self.push(value);
-            return;
-        }
-
-        let indentation = self.detect_indentation();
-
-        // Build the new SEQUENCE_ENTRY, terminated with its own NEWLINE.
-        // Parser convention: the INDENT sits at SEQUENCE level as a
-        // separator before the entry, not inside it.
-        let mut builder = GreenNodeBuilder::new();
-        builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
-        builder.token(SyntaxKind::DASH.into(), "-");
-        builder.token(SyntaxKind::WHITESPACE.into(), " ");
-        let value_ends_with_newline = build_entry_value(
-            &mut builder,
-            &value,
-            indentation.len(),
-            indentation.len() + 2,
-            None,
-        );
-        if !value_ends_with_newline {
-            builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        builder.finish_node();
-        let new_entry = SyntaxNode::new_root_mut(builder.finish());
-
-        // Locate the target position. If we're inserting before an
-        // existing entry, we want to land right at the INDENT that
-        // precedes it (so we don't split the existing NEWLINE-INDENT
-        // pairing that separates entries).
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-        let mut item_count = 0;
-        let mut target_entry_pos = children.len();
-        for (i, child) in children.iter().enumerate() {
-            let Some(node) = child.as_node() else {
-                continue;
-            };
-            if node.kind() != SyntaxKind::SEQUENCE_ENTRY {
-                continue;
-            }
-            if item_count == index {
-                target_entry_pos = i;
-                break;
-            }
-            item_count += 1;
-        }
-
-        // The INDENT (if any) that separates the target entry from the
-        // previous one is the child immediately before target_entry_pos.
-        // Insert our new entry+INDENT-separator *before* that INDENT, so
-        // the layout stays `NEWLINE INDENT ENTRY INDENT NEW_ENTRY`.
-        let insert_at = if target_entry_pos > 0
-            && children
-                .get(target_entry_pos - 1)
-                .and_then(|c| c.as_token())
-                .is_some_and(|t| t.kind() == SyntaxKind::INDENT)
-        {
-            target_entry_pos - 1
-        } else {
-            target_entry_pos
-        };
-
-        // Appending past the last entry (source doc had no trailing
-        // newline)? Ensure the previous entry has one, otherwise our
-        // new INDENT+ENTRY gets glued onto its tail as `- b  - c`.
-        // A comment after the previous entry, on its line or one of its own,
-        // ends its lines instead.
-        let mut inserts = Vec::new();
-        if target_entry_pos == children.len() {
-            let tail = children.iter().rev().take_while(|c| {
-                c.as_node()
-                    .map_or(true, |n| n.kind() != SyntaxKind::SEQUENCE_ENTRY)
-            });
-            if tail.clone().any(|c| c.kind() == SyntaxKind::COMMENT) {
-                if children
-                    .last()
-                    .is_some_and(|c| c.kind() == SyntaxKind::COMMENT)
-                {
-                    inserts.push(fresh_token(SyntaxKind::NEWLINE, "\n").into());
-                }
-            } else if let Some(prev_entry) = children.iter().rev().find_map(|c| {
-                c.as_node()
-                    .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-            }) {
-                trivia::terminate(prev_entry);
-            }
-        }
-
-        // Inserting at the head of a SEQUENCE whose parent VALUE
-        // supplies the leading INDENT, or that starts on its parent's dash
-        // line (`- - 1`)? Don't emit our own leading INDENT for the new
-        // entry (it would stack), but do give the displaced old-first entry
-        // an INDENT of its own so it stays at the right column.
-        let inserting_at_head = target_entry_pos < children.len()
-            && children[..target_entry_pos].iter().all(|c| {
-                c.as_node()
-                    .map_or(true, |n| n.kind() != SyntaxKind::SEQUENCE_ENTRY)
-            });
-        if inserting_at_head && column_set_outside(&self.0) {
-            let mut inserts = vec![new_entry.into()];
-            inserts.extend(indent_token(&indentation));
-            self.0.splice_children(insert_at..insert_at, inserts);
-            return;
-        }
-
-        inserts.extend(indent_token(&indentation));
-        inserts.push(new_entry.clone().into());
-        self.0.splice_children(insert_at..insert_at, inserts);
-        crate::nodes::settle_lines_after_inserted_entry(&new_entry);
+        SyntaxNode::new_root_mut(builder.finish())
     }
 
     /// Replace the item at `index` with a new value.
@@ -1037,7 +628,7 @@ impl Sequence {
         let new_entry = rebuild_entry_with_value(node, value, flow, anchor);
 
         // Replace the old SEQUENCE_ENTRY with the new one
-        self.0.splice_children(i..i + 1, vec![new_entry.into()]);
+        replace_children(&self.0, i..i + 1, vec![new_entry.into()]);
         let new_entry = self
             .0
             .children_with_tokens()
@@ -1273,6 +864,8 @@ mod tests {
             "s:\n  - x\n  - y\n",
             "s:\n    - deep\n",
             "s:\n  - a\nafter: kept\n",
+            "s:\n  - a\n\nafter: kept\n",
+            "s:\n  - a",
         ] {
             for count in 0..6usize {
                 let pushed = {
@@ -2672,9 +2265,9 @@ scores:
             crate::debug::assert_edited(&yaml, expected);
         }
         let cases = [
-            ("- - 1", "- - 1\n- x\n"),
-            ("- a: 1", "- a: 1\n- x\n"),
-            ("- - |\n    x", "- - |\n    x\n- x\n"),
+            ("- - 1", "- - 1\n- x"),
+            ("- a: 1", "- a: 1\n- x"),
+            ("- - |\n    x", "- - |\n    x\n- x"),
         ];
         for (source, expected) in cases {
             let yaml = YamlFile::from_str(source).unwrap();
@@ -2690,7 +2283,7 @@ scores:
     fn test_append_after_trailing_comment() {
         let cases: &[(&str, &str, &str)] = &[
             ("- 1\n  # c\n", "- 1\n  # c\n- x\n", "- 1\n  # c\n- x\n"),
-            ("- 1\n  # c", "- 1\n  # c\n- x", "- 1\n  # c\n- x\n"),
+            ("- 1\n  # c", "- 1\n  # c\n- x", "- 1\n  # c\n- x"),
             ("- 1\n# c\n", "- 1\n# c\n- x\n", "- 1\n# c\n- x\n"),
             (
                 "- 1\n  # c\n  # d\n",
@@ -2698,7 +2291,7 @@ scores:
                 "- 1\n  # c\n  # d\n- x\n",
             ),
             ("- 1 # c\n", "- 1 # c\n- x\n", "- 1 # c\n- x\n"),
-            ("- 1 # c", "- 1 # c\n- x", "- 1 # c\n- x\n"),
+            ("- 1 # c", "- 1 # c\n- x", "- 1 # c\n- x"),
             (
                 "- 1 # c\n  # d\n",
                 "- 1 # c\n  # d\n- x\n",
@@ -2712,7 +2305,7 @@ scores:
             (
                 "a:\n  - 1\n    # c",
                 "a:\n  - 1\n    # c\n  - x",
-                "a:\n  - 1\n    # c\n  - x\n",
+                "a:\n  - 1\n    # c\n  - x",
             ),
             (
                 "a:\n- 1\n  # c\n",
@@ -2727,7 +2320,7 @@ scores:
             (
                 "a:\n  - 1 # c",
                 "a:\n  - 1 # c\n  - x",
-                "a:\n  - 1 # c\n  - x\n",
+                "a:\n  - 1 # c\n  - x",
             ),
             (
                 "a:\n  - 1 # c\nb: 1\n",
@@ -2792,6 +2385,129 @@ scores:
                 let seq = outer.get(0).unwrap().as_sequence().cloned().unwrap();
                 append(&seq);
                 crate::debug::assert_edited(&yaml, expected);
+            }
+        }
+    }
+
+    /// New items go at the column of the existing ones, wherever the
+    /// parser put that column.
+    #[test]
+    fn test_add_item_at_column_of_items() {
+        use rowan::ast::AstNode;
+        let cases = [
+            (
+                "k: !!seq\n- a\n",
+                "k: !!seq\n- a\n- x\n",
+                "k: !!seq\n- x\n- a\n",
+            ),
+            (
+                "k: !!seq\n  - a\n  - b\n",
+                "k: !!seq\n  - a\n  - b\n  - x\n",
+                "k: !!seq\n  - x\n  - a\n  - b\n",
+            ),
+            (
+                "--- !!seq\n- a\n",
+                "--- !!seq\n- a\n- x\n",
+                "--- !!seq\n- x\n- a\n",
+            ),
+            (" - a\n - b\n", " - a\n - b\n - x\n", " - x\n - a\n - b\n"),
+            ("? - a\n: b\n", "? - a\n  - x\n: b\n", "? - x\n  - a\n: b\n"),
+            (
+                "k:\n  ? - a\n  : b\n",
+                "k:\n  ? - a\n    - x\n  : b\n",
+                "k:\n  ? - x\n    - a\n  : b\n",
+            ),
+            ("? a\n: - b\n", "? a\n: - b\n  - x\n", "? a\n: - x\n  - b\n"),
+            (
+                "? |\n  k\n: - a\n",
+                "? |\n  k\n: - a\n  - x\n",
+                "? |\n  k\n: - x\n  - a\n",
+            ),
+        ];
+        for (source, pushed, inserted) in cases {
+            for (push, expected) in [(true, pushed), (false, inserted)] {
+                let yaml = YamlFile::from_str(source).unwrap();
+                let seq = yaml
+                    .syntax()
+                    .descendants()
+                    .find_map(crate::Sequence::cast)
+                    .unwrap();
+                if push {
+                    seq.push("x");
+                } else {
+                    seq.insert(0, "x");
+                }
+                crate::debug::assert_edited(&yaml, expected);
+            }
+        }
+    }
+
+    /// Sequence edits write the document's own line break, whichever it is.
+    #[test]
+    fn test_edits_write_document_line_breaks() {
+        type Edit = fn(&crate::Sequence);
+        let edits: [(&str, Edit, &str); 10] = [
+            ("- a\n", |s| s.push("b"), "- a\n- b\n"),
+            ("- a  # c\n", |s| s.push("b"), "- a  # c\n- b\n"),
+            ("- a\n", |s| s.insert(0, "b"), "- b\n- a\n"),
+            ("# h\n- a\n", |s| s.insert(0, "b"), "# h\n- b\n- a\n"),
+            (
+                "- a  # c\n- d\n",
+                |s| s.insert(1, "b"),
+                "- a  # c\n- b\n- d\n",
+            ),
+            ("- a\n", |s| s.extend_with("x", 3), "- a\n- x\n- x\n- x\n"),
+            (
+                "- a: 1\n  b: 2\n- c\n",
+                |s| assert!(s.set(0, 5)),
+                "- 5\n- c\n",
+            ),
+            (
+                "- a\n- c\n",
+                |s| {
+                    assert!(s.set(
+                        0,
+                        crate::Document::from_str("x: 1\ny: 2\n")
+                            .unwrap()
+                            .as_mapping()
+                            .unwrap()
+                    ))
+                },
+                "- x: 1\n  y: 2\n- c\n",
+            ),
+            (
+                "- &a\n  - x\n- c\n",
+                |s| {
+                    assert!(s.set(
+                        0,
+                        crate::Document::from_str("x: 1\ny: 2\n")
+                            .unwrap()
+                            .as_mapping()
+                            .unwrap()
+                    ))
+                },
+                "- &a\n  x: 1\n  y: 2\n- c\n",
+            ),
+            (
+                "-\n  # n\n  a\n- c\n",
+                |s| {
+                    assert!(s.set(
+                        0,
+                        crate::Document::from_str("x: 1\ny: 2\n")
+                            .unwrap()
+                            .as_mapping()
+                            .unwrap()
+                    ))
+                },
+                "-\n  # n\n  x: 1\n  y: 2\n- c\n",
+            ),
+        ];
+        for line_break in ["\n", "\r\n", "\r"] {
+            for (source, edit, expected) in &edits {
+                let source = source.replace('\n', line_break);
+                let yaml = YamlFile::from_str(&source).unwrap();
+                edit(&yaml.document().unwrap().as_sequence().unwrap());
+                crate::debug::assert_edited(&yaml, &expected.replace('\n', line_break));
             }
         }
     }

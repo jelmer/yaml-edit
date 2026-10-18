@@ -156,8 +156,9 @@ pub(crate) fn move_leading_lines_out(collection: &SyntaxNode) {
         && leading.iter().any(|t| t.kind() == SyntaxKind::COMMENT)
         && !has_child_token(&parent, |k| k == SyntaxKind::DOC_START)
     {
-        // TODO: the parser puts comment lines before the content of a
-        // document without `---` at stream level, outside the DOCUMENT.
+        // The parser puts them at stream level, outside the DOCUMENT, but
+        // there they would drop out of the document's text.
+        // debug::shape_to_string allows for this.
         return;
     }
     let starts_with_comment = leading[0].kind() == SyntaxKind::COMMENT;
@@ -191,7 +192,7 @@ pub(crate) fn move_leading_lines_out(collection: &SyntaxNode) {
     );
     crate::nodes::replace_children(collection, 0..leading.len(), vec![]);
     let at = collection.index();
-    parent.splice_children(at..at, lines);
+    crate::nodes::insert_children(&parent, at, lines);
 }
 
 /// Whether `indent` starts a comment line.
@@ -525,11 +526,12 @@ impl YamlFile {
             // the first document moves up to the stream ahead of the directive.
             if let Some(bom) = leading_bom(doc.syntax()) {
                 bom.detach();
-                self.0.splice_children(0..0, vec![bom.into()]);
+                crate::nodes::insert_children(&self.0, 0, vec![bom.into()]);
             }
             if !has_child_token(doc.syntax(), |k| k == SyntaxKind::DOC_START) {
-                doc.syntax().splice_children(
-                    0..0,
+                crate::nodes::insert_children(
+                    doc.syntax(),
+                    0,
                     vec![
                         crate::nodes::fresh_token(SyntaxKind::DOC_START, "---").into(),
                         crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into(),
@@ -545,8 +547,9 @@ impl YamlFile {
         let directive_node = SyntaxNode::new_root_mut(builder.finish());
 
         let index = usize::from(leading_bom(&self.0).is_some());
-        self.0.splice_children(
-            index..index,
+        crate::nodes::insert_children(
+            &self.0,
+            index,
             vec![
                 directive_node.into(),
                 crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into(),
@@ -583,8 +586,9 @@ impl YamlFile {
         }
         if needs_start && !has_child_token(document.syntax(), |k| k == SyntaxKind::DOC_START) {
             let index = usize::from(bom.is_some());
-            document.syntax().splice_children(
-                index..index,
+            crate::nodes::insert_children(
+                document.syntax(),
+                index,
                 vec![
                     crate::nodes::fresh_token(SyntaxKind::DOC_START, "---").into(),
                     crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into(),
@@ -616,7 +620,7 @@ impl YamlFile {
             // Directives or comments only: the marker belongs at the start of
             // the stream, which needs only one.
             _ if leading_bom(&self.0).is_some() => {}
-            _ => self.0.splice_children(0..0, vec![bom.into()]),
+            _ => crate::nodes::insert_children(&self.0, 0, vec![bom.into()]),
         }
     }
 
@@ -3936,7 +3940,7 @@ fifth: 5"#;
         let output = doc.to_string();
 
         // Verify exact output (note: MappingBuilder adds trailing space after non-inline value keys)
-        let expected = "name: project\nconfig:\n  server:\n    host: 0.0.0.0\n    port: 8080\n  debug: true\n  features:\n    - api\n    - web\n    - cli\n";
+        let expected = "name: project\nconfig:\n  server:\n    host: 0.0.0.0\n    port: 8080\n  debug: true\n  features:\n    - api\n    - web\n    - cli";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
@@ -3995,7 +3999,7 @@ fifth: 5"#;
         let output = doc.to_string();
 
         let expected =
-            "name: project\ntags: !!set\n  database: null\n  production: null\n  web: null\n";
+            "name: project\ntags: !!set\n  database: null\n  production: null\n  web: null";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
@@ -4057,7 +4061,7 @@ fifth: 5"#;
 
         let output = doc.to_string();
 
-        let expected = "name: project\nbuild_steps: !!omap\n  - compile: gcc main.c\n  - test: ./a.out test\n  - package: tar -czf app.tar.gz .\n";
+        let expected = "name: project\nbuild_steps: !!omap\n  - compile: gcc main.c\n  - test: ./a.out test\n  - package: tar -czf app.tar.gz .";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
@@ -4137,7 +4141,7 @@ fifth: 5"#;
 
         let output = doc.to_string();
 
-        let expected = "name: project\nconnections: !!pairs\n  - server: primary.db\n  - server: secondary.db\n  - server: tertiary.db\n  - timeout: 30\n";
+        let expected = "name: project\nconnections: !!pairs\n  - server: primary.db\n  - server: secondary.db\n  - server: tertiary.db\n  - timeout: 30";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
@@ -4222,7 +4226,7 @@ fifth: 5"#;
         doc1.insert_after("name", "empty_list", empty_list);
         assert_cst_ok(&doc1);
         let output1 = doc1.to_string();
-        assert_eq!(output1, "name: project\nempty_list: []\n");
+        assert_eq!(output1, "name: project\nempty_list: []");
 
         // Test empty mapping - use flow-style literal
         let yaml2 = "name: project";
@@ -4236,7 +4240,7 @@ fifth: 5"#;
         doc2.insert_after("name", "empty_map", empty_map);
         assert_cst_ok(&doc2);
         let output2 = doc2.to_string();
-        assert_eq!(output2, "name: project\nempty_map: {}\n");
+        assert_eq!(output2, "name: project\nempty_map: {}");
 
         // Test empty set
         let yaml3 = "name: project";
@@ -4249,7 +4253,7 @@ fifth: 5"#;
         );
         assert_cst_ok(&doc3);
         let output3 = doc3.to_string();
-        assert_eq!(output3, "name: project\nempty_set: !!set {}\n");
+        assert_eq!(output3, "name: project\nempty_set: !!set {}");
 
         // Verify all are valid YAML
         assert!(
@@ -4289,7 +4293,7 @@ fifth: 5"#;
 
         let output = doc.to_string();
 
-        let expected = "name: project\nnested_data:\n- item1\n-\n  config:\n    - debug\n    - true\n    - 8080\n  name: service\n- 42\n";
+        let expected = "name: project\nnested_data:\n- item1\n-\n  config:\n    - debug\n    - true\n    - 8080\n  name: service\n- 42";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
@@ -4773,5 +4777,19 @@ server:
             "tagged block scalar value should include 'wrapped': {:?}",
             value.to_string()
         );
+    }
+
+    #[test]
+    fn test_edits_write_cr_line_breaks() {
+        let file = YamlFile::from_str("a:\r- 1\r").unwrap();
+        let doc = file.document().unwrap();
+        doc.as_mapping()
+            .unwrap()
+            .get_sequence("a")
+            .unwrap()
+            .push("b");
+        file.add_directive("%YAML 1.2");
+        file.push_document(Document::from_str("d: 4\n").unwrap());
+        crate::debug::assert_edited(&file, "%YAML 1.2\r---\ra:\r- 1\r- b\r---\rd: 4\r");
     }
 }

@@ -1,6 +1,6 @@
 //! The trivia between collection entries: the line break ending a block
 //! collection entry's line, and the separator after a flow collection entry,
-//! and removing an entry along with the trivia that belongs to it.
+//! and adding or removing an entry along with the trivia that belongs to it.
 //!
 //! A block entry normally owns the NEWLINE ending its last line, but the
 //! parser puts it deeper when the entry ends in a nested block value, leaves
@@ -8,10 +8,10 @@
 //! is none at the end of unterminated input. A flow entry owns the comma
 //! after it and the white space around that.
 
-use super::empty_collection::render_empty;
+use super::empty_collection::{detach_empty_collection_placeholder_newline, render_empty};
 use super::{
-    append_children, entry_value, fresh_token, has_child_token, is_block_scalar, replace_children,
-    SyntaxNode, SyntaxToken,
+    append_children, entry_value, fresh_token, has_child_token, insert_children, is_block_scalar,
+    replace_children, SyntaxNode, SyntaxToken,
 };
 use crate::lex::SyntaxKind;
 
@@ -64,15 +64,16 @@ pub(crate) fn line_end(entry: &SyntaxNode) -> LineEnd {
 /// Is `entry` followed in its parent by a comment on its last line and the
 /// NEWLINE ending that?
 fn comment_line_end(entry: &SyntaxNode) -> bool {
-    let mut after =
-        std::iter::successors(entry.next_sibling_or_token(), |s| s.next_sibling_or_token())
-            .skip_while(|s| s.kind() == SyntaxKind::WHITESPACE);
-    after
-        .next()
-        .is_some_and(|s| s.kind() == SyntaxKind::COMMENT)
-        && after
-            .next()
-            .is_some_and(|s| s.kind() == SyntaxKind::NEWLINE)
+    comment_after(entry)
+        .and_then(|c| c.next_sibling_or_token())
+        .is_some_and(|s| s.kind() == SyntaxKind::NEWLINE)
+}
+
+/// The comment after `entry` in its parent, on its last line.
+fn comment_after(entry: &SyntaxNode) -> Option<rowan::SyntaxElement<super::Lang>> {
+    std::iter::successors(entry.next_sibling_or_token(), |s| s.next_sibling_or_token())
+        .find(|s| s.kind() != SyntaxKind::WHITESPACE)
+        .filter(|s| s.kind() == SyntaxKind::COMMENT)
 }
 
 /// Does `node`'s text end in a NEWLINE, ignoring zero-width tokens such as
@@ -92,9 +93,259 @@ fn last_non_empty_token(node: &SyntaxNode) -> Option<SyntaxToken> {
 }
 
 /// The index in `entry`'s parent just past the line break ending its line,
-/// where an entry on the next line goes.
+/// where an entry on the next line goes. If there is no line break, it is
+/// the index past the comment ending the line, if the parser put that
+/// beside the entry.
 pub(crate) fn index_after_line(entry: &SyntaxNode) -> usize {
-    entry.index() + 1 + usize::from(line_end(entry) == LineEnd::Sibling)
+    match line_end(entry) {
+        LineEnd::Sibling => entry.index() + 2,
+        LineEnd::AfterComment => {
+            comment_after(entry)
+                .expect("a comment ends the line")
+                .index()
+                + 2
+        }
+        LineEnd::Open => comment_after(entry).map_or(entry.index(), |c| c.index()) + 1,
+        LineEnd::Own | LineEnd::Nested => entry.index() + 1,
+    }
+}
+
+/// Where a new entry goes in its collection.
+pub(crate) enum Slot {
+    /// After the last entry.
+    End,
+    /// On the line after this entry.
+    After(SyntaxNode),
+    /// In place of this entry, which moves to the next line.
+    Before(SyntaxNode),
+}
+
+/// The column at which the entries of `collection` start: the INDENT
+/// before its second entry, or failing that the column the collection
+/// starts at.
+pub(crate) fn entry_column(collection: &SyntaxNode) -> usize {
+    let mut entries = collection.children().filter(|n| {
+        matches!(
+            n.kind(),
+            SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+        )
+    });
+    entries
+        .nth(1)
+        .and_then(|second| second.prev_sibling_or_token())
+        .and_then(|c| c.into_token())
+        .filter(|t| t.kind() == SyntaxKind::INDENT)
+        .map_or_else(
+            || crate::column::node_column(collection),
+            |t| t.text().len(),
+        )
+}
+
+/// Splice `entry`, a block collection entry built standalone, into
+/// `collection` at `slot`, on a line of its own.
+///
+/// The entry before it gets a line break if it lacks one, the new entry
+/// an INDENT at the collection's column (unless it comes first, where the
+/// parser has the column outside the collection), and an explicit-key
+/// entry's line break goes to the collection. Should the new entry end in
+/// a block scalar, the lines after it are laid out so that it does not
+/// take them in.
+///
+/// Should `entry` go after the end of input that had no final line
+/// break, it ends without one.
+pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNode) {
+    let kind = entry.kind();
+    let column = entry_column(collection);
+    let indent =
+        || (column > 0).then(|| fresh_token(SyntaxKind::INDENT, &" ".repeat(column)).into());
+    let mut first = false;
+    let mut open_end = false;
+    let (at, elements) = match slot {
+        Slot::Before(next) => {
+            let prev = next
+                .siblings(rowan::Direction::Prev)
+                .skip(1)
+                .find(|n| n.kind() == kind);
+            if let Some(prev) = prev {
+                terminate(&prev);
+            }
+            // The INDENT before `next`, if any, is the new entry's now.
+            let mut elements = vec![entry.clone().into()];
+            elements.extend(indent());
+            (next.index(), elements)
+        }
+        Slot::After(prev) => {
+            open_end = !line_end(&prev).is_terminated();
+            terminate(&prev);
+            let mut elements: Vec<_> = indent().into_iter().collect();
+            elements.push(entry.clone().into());
+            (index_after_line(&prev), elements)
+        }
+        Slot::End => {
+            let mut elements = Vec::new();
+            let at = match last_entry(collection, kind) {
+                Some(last) => {
+                    elements.extend(indent());
+                    // Blank lines ending a nested collection separate it
+                    // from what follows; those ending the document stay
+                    // there.
+                    if is_root(collection) {
+                        end_slot_index(collection)
+                    } else {
+                        index_after_last_line(collection, &last)
+                    }
+                }
+                None => {
+                    first = true;
+                    end_slot_index(collection)
+                }
+            };
+            elements.push(entry.clone().into());
+            let (at, opened) = end_line(collection, at);
+            open_end = opened;
+            (at, elements)
+        }
+    };
+    insert_children(collection, at, elements);
+    if first {
+        detach_empty_collection_placeholder_newline(collection, entry);
+    }
+    hand_line_break_to_mapping(entry);
+    super::settle_lines_after_inserted_entry(entry);
+    if open_end {
+        match line_end(entry) {
+            LineEnd::Sibling => {
+                let newline = entry.next_sibling_or_token().expect("a line break follows");
+                newline.detach();
+            }
+            _ => unterminate_last(entry),
+        }
+    }
+}
+
+/// The last entry of kind `kind` in `collection`.
+fn last_entry(collection: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
+    std::iter::successors(collection.last_child(), |n| n.prev_sibling()).find(|n| n.kind() == kind)
+}
+
+/// Is `collection` the document's own node, rather than a value in
+/// another collection?
+fn is_root(collection: &SyntaxNode) -> bool {
+    !collection.ancestors().skip(1).any(|n| {
+        matches!(
+            n.kind(),
+            SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+        )
+    })
+}
+
+/// The index in `collection` where an entry after its last one goes: at
+/// the end, ahead of the INDENT of a comment line the parser lifted out.
+fn end_slot_index(collection: &SyntaxNode) -> usize {
+    let count = collection.green().children().len();
+    let lifted_comment_indent = collection
+        .last_child_or_token()
+        .is_some_and(|c| c.kind() == SyntaxKind::INDENT);
+    count - usize::from(lifted_comment_indent)
+}
+
+/// The child of `node` at index `i`, found from the nearer end, as
+/// `push` needs to stay cheap on a long sequence.
+fn child_at(node: &SyntaxNode, i: usize) -> Option<rowan::SyntaxElement<super::Lang>> {
+    let from_end = node.green().children().len().checked_sub(i + 1)?;
+    if from_end < i {
+        std::iter::successors(node.last_child_or_token(), |c| c.prev_sibling_or_token())
+            .nth(from_end)
+    } else {
+        node.children_with_tokens().nth(i)
+    }
+}
+
+/// The index in `collection` just past the line of `last`, its last entry,
+/// or past the last comment line after it.
+fn index_after_last_line(collection: &SyntaxNode, last: &SyntaxNode) -> usize {
+    std::iter::successors(collection.last_child_or_token(), |c| {
+        c.prev_sibling_or_token()
+    })
+    .take_while(|c| c.as_node() != Some(last))
+    .find(|c| c.kind() == SyntaxKind::COMMENT)
+    .map_or_else(|| last.index(), |c| c.index())
+        + 1
+}
+
+/// End the line that the child of `collection` before index `at` is on,
+/// if it is open. Returns the index of the start of the next line, and
+/// whether the line was open.
+fn end_line(collection: &SyntaxNode, at: usize) -> (usize, bool) {
+    let before = at.checked_sub(1).and_then(|i| child_at(collection, i));
+    match before {
+        Some(rowan::NodeOrToken::Node(entry))
+            if matches!(
+                entry.kind(),
+                SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+            ) =>
+        {
+            let open = !line_end(&entry).is_terminated();
+            terminate(&entry);
+            (index_after_line(&entry), open)
+        }
+        Some(rowan::NodeOrToken::Token(t)) if t.kind() == SyntaxKind::COMMENT => {
+            if t.next_sibling_or_token()
+                .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE)
+            {
+                return (at + 1, false);
+            }
+            insert_children(
+                collection,
+                at,
+                vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
+            );
+            (at + 1, true)
+        }
+        _ => (at, false),
+    }
+}
+
+/// Splice `entry`, a flow collection entry built standalone, into
+/// `collection`, a flow collection, at `slot`, with the separators that
+/// keep the entries apart.
+pub(crate) fn attach_flow_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNode) {
+    let at = match slot {
+        Slot::End => collection
+            .children_with_tokens()
+            .position(|c| {
+                matches!(
+                    c.kind(),
+                    SyntaxKind::RIGHT_BRACE | SyntaxKind::RIGHT_BRACKET
+                )
+            })
+            .unwrap_or_else(|| collection.children_with_tokens().count()),
+        Slot::After(prev) => prev.index() + 1,
+        Slot::Before(next) => next.index(),
+    };
+
+    let kind = entry.kind();
+    let mut entries_before: Vec<SyntaxNode> = collection
+        .children_with_tokens()
+        .take(at)
+        .filter_map(|c| c.into_node())
+        .filter(|n| n.kind() == kind)
+        .collect();
+    let has_following_entry = collection
+        .children_with_tokens()
+        .skip(at)
+        .any(|c| c.as_node().is_some_and(|n| n.kind() == kind));
+    if has_following_entry {
+        // The new entry separates from the next one with `, `, and one
+        // before it gets the same if it lacked a separator.
+        if let Some(prev) = entries_before.last() {
+            FlowSeparator::ensure(prev);
+        }
+        FlowSeparator::ensure(entry);
+    } else if let Some(last) = entries_before.pop() {
+        FlowSeparator::hand_over_end(&last, entries_before.last(), entry);
+    }
+    insert_children(collection, at, vec![entry.clone().into()]);
 }
 
 /// Splice `entry` out of `collection`, a block or flow collection, with
@@ -110,6 +361,8 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
     let kind = entry.kind();
     let is_last = !std::iter::successors(entry.next_sibling(), |n| n.next_sibling())
         .any(|n| n.kind() == kind);
+    let prev = std::iter::successors(entry.prev_sibling(), |n| n.prev_sibling())
+        .find(|n| n.kind() == kind);
     let end = line_end(entry);
     let flow = has_child_token(collection, |k| {
         matches!(k, SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET)
@@ -171,6 +424,9 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
         // collection belong after it in the parent, as the parser has them:
         // `x:\n  - a\n  # c\n  - b\ny: 1\n` with `b` removed keeps `# c`
         // in the sequence.
+        if let Some(prev) = &prev {
+            super::replaced_value::settle_lines_after_block_scalar(prev);
+        }
     }
 
     if drained {
@@ -212,7 +468,15 @@ pub(crate) fn terminate(entry: &SyntaxNode) {
         // An explicit-key entry gets it at its end, from where
         // hand_line_break_to_mapping moves it out with the comment ending
         // its line, if any.
-        if has_child_token(entry, |k| k == SyntaxKind::QUESTION) {
+        if let Some(comment) = comment_after(entry) {
+            let parent = entry.parent().expect("an attached entry has a parent");
+            let at = comment.index() + 1;
+            insert_children(
+                &parent,
+                at,
+                vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
+            );
+        } else if has_child_token(entry, |k| k == SyntaxKind::QUESTION) {
             append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
         } else {
             terminate_last_line(entry);
@@ -221,16 +485,17 @@ pub(crate) fn terminate(entry: &SyntaxNode) {
     hand_line_break_to_mapping(entry);
 }
 
-/// Remove the line break that ends `collection`, a block collection whose
-/// last line had none before it was edited. One that is part of a block
-/// scalar's value stays, as removing it would change the value.
-pub(crate) fn unterminate_last(collection: &SyntaxNode) {
-    let Some(last) = last_non_empty_token(collection) else {
+/// Remove the line break that ends `node`, a block collection or entry
+/// ending input whose last line had none before it was edited. One that is
+/// part of a block scalar's value stays, as removing it would change the
+/// value.
+pub(crate) fn unterminate_last(node: &SyntaxNode) {
+    let Some(last) = last_non_empty_token(node) else {
         return;
     };
     let in_scalar = last
         .parent_ancestors()
-        .take_while(|n| n != collection)
+        .take_while(|n| n != node)
         .any(|n| n.kind() == SyntaxKind::SCALAR);
     if last.kind() == SyntaxKind::NEWLINE && !in_scalar {
         last.detach();
@@ -280,7 +545,7 @@ pub(crate) fn hand_line_break_to_mapping(entry: &SyntaxNode) {
         })
         .collect();
     let at = entry.index() + 1;
-    parent.splice_children(at..at, moved);
+    insert_children(&parent, at, moved);
 }
 
 /// Add the line break that ends the last line of `node`, where the parser
@@ -295,7 +560,7 @@ pub(crate) fn terminate_last_line(node: &SyntaxNode) {
     let newline = || vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()];
     let insert_before = |n: &SyntaxNode| {
         let parent = n.parent().expect("a descendant has a parent");
-        parent.splice_children(n.index()..n.index(), newline());
+        insert_children(&parent, n.index(), newline());
     };
 
     let mut cur = node.clone();
@@ -321,7 +586,7 @@ pub(crate) fn terminate_last_line(node: &SyntaxNode) {
     {
         let parent = cur.parent().expect("a mapping entry has a mapping");
         let after = cur.index() + 1;
-        parent.splice_children(after..after, newline());
+        insert_children(&parent, after, newline());
     } else {
         append_children(&cur, newline());
     }
@@ -388,20 +653,9 @@ impl FlowSeparator {
         true
     }
 
-    /// Append `, ` to `entry` unless it already ends with a comma.
+    /// Append `, ` to `entry` unless it already has a comma.
     pub(crate) fn ensure(entry: &SyntaxNode) {
-        let ends_with_comma = entry
-            .children_with_tokens()
-            .filter_map(|c| c.into_token())
-            .filter(|t| {
-                !matches!(
-                    t.kind(),
-                    SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
-                )
-            })
-            .last()
-            .is_some_and(|t| t.kind() == SyntaxKind::COMMA);
-        if !ends_with_comma {
+        if !has_comma(entry) {
             append_children(entry, Self::comma_space().build());
         }
     }
@@ -427,7 +681,7 @@ impl FlowSeparator {
         if !spaced {
             tokens.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
         }
-        entry.splice_children(at..at, tokens);
+        insert_children(entry, at, tokens);
     }
 
     /// Drop the comma at the end of `entry`, which has become the last

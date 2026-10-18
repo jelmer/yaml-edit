@@ -4,16 +4,15 @@ mod movements;
 
 pub(crate) use helpers::build_block_value_node;
 pub(crate) use helpers::flow_form;
-use helpers::FlowInsertPos;
 pub(crate) use helpers::{
     block_scalar_body_shift, drop_tagged_anchor, held_anchor, held_anchor_token, source_anchor_text,
 };
 
 use super::empty_collection::{self, render_empty};
-use super::trivia::{self, hand_line_break_to_mapping, line_end, FlowSeparator, LineEnd};
+use super::trivia::{self, hand_line_break_to_mapping, line_end, LineEnd, Slot};
 use super::{
-    entry_key, entry_value, fresh_token, has_child_token, is_block_scalar,
-    settle_lines_after_inserted_entry, Lang, Sequence, SyntaxNode,
+    entry_key, entry_value, fresh_token, has_child_token, insert_children, replace_children, Lang,
+    Sequence, SyntaxNode,
 };
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
@@ -276,72 +275,16 @@ impl Mapping {
             return;
         }
         let end = self.0.children_with_tokens().count();
-        self.0.splice_children(
-            end..end,
+        insert_children(
+            &self.0,
+            end,
             vec![fresh_token(SyntaxKind::RIGHT_BRACE, "}").into()],
         );
-        self.0
-            .splice_children(0..0, vec![fresh_token(SyntaxKind::LEFT_BRACE, "{").into()]);
-    }
-
-    /// Slice this mapping's children into leading decoration, one
-    /// `(entry, postscript)` group per entry, and trailing decoration.
-    ///
-    /// A group carries the tokens between its entry and the next, so
-    /// reshuffling groups keeps a between-entry comment glued to the entry it
-    /// visually followed.
-    #[allow(clippy::type_complexity)]
-    fn slice_into_entry_groups(
-        &self,
-        all: &[rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>],
-    ) -> (
-        Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>>,
-        Vec<(
-            SyntaxNode,
-            Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>>,
-        )>,
-        Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>>,
-    ) {
-        let entry_indices: Vec<usize> = all
-            .iter()
-            .enumerate()
-            .filter_map(|(i, c)| {
-                c.as_node()
-                    .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-                    .map(|_| i)
-            })
-            .collect();
-
-        let leading = all[..*entry_indices.first().unwrap_or(&all.len())].to_vec();
-        let mut trailing = entry_indices
-            .last()
-            .map(|&i| all[i + 1..].to_vec())
-            .unwrap_or_default();
-
-        // An explicit-key entry (`? k` / `: v`) doesn't own its line break;
-        // the NEWLINE sits beside it. For the last entry that token lands in
-        // `trailing`, which stays put -- so reordering it to a non-final
-        // position would run it into the entry that follows. Hand it back so
-        // it travels with the entry.
-        let last_entry_terminator = entry_indices
-            .last()
-            .and_then(|&i| all[i].as_node())
-            .is_some_and(|n| line_end(n) == LineEnd::Sibling)
-            .then(|| trailing.remove(0));
-
-        let mut groups: Vec<(SyntaxNode, Vec<_>)> = entry_indices
-            .windows(2)
-            .map(|w| {
-                let entry = all[w[0]].as_node().cloned().unwrap();
-                let postscript = all[w[0] + 1..w[1]].to_vec();
-                (entry, postscript)
-            })
-            .collect();
-        if let Some(&last) = entry_indices.last() {
-            let postscript = last_entry_terminator.into_iter().collect();
-            groups.push((all[last].as_node().cloned().unwrap(), postscript));
-        }
-        (leading, groups, trailing)
+        insert_children(
+            &self.0,
+            0,
+            vec![fresh_token(SyntaxKind::LEFT_BRACE, "{").into()],
+        );
     }
 
     /// Reorder fields according to the specified order.
@@ -376,155 +319,6 @@ impl Mapping {
         ordered.extend(rest);
         self.arrange_entries(&ordered);
     }
-
-    /// Put the entries of this mapping in the order of `order`, which holds
-    /// each of them once. An entry takes along the comment lines that
-    /// follow it up to the next entry; the layout that belongs to
-    /// positions, including the blank lines between entries, stays put.
-    pub(super) fn arrange_entries(&self, order: &[SyntaxNode]) {
-        // Slice the children into leading decoration, (entry, tokens
-        // that follow it up to the next entry), and trailing
-        // decoration. Reshuffling (entry, postscript) pairs keeps a
-        // between-entry comment glued to the entry it visually
-        // followed.
-        let all: Vec<_> = self.0.children_with_tokens().collect();
-        let (leading, mut groups, mut trailing) = self.slice_into_entry_groups(&all);
-        assert_eq!(
-            groups.len(),
-            order.len(),
-            "the order names every entry once"
-        );
-        let layout = self.slot_layout();
-        // The INDENT that starts an entry's line in a nested block mapping
-        // belongs to that line, not to the entry before it.
-        let line_indents: Vec<_> = groups
-            .iter_mut()
-            .map(|(_, postscript)| {
-                postscript
-                    .last()
-                    .is_some_and(|c| c.kind() == SyntaxKind::INDENT)
-                    .then(|| postscript.pop())
-                    .flatten()
-            })
-            .collect();
-        // The blank lines between two entries, after any comment lines
-        // that go with the entry above, belong to their position too.
-        let mut gaps: Vec<Vec<_>> = if self.is_flow_style() {
-            vec![Vec::new(); groups.len()]
-        } else {
-            let mut gaps: Vec<Vec<_>> = groups
-                .iter_mut()
-                .map(|(entry, postscript)| {
-                    let at = blank_lines_start(entry, postscript);
-                    postscript.split_off(at)
-                })
-                .collect();
-            if let Some(last) = gaps.last_mut() {
-                let end = leading_blank_lines_end(&trailing);
-                *last = trailing.drain(..end).collect();
-            }
-            gaps
-        };
-
-        let ordered: Vec<_> = order
-            .iter()
-            .map(|wanted| {
-                let pos = groups
-                    .iter()
-                    .position(|(entry, _)| entry == wanted)
-                    .expect("the order names entries of this mapping");
-                groups.remove(pos)
-            })
-            .collect();
-
-        // A block scalar would take the blank lines after it into its
-        // value, so they go after the next entry that can have them
-        // instead, or failing that the one before.
-        let ends_in_block_scalar: Vec<bool> = ordered
-            .iter()
-            .map(|(entry, postscript)| {
-                postscript.iter().all(is_blank) && ends_in_block_scalar(entry)
-            })
-            .collect();
-        for i in 0..gaps.len() {
-            if !ends_in_block_scalar[i] || gaps[i].is_empty() {
-                continue;
-            }
-            let home = (i + 1..gaps.len())
-                .chain((0..i).rev())
-                .find(|&j| !ends_in_block_scalar[j])
-                .expect("blank lines follow an entry that does not end in a block scalar");
-            let moved = std::mem::take(&mut gaps[i]);
-            gaps[home].extend(moved);
-        }
-
-        let mut new_children = leading;
-        let last_gap = gaps.pop().unwrap_or_default();
-        for (i, (entry, postscript)) in ordered.into_iter().enumerate() {
-            if let Some(i) = i.checked_sub(1) {
-                new_children.append(&mut gaps[i]);
-                new_children.extend(line_indents[i].clone());
-            }
-            new_children.push(entry.into());
-            new_children.extend(postscript);
-        }
-        new_children.extend(last_gap);
-        new_children.extend(trailing);
-
-        crate::nodes::kept_aliases::keeping_aliases_moved(&self.0, None, || {
-            crate::nodes::replace_children(&self.0, 0..all.len(), new_children);
-            self.restore_slot_layout(&layout);
-            None
-        });
-    }
-}
-
-type Element = rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>;
-
-fn is_blank(element: &Element) -> bool {
-    matches!(
-        element.kind(),
-        SyntaxKind::NEWLINE | SyntaxKind::WHITESPACE | SyntaxKind::INDENT
-    )
-}
-
-/// Where the blank lines in `postscript`, the elements after `entry` up to
-/// the next entry, start: after the line break that ends the last line
-/// with anything else on it.
-fn blank_lines_start(entry: &SyntaxNode, postscript: &[Element]) -> usize {
-    let last = match postscript.iter().rposition(|e| !is_blank(e)) {
-        Some(last) => last,
-        None if trivia::ends_with_line_break(entry) => return 0,
-        // The line break of an explicit-key entry follows it.
-        None => 0,
-    };
-    postscript[last..]
-        .iter()
-        .position(|e| e.kind() == SyntaxKind::NEWLINE)
-        .map_or(postscript.len(), |i| last + i + 1)
-}
-
-/// Where the blank lines that start `elements` end: after the last line
-/// break before anything else.
-fn leading_blank_lines_end(elements: &[Element]) -> usize {
-    let first = elements
-        .iter()
-        .position(|e| !is_blank(e))
-        .unwrap_or(elements.len());
-    elements[..first]
-        .iter()
-        .rposition(|e| e.kind() == SyntaxKind::NEWLINE)
-        .map_or(0, |i| i + 1)
-}
-
-/// Does the text of `entry` end with a block scalar?
-fn ends_in_block_scalar(entry: &SyntaxNode) -> bool {
-    entry
-        .descendants_with_tokens()
-        .filter_map(|c| c.into_token())
-        .filter(|t| !t.text().is_empty())
-        .last()
-        .is_some_and(|t| t.parent_ancestors().any(|n| is_block_scalar(&n)))
 }
 
 /// Is `node` a single pair in a flow sequence (`[a: 1]`), a flow mapping
@@ -787,141 +581,56 @@ impl Mapping {
 
     /// Internal unified method to set any YAML value type
     fn set_as_yaml<K: crate::AsYaml, V: crate::AsYaml>(&self, key: K, value: V) {
-        // A placeholder from `Mapping::new_pending_block` turns into a real block
-        // mapping now that it has an entry to hold. This runs before the
-        // flow_context check below so the entry is laid out as block.
-        empty_collection::convert_placeholder_to_block(&self.0);
-
-        // Detect if this mapping is in flow style (JSON format)
-        let flow_context = self.is_flow_style();
-
-        // Detect if existing entries use explicit keys
-        let use_explicit_keys = self.uses_explicit_keys();
-
         // An existing entry with this key takes the value in place.
         let existing = self
             .0
             .children()
             .filter_map(MappingEntry::cast)
             .find(|entry| entry.key().is_some_and(|k| key_content_matches(&k, &key)));
-        if let Some(entry) = existing {
-            // set_value shifts the flow form to the entry's line, so its
-            // continuation lines are given relative to that.
-            let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
-            match flow.and_then(|q| flow_form(&value, 2, q)) {
-                Some(flow) => entry.set_value(flow, flow_context),
-                None => entry.set_value(value, flow_context),
-            }
+        let Some(entry) = existing else {
+            self.insert_new(Slot::End, key, value);
             return;
-        }
-
-        // Entry doesn't exist, create a new one. Tell the constructor at
-        // what column its key will sit so a node-backed block value has its
-        // interior indentation shifted to line up under the new entry.
-        let key_indent = self.detect_indentation_level();
+        };
+        // set_value shifts the flow form to the entry's line, so its
+        // continuation lines are given relative to that.
+        let flow_context = self.is_flow_style();
         let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
-        let new_entry = MappingEntry::new_in(key, value, flow, use_explicit_keys, key_indent);
-        self.insert_entry_cst(&new_entry.0);
-    }
-
-    /// Insert `new_entry` into a flow-style mapping (`{...}`) at the position
-    /// dictated by `where_at`, wiring up `, ` separators so the entries stay
-    /// syntactically valid inside the braces.
-    pub(super) fn insert_flow_entry_cst_at(&self, new_entry: &SyntaxNode, where_at: FlowInsertPos) {
-        self.brace_flow_pair();
-        let brace_pos = self.0.children_with_tokens().position(|c| {
-            c.as_token()
-                .is_some_and(|t| t.kind() == SyntaxKind::RIGHT_BRACE)
-        });
-
-        // Resolve the target index. Anchor by node identity so a subsequent
-        // splice targets the right slot even if we've added separators.
-        let target_idx = match where_at {
-            FlowInsertPos::End => {
-                brace_pos.unwrap_or_else(|| self.0.children_with_tokens().count())
-            }
-            FlowInsertPos::After(ref n) => self
-                .0
-                .children_with_tokens()
-                .position(|c| c.as_node() == Some(n))
-                .map_or_else(|| brace_pos.unwrap_or(0), |i| i + 1),
-            FlowInsertPos::Before(ref n) => self
-                .0
-                .children_with_tokens()
-                .position(|c| c.as_node() == Some(n))
-                .unwrap_or_else(|| brace_pos.unwrap_or(0)),
-        };
-
-        let mut entries_before: Vec<SyntaxNode> = self
-            .0
-            .children_with_tokens()
-            .take(target_idx)
-            .filter_map(|c| c.into_node())
-            .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-            .collect();
-        let has_following_entry = self.0.children_with_tokens().skip(target_idx).any(|c| {
-            c.as_node()
-                .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-        });
-        if has_following_entry {
-            // The new entry separates from the next one with `, `, and
-            // one before it gets the same if it lacked a separator.
-            if let Some(prev) = entries_before.last() {
-                FlowSeparator::ensure(prev);
-            }
-            FlowSeparator::ensure(new_entry);
-        } else if let Some(last) = entries_before.pop() {
-            FlowSeparator::hand_over_end(&last, entries_before.last(), new_entry);
+        match flow.and_then(|q| flow_form(&value, 2, q)) {
+            Some(flow) => entry.set_value(flow, flow_context),
+            None => entry.set_value(value, flow_context),
         }
-
-        self.0
-            .splice_children(target_idx..target_idx, vec![new_entry.clone().into()]);
     }
 
-    /// Internal method to insert a new entry at the end (does not check for duplicates)
-    fn insert_entry_cst(&self, new_entry: &SyntaxNode) {
+    /// Add an entry for `key`, which is not in this mapping yet, at `slot`,
+    /// written in the mapping's style.
+    fn insert_new(&self, slot: Slot, key: impl crate::AsYaml, value: impl crate::AsYaml) {
+        // A placeholder from `Mapping::new_pending_block` turns into a real
+        // block mapping now that it has an entry to hold, before the entry
+        // is laid out.
+        empty_collection::convert_placeholder_to_block(&self.0);
+        let flow = self
+            .is_flow_style()
+            .then(|| crate::nodes::flow_quoting(&self.0));
+        // The column of the key tells the constructor how far to shift a
+        // node-backed block value.
+        let new_entry = MappingEntry::new_in(
+            key,
+            value,
+            flow,
+            self.uses_explicit_keys(),
+            self.detect_indentation_level(),
+        );
+        self.attach(&new_entry.0, slot);
+    }
+
+    /// Splice `new_entry` into this mapping at `slot`.
+    pub(super) fn attach(&self, new_entry: &SyntaxNode, slot: Slot) {
         if self.is_flow_style() {
-            self.insert_flow_entry_cst_at(new_entry, FlowInsertPos::End);
-            return;
-        }
-
-        let last_entry = self
-            .0
-            .children()
-            .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-            .last();
-        if let Some(prev) = &last_entry {
-            trivia::terminate(prev);
-        }
-
-        let count = self.0.children_with_tokens().count();
-        let insert_pos = if self.ends_with_lifted_comment_indent() {
-            count - 1
+            self.brace_flow_pair();
+            trivia::attach_flow_entry(&self.0, slot, new_entry);
         } else {
-            count
-        };
-        let mut new_elements = Vec::new();
-
-        let indent_level = self.detect_indentation_level();
-        if indent_level > 0 && count > 0 {
-            new_elements.push(fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level)).into());
+            trivia::attach_entry(&self.0, slot, new_entry);
         }
-
-        new_elements.push(new_entry.clone().into());
-
-        // Note: We don't add a trailing newline here because MappingEntry::new()
-        // already adds one as part of the newline ownership model (entries own their trailing newlines)
-
-        self.0.splice_children(insert_pos..insert_pos, new_elements);
-
-        // If the mapping had been empty and sits inside a `key:\n    \n`
-        // placeholder, strip the outer MAPPING_ENTRY's trailing NEWLINE
-        // that acted as the placeholder marker (see issue #18).
-        if count == 0 {
-            empty_collection::detach_empty_collection_placeholder_newline(&self.0, new_entry);
-        }
-        hand_line_break_to_mapping(new_entry);
-        settle_lines_after_inserted_entry(new_entry);
     }
 
     /// Set a key-value pair with field ordering support
@@ -980,23 +689,9 @@ impl Mapping {
                 });
             }
 
-            // Build the new entry with proper newline ownership
-            let flow_context = self.is_flow_style();
-            let use_explicit_keys = self.uses_explicit_keys();
-            let key_indent = self.detect_indentation_level();
-            let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
-            let new_entry =
-                MappingEntry::new_in(&key, &value, flow, use_explicit_keys, key_indent).0;
-
             match (insert_after_node, insert_before_node) {
-                (Some(after), _) if flow_context => {
-                    self.insert_flow_entry_cst_at(&new_entry, FlowInsertPos::After(after));
-                }
-                (Some(after), _) => self.insert_block_entry_after(&new_entry, &after),
-                (None, Some(before)) if flow_context => {
-                    self.insert_flow_entry_cst_at(&new_entry, FlowInsertPos::Before(before));
-                }
-                (None, Some(before)) => self.insert_block_entry_before(&new_entry, &before),
+                (Some(after), _) => self.insert_new(Slot::After(after), &key, &value),
+                (None, Some(before)) => self.insert_new(Slot::Before(before), &key, &value),
                 // No ordered key is present yet, so order says nothing about
                 // where this one goes.
                 (None, None) => self.set_as_yaml(&key, &value),
@@ -1007,80 +702,11 @@ impl Mapping {
         }
     }
 
-    /// The INDENT token entries of this mapping are preceded by, if any.
-    fn entry_indent_token(&self) -> Option<rowan::SyntaxToken<Lang>> {
-        let level = self.detect_indentation_level();
-        (level > 0).then(|| super::fresh_token(SyntaxKind::INDENT, &" ".repeat(level)))
-    }
-
-    /// Splice `new_entry` into this block mapping on the line after `after`.
-    fn insert_block_entry_after(&self, new_entry: &SyntaxNode, after: &SyntaxNode) {
-        trivia::terminate(after);
-        let at = trivia::index_after_line(after);
-        let mut elements: Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>> = self
-            .entry_indent_token()
-            .into_iter()
-            .map(Into::into)
-            .collect();
-        elements.push(new_entry.clone().into());
-        self.0.splice_children(at..at, elements);
-        hand_line_break_to_mapping(new_entry);
-        settle_lines_after_inserted_entry(new_entry);
-    }
-
-    /// Splice `new_entry` into this block mapping ahead of `before`.
-    fn insert_block_entry_before(&self, new_entry: &SyntaxNode, before: &SyntaxNode) {
-        let prev = before
-            .siblings(rowan::Direction::Prev)
-            .skip(1)
-            .find(|n| n.kind() == SyntaxKind::MAPPING_ENTRY);
-        if let Some(prev) = prev {
-            trivia::terminate(&prev);
-        }
-        let idx = before.index();
-        // The indent preceding `before` (the parent VALUE's for the first
-        // child, a sibling INDENT token otherwise) now serves the new entry,
-        // so the displaced `before` needs its own sibling INDENT.
-        let mut elements: Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>> =
-            vec![new_entry.clone().into()];
-        elements.extend(self.entry_indent_token().map(Into::into));
-        self.0.splice_children(idx..idx, elements);
-        hand_line_break_to_mapping(new_entry);
-        settle_lines_after_inserted_entry(new_entry);
-    }
-
     /// Detect the indentation level (in spaces) used by entries in this mapping.
     ///
     /// Returns `0` for root-level mappings where entries have no leading indentation.
     pub fn detect_indentation_level(&self) -> usize {
-        // Look for an INDENT token that precedes an entry inside this mapping.
-        // For a multi-entry mapping the parser stores that column here. INDENTs
-        // of comment or blank lines say nothing about where keys sit: those
-        // lines may be indented arbitrarily.
-        // For a single-entry (or empty) mapping the column isn't stored here,
-        // it's the INDENT that precedes the MAPPING node in its parent's
-        // VALUE. Fall back to that.
-        self.0
-            .children_with_tokens()
-            .filter_map(|c| c.into_token())
-            .find(|t| {
-                t.kind() == SyntaxKind::INDENT
-                    && t.next_sibling_or_token()
-                        .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-            })
-            .map_or_else(|| crate::column::node_column(&self.0), |t| t.text().len())
-    }
-
-    /// Whether this mapping ends in the INDENT of a comment line.
-    ///
-    /// When a block mapping's last line is a comment, the parser leaves that
-    /// line's INDENT here and lifts the comment itself to an ancestor. The
-    /// INDENT may be wider than the keys' column. New entries go in front of
-    /// it, leaving it to the comment.
-    fn ends_with_lifted_comment_indent(&self) -> bool {
-        self.0
-            .last_child_or_token()
-            .is_some_and(|c| c.kind() == SyntaxKind::INDENT)
+        trivia::entry_column(&self.0)
     }
 
     /// Insert a key-value pair at a specific index (0-based), preserving formatting.
@@ -1200,8 +826,7 @@ impl Mapping {
             }
         }
         let i = old.index();
-        self.0
-            .splice_children(i..i + 1, vec![new_entry.clone().into()]);
+        replace_children(&self.0, i..i + 1, vec![new_entry.clone().into()]);
         hand_line_break_to_mapping(&new_entry);
         new_entry
     }
@@ -1400,7 +1025,11 @@ impl Mapping {
         }
         let old_ended_line = trivia::ends_with_line_break(&old_key);
         let i = old_key.index();
-        node.splice_children(i..i + 1, built.children_with_tokens().collect::<Vec<_>>());
+        replace_children(
+            node,
+            i..i + 1,
+            built.children_with_tokens().collect::<Vec<_>>(),
+        );
         if make_explicit {
             hand_line_break_to_mapping(node);
         }
@@ -1451,10 +1080,11 @@ impl Mapping {
             .is_some_and(|c| !c.is_whitespace() && !matches!(c, ',' | ']' | '}'));
         if !json_like && value_adjacent {
             let i = colon.index() + 1;
-            colon
-                .parent()
-                .expect("a COLON is in an entry")
-                .splice_children(i..i, vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()]);
+            insert_children(
+                &colon.parent().expect("a COLON is in an entry"),
+                i,
+                vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()],
+            );
         }
     }
 
@@ -1472,7 +1102,11 @@ impl Mapping {
             && !key.text().is_empty()
         {
             let i = key.index();
-            entry.splice_children(i..i, vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()]);
+            insert_children(
+                &entry,
+                i,
+                vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()],
+            );
         }
         let ends_line = trivia::ends_with_line_break(key);
         let after = key.next_sibling_or_token();
@@ -1484,7 +1118,11 @@ impl Mapping {
             }
         } else if old_ended_line && newline_after.is_none() {
             let i = key.index() + 1;
-            entry.splice_children(i..i, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+            insert_children(
+                &entry,
+                i,
+                vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
+            );
         }
     }
 
@@ -1667,110 +1305,11 @@ impl Mapping {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) {
-        // As in `set_as_yaml`: a pending-block placeholder becomes a real
-        // block mapping before its first entry is laid out.
-        empty_collection::convert_placeholder_to_block(&self.0);
-
-        // Create the new mapping entry
-        let flow_context = self.is_flow_style();
-        let use_explicit_keys = self.uses_explicit_keys();
-        let key_indent = self.detect_indentation_level();
-        let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
-        let new_entry = MappingEntry::new_in(&key, &value, flow, use_explicit_keys, key_indent);
-
-        // Flow needs bracket-aware placement (see insert_flow_entry_cst_at);
-        // the block splice below would drop after `}`.
-        if flow_context {
-            let actual_index = index.min(self.entries().count());
-            let where_at = self
-                .entries()
-                .nth(actual_index)
-                .map_or(FlowInsertPos::End, |e| {
-                    FlowInsertPos::Before(e.syntax().clone())
-                });
-            self.insert_flow_entry_cst_at(&new_entry.0, where_at);
-            return;
-        }
-
-        // Count existing entries to determine actual insertion position
-        let entry_count = self.entries().count();
-        let actual_index = index.min(entry_count);
-
-        // Find the position in children_with_tokens corresponding to the nth entry
-        let mut entry_positions = Vec::new();
-        for (i, child) in self.0.children_with_tokens().enumerate() {
-            if child
-                .as_node()
-                .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-            {
-                entry_positions.push(i);
-            }
-        }
-
-        // Determine where to insert
-        let child_count = self.0.children_with_tokens().count();
-        let insert_pos = if actual_index < entry_positions.len() {
-            entry_positions[actual_index]
-        } else if self.ends_with_lifted_comment_indent() {
-            child_count - 1
-        } else {
-            child_count
-        };
-
-        let mut new_elements = Vec::new();
-
-        // Terminating the previous entry can add a line break after it.
-        let anchor = self.0.children_with_tokens().nth(insert_pos);
-        if insert_pos > 0 {
-            // Give the previous entry its own trailing NEWLINE so
-            // the "each block MAPPING_ENTRY owns its terminator"
-            // invariant holds (see src/nodes/mod.rs); a standalone
-            // NEWLINE between entries would render fine now but be
-            // fragile against later reshuffles.
-            // An INDENT directly before the insertion point belongs to the
-            // entry being displaced, not to the line above; look past it for
-            // whatever actually terminates the previous line.
-            let preceding: Vec<_> = self
-                .0
-                .children_with_tokens()
-                .take(insert_pos)
-                .filter(|c| c.kind() != SyntaxKind::INDENT)
-                .collect();
-            if let Some(prev_node) = preceding.last() {
-                if let rowan::NodeOrToken::Node(prev) = prev_node {
-                    if prev.kind() == SyntaxKind::MAPPING_ENTRY {
-                        trivia::terminate(prev);
-                    }
-                } else if let rowan::NodeOrToken::Token(t) = prev_node {
-                    if t.kind() != SyntaxKind::NEWLINE {
-                        new_elements.push(fresh_token(SyntaxKind::NEWLINE, "\n").into());
-                    }
-                }
-            }
-        }
-
-        // Add the new entry
-        new_elements.push(new_entry.0.clone().into());
-
-        // Inserting before an existing entry hands the new entry the indent
-        // that already precedes it, so the displaced entry needs a fresh one.
-        // Appending at the end has no such donor: the indent goes in front.
-        let displaces_entry = actual_index < entry_positions.len();
-        let indent_level = self.detect_indentation_level();
-        if indent_level > 0 {
-            let token = fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_level));
-            if displaces_entry {
-                new_elements.push(token.into());
-            } else {
-                new_elements.insert(0, token.into());
-            }
-        }
-
-        let insert_pos =
-            anchor.map_or_else(|| self.0.children_with_tokens().count(), |a| a.index());
-        self.0.splice_children(insert_pos..insert_pos, new_elements);
-        hand_line_break_to_mapping(&new_entry.0);
-        settle_lines_after_inserted_entry(&new_entry.0);
+        let slot = self
+            .entries()
+            .nth(index)
+            .map_or(Slot::End, |e| Slot::Before(e.0));
+        self.insert_new(slot, key, value);
     }
 
     crate::nodes::ast_node_spans!("mapping");

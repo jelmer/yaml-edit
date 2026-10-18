@@ -257,17 +257,13 @@ impl ErrorRecoveryContext {
             .map_or(text.len(), |i| end + i);
 
         let line = &text[line_start..line_end];
-        let error_start = start - line_start;
-        let error_len = (end - start).min(line_end - start);
-
-        // Create error indicator
-        let mut indicator = String::new();
-        for _ in 0..error_start {
-            indicator.push(' ');
-        }
-        for _ in 0..error_len.max(1) {
-            indicator.push('^');
-        }
+        let error_start = self.index.column(start);
+        let error_len = text[start..end.min(line_end)].chars().count();
+        let indicator = format!(
+            "{}{}",
+            " ".repeat(error_start),
+            "^".repeat(error_len.max(1))
+        );
 
         format!("{line}\n{indicator}")
     }
@@ -390,6 +386,21 @@ mod tests {
 
         let snippet = ctx.get_context_snippet(range);
         assert_eq!(snippet, "baz qux\n    ^^^");
+    }
+
+    #[test]
+    fn test_context_snippet_counts_chars() {
+        let ctx = ErrorRecoveryContext::new("k: \u{e9}\u{e9} bad\n".to_string());
+        let snippets = [(3, 7), (8, 11)].map(|(start, end)| {
+            ctx.get_context_snippet(TextRange::new(TextSize::from(start), TextSize::from(end)))
+        });
+        assert_eq!(
+            snippets,
+            [
+                "k: \u{e9}\u{e9} bad\n   ^^",
+                "k: \u{e9}\u{e9} bad\n      ^^^"
+            ]
+        );
     }
 
     #[test]

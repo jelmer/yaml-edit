@@ -157,7 +157,7 @@ fn sequence_insert_past_end_without_trailing_newline() {
     let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
     seq.insert(2, "c");
     assert_cst_ok(&doc);
-    assert_eq!(doc.to_string(), "items:\n  - a\n  - b\n  - c\n");
+    assert_eq!(doc.to_string(), "items:\n  - a\n  - b\n  - c");
 }
 
 #[test]
@@ -525,14 +525,13 @@ fn top_level_mapping_clear_renders_flow_empty() {
 }
 
 #[test]
-fn reorder_keeps_between_entry_comment_attached_to_predecessor() {
-    // A comment between two entries counts as the predecessor's
-    // postscript: it stays glued to the entry it visually followed
-    // (`a`) rather than being lifted to the end of the mapping.
+fn reorder_keeps_between_entry_comment_attached_to_successor() {
+    // A comment line between two entries goes with the entry below it
+    // (`b`) rather than staying in place.
     let doc = Document::from_str("a: 1\n# note\nb: 2\n").unwrap();
     doc.as_mapping().unwrap().reorder_fields(["b", "a"]);
     assert_cst_ok(&doc);
-    assert_eq!(doc.to_string(), "b: 2\na: 1\n# note\n");
+    assert_eq!(doc.to_string(), "# note\nb: 2\na: 1\n");
 }
 
 #[test]

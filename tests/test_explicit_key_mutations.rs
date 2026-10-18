@@ -299,11 +299,11 @@ fn explicit_key_entry_placed_by_field_order_leaves_line_break_to_mapping() {
 fn unterminated_explicit_key_entry_gets_line_break_in_mapping() {
     assert_eq!(
         edit_root("? a\n: 1", |m| m.set("b", 2)),
-        "? a\n: 1\n? b\n: 2\n"
+        "? a\n: 1\n? b\n: 2"
     );
     assert_eq!(
         edit_root("? a\n: 1", |m| m.set_with_field_order("b", 2, ["a", "b"])),
-        "? a\n: 1\n? b\n: 2\n"
+        "? a\n: 1\n? b\n: 2"
     );
     assert_eq!(
         edit_root("? b\n: 2\n? a\n: 1", |m| {
@@ -413,7 +413,7 @@ fn entry_inserted_after_last_explicit_key_entry() {
     );
     assert_eq!(
         edit_root("? a\n: 1", |m| assert!(m.move_after("a", "b", 2))),
-        "? a\n: 1\n? b\n: 2\n"
+        "? a\n: 1\n? b\n: 2"
     );
     assert_eq!(
         edit_root("? a\n: 1\n", |m| assert!(m.insert_before("a", "b", 2))),
@@ -826,4 +826,28 @@ fn comment_before_explicit_key_kept_on_rename() {
             vec![]
         );
     }
+}
+
+#[test]
+fn entry_inserted_after_comment_ending_a_line() {
+    assert_eq!(
+        edit_root("? a\n: b  # c\nz: 1\n", |m| {
+            assert!(m.insert_after("a", "k", 1));
+        }),
+        "? a\n: b  # c\n? k\n: 1\nz: 1\n"
+    );
+}
+
+#[test]
+fn entry_added_after_comment_ending_the_input() {
+    assert_eq!(
+        edit_root("? a\n: b  # c", |m| m.set("k", 1)),
+        "? a\n: b  # c\n? k\n: 1"
+    );
+    assert_eq!(
+        edit_root("? a\n: b  # c", |m| {
+            assert!(m.insert_after("a", "k", 1));
+        }),
+        "? a\n: b  # c\n? k\n: 1"
+    );
 }

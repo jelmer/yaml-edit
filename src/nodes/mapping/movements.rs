@@ -1,16 +1,29 @@
-//! `Mapping::move_after` / `move_before` -- pull a key out of its
-//! current position and re-insert it at a new position.
+//! Moving entries around a mapping: `Mapping::reorder_fields`,
+//! `move_after` and `move_before`.
 
-use super::helpers::FlowInsertPos;
 use super::{Mapping, MappingEntry};
 use crate::lex::SyntaxKind;
+use crate::nodes::trivia::Slot;
 use crate::nodes::trivia::{self, line_end, FlowSeparator};
-use crate::nodes::{fresh_token, SyntaxNode, SyntaxToken};
+use crate::nodes::{fresh_token, replace_children, Lang, SyntaxNode, SyntaxToken};
 use rowan::ast::AstNode;
+
+type Element = rowan::SyntaxElement<Lang>;
+
+/// An entry being moved, with what goes along with it.
+struct Group {
+    /// The comment lines before it, with any blank lines among and after
+    /// them.
+    lines_before: Vec<Element>,
+    entry: SyntaxNode,
+    /// The rest of its line that the parser put beside it, and in a flow
+    /// mapping anything else up to the next entry.
+    line: Vec<Element>,
+}
 
 /// The layout that belongs to a position in a mapping rather than to the
 /// entry at it, so that it stays put when entries are moved around.
-pub(super) struct SlotLayout {
+struct SlotLayout {
     /// For each entry of a flow mapping, the separator it ends with, if
     /// that can be swapped for another entry's.
     flow_separators: Vec<Option<FlowSeparator>>,
@@ -39,9 +52,150 @@ fn flow_line_indent(entry: &SyntaxNode) -> Option<Vec<SyntaxToken>> {
 }
 
 impl Mapping {
+    /// Put the entries of this mapping in the order of `order`, which holds
+    /// each of them once. An entry takes along the rest of its line and, in
+    /// a block mapping, the comment lines before it back to the previous
+    /// entry or the blank lines after that; the layout that belongs to
+    /// positions, including those blank lines, stays put.
+    pub(super) fn arrange_entries(&self, order: &[SyntaxNode]) {
+        let all: Vec<Element> = self.0.children_with_tokens().collect();
+        let starts: Vec<usize> = all
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.kind() == SyntaxKind::MAPPING_ENTRY)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            starts.len(),
+            order.len(),
+            "the order names every entry once"
+        );
+        let Some(&first) = starts.first() else {
+            return;
+        };
+        let layout = self.slot_layout();
+        let flow = self.is_flow_style();
+
+        // What moves with each entry, and for each position the blank lines
+        // after it and the INDENT starting the next entry's line.
+        let mut groups: Vec<Group> = Vec::new();
+        let mut gaps: Vec<Vec<Element>> = Vec::new();
+        let mut line_indents = Vec::new();
+        let mut trailing = Vec::new();
+        let mut lines_before = Vec::new();
+        for (i, &at) in starts.iter().enumerate() {
+            let entry = all[at].as_node().expect("an entry is a node");
+            let line_end = trivia::index_after_line(entry);
+            groups.push(Group {
+                lines_before: std::mem::take(&mut lines_before),
+                entry: entry.clone(),
+                line: all[at + 1..line_end].to_vec(),
+            });
+            let Some(&next) = starts.get(i + 1) else {
+                trailing = all[line_end..].to_vec();
+                let gap_end = if flow {
+                    0
+                } else {
+                    leading_blank_lines_end(&trailing)
+                };
+                gaps.push(trailing.drain(..gap_end).collect());
+                break;
+            };
+            let mut between = all[line_end..next].to_vec();
+            let indent = between
+                .last()
+                .is_some_and(|c| c.kind() == SyntaxKind::INDENT)
+                .then(|| between.pop())
+                .flatten();
+            line_indents.push(indent);
+            if flow {
+                // TODO: the parser puts the comment lines between the
+                // entries of a flow mapping in the entry above, and they go
+                // with that rather than with the entry below.
+                groups.last_mut().expect("just pushed").line.extend(between);
+                gaps.push(Vec::new());
+            } else {
+                lines_before = between.split_off(leading_blank_lines_end(&between));
+                gaps.push(between);
+            }
+        }
+
+        let ordered: Vec<Group> = order
+            .iter()
+            .map(|wanted| {
+                let pos = groups
+                    .iter()
+                    .position(|group| group.entry == *wanted)
+                    .expect("the order names entries of this mapping");
+                groups.remove(pos)
+            })
+            .collect();
+
+        // A block scalar would take the blank lines after it into its
+        // value, so they go after the next entry that can have them
+        // instead, or failing that the one before.
+        let ends_in_block_scalar: Vec<bool> = ordered
+            .iter()
+            .map(|group| {
+                group.line.iter().all(is_blank)
+                    && crate::nodes::ending_block_scalar(&group.entry).is_some()
+            })
+            .collect();
+        for i in 0..gaps.len() {
+            if !ends_in_block_scalar[i] || gaps[i].is_empty() {
+                continue;
+            }
+            let home = (i + 1..gaps.len())
+                .chain((0..i).rev())
+                .find(|&j| !ends_in_block_scalar[j])
+                .expect("blank lines follow an entry that does not end in a block scalar");
+            let moved = std::mem::take(&mut gaps[i]);
+            gaps[home].extend(moved);
+        }
+
+        // Comment lines now before the first entry go where the parser
+        // puts them, ahead of the mapping.
+        let lines_lead = !ordered[0].lines_before.is_empty();
+        let mut new_children = all[..first].to_vec();
+        let last_gap = gaps.pop().expect("there is an entry");
+        for (i, group) in ordered.into_iter().enumerate() {
+            let indent = match i.checked_sub(1) {
+                Some(i) => {
+                    new_children.append(&mut gaps[i]);
+                    line_indents[i].clone()
+                }
+                // The first entry's line is indented outside the mapping,
+                // unless lines go before it.
+                None if lines_lead => line_indents[0]
+                    .as_ref()
+                    .and_then(|c| c.as_token())
+                    .map(|t| fresh_token(t.kind(), t.text()).into()),
+                None => None,
+            };
+            new_children.extend(group.lines_before);
+            new_children.extend(indent);
+            new_children.push(group.entry.into());
+            new_children.extend(group.line);
+        }
+        new_children.extend(last_gap);
+        new_children.extend(trailing);
+
+        crate::nodes::kept_aliases::keeping_aliases_moved(&self.0, None, || {
+            crate::nodes::replace_children(&self.0, 0..all.len(), new_children);
+            if lines_lead {
+                crate::yaml::move_leading_lines_out(&self.0);
+            }
+            self.restore_slot_layout(&layout);
+            for entry in order {
+                crate::nodes::replaced_value::settle_lines_after_block_scalar(entry);
+            }
+            None
+        });
+    }
+
     /// Take note of the layout of this mapping that belongs to positions
     /// rather than entries, for [`restore_slot_layout`](Self::restore_slot_layout).
-    pub(super) fn slot_layout(&self) -> SlotLayout {
+    fn slot_layout(&self) -> SlotLayout {
         let entries: Vec<SyntaxNode> = self.entries().map(|e| e.0).collect();
         let texts = |tokens: Vec<SyntaxToken>| {
             tokens
@@ -68,7 +222,7 @@ impl Mapping {
 
     /// Give each position of this mapping, whose entries have been moved
     /// around since `layout` was taken, the layout it had then.
-    pub(super) fn restore_slot_layout(&self, layout: &SlotLayout) {
+    fn restore_slot_layout(&self, layout: &SlotLayout) {
         let entries: Vec<SyntaxNode> = self.entries().map(|e| e.0).collect();
         let Some((last, rest)) = entries.split_last() else {
             return;
@@ -108,7 +262,7 @@ impl Mapping {
                 .iter()
                 .map(|(kind, text)| rowan::NodeOrToken::Token(fresh_token(*kind, text)))
                 .collect();
-            crate::nodes::replace_children(entry, end - own.len()..end, tokens);
+            replace_children(entry, end - own.len()..end, tokens);
         }
     }
 
@@ -155,8 +309,9 @@ impl Mapping {
             self.arrange_entries(&order);
             return true;
         }
-        let flow_context = self.is_flow_style();
-        let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
+        let flow = self
+            .is_flow_style()
+            .then(|| crate::nodes::flow_quoting(&self.0));
         let entry = MappingEntry::new_in(
             new_key,
             new_value,
@@ -164,19 +319,14 @@ impl Mapping {
             self.uses_explicit_keys(),
             self.detect_indentation_level(),
         );
-        self.insert_next_to(&entry.0, target.syntax().clone(), flow_context, after);
+        let target = target.syntax().clone();
+        let slot = if after {
+            Slot::After(target)
+        } else {
+            Slot::Before(target)
+        };
+        self.attach(&entry.0, slot);
         true
-    }
-
-    /// Insert `entry` after `target`, an entry of this mapping, if `after`
-    /// is set, and before it otherwise.
-    fn insert_next_to(&self, entry: &SyntaxNode, target: SyntaxNode, flow: bool, after: bool) {
-        match (flow, after) {
-            (true, true) => self.insert_flow_entry_cst_at(entry, FlowInsertPos::After(target)),
-            (true, false) => self.insert_flow_entry_cst_at(entry, FlowInsertPos::Before(target)),
-            (false, true) => self.insert_block_entry_after(entry, &target),
-            (false, false) => self.insert_block_entry_before(entry, &target),
-        }
     }
 
     /// Move a key-value pair to immediately after an existing key.
@@ -221,4 +371,24 @@ impl Mapping {
     ) -> bool {
         self.move_around(&before_key, &new_key, &new_value, false)
     }
+}
+
+fn is_blank(element: &Element) -> bool {
+    matches!(
+        element.kind(),
+        SyntaxKind::NEWLINE | SyntaxKind::WHITESPACE | SyntaxKind::INDENT
+    )
+}
+
+/// Where the blank lines that start `elements` end: after the last line
+/// break before anything else.
+fn leading_blank_lines_end(elements: &[Element]) -> usize {
+    let first = elements
+        .iter()
+        .position(|e| !is_blank(e))
+        .unwrap_or(elements.len());
+    elements[..first]
+        .iter()
+        .rposition(|e| e.kind() == SyntaxKind::NEWLINE)
+        .map_or(0, |i| i + 1)
 }

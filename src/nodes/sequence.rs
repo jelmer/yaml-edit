@@ -600,6 +600,9 @@ impl Sequence {
         if let Some(comment) = dash_comment {
             replaced_value::add_dash_line_comment(&new_entry, comment);
         }
+        if let Some(item) = entry_item(&new_entry) {
+            crate::nodes::trivia::drop_space_before_empty(&item);
+        }
         new_entry
     }
 

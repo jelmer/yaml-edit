@@ -95,6 +95,25 @@ pub(crate) fn ends_line(node: &SyntaxNode) -> bool {
     })
 }
 
+/// Drop the space before `content`, a value or item just written, if it
+/// is empty and ends its line, where the space would trail.
+pub(crate) fn drop_space_before_empty(content: &SyntaxNode) {
+    if !content.text().is_empty() {
+        return;
+    }
+    let ends_line = content
+        .last_token()
+        .and_then(|t| t.next_token())
+        .map_or(true, |t| t.kind() == SyntaxKind::NEWLINE);
+    let space = content
+        .first_token()
+        .and_then(|t| t.prev_token())
+        .filter(|t| t.kind() == SyntaxKind::WHITESPACE);
+    if let Some(space) = space.filter(|_| ends_line) {
+        space.detach();
+    }
+}
+
 /// The last token in `node`'s subtree that has text.
 fn last_non_empty_token(node: &SyntaxNode) -> Option<SyntaxToken> {
     // descendants_with_tokens isn't double-ended; prev_token() would walk

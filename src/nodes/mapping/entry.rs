@@ -572,6 +572,9 @@ impl MappingEntry {
         self.replace_value(new_value, flow_context, anchor);
         crate::nodes::trivia::hand_line_break_to_mapping(&self.0);
         restore_trailing_lines(&self.0, trailing_lines);
+        if let Some(content) = self.value().and_then(|v| v.last_child()) {
+            crate::nodes::trivia::drop_space_before_empty(&content);
+        }
     }
 
     /// Replace the value with `new_value`, under `old_anchor` if set.

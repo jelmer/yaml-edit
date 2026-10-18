@@ -268,6 +268,7 @@ impl AnchorRegistry {
                     | SyntaxKind::MAPPING
                     | SyntaxKind::SEQUENCE
                     | SyntaxKind::TAGGED_NODE
+                    | SyntaxKind::ALIAS
             ) {
                 return Some(child);
             }
@@ -297,6 +298,38 @@ impl AnchorRegistry {
             .rev()
             .find(|(anchor, _)| *anchor < position)
             .map(|(_, node)| node)
+    }
+
+    /// Look up the node that `alias` refers to like
+    /// [`resolve_alias`](Self::resolve_alias), following anchors that are
+    /// on aliases themselves, as in `&b *a`, to the node they end at.
+    pub(crate) fn resolve_alias_through(
+        &self,
+        alias: &crate::yaml::Alias,
+    ) -> Result<&SyntaxNode, ResolveError> {
+        let mut alias = alias.clone();
+        let mut seen = Vec::new();
+        loop {
+            let name = alias.name();
+            let target = self.resolve_alias(&name, alias.syntax()).ok_or_else(|| {
+                ResolveError::UndefinedAlias {
+                    alias: name.clone(),
+                }
+            })?;
+            let content = if target.kind() == SyntaxKind::VALUE {
+                target.children().next()
+            } else {
+                Some(target.clone())
+            };
+            let Some(next) = content.and_then(crate::yaml::Alias::cast) else {
+                return Ok(target);
+            };
+            if seen.contains(target) {
+                return Err(ResolveError::RecursiveAlias { alias: name });
+            }
+            seen.push(target.clone());
+            alias = next;
+        }
     }
 
     /// Check if an anchor is defined
@@ -523,6 +556,10 @@ pub(crate) fn resolved_value(
 /// `!!pairs` get their own [`YamlValue`] variants, other tagged
 /// collections are [`YamlValue::Tagged`] and a tagged scalar keeps its tag
 /// on the [`ScalarValue`](crate::ScalarValue).
+///
+/// A tag on an alias, which YAML does not allow but the parser accepts,
+/// applies to the node the alias refers to, as if the alias were a copy of
+/// it.
 fn resolved_tagged(
     tagged: &crate::yaml::TaggedNode,
     registry: Option<&AnchorRegistry>,
@@ -530,76 +567,132 @@ fn resolved_tagged(
 ) -> Result<Option<YamlValue>, ResolveError> {
     use crate::as_yaml::YamlNode;
 
-    if let Some(set) = tagged.as_set() {
-        for entry in tagged.as_mapping().iter().flat_map(|m| m.entries()) {
-            let Some(value) = entry.value_node() else {
-                continue;
-            };
-            let is_null = matches!(
-                resolved_value(value.clone(), registry, expanding)?,
-                Some(YamlValue::Scalar(s)) if s.scalar_type() == crate::scalar::ScalarType::Null
-            );
-            if !is_null {
-                return Err(ResolveError::NonNullSetValue {
-                    member: entry
-                        .key_node()
-                        .map_or_else(String::new, |key| key.to_string()),
-                    value: value.to_string(),
-                });
-            }
-        }
-        let mut members = std::collections::BTreeSet::new();
-        let mut seen = Vec::new();
-        for member in set.members() {
-            let Some(YamlValue::Scalar(s)) = resolved_value(member.clone(), registry, expanding)?
-            else {
-                return Err(ResolveError::InvalidSetMember {
-                    member: member.to_string(),
-                });
-            };
-            record_unique_key(&mut seen, member, s.value().to_string(), registry)?;
-            members.insert(s.value().to_string());
-        }
-        return Ok(Some(YamlValue::Set(members)));
-    }
-    let content_text = || {
-        tagged
-            .syntax()
-            .children()
-            .next()
-            .map_or_else(String::new, |content| content.to_string())
-    };
-    match tagged.tag().as_deref() {
-        Some("!!set") => {
-            return Err(ResolveError::InvalidSetContent {
-                content: content_text(),
-            })
-        }
-        Some(tag @ ("!!omap" | "!!pairs")) if tagged.as_sequence().is_none() => {
-            return Err(ResolveError::InvalidPairsContent {
-                tag: tag.to_string(),
-                content: content_text(),
-            })
-        }
-        _ => {}
-    }
-    let content = tagged
-        .as_mapping()
-        .map(YamlNode::Mapping)
-        .or_else(|| tagged.as_sequence().map(YamlNode::Sequence));
+    let content = tagged.syntax().children().find_map(YamlNode::from_syntax);
     let (Some(tag), Some(content)) = (tagged.tag(), content) else {
         return Ok(crate::scalar::ScalarValue::from_tagged(tagged).map(YamlValue::Scalar));
     };
-    match (tag.as_str(), &content) {
+    match content {
+        YamlNode::Alias(alias) => resolved_tagged_alias(&tag, &alias, registry, expanding),
+        content => resolved_with_tag(&tag, content, registry, expanding),
+    }
+}
+
+/// Resolve `alias`, which has tag `tag`, to the node it refers to under
+/// that tag.
+fn resolved_tagged_alias(
+    tag: &str,
+    alias: &crate::yaml::Alias,
+    registry: Option<&AnchorRegistry>,
+    expanding: &mut Vec<SyntaxNode>,
+) -> Result<Option<YamlValue>, ResolveError> {
+    use crate::as_yaml::YamlNode;
+
+    let name = alias.name();
+    let Some(registry) = registry else {
+        return Err(ResolveError::UnresolvedAlias { alias: name });
+    };
+    let target = registry
+        .resolve_alias(&name, alias.syntax())
+        .ok_or_else(|| ResolveError::UndefinedAlias {
+            alias: name.clone(),
+        })?;
+    if expanding.contains(target) {
+        return Err(ResolveError::RecursiveAlias { alias: name });
+    }
+    let Some(target_node) = YamlNode::from_syntax_peeled(target.clone()) else {
+        return Err(ResolveError::UndefinedAlias { alias: name });
+    };
+    expanding.push(target.clone());
+    let value = match target_node {
+        YamlNode::Alias(inner) => resolved_tagged_alias(tag, &inner, Some(registry), expanding),
+        // The tag of the alias takes the place of that of the node.
+        YamlNode::TaggedNode(tagged) => {
+            match tagged.syntax().children().find_map(YamlNode::from_syntax) {
+                Some(YamlNode::Alias(inner)) => {
+                    resolved_tagged_alias(tag, &inner, Some(registry), expanding)
+                }
+                Some(content) => resolved_with_tag(tag, content, Some(registry), expanding),
+                None => Ok(crate::scalar::ScalarValue::from_tagged(&tagged)
+                    .map(|s| YamlValue::Scalar(s.with_resolved_tag(tag.to_string())))),
+            }
+        }
+        content => resolved_with_tag(tag, content, Some(registry), expanding),
+    };
+    expanding.pop();
+    value
+}
+
+/// Resolve `content`, an untagged scalar, mapping or sequence, as if it
+/// had tag `tag`.
+fn resolved_with_tag(
+    tag: &str,
+    content: crate::as_yaml::YamlNode,
+    registry: Option<&AnchorRegistry>,
+    expanding: &mut Vec<SyntaxNode>,
+) -> Result<Option<YamlValue>, ResolveError> {
+    use crate::as_yaml::YamlNode;
+
+    match (tag, content) {
+        ("!!set", YamlNode::Mapping(mapping)) => {
+            resolved_set(&mapping, registry, expanding).map(|set| Some(YamlValue::Set(set)))
+        }
+        ("!!set", content) => Err(ResolveError::InvalidSetContent {
+            content: content.syntax().text().to_string(),
+        }),
         ("!!omap", YamlNode::Sequence(seq)) => Ok(Some(YamlValue::OrderedMapping(resolved_pairs(
-            &tag, seq, registry, expanding,
+            tag, &seq, registry, expanding,
         )?))),
         ("!!pairs", YamlNode::Sequence(seq)) => Ok(Some(YamlValue::Pairs(resolved_pairs(
-            &tag, seq, registry, expanding,
+            tag, &seq, registry, expanding,
         )?))),
-        _ => Ok(resolved_value(content, registry, expanding)?
-            .map(|value| YamlValue::Tagged(tag, Box::new(value)))),
+        ("!!omap" | "!!pairs", content) => Err(ResolveError::InvalidPairsContent {
+            tag: tag.to_string(),
+            content: content.syntax().text().to_string(),
+        }),
+        (_, YamlNode::Scalar(scalar)) => Ok(Some(YamlValue::Scalar(
+            crate::scalar::ScalarValue::from_scalar(&scalar).with_resolved_tag(tag.to_string()),
+        ))),
+        (_, content) => Ok(resolved_value(content, registry, expanding)?
+            .map(|value| YamlValue::Tagged(tag.to_string(), Box::new(value)))),
     }
+}
+
+/// The members of a `!!set` whose content is `mapping`.
+fn resolved_set(
+    mapping: &crate::yaml::Mapping,
+    registry: Option<&AnchorRegistry>,
+    expanding: &mut Vec<SyntaxNode>,
+) -> Result<std::collections::BTreeSet<String>, ResolveError> {
+    for entry in mapping.entries() {
+        let Some(value) = entry.value_node() else {
+            continue;
+        };
+        let is_null = matches!(
+            resolved_value(value.clone(), registry, expanding)?,
+            Some(YamlValue::Scalar(s)) if s.scalar_type() == crate::scalar::ScalarType::Null
+        );
+        if !is_null {
+            return Err(ResolveError::NonNullSetValue {
+                member: entry
+                    .key_node()
+                    .map_or_else(String::new, |key| key.to_string()),
+                value: value.to_string(),
+            });
+        }
+    }
+    let mut members = std::collections::BTreeSet::new();
+    let mut seen = Vec::new();
+    for member in mapping.keys() {
+        let Some(YamlValue::Scalar(s)) = resolved_value(member.clone(), registry, expanding)?
+        else {
+            return Err(ResolveError::InvalidSetMember {
+                member: member.to_string(),
+            });
+        };
+        record_unique_key(&mut seen, member, s.value().to_string(), registry)?;
+        members.insert(s.value().to_string());
+    }
+    Ok(members)
 }
 
 /// The entries of a `!!omap` or `!!pairs` sequence tagged `tag`, in order.
@@ -959,11 +1052,10 @@ fn resolve_alias_node(
     let YamlNode::Alias(alias) = &node else {
         return Ok(node);
     };
-    let name = alias.name();
-    registry
-        .resolve_alias(&name, alias.syntax())
-        .and_then(|target| YamlNode::from_syntax_peeled(target.clone()))
-        .ok_or(ResolveError::UndefinedAlias { alias: name })
+    let target = registry.resolve_alias_through(alias)?;
+    YamlNode::from_syntax_peeled(target.clone()).ok_or(ResolveError::UndefinedAlias {
+        alias: alias.name(),
+    })
 }
 
 /// Extension trait that adds [`merged`](Self::merged) to [`Mapping`](crate::yaml::Mapping).
@@ -2130,6 +2222,122 @@ m:
                 "a",
                 YamlValue::from(1)
             )]))))
+        );
+    }
+
+    #[test]
+    fn get_resolved_tagged_alias() {
+        // The alias's own tag applies to what it refers to, as when an
+        // edit replaces it with a copy.
+        for (yaml, expected) in [
+            ("x: &x 1\na: !t *x\n", "a: !t 1\n"),
+            ("x: &x '1'\na: !!int *x\n", "a: !!int '1'\n"),
+            ("x: &x [1]\na: !t *x\n", "a: !t [1]\n"),
+            ("x: &x {k: 1}\na: !t *x\n", "a: !t {k: 1}\n"),
+            ("x: &x {k: }\na: !!set *x\n", "a: !!set {k: }\n"),
+            ("x: &x [{k: 1}]\na: !!omap *x\n", "a: !!omap [{k: 1}]\n"),
+            ("y: &y 2\nx: &x [*y]\na: !t *x\n", "a: !t [2]\n"),
+            ("x: &x !u 1\na: !t *x\n", "a: !t 1\n"),
+            ("x: !u &x [1]\na: !t *x\n", "a: !t [1]\n"),
+            ("x: &x !u {k: }\na: !!set *x\n", "a: !!set {k: }\n"),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved("a"),
+                doc(expected).get_resolved("a"),
+                "{yaml:?}"
+            );
+        }
+        assert_eq!(
+            doc("x: &x 1\na: !t *x\n").get_resolved("a"),
+            Ok(Some(YamlValue::Scalar(
+                crate::ScalarValue::parse("1").with_resolved_tag("!t".to_string())
+            )))
+        );
+    }
+
+    #[test]
+    fn get_resolved_tagged_alias_errors() {
+        for (yaml, expected) in [
+            (
+                "a: !t *nope\n",
+                ResolveError::UndefinedAlias {
+                    alias: "nope".to_string(),
+                },
+            ),
+            (
+                "a: &a [!t *a]\n",
+                ResolveError::RecursiveAlias {
+                    alias: "a".to_string(),
+                },
+            ),
+            (
+                "x: &x 1\na: !!set *x\n",
+                ResolveError::InvalidSetContent {
+                    content: "1".to_string(),
+                },
+            ),
+        ] {
+            assert_eq!(doc(yaml).get_resolved("a"), Err(expected), "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn get_resolved_anchored_alias() {
+        // An anchor on an alias, which YAML does not allow, names the node
+        // the alias refers to.
+        for (yaml, key, expected) in [
+            ("x: &x 1\nb: &b *x\nc: *b\n", "c", "c: 1\n"),
+            ("x: &x 1\ns: [&b *x, *b]\n", "s", "s: [1, 1]\n"),
+            ("x: &x 1\nb: &b *x\nc: !t *b\n", "c", "c: !t 1\n"),
+            ("x: &x 1\nb: !t &b *x\nc: *b\n", "c", "c: !t 1\n"),
+            (
+                "x: &x {k: 1}\nb: &b *x\nm: {<<: *b, j: 2}\n",
+                "m",
+                "m: {k: 1, j: 2}\n",
+            ),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved(key),
+                doc(expected).get_resolved(key),
+                "{yaml:?}"
+            );
+        }
+        assert_eq!(
+            doc("x: &x 1\nb: &b *x\nc: *b\n").get_resolved("c"),
+            Ok(Some(YamlValue::from(1)))
+        );
+        assert_eq!(
+            merged_pairs("x: &x {k: 1}\nb: &b *x\nm: {<<: *b, j: *b}\n", "m"),
+            pairs(&[("j", "{k: 1}"), ("k", "1")])
+        );
+    }
+
+    #[test]
+    fn get_resolved_anchored_alias_errors() {
+        for (yaml, expected) in [
+            (
+                "c: &c *c\n",
+                ResolveError::RecursiveAlias {
+                    alias: "c".to_string(),
+                },
+            ),
+            (
+                "b: &b *nope\nc: *b\n",
+                ResolveError::UndefinedAlias {
+                    alias: "nope".to_string(),
+                },
+            ),
+        ] {
+            assert_eq!(doc(yaml).get_resolved("c"), Err(expected), "{yaml:?}");
+        }
+        let d = doc("b: &b *b\nm: {<<: *b}\n");
+        let registry = d.build_anchor_registry();
+        let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+        assert_eq!(
+            m.merged(&registry).err(),
+            Some(ResolveError::RecursiveAlias {
+                alias: "b".to_string()
+            })
         );
     }
 

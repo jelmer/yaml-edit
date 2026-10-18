@@ -131,6 +131,12 @@ pub(super) struct Parser {
     comment_run_scan: Cell<Option<(usize, usize, Option<usize>)>>,
     /// The kind of the token emitted last.
     pub(super) previous_kind: Option<SyntaxKind>,
+    /// `tokens.len()` at the root node when it starts on the `---` line.
+    ///
+    /// A block sequence there (`--- - a\n- b\n`) is invalid, which the
+    /// validator reports, but its entries line up with the line's start
+    /// rather than with the first dash, as a block mapping's do.
+    pub(super) marker_line_node: Option<usize>,
 }
 
 impl Parser {
@@ -169,6 +175,7 @@ impl Parser {
             nesting_depth: 0,
             comment_run_scan: Cell::new(None),
             previous_kind: None,
+            marker_line_node: None,
         }
     }
 
@@ -273,7 +280,12 @@ impl Parser {
         // Handle document start marker
         if self.current() == Some(SyntaxKind::DOC_START) {
             self.bump();
+            self.skip_whitespace();
+            self.marker_line_node = Some(self.tokens.len());
             self.skip_ws_and_newlines();
+            if self.marker_line_node != Some(self.tokens.len()) {
+                self.marker_line_node = None;
+            }
         }
 
         // Parse the document content
@@ -306,6 +318,7 @@ impl Parser {
                 self.scalar_continuation_floor = Some(0);
             }
             self.parse_value();
+            self.marker_line_node = None;
             self.scalar_continuation_floor = outer_floor;
 
             // A line opening a mapping after the root node, as in

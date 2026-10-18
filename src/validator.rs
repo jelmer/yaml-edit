@@ -3600,6 +3600,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_doc_start_block_sequence() {
+        assert_eq!(
+            located("--- - 1\n"),
+            vec![(
+                "Content on same line as document start marker".to_string(),
+                "1:1".to_string()
+            )]
+        );
+        assert_eq!(
+            located("--- - 1\n- 2\n"),
+            vec![
+                (
+                    "Content on same line as document start marker".to_string(),
+                    "1:1".to_string()
+                ),
+                (
+                    "Inconsistent sequence item indentation".to_string(),
+                    "2:1".to_string()
+                )
+            ]
+        );
+        assert_eq!(located("--- # c\n- 1\n"), vec![]);
+    }
+
     fn messages(yaml: &str) -> Vec<String> {
         let file = crate::YamlFile::from_str(yaml).unwrap();
         Validator::new()

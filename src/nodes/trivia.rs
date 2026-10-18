@@ -10,8 +10,8 @@
 
 use super::empty_collection::{detach_empty_collection_placeholder_newline, render_empty};
 use super::{
-    append_children, entry_value, fresh_token, has_child_token, is_block_scalar, replace_children,
-    SyntaxNode, SyntaxToken,
+    append_children, entry_value, fresh_token, has_child_token, insert_children, is_block_scalar,
+    replace_children, SyntaxNode, SyntaxToken,
 };
 use crate::lex::SyntaxKind;
 
@@ -206,7 +206,7 @@ pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNo
             (at, elements)
         }
     };
-    collection.splice_children(at..at, elements);
+    insert_children(collection, at, elements);
     if first {
         detach_empty_collection_placeholder_newline(collection, entry);
     }
@@ -295,7 +295,11 @@ fn end_line(collection: &SyntaxNode, at: usize) -> (usize, bool) {
             {
                 return (at + 1, false);
             }
-            collection.splice_children(at..at, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+            insert_children(
+                collection,
+                at,
+                vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
+            );
             (at + 1, true)
         }
         _ => (at, false),
@@ -341,7 +345,7 @@ pub(crate) fn attach_flow_entry(collection: &SyntaxNode, slot: Slot, entry: &Syn
     } else if let Some(last) = entries_before.pop() {
         FlowSeparator::hand_over_end(&last, entries_before.last(), entry);
     }
-    collection.splice_children(at..at, vec![entry.clone().into()]);
+    insert_children(collection, at, vec![entry.clone().into()]);
 }
 
 /// Splice `entry` out of `collection`, a block or flow collection, with
@@ -467,7 +471,11 @@ pub(crate) fn terminate(entry: &SyntaxNode) {
         if let Some(comment) = comment_after(entry) {
             let parent = entry.parent().expect("an attached entry has a parent");
             let at = comment.index() + 1;
-            parent.splice_children(at..at, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+            insert_children(
+                &parent,
+                at,
+                vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
+            );
         } else if has_child_token(entry, |k| k == SyntaxKind::QUESTION) {
             append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
         } else {
@@ -537,7 +545,7 @@ pub(crate) fn hand_line_break_to_mapping(entry: &SyntaxNode) {
         })
         .collect();
     let at = entry.index() + 1;
-    parent.splice_children(at..at, moved);
+    insert_children(&parent, at, moved);
 }
 
 /// Add the line break that ends the last line of `node`, where the parser
@@ -552,7 +560,7 @@ pub(crate) fn terminate_last_line(node: &SyntaxNode) {
     let newline = || vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()];
     let insert_before = |n: &SyntaxNode| {
         let parent = n.parent().expect("a descendant has a parent");
-        parent.splice_children(n.index()..n.index(), newline());
+        insert_children(&parent, n.index(), newline());
     };
 
     let mut cur = node.clone();
@@ -578,7 +586,7 @@ pub(crate) fn terminate_last_line(node: &SyntaxNode) {
     {
         let parent = cur.parent().expect("a mapping entry has a mapping");
         let after = cur.index() + 1;
-        parent.splice_children(after..after, newline());
+        insert_children(&parent, after, newline());
     } else {
         append_children(&cur, newline());
     }
@@ -673,7 +681,7 @@ impl FlowSeparator {
         if !spaced {
             tokens.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
         }
-        entry.splice_children(at..at, tokens);
+        insert_children(entry, at, tokens);
     }
 
     /// Drop the comma at the end of `entry`, which has become the last

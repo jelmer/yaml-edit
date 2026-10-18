@@ -10,7 +10,10 @@ pub(crate) use helpers::{
 
 use super::empty_collection::{self, render_empty};
 use super::trivia::{self, hand_line_break_to_mapping, line_end, LineEnd, Slot};
-use super::{entry_key, entry_value, fresh_token, has_child_token, Lang, Sequence, SyntaxNode};
+use super::{
+    entry_key, entry_value, fresh_token, has_child_token, insert_children, replace_children, Lang,
+    Sequence, SyntaxNode,
+};
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::yaml::{dump_cst_to_string, ValueNode};
@@ -272,12 +275,16 @@ impl Mapping {
             return;
         }
         let end = self.0.children_with_tokens().count();
-        self.0.splice_children(
-            end..end,
+        insert_children(
+            &self.0,
+            end,
             vec![fresh_token(SyntaxKind::RIGHT_BRACE, "}").into()],
         );
-        self.0
-            .splice_children(0..0, vec![fresh_token(SyntaxKind::LEFT_BRACE, "{").into()]);
+        insert_children(
+            &self.0,
+            0,
+            vec![fresh_token(SyntaxKind::LEFT_BRACE, "{").into()],
+        );
     }
 
     /// Reorder fields according to the specified order.
@@ -819,8 +826,7 @@ impl Mapping {
             }
         }
         let i = old.index();
-        self.0
-            .splice_children(i..i + 1, vec![new_entry.clone().into()]);
+        replace_children(&self.0, i..i + 1, vec![new_entry.clone().into()]);
         hand_line_break_to_mapping(&new_entry);
         new_entry
     }
@@ -1019,7 +1025,11 @@ impl Mapping {
         }
         let old_ended_line = trivia::ends_with_line_break(&old_key);
         let i = old_key.index();
-        node.splice_children(i..i + 1, built.children_with_tokens().collect::<Vec<_>>());
+        replace_children(
+            node,
+            i..i + 1,
+            built.children_with_tokens().collect::<Vec<_>>(),
+        );
         if make_explicit {
             hand_line_break_to_mapping(node);
         }
@@ -1070,10 +1080,11 @@ impl Mapping {
             .is_some_and(|c| !c.is_whitespace() && !matches!(c, ',' | ']' | '}'));
         if !json_like && value_adjacent {
             let i = colon.index() + 1;
-            colon
-                .parent()
-                .expect("a COLON is in an entry")
-                .splice_children(i..i, vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()]);
+            insert_children(
+                &colon.parent().expect("a COLON is in an entry"),
+                i,
+                vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()],
+            );
         }
     }
 
@@ -1091,7 +1102,11 @@ impl Mapping {
             && !key.text().is_empty()
         {
             let i = key.index();
-            entry.splice_children(i..i, vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()]);
+            insert_children(
+                &entry,
+                i,
+                vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()],
+            );
         }
         let ends_line = trivia::ends_with_line_break(key);
         let after = key.next_sibling_or_token();
@@ -1103,7 +1118,11 @@ impl Mapping {
             }
         } else if old_ended_line && newline_after.is_none() {
             let i = key.index() + 1;
-            entry.splice_children(i..i, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+            insert_children(
+                &entry,
+                i,
+                vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
+            );
         }
     }
 

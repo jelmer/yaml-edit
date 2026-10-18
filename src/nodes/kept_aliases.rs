@@ -693,7 +693,7 @@ fn strip_properties(alias: &SyntaxNode) {
         let holder = parent.parent().expect("a tagged alias has a holder");
         let i = parent.index();
         alias.detach();
-        holder.splice_children(i..i + 1, vec![alias.clone().into()]);
+        super::replace_children(&holder, i..i + 1, vec![alias.clone().into()]);
     }
     let holder = alias.parent().expect("an alias in a document has a parent");
     if let Some(anchor) = super::mapping::held_anchor_token(&holder) {

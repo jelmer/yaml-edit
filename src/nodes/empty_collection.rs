@@ -3,7 +3,10 @@
 //! collection that loses its last entry turns into that, and an empty
 //! placeholder turns back into a block collection when it gets its first.
 
-use super::{fresh_token, has_child_token, replace_children, trivia, SyntaxNode, SyntaxToken};
+use super::{
+    fresh_token, has_child_token, insert_children, replace_children, trivia, SyntaxNode,
+    SyntaxToken,
+};
 use crate::lex::SyntaxKind;
 use rowan::ast::AstNode;
 
@@ -144,12 +147,16 @@ fn render_in_place(collection: &SyntaxNode, terminated: bool) {
             let end = node.children_with_tokens().count();
             let mut lines = vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()];
             lines.extend(tail);
-            node.splice_children(end..end, lines);
+            insert_children(&node, end, lines);
         }
         return;
     };
     let at = node.index() + 1;
-    parent.splice_children(at..at, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+    insert_children(
+        &parent,
+        at,
+        vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
+    );
     if tail.is_empty() {
         return;
     }
@@ -161,7 +168,7 @@ fn render_in_place(collection: &SyntaxNode, terminated: bool) {
         }
         _ => (parent, at + 1),
     };
-    host.splice_children(at..at, tail);
+    insert_children(&host, at, tail);
 }
 
 /// [`render_empty`] for a mapping value: replace the `NEWLINE INDENT
@@ -273,7 +280,7 @@ fn render_as_value(collection: &SyntaxNode, terminated: bool) {
     replace_children(&host, start..end, replacement);
     if !comment.is_empty() {
         let after_host = host.index() + 1;
-        value_node.splice_children(after_host..after_host, comment);
+        insert_children(&value_node, after_host, comment);
     }
 
     // The space separating the colon from its value belongs to the
@@ -287,7 +294,7 @@ fn render_as_value(collection: &SyntaxNode, terminated: bool) {
             .prev_sibling_or_token()
             .is_some_and(|el| el.kind() == SyntaxKind::WHITESPACE);
         if !separated {
-            entry_node.splice_children(index..index, vec![ws().into()]);
+            insert_children(&entry_node, index, vec![ws().into()]);
         }
     }
 
@@ -340,7 +347,7 @@ fn indent_past_question(collection: &SyntaxNode) {
     let at = collection.index();
     match indent {
         Some(t) => replace_children(&host, t.index()..at, vec![new_indent.into()]),
-        None => host.splice_children(at..at, vec![new_indent.into()]),
+        None => insert_children(&host, at, vec![new_indent.into()]),
     }
 }
 
@@ -378,7 +385,7 @@ fn hand_trailing_indent_to_comment(collection: &SyntaxNode) {
     };
     let new_indent = fresh_token(SyntaxKind::INDENT, indent.text());
     indent.detach();
-    host.splice_children(at..at, vec![new_indent.into()]);
+    insert_children(&host, at, vec![new_indent.into()]);
 }
 
 /// The node that carries `collection`'s line: the collection itself, the
@@ -556,5 +563,5 @@ pub(crate) fn convert_placeholder_to_block(collection: &SyntaxNode) {
     scaffold.push(fresh_token(SyntaxKind::NEWLINE, "\n").into());
     scaffold.push(fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_width)).into());
     let pos = collection.index();
-    host.splice_children(pos..pos, scaffold);
+    insert_children(&host, pos, scaffold);
 }

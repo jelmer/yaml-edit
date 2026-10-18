@@ -74,7 +74,7 @@ impl Comment {
             .expect("a comment token always has a parent node");
         let index = self.0.index();
         let new_token = fresh_token(SyntaxKind::COMMENT, text);
-        parent.splice_children(index..index + 1, vec![new_token.into()]);
+        super::replace_children(&parent, index..index + 1, vec![new_token.into()]);
     }
 
     /// Replace the comment content, preserving the leading `# ` marker.

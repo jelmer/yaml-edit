@@ -402,8 +402,10 @@ reordered to `b, a` gives `b: &k a\n*k : 1\n`. The node stays as it is, a
 copy with its own anchor, if it holds other anchors, or another anchor
 with its name comes between. An alias that ends up after another anchor with
 its name becomes a copy, with the anchor only if later aliases need it.
-`move_after`/`move_before` given another value remove the old entry as
-`remove` does. Sequences have no reordering methods.
+`move_after`/`move_before` given another value rebuild the entry with it
+in place, the old value going as with `remove`, and then move it the same
+way, comment lines after it included, so an alias in its key keeps
+resolving too. Sequences have no reordering methods.
 
 Looking up a key that is an alias (`get`, `set`, `rename_key`, ...)
 matches an alias key of the same name, not the node it refers to, and

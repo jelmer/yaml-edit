@@ -1175,27 +1175,40 @@ impl Mapping {
         new_value: impl crate::AsYaml,
     ) {
         match self.find_entry_by_key(&new_key) {
-            Some(old) => self.replace_entry(&old.0, new_key, new_value),
+            Some(old) => {
+                self.replace_entry(&old.0, new_key, new_value, true);
+            }
             None => self.insert_new_entry_at(index, new_key, new_value),
         }
     }
 
     /// Replace `old`, an entry of this mapping, with a new entry built the
-    /// way `set` builds one, in the same place. As with `set`, an anchor on
-    /// the old value goes on the new one unless that is an alias.
-    fn replace_entry(&self, old: &SyntaxNode, key: impl crate::AsYaml, value: impl crate::AsYaml) {
+    /// way `set` builds one, in the same place, and return it. If
+    /// `keep_anchor` is set, an anchor on the old value goes on the new one
+    /// unless that is an alias, as with `set`; otherwise the old value goes
+    /// as with `remove`.
+    pub(super) fn replace_entry(
+        &self,
+        old: &SyntaxNode,
+        key: impl crate::AsYaml,
+        value: impl crate::AsYaml,
+        keep_anchor: bool,
+    ) -> SyntaxNode {
         let kept = MappingEntry::cast(old.clone())
             .and_then(|e| e.value())
-            .filter(|_| value.kind() != YamlKind::Alias)
+            .filter(|_| keep_anchor && value.kind() != YamlKind::Alias)
             .and_then(|v| held_anchor_token(&v));
         let anchor = kept.as_ref().map(|t| t.text().to_string());
+        let mut new = None;
         crate::nodes::kept_aliases::keeping_aliases(old, kept, || {
             // The entry is built without the value's anchor; putting the
             // value in again settles which anchor it gets, as in set_value.
             let entry = MappingEntry(self.splice_in_entry(old, key, &value));
             self.put_value(&entry, &value, anchor.as_deref());
+            new = Some(entry.0.clone());
             entry.value()
         });
+        new.expect("the edit ran")
     }
 
     /// Replace the value of `entry`, an entry of this mapping, with `value`

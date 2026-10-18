@@ -267,3 +267,23 @@ fn removing_anchor_of_alias_key_copies_it() {
         assert_edited(&doc, expected);
     }
 }
+
+#[test]
+fn move_with_new_value_keeps_alias_key_resolving() {
+    let cases = [
+        ("a: &a 1\n*a : 2\nc: 3\n", "&a 1 : 5\na: *a\nc: 3\n"),
+        ("{a: &a 1, *a : 2, c: 3}\n", "{&a 1 : 5, a: *a, c: 3}\n"),
+    ];
+    for (source, expected) in cases {
+        let doc = Document::from_str(source).unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        assert!(mapping.move_before("a", alias_key(), 5));
+        assert_edited(&doc, expected);
+    }
+
+    // The old value still goes as with remove.
+    let doc = Document::from_str("a: &a 1\n*a : 2\nb: *a\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(mapping.move_after("b", "a", 5));
+    assert_edited(&doc, "&a 1 : 2\nb: *a\na: 5\n");
+}

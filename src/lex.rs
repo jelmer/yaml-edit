@@ -356,13 +356,6 @@ fn is_hash_a_comment_start(input: &str, hash_idx: usize) -> bool {
             .is_some_and(is_white_or_break)
 }
 
-/// Read a plain-scalar body, treating `:` as scalar content when it's not
-/// followed by whitespace (matching YAML plain-scalar semantics), and `-`
-/// as scalar content unconditionally.
-///
-/// Used from the `.` and `-` scalar-prefix branches, where the char
-/// that dispatched us was itself a scalar prefix rather than a
-/// structural indicator.
 /// Scan a double-quoted string body, consuming through the closing quote.
 ///
 /// Returns the end offset and whether a closing quote was found; a backslash
@@ -471,60 +464,18 @@ fn is_chomping_indicator(line_prefix: &str) -> bool {
         .is_some_and(|b| b == b'|' || b == b'>')
 }
 
-/// `absorb_spaces` folds an internal whitespace run into the scalar when
-/// more scalar content follows, as a plain scalar spanning several words
-/// requires. A block scalar's chomping indicator (`|-`, `>-`) is a token
-/// in its own right, so that caller passes false.
-fn read_plain_scalar_body_from<'a>(
-    chars: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
-    input: &'a str,
-    start_idx: usize,
-    flow_depth: u32,
-    absorb_spaces: bool,
-) -> &'a str {
-    let mut end_idx = start_idx;
-    while let Some((idx, ch)) = chars.peek().copied() {
-        // Intra-line whitespace belongs to the scalar when more scalar
-        // content follows on the same line, exactly as in the catch-all
-        // arm. Without this a space ended the body, so `-{ [a]: v }`
-        // lexed `[` as a flow collection rather than scalar content.
-        if absorb_spaces && (ch == ' ' || ch == '\t') {
-            if !plain_scalar_continues_past_whitespace(input, idx, flow_depth) {
-                break;
-            }
-            while let Some((wi, wc)) = chars.peek().copied() {
-                if wc != ' ' && wc != '\t' {
-                    break;
-                }
-                end_idx = wi + wc.len_utf8();
-                chars.next();
-            }
-            continue;
-        }
-        if is_white_or_break(ch) {
-            break;
-        }
-        if ch == ':' && is_colon_a_mapping_indicator(input, idx, flow_depth) {
-            break;
-        }
-        if ch == '#' && is_hash_a_comment_start(input, idx) {
-            break;
-        }
-        // `-` and `+` are indicators only where a node starts (a sequence
-        // entry, or a block-scalar chomping suffix); inside a body they are
-        // content, so `++` is the single scalar `++`.
-        // `?`, `|`, `>`, `&`, `*`, `!` and `%` are indicators only at the
-        // start of a node; this is a scalar body, so they are content here,
-        // as the catch-all arm already has it. `+?` is one scalar.
-        if is_yaml_special_except(ch, "-+:#'\"?|>&*!%")
-            && !(flow_depth == 0 && matches!(ch, ',' | '[' | ']' | '{' | '}'))
-        {
-            break;
-        }
-        end_idx = idx + ch.len_utf8();
-        chars.next();
-    }
-    &input[start_idx..end_idx]
+/// Whether a `+` following `line_prefix`, the text of its line before it,
+/// closes a block scalar header (`|+`, `>2+`) and so is a chomping
+/// indicator. The header has to *open* the value for that: in `/|+:` the
+/// pipe is scalar content, so the `+` is content too and the key is `/|+`.
+fn plus_closes_block_scalar_header(line_prefix: &str) -> bool {
+    // Step back over any explicit indentation digits to the `|` or `>` this
+    // `+` would close; only the value's start may precede that.
+    let head = line_prefix.trim_end_matches(|c: char| c.is_ascii_digit());
+    head.strip_suffix(['|', '>']).is_some_and(|before| {
+        let before = before.trim_end_matches([' ', '\t']);
+        before.is_empty() || before.ends_with(':') || before.ends_with('-')
+    })
 }
 
 /// Tokenize YAML input with whitespace validation
@@ -673,14 +624,79 @@ impl<'a, 'c> LexState<'a, 'c> {
     /// The characters before `body_start` have already been consumed by the
     /// caller (`-`, `+`, `.`, ...) and stay part of the scalar text.
     fn push_plain_scalar(&mut self, start: usize, body_start: usize, absorb_spaces: bool) {
-        let body = read_plain_scalar_body_from(
-            &mut self.chars,
-            self.input,
-            body_start,
-            self.flow_depth,
-            absorb_spaces,
-        );
-        self.push_scalar(start, body_start + body.len());
+        let end = self.read_plain_scalar_body(body_start, absorb_spaces, false);
+        self.push_scalar(start, end);
+    }
+
+    /// Read a plain-scalar body starting at `start_idx`, returning where it
+    /// ends. `:` is content unless it is a mapping indicator, `#` unless it
+    /// starts a comment, and the indicators that only count at the start of
+    /// a node are content here.
+    ///
+    /// `absorb_spaces` folds an internal whitespace run into the scalar when
+    /// more scalar content follows, as a plain scalar spanning several words
+    /// requires. A block scalar's chomping indicator (`|-`, `>-`) is a token
+    /// in its own right, so that caller passes false.
+    ///
+    /// `stop_at_chomping_plus` ends the body at a `+` closing a block scalar
+    /// header, so that `|2+` keeps the `+` as its own token.
+    fn read_plain_scalar_body(
+        &mut self,
+        start_idx: usize,
+        absorb_spaces: bool,
+        stop_at_chomping_plus: bool,
+    ) -> usize {
+        let input = self.input;
+        let flow_depth = self.flow_depth;
+        let mut end_idx = start_idx;
+        while let Some((idx, ch)) = self.chars.peek().copied() {
+            // Intra-line whitespace belongs to the scalar when more scalar
+            // content follows on the same line. Without this a space ended
+            // the body, so `-{ [a]: v }` lexed `[` as a flow collection
+            // rather than scalar content.
+            if absorb_spaces && (ch == ' ' || ch == '\t') {
+                if !plain_scalar_continues_past_whitespace(input, idx, flow_depth) {
+                    break;
+                }
+                while let Some((wi, wc)) = self.chars.peek().copied() {
+                    if wc != ' ' && wc != '\t' {
+                        break;
+                    }
+                    end_idx = wi + wc.len_utf8();
+                    self.chars.next();
+                }
+                continue;
+            }
+            if is_white_or_break(ch) {
+                break;
+            }
+            if ch == ':' && is_colon_a_mapping_indicator(input, idx, flow_depth) {
+                break;
+            }
+            if ch == '#' && is_hash_a_comment_start(input, idx) {
+                break;
+            }
+            if stop_at_chomping_plus
+                && ch == '+'
+                && plus_closes_block_scalar_header(&input[self.line_start..idx])
+            {
+                break;
+            }
+            // `-` and `+` are indicators only where a node starts (a sequence
+            // entry, or a block-scalar chomping suffix); inside a body they
+            // are content, so `++` is the single scalar `++`.
+            // `?`, `|`, `>`, `&`, `*`, `!` and `%` are indicators only at the
+            // start of a node (YAML 1.2 section 7.1), so they are content
+            // here too: `+?`, `a|b` and `a: b%c` are each one scalar.
+            if is_yaml_special_except(ch, "-+:#'\"?|>&*!%")
+                && !(flow_depth == 0 && matches!(ch, ',' | '[' | ']' | '{' | '}'))
+            {
+                break;
+            }
+            end_idx = idx + ch.len_utf8();
+            self.chars.next();
+        }
+        end_idx
     }
 
     /// Lex the token starting with `ch`, which has just been consumed.
@@ -1287,124 +1303,8 @@ impl<'a, 'c> LexState<'a, 'c> {
     }
 
     fn lex_plain_scalar(&mut self, start_idx: usize, ch: char) {
-        let mut end_idx = start_idx + ch.len_utf8();
-
-        // Read the rest of the scalar normally, including embedded hyphens
-        while let Some((idx, next_ch)) = self.chars.peek().copied() {
-            // Line breaks always terminate the current scalar token.
-            if next_ch == '\n' || next_ch == '\r' {
-                break;
-            }
-
-            // Intra-line whitespace (space/tab) is part of a plain
-            // scalar when followed by more scalar content on the same
-            // line. Per YAML 1.2, plain scalars may contain single or
-            // multiple internal spaces, but stop at line break, at
-            // ` #` (comment start), or at end of line.
-            if next_ch == ' ' || next_ch == '\t' {
-                if !plain_scalar_continues_past_whitespace(self.input, idx, self.flow_depth) {
-                    break;
-                }
-                // Absorb the whitespace run into the scalar
-                while let Some((wi, wc)) = self.chars.peek().copied() {
-                    if wc != ' ' && wc != '\t' {
-                        break;
-                    }
-                    end_idx = wi + wc.len_utf8();
-                    self.chars.next();
-                }
-                continue;
-            }
-
-            // `:` inside a plain scalar breaks the scalar iff
-            // it's a mapping indicator (see helper for rules).
-            if next_ch == ':' {
-                if is_colon_a_mapping_indicator(self.input, idx, self.flow_depth) {
-                    break;
-                }
-                end_idx = idx + next_ch.len_utf8();
-                self.chars.next();
-                continue;
-            }
-
-            // Check other special characters (excluding hyphen and colon).
-            // `&`, `*`, `!`, `?` are node-property / block-key indicators
-            // that are only meaningful at the start of a node. Once we
-            // are inside a plain-scalar body they are ordinary content
-            // per YAML 1.2 §7.1 (a `&anchor` must be followed by
-            // whitespace to actually be an anchor).
-            // `%` is an indicator only at the start of a line, where
-            // the main loop takes it as a directive; inside a scalar it
-            // is ordinary content (`a: b%c`).
-            // `|` and `>` open a block scalar only at a node start, so
-            // mid-scalar they are content too (`a|b`, `a>b`). A `+` is
-            // an indicator only as the chomping suffix of such a
-            // header, where `|2+` must keep it as its own token;
-            // anywhere else it is content (`a+b`).
-            // A `+` closing a block-scalar header (`|+`, `>2+`) is a
-            // chomping indicator. The `|` has to *open* the value for
-            // that, though: in `/|+:` the pipe is scalar content, so
-            // the `+` is content too and the key is `/|+`. Require
-            // nothing but the value's start before the `|`.
-            let plus_is_chomping = next_ch == '+' && {
-                // Step back over any explicit indentation digits to
-                // the `|` or `>` this `+` would close.
-                let head =
-                    self.input[self.line_start..idx].trim_end_matches(|c: char| c.is_ascii_digit());
-                match head.strip_suffix(['|', '>']) {
-                    // The header must open the value: only the value's
-                    // start may precede it. In `/|+:` the pipe is
-                    // scalar content, so the `+` is content too and the
-                    // key is `/|+`.
-                    Some(before) => {
-                        let before = before.trim_end_matches([' ', '\t']);
-                        before.is_empty() || before.ends_with(':') || before.ends_with('-')
-                    }
-                    None => false,
-                }
-            };
-            if plus_is_chomping {
-                break;
-            }
-            if is_yaml_special_except(next_ch, "-:#&*!?'\"|>%+") {
-                // In block context, flow indicators do NOT break scalars
-                if self.flow_depth == 0 && matches!(next_ch, '[' | ']' | '{' | '}' | ',') {
-                    // do nothing, let it be part of the scalar
-                } else {
-                    break;
-                }
-            }
-
-            // `#` inside a plain scalar breaks the scalar iff
-            // it's a comment start (see helper for rules).
-            if next_ch == '#' {
-                if is_hash_a_comment_start(self.input, idx) {
-                    break;
-                }
-                end_idx = idx + next_ch.len_utf8();
-                self.chars.next();
-                continue;
-            }
-
-            // Special case: check if hyphen is a sequence marker
-            if next_ch == '-' {
-                // A hyphen is only a sequence marker if it's at line start
-                // and this scalar is already complete (we're at a word boundary)
-                let before_hyphen = &self.input[self.line_start..idx];
-
-                // If there's only whitespace before the hyphen, it might be a sequence marker
-                // Break here to let the main loop handle it
-                if before_hyphen.chars().all(|c| c == ' ' || c == '\t') && idx == end_idx {
-                    break;
-                }
-            }
-
-            end_idx = idx + next_ch.len_utf8();
-            self.chars.next();
-        }
-
-        let text = &self.input[start_idx..end_idx];
-        self.tokens.push((classify_scalar(text), text));
+        let end = self.read_plain_scalar_body(start_idx + ch.len_utf8(), true, true);
+        self.push_scalar(start_idx, end);
     }
 
     fn finish(self) -> (Vec<(SyntaxKind, &'a str)>, Vec<WhitespaceError>) {

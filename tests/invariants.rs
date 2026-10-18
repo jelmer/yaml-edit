@@ -665,3 +665,58 @@ fn nested_sequence_push_keeps_its_indent() {
     assert_file_cst_ok(&file);
     assert_eq!(file.to_string(), "a:\n  - x\n  - new\n");
 }
+
+/// A complete node followed by more content before the key's colon, as in
+/// `[q] x: v`, is not a valid implicit key. The parser keeps the extra
+/// content in the key as a node of its own, and the validator reports it.
+#[test]
+fn node_followed_by_content_before_colon() {
+    use yaml_edit::validator::Validator;
+    const TWO_NODES: &str = "Key holds more than one node";
+    const SAME_LINE: &str = "Block mapping cannot start on same line as mapping key";
+    const INDENT: &str =
+        "Sibling block mapping entries have inconsistent indentation (expected \"\", found \"  \")";
+    for (yaml, expected) in [
+        ("k:\n  [q] x: v\n", vec![(TWO_NODES, "2:7")]),
+        ("k:\n  {q: 1} x: v\n", vec![(TWO_NODES, "2:10")]),
+        ("k:\n  [q] x y: v\n", vec![(TWO_NODES, "2:7")]),
+        ("- [q] x: v\n", vec![(TWO_NODES, "1:7")]),
+        ("b:\n- [q] x: v\n", vec![(TWO_NODES, "2:7")]),
+        ("[q] x: v\n", vec![(TWO_NODES, "1:5")]),
+        ("&a [q] x: v\n", vec![(TWO_NODES, "1:8")]),
+        ("a: &a 1\nk:\n  *a x: v\n", vec![(TWO_NODES, "3:6")]),
+        ("a: &a 1\n*a x: v\n", vec![(TWO_NODES, "2:4")]),
+        ("- &a 1\n- *a x: v\n", vec![(TWO_NODES, "2:6")]),
+        (
+            "k: [q] x: v\n",
+            vec![(SAME_LINE, "1:4"), (TWO_NODES, "1:8")],
+        ),
+        (
+            "a: &a 1\nk: *a x: v\n",
+            vec![(SAME_LINE, "2:4"), (TWO_NODES, "2:7")],
+        ),
+        ("a: &a 1\nk: *a : v\n", vec![(SAME_LINE, "2:4")]),
+        (
+            "k: a\n  [q] x: v\n",
+            vec![(INDENT, "2:1"), (TWO_NODES, "2:7")],
+        ),
+        (
+            "k:\n  \"q\" x: v\n",
+            vec![("Trailing content after quoted string", "2:7")],
+        ),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
+        assert_eq!(file.to_string(), yaml);
+        assert_file_cst_ok(&file);
+        let violations: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| (v.message, v.location.unwrap()))
+            .collect();
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|(message, at)| (message.to_string(), at.to_string()))
+            .collect();
+        assert_eq!(violations, expected, "{yaml:?}");
+    }
+}

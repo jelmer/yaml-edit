@@ -325,6 +325,8 @@ pub(crate) fn render_empty_collection_as_flow(collection: &SyntaxNode, terminate
         ],
     );
 
+    indent_past_question(collection);
+
     if !terminated && tail.is_empty() {
         return;
     }
@@ -371,6 +373,54 @@ pub(crate) fn render_empty_collection_as_flow(collection: &SyntaxNode, terminate
         _ => (parent, at + 1),
     };
     host.splice_children(at..at, tail);
+}
+
+/// A block sequence in an explicit key may start on the line after the
+/// `?`, at the `?`'s own column, but a flow collection there would end the
+/// key. Indent `collection` past the `?` if it sits there.
+fn indent_past_question(collection: &SyntaxNode) {
+    let Some(host) = collection.parent() else {
+        return;
+    };
+    let Some(key) = host
+        .ancestors()
+        .find(|n| n.kind() != SyntaxKind::TAGGED_NODE)
+        .filter(|n| n.kind() == SyntaxKind::KEY)
+    else {
+        return;
+    };
+    let question = key
+        .parent()
+        .and_then(|e| {
+            e.children_with_tokens()
+                .filter_map(|el| el.into_token())
+                .find(|t| t.kind() == SyntaxKind::QUESTION)
+        })
+        .expect("explicit key has a ?");
+    let Some(prev) = collection
+        .prev_sibling_or_token()
+        .and_then(|el| el.into_token())
+    else {
+        return;
+    };
+    let indent = match prev.kind() {
+        SyntaxKind::NEWLINE => None,
+        SyntaxKind::INDENT => Some(prev),
+        _ => return,
+    };
+    let column = crate::validator::token_column(&question);
+    if indent
+        .as_ref()
+        .is_some_and(|t| t.text().chars().count() > column)
+    {
+        return;
+    }
+    let new_indent = crate::nodes::fresh_token(SyntaxKind::INDENT, &" ".repeat(column + 2));
+    let at = collection.index();
+    match indent {
+        Some(t) => crate::nodes::replace_children(&host, t.index()..at, vec![new_indent.into()]),
+        None => host.splice_children(at..at, vec![new_indent.into()]),
+    }
 }
 
 /// Whether `indent` starts a comment line.

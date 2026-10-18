@@ -1536,3 +1536,108 @@ fn test_hash_keeps_its_comment_role() {
     let tree = yaml_edit::debug::tree_to_string(file.syntax());
     assert!(tree.contains("COMMENT"), "{tree}");
 }
+
+/// Parse `yaml`, check it round-trips without ERROR nodes, and return its
+/// document's root node.
+fn parse_clean(yaml: &str) -> yaml_edit::Document {
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let tree = yaml_edit::debug::tree_to_string(file.syntax());
+    assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
+    file.document().unwrap()
+}
+
+/// A node property or a lone `+` only means something at the start of a
+/// node, and a continuation line is inside one already.
+#[test]
+fn indicators_on_a_continuation_line_are_content() {
+    for (yaml, value) in [
+        ("a\n!t\n", "a !t"),
+        ("a\n&x\n", "a &x"),
+        ("a\n*x\n", "a *x"),
+        ("a\n+\n", "a +"),
+        ("a\n}\n", "a }"),
+        ("a\n[:]\n", "a [:]"),
+    ] {
+        let doc = parse_clean(yaml);
+        assert_eq!(doc.as_scalar().unwrap().as_string(), value, "{yaml:?}");
+    }
+
+    let doc = parse_clean("- a\n !\n");
+    let entry = doc.as_sequence().unwrap().first().unwrap();
+    assert_eq!(entry.as_scalar().unwrap().as_string(), "a !");
+}
+
+/// A `-` continues a scalar only where it cannot open the next entry of the
+/// sequence the scalar sits in.
+#[test]
+fn a_dash_continues_a_scalar_past_its_sequence() {
+    let doc = parse_clean("a:\n- x\n  - y\n");
+    let seq = doc.as_mapping().unwrap().get("a").unwrap();
+    let items: Vec<String> = seq
+        .as_sequence()
+        .unwrap()
+        .values()
+        .map(|v| v.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(items, ["x - y"]);
+
+    let doc = parse_clean("a:\n- x\n- y\n");
+    let seq = doc.as_mapping().unwrap().get("a").unwrap();
+    let items: Vec<String> = seq
+        .as_sequence()
+        .unwrap()
+        .values()
+        .map(|v| v.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(items, ["x", "y"]);
+
+    let doc = parse_clean("k: v\n  -\n");
+    let value = doc.as_mapping().unwrap().get("k").unwrap();
+    assert_eq!(value.as_scalar().unwrap().as_string(), "v -");
+}
+
+/// A `?` past the scalar's own column cannot open an explicit key of the
+/// mapping the scalar is a value of.
+#[test]
+fn a_question_mark_past_a_block_value_continues_it() {
+    let doc = parse_clean("o:\n  k:\n    v\n     ?\n");
+    let o = doc.as_mapping().unwrap().get("o").unwrap();
+    let k = o.as_mapping().unwrap().get("k").unwrap();
+    assert_eq!(k.as_scalar().unwrap().as_string(), "v ?");
+
+    let doc = parse_clean("? a\n: 1\n? b\n: 2\n");
+    let keys: Vec<String> = doc
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, ["a", "b"]);
+}
+
+/// A continuation inside a sequence entry only has to clear the dash.
+#[test]
+fn an_equally_indented_line_continues_a_sequence_entry() {
+    let doc = parse_clean("- x\n y\n");
+    let entry = doc.as_sequence().unwrap().first().unwrap();
+    assert_eq!(entry.as_scalar().unwrap().as_string(), "x y");
+}
+
+/// The body of a lone tag is still a node of the collection the tag sits
+/// in, so its continuation only has to clear the tag's column.
+#[test]
+fn a_tagged_body_continues_past_the_tag_column() {
+    let doc = parse_clean("!\n  a\n b\n");
+    assert_eq!(doc.as_scalar().unwrap().as_string(), "a b");
+
+    let doc = parse_clean("x\n  a\n b\n");
+    assert_eq!(doc.as_scalar().unwrap().as_string(), "x a b");
+
+    let doc = parse_clean("o:\n  k: !t\n    a\n   b\n");
+    let o = doc.as_mapping().unwrap().get("o").unwrap();
+    let k = o.as_mapping().unwrap().get("k").unwrap();
+    let tagged = k.as_tagged().unwrap();
+    assert_eq!(tagged.tag().as_deref(), Some("!t"));
+    assert_eq!(tagged.value().unwrap().as_string(), "a b");
+}

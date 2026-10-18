@@ -1718,7 +1718,8 @@ impl Validator {
         // Determine the expected indent for entries in this mapping.
         //   - Nested mapping (parent VALUE has NEWLINE + INDENT before
         //     us): use that INDENT's text.
-        //   - Root mapping (child of DOCUMENT): the empty string.
+        //   - Otherwise (root, compact or explicit-entry mapping): the
+        //     column of its first entry.
         //
         // Then walk direct children. Every INDENT token that precedes a
         // MAPPING_ENTRY (i.e. separates two entries) must equal the
@@ -1760,14 +1761,17 @@ impl Validator {
                 // A compact mapping on a sequence entry's own line has no
                 // INDENT of its own (`- key: value\n  key2: value2\n`); its
                 // entries line up under the dash's gap. The same goes for one
-                // after an explicit `?` or `:`. Take the column from the
-                // node's offset within its line.
+                // after an explicit `?` or `:`. A root mapping may be
+                // indented too (`  a: 1\n  b: 2\n`), and after a leading
+                // comment its INDENT is not even in the DOCUMENT. Take the
+                // column from the node's offset within its line.
                 let parent = node.parent()?;
                 if !matches!(
                     parent.kind(),
                     crate::SyntaxKind::SEQUENCE_ENTRY
                         | crate::SyntaxKind::KEY
                         | crate::SyntaxKind::VALUE
+                        | crate::SyntaxKind::DOCUMENT
                 ) {
                     return None;
                 }
@@ -3732,6 +3736,31 @@ mod tests {
             vec![(
                 "Sibling block mapping entries have inconsistent indentation \
                  (expected \"  \", found \" \")"
+                    .to_string(),
+                "2:1".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn test_indented_root_mapping() {
+        for yaml in [
+            "  a: 1\n  b: 2\n",
+            "\n  a: 1\n  b: 2\n",
+            "# c\n  a: 1\n  b: 2\n",
+            "---\n  a: 1\n  b: 2\n",
+            "--- # c\n  a: 1\n  b: 2\n",
+            "a: 1\n---\n  b: 1\n  c: 2\n",
+            "  - a\n  - b\n",
+            "# c\n  - a\n  - b\n",
+        ] {
+            assert_eq!(located(yaml), vec![], "{yaml:?}");
+        }
+        assert_eq!(
+            located("  a: 1\n   b: 2\n"),
+            vec![(
+                "Sibling block mapping entries have inconsistent indentation \
+                 (expected \"  \", found \"   \")"
                     .to_string(),
                 "2:1".to_string()
             )]

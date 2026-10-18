@@ -1125,9 +1125,14 @@ impl Parser {
                 // entry, not part of the value's scalar: `- a: 1\n  ? c\n`
                 // is two entries, while `- x\n  ? c\n` (no mapping) is the
                 // single scalar `x ? c`.
+                //
+                // A node a tag on this line adopts from later lines has to
+                // clear the key's column too, not just the mapping's base:
+                // in `- a: !!null\n  b: c\n` the `b` line is a sibling.
+                let column = base_indent.max(key_column);
                 let outer_column = self.mapping_value_column;
-                self.mapping_value_column = Some(base_indent.max(key_column));
-                self.parse_mapping_value(base_indent);
+                self.mapping_value_column = Some(column);
+                self.parse_mapping_value(column);
                 self.mapping_value_column = outer_column;
                 has_value = true;
 
@@ -1425,6 +1430,26 @@ mod tests {
         let doc = file.document().expect("should have a document");
         assert_eq!(crate::validator::Validator::new().validate(&doc), vec![]);
         crate::YamlValue::from_document(&doc).expect("should convert")
+    }
+
+    /// A tag ending a compact mapping's first line annotates a null when the
+    /// next line is at the key's column, as it does at the line start.
+    #[test]
+    fn test_sibling_after_tagged_null_in_compact_mapping() {
+        for (src, expected) in [
+            ("- a: !!null\n  b: c\n", "[{a: !!null , b: c}]"),
+            ("- a: !!null &x\n  b: c\n", "[{a: !!null &x , b: c}]"),
+            ("- a: &x !!null\n  b: c\n", "[{a: &x !!null , b: c}]"),
+            ("- a: !!null # c\n  b: c\n", "[{a: !!null , b: c}]"),
+            ("- !!str a: !!null\n  b: c\n", "[{!!str a: !!null , b: c}]"),
+            ("- [a]: !!str\n  b: c\n", "[{[a]: !!str , b: c}]"),
+            ("k:\n  - a: !!null\n    b: c\n", "{k: [{a: !!null , b: c}]}"),
+            ("? x\n: a: !!null\n  b: c\n", "{x: {a: !!null , b: c}}"),
+            ("- a: !!str\n   x\n  b: c\n", "[{a: !!str x, b: c}]"),
+            ("- a: !!null\n    b: c\n", "[{a: !!null {b: c}}]"),
+        ] {
+            assert_eq!(checked_value(src), checked_value(expected), "{src:?}");
+        }
     }
 
     /// A compact mapping as an explicit value ends where the next entry of

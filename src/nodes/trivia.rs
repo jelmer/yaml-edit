@@ -348,6 +348,8 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
     let kind = entry.kind();
     let is_last = !std::iter::successors(entry.next_sibling(), |n| n.next_sibling())
         .any(|n| n.kind() == kind);
+    let prev = std::iter::successors(entry.prev_sibling(), |n| n.prev_sibling())
+        .find(|n| n.kind() == kind);
     let end = line_end(entry);
     let flow = has_child_token(collection, |k| {
         matches!(k, SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET)
@@ -409,6 +411,9 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
         // collection belong after it in the parent, as the parser has them:
         // `x:\n  - a\n  # c\n  - b\ny: 1\n` with `b` removed keeps `# c`
         // in the sequence.
+        if let Some(prev) = &prev {
+            super::replaced_value::settle_lines_after_block_scalar(prev);
+        }
     }
 
     if drained {

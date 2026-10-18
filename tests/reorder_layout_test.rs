@@ -303,3 +303,13 @@ fn reorder_keeps_comment_on_explicit_key_value_line() {
         check_reorder(source, &["a", "b"], expected, root);
     }
 }
+
+#[test]
+fn reorder_keeps_comment_line_out_of_block_scalar_before() {
+    check_reorder(
+        "c: |\n  x\nb: 1\n  # t\n",
+        &["b", "c"],
+        "b: 1\nc: |\n  x\n# t\n",
+        root,
+    );
+}

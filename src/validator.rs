@@ -1196,6 +1196,8 @@ impl Validator {
     /// none can start one: `,`, `]`, `}`, `%` and the reserved `@` and `` ` ``
     /// never can, and a `-` can only
     /// when a safe character follows it, as in `-1` (G5U8 is `[-, -]`).
+    /// The other [`crate::scalar::INDICATORS`] open a quoted or block scalar,
+    /// which other checks cover, or are lexed as tokens of their own.
     /// Outside a flow collection a `- ` usually opens a block sequence
     /// entry, but after a tag or anchor on the same line the parser reads
     /// it as a plain scalar (SY6V is `&anchor - sequence entry`).

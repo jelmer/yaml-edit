@@ -68,6 +68,12 @@ impl From<CoreScalarType> for ScalarType {
     }
 }
 
+/// The c-indicator characters (YAML 1.2 5.3), which cannot start a plain
+/// scalar, except for `-`, `?` and `:` followed by a safe character.
+pub(crate) const INDICATORS: &[char] = &[
+    '-', '?', ':', ',', '[', ']', '{', '}', '#', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`',
+];
+
 /// The non-string core schema type named by `tag`, if any.
 fn core_tag_type(tag: &str) -> Option<CoreScalarType> {
     let name = tag
@@ -1141,39 +1147,17 @@ impl ScalarValue {
         let radix_like = ["0b", "0B", "0o", "0O", "0x", "0X"]
             .iter()
             .any(|p| unsigned.strip_prefix(p).is_some_and(|d| all_digits(d, 16)));
-        value.parse::<f64>().is_ok()
-            || radix_like
-            || Self::classify_plain(value) != CoreScalarType::String
+        value.parse::<f64>().is_ok() || radix_like
     }
 
     /// Whether `value` needs quoting even with an explicit tag deciding its
     /// type, because as a plain scalar it would not read back as `value`.
     fn needs_quoting_as_tagged(value: &str) -> bool {
-        // Check if starts with special characters. `#` is included because a
-        // plain scalar starting with `#` reads as a comment: at column 0 the
-        // whole line becomes one, and after whitespace (e.g. `key: #x`) the
-        // `#x` becomes a trailing comment and the value is lost.
-        if value.starts_with(|ch: char| {
-            matches!(
-                ch,
-                '-' | '?'
-                    | ':'
-                    | '['
-                    | ']'
-                    | '{'
-                    | '}'
-                    | ','
-                    | '>'
-                    | '<'
-                    | '!'
-                    | '&'
-                    | '*'
-                    | '#'
-                    | '%'
-                    | '@'
-                    | '`'
-            )
-        }) {
+        // `-`, `?` and `:` could start a plain scalar before a safe
+        // character, but are quoted anyway, as is `<`, which is not an
+        // indicator. A plain scalar starting with `#` would read as a
+        // comment, and the value would be lost.
+        if value.starts_with(INDICATORS) || value.starts_with('<') {
             return true;
         }
 

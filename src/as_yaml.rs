@@ -155,6 +155,23 @@ where
     }
 }
 
+/// Feed a hash of `value` into `state`, consistent with [`yaml_eq`]: values
+/// that compare equal hash equally, so they can be used as keys in hash
+/// maps with an equality defined by [`yaml_eq`].
+///
+/// [`yaml_eq`] is not reflexive for values containing aliases or content
+/// that cannot be resolved, so such values need care as hash map keys.
+pub fn yaml_hash<T, H>(value: &T, state: &mut H)
+where
+    T: AsYaml + ?Sized,
+    H: std::hash::Hasher,
+{
+    use std::hash::Hash;
+    if let Some(Ok(Some(identity))) = to_syntax(value).map(|node| node_identity(&node, None)) {
+        identity.hash(state);
+    }
+}
+
 /// The node backing `v`, or for a raw value, the CST it builds.
 fn to_syntax<T: AsYaml + ?Sized>(v: &T) -> Option<SyntaxNode> {
     use crate::lex::SyntaxKind;
@@ -1616,6 +1633,36 @@ key: value
         assert!(yaml_eq(&m1, &m2));
         assert!(yaml_eq(&m2, &m1));
         assert!(!yaml_eq(&m1, &m3));
+    }
+
+    fn root_of(text: &str) -> YamlNode {
+        let doc = Document::from_str(text).unwrap();
+        YamlNode::from_syntax(doc.syntax().first_child().unwrap()).unwrap()
+    }
+
+    fn hash_of(text: &str) -> u64 {
+        use std::hash::Hasher;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        yaml_hash(&root_of(text), &mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn test_yaml_hash_consistent_with_yaml_eq() {
+        for (a, b) in [
+            ("name", "\"name\""),
+            ("name", "!!str name"),
+            ("1", "0x1"),
+            ("{a: 1, b: 2}", "{b: 2, a: 1}"),
+            ("[1, 'x']", "- 1\n- \"x\"\n"),
+            ("a:\n  b: [1]\n", "{a: {b: [0x1]}}"),
+        ] {
+            assert!(yaml_eq(&root_of(a), &root_of(b)), "{a:?} vs {b:?}");
+            assert_eq!(hash_of(a), hash_of(b), "{a:?} vs {b:?}");
+        }
+        assert_ne!(hash_of("1"), hash_of("'1'"));
+        assert_ne!(hash_of("{a: 1, b: 2}"), hash_of("{b: 1, a: 2}"));
+        assert_ne!(hash_of("[1, 2]"), hash_of("[2, 1]"));
     }
 
     #[test]

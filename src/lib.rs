@@ -204,7 +204,7 @@ mod value;
 pub mod visitor;
 mod yaml;
 
-pub use as_yaml::{yaml_eq, AsYaml, YamlKind, YamlNode};
+pub use as_yaml::{yaml_eq, yaml_hash, AsYaml, YamlKind, YamlNode};
 pub use builder::{MappingBuilder, SequenceBuilder, YamlBuilder};
 pub use error::{YamlError, YamlResult};
 pub use lex::{

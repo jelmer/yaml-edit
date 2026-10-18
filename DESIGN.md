@@ -336,7 +336,9 @@ comment and blank lines after it, up to the next entry:
 `b: 2\na: 1  # c\n# d\n`. Lines before the first entry stay where they
 are. In a flow mapping the commas stay with their positions, and one
 that has to follow an entry whose comment ends its line goes before
-that comment.
+that comment. So does the indentation of the line after such a
+comment: `{a: 1, # c\n b: 2 # d\n}` reordered gives
+`{b: 2, # d\n a: 1 # c\n}`.
 
 ## Paths, anchors and aliases
 

@@ -60,8 +60,27 @@ fn reorder_flow_mapping_with_comments() {
     check_reorder(
         "{a: 1, # c\n b: 2 # d\n}\n",
         &["b"],
-        "{b: 2, # d\na: 1 # c\n }\n",
+        "{b: 2, # d\n a: 1 # c\n}\n",
         root,
+    );
+    for (source, expected) in [
+        (
+            "{\n  a: 1, # c\n  b: 2 # d\n}\n",
+            "{\n  b: 2, # d\n  a: 1 # c\n}\n",
+        ),
+        (
+            "{\n  a: 1, # c\n  b: 2, # d\n}\n",
+            "{\n  b: 2, # d\n  a: 1, # c\n}\n",
+        ),
+        ("{a: 1,\n # c\n b: 2}\n", "{b: 2, a: 1\n # c\n }\n"),
+    ] {
+        check_reorder(source, &["b"], expected, root);
+    }
+    check_reorder(
+        "top: {a: 1, # c\n   b: 2 # d\n  }\n",
+        &["b"],
+        "top: {b: 2, # d\n   a: 1 # c\n  }\n",
+        top,
     );
 }
 
@@ -157,7 +176,7 @@ fn move_keeps_comments() {
         ("? a  # c\n: 1  # e\nb: 2\n", "b: 2\n? a  # c\n: 1  # e\n"),
         // A comment line goes with the entry above it, as in reorder_fields.
         ("a: 1\n# c\nb: 2\n", "b: 2\na: 1\n# c\n"),
-        ("{a: 1, # c\n b: 2 # d\n}", "{b: 2, # d\na: 1 # c\n }"),
+        ("{a: 1, # c\n b: 2 # d\n}", "{b: 2, # d\n a: 1 # c\n}"),
         ("{a: 1 # c\n, b: 2 # d\n}\n", "{b: 2, # d\na: 1 # c\n}\n"),
         ("{a: 1, b: 2 # d\n}\n", "{b: 2, # d\na: 1}\n"),
     ] {

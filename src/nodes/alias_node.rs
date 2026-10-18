@@ -15,9 +15,9 @@ impl Alias {
     ///
     /// # Panics
     ///
-    /// Panics if `name` is empty or contains whitespace or YAML special
-    /// characters (`:+-?[]{},'|>&*!%"#`). Such names would not round-trip
-    /// through the lexer as a single alias token.
+    /// Panics if `name` is not a valid anchor name: it must be non-empty and
+    /// hold no whitespace, line breaks, flow indicators (`,[]{}`) or
+    /// non-printable characters.
     ///
     /// # Examples
     ///
@@ -34,7 +34,7 @@ impl Alias {
         let name = name.as_ref();
         assert!(
             crate::lex::is_valid_anchor_name(name),
-            "alias name must be non-empty and contain no whitespace or YAML special characters, got {name:?}"
+            "alias name must be a valid anchor name, got {name:?}"
         );
         let text = format!("*{name}");
         let mut builder = GreenNodeBuilder::new();
@@ -364,25 +364,29 @@ items:
     }
 
     #[test]
-    #[should_panic(expected = "alias name must be non-empty")]
+    #[should_panic(expected = "alias name must be a valid anchor name")]
     fn test_alias_new_rejects_empty() {
         let _ = crate::Alias::new("");
     }
 
     #[test]
-    #[should_panic(expected = "alias name must be non-empty")]
+    #[should_panic(expected = "alias name must be a valid anchor name")]
     fn test_alias_new_rejects_whitespace() {
         let _ = crate::Alias::new("bad name");
     }
 
     #[test]
-    #[should_panic(expected = "alias name must be non-empty")]
-    fn test_alias_new_rejects_leading_star() {
-        let _ = crate::Alias::new("*already_starred");
+    fn test_alias_new_accepts_indicators() {
+        // Only the flow indicators are excluded from anchor names.
+        let doc = Document::from_str("a: &*x: 1\nb: 2\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        mapping.set("b", crate::Alias::new("*x:"));
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), "a: &*x: 1\nb: **x:\n");
     }
 
     #[test]
-    #[should_panic(expected = "alias name must be non-empty")]
+    #[should_panic(expected = "alias name must be a valid anchor name")]
     fn test_alias_new_rejects_flow_indicator() {
         let _ = crate::Alias::new("bad,name");
     }

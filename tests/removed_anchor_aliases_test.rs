@@ -208,6 +208,9 @@ fn mapping_remove_keeps_anchors() {
             "&x k : &y 2\n",
             "k: 2\n",
         ),
+        // `:` may be part of an anchor name (W5VH).
+        ("a: &a: 1\nb: *a:\n", "b: &a: 1\n", "b: 1\n"),
+        ("a: &x: k\n*x: : 1\n", "&x: k : 1\n", "k: 1\n"),
     ];
     for (source, expected, meaning) in cases {
         let doc = Document::from_str(source).unwrap();

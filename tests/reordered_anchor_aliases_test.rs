@@ -193,3 +193,17 @@ fn reorder_fields_copies_tagged_alias_to_tagged_node() {
     assert!(doc.reorder_fields(["b", "a"]));
     assert_edited(&doc, "b: !t 1\na: &x !u 1\n");
 }
+
+#[test]
+fn anchor_name_with_colon() {
+    // `:` is allowed in an anchor name (the test suite's W5VH).
+    let doc = Document::from_str("a: &a: 1\nb: *a:\n").unwrap();
+    assert!(doc.reorder_fields(["b", "a"]));
+    assert_edited(&doc, "b: &a: 1\na: *a:\n");
+    assert_same_values(&doc, "a: 1\nb: 1\n");
+
+    let doc = Document::from_str("a: &a: 1\nb: *a:\nc: 2\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(mapping.move_after("c", "a", mapping.get("a").unwrap()));
+    assert_edited(&doc, "b: &a: 1\nc: 2\na: *a:\n");
+}

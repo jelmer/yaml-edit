@@ -350,13 +350,12 @@ impl MappingEntry {
         if follows_colon {
             self.insert_at(value_idx, vec![fresh_token(SyntaxKind::WHITESPACE, " ")]);
         } else if !has_colon && flow_context {
+            let colon = fresh_token(SyntaxKind::COLON, ":");
             self.insert_at(
                 value_idx,
-                vec![
-                    fresh_token(SyntaxKind::COLON, ":"),
-                    fresh_token(SyntaxKind::WHITESPACE, " "),
-                ],
+                vec![colon.clone(), fresh_token(SyntaxKind::WHITESPACE, " ")],
             );
+            crate::nodes::trivia::separate_from_question(&colon);
         }
         // TODO: a block explicit key without a value (`? a` at the end of
         // the input) needs `\n:` before the value, not `: `.
@@ -540,13 +539,8 @@ impl MappingEntry {
         flow_context: bool,
         anchor: Option<&str>,
     ) {
-        use crate::nodes::replaced_value::{restore_trailing_lines, take_trailing_lines};
-        let trailing_lines = match self.value() {
-            Some(old) if !flow_context => take_trailing_lines(&old),
-            _ => Vec::new(),
-        };
         self.replace_value(new_value, flow_context, anchor);
-        restore_trailing_lines(&self.0, trailing_lines);
+        crate::nodes::replaced_value::settle_lines_after_block_scalar(&self.0);
         if let Some(content) = self.value().and_then(|v| v.last_child()) {
             crate::nodes::trivia::drop_space_before_empty(&content);
         }

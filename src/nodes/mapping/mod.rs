@@ -795,11 +795,18 @@ impl Mapping {
         )
         .0;
         if flow_context {
-            // The separator to the next entry lives in the entry before it.
-            let separator: Vec<_> = old
+            // The separator to the next entry lives in the entry before it,
+            // as does the line break ending its line.
+            let mut separator: Vec<_> = old
                 .children_with_tokens()
                 .skip_while(|c| c.kind() != SyntaxKind::COMMA)
                 .collect();
+            if separator.is_empty() {
+                separator.extend(
+                    old.last_child_or_token()
+                        .filter(|c| c.kind() == SyntaxKind::NEWLINE),
+                );
+            }
             for c in &separator {
                 c.detach();
             }
@@ -1025,18 +1032,6 @@ impl Mapping {
         }
         if self.is_flow_style() {
             Self::separate_adjacent_value(&new_key);
-            // An omitted value directly follows its key, ahead of any line
-            // break the key was given.
-            let omitted = new_key
-                .siblings_with_tokens(rowan::Direction::Next)
-                .skip(1)
-                .find(|c| !matches!(c.kind(), SyntaxKind::NEWLINE | SyntaxKind::INDENT))
-                .and_then(|c| c.into_node())
-                .filter(|v| v.kind() == SyntaxKind::VALUE && v.text().is_empty());
-            if let Some(value) = omitted {
-                value.detach();
-                insert_children(node, new_key.index() + 1, vec![value.into()]);
-            }
         }
         crate::nodes::separate_key_from_colon(node);
         new_key
@@ -1116,11 +1111,11 @@ impl Mapping {
             entry.last_child_or_token()
         }
         .filter(|c| c.kind() == SyntaxKind::NEWLINE);
-        if ends_line {
+        if ends_line && !old_ended_line {
             if let Some(newline) = newline_after {
                 newline.detach();
             }
-        } else if old_ended_line && newline_after.is_none() {
+        } else if old_ended_line && !ends_line {
             if has_colon {
                 insert_children(
                     &entry,

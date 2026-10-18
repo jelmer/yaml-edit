@@ -829,17 +829,6 @@ pub(crate) fn copy_node_content_reindent(
     node: &SyntaxNode,
     delta: isize,
 ) -> bool {
-    reindent_children(builder, node, delta, node.text_range().end())
-}
-
-/// [`copy_node_content_reindent`] for a node within the copy, which ends at
-/// `end`.
-fn reindent_children(
-    builder: &mut rowan::GreenNodeBuilder,
-    node: &SyntaxNode,
-    delta: isize,
-    end: rowan::TextSize,
-) -> bool {
     use crate::lex::SyntaxKind;
     let mut after_newline = false;
     let pad = |n: isize| " ".repeat(n.max(0) as usize);
@@ -861,24 +850,13 @@ fn reindent_children(
                     builder.token(SyntaxKind::INDENT.into(), &pad(delta));
                 }
                 builder.start_node(n.kind().into());
-                after_newline = reindent_children(builder, &n, delta, end);
+                after_newline = copy_node_content_reindent(builder, &n, delta);
                 builder.finish_node();
             }
             rowan::NodeOrToken::Token(t) => match t.kind() {
                 SyntaxKind::NEWLINE => {
                     builder.token(t.kind().into(), t.text());
                     after_newline = true;
-                    // Inside a flow collection a line's indentation follows
-                    // its line break in the same node, even when that is
-                    // the end of an entry.
-                    if delta > 0
-                        && starts_unindented_line(&t, end)
-                        && t.parent_ancestors()
-                            .any(|n| crate::nodes::starts_a_flow_collection(&n))
-                    {
-                        builder.token(SyntaxKind::INDENT.into(), &pad(delta));
-                        after_newline = false;
-                    }
                 }
                 SyntaxKind::WHITESPACE | SyntaxKind::INDENT => {
                     if after_newline {
@@ -902,19 +880,6 @@ fn reindent_children(
         }
     }
     after_newline
-}
-
-/// Whether the line after the line break `newline` has content before
-/// `end` and starts without indentation.
-fn starts_unindented_line(newline: &crate::nodes::SyntaxToken, end: rowan::TextSize) -> bool {
-    use crate::lex::SyntaxKind;
-    newline.next_token().is_some_and(|next| {
-        next.text_range().start() < end
-            && !matches!(
-                next.kind(),
-                SyntaxKind::WHITESPACE | SyntaxKind::INDENT | SyntaxKind::NEWLINE
-            )
-    })
 }
 
 /// `delta`, raised where needed so that every line of `node` after its

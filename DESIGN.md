@@ -209,7 +209,11 @@ comment ending its line: a mapping entry has it in its `VALUE`, a sequence
 entry after its item. An entry ending in a nested block collection or a
 block scalar has its line ended by that instead. The parent
 `MAPPING`/`SEQUENCE` node does not own any newlines itself, except for blank
-lines and comment lines between entries.
+lines and comment lines between entries. Those after a nested collection's
+last entry are between entries of the collection holding the next one, and
+belong to it: in `a:\n  - x\n\nb: 1\n` the blank line is the outer
+mapping's, not the sequence's. At the end of the input, blank lines go to the
+root collection.
 
 ```
 MAPPING_ENTRY
@@ -235,8 +239,8 @@ that add documents or directives must keep a BOM first in the stream.
 
 A new entry at the end of a collection (`set` with a new key, `push`)
 goes after its last entry and any comment lines after that. Blank lines
-ending a nested collection separate it from what follows, so they stay
-after the new entry: `a:\n  x: 1\n\nb: 2\n` with `y` set in `a` gives
+after a nested collection belong to its parent, so they stay after the
+new entry: `a:\n  x: 1\n\nb: 2\n` with `y` set in `a` gives
 `a:\n  x: 1\n  y: 3\n\nb: 2\n`. Those ending the root collection stay
 where they are, and the new entry goes after them: `- x\n\n` with `y`
 pushed gives `- x\n\n- y\n`. Input that has no final line break
@@ -388,12 +392,11 @@ not, or failing that the one before. `move_after`/`move_before` given
 another value remove the old entry as `remove` does, leaving its comment
 lines where they were.
 
-In a flow mapping the parser puts a comment line in the entry above it,
-and it goes with that entry. The commas stay with their positions, and
-one that has to follow an entry whose comment ends its line goes before
-that comment. So does the indentation of the line after such a
-comment: `{a: 1, # c\n b: 2 # d\n}` reordered gives
-`{b: 2, # d\n a: 1 # c\n}`.
+A flow mapping is no different: an entry owns its comma and the rest of
+that line, and the comment lines after it go with the entry below them.
+The commas stay with their positions, and one that has to follow an entry
+whose comment ends its line goes before that comment:
+`{a: 1, # c\n b: 2 # d\n}` reordered gives `{b: 2, # d\n a: 1 # c\n}`.
 
 Removing an entry or item takes along the comment at the end of its
 line, and leaves the comment lines before and after it: `- x\n# c\n- a  # d\n- y\n`

@@ -4439,8 +4439,8 @@ database:  # Database settings
   pool:
     min: 1    # Minimum connections
     max: 10   # Maximum connections
-
 logging: debug
+
 # Server configuration
 server:
   port: 8080  # HTTP port

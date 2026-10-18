@@ -867,3 +867,23 @@ fn entry_added_after_comment_ending_the_input() {
         "? a\n: b  # c\n? k\n: 1"
     );
 }
+
+#[test]
+fn block_key_renamed_keeps_the_lines_after_it() {
+    for (source, expected) in [
+        ("? - a\n\nc: d\n", "? z\n\nc: d\n"),
+        ("? - a\n\n: b\nc: d\n", "? z\n\n: b\nc: d\n"),
+        ("? x: 1\n\n# c\nc: d\n", "? z\n\n# c\nc: d\n"),
+        ("k:\n  ? - a\n\n  c: d\n", "k:\n  ? z\n\n  c: d\n"),
+    ] {
+        let text = edit_root(source, |m| {
+            let mut m = m.clone();
+            if source.starts_with("k:") {
+                m = m.get_mapping("k").unwrap();
+            }
+            let key = m.keys().next().unwrap();
+            assert!(m.rename_key(key, "z"));
+        });
+        assert_eq!(text, expected, "{source:?}");
+    }
+}

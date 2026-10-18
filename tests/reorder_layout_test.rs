@@ -80,7 +80,7 @@ fn reorder_flow_mapping_with_comments() {
             "{\n  a: 1, # c\n  b: 2, # d\n}\n",
             "{\n  b: 2, # d\n  a: 1, # c\n}\n",
         ),
-        ("{a: 1,\n # c\n b: 2}\n", "{b: 2, a: 1\n # c\n }\n"),
+        ("{a: 1,\n # c\n b: 2}\n", "{ # c\n b: 2,\n a: 1}\n"),
     ] {
         check_reorder(source, &["b"], expected, root);
     }
@@ -393,4 +393,14 @@ fn reorder_comment_line_to_front_of_file() {
             debug::shape_to_string(reparsed.syntax())
         );
     }
+}
+
+#[test]
+fn reorder_keeps_blank_line_after_block_value_at_its_position() {
+    check_reorder(
+        "a:\n  x: 1\n\nb: 2\n",
+        &["b", "a"],
+        "b: 2\n\na:\n  x: 1\n",
+        root,
+    );
 }

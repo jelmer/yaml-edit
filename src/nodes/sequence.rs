@@ -578,13 +578,12 @@ impl Sequence {
         let children: Vec<_> = self.0.children_with_tokens().collect();
         let node = children[i].as_node().expect("entry index names a node");
         let flow = self.is_flow_style().then(|| flow_quoting(&self.0));
-        let (trailing_lines, dash_comment) = match entry_item(node) {
+        let dash_comment = match entry_item(node) {
             Some(old) if flow.is_none() => {
-                let lines = replaced_value::take_trailing_lines(&old);
                 replaced_value::remove_comment_after_item(&old);
-                (lines, replaced_value::take_dash_line_comment(node))
+                replaced_value::take_dash_line_comment(node)
             }
-            _ => (Vec::new(), None),
+            _ => None,
         };
         let new_entry = rebuild_entry_with_value(node, value, flow, anchor);
 
@@ -596,7 +595,7 @@ impl Sequence {
             .nth(i)
             .and_then(|c| c.into_node());
         let new_entry = new_entry.expect("the new entry was just spliced in");
-        replaced_value::restore_trailing_lines(&new_entry, trailing_lines);
+        replaced_value::settle_lines_after_block_scalar(&new_entry);
         if let Some(comment) = dash_comment {
             replaced_value::add_dash_line_comment(&new_entry, comment);
         }

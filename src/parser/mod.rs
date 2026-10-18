@@ -126,6 +126,75 @@ impl<'a> Lookahead<'a> {
     }
 }
 
+/// A tree builder that can hold back the line breaks and indentation
+/// between the entries of a block collection until it is known which node
+/// they belong to.
+///
+/// They go in front of whatever is emitted next. A node finished in the
+/// meantime leaves them to its parent, so the blank lines after a nested
+/// collection's last entry end up in the collection holding the next one.
+/// The outermost block collection keeps those at its end.
+pub(super) struct TreeBuilder {
+    inner: GreenNodeBuilder<'static>,
+    open: Vec<rowan::SyntaxKind>,
+    held: Vec<(SyntaxKind, String)>,
+}
+
+impl TreeBuilder {
+    fn new() -> Self {
+        Self {
+            inner: GreenNodeBuilder::new(),
+            open: Vec::new(),
+            held: Vec::new(),
+        }
+    }
+
+    fn flush(&mut self) {
+        for (kind, text) in std::mem::take(&mut self.held) {
+            self.inner.token(kind.into(), &text);
+        }
+    }
+
+    pub(super) fn token(&mut self, kind: rowan::SyntaxKind, text: &str) {
+        self.flush();
+        self.inner.token(kind, text);
+    }
+
+    fn hold(&mut self, kind: SyntaxKind, text: String) {
+        self.held.push((kind, text));
+    }
+
+    pub(super) fn start_node(&mut self, kind: rowan::SyntaxKind) {
+        self.flush();
+        self.open.push(kind);
+        self.inner.start_node(kind);
+    }
+
+    pub(super) fn finish_node(&mut self) {
+        let is_collection = |kind: &rowan::SyntaxKind| {
+            *kind == SyntaxKind::MAPPING.into() || *kind == SyntaxKind::SEQUENCE.into()
+        };
+        let kind = self.open.pop().expect("a node is open");
+        if is_collection(&kind) && !self.open.iter().any(is_collection) {
+            self.flush();
+        }
+        self.inner.finish_node();
+    }
+
+    /// Run `f` ahead of the trivia held back, for a zero-width node that
+    /// ends what came before it.
+    fn ahead_of_held(&mut self, f: impl FnOnce(&mut Self)) {
+        let held = std::mem::take(&mut self.held);
+        f(self);
+        self.held = held;
+    }
+
+    fn finish(mut self) -> rowan::GreenNode {
+        self.flush();
+        self.inner.finish()
+    }
+}
+
 /// Internal parser state
 ///
 /// Fields are `pub(super)` so the topic sub-modules
@@ -134,7 +203,10 @@ impl<'a> Lookahead<'a> {
 pub(super) struct Parser<'a> {
     pub(super) tokens: Vec<(SyntaxKind, String)>,
     pub(super) current_token_index: usize,
-    pub(super) builder: GreenNodeBuilder<'static>,
+    pub(super) builder: TreeBuilder,
+    /// Whether [`bump`](Self::bump) holds back line breaks, indentation
+    /// and white space; see [`TreeBuilder`].
+    hold_trivia: bool,
     pub(super) errors: Vec<String>,
     pub(super) positioned_errors: Vec<PositionedParseError>,
     pub(super) in_flow_context: bool,
@@ -193,7 +265,8 @@ impl<'a> Parser<'a> {
         Self {
             tokens,
             current_token_index: token_count,
-            builder: GreenNodeBuilder::new(),
+            builder: TreeBuilder::new(),
+            hold_trivia: false,
             errors: Vec::new(),
             positioned_errors: Vec::new(),
             in_flow_context: false,
@@ -721,6 +794,19 @@ impl Parser<'_> {
         base_indent: usize,
         dash_lines: bool,
     ) -> bool {
+        self.holding_trivia(|p| p.skip_whitespace_with_dedent_check(base_indent, dash_lines))
+    }
+
+    /// Run `f` with the line breaks, indentation and white space it steps
+    /// over held back for the node that comes next; see [`TreeBuilder`].
+    pub(super) fn holding_trivia<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = std::mem::replace(&mut self.hold_trivia, true);
+        let result = f(self);
+        self.hold_trivia = outer;
+        result
+    }
+
+    fn skip_whitespace_with_dedent_check(&mut self, base_indent: usize, dash_lines: bool) -> bool {
         while self.current().is_some() {
             match self.current() {
                 Some(SyntaxKind::WHITESPACE) => {
@@ -1024,17 +1110,23 @@ impl Parser<'_> {
     /// KEY, VALUE and SEQUENCE_ENTRY holds exactly one scalar or collection,
     /// and this token renders as nothing so round-trips stay lossless.
     pub(super) fn emit_implicit_null(&mut self) {
-        self.builder.start_node(SyntaxKind::SCALAR.into());
-        self.builder.token(SyntaxKind::NULL.into(), "");
-        self.builder.finish_node();
+        self.builder.ahead_of_held(|b| {
+            b.start_node(SyntaxKind::SCALAR.into());
+            b.token(SyntaxKind::NULL.into(), "");
+            b.finish_node();
+        });
     }
 
     /// [`emit_implicit_null`](Self::emit_implicit_null) wrapped in a VALUE
     /// node, for the mapping shapes that wrap their values.
     pub(super) fn emit_implicit_null_value(&mut self) {
-        self.builder.start_node(SyntaxKind::VALUE.into());
-        self.emit_implicit_null();
-        self.builder.finish_node();
+        self.builder.ahead_of_held(|b| {
+            b.start_node(SyntaxKind::VALUE.into());
+            b.start_node(SyntaxKind::SCALAR.into());
+            b.token(SyntaxKind::NULL.into(), "");
+            b.finish_node();
+            b.finish_node();
+        });
     }
 
     pub(super) fn bump(&mut self) {
@@ -1057,12 +1149,21 @@ impl Parser<'_> {
                 _ => {}
             }
 
-            self.builder.token(kind.into(), &text);
-            self.previous_kind = Some(kind);
             if self.current_token_index > 0 {
                 self.current_token_index -= 1;
             }
             self.position += text.len();
+            self.previous_kind = Some(kind);
+            if self.hold_trivia
+                && matches!(
+                    kind,
+                    SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE
+                )
+            {
+                self.builder.hold(kind, text);
+            } else {
+                self.builder.token(kind.into(), &text);
+            }
         }
     }
 

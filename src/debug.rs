@@ -394,6 +394,13 @@ pub(crate) fn assert_parser_shaped(node: &impl rowan::ast::AstNode<Language = cr
 }
 
 fn validate_node(node: &SyntaxNode) -> Result<(), String> {
+    if matches!(
+        node.kind(),
+        SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+    ) && is_in_flow_collection(node)
+    {
+        validate_flow_entry_end(node)?;
+    }
     match node.kind() {
         SyntaxKind::MAPPING_ENTRY => {
             let keys: Vec<_> = node
@@ -483,6 +490,30 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                     comment.text()
                 ));
             }
+            // Blank lines and indentation after a nested collection's last
+            // entry belong to the collection holding the next one, or to
+            // the root collection at the end of the input.
+            let nested = node
+                .ancestors()
+                .skip(1)
+                .any(|n| matches!(n.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE));
+            let trailing_line = node
+                .last_child_or_token()
+                .and_then(|c| c.into_token())
+                .filter(|t| {
+                    !t.text().is_empty()
+                        && (t.kind() != SyntaxKind::NEWLINE
+                            || t.prev_sibling_or_token()
+                                .map_or(true, |p| p.kind() != SyntaxKind::COMMENT))
+                });
+            if let Some(token) = trailing_line.filter(|_| nested) {
+                return Err(format!(
+                    "nested {:?} ends with {:?} {:?} after its last entry",
+                    node.kind(),
+                    token.kind(),
+                    token.text()
+                ));
+            }
         }
         SyntaxKind::SEQUENCE_ENTRY
             if !is_in_flow_collection(node)
@@ -505,14 +536,35 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
     Ok(())
 }
 
+/// A flow entry ends with the line of its comma, or of its content if it
+/// has none: the lines after that, and the next line's indentation, are
+/// the collection's.
+fn validate_flow_entry_end(entry: &SyntaxNode) -> Result<(), String> {
+    let children: Vec<_> = entry.children_with_tokens().collect();
+    let end = children
+        .iter()
+        .rposition(|c| c.as_node().is_some() || c.kind() == SyntaxKind::COMMA)
+        .map_or(0, |i| i + 1);
+    let newline = children[end..]
+        .iter()
+        .position(|c| c.kind() == SyntaxKind::NEWLINE);
+    match newline {
+        Some(i) if end + i + 1 < children.len() => Err(format!(
+            "flow {:?} holds {:?} after the end of its line",
+            entry.kind(),
+            children[end + i + 1].kind()
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Is this entry terminated by a NEWLINE of its own, along with the
 /// comment ending its line, if any?
 ///
 /// A NEWLINE followed only by an implicit null's zero-width token counts
 /// too: in `? - a\n` the line break ends the key's sequence, and the
-/// entry's empty value comes after it. So does one followed by the INDENT
-/// of a comment line indented past the collection, which the parser
-/// leaves at the end of the collection the entry ends in.
+/// entry's empty value comes after it. So does one followed by the spaces
+/// of a block scalar's last line, which belong to its body.
 fn entry_is_terminated(entry: &SyntaxNode) -> bool {
     crate::nodes::trivia::ends_line(entry)
 }

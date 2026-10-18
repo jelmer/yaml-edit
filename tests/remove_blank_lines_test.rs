@@ -123,3 +123,14 @@ fn test_remove_after_comment() {
         "a: 1\n# c\n\nc: 3\n"
     );
 }
+
+/// The blank lines after a block value are the mapping's, as after a
+/// scalar one.
+#[test]
+fn test_remove_block_value_before_blank_line() {
+    assert_eq!(
+        remove("a: 1\nk:\n  x: 1\n\nz: 2\n", &[], "k"),
+        "a: 1\n\nz: 2\n"
+    );
+    assert_eq!(remove("a: 1\nk: 1\n\nz: 2\n", &[], "k"), "a: 1\n\nz: 2\n");
+}

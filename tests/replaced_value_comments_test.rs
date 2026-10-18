@@ -412,7 +412,7 @@ fn detached_entry_set_value() {
             "v: |  # src\n  text\n",
             "# note\nk: |  # src\n  text\n",
         ),
-        ("k:\n  x: 1\n\nz: 2\n", "v:\n  y: 1\n", "k:\n  y: 1\n\n"),
+        ("k:\n  x: 1\n\nz: 2\n", "v:\n  y: 1\n", "k:\n  y: 1\n"),
     ] {
         let file = YamlFile::from_str(src).unwrap();
         let entry = mapping_at(&file, "").remove("k").unwrap();

@@ -1858,6 +1858,7 @@ mod tests {
             Ok(YamlValue::scalar("COMPRESSED[3"))
         );
         assert_eq!(handler.deserialize("SGk="), Ok(YamlValue::scalar("SGk=")));
+        assert_eq!(handler.validate("a+b/"), Ok(()));
         assert_eq!(handler.description(), "Compressed binary data");
     }
 

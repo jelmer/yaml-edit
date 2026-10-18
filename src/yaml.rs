@@ -156,8 +156,10 @@ pub(crate) fn move_leading_lines_out(collection: &SyntaxNode) {
         && leading.iter().any(|t| t.kind() == SyntaxKind::COMMENT)
         && !has_child_token(&parent, |k| k == SyntaxKind::DOC_START)
     {
-        // TODO: the parser puts comment lines before the content of a
-        // document without `---` at stream level, outside the DOCUMENT.
+        // The parser puts them at stream level, outside the DOCUMENT, but
+        // there they would drop out of the document's text. For a mapping
+        // debug::shape_to_string allows for this.
+        // TODO: so should it for a sequence.
         return;
     }
     let starts_with_comment = leading[0].kind() == SyntaxKind::COMMENT;

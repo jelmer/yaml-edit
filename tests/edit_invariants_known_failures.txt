@@ -10,7 +10,6 @@
 7BUB d0 seq0 remove[1] shape
 DFF7 d0 map0 rename[2] semantic
 DFF7 d0 map0 rename[2] shape
-F8F9 d0 map0 remove[0] shape
 JEF9/02 d0 seq0 set[0] shape
 K3WX d0 map0 rename[0] semantic
 K3WX d0 map0 rename[0] shape

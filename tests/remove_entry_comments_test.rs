@@ -114,3 +114,21 @@ fn remove_keeps_comment_line_out_of_block_scalar_before() {
     );
     check_edit("- |\n  x\n- 1\n  # t\n", remove_top(1), "- |\n  x\n# t\n");
 }
+
+#[test]
+fn remove_first_root_entry_before_comment_line() {
+    // The comment line stays in the mapping rather than at stream level,
+    // where the parser has it; debug::shape_to_string allows for that.
+    let source = "a: 1\n# c\nb: 2\n";
+    let file = yaml_edit::YamlFile::from_str(source).unwrap();
+    let doc = file.documents().next().unwrap();
+    assert!(doc.as_mapping().unwrap().remove("a").is_some());
+    assert_eq!(file.to_string(), "# c\nb: 2\n");
+    assert_eq!(doc.to_string(), "# c\nb: 2\n");
+    common::assert_file_cst_ok(&file);
+    let reparsed = yaml_edit::YamlFile::from_str("# c\nb: 2\n").unwrap();
+    assert_eq!(
+        debug::shape_to_string(file.syntax()),
+        debug::shape_to_string(reparsed.syntax())
+    );
+}

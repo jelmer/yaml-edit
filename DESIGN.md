@@ -102,7 +102,7 @@ its own text: `len`, `get`, `set` and the other accessors behave the same,
 and `debug::shape_to_string` gives the same output for both. String keys and
 values are quoted where a plain scalar would be read back as something else.
 
-There is one exception. YAML has no block syntax for an empty collection, so
+There are two exceptions. YAML has no block syntax for an empty collection, so
 an empty one is written `{}` or `[]` whatever its style. One that is to be
 block style once it has entries (`Mapping::new_pending_block`, or a block
 collection whose last entry was removed or that was cleared) carries a
@@ -111,6 +111,14 @@ entry writes it as a block collection again. A `{}` or `[]` from the source
 has no such marker and stays flow. Re-parsing the text cannot recover the
 marker, so `debug::shape_to_string` leaves it out, and is what to compare an
 edited tree with a re-parse by; `debug::tree_to_string` shows it.
+
+The other is comment lines that an edit leaves at the front of the root
+block mapping of a document without `---`, such as those after a
+removed first entry. The parser puts such lines before the document, at
+stream level, where they would no longer be part of the `Document`'s
+text, so they stay in the mapping.
+`debug::shape_to_string` shows them before the document, together with
+anything ahead of them in it, as the parser has them.
 
 ## `AsYaml` trait
 

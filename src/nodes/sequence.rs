@@ -1174,9 +1174,9 @@ impl Sequence {
             unterminate_last_line(&self.0);
         }
         // If we just drained the last entry from a block
-        // sequence under a key, collapse the placeholder
-        // scaffold to `key: []` so re-parse still finds
-        // the (now-empty) sequence at that key.
+        // sequence under a key or in a sequence item, collapse
+        // the placeholder scaffold to `key: []` or `- []` so
+        // re-parse still finds the (now-empty) sequence there.
         if self.is_empty() {
             collapse_empty_child_sequence_in_parent(&self.0, removed_terminated);
         }

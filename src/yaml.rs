@@ -231,11 +231,100 @@ pub(crate) fn convert_placeholder_to_block(collection: &SyntaxNode) {
     parent.splice_children(pos..pos, vec![nl.into(), indent.into()]);
 }
 
+/// The flow-empty tokens for a collection of `kind`, if it is one.
+fn flow_brackets(kind: SyntaxKind) -> Option<(SyntaxKind, SyntaxKind, &'static str, &'static str)> {
+    match kind {
+        SyntaxKind::MAPPING => Some((SyntaxKind::LEFT_BRACE, SyntaxKind::RIGHT_BRACE, "{", "}")),
+        SyntaxKind::SEQUENCE => Some((
+            SyntaxKind::LEFT_BRACKET,
+            SyntaxKind::RIGHT_BRACKET,
+            "[",
+            "]",
+        )),
+        _ => None,
+    }
+}
+
+/// Write an empty block MAPPING or SEQUENCE that is not a mapping value,
+/// such as a document's root or a sequence item, as `{}` or `[]`, so that
+/// it does not render as empty text. The counterpart for a mapping value
+/// is [`collapse_empty_child_collection_in_parent`].
+///
+/// `terminated` says whether the collection's last line ended in a line
+/// break before it was drained; if so, the flow-empty line gets one too.
+pub(crate) fn render_empty_collection_as_flow(collection: &SyntaxNode, terminated: bool) {
+    let Some((open_kind, close_kind, open_txt, close_txt)) = flow_brackets(collection.kind())
+    else {
+        return;
+    };
+    if collection.children().any(|c| {
+        matches!(
+            c.kind(),
+            SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+        )
+    }) || has_child_token(collection, |k| k == open_kind)
+    {
+        return;
+    }
+    let has_map_entry_parent = collection
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::VALUE)
+        .and_then(|v| v.parent())
+        .is_some_and(|e| e.kind() == SyntaxKind::MAPPING_ENTRY);
+    if has_map_entry_parent {
+        return;
+    }
+    // Entries normally take their trailing NEWLINE with them when removed.
+    // An explicit-key entry's line break is a sibling, so it outlives the
+    // entry and would otherwise leave the mapping rendering as bare
+    // whitespace instead of `{}`.
+    let leftovers: Vec<_> = collection.children_with_tokens().collect();
+    if !leftovers
+        .iter()
+        .all(|c| matches!(c.kind(), SyntaxKind::NEWLINE | SyntaxKind::INDENT))
+    {
+        return;
+    }
+    crate::nodes::replace_children(
+        collection,
+        0..leftovers.len(),
+        vec![
+            crate::nodes::fresh_token(open_kind, open_txt).into(),
+            crate::nodes::fresh_token(close_kind, close_txt).into(),
+        ],
+    );
+
+    if !terminated {
+        return;
+    }
+    // The line break follows the node, properties included, as a parsed
+    // flow-empty line has it.
+    let node = collection
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::TAGGED_NODE)
+        .unwrap_or_else(|| collection.clone());
+    let Some(parent) = node
+        .parent()
+        .filter(|p| matches!(p.kind(), SyntaxKind::DOCUMENT | SyntaxKind::SEQUENCE_ENTRY))
+    else {
+        // TODO: keep the line break of a drained collection elsewhere, such
+        // as an explicit key.
+        return;
+    };
+    let at = node.index() + 1;
+    parent.splice_children(
+        at..at,
+        vec![crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into()],
+    );
+}
+
 /// If `collection` is an empty block MAPPING or SEQUENCE sitting
 /// inside a MAPPING_ENTRY's VALUE, replace the `NEWLINE INDENT
 /// COLLECTION` placeholder with an inline flow-empty
 /// (` {}` or ` []`) so the entry renders as `key: {}` / `key: []`
-/// instead of an unterminated `key:\n    ` shape.
+/// instead of an unterminated `key:\n    ` shape. In a sequence item it
+/// becomes `- {}` / `- []` instead, through
+/// [`render_empty_collection_as_flow`].
 ///
 /// Node properties, a trailing comment on the key line and comment
 /// lines before or inside the collection are kept. Skips flow
@@ -245,20 +334,27 @@ pub(crate) fn convert_placeholder_to_block(collection: &SyntaxNode) {
 /// break before it was drained. If not, the collection ended the input
 /// without one, and the entry is left without one too.
 pub(crate) fn collapse_empty_child_collection_in_parent(collection: &SyntaxNode, terminated: bool) {
-    let (open_kind, close_kind, open_txt, close_txt) = match collection.kind() {
-        SyntaxKind::MAPPING => (SyntaxKind::LEFT_BRACE, SyntaxKind::RIGHT_BRACE, "{", "}"),
-        SyntaxKind::SEQUENCE => (
-            SyntaxKind::LEFT_BRACKET,
-            SyntaxKind::RIGHT_BRACKET,
-            "[",
-            "]",
-        ),
-        _ => return,
+    let Some((open_kind, close_kind, open_txt, close_txt)) = flow_brackets(collection.kind())
+    else {
+        return;
     };
 
     // Flow collections already render correctly when empty.
     let is_flow = has_child_token(collection, |k| k == open_kind);
     if is_flow {
+        return;
+    }
+
+    // A sequence item has no line of its own to fall back to: emptied, it
+    // would leave a bare `- ` (a null) or merge into the next item.
+    let in_sequence_item = collection
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::TAGGED_NODE)
+        .or_else(|| Some(collection.clone()))
+        .and_then(|n| n.parent())
+        .is_some_and(|p| p.kind() == SyntaxKind::SEQUENCE_ENTRY);
+    if in_sequence_item {
+        render_empty_collection_as_flow(collection, terminated);
         return;
     }
 

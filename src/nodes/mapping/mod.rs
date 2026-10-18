@@ -4,10 +4,7 @@ mod movements;
 
 pub(crate) use helpers::build_block_value_node;
 pub(crate) use helpers::flow_form;
-use helpers::{
-    append_comma_space_to_entry, ensure_top_level_empty_renders_as_flow, index_after_entry_line,
-    FlowInsertPos,
-};
+use helpers::{append_comma_space_to_entry, index_after_entry_line, FlowInsertPos};
 pub(crate) use helpers::{
     block_scalar_body_shift, drop_tagged_anchor, held_anchor, held_anchor_token, source_anchor_text,
 };
@@ -1410,9 +1407,9 @@ impl Mapping {
             indent.detach();
         }
 
-        // Nested mapping drained by remove: collapse to `key: {}` so
-        // `set_path("a.b.c", v) + remove_path(...)` doesn't leave a
-        // dangling indent scaffold. Top-level drain is left alone here
+        // Nested mapping drained by remove: collapse to `key: {}` or
+        // `- {}` so `set_path("a.b.c", v) + remove_path(...)` doesn't
+        // leave a dangling indent scaffold. Top-level drain is left alone here
         // -- callers may add more entries and injecting `{}` would
         // poison subsequent block-style `set`s; `Mapping::clear`
         // handles the explicit-empty case.
@@ -1517,7 +1514,7 @@ impl Mapping {
             let children: Vec<_> = self.0.children_with_tokens().collect();
             self.remove_entry_at(&children, i, &entry);
         }
-        ensure_top_level_empty_renders_as_flow(&self.0, terminated);
+        crate::yaml::render_empty_collection_as_flow(&self.0, terminated);
     }
 
     /// Rename a key while preserving its value and formatting.

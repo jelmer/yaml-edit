@@ -109,6 +109,15 @@ fn clear_collection_in_sequence_item() {
 }
 
 #[test]
+fn clear_top_level_sequence() {
+    let clear = |d: &Document| d.as_sequence().unwrap().clear();
+    check_edit("- 1\n", clear, "[]\n");
+    check_edit("- 1\n- 2\n", clear, "[]\n");
+    check_edit("- 1\n- 2", clear, "[]");
+    check_edit("---\n- 1\n", clear, "---\n[]\n");
+}
+
+#[test]
 fn edit_through_handle_to_drained_sequence_item() {
     check_edit(
         "- b: 2\n- 3\n",

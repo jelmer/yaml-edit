@@ -1277,7 +1277,7 @@ pub(crate) fn build_mapping<K: AsYaml, V: AsYaml>(
         crate::nodes::build_key_content(builder, &key, indent, flow);
         builder.finish_node(); // KEY
         builder.token(SyntaxKind::COLON.into(), ":");
-        let starts_block = block && matches!(value.kind(), YamlKind::Mapping | YamlKind::Sequence);
+        let starts_block = block && !value.is_inline();
         let ends_with_newline = if starts_block {
             builder.start_node(SyntaxKind::VALUE.into());
             builder.token(SyntaxKind::NEWLINE.into(), "\n");

@@ -640,7 +640,8 @@ fn build_tagged_pair_seq(
     indent: usize,
     flow: Option<FlowQuoting>,
 ) -> bool {
-    build_tagged(builder, tag, flow.is_none(), indent, |builder| {
+    let block = flow.is_none() && !pairs.is_empty();
+    build_tagged(builder, tag, block, indent, |builder| {
         let items = pairs
             .iter()
             .map(|(k, v)| YamlValue::Mapping(BTreeMap::from([(k.clone(), v.clone())])));
@@ -1033,6 +1034,17 @@ mod tests {
             YamlValue::Sequence(vec![YamlValue::from("a")]),
         );
         assert_eq!(render_as_yaml(&m2), "list:\n  - a\n");
+
+        // Empty collections stay on the key's line, as do tagged ones.
+        let mut m3 = BTreeMap::new();
+        m3.insert("e".to_string(), YamlValue::mapping());
+        m3.insert("l".to_string(), YamlValue::sequence());
+        m3.insert("o".to_string(), YamlValue::from_ordered_mapping(vec![]));
+        m3.insert("p".to_string(), YamlValue::from_pairs(vec![]));
+        assert_eq!(
+            render_as_yaml(&m3),
+            "e: {}\nl: []\no: !!omap []\np: !!pairs []\n"
+        );
 
         // YamlValue delegates to the right impl per variant.
         assert_eq!(
@@ -1617,6 +1629,19 @@ ordered: !!omap [first: *list]
             doc.to_string(),
             "a: 1\nb:\n  n:\n    s: |\n      x\n      y\n"
         );
+    }
+
+    #[test]
+    fn test_set_nested_empty_collections() {
+        use std::str::FromStr;
+        let mut m = BTreeMap::new();
+        m.insert("e".to_string(), YamlValue::mapping());
+        m.insert("o".to_string(), YamlValue::from_ordered_mapping(vec![]));
+        let doc = crate::yaml::Document::from_str("a: 1\n").unwrap();
+        doc.set("b", YamlValue::Mapping(m));
+        assert_cst_ok(&doc);
+        crate::debug::assert_parser_shaped(&doc);
+        assert_eq!(doc.to_string(), "a: 1\nb:\n  e: {}\n  o: !!omap []\n");
     }
 
     #[test]

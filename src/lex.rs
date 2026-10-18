@@ -1170,7 +1170,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             // the main loop then handles; the text still round-trips
             // and the parser reports the malformed tag.
             while let Some((idx, ch)) = self.chars.peek() {
-                if *ch == '\n' {
+                if matches!(ch, '\n' | '\r') {
                     break;
                 }
                 end_idx = *idx + ch.len_utf8();
@@ -3052,5 +3052,17 @@ double: "quoted""#;
                 "unix:///Users/${metadata.username}/path"
             )
         );
+    }
+
+    #[test]
+    fn test_unterminated_verbatim_tag_ends_at_line_break() {
+        use SyntaxKind::*;
+        for line_break in ["\n", "\r\n", "\r"] {
+            let input = format!("!<x{line_break}a");
+            assert_eq!(
+                lex(&input),
+                vec![(TAG, "!<x"), (NEWLINE, line_break), (STRING, "a")]
+            );
+        }
     }
 }

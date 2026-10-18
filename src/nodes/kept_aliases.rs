@@ -97,7 +97,7 @@ pub(crate) fn keeping_aliases(
 ///
 /// Where an alias now comes before the node it referred to, the alias
 /// becomes a copy of that node, anchor included, and the node becomes an
-/// alias if it can: it has to be a value or a sequence item without
+/// alias if it can: it has to be a value, sequence item or key without
 /// anchors inside, and no other anchor with its name may come between.
 /// Otherwise the node keeps its anchor too.
 pub(crate) fn keeping_aliases_moved(
@@ -537,9 +537,12 @@ impl Tracker {
             } else {
                 origin.parent()
             };
-        let Some(holder) =
-            holder.filter(|h| matches!(h.kind(), SyntaxKind::VALUE | SyntaxKind::SEQUENCE_ENTRY))
-        else {
+        let Some(holder) = holder.filter(|h| {
+            matches!(
+                h.kind(),
+                SyntaxKind::VALUE | SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::KEY
+            )
+        }) else {
             return;
         };
         // Anchors inside the node would go with it.
@@ -562,6 +565,8 @@ impl Tracker {
         if redefined {
             return;
         }
+        // A key would otherwise keep its anchor, as a renamed key does.
+        super::detach_anchor(origin);
         let holder = replace_in_holder(&holder, crate::yaml::Alias::new(&name), None);
         let alias = descendant_aliases(&holder)
             .into_iter()

@@ -4,6 +4,8 @@
 //!
 //! Split out of `parser/mod.rs` unchanged.
 
+use super::block::reaches_key_colon;
+use super::scalars::is_plain_scalar_kind;
 use super::{Parser, MAX_FLOW_DEPTH};
 use crate::error_recovery::ParseContext;
 use crate::lex::SyntaxKind;
@@ -33,6 +35,24 @@ impl Parser {
         has_implicit_mapping_pattern(tokens)
     }
 
+    /// Keep plain scalar content between a complete key node and its colon,
+    /// as in `{*a x: v}` or `[[q] x: v]`, in the KEY as a second node, which
+    /// the validator reports, as a block mapping key does.
+    fn parse_flow_content_before_colon(&mut self) {
+        let whitespace = usize::from(self.current() == Some(SyntaxKind::WHITESPACE));
+        let rest = std::iter::once(self.current().unwrap_or(SyntaxKind::EOF))
+            .chain(self.upcoming_tokens())
+            .skip(whitespace);
+        if !self.peek_kind(whitespace).is_some_and(is_plain_scalar_kind) || !reaches_key_colon(rest)
+        {
+            return;
+        }
+        if whitespace == 1 {
+            self.bump();
+        }
+        self.parse_scalar();
+    }
+
     /// Parse an implicit flow mapping (key: value without braces).
     /// Used inside flow sequences: [ key: value ] is valid YAML.
     fn parse_implicit_flow_mapping(&mut self) {
@@ -54,6 +74,7 @@ impl Parser {
             self.emit_implicit_null();
         } else {
             self.parse_value();
+            self.parse_flow_content_before_colon();
         }
         self.builder.finish_node();
 
@@ -259,6 +280,7 @@ impl Parser {
                 self.emit_implicit_null();
             } else {
                 self.parse_value();
+                self.parse_flow_content_before_colon();
             }
             self.builder.finish_node();
 
@@ -282,13 +304,7 @@ impl Parser {
                     self.builder.finish_node();
                 }
             } else {
-                self.skip_ws_and_newlines();
-                let error_msg = self.create_detailed_error(
-                    "Missing colon in flow mapping",
-                    "':' after key",
-                    self.current_text(),
-                );
-                self.add_error_and_recover(error_msg, SyntaxKind::COLON, ParseErrorKind::Other);
+                self.emit_implicit_null_value();
             }
 
             self.skip_ws_and_newlines(); // Support comments after values

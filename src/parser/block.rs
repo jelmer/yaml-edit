@@ -1207,7 +1207,7 @@ impl Parser {
 /// Plain scalar content in between is not part of a valid key, but the
 /// parser keeps it in the key as a second node, which the validator
 /// reports: `[q] x: v`.
-fn reaches_key_colon(kinds: impl Iterator<Item = SyntaxKind>) -> bool {
+pub(super) fn reaches_key_colon(kinds: impl Iterator<Item = SyntaxKind>) -> bool {
     for kind in kinds {
         match kind {
             SyntaxKind::COLON => return true,

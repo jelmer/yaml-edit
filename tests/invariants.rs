@@ -765,3 +765,38 @@ fn node_followed_by_content_on_its_line() {
         );
     }
 }
+
+/// In a flow collection, plain scalar content between a complete key node
+/// and its colon stays in the KEY, as in a block mapping, and a key with no
+/// colon after it ends its entry, as an entry missing its comma.
+#[test]
+fn flow_key_followed_by_content() {
+    use yaml_edit::validator::Validator;
+    const TWO_NODES: &str = "Key holds more than one node";
+    const NO_COMMA: &str = "Missing comma between flow collection entries";
+    for (yaml, expected) in [
+        ("a: &a 1\nb: {*a x: v}\n", vec![(TWO_NODES, "2:8")]),
+        ("a: &a 1\nb: [*a x: v]\n", vec![(TWO_NODES, "2:8")]),
+        ("{[q] x: v}\n", vec![(TWO_NODES, "1:6")]),
+        ("[[q] x y: v, b]\n", vec![(TWO_NODES, "1:6")]),
+        ("[\"q\" x: v]\n", vec![(TWO_NODES, "1:6")]),
+        ("{\"q\" x: v}\n", vec![(TWO_NODES, "1:6")]),
+        ("a: &a 1\nb: {*a x}\n", vec![(NO_COMMA, "2:8")]),
+        ("{[q] [r]}\n", vec![(NO_COMMA, "1:6")]),
+        ("a: &a 1\nb: {*a\n x: v}\n", vec![(NO_COMMA, "3:2")]),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
+        assert_eq!(file.to_string(), yaml);
+        assert_file_cst_ok(&file);
+        let violations: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| (v.message, v.location.unwrap()))
+            .collect();
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|(message, at)| (message.to_string(), at.to_string()))
+            .collect();
+        assert_eq!(violations, expected, "{yaml:?}");
+    }
+}

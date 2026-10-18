@@ -1038,6 +1038,18 @@ impl Mapping {
         }
         if self.is_flow_style() {
             Self::separate_adjacent_value(&new_key);
+            // An omitted value directly follows its key, ahead of any line
+            // break the key was given.
+            let omitted = new_key
+                .siblings_with_tokens(rowan::Direction::Next)
+                .skip(1)
+                .find(|c| !matches!(c.kind(), SyntaxKind::NEWLINE | SyntaxKind::INDENT))
+                .and_then(|c| c.into_node())
+                .filter(|v| v.kind() == SyntaxKind::VALUE && v.text().is_empty());
+            if let Some(value) = omitted {
+                value.detach();
+                insert_children(node, new_key.index() + 1, vec![value.into()]);
+            }
         }
         crate::nodes::separate_key_from_colon(node);
         new_key
@@ -1138,7 +1150,8 @@ impl Mapping {
     ///
     /// In a flow mapping the `?` sits inside KEY, so it carries over, as do
     /// any tokens after the key's content. The line break before block
-    /// content (`?\n- a`) goes, as the new key is written inline.
+    /// content (`?\n- a`) goes, as the new key is written inline, and the
+    /// one after an empty key (`?\n}`) follows the new key.
     ///
     /// A comment before the old content stays on its line, or follows the
     /// new KEY if the content was on that line too.
@@ -1172,6 +1185,9 @@ impl Mapping {
                 .count();
             for t in &after[..ws] {
                 builder.token(t.kind().into(), t.text());
+            }
+            if ws == 0 {
+                builder.token(SyntaxKind::WHITESPACE.into(), " ");
             }
             rest = &after[ws..];
         }
@@ -1211,6 +1227,16 @@ impl Mapping {
         if let Some(comment) = comment_after {
             builder.token(SyntaxKind::WHITESPACE.into(), "  ");
             builder.token(SyntaxKind::COMMENT.into(), &comment);
+        }
+        // The line break after an empty key now follows the new one.
+        let old_empty = old.children().next().is_some_and(|n| n.text().is_empty());
+        if old_empty && comment.is_none() {
+            for t in rest
+                .iter()
+                .filter(|t| matches!(t.kind(), SyntaxKind::NEWLINE | SyntaxKind::INDENT))
+            {
+                builder.token(t.kind().into(), t.text());
+            }
         }
     }
 

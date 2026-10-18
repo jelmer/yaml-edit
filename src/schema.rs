@@ -1638,4 +1638,212 @@ value: 42
             )])
         );
     }
+
+    #[test]
+    fn test_coercion_failed_error() {
+        let error = ValidationError::coercion_failed(
+            "root.a",
+            "bools",
+            ScalarType::String,
+            vec![ScalarType::Boolean],
+        );
+        assert_eq!(
+            error.kind,
+            ValidationErrorKind::CoercionFailed {
+                from_type: ScalarType::String,
+                to_types: vec![ScalarType::Boolean],
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "Validation error at root.a: cannot coerce String to any of [Boolean] in bools schema"
+        );
+    }
+
+    #[test]
+    fn test_custom_constraint_failed_display() {
+        let error = ValidationError::custom_constraint_failed("root.p", "ports", "range", "80");
+        assert_eq!(
+            error.to_string(),
+            "Validation error at root.p: custom constraint 'range' failed for value '80'"
+        );
+    }
+
+    #[test]
+    fn test_custom_validation_result_predicates() {
+        assert!(CustomValidationResult::Valid.is_valid());
+        assert!(!CustomValidationResult::Valid.is_invalid());
+        let invalid = CustomValidationResult::invalid("c", "r");
+        assert!(!invalid.is_valid());
+        assert!(invalid.is_invalid());
+        assert_eq!(
+            invalid,
+            CustomValidationResult::Invalid {
+                constraint: "c".to_string(),
+                reason: "r".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_custom_schema_debug() {
+        let schema = CustomSchema::new("dbg")
+            .allow_types(&[ScalarType::String, ScalarType::String, ScalarType::Integer])
+            .allow_type(ScalarType::Integer)
+            .with_validator(ScalarType::String, |_, _| CustomValidationResult::Valid)
+            .strict();
+        assert_eq!(
+            format!("{schema:?}"),
+            "CustomSchema { name: \"dbg\", allowed_types: [String, Integer], allow_coercion: false, validators: \"<1 validators>\" }"
+        );
+    }
+
+    #[test]
+    fn test_custom_schema_equality_and_types() {
+        let a = Schema::Custom(CustomSchema::new("same").allow_type(ScalarType::String));
+        let b = Schema::Custom(CustomSchema::new("same").allow_type(ScalarType::Integer));
+        let c = Schema::Custom(CustomSchema::new("other"));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, Schema::Core);
+        assert_eq!(b.allowed_scalar_types(), vec![ScalarType::Integer]);
+        assert!(b.allows_scalar_type(ScalarType::Integer));
+        assert!(!b.allows_scalar_type(ScalarType::String));
+    }
+
+    #[test]
+    fn test_custom_schema_validate_scalar() {
+        let schema = CustomSchema::new("ints")
+            .allow_type(ScalarType::Integer)
+            .strict();
+        assert_eq!(schema.validate_scalar(" 42 ", "p"), Ok(()));
+        assert_eq!(
+            schema.validate_scalar("true", "p"),
+            Err(ValidationError::type_not_allowed(
+                "p",
+                "ints",
+                ScalarType::Boolean,
+                vec![ScalarType::Integer],
+            ))
+        );
+    }
+
+    #[test]
+    fn test_custom_schema_coercion() {
+        let validator =
+            SchemaValidator::custom(CustomSchema::new("bools").allow_type(ScalarType::Boolean));
+        assert_eq!(
+            validator.validate(&create_test_document("a: yes\nb: 0\n")),
+            Ok(())
+        );
+        let document = create_test_document("a: hello\n");
+        let expected = Err(vec![ValidationError::coercion_failed(
+            "root.a",
+            "bools",
+            ScalarType::String,
+            vec![ScalarType::Boolean],
+        )]);
+        assert_eq!(validator.validate(&document), expected);
+        assert_eq!(validator.can_coerce(&document), expected);
+    }
+
+    #[test]
+    fn test_custom_schema_can_coerce_skips_validators() {
+        let validator = SchemaValidator::custom(
+            CustomSchema::new("never")
+                .allow_type(ScalarType::String)
+                .with_validator(ScalarType::String, |_, _| {
+                    CustomValidationResult::invalid("never", "always fails")
+                })
+                .strict(),
+        );
+        let document = create_test_document("a: 42\n");
+        assert_eq!(
+            validator.validate(&document),
+            Err(vec![ValidationError::type_not_allowed(
+                "root.a",
+                "never",
+                ScalarType::Integer,
+                vec![ScalarType::String],
+            )])
+        );
+        assert_eq!(validator.can_coerce(&document), Ok(()));
+        let document = create_test_document("a: x\n");
+        assert_eq!(
+            validator.validate(&document),
+            Err(vec![ValidationError::custom_constraint_failed(
+                "root.a",
+                "never",
+                "never: always fails",
+                "x",
+            )])
+        );
+        assert_eq!(validator.can_coerce(&document), Ok(()));
+    }
+
+    #[test]
+    fn test_custom_schema_can_coerce_tagged() {
+        let validator =
+            SchemaValidator::custom(CustomSchema::new("strings").allow_type(ScalarType::String));
+        let document = create_test_document("a: !!timestamp 2001-01-01\n");
+        assert_eq!(
+            validator.can_coerce(&document),
+            Err(vec![ValidationError::type_not_allowed(
+                "root.a",
+                "strings",
+                ScalarType::Timestamp,
+                vec![ScalarType::String],
+            )])
+        );
+    }
+
+    #[test]
+    fn test_root_scalar_and_sequence_paths() {
+        let failsafe = SchemaValidator::failsafe().strict();
+        let int_error = |path: &str| {
+            ValidationError::type_not_allowed(
+                path,
+                "failsafe",
+                ScalarType::Integer,
+                vec![ScalarType::String],
+            )
+        };
+        assert_eq!(
+            failsafe.validate(&create_test_document("5\n")),
+            Err(vec![int_error("root")])
+        );
+        assert_eq!(
+            failsafe.validate(&create_test_document("- x\n- 1\n- [2]\n")),
+            Err(vec![int_error("root[1]"), int_error("root[2][0]")])
+        );
+        assert_eq!(
+            failsafe.can_coerce(&create_test_document("- x\n- {a: 1}\n")),
+            Err(vec![int_error("root[1].a")])
+        );
+    }
+
+    #[test]
+    fn test_standard_schema_coerces_untagged_scalars() {
+        let document = create_test_document("a: 1\nb: [true, ~]\nc: {d: 2001-01-01}\n");
+        assert_eq!(SchemaValidator::failsafe().validate(&document), Ok(()));
+        assert_eq!(SchemaValidator::failsafe().can_coerce(&document), Ok(()));
+        let document = create_test_document("a: [!!timestamp 2001-01-01]\nb: {c: !!regex x}\n");
+        assert_eq!(
+            SchemaValidator::json().can_coerce(&document),
+            Err(vec![
+                ValidationError::type_not_allowed(
+                    "root.a[0]",
+                    "json",
+                    ScalarType::Timestamp,
+                    json_types(),
+                ),
+                ValidationError::type_not_allowed(
+                    "root.b.c",
+                    "json",
+                    ScalarType::Regex,
+                    json_types(),
+                ),
+            ])
+        );
+    }
 }

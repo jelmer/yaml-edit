@@ -1090,7 +1090,7 @@ fn undo_child_on_err(
     let result = write();
     if result.is_err() {
         let restored = crate::yaml::SyntaxNode::new_root_mut(saved);
-        container.splice_children(child..child + 1, vec![restored.into()]);
+        crate::nodes::replace_children(container, child..child + 1, vec![restored.into()]);
     }
     result
 }

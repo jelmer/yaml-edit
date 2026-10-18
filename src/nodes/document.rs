@@ -495,7 +495,7 @@ impl Document {
             new_children.push(crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into());
         }
         new_children.push(root.into());
-        self.0.splice_children(index..index, new_children);
+        super::insert_children(&self.0, index, new_children);
     }
 
     /// Get the scalar value for `key` as a decoded `String`.

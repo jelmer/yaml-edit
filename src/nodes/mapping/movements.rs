@@ -5,7 +5,7 @@ use super::{Mapping, MappingEntry};
 use crate::lex::SyntaxKind;
 use crate::nodes::trivia::Slot;
 use crate::nodes::trivia::{self, line_end, FlowSeparator};
-use crate::nodes::{fresh_token, Lang, SyntaxNode, SyntaxToken};
+use crate::nodes::{fresh_token, replace_children, Lang, SyntaxNode, SyntaxToken};
 use rowan::ast::AstNode;
 
 type Element = rowan::SyntaxElement<Lang>;
@@ -262,7 +262,7 @@ impl Mapping {
                 .iter()
                 .map(|(kind, text)| rowan::NodeOrToken::Token(fresh_token(*kind, text)))
                 .collect();
-            crate::nodes::replace_children(entry, end - own.len()..end, tokens);
+            replace_children(entry, end - own.len()..end, tokens);
         }
     }
 

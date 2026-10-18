@@ -192,7 +192,7 @@ pub(crate) fn move_leading_lines_out(collection: &SyntaxNode) {
     );
     crate::nodes::replace_children(collection, 0..leading.len(), vec![]);
     let at = collection.index();
-    parent.splice_children(at..at, lines);
+    crate::nodes::insert_children(&parent, at, lines);
 }
 
 /// Whether `indent` starts a comment line.
@@ -526,11 +526,12 @@ impl YamlFile {
             // the first document moves up to the stream ahead of the directive.
             if let Some(bom) = leading_bom(doc.syntax()) {
                 bom.detach();
-                self.0.splice_children(0..0, vec![bom.into()]);
+                crate::nodes::insert_children(&self.0, 0, vec![bom.into()]);
             }
             if !has_child_token(doc.syntax(), |k| k == SyntaxKind::DOC_START) {
-                doc.syntax().splice_children(
-                    0..0,
+                crate::nodes::insert_children(
+                    doc.syntax(),
+                    0,
                     vec![
                         crate::nodes::fresh_token(SyntaxKind::DOC_START, "---").into(),
                         crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into(),
@@ -546,8 +547,9 @@ impl YamlFile {
         let directive_node = SyntaxNode::new_root_mut(builder.finish());
 
         let index = usize::from(leading_bom(&self.0).is_some());
-        self.0.splice_children(
-            index..index,
+        crate::nodes::insert_children(
+            &self.0,
+            index,
             vec![
                 directive_node.into(),
                 crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into(),
@@ -584,8 +586,9 @@ impl YamlFile {
         }
         if needs_start && !has_child_token(document.syntax(), |k| k == SyntaxKind::DOC_START) {
             let index = usize::from(bom.is_some());
-            document.syntax().splice_children(
-                index..index,
+            crate::nodes::insert_children(
+                document.syntax(),
+                index,
                 vec![
                     crate::nodes::fresh_token(SyntaxKind::DOC_START, "---").into(),
                     crate::nodes::fresh_token(SyntaxKind::NEWLINE, "\n").into(),
@@ -617,7 +620,7 @@ impl YamlFile {
             // Directives or comments only: the marker belongs at the start of
             // the stream, which needs only one.
             _ if leading_bom(&self.0).is_some() => {}
-            _ => self.0.splice_children(0..0, vec![bom.into()]),
+            _ => crate::nodes::insert_children(&self.0, 0, vec![bom.into()]),
         }
     }
 
@@ -4759,5 +4762,19 @@ server:
             "tagged block scalar value should include 'wrapped': {:?}",
             value.to_string()
         );
+    }
+
+    #[test]
+    fn test_edits_write_cr_line_breaks() {
+        let file = YamlFile::from_str("a:\r- 1\r").unwrap();
+        let doc = file.document().unwrap();
+        doc.as_mapping()
+            .unwrap()
+            .get_sequence("a")
+            .unwrap()
+            .push("b");
+        file.add_directive("%YAML 1.2");
+        file.push_document(Document::from_str("d: 4\n").unwrap());
+        crate::debug::assert_edited(&file, "%YAML 1.2\r---\ra:\r- 1\r- b\r---\rd: 4\r");
     }
 }

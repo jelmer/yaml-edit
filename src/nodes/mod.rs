@@ -274,8 +274,9 @@ pub(crate) fn insert_header_comment(value: &SyntaxNode, ws: &str, comment: &str)
         .expect("a block scalar's header ends with a line break");
     let parent = header_end.parent().expect("a token has a parent");
     let idx = header_end.index();
-    parent.splice_children(
-        idx..idx,
+    insert_children(
+        &parent,
+        idx,
         vec![
             fresh_token(SyntaxKind::WHITESPACE, ws).into(),
             fresh_token(SyntaxKind::COMMENT, comment).into(),
@@ -301,7 +302,11 @@ pub(crate) fn separate_key_from_colon(entry: &SyntaxNode) {
         .is_some_and(|n| n.kind() == SyntaxKind::COLON)
     {
         let i = key.index() + 1;
-        entry.splice_children(i..i, vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()]);
+        insert_children(
+            entry,
+            i,
+            vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()],
+        );
     }
 }
 
@@ -329,8 +334,9 @@ pub(crate) fn has_child_token(parent: &SyntaxNode, pred: impl Fn(SyntaxKind) -> 
 pub(crate) fn replace_children(
     parent: &SyntaxNode,
     range: std::ops::Range<usize>,
-    children: Vec<rowan::NodeOrToken<SyntaxNode, SyntaxToken>>,
+    mut children: Vec<rowan::NodeOrToken<SyntaxNode, SyntaxToken>>,
 ) {
+    match_line_breaks(parent, None, &mut children);
     for i in range.clone().rev() {
         match parent
             .children_with_tokens()
@@ -344,19 +350,90 @@ pub(crate) fn replace_children(
     parent.splice_children(range.start..range.start, children);
 }
 
+/// Insert `children` into `parent`'s child list at `at`.
+pub(crate) fn insert_children(
+    parent: &SyntaxNode,
+    at: usize,
+    children: Vec<rowan::NodeOrToken<SyntaxNode, SyntaxToken>>,
+) {
+    replace_children(parent, at..at, children);
+}
+
 /// Append `children` at the end of `parent`'s child list.
 pub(crate) fn append_children(
     parent: &SyntaxNode,
     children: Vec<rowan::NodeOrToken<SyntaxNode, SyntaxToken>>,
 ) {
-    let end = parent.children_with_tokens().count();
-    parent.splice_children(end..end, children);
+    insert_children(parent, parent.children_with_tokens().count(), children);
+}
+
+/// Rewrite the `\n` line breaks in `elements`, about to go into the tree
+/// `node` is in, to the document's own line break.
+///
+/// Builders and fresh tokens always write `\n`; in a document using `\r\n`
+/// or `\r` they would mix line endings. The document's line break is its
+/// first one, as for the lexer's mixed line ending check, leaving out any
+/// inside `skip`. A document without one keeps `\n`.
+fn match_line_breaks(
+    node: &SyntaxNode,
+    skip: Option<&SyntaxNode>,
+    elements: &mut [rowan::NodeOrToken<SyntaxNode, SyntaxToken>],
+) {
+    let tokens = |e: &rowan::NodeOrToken<SyntaxNode, SyntaxToken>| {
+        let tokens: Vec<_> = match e {
+            rowan::NodeOrToken::Node(n) => n
+                .descendants_with_tokens()
+                .filter_map(|c| c.into_token())
+                .collect(),
+            rowan::NodeOrToken::Token(t) => vec![t.clone()],
+        };
+        tokens
+            .into_iter()
+            .filter(|t| t.text().contains('\n') && !t.text().contains('\r'))
+            .collect::<Vec<_>>()
+    };
+    let to_rewrite: Vec<_> = elements.iter().map(tokens).collect();
+    if to_rewrite.iter().all(Vec::is_empty) {
+        return;
+    }
+    let root = node.ancestors().last().expect("a node is its own ancestor");
+    let skip = skip.map(|n| n.text_range());
+    let Some(line_break) = root
+        .descendants_with_tokens()
+        .filter_map(|c| c.into_token())
+        .find(|t| {
+            t.kind() == SyntaxKind::NEWLINE
+                && !skip.is_some_and(|r| r.contains_range(t.text_range()))
+        })
+        .map(|t| t.text().to_string())
+        .filter(|b| b != "\n")
+    else {
+        return;
+    };
+    for (element, tokens) in elements.iter_mut().zip(to_rewrite) {
+        for token in tokens {
+            let fresh = fresh_token(token.kind(), &token.text().replace('\n', &line_break));
+            match element {
+                rowan::NodeOrToken::Token(_) => *element = fresh.into(),
+                rowan::NodeOrToken::Node(_) => {
+                    let parent = token.parent().expect("a token in a node has a parent");
+                    let i = token.index();
+                    parent.splice_children(i..i + 1, vec![fresh.into()]);
+                }
+            }
+        }
+    }
 }
 
 /// Lay out the lines after `entry`, a block collection entry just
 /// inserted, so that a block scalar its value ends in does not take them
 /// in.
 pub(crate) fn settle_lines_after_inserted_entry(entry: &SyntaxNode) {
+    // TODO: have sequence.rs insert through insert_children like the rest,
+    // so that this is not needed and the line breaks it adds elsewhere (in
+    // insert at the head, after a comment, extend_with, set) match too.
+    let mut elements = [rowan::NodeOrToken::Node(entry.clone())];
+    match_line_breaks(entry, Some(entry), &mut elements);
     move_blank_lines_ahead_of_kept_scalar(entry);
     replaced_value::settle_lines_after_block_scalar(entry);
 }
@@ -431,7 +508,7 @@ fn move_blank_lines_ahead_of_kept_scalar(entry: &SyntaxNode) {
     }
     let parent = at.parent().expect("an inserted entry is in a document");
     let index = at.index();
-    parent.splice_children(index..index, moved);
+    insert_children(&parent, index, moved);
 }
 
 /// Whether the last node `entry` holds is a kept (`|+`, `>+`) block scalar.

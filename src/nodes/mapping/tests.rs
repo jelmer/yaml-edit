@@ -2111,5 +2111,28 @@ fn test_set_nested_with_cr_line_breaks() {
     let doc = crate::yaml::Document::from_str("x: 1\ra:\r  b: 1\r").unwrap();
     let mapping = doc.as_mapping().unwrap();
     mapping.get_mapping("a").unwrap().set("d", 4);
-    assert_eq!(doc.to_string(), "x: 1\ra:\r  b: 1\r  d: 4\n");
+    assert_eq!(doc.to_string(), "x: 1\ra:\r  b: 1\r  d: 4\r");
+}
+
+#[test]
+fn test_set_writes_crlf_line_breaks() {
+    use crate::builder::MappingBuilder;
+    let file = YamlFile::from_str("a: 1\r\n").unwrap();
+    let doc = file.document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    mapping.set("b", MappingBuilder::new().pair("c", 1).build_document());
+    mapping.set("d", ScalarValue::literal("x\ny\n"));
+    mapping.set("e", ScalarValue::single_quoted("x\ny"));
+    crate::debug::assert_edited(
+        &file,
+        "a: 1\r\nb:\r\n  c: 1\r\nd: |\r\n  x\r\n  y\r\ne: 'x\r\n\r\n  y'\r\n",
+    );
+}
+
+#[test]
+fn test_set_without_line_breaks_writes_lf() {
+    let file = YamlFile::from_str("a: 1").unwrap();
+    file.document().unwrap().as_mapping().unwrap().set("b", 2);
+    // The input's last line stays unterminated.
+    crate::debug::assert_edited(&file, "a: 1\nb: 2");
 }

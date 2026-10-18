@@ -1127,6 +1127,10 @@ ordered: !!omap [first: *list]
             ("{[q] x: v}\n", "x"),
             ("? a\n 5b: 1\n", "5b: 1\n"),
             ("a: &x [q] y\nb: *x\n", "y"),
+            ("k:\n  [q] x\n  y\n", "x\n  y"),
+            ("k:\n  [q]\n  y\n", "y"),
+            ("- [q] x\n  y\n", "x\n  y"),
+            ("[q]\n y\n", "y"),
         ] {
             let expected = ResolveError::ExtraNode {
                 node: extra.to_string(),

@@ -999,18 +999,14 @@ impl Parser {
         self.builder.finish_node(); // SCALAR
     }
 
-    /// Keep plain scalar content after a complete node on its line, as in
-    /// `[q] x` or `*a x: v`, as a second node next to it.
+    /// Keep plain scalar content after a complete key node on its line, as
+    /// in `[q] x: v` or `*a x: v`, as a second node of the key.
     ///
-    /// It is not part of a valid node, but the validator reports it, rather
-    /// than the parser ending the node before it and stranding the rest of
-    /// the line: in a key it would start another entry on the same line,
-    /// and in a value it would be left after the document. Block context
-    /// only: a flow collection has its own separators.
-    pub(super) fn parse_content_after_node(&mut self) {
-        if self.in_flow_context {
-            return;
-        }
+    /// It is not part of a valid key, but the validator reports it, rather
+    /// than the parser ending the key before it and starting another entry
+    /// on the same line. An implicit key cannot span lines, so the content
+    /// is taken from this line only.
+    fn parse_content_after_key_node(&mut self) {
         let whitespace = usize::from(self.current() == Some(SyntaxKind::WHITESPACE));
         if self.peek_kind(whitespace).is_some_and(is_plain_scalar_kind) {
             if whitespace == 1 {
@@ -1018,6 +1014,48 @@ impl Parser {
             }
             self.parse_block_key_scalar();
         }
+    }
+
+    /// Keep plain scalar content after a complete node, as in `[q] x` or
+    /// `*a x`, as a second node next to it in the same slot.
+    ///
+    /// It is not part of a valid node, but the validator reports it, rather
+    /// than the parser ending the node before it and leaving the rest after
+    /// the document. The content is read as the plain scalar it would be in
+    /// place of the node, so it may continue on more indented lines, and it
+    /// may also start on such a line: `k:\n  [q]\n  y\n`. Block context
+    /// only: a flow collection has its own separators.
+    pub(super) fn parse_content_after_node(&mut self) {
+        if self.in_flow_context {
+            return;
+        }
+        let whitespace = usize::from(self.current() == Some(SyntaxKind::WHITESPACE));
+        let on_next_line = self.peek_kind(whitespace) == Some(SyntaxKind::NEWLINE)
+            && self.is_plain_scalar_continuation(whitespace, self.plain_scalar_indent())
+            && self
+                .upcoming_tokens()
+                .find(|kind| {
+                    !matches!(
+                        kind,
+                        SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE
+                    )
+                })
+                .is_some_and(is_plain_scalar_kind);
+        if on_next_line {
+            while matches!(
+                self.current(),
+                Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE)
+            ) {
+                self.bump();
+            }
+        } else if self.peek_kind(whitespace).is_some_and(is_plain_scalar_kind) {
+            if whitespace == 1 {
+                self.bump();
+            }
+        } else {
+            return;
+        }
+        self.parse_scalar();
     }
 
     fn parse_mapping_key_value_pair(&mut self, base_indent: usize) {
@@ -1031,7 +1069,7 @@ impl Parser {
         self.builder.start_node(SyntaxKind::KEY.into());
 
         self.parse_block_key_node();
-        self.parse_content_after_node();
+        self.parse_content_after_key_node();
         self.builder.finish_node(); // KEY
 
         self.skip_whitespace();
@@ -1379,6 +1417,69 @@ DOCUMENT
         WHITESPACE: \" \"
         SCALAR
           STRING: \"x\"
+      NEWLINE: \"\\\\n\"
+"
+        );
+    }
+
+    /// Content after a flow collection value may continue on, or start on,
+    /// a more indented line, as a plain scalar would.
+    #[test]
+    fn test_content_after_flow_value_on_later_lines() {
+        let parsed = YamlFile::from_str("k:\n  [q] x\n  y\n").unwrap();
+        assert_eq!(
+            crate::debug::tree_to_string(rowan::ast::AstNode::syntax(&parsed)),
+            "\
+DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"k\"
+      COLON: \":\"
+      VALUE
+        NEWLINE: \"\\\\n\"
+        INDENT: \"  \"
+        SEQUENCE
+          LEFT_BRACKET: \"[\"
+          SEQUENCE_ENTRY
+            SCALAR
+              STRING: \"q\"
+          RIGHT_BRACKET: \"]\"
+        WHITESPACE: \" \"
+        SCALAR
+          STRING: \"x\"
+          NEWLINE: \"\\\\n\"
+          INDENT: \"  \"
+          STRING: \"y\"
+      NEWLINE: \"\\\\n\"
+"
+        );
+
+        let parsed = YamlFile::from_str("k:\n  [q]\n  y\n").unwrap();
+        assert_eq!(
+            crate::debug::tree_to_string(rowan::ast::AstNode::syntax(&parsed)),
+            "\
+DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"k\"
+      COLON: \":\"
+      VALUE
+        NEWLINE: \"\\\\n\"
+        INDENT: \"  \"
+        SEQUENCE
+          LEFT_BRACKET: \"[\"
+          SEQUENCE_ENTRY
+            SCALAR
+              STRING: \"q\"
+          RIGHT_BRACKET: \"]\"
+        NEWLINE: \"\\\\n\"
+        INDENT: \"  \"
+        SCALAR
+          STRING: \"y\"
       NEWLINE: \"\\\\n\"
 "
         );

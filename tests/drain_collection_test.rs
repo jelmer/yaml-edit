@@ -117,6 +117,34 @@ fn clear_top_level_sequence() {
     check_edit("---\n- 1\n", clear, "---\n[]\n");
 }
 
+/// Refilling a drained root collection takes the lines after it back from
+/// the document, up to any `...`.
+#[test]
+fn refill_drained_root_collection_takes_lines_after_it() {
+    let refill_mapping = |d: &Document| {
+        let m = d.as_mapping().unwrap();
+        m.remove("a");
+        m.set("b", 2);
+    };
+    check_edit("a: 1\n# c\n", refill_mapping, "b: 2\n# c\n");
+    check_edit("a: 1\n# c", refill_mapping, "b: 2\n# c");
+    check_edit("!!map\na: 1\n# c\n", refill_mapping, "!!map\nb: 2\n# c\n");
+    check_edit(
+        "a: 1\n# c\n  # d\n\n...\n",
+        refill_mapping,
+        "b: 2\n# c\n  # d\n\n...\n",
+    );
+    check_edit(
+        "- 1\n# c\n",
+        |d| {
+            let s = d.as_sequence().unwrap();
+            s.remove(0);
+            s.push(2);
+        },
+        "- 2\n# c\n",
+    );
+}
+
 #[test]
 fn edit_through_handle_to_drained_sequence_item() {
     check_edit(

@@ -381,9 +381,9 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 .children()
                 .filter(|c| c.kind() == SyntaxKind::VALUE)
                 .collect();
-            if values.len() > 1 {
+            if values.len() != 1 {
                 return Err(format!(
-                    "MAPPING_ENTRY should have at most 1 VALUE, found {}",
+                    "MAPPING_ENTRY should have exactly 1 VALUE, found {}",
                     values.len()
                 ));
             }
@@ -676,6 +676,33 @@ mod tests {
                     .to_string()
             )
         );
+    }
+
+    /// The parser gives an entry whose value was omitted, or whose `:` is
+    /// missing, an implicit null VALUE, so one without is malformed.
+    #[test]
+    fn test_validate_tree_entry_without_value() {
+        let file = YamlFile::parse("a:\n<<\n").tree();
+        assert_eq!(validate_tree(file.syntax()), Ok(()));
+        for entry in file
+            .syntax()
+            .descendants()
+            .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+            .collect::<Vec<_>>()
+        {
+            let value = entry
+                .children()
+                .find(|c| c.kind() == SyntaxKind::VALUE)
+                .unwrap();
+            let index = value.index();
+            value.detach();
+            assert_eq!(
+                validate_tree(file.syntax()),
+                Err("MAPPING_ENTRY should have exactly 1 VALUE, found 0".to_string())
+            );
+            crate::nodes::insert_children(&entry, index, vec![value.into()]);
+            assert_eq!(file.syntax().to_string(), "a:\n<<\n");
+        }
     }
 
     #[test]

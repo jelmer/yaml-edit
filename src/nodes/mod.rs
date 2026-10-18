@@ -149,6 +149,8 @@
 //!                                                 NEWLINE }
 //! {? : v}    (flow explicit key)  KEY { QUESTION, WHITESPACE,
 //!                                       SCALAR { NULL "" } }, COLON, ...
+//! <<\n       (missing `:`, error) KEY ..., COLON "",
+//!                                 VALUE { SCALAR { NULL "" } }, NEWLINE
 //! - \n       (block sequence)     SEQUENCE_ENTRY { DASH, WHITESPACE,
 //!                                                  SCALAR { NULL "" }, NEWLINE }
 //! [a, , c]   (flow sequence)      SEQUENCE_ENTRY { SCALAR { NULL "" }, COMMA, ... }

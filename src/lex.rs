@@ -748,7 +748,13 @@ impl<'a, 'c> LexState<'a, 'c> {
             // A flow indicator inside a block scalar's body is literal
             // text, so it neither opens nor closes a collection. Read the
             // rest of the line as the scalar content it is.
-            '[' | ']' | '{' | '}' | ','
+            //
+            // The same goes for a `#`: the body is taken verbatim, so
+            // `- >\n  # detected\n` holds the content `# detected` rather
+            // than a comment (test suite 4QFQ). A line that does not reach
+            // the body's column has left it, where a comment is a comment
+            // again (T26H).
+            '[' | ']' | '{' | '}' | ',' | '#'
                 if in_block_scalar_body(self.block_scalar, self.line_start) =>
             {
                 self.push_plain_scalar(start_idx, start_idx + 1, true);
@@ -872,14 +878,6 @@ impl<'a, 'c> LexState<'a, 'c> {
             // `:#: v` is a mapping keyed `:#`, as saphyr reads it. Continue
             // the scalar rather than starting a comment, which the catch-all
             // arm already does for `a#: v`.
-            // A `#` inside a block scalar's body is literal text: the body
-            // is taken verbatim, so `- >\n  # detected\n` holds the content
-            // `# detected` rather than a comment (test suite 4QFQ). A line
-            // that does not reach the body's column has left it, where a
-            // comment is a comment again (T26H).
-            '#' if in_block_scalar_body(self.block_scalar, self.line_start) => {
-                self.push_plain_scalar(start_idx, start_idx + 1, true);
-            }
             // A `#` not preceded by whitespace is scalar content wherever it
             // sits, including a continuation line whose previous token is the
             // INDENT (`safe: a!"#$%\n     !"#$%` -- test suite FBC9).

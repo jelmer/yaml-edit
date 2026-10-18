@@ -324,9 +324,9 @@ pub enum Schema {
 impl PartialEq for Schema {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Schema::Failsafe, Schema::Failsafe) => true,
-            (Schema::Json, Schema::Json) => true,
-            (Schema::Core, Schema::Core) => true,
+            (Schema::Failsafe, Schema::Failsafe)
+            | (Schema::Json, Schema::Json)
+            | (Schema::Core, Schema::Core) => true,
             (Schema::Custom(a), Schema::Custom(b)) => a.name == b.name,
             _ => false,
         }

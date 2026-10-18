@@ -1232,9 +1232,9 @@ impl ScalarValue {
     fn rendered_tag(&self) -> Option<&str> {
         self.tag.as_deref().or(match self.scalar_type {
             #[cfg(feature = "base64")]
-            ScalarType::Binary => Some("!!binary"),
-            ScalarType::Timestamp => Some("!!timestamp"),
-            ScalarType::Regex => Some("!!regex"),
+            ScalarType::Binary => Some(crate::tag::BINARY),
+            ScalarType::Timestamp => Some(crate::tag::TIMESTAMP),
+            ScalarType::Regex => Some(crate::tag::REGEX),
             _ => None,
         })
     }

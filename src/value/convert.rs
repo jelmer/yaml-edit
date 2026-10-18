@@ -18,12 +18,10 @@ fn key_identity(
     key: &YamlNode,
     registry: Option<&AnchorRegistry>,
 ) -> Result<NodeIdentity, ResolveError> {
-    let identity =
-        crate::as_yaml::node_identity(key.syntax(), registry).map_err(|e| match (registry, e) {
-            (None, AliasError::Undefined { alias }) => ResolveError::UnresolvedAlias { alias },
-            (_, e) => e.into(),
-        })?;
-    Ok(identity.expect("a YamlNode is a value node"))
+    crate::as_yaml::key_identity(key, registry).map_err(|e| match (registry, e) {
+        (None, AliasError::Undefined { alias }) => ResolveError::UnresolvedAlias { alias },
+        (_, e) => e.into(),
+    })
 }
 
 /// The node `alias` refers to through `registry`, as the anchored node

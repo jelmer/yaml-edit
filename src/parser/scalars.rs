@@ -507,13 +507,10 @@ impl Parser<'_> {
                 {
                     return None
                 }
-                // An explicit key opens a mapping without a colon on the line.
-                SyntaxKind::QUESTION => return deep_enough(indent).then_some(indent),
-                // A flow collection is a complete node on its own.
-                SyntaxKind::LEFT_BRACKET | SyntaxKind::LEFT_BRACE => {
-                    return deep_enough(indent).then_some(indent)
-                }
-                // Anything else opens a plain scalar, which is a valid
+                // Anything else is the body if it is deep enough: an
+                // explicit key opens a mapping without a colon on the line,
+                // a flow collection is a complete node on its own, and
+                // anything else opens a plain scalar, which is a valid
                 // tagged body whether or not a colon makes it a mapping.
                 _ => return deep_enough(indent).then_some(indent),
             }

@@ -49,7 +49,7 @@
 //! }
 //! ```
 
-use crate::as_yaml::{AsYaml, NodeIdentity};
+use crate::as_yaml::{key_identity, AsYaml, NodeIdentity};
 use crate::lex::SyntaxKind;
 use crate::value::YamlValue;
 use crate::yaml::SyntaxNode;
@@ -469,16 +469,6 @@ pub(crate) fn is_merge_key(key: &crate::as_yaml::YamlNode) -> bool {
     key.as_scalar().is_some_and(|s| s.value() == "<<")
 }
 
-/// The identity of `key` as a mapping key, following aliases through
-/// `registry`; see [`NodeIdentity`].
-fn key_identity(
-    key: &crate::as_yaml::YamlNode,
-    registry: &AnchorRegistry,
-) -> Result<NodeIdentity, AliasError> {
-    Ok(crate::as_yaml::node_identity(key.syntax(), Some(registry))?
-        .expect("a YamlNode is a value node"))
-}
-
 /// A view over a [`Mapping`](crate::yaml::Mapping) that transparently expands
 /// alias references (`*name`) and merge keys (`<<:`).
 ///
@@ -728,7 +718,7 @@ fn merged_entries(
 ) -> Result<Vec<MergedEntry>, MergeError> {
     let mut entries: Vec<MergedEntry> = Vec::new();
     for (key, value) in base.iter().filter(|(k, _)| !is_merge_key(k)) {
-        let identity = key_identity(&key, registry)?;
+        let identity = key_identity(&key, Some(registry))?;
         entries.push((identity, key, resolve_alias_node(value, registry)?));
     }
     for source in merge_sources(base, registry)? {
@@ -736,7 +726,7 @@ fn merged_entries(
             if is_merge_key(&key) {
                 continue;
             }
-            let identity = key_identity(&key, registry)?;
+            let identity = key_identity(&key, Some(registry))?;
             if entries.iter().any(|(k, _, _)| *k == identity) {
                 continue;
             }

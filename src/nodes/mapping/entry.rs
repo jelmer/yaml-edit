@@ -398,7 +398,7 @@ impl MappingEntry {
             return;
         };
         // The key's line break, if it has one, now ends the `:` line.
-        let ends_line = self.0.text().to_string().ends_with('\n');
+        let ends_line = self.0.text().to_string().ends_with(['\n', '\r']);
         let mut tokens = Vec::new();
         if !ends_line {
             tokens.push(fresh_token(SyntaxKind::NEWLINE, "\n"));

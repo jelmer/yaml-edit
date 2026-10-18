@@ -2591,3 +2591,33 @@ rbi:
     let output = parsed.to_string();
     assert_eq!(output, yaml);
 }
+
+#[test]
+fn test_verbatim_collection_tags_convert() {
+    use std::collections::BTreeSet;
+    use yaml_edit::YamlValue;
+    // `!<tag:yaml.org,2002:set>` is the tag `!!set` abbreviates.
+    let value = YamlValue::parse_raw("!<tag:yaml.org,2002:set> {x, y}\n").unwrap();
+    assert_eq!(
+        value,
+        YamlValue::Set(BTreeSet::from(["x".to_string(), "y".to_string()]))
+    );
+    let value = YamlValue::parse_raw("!<tag:yaml.org,2002:omap> [b: 1]\n").unwrap();
+    assert_eq!(
+        value,
+        YamlValue::OrderedMapping(vec![("b".to_string(), YamlValue::from(1))])
+    );
+    let value = YamlValue::parse_raw("!<tag:yaml.org,2002:pairs> [b: 1, b: 2]\n").unwrap();
+    assert_eq!(
+        value,
+        YamlValue::Pairs(vec![
+            ("b".to_string(), YamlValue::from(1)),
+            ("b".to_string(), YamlValue::from(2))
+        ])
+    );
+    let value = YamlValue::parse_raw("!!omap [!<tag:yaml.org,2002:map> {b: 1}]\n").unwrap();
+    assert_eq!(
+        value,
+        YamlValue::OrderedMapping(vec![("b".to_string(), YamlValue::from(1))])
+    );
+}

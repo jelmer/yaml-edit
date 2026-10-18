@@ -26,6 +26,7 @@ use crate::nodes::{
     has_child_token, in_flow_collection, is_block_scalar, is_quoted_scalar,
     starts_a_flow_collection,
 };
+use crate::tag;
 use crate::yaml::{Document, SyntaxNode};
 use rowan::ast::AstNode;
 use std::fmt;
@@ -2030,10 +2031,10 @@ impl Validator {
         {
             return;
         }
-        let message = match tagged.tag().as_deref() {
-            Some("!!set") if tagged.as_set().is_none() => "!!set content is not a mapping",
-            Some("!!omap") if tagged.as_sequence().is_none() => "!!omap content is not a sequence",
-            Some("!!pairs") if tagged.as_sequence().is_none() => {
+        let message = match tagged.normalized_tag().as_deref() {
+            Some(tag::SET) if tagged.as_set().is_none() => "!!set content is not a mapping",
+            Some(tag::OMAP) if tagged.as_sequence().is_none() => "!!omap content is not a sequence",
+            Some(tag::PAIRS) if tagged.as_sequence().is_none() => {
                 "!!pairs content is not a sequence"
             }
             _ => return,
@@ -2074,7 +2075,7 @@ impl Validator {
                 continue;
             }
             let is_null = crate::as_yaml::scalar_canonical(value.syntax())
-                .is_some_and(|(tag, _)| tag == "!!null");
+                .is_some_and(|(t, _)| t == tag::NULL);
             if is_null {
                 continue;
             }
@@ -2105,10 +2106,13 @@ impl Validator {
         let Some(tagged) = crate::yaml::TaggedNode::cast(node.clone()) else {
             return;
         };
-        let Some(tag) = tagged
-            .tag()
-            .filter(|tag| matches!(tag.as_str(), "!!omap" | "!!pairs"))
-        else {
+        if !matches!(
+            tagged.normalized_tag().as_deref(),
+            Some(tag::OMAP | tag::PAIRS)
+        ) {
+            return;
+        }
+        let Some(written_tag) = tagged.tag() else {
             return;
         };
         let Some(sequence) = tagged.as_sequence() else {
@@ -2118,7 +2122,9 @@ impl Validator {
             let mapping = match &item {
                 YamlNode::Alias(_) => continue,
                 YamlNode::Mapping(mapping) => Some(mapping.clone()),
-                YamlNode::TaggedNode(tagged) if tagged.tag().as_deref() == Some("!!map") => {
+                YamlNode::TaggedNode(tagged)
+                    if tagged.normalized_tag().as_deref() == Some(tag::MAP) =>
+                {
                     tagged.as_mapping()
                 }
                 _ => None,
@@ -2130,7 +2136,7 @@ impl Validator {
                 Rule::InvalidTag,
                 item.syntax().text_range(),
                 format!(
-                    "{tag} item {:?} is not a mapping with a single entry",
+                    "{written_tag} item {:?} is not a mapping with a single entry",
                     item.to_string()
                 ),
             ));
@@ -2149,7 +2155,7 @@ impl Validator {
         let Some(tagged) = crate::yaml::TaggedNode::cast(node.clone()) else {
             return;
         };
-        if tagged.tag().as_deref() != Some("!!omap") {
+        if tagged.normalized_tag().as_deref() != Some(tag::OMAP) {
             return;
         }
         let Some(sequence) = tagged.as_sequence() else {
@@ -2159,7 +2165,9 @@ impl Validator {
         // the range of its entry.
         let keys = sequence.items().filter_map(|item| {
             let mapping = match crate::yaml::TaggedNode::cast(item.clone()) {
-                Some(tagged) if tagged.tag().as_deref() == Some("!!map") => tagged.as_mapping()?,
+                Some(tagged) if tagged.normalized_tag().as_deref() == Some(tag::MAP) => {
+                    tagged.as_mapping()?
+                }
                 Some(_) => return None,
                 None => crate::yaml::Mapping::cast(item)?,
             };
@@ -4568,6 +4576,44 @@ mod tests {
         // A `|` or `>` opening a continuation line is plain scalar content.
         for yaml in ["a: b\n  > c\n", "a: b\n  | c\n", "- x\n  | y\n"] {
             assert_eq!(messages(yaml), Vec::<String>::new(), "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn test_verbatim_collection_tags() {
+        // `!<tag:yaml.org,2002:set>` is the tag `!!set` abbreviates.
+        for (yaml, expected) in [
+            (
+                "a: !<tag:yaml.org,2002:set> [x]\n",
+                vec!["!!set content is not a mapping"],
+            ),
+            (
+                "a: !<tag:yaml.org,2002:set> {x: 1}\n",
+                vec!["!!set member \"x\" has non-null value \"1\""],
+            ),
+            (
+                "a: !<tag:yaml.org,2002:omap> a\n",
+                vec!["!!omap content is not a sequence"],
+            ),
+            (
+                "a: !<tag:yaml.org,2002:pairs> a\n",
+                vec!["!!pairs content is not a sequence"],
+            ),
+            (
+                "a: !<tag:yaml.org,2002:omap> [a]\n",
+                vec!["!<tag:yaml.org,2002:omap> item \"a\" is not a mapping with a single entry"],
+            ),
+            (
+                "a: !!omap [!<tag:yaml.org,2002:map> {b: 1}, {b: 2}]\n",
+                vec!["Duplicate !!omap key: \"b\" (semantically equal to \"b\")"],
+            ),
+            (
+                "a: !<tag:yaml.org,2002:omap> [{b: 1}, {b: 2}]\n",
+                vec!["Duplicate !!omap key: \"b\" (semantically equal to \"b\")"],
+            ),
+            ("a: !!pairs [!<tag:yaml.org,2002:map> {b: 1}]\n", vec![]),
+        ] {
+            assert_eq!(messages(yaml), expected, "{yaml:?}");
         }
     }
 }

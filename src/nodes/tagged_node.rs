@@ -23,6 +23,12 @@ impl TaggedNode {
         None
     }
 
+    /// The tag, in its `!!` shorthand if it is in the `tag:yaml.org,2002:`
+    /// namespace.
+    pub(crate) fn normalized_tag(&self) -> Option<String> {
+        self.tag().map(|t| crate::tag::normalize(&t).into_owned())
+    }
+
     /// Get the value part of this tagged scalar (without the tag)
     pub fn value(&self) -> Option<Scalar> {
         // Find the nested SCALAR node
@@ -95,7 +101,7 @@ impl TaggedNode {
     /// Returns the entries of the inner sequence as `MappingEntry` values, each
     /// holding a single key-value pair with full CST fidelity.
     pub fn as_ordered_mapping(&self) -> Option<Vec<MappingEntry>> {
-        if self.tag().as_deref() != Some("!!omap") {
+        if self.normalized_tag().as_deref() != Some(crate::tag::OMAP) {
             return None;
         }
         self.extract_mapping_entries()
@@ -107,7 +113,7 @@ impl TaggedNode {
     /// Returns the entries of the inner sequence as `MappingEntry` values.
     /// Unlike `!!omap`, duplicate keys are allowed.
     pub fn as_pairs(&self) -> Option<Vec<MappingEntry>> {
-        if self.tag().as_deref() != Some("!!pairs") {
+        if self.normalized_tag().as_deref() != Some(crate::tag::PAIRS) {
             return None;
         }
         self.extract_mapping_entries()
@@ -355,5 +361,34 @@ mod tests {
             tree_to_string(node),
             tree_to_string(reparsed.as_node().unwrap())
         );
+    }
+
+    #[test]
+    fn test_verbatim_collection_tags() {
+        let tagged = |yaml: &str| {
+            YamlFile::from_str(yaml)
+                .unwrap()
+                .document()
+                .unwrap()
+                .as_mapping()
+                .unwrap()
+                .get("a")
+                .unwrap()
+                .as_tagged()
+                .unwrap()
+                .clone()
+        };
+        let set = tagged("a: !<tag:yaml.org,2002:set> {x, y}\n");
+        let members: Vec<String> = set
+            .as_set()
+            .unwrap()
+            .members()
+            .map(|m| m.to_string())
+            .collect();
+        assert_eq!(members, vec!["x", "y"]);
+        let omap = tagged("a: !<tag:yaml.org,2002:omap> [b: 1, c: 2]\n");
+        assert_eq!(omap.as_ordered_mapping().map(|e| e.len()), Some(2));
+        let pairs = tagged("a: !<tag:yaml.org,2002:pairs> [b: 1, b: 2]\n");
+        assert_eq!(pairs.as_pairs().map(|e| e.len()), Some(2));
     }
 }

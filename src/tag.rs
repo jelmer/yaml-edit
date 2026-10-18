@@ -11,6 +11,8 @@ pub(crate) const NULL: &str = "!!null";
 pub(crate) const MAP: &str = "!!map";
 pub(crate) const SEQ: &str = "!!seq";
 pub(crate) const SET: &str = "!!set";
+pub(crate) const OMAP: &str = "!!omap";
+pub(crate) const PAIRS: &str = "!!pairs";
 
 /// The name of `tag` within the `tag:yaml.org,2002:` namespace, such as
 /// `set` for either spelling of the set tag.

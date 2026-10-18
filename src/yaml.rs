@@ -452,7 +452,9 @@ impl Set {
     /// the validator reports it.
     pub fn cast(node: SyntaxNode) -> Option<Self> {
         let tagged_node = TaggedNode::cast(node.clone())?;
-        if tagged_node.tag().as_deref() == Some("!!set") && tagged_node.as_mapping().is_some() {
+        if tagged_node.normalized_tag().as_deref() == Some(crate::tag::SET)
+            && tagged_node.as_mapping().is_some()
+        {
             Some(Set(node))
         } else {
             None

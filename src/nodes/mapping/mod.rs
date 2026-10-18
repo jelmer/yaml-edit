@@ -756,26 +756,26 @@ impl Mapping {
                 .unwrap_or_else(|| brace_pos.unwrap_or(0)),
         };
 
-        // If a MAPPING_ENTRY precedes the target position, append `, ` to
-        // it so the two entries are properly delimited.
-        let prev_entry = self
+        let mut entries_before: Vec<SyntaxNode> = self
             .0
             .children_with_tokens()
             .take(target_idx)
             .filter_map(|c| c.into_node())
             .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-            .last();
-        if let Some(prev) = prev_entry {
-            append_comma_space_to_entry(&prev);
-        }
-        // If a MAPPING_ENTRY follows the target position, append `, ` to
-        // the *new* entry so it separates from the next one.
+            .collect();
         let has_following_entry = self.0.children_with_tokens().skip(target_idx).any(|c| {
             c.as_node()
                 .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
         });
         if has_following_entry {
+            // The new entry separates from the next one with `, `, and
+            // one before it gets the same if it lacked a separator.
+            if let Some(prev) = entries_before.last() {
+                append_comma_space_to_entry(prev);
+            }
             append_comma_space_to_entry(new_entry);
+        } else if let Some(last) = entries_before.pop() {
+            crate::nodes::hand_over_flow_end(&last, entries_before.last(), new_entry);
         }
 
         self.0

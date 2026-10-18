@@ -1,8 +1,9 @@
 //! Removing the last entry of a flow collection drops the separator that
 //! the entry before it carried.
 
+use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::YamlFile;
+use yaml_edit::{debug, YamlFile};
 
 mod common;
 use common::assert_file_cst_ok;
@@ -54,4 +55,62 @@ fn test_remove_last_flow_sequence_item() {
     assert_eq!(file.to_string(), "[a, b]");
     let reparsed = YamlFile::from_str(&file.to_string()).unwrap();
     assert_eq!(reparsed.document().unwrap().as_sequence().unwrap().len(), 2);
+}
+
+#[track_caller]
+fn assert_edited(file: &YamlFile, expected: &str) {
+    assert_eq!(file.to_string(), expected);
+    assert_file_cst_ok(file);
+    let reparsed = YamlFile::from_str(expected).unwrap();
+    assert_eq!(
+        debug::tree_to_string(file.syntax()),
+        debug::tree_to_string(reparsed.syntax())
+    );
+}
+
+const MAPPING_APPENDS: &[(&str, &str)] = &[
+    ("{a: 1, b: 2,}", "{a: 1, b: 2, c: 9,}"),
+    ("{a: 1, b: 2, }\n", "{a: 1, b: 2, c: 9, }\n"),
+    ("{a: 1,}", "{a: 1, c: 9,}"),
+    ("{ a: 1, b: 2 }", "{ a: 1, b: 2, c: 9 }"),
+    ("{a: 1,\n  b: 2,\n}\n", "{a: 1,\n  b: 2,\n  c: 9,\n}\n"),
+    ("{a: 1, # x\n b: 2,}", "{a: 1, # x\n b: 2, c: 9,}"),
+    ("{a: 1, b: 2, # x\n}", "{a: 1, b: 2, # x\nc: 9,}"),
+    (
+        "top: {a: 1, b: 2, # x\n  }\n",
+        "top: {a: 1, b: 2, # x\n  c: 9,}\n",
+    ),
+];
+
+type Insertion = dyn Fn(&yaml_edit::Mapping);
+
+fn flow_mapping(file: &YamlFile) -> yaml_edit::Mapping {
+    let root = file.document().unwrap().as_mapping().unwrap();
+    root.get_mapping("top").unwrap_or(root)
+}
+
+#[test]
+fn test_append_to_flow_mapping_keeps_trailing_comma() {
+    for &(source, expected) in MAPPING_APPENDS {
+        let insertions: [(&str, &Insertion); 5] = [
+            ("set", &|m| m.set("c", 9)),
+            ("insert_after", &|m| {
+                assert!(m.insert_after("b", "c", 9) || m.insert_after("a", "c", 9))
+            }),
+            ("insert_at_index", &|m| m.insert_at_index(2, "c", 9)),
+            ("move_after", &|m| {
+                let last = m.keys().last().unwrap();
+                assert!(m.move_after(last, "c", 9));
+            }),
+            ("set_with_field_order", &|m| {
+                m.set_with_field_order("c", 9, ["a", "b", "c"])
+            }),
+        ];
+        for (name, insert) in insertions {
+            let file = YamlFile::from_str(source).unwrap();
+            insert(&flow_mapping(&file));
+            assert_eq!(file.to_string(), expected, "{name} on {source:?}");
+            assert_edited(&file, expected);
+        }
+    }
 }

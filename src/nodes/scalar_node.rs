@@ -93,7 +93,7 @@ pub(crate) fn block_parent_column(scalar: &SyntaxNode) -> usize {
                 SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
             )
         })
-        .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry))
+        .map_or(0, |entry| crate::column::node_column(&entry))
 }
 
 /// Replace `\r\n` and lone `\r` line breaks with `\n`, which
@@ -229,9 +229,7 @@ impl Scalar {
             None => content_lines
                 .iter()
                 .find(|line| !line.trim().is_empty())
-                .map_or(usize::MAX, |line| {
-                    line.chars().take_while(|c| *c == ' ').count()
-                }),
+                .map_or(usize::MAX, |line| crate::column::space_indent(line)),
         };
 
         // A line with no more than `base_indent` spaces and nothing else is
@@ -246,7 +244,7 @@ impl Scalar {
             // stay on UTF-8 boundaries even if the line starts with
             // multi-byte content at less than base_indent spaces of
             // indentation.
-            let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
+            let leading_spaces = crate::column::space_indent(line);
             let strip = leading_spaces.min(base_indent);
             let strip_bytes = line
                 .char_indices()
@@ -424,7 +422,7 @@ impl AsYaml for Scalar {
             crate::yaml::copy_node_to_builder(builder, &self.0);
             return false;
         }
-        let delta = indent as isize - crate::as_yaml::source_line_indent(&self.0) as isize;
+        let delta = indent as isize - crate::column::line_indent(&self.0) as isize;
         let delta = crate::as_yaml::clear_parent_column(&self.0, indent, delta);
         builder.start_node(SyntaxKind::SCALAR.into());
         copy_shifting_continuation_lines(builder, &self.0, delta, false);

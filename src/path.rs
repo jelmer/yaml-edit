@@ -1055,7 +1055,7 @@ fn expanded_copy(target: &crate::yaml::SyntaxNode) -> crate::yaml::SyntaxNode {
 
     let mut builder = rowan::GreenNodeBuilder::new();
     builder.start_node(target.kind().into());
-    let base = crate::as_yaml::source_base_indent(target) as isize;
+    let base = crate::column::node_column(target) as isize;
     crate::as_yaml::copy_node_content_reindent(&mut builder, target, -base);
     builder.finish_node();
     let copy = crate::yaml::SyntaxNode::new_root_mut(builder.finish());

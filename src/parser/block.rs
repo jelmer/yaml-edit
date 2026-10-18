@@ -10,7 +10,7 @@ use crate::error_recovery::ParseContext;
 use crate::lex::SyntaxKind;
 use crate::ParseErrorKind;
 
-impl Parser {
+impl Parser<'_> {
     /// Consume comment lines sitting between entries of a block collection.
     ///
     /// Returns true when the comments ran into a dedent, meaning the
@@ -74,7 +74,7 @@ impl Parser {
         .flatten()
         .max();
         let later_entry_indent = indicator_column.map(|column| {
-            let key_column = self.error_context.current_location().1.saturating_sub(1);
+            let key_column = self.column();
             key_column.min(column + 1)
         });
         // A floor set for a scalar node does not carry over to the values of
@@ -113,9 +113,10 @@ impl Parser {
             // left of the `?`, but the colon opens the key's null-key entry
             // (M2N8).
             if self.current() == Some(SyntaxKind::COLON)
-                && self.ctx.explicit_key_column.is_some_and(|column| {
-                    self.error_context.current_location().1.saturating_sub(1) <= column
-                })
+                && self
+                    .ctx
+                    .explicit_key_column
+                    .is_some_and(|column| self.column() <= column)
             {
                 break;
             }
@@ -216,7 +217,7 @@ impl Parser {
             // current_line_indent counts leading whitespace only, so it reads
             // 0 for the `-` of an explicit key (`? - a`), whose entries then
             // look indented past their own sequence.
-            let dash_column = self.error_context.current_location().1.saturating_sub(1);
+            let dash_column = self.column();
             if first_entry {
                 if self.marker_line_node != Some(self.tokens.len()) {
                     base_indent = base_indent.max(dash_column);
@@ -355,8 +356,7 @@ impl Parser {
         // the first key's column when that is right of the caller's base: a
         // compact mapping as a value, `? h\n: ? b\n  : x\n  a: 1\n`, has
         // its entries at column 2 though its value slot was parsed from 0.
-        let base_indent =
-            base_indent.max(self.error_context.current_location().1.saturating_sub(1));
+        let base_indent = base_indent.max(self.column());
         // Neither key nor value is the document's own node, so a block
         // scalar in either needs an indented body: `? a\n: |\nb: 1\n` keeps
         // `b` as the next entry.
@@ -384,7 +384,7 @@ impl Parser {
             self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
             // Parse explicit key
-            let question_column = self.error_context.current_location().1.saturating_sub(1);
+            let question_column = self.column();
             self.bump(); // consume '?'
             self.skip_whitespace();
 
@@ -411,7 +411,7 @@ impl Parser {
 
             // Parse value if there's a colon
             if self.current() == Some(SyntaxKind::COLON) {
-                let colon_column = self.error_context.current_location().1.saturating_sub(1);
+                let colon_column = self.column();
                 self.bump(); // consume ':'
                 self.skip_whitespace();
                 let value_ctx = BlockCtx {
@@ -582,7 +582,7 @@ impl Parser {
     fn parse_explicit_key_entry(&mut self) {
         self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
-        let question_column = self.error_context.current_location().1.saturating_sub(1);
+        let question_column = self.column();
         self.bump(); // consume '?'
         self.skip_whitespace();
 
@@ -609,7 +609,7 @@ impl Parser {
             p.skip_ws_and_newlines();
 
             if p.current() == Some(SyntaxKind::COLON) {
-                let colon_column = p.error_context.current_location().1.saturating_sub(1);
+                let colon_column = p.column();
                 p.bump(); // consume ':'
                 p.skip_whitespace();
                 let value_ctx = BlockCtx {
@@ -1120,7 +1120,7 @@ impl Parser {
     fn parse_mapping_key_value_pair(&mut self, base_indent: usize) {
         // The key's own column, read before anything is consumed. It is
         // 1-based, so step back to a column.
-        let key_column = self.error_context.current_location().1.saturating_sub(1);
+        let key_column = self.column();
         // Start MAPPING_ENTRY node to wrap the entire key-value pair
         self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 

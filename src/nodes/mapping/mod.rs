@@ -1082,10 +1082,7 @@ impl Mapping {
                     && t.next_sibling_or_token()
                         .is_some_and(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
             })
-            .map_or_else(
-                || crate::as_yaml::source_base_indent(&self.0),
-                |t| t.text().len(),
-            )
+            .map_or_else(|| crate::column::node_column(&self.0), |t| t.text().len())
     }
 
     /// Whether this mapping ends in the INDENT of a comment line.
@@ -1710,7 +1707,7 @@ impl Mapping {
         builder.start_node(SyntaxKind::KEY.into());
         let indent = old
             .parent()
-            .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry));
+            .map_or(0, |entry| crate::column::node_column(&entry));
         let leading: Vec<_> = old
             .children_with_tokens()
             .map_while(|c| c.into_token())

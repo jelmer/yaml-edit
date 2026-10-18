@@ -22,6 +22,7 @@
 //! }
 //! ```
 
+use crate::column::{space_indent, token_column};
 use crate::nodes::{
     has_child_token, in_flow_collection, is_block_scalar, is_quoted_scalar,
     starts_a_flow_collection,
@@ -204,30 +205,6 @@ fn has_content(node: &SyntaxNode) -> bool {
     })
 }
 
-/// The zero-based column `token` starts at.
-///
-/// Walks back through preceding tokens to the last line break rather than
-/// serializing the document: this runs for many tokens, and rebuilding the
-/// whole text each time made validation quadratic in the file size.
-pub(crate) fn token_column(token: &crate::nodes::SyntaxToken) -> usize {
-    let mut col = 0;
-    let mut cur = token.prev_token();
-    while let Some(t) = cur {
-        // A byte order mark is not part of the line's content.
-        if t.kind() == crate::SyntaxKind::BOM {
-            break;
-        }
-        let text = t.text();
-        if let Some(i) = text.rfind('\n') {
-            col += text[i + 1..].chars().count();
-            return col;
-        }
-        col += text.chars().count();
-        cur = t.prev_token();
-    }
-    col
-}
-
 /// The least indentation a continuation line of `node` needs: one more
 /// than the column of the innermost block collection entry holding it, or
 /// `None` outside any block collection.
@@ -258,18 +235,12 @@ fn entry_is_empty(entry: &SyntaxNode) -> bool {
 /// text of the tree `node` belongs to.
 fn fill_locations(node: &SyntaxNode, violations: &mut [Violation]) {
     let tree = node.ancestors().last().unwrap_or_else(|| node.clone());
-    let text = tree.text().to_string();
-    let line_starts: Vec<usize> = std::iter::once(0)
-        .chain(text.match_indices('\n').map(|(i, _)| i + 1))
-        .collect();
+    let index = crate::line_index::LineIndex::new(tree.text().to_string());
     for v in violations.iter_mut() {
         let Some(range) = v.text_range else {
             continue;
         };
-        let offset = range.start as usize;
-        let line = line_starts.partition_point(|&s| s <= offset) - 1;
-        let column = text[line_starts[line]..offset].chars().count();
-        v.location = Some(crate::LineColumn::new(line + 1, column + 1).to_string());
+        v.location = Some(index.line_column(range.start as usize).to_string());
     }
 }
 
@@ -925,9 +896,6 @@ impl Validator {
         // Indentation is spaces only (s-indent), so a tab in an INDENT
         // token starts the line's content: R4YG's " \t" line is indented
         // one, not two, and its expected events keep the tab.
-        fn space_indent(token: &rowan::SyntaxToken<crate::Lang>) -> usize {
-            token.text().chars().take_while(|c| *c == ' ').count()
-        }
 
         let mut past_first_newline = false;
         let mut max_blank_indent = 0usize;
@@ -953,7 +921,7 @@ impl Validator {
                     // line non-blank, so it carries no indentation claim.
                     if let Some(ind) = pending_indent.take() {
                         if !ind.text().contains('\t') {
-                            max_blank_indent = max_blank_indent.max(space_indent(&ind));
+                            max_blank_indent = max_blank_indent.max(space_indent(ind.text()));
                         }
                     }
                 }
@@ -967,7 +935,7 @@ impl Validator {
                     // content, is 5LLU's error.
                     if let Some(ind) = pending_indent.take() {
                         if body_indent.is_none() {
-                            let indent = space_indent(&ind);
+                            let indent = space_indent(ind.text());
                             body_indent = Some(indent);
                             if indent < max_blank_indent {
                                 violations.push(Violation::error_at(Rule::Other, ind.text_range(), format!( "Block scalar content under-indented ({indent} spaces) relative to preceding blank line ({max_blank_indent} spaces)" )));
@@ -1667,7 +1635,7 @@ impl Validator {
             match t.kind() {
                 crate::SyntaxKind::NEWLINE => indent = Some(0),
                 crate::SyntaxKind::INDENT | crate::SyntaxKind::WHITESPACE if indent.is_some() => {
-                    indent = Some(t.text().chars().take_while(|c| *c == ' ').count());
+                    indent = Some(space_indent(t.text()));
                 }
                 crate::SyntaxKind::COMMENT => indent = None,
                 _ if indent.take().is_some_and(|i| i < required) => {
@@ -2523,7 +2491,7 @@ impl Validator {
                 }
 
                 // A line opening with a tab is left to check_tab_usage.
-                let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
+                let leading_spaces = space_indent(line);
                 if leading_spaces < required && !line.trim().is_empty() && !line.starts_with('\t') {
                     violations.push(Violation::error_at(
                         Rule::InvalidIndentation,
@@ -3520,6 +3488,31 @@ mod tests {
             .into_iter()
             .map(|v| (v.message, v.location.unwrap()))
             .collect()
+    }
+
+    #[test]
+    fn test_location_line_breaks_and_bom() {
+        for (yaml, location) in [
+            ("a: 1\nb: {x: 1, x: 2}\n", "2:11"),
+            ("a: 1\rb: {x: 1, x: 2}\r", "2:11"),
+            ("a: 1\r\nb: {x: 1, x: 2}\r\n", "2:11"),
+            ("\u{FEFF}b: {x: 1, x: 2}\n", "1:11"),
+        ] {
+            assert_eq!(
+                located(yaml),
+                vec![(
+                    "Duplicate key: \"x\" (semantically equal to \"x\")".to_string(),
+                    location.to_string()
+                )],
+                "{yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_indentation_with_cr_line_breaks() {
+        assert_eq!(located("-\r  name: a\r  hr: 1\r-\r  name: b\r"), vec![]);
+        assert_eq!(located("a:\r  b: 1\r  c: 2\r"), vec![]);
     }
 
     #[test]

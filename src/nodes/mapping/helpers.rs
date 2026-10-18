@@ -112,7 +112,7 @@ pub(crate) fn build_block_value_node(
     let delta = if is_scalar {
         block_scalar_body_shift(source, target)
     } else {
-        target as isize - crate::as_yaml::source_base_indent(source) as isize
+        target as isize - crate::column::node_column(source) as isize
     };
     let anchor = anchor
         .map(str::to_string)
@@ -189,7 +189,7 @@ pub(super) fn build_tagged_value_node(
             .take_while(|c| c.as_node().is_none())
             .all(|c| c.kind() != SyntaxKind::NEWLINE);
         if !content_on_tag_line {
-            target as isize - crate::as_yaml::source_base_indent(&inner) as isize
+            target as isize - crate::column::node_column(&inner) as isize
         } else if is_block_scalar(&inner) {
             block_scalar_body_shift(&inner, target)
         } else {

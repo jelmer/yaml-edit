@@ -397,7 +397,7 @@ fn indent_past_question(collection: &SyntaxNode) {
         SyntaxKind::INDENT => Some(prev),
         _ => return,
     };
-    let column = crate::validator::token_column(&question);
+    let column = crate::column::token_column(&question);
     if indent
         .as_ref()
         .is_some_and(|t| t.text().chars().count() > column)

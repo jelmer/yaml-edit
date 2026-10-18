@@ -7,7 +7,7 @@ use super::{BlockCtx, Lookahead, Parser};
 use crate::lex::{block_scalar_header, SyntaxKind};
 use crate::ParseErrorKind;
 
-impl Parser {
+impl Parser<'_> {
     pub(super) fn parse_alias(&mut self) {
         // Create an alias node and consume the reference token
         // The token itself already contains the full "*alias_name" text
@@ -1007,7 +1007,7 @@ pub(super) fn is_plain_scalar_kind(kind: SyntaxKind) -> bool {
 /// clear the enclosing column make the line invalid as body; the parser
 /// leniently counts its tabs as indentation then.
 fn body_indent(indent: &str, enclosing_column: usize) -> usize {
-    let spaces = indent.bytes().take_while(|b| *b == b' ').count();
+    let spaces = crate::column::space_indent(indent);
     if spaces > enclosing_column {
         spaces
     } else {

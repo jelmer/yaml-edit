@@ -9,7 +9,7 @@ use crate::error_recovery::ParseContext;
 use crate::lex::SyntaxKind;
 use crate::ParseErrorKind;
 
-impl Parser {
+impl Parser<'_> {
     /// Checks if the upcoming tokens form an implicit mapping pattern (key: value).
     ///
     /// This scans forward through the token buffer to detect if there's a colon at

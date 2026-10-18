@@ -763,25 +763,14 @@ impl FromStr for Document {
                 // error. Returning `first` would drop them from the output,
                 // so say so instead of losing the text.
                 rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::ERROR => {
+                    let lc = crate::byte_offset_to_line_column(s, n.text_range().start().into());
                     return Err(crate::error::YamlError::Parse {
                         message: format!(
                             "could not be parsed as part of the document: {:?}",
                             n.text().to_string()
                         ),
-                        line: Some(
-                            crate::byte_offset_to_line_column(
-                                s,
-                                usize::from(n.text_range().start()),
-                            )
-                            .line,
-                        ),
-                        column: Some(
-                            crate::byte_offset_to_line_column(
-                                s,
-                                usize::from(n.text_range().start()),
-                            )
-                            .column,
-                        ),
+                        line: Some(lc.line),
+                        column: Some(lc.column),
                     });
                 }
                 _ => {}

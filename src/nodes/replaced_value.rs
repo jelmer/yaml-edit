@@ -171,7 +171,7 @@ fn block_scalar_body_column(scalar: &SyntaxNode) -> Option<usize> {
     text.lines()
         .skip(1)
         .find(|line| !line.trim().is_empty())
-        .map(|line| line.len() - line.trim_start_matches(' ').len())
+        .map(crate::column::space_indent)
 }
 
 /// The line break ending the last line of `scalar`, a block scalar: its
@@ -249,7 +249,7 @@ fn absorb_blank_lines_after(scalar: &SyntaxNode) {
 /// of `scalar`, the block scalar `entry` ends with, back to the entry's
 /// column, so that it stays a comment rather than becoming body text.
 fn dedent_comment_line_after(entry: &SyntaxNode, scalar: &SyntaxNode) {
-    let column = crate::as_yaml::source_base_indent(entry);
+    let column = crate::column::node_column(entry);
     let body = block_scalar_body_column(scalar).unwrap_or(column + 1);
     let is_space =
         |t: &SyntaxToken| matches!(t.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE);
@@ -379,7 +379,7 @@ pub(crate) fn add_dash_line_comment(entry: &SyntaxNode, comment: LineComment) {
     if let Some(item) = item_on_dash_line {
         // A collection opening on the dash line would make the comment its
         // first entry's, so it moves to the next line.
-        let column = crate::as_yaml::source_base_indent(&item);
+        let column = crate::column::node_column(&item);
         if let Some(space) = item
             .prev_sibling_or_token()
             .and_then(|c| c.into_token())
@@ -441,7 +441,7 @@ pub(crate) fn add_dash_line_comment(entry: &SyntaxNode, comment: LineComment) {
 /// entry's column, where the parser keeps such a line. A detached entry
 /// has no line above it, so the comment line goes first in the entry.
 pub(crate) fn insert_comment_line_above(entry: &SyntaxNode, comment: &str) {
-    let column = crate::as_yaml::source_base_indent(entry);
+    let column = crate::column::node_column(entry);
     // The line starts in the outermost node that `entry` starts.
     let mut node = entry.clone();
     while node.prev_sibling_or_token().is_none() && node.kind() != SyntaxKind::DOCUMENT {

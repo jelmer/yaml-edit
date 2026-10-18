@@ -25,6 +25,7 @@ pub(crate) use flow::has_implicit_mapping_pattern;
 use crate::{
     error_recovery::{ErrorBuilder, ErrorRecoveryContext, ParseContext, RecoveryStrategy},
     lex::{lex, SyntaxKind},
+    line_index::LineIndex,
     yaml::ParsedYaml,
     ParseErrorKind, PositionedParseError,
 };
@@ -130,15 +131,21 @@ impl<'a> Lookahead<'a> {
 /// Fields are `pub(super)` so the topic sub-modules
 /// ([`scalars`], [`flow`], [`block`]) can add `impl Parser` blocks
 /// without going through accessor methods for every field.
-pub(super) struct Parser {
+pub(super) struct Parser<'a> {
     pub(super) tokens: Vec<(SyntaxKind, String)>,
     pub(super) current_token_index: usize,
     pub(super) builder: GreenNodeBuilder<'static>,
     pub(super) errors: Vec<String>,
     pub(super) positioned_errors: Vec<PositionedParseError>,
     pub(super) in_flow_context: bool,
-    /// Error recovery context for better error messages
+    /// The stack of contexts that picks an error recovery strategy.
+    ///
+    /// Positions are tracked by `position` and `line_index` instead, so it
+    /// is given no text.
     pub(super) error_context: ErrorRecoveryContext,
+    /// Byte offset of the current token.
+    position: usize,
+    line_index: LineIndex<&'a str>,
     /// Track the current line's indentation level for plain scalar continuation
     pub(super) current_line_indent: usize,
     /// Context of the block node being parsed; see [`BlockCtx`].
@@ -170,8 +177,8 @@ pub(super) struct Parser {
     pub(super) marker_line_node: Option<usize>,
 }
 
-impl Parser {
-    fn new(text: &str) -> Self {
+impl<'a> Parser<'a> {
+    fn new(text: &'a str) -> Self {
         let lexed = lex(text);
         let mut tokens = Vec::new();
 
@@ -190,7 +197,9 @@ impl Parser {
             errors: Vec::new(),
             positioned_errors: Vec::new(),
             in_flow_context: false,
-            error_context: ErrorRecoveryContext::new(text.to_string()),
+            error_context: ErrorRecoveryContext::new(String::new()),
+            position: 0,
+            line_index: LineIndex::new(text),
             ctx: BlockCtx::default(),
             node_is_document_root: false,
             current_line_indent: 0,
@@ -655,7 +664,7 @@ impl Parser {
     }
 }
 
-impl Parser {
+impl Parser<'_> {
     fn parse_directive(&mut self) {
         self.builder.start_node(SyntaxKind::DIRECTIVE.into());
 
@@ -996,9 +1005,13 @@ impl Parser {
             if self.current_token_index > 0 {
                 self.current_token_index -= 1;
             }
-            // Update error context position
-            self.error_context.advance(text.len());
+            self.position += text.len();
         }
+    }
+
+    /// The 0-based column of the current token.
+    pub(super) fn column(&self) -> usize {
+        self.line_index.column(self.position)
     }
 
     pub(super) fn current(&self) -> Option<SyntaxKind> {
@@ -1305,9 +1318,16 @@ impl Parser {
     }
 
     pub(super) fn add_error(&mut self, message: String, kind: ParseErrorKind) {
-        // Create positioned error with line/column info
         let token_len = self.current_text().map_or(1, |s| s.len());
-        let positioned_error = self.error_context.create_error(message, token_len, kind);
+        let positioned_error = PositionedParseError {
+            message,
+            range: crate::TextPosition::new(
+                self.position as u32,
+                (self.position + token_len) as u32,
+            ),
+            code: None,
+            kind,
+        };
 
         self.errors.push(positioned_error.message.clone());
         self.positioned_errors.push(positioned_error);

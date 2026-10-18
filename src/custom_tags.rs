@@ -469,12 +469,12 @@ impl CustomTagParser {
 /// scalar's continuation) loses only the indentation it has, which in those
 /// places carries no meaning.
 fn dedented_block_text(collection: &SyntaxNode) -> String {
-    let column = crate::as_yaml::source_base_indent(collection);
+    let column = crate::column::node_column(collection);
     let text = collection.text().to_string();
     let mut lines = text.split_inclusive('\n');
     let mut dedented = lines.next().unwrap_or_default().to_string();
     for line in lines {
-        let indent = line.len() - line.trim_start_matches(' ').len();
+        let indent = crate::column::space_indent(line);
         dedented.push_str(&line[indent.min(column)..]);
     }
     dedented

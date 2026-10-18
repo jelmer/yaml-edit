@@ -179,7 +179,7 @@ impl AsYaml for TaggedNode {
             .take_while(|c| c.as_node().is_none())
             .all(|c| c.kind() != SyntaxKind::NEWLINE);
         let delta = if content_on_tag_line {
-            let delta = indent as isize - crate::as_yaml::source_line_indent(&self.0) as isize;
+            let delta = indent as isize - crate::column::line_indent(&self.0) as isize;
             crate::as_yaml::clear_parent_column(&self.0, indent, delta)
         } else {
             continuation_indent(&self.0).map_or(0, |base| indent as isize - base as isize)

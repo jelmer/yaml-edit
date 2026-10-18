@@ -900,7 +900,7 @@ pub(crate) fn clear_parent_column(node: &SyntaxNode, parent: usize, delta: isize
         .split('\n')
         .skip(1)
         .filter(|line| !line.trim().is_empty())
-        .map(|line| line.len() - line.trim_start_matches(' ').len())
+        .map(crate::column::space_indent)
         .min();
     shallowest.map_or(delta, |column| {
         delta.max(parent as isize + 1 - column as isize)
@@ -914,7 +914,7 @@ pub(crate) fn shift_line_start(text: &str, delta: isize) -> String {
     if delta >= 0 {
         return format!("{}{text}", " ".repeat(delta as usize));
     }
-    let spaces = text.len() - text.trim_start_matches(' ').len();
+    let spaces = crate::column::space_indent(text);
     text[spaces.min(delta.unsigned_abs())..].to_string()
 }
 
@@ -936,75 +936,8 @@ pub(crate) fn shift_inner_lines(text: &str, delta: isize) -> Cow<'_, str> {
     Cow::Owned(shifted)
 }
 
-/// Column at which `node` starts on its line.
-///
-/// For a MAPPING or SEQUENCE this is the column of its first entry; for
-/// a MAPPING_ENTRY it's the column of the key. Returns 0 for anything at
-/// the start of the tree's text.
-pub(crate) fn source_base_indent(node: &SyntaxNode) -> usize {
-    // Walk backwards through preceding tokens (climbing to parent siblings
-    // when we run out), accumulating characters until we hit a NEWLINE or
-    // the start of the tree. This works regardless of how the parser
-    // distributed INDENT/WHITESPACE tokens (siblings, inside a
-    // `SEQUENCE_ENTRY`'s dash-space, etc.) and only materializes text
-    // subtrees that we've already confirmed contain a newline.
-    let mut column: usize = 0;
-    let mut cursor = node.prev_sibling_or_token();
-    let mut current = node.clone();
-    loop {
-        while let Some(item) = cursor {
-            match item {
-                rowan::NodeOrToken::Token(t) => {
-                    let text = t.text();
-                    if let Some(nl) = text.rfind('\n') {
-                        column += text[nl + 1..].chars().count();
-                        return column;
-                    }
-                    column += text.chars().count();
-                    cursor = t.prev_sibling_or_token();
-                }
-                rowan::NodeOrToken::Node(n) => {
-                    // For nodes containing no newline we still need the
-                    // character count (bytes lie for multi-byte input);
-                    // materialize.
-                    let text = n.text().to_string();
-                    if let Some(nl) = text.rfind('\n') {
-                        column += text[nl + 1..].chars().count();
-                        return column;
-                    }
-                    column += text.chars().count();
-                    cursor = n.prev_sibling_or_token();
-                }
-            }
-        }
-        // Ran out of siblings; climb up and continue with the parent's siblings.
-        match current.parent() {
-            Some(p) => {
-                cursor = p.prev_sibling_or_token();
-                current = p;
-            }
-            None => return column,
-        }
-    }
-}
-
-/// Indentation of the line on which `node` starts.
-pub(crate) fn source_line_indent(node: &SyntaxNode) -> usize {
-    let mut prefix = Vec::new();
-    let mut cursor = node.first_token().and_then(|t| t.prev_token());
-    while let Some(token) = cursor {
-        match token.text().rfind('\n') {
-            Some(nl) => {
-                prefix.push(token.text()[nl + 1..].to_string());
-                break;
-            }
-            None => prefix.push(token.text().to_string()),
-        }
-        cursor = token.prev_token();
-    }
-    prefix.reverse();
-    prefix.concat().chars().take_while(|&c| c == ' ').count()
-}
+// TODO: use crate::column::node_column in nodes/sequence.rs and drop this.
+pub(crate) use crate::column::node_column as source_base_indent;
 
 /// Base column to measure a copied collection's indentation from: for a
 /// flow collection, whose continuation lines are only bound to the
@@ -1012,9 +945,9 @@ pub(crate) fn source_line_indent(node: &SyntaxNode) -> usize {
 /// otherwise the column of its first entry.
 pub(crate) fn source_reindent_base(node: &SyntaxNode, is_flow: bool) -> usize {
     if is_flow {
-        source_line_indent(node)
+        crate::column::line_indent(node)
     } else {
-        source_base_indent(node)
+        crate::column::node_column(node)
     }
 }
 

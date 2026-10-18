@@ -114,3 +114,16 @@ fn clear_nested_sequence() {
     check_edit("top:\n  - 1\n  - 2", clear, "top: []");
     check_edit("top:\n  - 1\n  - 2\n", clear, "top: []\n");
 }
+
+#[test]
+fn remove_entry_after_blank_line() {
+    // A blank line before the removed entry stays, as it does when the
+    // entry is not last. Unterminated, it ends the input in place of the
+    // removed line, so the line break before it is the last one.
+    check_remove("a: 1\n\nb: 2\nc: 3", "a: 1\n\nc: 3");
+    check_remove("a: 1\n\nb: 2\n", "a: 1\n\n");
+    check_remove("a: 1\n\nb: 2", "a: 1\n");
+    check_remove("a: 1\n\n\nb: 2", "a: 1\n\n");
+    // With blank lines on both sides, only one gap is kept.
+    check_remove("a: 1\n\nb: 2\n\nc: 3", "a: 1\n\nc: 3");
+}

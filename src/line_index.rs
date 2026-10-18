@@ -40,6 +40,11 @@ impl<T: AsRef<str>> LineIndex<T> {
         LineColumn::new(line + 1, self.column_in_line(line, offset) + 1)
     }
 
+    /// The 0-based column of `offset`.
+    pub(crate) fn column(&self, offset: usize) -> usize {
+        self.column_in_line(self.line_of(offset), offset)
+    }
+
     /// The byte offset at which the line holding `offset` starts.
     pub(crate) fn line_start(&self, offset: usize) -> usize {
         self.line_starts[self.line_of(offset)]

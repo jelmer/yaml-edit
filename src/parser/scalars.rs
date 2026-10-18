@@ -7,7 +7,7 @@ use super::{BlockCtx, Lookahead, Parser};
 use crate::lex::{block_scalar_header, SyntaxKind};
 use crate::ParseErrorKind;
 
-impl Parser {
+impl Parser<'_> {
     pub(super) fn parse_alias(&mut self) {
         // Create an alias node and consume the reference token
         // The token itself already contains the full "*alias_name" text

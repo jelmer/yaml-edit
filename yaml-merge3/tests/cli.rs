@@ -103,6 +103,8 @@ fn errors_exit_255() {
     let output = run(&dir, &["-L", "a", "-L", "b", "-L", "c", "-L", "d"]);
     assert_eq!(output.status.code(), Some(255));
     assert_eq!(stderr(&output), "yaml-merge3: too many labels\n");
+    let output = run(&dir, &["-L", "a", "-L", "b", "-L", "c"]);
+    assert_eq!(output.status.code(), Some(0));
 
     std::fs::remove_file(dir.join("base")).unwrap();
     let output = run(&dir, &[]);

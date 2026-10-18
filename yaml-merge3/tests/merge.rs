@@ -862,3 +862,33 @@ fn collections_changing_kind_conflict() {
         assert_eq!(paths, vec![path(&[key])], "{ours:?} + {theirs:?}");
     }
 }
+
+#[test]
+fn flow_mapping_deletion_against_other_side() {
+    // Deleted on one side; the other side only respelled it.
+    assert_eq!(
+        clean("m: {a: 1, b: 2}\n", "m: {a: 1}\n", "m: {a: 1, b: 0x2}\n"),
+        "m: {a: 1}\n"
+    );
+    assert_eq!(
+        clean("m: {a: 1, b: 2}\n", "m: {a: 1, b: 0x2}\n", "m: {a: 1}\n"),
+        "m: {a: 1}\n"
+    );
+    // Deleted on one side, changed on the other.
+    for (ours, theirs) in [
+        ("m: {a: 1}\n", "m: {a: 1, b: 3}\n"),
+        ("m: {a: 1, b: 3}\n", "m: {a: 1}\n"),
+    ] {
+        let result = merge("m: {a: 1, b: 2}\n", ours, theirs, &MergeOptions::default());
+        assert!(!result.is_clean());
+        assert_eq!(result.conflicts, vec![Conflict { path: path(&["m"]) }]);
+    }
+}
+
+#[test]
+fn same_value_respelled_with_comment_change() {
+    assert_eq!(
+        clean("a: 1  # c\n", "a: 0x2  # c\n", "a: 2  # d\n"),
+        "a: 0x2  # d\n"
+    );
+}

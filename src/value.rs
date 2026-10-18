@@ -1542,7 +1542,6 @@ ordered: !!omap [first: *list]
             "k: !local []",
             "k: !!map {}",
             "k: !!seq\n    - a",
-            "k: !<tag:yaml.org,2002:set>\n  a: null",
             "!local\na: !!str 1",
             "!local\n  - a\n  - !!int 1",
         ] {
@@ -1550,6 +1549,11 @@ ordered: !!omap [first: *list]
             assert_eq!(v.to_yaml_string(0), src);
             assert_eq!(YamlValue::parse_raw(&v.to_yaml_string(0)).unwrap(), v);
         }
+        // A verbatim core tag is read as the tag it spells, which renders in
+        // its shorthand.
+        let v = YamlValue::parse_raw("k: !<tag:yaml.org,2002:set>\n  a: null").unwrap();
+        assert_eq!(v.to_yaml_string(0), "k: !!set\n  a: null");
+        assert_eq!(YamlValue::parse_raw(&v.to_yaml_string(0)).unwrap(), v);
     }
 
     #[test]

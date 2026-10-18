@@ -90,10 +90,7 @@ impl ValueNode for Scalar {
         // starting on a NEW line after their indicator, so they don't
         // render inline. Everything else - plain, quoted, tagged scalars -
         // sits on the same line as its key.
-        !self
-            .0
-            .children_with_tokens()
-            .any(|c| matches!(c.kind(), SyntaxKind::PIPE | SyntaxKind::GREATER))
+        !crate::nodes::is_block_scalar(&self.0)
     }
 }
 
@@ -455,7 +452,9 @@ impl Set {
     /// the validator reports it.
     pub fn cast(node: SyntaxNode) -> Option<Self> {
         let tagged_node = TaggedNode::cast(node.clone())?;
-        if tagged_node.tag().as_deref() == Some("!!set") && tagged_node.as_mapping().is_some() {
+        if tagged_node.normalized_tag().as_deref() == Some(crate::tag::SET)
+            && tagged_node.as_mapping().is_some()
+        {
             Some(Set(node))
         } else {
             None

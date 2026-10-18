@@ -669,20 +669,20 @@ fn resolved_with_tag(
 ) -> Result<Option<YamlValue>, ResolveError> {
     use crate::as_yaml::YamlNode;
 
-    match (tag, content) {
-        ("!!set", YamlNode::Mapping(mapping)) => {
+    match (crate::tag::normalize(tag).as_ref(), content) {
+        (crate::tag::SET, YamlNode::Mapping(mapping)) => {
             resolved_set(&mapping, registry, expanding).map(|set| Some(YamlValue::Set(set)))
         }
-        ("!!set", content) => Err(ResolveError::InvalidSetContent {
+        (crate::tag::SET, content) => Err(ResolveError::InvalidSetContent {
             content: content.syntax().text().to_string(),
         }),
-        ("!!omap", YamlNode::Sequence(seq)) => Ok(Some(YamlValue::OrderedMapping(resolved_pairs(
+        (crate::tag::OMAP, YamlNode::Sequence(seq)) => Ok(Some(YamlValue::OrderedMapping(
+            resolved_pairs(tag, &seq, registry, expanding)?,
+        ))),
+        (crate::tag::PAIRS, YamlNode::Sequence(seq)) => Ok(Some(YamlValue::Pairs(resolved_pairs(
             tag, &seq, registry, expanding,
         )?))),
-        ("!!pairs", YamlNode::Sequence(seq)) => Ok(Some(YamlValue::Pairs(resolved_pairs(
-            tag, &seq, registry, expanding,
-        )?))),
-        ("!!omap" | "!!pairs", content) => Err(ResolveError::InvalidPairsContent {
+        (crate::tag::OMAP | crate::tag::PAIRS, content) => Err(ResolveError::InvalidPairsContent {
             tag: tag.to_string(),
             content: content.syntax().text().to_string(),
         }),
@@ -747,10 +747,12 @@ fn resolved_pairs(
     for item in seq.values() {
         let entries = match resolved_value(item.clone(), registry, expanding)? {
             Some(YamlValue::Mapping(entries)) => Some(entries),
-            Some(YamlValue::Tagged(t, inner)) if t == "!!map" => match *inner {
-                YamlValue::Mapping(entries) => Some(entries),
-                _ => None,
-            },
+            Some(YamlValue::Tagged(t, inner)) if crate::tag::normalize(&t) == crate::tag::MAP => {
+                match *inner {
+                    YamlValue::Mapping(entries) => Some(entries),
+                    _ => None,
+                }
+            }
             _ => None,
         }
         .filter(|entries| entries.len() == 1)
@@ -758,7 +760,7 @@ fn resolved_pairs(
             tag: tag.to_string(),
             item: item.to_string(),
         })?;
-        if tag == "!!omap" {
+        if crate::tag::normalize(tag) == crate::tag::OMAP {
             let key = pair_key(tag, &item, registry)?;
             record_unique_key(&mut seen, key_identity(&key, registry)?, key)?;
         }

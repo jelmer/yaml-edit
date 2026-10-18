@@ -196,6 +196,7 @@ mod parser;
 pub mod path;
 mod scalar;
 mod schema;
+mod tag;
 pub mod validator;
 mod value;
 pub mod visitor;

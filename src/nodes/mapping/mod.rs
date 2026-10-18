@@ -9,15 +9,14 @@ use helpers::{
     FlowInsertPos,
 };
 pub(crate) use helpers::{
-    block_scalar_body_shift, drop_tagged_anchor, held_anchor, held_anchor_token, is_block_scalar,
-    source_anchor_text,
+    block_scalar_body_shift, drop_tagged_anchor, held_anchor, held_anchor_token, source_anchor_text,
 };
 
 use super::{
     ensure_trailing_newline, entry_key, entry_line_terminated, entry_value, fresh_token,
-    hand_line_break_to_mapping, has_child_token, settle_lines_after_inserted_entry,
-    strip_flow_separator, trailing_newline_reachable, unterminate_last_line, Lang, Sequence,
-    SyntaxNode,
+    hand_line_break_to_mapping, has_child_token, is_block_scalar,
+    settle_lines_after_inserted_entry, strip_flow_separator, trailing_newline_reachable,
+    unterminate_last_line, Lang, Sequence, SyntaxNode,
 };
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;

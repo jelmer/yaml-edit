@@ -2327,6 +2327,9 @@ block_map:
         assert!(a == owned);
         assert!(a.yaml_eq(&"x"));
         assert!(a != "y");
+        assert!(!a.yaml_eq(&"y"));
+        let other = String::from("y");
+        assert!(a != other);
         let b = mapping.get("b").unwrap();
         assert_eq!(b.get_item(1).unwrap().to_string(), "2");
         assert_eq!(b.get_item(2), None);

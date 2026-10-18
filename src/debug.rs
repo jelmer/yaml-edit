@@ -1612,6 +1612,21 @@ mod new_debug_tests {
     }
 
     #[test]
+    fn test_visual_diff_same_length() {
+        let before = Document::from_str("a: 1\n").unwrap();
+        let after = Document::from_str("a: 2\n").unwrap();
+        let diff = VisualDiff {
+            before: &before,
+            after: &after,
+        }
+        .to_string();
+        assert!(
+            diff.ends_with("Changes:\n--------\nLine 1: \"a: 1\" -> \"a: 2\"\n"),
+            "{diff}"
+        );
+    }
+
+    #[test]
     fn test_graphviz_dot_full_output() {
         let yaml = YamlFile::from_str("a").unwrap();
         assert_eq!(

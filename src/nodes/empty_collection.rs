@@ -1,0 +1,502 @@
+//! Empty collections. YAML has no block syntax for a mapping or sequence
+//! without entries, so an empty one is written `{}` or `[]`: a block
+//! collection that loses its last entry turns into that, and an empty
+//! placeholder turns back into a block collection when it gets its first.
+
+use super::{fresh_token, has_child_token, replace_children, trivia, SyntaxNode, SyntaxToken};
+use crate::lex::SyntaxKind;
+use rowan::ast::AstNode;
+
+type Element = rowan::NodeOrToken<SyntaxNode, SyntaxToken>;
+
+/// Write `collection`, a block MAPPING or SEQUENCE left without entries,
+/// as `{}` or `[]`, so that it does not read back as null or merge into
+/// what follows. Does nothing to a flow collection or one with entries.
+///
+/// The collection itself becomes the flow-empty, rather than a new node, so
+/// handles to it stay attached. As a mapping value it moves up onto the
+/// key's line, with its node properties and a comment ending that line:
+/// `key: !t {}  # c`. Elsewhere, as a sequence item, explicit key or
+/// document root, it stays where it is. Comment lines are kept.
+///
+/// `terminated` says whether the collection's last line ended in a line
+/// break before it was drained; if so, the flow-empty line gets one too.
+/// `bare` says whether to rewrite a document root or detached collection,
+/// which has no entry line that would otherwise be left empty.
+pub(crate) fn render_empty(collection: &SyntaxNode, terminated: bool, bare: bool) {
+    let Some((open, _)) = brackets(collection.kind()) else {
+        return;
+    };
+    if has_child_token(collection, |k| k == open.0)
+        || collection.children().any(|c| {
+            matches!(
+                c.kind(),
+                SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+            )
+        })
+    {
+        return;
+    }
+    let node = collection
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::TAGGED_NODE)
+        .unwrap_or_else(|| collection.clone());
+    match node.parent().map(|p| p.kind()) {
+        Some(SyntaxKind::VALUE) => render_as_value(collection, terminated),
+        Some(SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::KEY) => {
+            render_in_place(collection, &node, terminated)
+        }
+        Some(SyntaxKind::DOCUMENT) | None if bare => render_in_place(collection, &node, terminated),
+        Some(SyntaxKind::DOCUMENT) | None => {}
+        Some(kind) => panic!("unexpected {kind:?} holding a block collection"),
+    }
+}
+
+/// The flow-empty brackets for a collection of `kind`, if it is one.
+fn brackets(kind: SyntaxKind) -> Option<((SyntaxKind, &'static str), (SyntaxKind, &'static str))> {
+    match kind {
+        SyntaxKind::MAPPING => Some((
+            (SyntaxKind::LEFT_BRACE, "{"),
+            (SyntaxKind::RIGHT_BRACE, "}"),
+        )),
+        SyntaxKind::SEQUENCE => Some((
+            (SyntaxKind::LEFT_BRACKET, "["),
+            (SyntaxKind::RIGHT_BRACKET, "]"),
+        )),
+        _ => None,
+    }
+}
+
+/// Replace the contents of the drained `collection` with flow-empty
+/// brackets, returning the comment lines and line breaks it held.
+fn replace_with_brackets(collection: &SyntaxNode) -> Vec<SyntaxToken> {
+    hand_trailing_indent_to_comment(collection);
+    let leftovers: Vec<_> = collection
+        .children_with_tokens()
+        .map(|el| match el {
+            rowan::NodeOrToken::Token(t) => t,
+            rowan::NodeOrToken::Node(n) => {
+                panic!("unexpected {:?} left in an empty collection", n.kind())
+            }
+        })
+        .collect();
+    if let Some(t) = leftovers.iter().find(|t| {
+        !matches!(
+            t.kind(),
+            SyntaxKind::COMMENT | SyntaxKind::INDENT | SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE
+        )
+    }) {
+        panic!("unexpected {:?} left in an empty collection", t.kind());
+    }
+    let (open, close) = brackets(collection.kind()).expect("a collection");
+    replace_children(
+        collection,
+        0..leftovers.len(),
+        vec![
+            fresh_token(open.0, open.1).into(),
+            fresh_token(close.0, close.1).into(),
+        ],
+    );
+    leftovers
+}
+
+fn copies(tokens: &[SyntaxToken]) -> Vec<Element> {
+    tokens
+        .iter()
+        .map(|t| fresh_token(t.kind(), t.text()).into())
+        .collect()
+}
+
+/// [`render_empty`] for a collection that is a sequence item, explicit key,
+/// document root or detached; `node` is the collection or the TAGGED_NODE
+/// around it.
+fn render_in_place(collection: &SyntaxNode, node: &SyntaxNode, terminated: bool) {
+    // Entries normally take their trailing NEWLINE with them when removed.
+    // An explicit-key entry's line break is a sibling, so it outlives the
+    // entry and would otherwise leave the mapping rendering as bare
+    // whitespace instead of `{}`. Comment lines that followed an entry
+    // stay after the flow-empty line, indented as they were.
+    let leftovers = replace_with_brackets(collection);
+    let tail_start = leftovers
+        .iter()
+        .position(|t| t.kind() == SyntaxKind::COMMENT)
+        .map(|i| {
+            if i > 0 && leftovers[i - 1].kind() != SyntaxKind::NEWLINE {
+                i - 1
+            } else {
+                i
+            }
+        })
+        .unwrap_or(leftovers.len());
+    let tail = copies(&leftovers[tail_start..]);
+
+    indent_past_question(collection);
+
+    if !terminated && tail.is_empty() {
+        return;
+    }
+    // The line break follows the node, properties included, as a parsed
+    // flow-empty line has it; for an explicit key, it follows the KEY.
+    let node = node
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::KEY)
+        .unwrap_or_else(|| node.clone());
+    let Some(parent) = node.parent() else {
+        // A detached collection has no line of its own; it keeps its
+        // comment lines at its end.
+        if !tail.is_empty() {
+            let end = node.children_with_tokens().count();
+            let mut lines = vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()];
+            lines.extend(tail);
+            node.splice_children(end..end, lines);
+        }
+        return;
+    };
+    let at = node.index() + 1;
+    parent.splice_children(at..at, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+    if tail.is_empty() {
+        return;
+    }
+    // A parsed comment line after a sequence item belongs to the sequence;
+    // a detached item keeps it at its end.
+    let (host, at) = match parent.parent() {
+        Some(sequence) if parent.kind() == SyntaxKind::SEQUENCE_ENTRY => {
+            (sequence, parent.index() + 1)
+        }
+        _ => (parent, at + 1),
+    };
+    host.splice_children(at..at, tail);
+}
+
+/// [`render_empty`] for a mapping value: replace the `NEWLINE INDENT
+/// COLLECTION` scaffold with an inline ` {}` or ` []`, so the entry
+/// renders as `key: {}` instead of an unterminated `key:\n    `. With
+/// comment lines before or inside the collection, which cannot share the
+/// key's line, the flow-empty takes the collection's place instead.
+fn render_as_value(collection: &SyntaxNode, terminated: bool) {
+    // A tag sits between the VALUE and the collection; the rewrite
+    // happens inside the TAGGED_NODE so the tag survives.
+    let host = collection.parent().expect("a mapping value has a parent");
+    let value_node = if host.kind() == SyntaxKind::TAGGED_NODE {
+        host.parent().expect("a tagged mapping value has a VALUE")
+    } else {
+        host.clone()
+    };
+    let entry_node = value_node
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::MAPPING_ENTRY)
+        .expect("a VALUE is in a MAPPING_ENTRY");
+
+    let mut properties = Vec::new();
+    let mut comment = None;
+    let mut comment_lines = false;
+    let mut seen_newline = false;
+    for el in host.children_with_tokens() {
+        let token = match el {
+            rowan::NodeOrToken::Node(n) if &n == collection => continue,
+            rowan::NodeOrToken::Node(n) => {
+                panic!("unexpected {:?} next to a block collection", n.kind())
+            }
+            rowan::NodeOrToken::Token(t) => t,
+        };
+        match token.kind() {
+            SyntaxKind::TAG | SyntaxKind::ANCHOR => properties.push(token),
+            SyntaxKind::COMMENT if seen_newline => comment_lines = true,
+            SyntaxKind::COMMENT => comment = Some(token),
+            SyntaxKind::NEWLINE => seen_newline = true,
+            SyntaxKind::INDENT | SyntaxKind::WHITESPACE => {}
+            kind => panic!("unexpected {kind:?} next to a block collection"),
+        }
+    }
+
+    // Comment lines left inside the drained collection are kept too,
+    // minus the indentation and line ends around them.
+    let leftovers = replace_with_brackets(collection);
+    let start = leftovers
+        .iter()
+        .position(|t| !matches!(t.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE))
+        .unwrap_or(leftovers.len());
+    let end = leftovers
+        .iter()
+        .rposition(|t| {
+            !matches!(
+                t.kind(),
+                SyntaxKind::INDENT | SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE
+            )
+        })
+        .map_or(start, |i| i + 1);
+    let inner = &leftovers[start..end];
+
+    if comment_lines || !inner.is_empty() {
+        let mut replacement = copies(inner);
+        if !inner.is_empty() {
+            let indent = collection
+                .prev_sibling_or_token()
+                .and_then(|el| el.into_token())
+                .filter(|t| t.kind() == SyntaxKind::INDENT)
+                .expect("block collection under a comment line is indented");
+            replacement.push(fresh_token(SyntaxKind::NEWLINE, "\n").into());
+            replacement.push(fresh_token(SyntaxKind::INDENT, indent.text()).into());
+        }
+        replacement.push(collection.clone().into());
+        let index = collection.index();
+        replace_children(&host, index..index + 1, replacement);
+        if terminated {
+            trivia::terminate(&entry_node);
+        }
+        return;
+    }
+
+    // Keep the host node and its properties, and replace everything after
+    // them (comment, line break, indent and the block collection) with the
+    // flow-empty collection.
+    let start = properties.last().map_or(0, |p| p.index() + 1);
+    let end = host.children_with_tokens().count();
+    // Each separator must be its own token: rowan cannot attach one
+    // mutable token in two places.
+    let ws = || fresh_token(SyntaxKind::WHITESPACE, " ");
+    let has_properties = !properties.is_empty();
+    let mut replacement: Vec<Element> = Vec::new();
+    if has_properties {
+        replacement.push(ws().into());
+    }
+    replacement.push(collection.clone().into());
+    let mut comment: Vec<Element> = comment
+        .into_iter()
+        .flat_map(|c| {
+            [
+                ws().into(),
+                fresh_token(SyntaxKind::COMMENT, c.text()).into(),
+            ]
+        })
+        .collect();
+    // A comment after a TAGGED_NODE belongs to the VALUE around it.
+    if host.kind() != SyntaxKind::TAGGED_NODE {
+        replacement.append(&mut comment);
+    }
+    replace_children(&host, start..end, replacement);
+    if !comment.is_empty() {
+        let after_host = host.index() + 1;
+        value_node.splice_children(after_host..after_host, comment);
+    }
+
+    // The space separating the colon from its value belongs to the
+    // entry, not the value: a parsed `key: {}` puts it between COLON
+    // and VALUE. Left inside, a later edit that replaces the whole
+    // VALUE took the space with it and wrote `key:value`, which is a
+    // plain scalar rather than an entry.
+    if !has_properties {
+        let index = value_node.index();
+        let separated = value_node
+            .prev_sibling_or_token()
+            .is_some_and(|el| el.kind() == SyntaxKind::WHITESPACE);
+        if !separated {
+            entry_node.splice_children(index..index, vec![ws().into()]);
+        }
+    }
+
+    if terminated {
+        trivia::terminate(&entry_node);
+    }
+}
+
+/// A block sequence in an explicit key may start on the line after the
+/// `?`, at the `?`'s own column, but a flow collection there would end the
+/// key. Indent `collection` past the `?` if it sits there.
+fn indent_past_question(collection: &SyntaxNode) {
+    let Some(host) = collection.parent() else {
+        return;
+    };
+    let Some(key) = host
+        .ancestors()
+        .find(|n| n.kind() != SyntaxKind::TAGGED_NODE)
+        .filter(|n| n.kind() == SyntaxKind::KEY)
+    else {
+        return;
+    };
+    let question = key
+        .parent()
+        .and_then(|e| {
+            e.children_with_tokens()
+                .filter_map(|el| el.into_token())
+                .find(|t| t.kind() == SyntaxKind::QUESTION)
+        })
+        .expect("explicit key has a ?");
+    let Some(prev) = collection
+        .prev_sibling_or_token()
+        .and_then(|el| el.into_token())
+    else {
+        return;
+    };
+    let indent = match prev.kind() {
+        SyntaxKind::NEWLINE => None,
+        SyntaxKind::INDENT => Some(prev),
+        _ => return,
+    };
+    let column = crate::validator::token_column(&question);
+    if indent
+        .as_ref()
+        .is_some_and(|t| t.text().chars().count() > column)
+    {
+        return;
+    }
+    let new_indent = fresh_token(SyntaxKind::INDENT, &" ".repeat(column + 2));
+    let at = collection.index();
+    match indent {
+        Some(t) => replace_children(&host, t.index()..at, vec![new_indent.into()]),
+        None => host.splice_children(at..at, vec![new_indent.into()]),
+    }
+}
+
+/// A comment line right after a block collection has its INDENT as the
+/// collection's last child, while the comment itself sits further up.
+/// Move the INDENT out, so that rewriting the collection keeps the
+/// comment's column. The parser puts it in the innermost block collection
+/// still open at the comment: the one holding `collection`, or the comment's
+/// own when that one has ended.
+fn hand_trailing_indent_to_comment(collection: &SyntaxNode) {
+    let Some(indent) = collection
+        .last_child_or_token()
+        .and_then(|el| el.into_token())
+        .filter(|t| t.kind() == SyntaxKind::INDENT)
+    else {
+        return;
+    };
+    if !crate::yaml::indents_comment_line(&indent) {
+        return;
+    }
+    let comment = indent.next_token().expect("comment after its INDENT");
+    let enclosing = collection
+        .ancestors()
+        .skip(1)
+        .find(|n| matches!(n.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE));
+    let (host, at) = match enclosing {
+        Some(e) if !comment.parent_ancestors().any(|a| a == e) => {
+            let end = e.children_with_tokens().count();
+            (e, end)
+        }
+        _ => (
+            comment.parent().expect("comment has a parent"),
+            comment.index(),
+        ),
+    };
+    let new_indent = fresh_token(SyntaxKind::INDENT, indent.text());
+    indent.detach();
+    host.splice_children(at..at, vec![new_indent.into()]);
+}
+
+/// Detach the trailing NEWLINE on `empty_collection`'s enclosing
+/// MAPPING_ENTRY when it was serving as a `key:\n    \n` placeholder.
+///
+/// The freshly built `new_entry` must be checked because it only supplies
+/// its own trailing NEWLINE for some shapes; when it does not, the
+/// placeholder is still needed to terminate the line. See issue #18.
+pub(crate) fn detach_empty_collection_placeholder_newline(
+    empty_collection: &SyntaxNode,
+    new_entry: &SyntaxNode,
+) {
+    if !trivia::line_end(new_entry).is_terminated() {
+        return;
+    }
+    let Some(parent_value) = empty_collection.parent() else {
+        return;
+    };
+    if parent_value.kind() != SyntaxKind::VALUE {
+        return;
+    }
+    let Some(parent_entry) = parent_value.parent() else {
+        return;
+    };
+    if parent_entry.kind() != SyntaxKind::MAPPING_ENTRY {
+        return;
+    }
+    let Some(last) = parent_entry.last_child_or_token() else {
+        return;
+    };
+    if last
+        .as_token()
+        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
+    {
+        last.detach();
+    }
+}
+
+/// Is `collection` an empty mapping or sequence awaiting its first entry?
+/// See [`Mapping::new_pending_block`](crate::Mapping::new_pending_block).
+pub(crate) fn is_block_placeholder(collection: &SyntaxNode) -> bool {
+    !collection.children().any(|c| {
+        matches!(
+            c.kind(),
+            SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+        )
+    }) && collection
+        .children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .any(|t| t.kind() == SyntaxKind::WHITESPACE && t.text().is_empty())
+}
+
+/// Turn `collection` into a block collection if it is an empty placeholder
+/// and nothing forces it to stay flow, before its first entry is added:
+/// drop its flow delimiters, remove the now-dangling inline separator after
+/// the entry's colon, and scaffold `NEWLINE INDENT` on the parent VALUE so
+/// the first entry lands in block position.
+pub(crate) fn convert_placeholder_to_block(collection: &SyntaxNode) {
+    if !is_block_placeholder(collection) || super::sequence::must_render_flow(collection) {
+        return;
+    }
+    let children: Vec<_> = collection.children_with_tokens().collect();
+    for child in children {
+        child.detach();
+    }
+
+    let Some(parent) = collection
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::VALUE)
+    else {
+        return;
+    };
+    let entry = parent
+        .parent()
+        .filter(|e| e.kind() == SyntaxKind::MAPPING_ENTRY);
+    let indent_width = entry
+        .as_ref()
+        .and_then(|e| e.parent())
+        .filter(|m| m.kind() == SyntaxKind::MAPPING)
+        .and_then(crate::nodes::Mapping::cast)
+        .map_or(2, |m| m.detect_indentation_level() + 2);
+
+    // The placeholder was laid out inline, so the entry carries a
+    // `WHITESPACE " "` separator between COLON and VALUE. Block content
+    // starts on the next line, which would leave that space after the colon.
+    if let Some(entry) = entry {
+        let sep = entry
+            .children_with_tokens()
+            .position(|c| c.as_node() == Some(&parent))
+            .filter(|&i| i >= 1)
+            .and_then(|i| entry.children_with_tokens().nth(i - 1))
+            .filter(|c| {
+                c.as_token()
+                    .is_some_and(|t| t.kind() == SyntaxKind::WHITESPACE)
+            });
+        if let Some(sep) = sep {
+            sep.detach();
+        }
+    }
+
+    let pos = parent
+        .children_with_tokens()
+        .position(|c| c.as_node() == Some(collection))
+        .unwrap_or(0);
+    let already_scaffolded = pos >= 1
+        && parent
+            .children_with_tokens()
+            .nth(pos - 1)
+            .and_then(|c| c.into_token())
+            .is_some_and(|t| matches!(t.kind(), SyntaxKind::INDENT | SyntaxKind::NEWLINE));
+    if already_scaffolded {
+        return;
+    }
+    let nl = fresh_token(SyntaxKind::NEWLINE, "\n");
+    let indent = fresh_token(SyntaxKind::INDENT, &" ".repeat(indent_width));
+    parent.splice_children(pos..pos, vec![nl.into(), indent.into()]);
+}

@@ -58,7 +58,25 @@ impl Parser {
         // first key's own column when it is further right, or
         // `"  k:\n  j: 1\n"` reads as `{k: {j: 1}}` where saphyr and PyYAML
         // both give two sibling entries.
-        let base_indent = base_indent.max(self.current_line_indent);
+        let mut base_indent = base_indent.max(self.current_line_indent);
+        // The line's indent misses a compact mapping whose key follows a
+        // `-`, `?` or `:` on its line: in `? a\n: b: c\n? d\n: e\n` the
+        // mapping `{b: c}` sits past the `:`, and `? d` is the enclosing
+        // mapping's next entry. Later entries have to clear that indicator.
+        // A line between it and the first key is still ours, misindented,
+        // which the validator reports.
+        let indicator_column = [
+            self.sequence_entry_column,
+            self.explicit_key_column,
+            self.explicit_value_column,
+        ]
+        .into_iter()
+        .flatten()
+        .max();
+        let mut later_entry_indent = indicator_column.map(|column| {
+            let key_column = self.error_context.current_location().1.saturating_sub(1);
+            key_column.min(column + 1)
+        });
         let outer_equal_indent = self.equal_indent_continues_scalar;
         self.equal_indent_continues_scalar = false;
         // A floor set for a scalar node does not carry over to the values of
@@ -116,6 +134,9 @@ impl Parser {
                 self.parse_explicit_key_entry();
             } else {
                 self.parse_mapping_key_value_pair(base_indent);
+            }
+            if let Some(indent) = later_entry_indent.take() {
+                base_indent = base_indent.max(indent);
             }
 
             // Progress guard: if no token was consumed this iteration we
@@ -1393,6 +1414,39 @@ mod tests {
     #[test]
     fn test_top_level_explicit_keys_are_unaffected() {
         assert_eq!(top_level_keys("? a\n: 1\nplain: v\n"), ["a", "plain"]);
+    }
+
+    /// The value of the single document in `src`, with a check that the
+    /// tree is well-formed and that the validator accepts it.
+    fn checked_value(src: &str) -> crate::YamlValue {
+        use rowan::ast::AstNode;
+        let file = YamlFile::from_str(src).expect("should parse");
+        crate::debug::validate_tree(file.syntax()).expect("tree should be valid");
+        let doc = file.document().expect("should have a document");
+        assert_eq!(crate::validator::Validator::new().validate(&doc), vec![]);
+        crate::YamlValue::from_document(&doc).expect("should convert")
+    }
+
+    /// A compact mapping as an explicit value ends where the next entry of
+    /// the enclosing mapping starts, left of its first key.
+    #[test]
+    fn test_entry_after_compact_mapping_explicit_value() {
+        for (src, expected) in [
+            ("? a\n: b: c\n? d\n: e\n", "{a: {b: c}, d: e}"),
+            ("? a\n: b: c\nd: e\n", "{a: {b: c}, d: e}"),
+            ("x: 1\n? a\n: b: c\n? d\n: e\n", "{x: 1, a: {b: c}, d: e}"),
+            ("? a\n: b: c\n  f: g\n? d\n: e\n", "{a: {b: c, f: g}, d: e}"),
+            ("? a\n: !!map b: c\n? d\n: e\n", "{a: {b: c}, d: e}"),
+            ("? a\n: &x b: c\n? d\n: e\n", "{a: {b: c}, d: e}"),
+            ("? a\n: {x: 1}: c\n? d\n: e\n", "{a: {{x: 1}: c}, d: e}"),
+            ("- ? a\n  : b: c\n  ? d\n  : e\n", "[{a: {b: c}, d: e}]"),
+            (
+                "k:\n  ? a\n  : b: c\n  ? d\n  : e\n",
+                "{k: {a: {b: c}, d: e}}",
+            ),
+        ] {
+            assert_eq!(checked_value(src), checked_value(expected), "{src:?}");
+        }
     }
 
     /// Content after a flow collection value stays in the VALUE rather

@@ -231,8 +231,8 @@ fn key_as_yaml_node<K: AsYaml>(key: &K) -> Option<YamlNode> {
     use crate::lex::SyntaxKind;
     use rowan::GreenNodeBuilder;
 
-    if let Some(node) = key.as_node() {
-        return YamlNode::from_syntax(node.clone());
+    if let Some(node) = key.value_node() {
+        return YamlNode::from_syntax(node);
     }
     let mut builder = GreenNodeBuilder::new();
     builder.start_node(SyntaxKind::ROOT.into());

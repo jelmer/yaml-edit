@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 62f20d54353835e1717155d93b6c2d30a126162b45f6a291146f7a7c337a1e5d # shrinks to value = Pairs([("", Scalar(ScalarValue { value: "\t[\n]\"", style: Literal, scalar_type: String, tag: None })), ("", Scalar(ScalarValue { value: "", style: SingleQuoted, scalar_type: String, tag: None }))]), indent = 0

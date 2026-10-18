@@ -255,12 +255,12 @@ impl SequenceBuilder {
     pub fn item(mut self, value: impl AsYaml) -> Self {
         self.start_entry();
         let nested = self.indent + 2;
-        let block_node = value.as_node().filter(|n| {
+        let block_node = value.value_node().filter(|n| {
             !value.is_inline() && !matches!(n.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE)
         });
         let ends_with_newline = match block_node {
             // Block scalars and tagged block content.
-            Some(node) => emit_block_value(&mut self.builder, node, nested, false),
+            Some(node) => emit_block_value(&mut self.builder, &node, nested, false),
             // A block collection starts on the dash line, its later lines
             // lined up under the first.
             None => {
@@ -400,8 +400,8 @@ impl MappingBuilder {
     pub fn pair(mut self, key: impl Into<String>, value: impl AsYaml) -> Self {
         self.start_entry(&key.into());
         let nested = self.indent + 2;
-        let ends_with_newline = match value.as_node().filter(|_| !value.is_inline()) {
-            Some(node) => emit_block_value(&mut self.builder, node, nested, true),
+        let ends_with_newline = match value.value_node().filter(|_| !value.is_inline()) {
+            Some(node) => emit_block_value(&mut self.builder, &node, nested, true),
             None if value.is_inline() => {
                 self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
                 self.builder.start_node(SyntaxKind::VALUE.into());

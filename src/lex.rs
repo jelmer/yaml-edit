@@ -1660,7 +1660,14 @@ fn track_block_scalar_body(
     {
         *body = None;
     } else if current.indent.is_none() {
-        current.indent = Some(indent);
+        // Only spaces indent, so a tab after them is content. As in the
+        // parser, tabs count when the spaces alone don't reach the body.
+        let spaces = crate::column::space_indent(&input[line_start..]);
+        current.indent = Some(if spaces >= current.min_indent {
+            spaces
+        } else {
+            indent
+        });
     }
 }
 
@@ -3051,6 +3058,33 @@ double: "quoted""#;
                 SyntaxKind::STRING,
                 "unix:///Users/${metadata.username}/path"
             )
+        );
+    }
+
+    #[test]
+    fn test_block_scalar_body_tab_is_not_indentation() {
+        // The body is indented two, so the tab is content and the next line
+        // is still body: its `"` must not start a quoted scalar.
+        use SyntaxKind::*;
+        assert_eq!(
+            lex("- |-\n  \t[\n  ]\"\n- b\n"),
+            vec![
+                (DASH, "-"),
+                (WHITESPACE, " "),
+                (PIPE, "|"),
+                (STRING, "-"),
+                (NEWLINE, "\n"),
+                (INDENT, "  \t"),
+                (STRING, "["),
+                (NEWLINE, "\n"),
+                (INDENT, "  "),
+                (STRING, "]\""),
+                (NEWLINE, "\n"),
+                (DASH, "-"),
+                (WHITESPACE, " "),
+                (STRING, "b"),
+                (NEWLINE, "\n"),
+            ]
         );
     }
 }

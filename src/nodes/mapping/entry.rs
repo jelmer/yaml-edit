@@ -116,7 +116,7 @@ impl MappingEntry {
         use_explicit_key: bool,
         key_indent: usize,
     ) -> Self {
-        let key_anchor = key.as_node().and_then(source_anchor_text);
+        let key_anchor = key.value_node().and_then(|n| source_anchor_text(&n));
         Self::build(
             key,
             value,
@@ -209,9 +209,9 @@ impl MappingEntry {
         // parsed as escaping the parent's scope, so we must re-indent.
         let built = (!flow_context).then(|| built_block_node(&value)).flatten();
         let block_source = value
-            .as_node()
+            .value_node()
             .filter(|_| !flow_context && !value.is_inline())
-            .or(built.as_ref())
+            .or(built)
             .filter(|_| {
                 matches!(
                     value.kind(),
@@ -233,7 +233,7 @@ impl MappingEntry {
             });
 
         let value_ends_with_newline = if let Some(source) = block_source {
-            let block = build_block_value_node(source, key_indent + 2, None);
+            let block = build_block_value_node(&source, key_indent + 2, None);
             if block.on_key_line {
                 builder.token(SyntaxKind::WHITESPACE.into(), " ");
             }
@@ -596,9 +596,9 @@ impl MappingEntry {
             .then(|| built_block_node(&new_value))
             .flatten();
         let block_source = new_value
-            .as_node()
+            .value_node()
             .filter(|_| !flow_context && !new_value.is_inline())
-            .or(built.as_ref())
+            .or(built)
             .filter(|_| {
                 matches!(
                     new_value.kind(),
@@ -606,7 +606,7 @@ impl MappingEntry {
                 )
             });
         if let Some(source) = block_source {
-            self.set_block_value(source, old_anchor);
+            self.set_block_value(&source, old_anchor);
             return;
         }
 
@@ -620,7 +620,7 @@ impl MappingEntry {
         // a flow mapping, stays where it is.
         let anchor = old_anchor
             .map(str::to_string)
-            .or_else(|| new_value.as_node().and_then(source_anchor_text));
+            .or_else(|| new_value.value_node().and_then(|n| source_anchor_text(&n)));
         let old_was_block = self.value().is_some_and(|v| value_is_block(&v));
         let trailing_comment = (old_was_block || self.value().is_some_and(|v| has_comment(&v)))
             .then(|| find_key_line_comment(&self.0))

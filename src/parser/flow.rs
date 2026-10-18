@@ -66,7 +66,7 @@ impl Parser<'_> {
             self.skip_whitespace();
         }
         if matches!(
-            self.current(),
+            self.next_significant_kind(),
             Some(SyntaxKind::COLON | SyntaxKind::COMMA | SyntaxKind::RIGHT_BRACKET)
         ) {
             self.emit_implicit_null();
@@ -178,11 +178,16 @@ impl Parser<'_> {
         self.flow_depth += 1;
 
         self.bump(); // consume the opening bracket
-        self.skip_ws_and_newlines(); // Support comments and newlines in flow collections
 
         let prev_flow = std::mem::replace(&mut self.in_flow_context, true);
 
-        while self.current() != Some(closer) && self.current().is_some() {
+        loop {
+            // Comment and blank lines between entries, and the indentation
+            // of the next entry's line, are the collection's.
+            self.skip_ws_and_newlines();
+            if self.current() == Some(closer) || self.current().is_none() {
+                break;
+            }
             let tokens_before = self.tokens.len();
             if !entry(self) {
                 break;
@@ -211,13 +216,22 @@ impl Parser<'_> {
         self.error_context.pop_context();
     }
 
-    /// Step over the comments and line breaks after a flow entry, and the
-    /// comma terminating it, which the entry owns, then close the entry.
+    /// Step over the comma terminating a flow entry, with anything before
+    /// it, and the rest of the line it ends, which the entry owns, then
+    /// close the entry.
     fn finish_flow_entry(&mut self) {
-        self.skip_ws_and_newlines(); // Support comments after values
-        if self.current() == Some(SyntaxKind::COMMA) {
+        if self.next_significant_kind() == Some(SyntaxKind::COMMA) {
+            self.skip_ws_and_newlines();
             self.bump();
-            self.skip_ws_and_newlines(); // Support comments after commas
+        }
+        self.skip_line_end_trivia();
+        if self.current() == Some(SyntaxKind::NEWLINE)
+            && !matches!(
+                self.previous_kind,
+                Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
+            )
+        {
+            self.bump();
         }
         self.builder.finish_node();
     }
@@ -281,8 +295,8 @@ impl Parser<'_> {
         // scalar. Emit the same zero-width `SCALAR { NULL "" }` shape
         // used everywhere else so `KEY` always contains one value node.
         if matches!(
-            self.current(),
-            Some(SyntaxKind::COMMA) | Some(SyntaxKind::COLON) | Some(SyntaxKind::RIGHT_BRACE)
+            self.next_significant_kind(),
+            Some(SyntaxKind::COMMA | SyntaxKind::COLON | SyntaxKind::RIGHT_BRACE)
         ) {
             self.emit_implicit_null();
         } else {

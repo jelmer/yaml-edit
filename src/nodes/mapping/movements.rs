@@ -5,7 +5,7 @@ use super::{Mapping, MappingEntry};
 use crate::lex::SyntaxKind;
 use crate::nodes::trivia::Slot;
 use crate::nodes::trivia::{self, line_end, FlowSeparator};
-use crate::nodes::{fresh_token, replace_children, Lang, SyntaxNode, SyntaxToken};
+use crate::nodes::{fresh_token, Lang, SyntaxNode};
 use rowan::ast::AstNode;
 
 type Element = rowan::SyntaxElement<Lang>;
@@ -16,9 +16,6 @@ struct Group {
     /// them.
     lines_before: Vec<Element>,
     entry: SyntaxNode,
-    /// In a flow mapping, what the parser put between it and the next
-    /// entry.
-    line: Vec<Element>,
 }
 
 /// The layout that belongs to a position in a mapping rather than to the
@@ -27,28 +24,10 @@ struct SlotLayout {
     /// For each entry of a flow mapping, the separator it ends with, if
     /// that can be swapped for another entry's.
     flow_separators: Vec<Option<FlowSeparator>>,
-    /// For each entry of a flow mapping that ends its line, the
-    /// indentation of the line that follows.
-    flow_line_indents: Vec<Option<Vec<(SyntaxKind, String)>>>,
     /// Whether the last entry of a flow mapping has a trailing comma.
     last_has_comma: bool,
     /// Whether the last entry of a block mapping ends its line.
     last_terminated: bool,
-}
-
-/// The indentation of the line after `entry`, a flow mapping entry, if
-/// the entry ends with a line break followed only by that indentation.
-fn flow_line_indent(entry: &SyntaxNode) -> Option<Vec<SyntaxToken>> {
-    let children: Vec<_> = entry.children_with_tokens().collect();
-    let start = children
-        .iter()
-        .rposition(|c| !matches!(c.kind(), SyntaxKind::WHITESPACE | SyntaxKind::INDENT))?;
-    (children[start].kind() == SyntaxKind::NEWLINE).then(|| {
-        children[start + 1..]
-            .iter()
-            .filter_map(|c| c.as_token().cloned())
-            .collect()
-    })
 }
 
 impl Mapping {
@@ -75,6 +54,16 @@ impl Mapping {
         };
         let layout = self.slot_layout();
         let flow = self.is_flow_style();
+        // A flow mapping's first entry has the indentation of its line
+        // inside the mapping, as the others do.
+        let mut prefix = all[..first].to_vec();
+        let first_indent = prefix
+            .last()
+            .filter(|c| flow && c.kind() == SyntaxKind::INDENT)
+            .cloned();
+        if first_indent.is_some() {
+            prefix.pop();
+        }
 
         // What moves with each entry, and for each position the blank lines
         // after it and the INDENT starting the next entry's line.
@@ -88,15 +77,10 @@ impl Mapping {
             groups.push(Group {
                 lines_before: std::mem::take(&mut lines_before),
                 entry: entry.clone(),
-                line: Vec::new(),
             });
             let Some(&next) = starts.get(i + 1) else {
                 trailing = all[at + 1..].to_vec();
-                let gap_end = if flow {
-                    0
-                } else {
-                    leading_blank_lines_end(&trailing)
-                };
+                let gap_end = leading_blank_lines_end(&trailing);
                 gaps.push(trailing.drain(..gap_end).collect());
                 break;
             };
@@ -107,16 +91,8 @@ impl Mapping {
                 .then(|| between.pop())
                 .flatten();
             line_indents.push(indent);
-            if flow {
-                // TODO: the parser puts the comment lines between the
-                // entries of a flow mapping in the entry above, and they go
-                // with that rather than with the entry below.
-                groups.last_mut().expect("just pushed").line.extend(between);
-                gaps.push(Vec::new());
-            } else {
-                lines_before = between.split_off(leading_blank_lines_end(&between));
-                gaps.push(between);
-            }
+            lines_before = between.split_off(leading_blank_lines_end(&between));
+            gaps.push(between);
         }
 
         let ordered: Vec<Group> = order
@@ -135,10 +111,7 @@ impl Mapping {
         // instead, or failing that the one before.
         let ends_in_block_scalar: Vec<bool> = ordered
             .iter()
-            .map(|group| {
-                group.line.iter().all(is_blank)
-                    && crate::nodes::ending_block_scalar(&group.entry).is_some()
-            })
+            .map(|group| crate::nodes::ending_block_scalar(&group.entry).is_some())
             .collect();
         for i in 0..gaps.len() {
             if !ends_in_block_scalar[i] || gaps[i].is_empty() {
@@ -155,33 +128,48 @@ impl Mapping {
         // Comment lines now before the first entry go where the parser
         // puts them, ahead of the mapping.
         let lines_lead = !ordered[0].lines_before.is_empty();
-        let mut new_children = all[..first].to_vec();
+        // Comment lines now first in a flow mapping may follow the `{` on
+        // its line.
+        let opening_line_open = flow
+            && prefix
+                .last()
+                .is_some_and(|c| c.kind() != SyntaxKind::NEWLINE);
+        let mut new_children = prefix;
         let last_gap = gaps.pop().expect("there is an entry");
-        for (i, group) in ordered.into_iter().enumerate() {
+        for (i, mut group) in ordered.into_iter().enumerate() {
             let indent = match i.checked_sub(1) {
                 Some(i) => {
                     new_children.append(&mut gaps[i]);
                     line_indents[i].clone()
                 }
-                // The first entry's line is indented outside the mapping,
-                // unless lines go before it.
+                None if first_indent.is_some() => first_indent.clone(),
+                // The first entry's line is indented outside a block
+                // mapping, unless lines go before it.
                 None if lines_lead => line_indents[0]
                     .as_ref()
                     .and_then(|c| c.as_token())
                     .map(|t| fresh_token(t.kind(), t.text()).into()),
                 None => None,
             };
+            if i == 0 && opening_line_open {
+                if let Some(first) = group
+                    .lines_before
+                    .first_mut()
+                    .filter(|c| c.kind() == SyntaxKind::INDENT)
+                {
+                    *first = fresh_token(SyntaxKind::WHITESPACE, &first.to_string()).into();
+                }
+            }
             new_children.extend(group.lines_before);
             new_children.extend(indent);
             new_children.push(group.entry.into());
-            new_children.extend(group.line);
         }
         new_children.extend(last_gap);
         new_children.extend(trailing);
 
         crate::nodes::kept_aliases::keeping_aliases_moved(&self.0, None, || {
             crate::nodes::replace_children(&self.0, 0..all.len(), new_children);
-            if lines_lead {
+            if lines_lead && !flow {
                 crate::yaml::move_leading_lines_out(&self.0);
             }
             self.restore_slot_layout(&layout);
@@ -196,24 +184,14 @@ impl Mapping {
     /// rather than entries, for [`restore_slot_layout`](Self::restore_slot_layout).
     fn slot_layout(&self) -> SlotLayout {
         let entries: Vec<SyntaxNode> = self.entries().map(|e| e.0).collect();
-        let texts = |tokens: Vec<SyntaxToken>| {
-            tokens
-                .iter()
-                .map(|t| (t.kind(), t.text().to_string()))
-                .collect()
-        };
-        let (flow_separators, flow_line_indents) = if self.is_flow_style() {
-            entries
-                .iter()
-                .map(|e| (FlowSeparator::of(e), flow_line_indent(e).map(texts)))
-                .unzip()
+        let flow_separators = if self.is_flow_style() {
+            entries.iter().map(FlowSeparator::of).collect()
         } else {
-            (Vec::new(), Vec::new())
+            Vec::new()
         };
         let last = entries.last();
         SlotLayout {
             flow_separators,
-            flow_line_indents,
             last_has_comma: last.is_some_and(trivia::has_comma),
             last_terminated: last.map_or(true, |e| line_end(e).is_terminated()),
         }
@@ -249,19 +227,6 @@ impl Mapping {
                 _ if is_last && !layout.last_has_comma => FlowSeparator::strip(entry),
                 _ => FlowSeparator::insert_comma(entry),
             }
-        }
-        // The line after an entry that ends its line, after its comment,
-        // is indented as the line after that position was.
-        for (entry, slot) in entries.iter().zip(&layout.flow_line_indents) {
-            let (Some(own), Some(slot)) = (flow_line_indent(entry), slot) else {
-                continue;
-            };
-            let end = entry.children_with_tokens().count();
-            let tokens: Vec<_> = slot
-                .iter()
-                .map(|(kind, text)| rowan::NodeOrToken::Token(fresh_token(*kind, text)))
-                .collect();
-            replace_children(entry, end - own.len()..end, tokens);
         }
     }
 

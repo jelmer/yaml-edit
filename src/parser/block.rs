@@ -1372,6 +1372,25 @@ mod tests {
         );
     }
 
+    /// A flow entry owns its comma, with anything before it, and the rest
+    /// of that line; the lines after it are the collection's.
+    #[test]
+    fn test_flow_entry_owns_its_line() {
+        assert_eq!(
+            entry_texts("{a: 1, # c\n # d\n b: 2 # e\n}\n"),
+            ["a: 1, # c\n", "b: 2 # e\n"]
+        );
+        assert_eq!(entry_texts("{\n?\n}\n"), ["?\n"]);
+        assert_eq!(
+            entry_texts("{a: 1 # c\n , b: 2}\n"),
+            ["a: 1 # c\n , ", "b: 2"]
+        );
+        assert_eq!(
+            entry_texts("{\n  a: 1,\n\n  b: 2\n  }\n"),
+            ["a: 1,\n", "b: 2\n"]
+        );
+    }
+
     /// A mapping entry owns the comment ending its last line, and the line
     /// break after it, whether its key is explicit or its value on a later
     /// line.

@@ -305,3 +305,54 @@ fn test_comment_after_directive() {
     let output = parsed.to_string();
     assert_eq!(output, yaml);
 }
+
+/// Edit the root of `source` with `edit`, check the result has the shape a
+/// re-parse of its text has, and return the text.
+#[track_caller]
+fn edited(source: &str, edit: impl FnOnce(&yaml_edit::Document)) -> String {
+    use rowan::ast::AstNode;
+    let doc = yaml_edit::Document::from_str(source).unwrap();
+    edit(&doc);
+    let text = doc.to_string();
+    let reparsed = yaml_edit::Document::from_str(&text).unwrap();
+    assert_eq!(
+        yaml_edit::debug::shape_to_string(doc.syntax()),
+        yaml_edit::debug::shape_to_string(reparsed.syntax())
+    );
+    yaml_edit::debug::validate_tree(doc.syntax()).unwrap();
+    text
+}
+
+/// A comment line between two flow entries describes the one below it, as
+/// in a block collection: it moves with that entry, and stays when the
+/// entry above is removed.
+#[test]
+fn test_comment_line_belongs_to_flow_entry_below() {
+    let source = "{\n  a: 1,\n  # about b\n  b: 2\n}\n";
+    let moved = "{\n  # about b\n  b: 2,\n  a: 1\n}\n";
+    assert_eq!(
+        edited(source, |d| d
+            .as_mapping()
+            .unwrap()
+            .reorder_fields(["b", "a"])),
+        moved
+    );
+    assert_eq!(
+        edited(source, |d| {
+            assert!(d.as_mapping().unwrap().move_after("b", "a", 1));
+        }),
+        moved
+    );
+    assert_eq!(
+        edited(source, |d| {
+            d.as_mapping().unwrap().remove("a").unwrap();
+        }),
+        "{\n  # about b\n  b: 2\n}\n"
+    );
+    assert_eq!(
+        edited("[\n  a,\n  # c\n  b\n]\n", |d| {
+            d.as_sequence().unwrap().remove(0).unwrap();
+        }),
+        "[\n  # c\n  b\n]\n"
+    );
+}

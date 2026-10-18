@@ -193,12 +193,30 @@
 //!
 //! ## Flow separators live on the previous entry
 //!
-//! Inside a flow mapping or sequence, the COMMA (and any following
-//! WHITESPACE / NEWLINE / INDENT) between two entries is stored as
-//! trailing siblings of the *previous* entry's KEY / VALUE / SCALAR,
-//! not inside the entry it precedes. Inserters that append a new entry
-//! must add a `, ` suffix to the entry they follow, not a `,` prefix on
-//! themselves. See [`trivia::FlowSeparator`].
+//! Inside a flow mapping or sequence, the COMMA between two entries is
+//! stored after the *previous* entry's KEY / VALUE / SCALAR, not inside
+//! the entry it precedes, along with anything before it and the rest of
+//! its line: white space, a comment and the NEWLINE. An entry without a
+//! comma owns the rest of its line the same way. Comment and blank lines
+//! after that, and the INDENT of the next line, belong to the collection,
+//! as between block entries:
+//!
+//! ```text
+//! # {a: 1, # c\n # d\n b: 2\n}
+//! MAPPING
+//!   LEFT_BRACE "{"
+//!   MAPPING_ENTRY ("a: 1, # c\n")
+//!   INDENT " "
+//!   COMMENT "# d"
+//!   NEWLINE "\n"
+//!   INDENT " "
+//!   MAPPING_ENTRY ("b: 2\n")
+//!   RIGHT_BRACE "}"
+//! ```
+//!
+//! Inserters that append a new entry must add a `, ` suffix to the entry
+//! they follow, not a `,` prefix on themselves. See
+//! [`trivia::FlowSeparator`].
 //!
 //! ## Prefer targeted splices over whole-node rebuilds
 //!

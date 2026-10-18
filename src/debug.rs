@@ -394,6 +394,13 @@ pub(crate) fn assert_parser_shaped(node: &impl rowan::ast::AstNode<Language = cr
 }
 
 fn validate_node(node: &SyntaxNode) -> Result<(), String> {
+    if matches!(
+        node.kind(),
+        SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+    ) && is_in_flow_collection(node)
+    {
+        validate_flow_entry_end(node)?;
+    }
     match node.kind() {
         SyntaxKind::MAPPING_ENTRY => {
             let keys: Vec<_> = node
@@ -527,6 +534,28 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// A flow entry ends with the line of its comma, or of its content if it
+/// has none: the lines after that, and the next line's indentation, are
+/// the collection's.
+fn validate_flow_entry_end(entry: &SyntaxNode) -> Result<(), String> {
+    let children: Vec<_> = entry.children_with_tokens().collect();
+    let end = children
+        .iter()
+        .rposition(|c| c.as_node().is_some() || c.kind() == SyntaxKind::COMMA)
+        .map_or(0, |i| i + 1);
+    let newline = children[end..]
+        .iter()
+        .position(|c| c.kind() == SyntaxKind::NEWLINE);
+    match newline {
+        Some(i) if end + i + 1 < children.len() => Err(format!(
+            "flow {:?} holds {:?} after the end of its line",
+            entry.kind(),
+            children[end + i + 1].kind()
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Is this entry terminated by a NEWLINE of its own, along with the

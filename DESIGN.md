@@ -392,12 +392,11 @@ not, or failing that the one before. `move_after`/`move_before` given
 another value remove the old entry as `remove` does, leaving its comment
 lines where they were.
 
-In a flow mapping the parser puts a comment line in the entry above it,
-and it goes with that entry. The commas stay with their positions, and
-one that has to follow an entry whose comment ends its line goes before
-that comment. So does the indentation of the line after such a
-comment: `{a: 1, # c\n b: 2 # d\n}` reordered gives
-`{b: 2, # d\n a: 1 # c\n}`.
+A flow mapping is no different: an entry owns its comma and the rest of
+that line, and the comment lines after it go with the entry below them.
+The commas stay with their positions, and one that has to follow an entry
+whose comment ends its line goes before that comment:
+`{a: 1, # c\n b: 2 # d\n}` reordered gives `{b: 2, # d\n a: 1 # c\n}`.
 
 Removing an entry or item takes along the comment at the end of its
 line, and leaves the comment lines before and after it: `- x\n# c\n- a  # d\n- y\n`

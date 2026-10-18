@@ -80,7 +80,7 @@ fn reorder_flow_mapping_with_comments() {
             "{\n  a: 1, # c\n  b: 2, # d\n}\n",
             "{\n  b: 2, # d\n  a: 1, # c\n}\n",
         ),
-        ("{a: 1,\n # c\n b: 2}\n", "{b: 2, a: 1\n # c\n }\n"),
+        ("{a: 1,\n # c\n b: 2}\n", "{ # c\n b: 2,\n a: 1}\n"),
     ] {
         check_reorder(source, &["b"], expected, root);
     }

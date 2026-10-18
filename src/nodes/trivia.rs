@@ -254,8 +254,19 @@ fn end_line(collection: &SyntaxNode, at: usize) -> (usize, bool) {
 /// `collection`, a flow collection, at `slot`, with the separators that
 /// keep the entries apart.
 pub(crate) fn attach_flow_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNode) {
-    let at = match slot {
-        Slot::End => collection
+    let kind = entry.kind();
+    // An entry after another goes where the one after that starts, past
+    // the lines between them, or after the last.
+    let next = match slot {
+        Slot::After(prev) => std::iter::successors(prev.next_sibling(), |n| n.next_sibling())
+            .find(|n| n.kind() == kind),
+        Slot::Before(next) => Some(next),
+        Slot::End => None,
+    };
+    let at = match (next, last_entry(collection, kind)) {
+        (Some(next), _) => next.index(),
+        (None, Some(last)) => last.index() + 1,
+        (None, None) => collection
             .children_with_tokens()
             .position(|c| {
                 matches!(
@@ -264,11 +275,8 @@ pub(crate) fn attach_flow_entry(collection: &SyntaxNode, slot: Slot, entry: &Syn
                 )
             })
             .unwrap_or_else(|| collection.children_with_tokens().count()),
-        Slot::After(prev) => prev.index() + 1,
-        Slot::Before(next) => next.index(),
     };
 
-    let kind = entry.kind();
     let mut entries_before: Vec<SyntaxNode> = collection
         .children_with_tokens()
         .take(at)
@@ -287,7 +295,10 @@ pub(crate) fn attach_flow_entry(collection: &SyntaxNode, slot: Slot, entry: &Syn
         }
         FlowSeparator::ensure(entry);
     } else if let Some(last) = entries_before.pop() {
-        FlowSeparator::hand_over_end(&last, entries_before.last(), entry);
+        let mut elements = FlowSeparator::hand_over_end(&last, entries_before.last(), entry);
+        elements.push(entry.clone().into());
+        insert_children(collection, at, elements);
+        return;
     }
     insert_children(collection, at, vec![entry.clone().into()]);
 }
@@ -295,11 +306,13 @@ pub(crate) fn attach_flow_entry(collection: &SyntaxNode, slot: Slot, entry: &Syn
 /// Splice `entry` out of `collection`, a block or flow collection, with
 /// the trivia that belongs to it.
 ///
-/// In a block collection that is the INDENT before it, and blank lines
-/// before it when there are blank lines after it too, so that the gap
-/// doesn't double. Comment lines around it stay. In a flow
-/// collection, the entry already holds its separator; the new last entry
-/// loses the one leading to the removed one, unless that had its own.
+/// That is the indentation of its line, and blank lines before it when
+/// there are blank lines after it too, so that the gap doesn't double.
+/// Comment lines around it stay. A flow entry sharing its line with
+/// another leaves the indentation, and one ending a line that it does not
+/// start takes the next line's, which then joins its line. A flow entry
+/// already holds its separator; the new last entry loses the one leading
+/// to the removed one, unless that had its own.
 pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
     let kind = entry.kind();
     let is_last = !std::iter::successors(entry.next_sibling(), |n| n.next_sibling())
@@ -312,12 +325,19 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
     });
 
     let mut trivia = Vec::new();
-    if !flow {
-        trivia.extend(
-            entry
-                .prev_sibling_or_token()
-                .filter(|c| c.kind() == SyntaxKind::INDENT),
-        );
+    if !flow || ends_with_line_break(entry) || is_last {
+        // The entry's line goes, unless another entry shares it. In a flow
+        // collection the next line joins the line the entry started on.
+        match line_indentation_before(entry) {
+            Some(indentation) => trivia.extend(indentation),
+            None if flow && ends_with_line_break(entry) => trivia.extend(
+                std::iter::successors(entry.next_sibling_or_token(), |c| c.next_sibling_or_token())
+                    .take_while(|c| {
+                        matches!(c.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE)
+                    }),
+            ),
+            None => {}
+        }
         if entry
             .next_sibling_or_token()
             .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE)
@@ -418,6 +438,25 @@ fn move_trailing_lines_out(collection: &SyntaxNode) {
             .map(|t| fresh_token(t.kind(), t.text()).into())
             .collect(),
     );
+}
+
+/// The indentation of the line `entry` starts, if it starts one: the
+/// INDENT and white space before it back to a line break.
+fn line_indentation_before(entry: &SyntaxNode) -> Option<Vec<rowan::SyntaxElement<super::Lang>>> {
+    let mut before =
+        std::iter::successors(entry.prev_sibling_or_token(), |c| c.prev_sibling_or_token())
+            .peekable();
+    let mut indentation = Vec::new();
+    while let Some(c) =
+        before.next_if(|c| matches!(c.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE))
+    {
+        indentation.push(c);
+    }
+    let starts_line = match before.next()? {
+        rowan::NodeOrToken::Node(n) => ends_with_line_break(&n),
+        rowan::NodeOrToken::Token(t) => t.kind() == SyntaxKind::NEWLINE,
+    };
+    starts_line.then_some(indentation)
 }
 
 /// The blank lines directly before `entry`, past the INDENT leading it.
@@ -543,6 +582,7 @@ impl FlowSeparator {
         };
         let end = entry.children_with_tokens().count();
         replace_children(entry, end - own.len()..end, separator.build());
+        separate_comma_from_indicator(entry);
         true
     }
 
@@ -550,6 +590,7 @@ impl FlowSeparator {
     pub(crate) fn ensure(entry: &SyntaxNode) {
         if !has_comma(entry) {
             append_children(entry, Self::comma_space().build());
+            separate_comma_from_indicator(entry);
         }
     }
 
@@ -575,11 +616,12 @@ impl FlowSeparator {
             tokens.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
         }
         insert_children(entry, at, tokens);
+        separate_comma_from_indicator(entry);
     }
 
     /// Drop the comma at the end of `entry`, which has become the last
-    /// entry. White space and line breaks after the comma go too, unless a
-    /// comment follows it.
+    /// entry. White space and line breaks after the comma go too, up to
+    /// the end of the collection, unless a comment follows it.
     pub(crate) fn strip(entry: &SyntaxNode) {
         let Some(comma) = entry
             .children_with_tokens()
@@ -589,6 +631,15 @@ impl FlowSeparator {
         else {
             return;
         };
+        let after_entry =
+            std::iter::successors(entry.next_sibling_or_token(), |c| c.next_sibling_or_token())
+                .map_while(|c| c.into_token())
+                .take_while(|t| {
+                    matches!(
+                        t.kind(),
+                        SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
+                    )
+                });
         let mut tail = vec![comma.clone()];
         let mut next = comma.next_sibling_or_token();
         while let Some(c) = next {
@@ -596,6 +647,7 @@ impl FlowSeparator {
             next = t.next_sibling_or_token();
             tail.push(t);
         }
+        tail.extend(after_entry);
         let only_whitespace = tail[1..].iter().all(|t| {
             matches!(
                 t.kind(),
@@ -608,6 +660,27 @@ impl FlowSeparator {
         for t in tail {
             t.detach();
         }
+        // The entry now ends with the line its content ends; the lines
+        // after that, which led up to the comma, are the collection's.
+        let content_end = entry.children().last().map_or(0, |n| n.index() + 1);
+        let lines: Vec<_> = entry
+            .children_with_tokens()
+            .skip(content_end)
+            .skip_while(|c| c.kind() != SyntaxKind::NEWLINE)
+            .skip(1)
+            .collect();
+        for c in &lines {
+            c.detach();
+        }
+        let parent = entry.parent().expect("a flow entry is in a collection");
+        insert_children(
+            &parent,
+            entry.index() + 1,
+            lines
+                .iter()
+                .map(|c| fresh_token(c.kind(), &c.to_string()).into())
+                .collect(),
+        );
     }
 
     /// Make room for `new_entry` after `last`, the last entry of a flow
@@ -615,22 +688,31 @@ impl FlowSeparator {
     /// `new_entry` takes over the separator `last` ends with, trailing comma
     /// included, and `last` gets the one between the entries before it, or
     /// `, ` if there is none. `before_last` is the entry before `last`.
+    /// Returns the indentation to put before `new_entry`.
     pub(crate) fn hand_over_end(
         last: &SyntaxNode,
         before_last: Option<&SyntaxNode>,
         new_entry: &SyntaxNode,
-    ) {
+    ) -> Vec<rowan::SyntaxElement<super::Lang>> {
         let Some(separator) = separator_tokens(last) else {
-            // A comment ends the line of `last`, which keeps its separator;
-            // the new entry goes on the next line.
-            let comma = fresh_token(SyntaxKind::COMMA, ",").into();
-            if has_comma(last) {
-                append_children(new_entry, vec![comma]);
-            } else {
-                let space = fresh_token(SyntaxKind::WHITESPACE, " ").into();
-                append_children(last, vec![comma, space]);
+            // A comment ends the line of `last`, which keeps it; the new
+            // entry starts the line after, ahead of the closing bracket.
+            let indentation: Vec<_> =
+                std::iter::successors(last.next_sibling_or_token(), |c| c.next_sibling_or_token())
+                    .take_while(|c| matches!(c.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE))
+                    .collect();
+            for c in &indentation {
+                c.detach();
             }
-            return;
+            if has_comma(last) {
+                append_children(new_entry, vec![fresh_token(SyntaxKind::COMMA, ",").into()]);
+                return indentation;
+            }
+            let mut separator = indentation;
+            separator.push(fresh_token(SyntaxKind::COMMA, ",").into());
+            separator.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
+            append_children(last, separator);
+            return Vec::new();
         };
         let usual = before_last
             .filter(|e| has_comma(e))
@@ -641,6 +723,44 @@ impl FlowSeparator {
         }
         append_children(new_entry, separator.into_iter().map(Into::into).collect());
         append_children(last, usual.build());
+        separate_comma_from_indicator(last);
+        // A new line is indented as the last entry's.
+        if !ends_with_line_break(last) {
+            return Vec::new();
+        }
+        let indentation = line_indentation_before(last).unwrap_or_default();
+        indentation
+            .iter()
+            .rev()
+            .map(|c| fresh_token(c.kind(), &c.to_string()).into())
+            .collect()
+    }
+}
+
+/// Put a space between the comma of `entry` and a `?` right before it.
+fn separate_comma_from_indicator(entry: &SyntaxNode) {
+    let comma = entry
+        .children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .find(|t| t.kind() == SyntaxKind::COMMA);
+    if let Some(comma) = comma {
+        separate_from_question(&comma);
+    }
+}
+
+/// Put a space after the `?` that `token`, a `,` or `:` in a flow entry,
+/// comes right after: a `?` only opens an explicit key when white space
+/// follows it.
+pub(crate) fn separate_from_question(token: &SyntaxToken) {
+    let question = std::iter::successors(token.prev_token(), |t| t.prev_token())
+        .find(|t| !t.text().is_empty())
+        .filter(|t| t.kind() == SyntaxKind::QUESTION);
+    if let Some(question) = question {
+        insert_children(
+            &question.parent().expect("a token has a parent"),
+            question.index() + 1,
+            vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()],
+        );
     }
 }
 

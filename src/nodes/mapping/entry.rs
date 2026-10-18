@@ -350,13 +350,12 @@ impl MappingEntry {
         if follows_colon {
             self.insert_at(value_idx, vec![fresh_token(SyntaxKind::WHITESPACE, " ")]);
         } else if !has_colon && flow_context {
+            let colon = fresh_token(SyntaxKind::COLON, ":");
             self.insert_at(
                 value_idx,
-                vec![
-                    fresh_token(SyntaxKind::COLON, ":"),
-                    fresh_token(SyntaxKind::WHITESPACE, " "),
-                ],
+                vec![colon.clone(), fresh_token(SyntaxKind::WHITESPACE, " ")],
             );
+            crate::nodes::trivia::separate_from_question(&colon);
         }
         // TODO: a block explicit key without a value (`? a` at the end of
         // the input) needs `\n:` before the value, not `: `.

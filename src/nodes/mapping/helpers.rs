@@ -428,7 +428,8 @@ impl FlowWriter {
         // Comments between entries sit beside them in a block collection;
         // each goes with the entry before it.
         self.push_comments(&children[..entries.first().copied().unwrap_or(children.len())]);
-        self.flush(indent);
+        let lines = self.end_line();
+        self.comment_lines(lines, indent);
         for (n, &i) in entries.iter().enumerate() {
             let entry = children[i].as_node().expect("entry is a node");
             self.builder.start_node(entry_kind.into());
@@ -445,8 +446,9 @@ impl FlowWriter {
                     self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
                 }
             }
-            self.flush(indent);
+            let lines = self.end_line();
             self.builder.finish_node();
+            self.comment_lines(lines, indent);
         }
         self.builder.token(close.1.into(), close.0);
         self.builder.finish_node();
@@ -591,17 +593,29 @@ impl FlowWriter {
         self.pending.push((ws, comment.text().to_string()));
     }
 
-    /// Write the pending comments, each ending its line, so that what
-    /// follows starts a fresh line at `indent`.
-    fn flush(&mut self, indent: usize) {
-        for (i, (ws, comment)) in std::mem::take(&mut self.pending).into_iter().enumerate() {
-            if i == 0 {
-                self.builder.token(SyntaxKind::WHITESPACE.into(), &ws);
-            }
+    /// End the current line with the first pending comment, and return
+    /// the others, or `None` if there are none.
+    fn end_line(&mut self) -> Option<Vec<String>> {
+        let mut pending = std::mem::take(&mut self.pending).into_iter();
+        let (ws, comment) = pending.next()?;
+        self.builder.token(SyntaxKind::WHITESPACE.into(), &ws);
+        self.builder.token(SyntaxKind::COMMENT.into(), &comment);
+        self.builder.token(SyntaxKind::NEWLINE.into(), "\n");
+        Some(pending.map(|(_, comment)| comment).collect())
+    }
+
+    /// Write `comments` from [`end_line`](Self::end_line) on lines of
+    /// their own at `indent`, which the line after them starts at too.
+    fn comment_lines(&mut self, comments: Option<Vec<String>>, indent: usize) {
+        let Some(comments) = comments else {
+            return;
+        };
+        let indentation = " ".repeat(indent);
+        for comment in comments {
+            self.builder.token(SyntaxKind::INDENT.into(), &indentation);
             self.builder.token(SyntaxKind::COMMENT.into(), &comment);
             self.builder.token(SyntaxKind::NEWLINE.into(), "\n");
-            self.builder
-                .token(SyntaxKind::INDENT.into(), &" ".repeat(indent));
         }
+        self.builder.token(SyntaxKind::INDENT.into(), &indentation);
     }
 }

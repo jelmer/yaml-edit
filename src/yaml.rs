@@ -90,10 +90,7 @@ impl ValueNode for Scalar {
         // starting on a NEW line after their indicator, so they don't
         // render inline. Everything else - plain, quoted, tagged scalars -
         // sits on the same line as its key.
-        !self
-            .0
-            .children_with_tokens()
-            .any(|c| matches!(c.kind(), SyntaxKind::PIPE | SyntaxKind::GREATER))
+        !crate::nodes::is_block_scalar(&self.0)
     }
 }
 

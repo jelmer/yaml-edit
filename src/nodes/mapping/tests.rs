@@ -2062,3 +2062,38 @@ fn test_alias_key_is_separated_from_colon() {
         assert_edited(&file, expected);
     }
 }
+
+#[test]
+fn test_set_plain_scalar_with_indicator_line() {
+    // The `>` token opening the scalar's second line is not a block scalar
+    // header, so the scalar stays on its key's or dash's line.
+    let source = YamlFile::from_str("x: b\n  > c\n").unwrap();
+    let scalar = source
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("x")
+        .unwrap()
+        .as_scalar()
+        .unwrap()
+        .clone();
+
+    let file = YamlFile::from_str("a: 1\nz: 2\n").unwrap();
+    file.document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .set("a", scalar.clone());
+    crate::debug::assert_edited(&file, "a: b\n  > c\nz: 2\n");
+
+    let file = YamlFile::from_str("k:\n  - 1\n").unwrap();
+    file.document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_sequence("k")
+        .unwrap()
+        .push(scalar);
+    crate::debug::assert_edited(&file, "k:\n  - 1\n  - b\n    > c\n");
+}

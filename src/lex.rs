@@ -460,6 +460,17 @@ fn quote_continues_plain_scalar(
     !closes_on_line
 }
 
+/// Whether a `-` or `+` following `line_prefix`, the text of its line before
+/// it, is a block scalar header's chomping indicator: the last character
+/// other than an indentation digit is the header's `|` or `>`.
+fn is_chomping_indicator(line_prefix: &str) -> bool {
+    line_prefix
+        .bytes()
+        .rev()
+        .find(|b| !b.is_ascii_digit())
+        .is_some_and(|b| b == b'|' || b == b'>')
+}
+
 /// Push a quoted-string token, marking it UNTERMINATED_STRING when the
 /// closing quote was never reached.
 fn push_quoted_string<'a>(
@@ -721,11 +732,6 @@ pub fn lex_with_validation_config<'a>(
                         // is a chomping indicator and stands alone, so it
                         // must not swallow the space that follows it. Same
                         // test as the `+` arm below.
-                        let is_chomping_indicator = input[current_line_start..start_idx]
-                            .bytes()
-                            .rev()
-                            .find(|b| !b.is_ascii_digit())
-                            .is_some_and(|b| b == b'|' || b == b'>');
                         push_plain_scalar_from(
                             &mut tokens,
                             &mut chars,
@@ -733,7 +739,7 @@ pub fn lex_with_validation_config<'a>(
                             token_start,
                             start_idx + 1,
                             flow_depth,
-                            !is_chomping_indicator,
+                            !is_chomping_indicator(&input[current_line_start..start_idx]),
                         );
                     }
                 }
@@ -748,12 +754,7 @@ pub fn lex_with_validation_config<'a>(
                 // the same scalar token -- so `+.INF` lexes as one FLOAT
                 // rather than PLUS + FLOAT. A bare `+` followed by
                 // whitespace stays PLUS.
-                let line_start = current_line_start;
-                let is_chomping_indicator = input[line_start..start_idx]
-                    .bytes()
-                    .rev()
-                    .find(|b| !b.is_ascii_digit())
-                    .is_some_and(|b| b == b'|' || b == b'>');
+                let chomping = is_chomping_indicator(&input[current_line_start..start_idx]);
                 // Outside a flow collection the flow indicators are ordinary
                 // scalar content, a `:` not followed by whitespace is never a
                 // mapping indicator, and a quote no longer opens a quoted
@@ -790,7 +791,7 @@ pub fn lex_with_validation_config<'a>(
                             || (*c == ':'
                                 && !is_colon_a_mapping_indicator(input, *idx, flow_depth)))
                 });
-                if !is_chomping_indicator && next_starts_scalar {
+                if !chomping && next_starts_scalar {
                     push_plain_scalar_from(
                         &mut tokens,
                         &mut chars,
@@ -800,7 +801,7 @@ pub fn lex_with_validation_config<'a>(
                         flow_depth,
                         true,
                     );
-                } else if !is_chomping_indicator && {
+                } else if !chomping && {
                     // A key may be separated from its colon by spaces
                     // (`+ : v`), so look past them as well.
                     let rest = &input[start_idx + 1..];
@@ -813,7 +814,7 @@ pub fn lex_with_validation_config<'a>(
                     // and stranded the rest of the entry.
                     let text = &input[token_start..start_idx + 1];
                     tokens.push((classify_scalar(text), text));
-                } else if is_chomping_indicator {
+                } else if chomping {
                     tokens.push((PLUS, &input[token_start..start_idx + 1]));
                 } else {
                     // Nothing follows on this line to extend the body, but a

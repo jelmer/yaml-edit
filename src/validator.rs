@@ -1381,10 +1381,11 @@ impl Validator {
                 if is_flow && !inside_a_block {
                     continue;
                 }
-                // A tab may separate an indicator from a scalar (`- \tx`),
-                // but a block collection after it needs `s-indent`, which
-                // forbids tabs: `-\t-` and `?\t-` are errors the test suite
-                // expects (Y79Y), while `-\t-1` is the scalar `-1`.
+                // A tab may separate an indicator from a scalar (`- \tx`) or a
+                // flow collection (`seq:\t[]`), but a block collection after
+                // it needs `s-indent`, which forbids tabs: `-\t-` and `?\t-`
+                // are errors the test suite expects (Y79Y), while `-\t-1` is
+                // the scalar `-1`.
                 // The tab has to separate the indicator from the node on
                 // the same line; trailing whitespace before a line break
                 // (DC7X's `seq:\t`) indents nothing.
@@ -1399,17 +1400,17 @@ impl Validator {
                         .next_sibling_or_token()
                         .and_then(|n| n.into_node())
                         .is_some_and(|n| {
-                            let opens_a_block = |k| {
+                            let opens_a_block = |n: &SyntaxNode| {
                                 matches!(
-                                    k,
+                                    n.kind(),
                                     crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-                                )
+                                ) && !starts_a_flow_collection(n)
                             };
-                            opens_a_block(n.kind())
+                            opens_a_block(&n)
                                 || (matches!(
                                     n.kind(),
                                     crate::SyntaxKind::VALUE | crate::SyntaxKind::KEY
-                                ) && n.children().any(|c| opens_a_block(c.kind())))
+                                ) && n.children().any(|c| opens_a_block(&c)))
                         })
                 {
                     violations.push(Violation::error_at(
@@ -4611,6 +4612,31 @@ mod tests {
             ),
         ] {
             assert_eq!(messages(yaml), vec![expected.to_string()], "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn test_tab_before_flow_collection_is_separation() {
+        // Only a block collection needs `s-indent` after an indicator; a flow
+        // collection is separated from it like a scalar.
+        for yaml in [
+            "a: b\nseq:\t[]\n",
+            "a: b\nseq:\t[1]\n",
+            "seq:\t{}\n",
+            "k:\n  seq:\t[]\n  x: 1\n",
+            "- a\n-\t[]\n",
+            "-\t{a: b}\n",
+            "?\t[a]\n:\t{b: c}\n",
+            "seq:\t&a [x]\n",
+        ] {
+            assert_eq!(messages(yaml), Vec::<String>::new(), "{yaml:?}");
+        }
+        for yaml in ["-\t{a: b}: c\n", "-\t[a]: c\n"] {
+            assert_eq!(
+                messages(yaml),
+                vec!["Tabs are not allowed for indentation in YAML".to_string()],
+                "{yaml:?}"
+            );
         }
     }
 }

@@ -293,3 +293,13 @@ fn move_with_new_value_keeps_position_layout() {
         assert_edited(&doc, expected);
     }
 }
+
+#[test]
+fn reorder_keeps_comment_on_explicit_key_value_line() {
+    for (source, expected) in [
+        ("b: 2\n? a\n: 1  # c\n", "? a\n: 1  # c\nb: 2\n"),
+        ("b: 2\n? a\n: 1  # c", "? a\n: 1  # c\nb: 2"),
+    ] {
+        check_reorder(source, &["a", "b"], expected, root);
+    }
+}

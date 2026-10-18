@@ -317,16 +317,19 @@ impl Mapping {
             .map(|&i| all[i + 1..].to_vec())
             .unwrap_or_default();
 
-        // An explicit-key entry (`? k` / `: v`) doesn't own its line break;
-        // the NEWLINE sits beside it. For the last entry that token lands in
-        // `trailing`, which stays put -- so reordering it to a non-final
-        // position would run it into the entry that follows. Hand it back so
-        // it travels with the entry.
-        let last_entry_terminator = entry_indices
+        // An explicit-key entry (`? k` / `: v`) doesn't own its line break,
+        // nor a comment ending its line; they sit beside it. For the last
+        // entry they land in `trailing`, which stays put, so hand them back
+        // to travel with the entry.
+        let last_entry_line_end: Vec<_> = entry_indices
             .last()
-            .and_then(|&i| all[i].as_node())
-            .is_some_and(|n| line_end(n) == LineEnd::Sibling)
-            .then(|| trailing.remove(0));
+            .map(|&i| {
+                let entry = all[i].as_node().expect("an entry is a node");
+                trailing
+                    .drain(..trivia::index_after_line(entry) - i - 1)
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let mut groups: Vec<(SyntaxNode, Vec<_>)> = entry_indices
             .windows(2)
@@ -337,8 +340,7 @@ impl Mapping {
             })
             .collect();
         if let Some(&last) = entry_indices.last() {
-            let postscript = last_entry_terminator.into_iter().collect();
-            groups.push((all[last].as_node().cloned().unwrap(), postscript));
+            groups.push((all[last].as_node().cloned().unwrap(), last_entry_line_end));
         }
         (leading, groups, trailing)
     }

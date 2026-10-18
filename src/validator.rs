@@ -415,6 +415,7 @@ impl Validator {
                 check_anchor_and_alias(node, violations);
                 check_single_content_node(node, violations);
                 check_tag_on_alias(node, violations);
+                check_multiple_tags(node, violations);
                 check_collection_tag_content(node, violations);
                 check_pairs_items(node, violations);
                 check_omap_keys(node, violations);
@@ -693,6 +694,22 @@ fn check_multiple_anchors(node: &SyntaxNode, violations: &mut Vec<Violation>) {
             Rule::InvalidAnchor,
             node.text_range(),
             "Multiple anchors on the same node",
+        ));
+    }
+}
+
+/// A node has one tag, but the parser nests a second one, as in
+/// `!a !b x`, as a TAGGED_NODE of its own.
+fn check_multiple_tags(node: &SyntaxNode, violations: &mut Vec<Violation>) {
+    let has_tag = |n: &SyntaxNode| has_child_token(n, |k| k == crate::SyntaxKind::TAG);
+    let inner = node
+        .children()
+        .find(|c| c.kind() == crate::SyntaxKind::TAGGED_NODE);
+    if has_tag(node) && inner.is_some_and(|inner| has_tag(&inner)) {
+        violations.push(Violation::error_at(
+            Rule::InvalidTag,
+            node.text_range(),
+            "Multiple tags on the same node",
         ));
     }
 }

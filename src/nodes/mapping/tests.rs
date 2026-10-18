@@ -1968,3 +1968,49 @@ fn test_edit_flow_mapping_with_explicit_key() {
         assert_edited(&yaml, expected);
     }
 }
+
+/// Setting a value next to a comment keeps the comment out of a block
+/// scalar's text, and the entries after it on their own lines.
+///
+/// Regression test for issues #220, #221 and #222.
+#[test]
+fn test_set_block_scalar_beside_comment() {
+    use crate::debug::assert_edited;
+    for (source, key, value, expected) in [
+        (
+            "first: | # c\n  x\nsecond: 1\n",
+            "first",
+            "Z",
+            "first: Z # c\nsecond: 1\n",
+        ),
+        (
+            "first: a # c\nsecond: x\n",
+            "first",
+            "line1\nline2\n",
+            "first: | # c\n  line1\n  line2\nsecond: x\n",
+        ),
+        (
+            "first: |\n    x\n  # note\nsecond: 1\n",
+            "first",
+            "a\nb\n",
+            "first: |\n  a\n  b\n# note\nsecond: 1\n",
+        ),
+        (
+            "first: 1\n\nsecond: 1\nlast: end # t\n",
+            "last",
+            "kept\n\n\n",
+            "first: 1\n\nsecond: 1\nlast: |+ # t\n  kept\n\n\n",
+        ),
+    ] {
+        let yaml = YamlFile::from_str(source).unwrap();
+        let mapping = yaml.document().unwrap().as_mapping().unwrap();
+        mapping.set(key, value);
+        assert_edited(&yaml, expected);
+        let mapping = yaml.document().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            mapping.get(key).unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{source:?}"
+        );
+    }
+}

@@ -79,3 +79,20 @@ fn test_set_two_entries_before_deeper_trailing_comment() {
     assert_eq!(out, "x:\n  a: 1\n  b: 2\n  k: v\n    # c\ny: 1\n");
     assert_x_keys(&out, &["a", "b", "k"]);
 }
+
+#[test]
+fn set_after_comment_ending_the_input() {
+    assert_eq!(
+        edit_src("x:\n  a: 1\n  # end", |m| m.set("b", 2)),
+        "x:\n  a: 1\n  # end\n  b: 2\n"
+    );
+}
+
+#[test]
+fn root_set_after_comment_ending_the_input() {
+    let file = YamlFile::from_str("a: 1\n# end").unwrap();
+    let root = file.document().unwrap().as_mapping().unwrap();
+    root.set("b", 2);
+    assert_file_cst_ok(&file);
+    assert_eq!(file.to_string(), "a: 1\n# end\nb: 2\n");
+}

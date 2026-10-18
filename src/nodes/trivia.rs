@@ -174,17 +174,14 @@ pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNo
             (index_after_line(&prev), elements)
         }
         Slot::End => {
-            let last = collection.children().filter(|n| n.kind() == kind).last();
             let mut elements = Vec::new();
-            match last {
-                Some(last) => {
-                    terminate(&last);
-                    elements.extend(indent());
-                }
-                None => first = true,
+            if last_entry(collection, kind).is_some() {
+                elements.extend(indent());
+            } else {
+                first = true;
             }
             elements.push(entry.clone().into());
-            (end_slot_index(collection), elements)
+            (end_line(collection, end_slot_index(collection)), elements)
         }
     };
     collection.splice_children(at..at, elements);
@@ -195,14 +192,53 @@ pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNo
     super::settle_lines_after_inserted_entry(entry);
 }
 
+/// The last entry of kind `kind` in `collection`.
+fn last_entry(collection: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
+    std::iter::successors(collection.last_child(), |n| n.prev_sibling()).find(|n| n.kind() == kind)
+}
+
 /// The index in `collection` where an entry after its last one goes: at
 /// the end, ahead of the INDENT of a comment line the parser lifted out.
 fn end_slot_index(collection: &SyntaxNode) -> usize {
-    let count = collection.children_with_tokens().count();
+    let count = collection.green().children().len();
     let lifted_comment_indent = collection
         .last_child_or_token()
         .is_some_and(|c| c.kind() == SyntaxKind::INDENT);
     count - usize::from(lifted_comment_indent)
+}
+
+/// The child of `node` at index `i`, found from the nearer end, as
+/// `push` needs to stay cheap on a long sequence.
+fn child_at(node: &SyntaxNode, i: usize) -> Option<rowan::SyntaxElement<super::Lang>> {
+    let from_end = node.green().children().len().checked_sub(i + 1)?;
+    if from_end < i {
+        std::iter::successors(node.last_child_or_token(), |c| c.prev_sibling_or_token())
+            .nth(from_end)
+    } else {
+        node.children_with_tokens().nth(i)
+    }
+}
+
+/// End the line that the child of `collection` before index `at` is on,
+/// if it is open, and return the index of the start of the next line.
+fn end_line(collection: &SyntaxNode, at: usize) -> usize {
+    let before = at.checked_sub(1).and_then(|i| child_at(collection, i));
+    match before {
+        Some(rowan::NodeOrToken::Node(entry))
+            if matches!(
+                entry.kind(),
+                SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+            ) =>
+        {
+            terminate(&entry);
+            index_after_line(&entry)
+        }
+        Some(rowan::NodeOrToken::Token(t)) if t.kind() == SyntaxKind::COMMENT => {
+            collection.splice_children(at..at, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+            at + 1
+        }
+        _ => at,
+    }
 }
 
 /// Splice `entry`, a flow collection entry built standalone, into

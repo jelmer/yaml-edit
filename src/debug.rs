@@ -449,15 +449,12 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
             // Block MAPPING_ENTRYs must be terminated by a NEWLINE
             // *somewhere* between themselves and the next sibling entry --
             // usually inside the entry, sometimes as a trailing
-            // comment+newline at the parent level, sometimes absent
-            // entirely for explicit-key entries with implicit-null
-            // values (`? a\n`).
+            // comment+newline at the parent level.
             //
             // The last entry of a mapping is allowed to lack a
             // terminator: an unterminated source doc (`a: 1\nb: 2`)
             // is legitimate YAML and must roundtrip.
             if !is_in_flow_collection(node)
-                && !ends_with_implicit_null(node)
                 && !is_last_entry_in_parent(node)
                 && !entry_is_terminated(node)
             {
@@ -500,8 +497,8 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
 /// terminated entry.
 ///
 /// A NEWLINE followed only by an implicit null's zero-width token counts
-/// too: `- a:\n- b\n` ends its first entry with the `VALUE { NEWLINE,
-/// SCALAR { NULL "" } }` of `a`.
+/// too: in `? - a\n` the line break ends the key's sequence, and the
+/// entry's empty value comes after it.
 fn entry_is_terminated(entry: &SyntaxNode) -> bool {
     if crate::nodes::trivia::ends_with_line_break(entry) {
         return true;
@@ -538,20 +535,6 @@ fn is_last_entry_in_parent(entry: &SyntaxNode) -> bool {
         sib = s.next_sibling();
     }
     true
-}
-
-/// Does this MAPPING_ENTRY's terminal VALUE hold a zero-width
-/// implicit-null scalar?
-///
-/// The parser emits `SCALAR { NULL "" }` for an entry like `? key\n`
-/// with no explicit value -- the entry's last leaf is that zero-width
-/// NULL, not a NEWLINE. That's valid parser output; the trailing
-/// NEWLINE character lives inside the KEY subtree instead.
-fn ends_with_implicit_null(entry: &SyntaxNode) -> bool {
-    let Some(last_token) = entry.last_token() else {
-        return false;
-    };
-    last_token.kind() == SyntaxKind::NULL && last_token.text().is_empty()
 }
 
 /// Walk every node and reject adjacent INDENT tokens.

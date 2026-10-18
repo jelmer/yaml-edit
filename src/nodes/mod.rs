@@ -76,11 +76,16 @@
 //! - The **last** entry of a block collection may lack a terminator
 //!   (unterminated sources like `a: 1\nb: 2` are legitimate YAML and
 //!   must roundtrip).
-//! - An entry ending in an **implicit-null** scalar (see below) has a
-//!   zero-width `SCALAR { NULL "" }` as its last leaf, not a NEWLINE.
-//!   That's a well-formed terminated entry; the NEWLINE lives elsewhere
-//!   in the tree (inside the KEY subtree for `? key\n`, inside the VALUE
-//!   between COLON and SCALAR for `key:\n`).
+//! - An explicit-key entry without a value whose key is a block node
+//!   (`? - a\n`) ends in the zero-width `SCALAR { NULL "" }` of its value
+//!   (see below), after the NEWLINE ending the key.
+//!
+//! An empty value never holds the lines after it. Where the parser looks
+//! past the end of the line for a value and finds none, the line break
+//! and whatever follows it are left to the entry and the collection, as
+//! after any other value: `key:\n` is `VALUE { SCALAR { NULL "" } }`
+//! followed by the entry's NEWLINE, and the INDENT, blank lines and
+//! comment lines after it belong to the collection.
 //!
 //! When a comment line is indented deeper than the collection it
 //! follows, the parser lifts the COMMENT and its NEWLINE into the parent
@@ -127,7 +132,7 @@
 //! ```text
 //! Source form                     CST shape
 //! ------------------------------- ----------------------------------------
-//! key:\n     (block mapping)      VALUE { NEWLINE, SCALAR { NULL "" } }
+//! key:\n     (block mapping)      VALUE { SCALAR { NULL "" } }, NEWLINE
 //! key:       (block mapping, EOF) VALUE { SCALAR { NULL "" } }
 //! {key}      (flow mapping)       MAPPING_ENTRY { KEY { SCALAR "key" },
 //!                                                 VALUE { SCALAR { NULL "" } } }
@@ -138,8 +143,9 @@
 //!                                                 VALUE { SCALAR { NULL "" } },
 //!                                                 COMMA }
 //! {: v}      (flow mapping)       KEY { SCALAR { NULL "" } }, COLON, VALUE ...
-//! ? key\n    (explicit key)       MAPPING_ENTRY { QUESTION, KEY ..., NEWLINE,
-//!                                                 VALUE { SCALAR { NULL "" } } }
+//! ? key\n    (explicit key)       MAPPING_ENTRY { QUESTION, KEY ...,
+//!                                                 VALUE { SCALAR { NULL "" } } },
+//!                                 NEWLINE
 //! {? : v}    (flow explicit key)  KEY { QUESTION, WHITESPACE,
 //!                                       SCALAR { NULL "" } }, COLON, ...
 //! - \n       (block sequence)     SEQUENCE_ENTRY { DASH, WHITESPACE,

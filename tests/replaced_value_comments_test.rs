@@ -187,12 +187,9 @@ fn set_to_empty_node_leaves_no_trailing_space() {
     sequence_at(&file, "").set(0, &null);
     assert_parser_shaped(&file, "-\n- 2\n", "- 1\n- 2\n");
 
-    // TODO: the parser keeps the line break after an empty value inside
-    // it, so this is not compared with a re-parse.
     let file = YamlFile::from_str("a: 1\nb: 2\n").unwrap();
     mapping_at(&file, "").set("a", &null);
-    assert_eq!(file.to_string(), "a:\nb: 2\n");
-    assert_file_cst_ok(&file);
+    assert_parser_shaped(&file, "a:\nb: 2\n", "a: 1\nb: 2\n");
 }
 
 #[test]

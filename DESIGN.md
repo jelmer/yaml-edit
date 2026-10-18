@@ -216,6 +216,10 @@ MAPPING_ENTRY
   NEWLINE                      <- owned by the entry
 ```
 
+An empty value holds nothing but its zero-width null, so `key:\n` ends
+with the entry's own NEWLINE just as `key: v\n` does; the lines after it,
+which the parser looks at for a value, belong to the collection.
+
 When inserting or replacing entries, check whether the entry already ends with
 a newline (nested collections do, scalars don't) before adding separators.
 

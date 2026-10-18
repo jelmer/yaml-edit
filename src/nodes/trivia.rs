@@ -630,29 +630,14 @@ pub(crate) fn hand_line_break_to_mapping(entry: &SyntaxNode) {
 /// puts it when another document follows.
 ///
 /// The parser hands the break to the innermost construct still open at the
-/// end of the line: the last block entry, a block scalar, the collection
-/// holding a trailing comment line, or the spot in front of an empty value
-/// it went looking for on the next line. `node` must not already end in a
+/// end of the line: the last block entry, a block scalar or the collection
+/// holding a trailing comment line. `node` must not already end in a
 /// NEWLINE.
 pub(crate) fn terminate_last_line(node: &SyntaxNode) {
     let newline = || vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()];
-    let insert_before = |n: &SyntaxNode| {
-        let parent = n.parent().expect("a descendant has a parent");
-        insert_children(&parent, n.index(), newline());
-    };
-
     let mut cur = node.clone();
     while let Some(rowan::NodeOrToken::Node(last)) = cur.last_child_or_token() {
-        if last.text_range().is_empty() {
-            match cur.kind() {
-                SyntaxKind::MAPPING_ENTRY if has_child_token(&cur, |k| k == SyntaxKind::COLON) => {}
-                SyntaxKind::MAPPING_ENTRY | SyntaxKind::VALUE => {
-                    insert_before(&last);
-                    return;
-                }
-                _ => break,
-            }
-        } else if !holds_line_end(&last) {
+        if !holds_line_end(&last) {
             break;
         }
         cur = last;
@@ -678,9 +663,7 @@ fn holds_line_end(node: &SyntaxNode) -> bool {
         }),
         SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY => true,
         SyntaxKind::SCALAR => is_block_scalar(node),
-        SyntaxKind::VALUE => node
-            .last_child()
-            .is_some_and(|last| last.text_range().is_empty() || holds_line_end(&last)),
+        SyntaxKind::VALUE => node.last_child().is_some_and(|last| holds_line_end(&last)),
         SyntaxKind::TAGGED_NODE => node.last_child().is_some_and(|last| holds_line_end(&last)),
         _ => false,
     }

@@ -66,18 +66,12 @@ pub(crate) fn remove_lifted_comment(entry: &SyntaxNode, value: &SyntaxNode) {
 
 /// Detach and return the blank lines, and the indentation of a comment
 /// line, that the parser keeps at the end of the innermost collection
-/// `value` ends with, or in front of an empty value, where it looked for
-/// one. They belong to the lines after the value.
+/// `value` ends with. They belong to the lines after the value.
 pub(crate) fn take_trailing_lines(value: &SyntaxNode) -> Vec<SyntaxToken> {
     let mut lines = Vec::new();
     let mut token = value.last_token();
-    while let Some(t) = token.clone().filter(|t| t.text().is_empty()) {
-        token = t.prev_token();
-    }
     while let Some(t) = token.filter(|t| {
-        t.parent()
-            .is_some_and(|p| is_block_collection(&p) || p.kind() == SyntaxKind::VALUE)
-            && starts_or_is_blank_line(t)
+        t.parent().is_some_and(|p| is_block_collection(&p)) && starts_or_is_blank_line(t)
     }) {
         token = t.prev_token();
         lines.push(t);

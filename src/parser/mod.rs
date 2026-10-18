@@ -826,6 +826,64 @@ impl Parser<'_> {
         ]);
     }
 
+    /// Step over the white space and comment ending the current line.
+    pub(super) fn skip_line_end_trivia(&mut self) {
+        self.skip_whitespace();
+        if self.current() == Some(SyntaxKind::COMMENT) {
+            self.bump();
+        }
+    }
+
+    /// The token [`skip_ws_and_newlines`](Self::skip_ws_and_newlines)
+    /// would stop at, and the indentation of its line.
+    pub(super) fn next_content(&self) -> (Option<SyntaxKind>, usize) {
+        let mut indent = self.current_line_indent;
+        for (kind, text) in self.tokens.iter().rev() {
+            match kind {
+                SyntaxKind::NEWLINE => indent = 0,
+                SyntaxKind::INDENT => indent = text.len(),
+                SyntaxKind::BOM | SyntaxKind::WHITESPACE | SyntaxKind::COMMENT => {}
+                _ => return (Some(*kind), indent),
+            }
+        }
+        (None, indent)
+    }
+
+    /// Where the value of a `:` is, when it is on a later line indented
+    /// past `mapping_column` (or at it, for an indentless sequence): the
+    /// number of tokens up to the INDENT starting that line, and the
+    /// indentation. Comment lines in between say nothing about where the
+    /// value sits, so they are stepped over: the YAML test suite's Q9WF has
+    /// a column-0 comment between a flow-collection key and its indented
+    /// block mapping. The caller is on the NEWLINE ending the colon's line.
+    fn value_line_after_colon(&self, mapping_column: Option<usize>) -> Option<(usize, usize)> {
+        let ahead = self.lookahead();
+        if ahead.kind(0) != Some(SyntaxKind::NEWLINE) {
+            return None;
+        }
+        let mut i = 1;
+        loop {
+            match ahead.kind(i) {
+                Some(SyntaxKind::COMMENT) => i += 1,
+                Some(SyntaxKind::INDENT) if ahead.kind(i + 1) == Some(SyntaxKind::COMMENT) => {
+                    i += 2
+                }
+                _ => break,
+            }
+            if ahead.kind(i) == Some(SyntaxKind::NEWLINE) {
+                i += 1;
+            }
+        }
+        let (SyntaxKind::INDENT, text) = ahead.get(i)? else {
+            return None;
+        };
+        let indent = text.len();
+        let opens_value = mapping_column.map_or(true, |column| {
+            indent > column || (indent == column && ahead.kind(i + 1) == Some(SyntaxKind::DASH))
+        });
+        opens_value.then_some((i, indent))
+    }
+
     /// Parse the VALUE node that follows a COLON in a block mapping entry.
     ///
     /// Three shapes end up here: content on the same line, content on the
@@ -864,47 +922,18 @@ impl Parser<'_> {
             self.scoped(ctx, |p| p.parse_value());
         } else if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
             self.parse_value();
-        } else if self.current() == Some(SyntaxKind::NEWLINE) {
-            self.bump(); // consume newline
-
-            // A comment line between the key and its value says nothing
-            // about where the value sits, so step over any run of them: the
-            // YAML test suite's Q9WF has a column-0 comment between a
-            // flow-collection key and its indented block mapping.
-            while self.current() == Some(SyntaxKind::COMMENT)
-                || (self.current() == Some(SyntaxKind::INDENT)
-                    && self.upcoming_tokens().next() == Some(SyntaxKind::COMMENT))
-            {
-                if self.current() == Some(SyntaxKind::INDENT) {
-                    self.bump();
-                }
-                self.bump(); // comment
-                if self.current() == Some(SyntaxKind::NEWLINE) {
-                    self.bump();
-                }
+        } else if let Some((skip, indent)) = self.value_line_after_colon(mapping_column) {
+            for _ in 0..=skip {
+                self.bump();
             }
-            let opens_value = self.current() == Some(SyntaxKind::INDENT)
-                && mapping_column.map_or(true, |column| {
-                    let indent = self.current_text().map_or(0, str::len);
-                    indent > column
-                        || (indent == column
-                            && self.upcoming_tokens().next() == Some(SyntaxKind::DASH))
-                });
-            if opens_value {
-                self.bump(); // consume indent
-                if track_indent {
-                    let value_indent = self.current_line_indent;
-                    self.parse_value_with_base_indent(value_indent);
-                } else {
-                    self.parse_value();
-                }
+            if track_indent {
+                self.parse_value_with_base_indent(indent);
             } else {
-                // Colon-then-dedent, or a line that is a sibling entry:
-                // implicit-null value.
-                self.emit_implicit_null();
+                self.parse_value();
             }
         } else {
-            // Colon at EOF: implicit-null value.
+            // No value: the input ends, or the next line is a dedent or a
+            // sibling entry, which is left to the mapping.
             self.emit_implicit_null();
         }
         self.builder.finish_node();

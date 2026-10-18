@@ -695,11 +695,21 @@ impl MappingEntry {
             };
             let old_omitted = self.value().is_some_and(|v| v.text_range().is_empty());
             let new_omitted = new_value_node.text_range().is_empty();
-            replace_children(
-                &self.0,
-                value_idx..value_idx + 1,
-                vec![new_value_node.clone().into()],
-            );
+            // The space before a key-line comment that was all the old
+            // value had now goes before the new value, which carries the
+            // comment with its own.
+            let mut at = value_idx..value_idx + 1;
+            let mut replacement = vec![new_value_node.clone().into()];
+            let space_before = value_idx
+                .checked_sub(1)
+                .and_then(|i| self.0.children_with_tokens().nth(i))
+                .is_some_and(|c| c.kind() == SyntaxKind::WHITESPACE);
+            if self.value_starts_with_comment() && space_before {
+                at.start -= 1;
+                replacement.insert(0, fresh_token(SyntaxKind::WHITESPACE, " ").into());
+            }
+            let value_idx = at.start + replacement.len() - 1;
+            replace_children(&self.0, at, replacement);
             if old_omitted && !new_omitted {
                 self.separate_filled_value(value_idx, flow_context);
             }

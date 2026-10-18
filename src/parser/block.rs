@@ -407,10 +407,11 @@ impl Parser<'_> {
 
             self.builder.finish_node();
 
-            self.skip_ws_and_newlines();
-
-            // Parse value if there's a colon
-            if self.current() == Some(SyntaxKind::COLON) {
+            // Parse value if there's a colon. Without one, the lines after
+            // the key's are the mapping's.
+            self.skip_line_end_trivia();
+            if self.next_content().0 == Some(SyntaxKind::COLON) {
+                self.skip_ws_and_newlines();
                 let colon_column = self.column();
                 self.bump(); // consume ':'
                 self.skip_whitespace();
@@ -610,9 +611,9 @@ impl Parser<'_> {
             });
             p.builder.finish_node();
 
-            p.skip_ws_and_newlines();
-
-            if p.current() == Some(SyntaxKind::COLON) {
+            p.skip_line_end_trivia();
+            if p.next_content().0 == Some(SyntaxKind::COLON) {
+                p.skip_ws_and_newlines();
                 let colon_column = p.column();
                 p.bump(); // consume ':'
                 p.skip_whitespace();
@@ -1187,7 +1188,25 @@ impl Parser<'_> {
                     }
                 }
             } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                self.skip_ws_and_newlines();
+                // Look for the value before stepping over the lines in
+                // between: without one, those lines are the mapping's, not
+                // the empty value's.
+                let (next, indent) = self.next_content();
+                let block_value = next.is_some() && indent > base_indent.max(key_column);
+                let indentless_sequence = next == Some(SyntaxKind::DASH)
+                    && (indent == base_indent || indent == key_column)
+                    // A dash at the column of a sequence we sit in is that
+                    // sequence's next entry, which it claims before we can:
+                    // `- - k:\n  - b\n` is the two items `{k: null}` and
+                    // `b`, not one item keyed by `[b]`.
+                    && match self.ctx.sequence_entry_column {
+                        Some(column) => indent > column,
+                        None => true,
+                    };
+                let block_scalar = matches!(next, Some(SyntaxKind::PIPE | SyntaxKind::GREATER));
+                if block_value || indentless_sequence || block_scalar {
+                    self.skip_ws_and_newlines();
+                }
                 // A mapping's value is never the document's own node,
                 // whatever the caller was parsing. Left set, a block scalar
                 // here read its body as starting at column 0 and swallowed
@@ -1200,7 +1219,7 @@ impl Parser<'_> {
                 // the dash. Against the base, `- k:\n  j: 1\n` reads `j` as
                 // the value of `k`; against the key it is the sibling entry
                 // saphyr and PyYAML both give.
-                if self.current_line_indent > base_indent.max(key_column) {
+                if block_value {
                     // Nested value is more indented than the enclosing mapping's
                     // base indent - belongs to this key.
                     //
@@ -1232,18 +1251,7 @@ impl Parser<'_> {
                     ctx.mapping_block_value_column = Some(base_indent.max(key_column));
                     self.scoped(ctx, |p| p.parse_value_with_base_indent(value_indent));
                     has_value = true;
-                } else if self.current() == Some(SyntaxKind::DASH)
-                    && (self.current_line_indent == base_indent
-                        || self.current_line_indent == key_column)
-                    // A dash at the column of a sequence we sit in is that
-                    // sequence's next entry, which it claims before we can:
-                    // `- - k:\n  - b\n` is the two items `{k: null}` and
-                    // `b`, not one item keyed by `[b]`.
-                    && match self.ctx.sequence_entry_column {
-                        Some(column) => self.current_line_indent > column,
-                        None => true,
-                    }
-                {
+                } else if indentless_sequence {
                     // An indentless sequence: its entries sit at the key's
                     // own column rather than past it, so it is the key's
                     // value even though nothing is more indented. A mapping
@@ -1251,7 +1259,7 @@ impl Parser<'_> {
                     // (`- k:\n  j: 1\n`), which is why only a dash counts.
                     self.parse_sequence_with_base_indent(self.current_line_indent);
                     has_value = true;
-                } else if matches!(self.current(), Some(SyntaxKind::PIPE | SyntaxKind::GREATER)) {
+                } else if block_scalar {
                     // A block scalar header can only be this key's value,
                     // whatever its column: nothing else starts with `|` or
                     // `>`. The validator reports one not indented past the
@@ -1344,6 +1352,31 @@ mod tests {
             .keys()
             .map(|k| k.to_string())
             .collect()
+    }
+
+    /// The text of every block mapping entry in `src`, in document order.
+    fn entry_texts(src: &str) -> Vec<String> {
+        let file = YamlFile::from_str(src).expect("should parse");
+        rowan::ast::AstNode::syntax(&file)
+            .descendants()
+            .filter(|n| n.kind() == crate::lex::SyntaxKind::MAPPING_ENTRY)
+            .map(|n| n.to_string())
+            .collect()
+    }
+
+    /// An empty value leaves the lines after it, which the parser looked
+    /// at for a value, to the collection.
+    #[test]
+    fn test_empty_value_leaves_following_lines() {
+        assert_eq!(entry_texts("a:\n\nb: 1\n"), ["a:\n", "b: 1\n"]);
+        assert_eq!(entry_texts("a: &x\n\n  # c\nb: 1\n"), ["a: &x\n", "b: 1\n"]);
+        assert_eq!(
+            entry_texts("x:\n  a:  # c\n  b: 1\n"),
+            ["x:\n  a:  # c\n  b: 1\n", "a:  # c\n", "b: 1\n"]
+        );
+        assert_eq!(entry_texts("? a\n:\n\n# c\nb: 1\n"), ["? a\n:", "b: 1\n"]);
+        assert_eq!(entry_texts("? a  # c\n\nb: 1\n"), ["? a  # c", "b: 1\n"]);
+        assert_eq!(entry_texts("- ? a\n  b: 1\n"), ["? a", "b: 1\n"]);
     }
 
     // Regression: a nested explicit-key block (`? k` / `: v`) used to swallow

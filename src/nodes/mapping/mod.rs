@@ -1120,21 +1120,29 @@ impl Mapping {
                 vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()],
             );
         }
+        // Without a `:` line, the key's line is the entry's.
+        let has_colon = has_child_token(&entry, |k| k == SyntaxKind::COLON);
         let ends_line = trivia::ends_with_line_break(key);
-        let after = key.next_sibling_or_token();
-        let newline_after = after.as_ref().filter(|c| c.kind() == SyntaxKind::NEWLINE);
+        let newline_after = if has_colon {
+            key.next_sibling_or_token()
+        } else {
+            entry.next_sibling_or_token()
+        }
+        .filter(|c| c.kind() == SyntaxKind::NEWLINE);
         if ends_line {
             if let Some(newline) = newline_after {
-                let i = newline.index();
-                entry.splice_children(i..i + 1, vec![]);
+                newline.detach();
             }
         } else if old_ended_line && newline_after.is_none() {
-            let i = key.index() + 1;
-            insert_children(
-                &entry,
-                i,
-                vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
-            );
+            if has_colon {
+                insert_children(
+                    &entry,
+                    key.index() + 1,
+                    vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
+                );
+            } else {
+                trivia::terminate(&entry);
+            }
         }
     }
 

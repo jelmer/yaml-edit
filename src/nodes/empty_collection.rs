@@ -138,7 +138,7 @@ fn render_in_place(collection: &SyntaxNode, terminated: bool) {
         return;
     }
     // The line break follows the node, properties included, as a parsed
-    // flow-empty line has it; for an explicit key, it follows the KEY.
+    // flow-empty line has it.
     let node = line_node(collection);
     let Some(parent) = node.parent() else {
         // A detached collection has no line of its own; it keeps its
@@ -389,15 +389,22 @@ fn hand_trailing_indent_to_comment(collection: &SyntaxNode) {
 }
 
 /// The node that carries `collection`'s line: the collection itself, the
-/// TAGGED_NODE around it, or for an explicit key the KEY.
+/// TAGGED_NODE around it, or for an explicit key the KEY, or the entry if
+/// that has no `:`.
 fn line_node(collection: &SyntaxNode) -> SyntaxNode {
     let node = collection
         .parent()
         .filter(|p| p.kind() == SyntaxKind::TAGGED_NODE)
         .unwrap_or_else(|| collection.clone());
-    node.parent()
-        .filter(|p| p.kind() == SyntaxKind::KEY)
-        .unwrap_or(node)
+    let Some(key) = node.parent().filter(|p| p.kind() == SyntaxKind::KEY) else {
+        return node;
+    };
+    let entry = key.parent().expect("a KEY is in an entry");
+    if has_child_token(&entry, |k| k == SyntaxKind::COLON) {
+        key
+    } else {
+        entry
+    }
 }
 
 /// Detach the line break that ended the line of `empty_collection`, now
@@ -433,6 +440,8 @@ pub(crate) fn detach_empty_collection_placeholder_newline(
             entry.last_child_or_token()
         };
         (entry, line_break)
+    } else if node.kind() == SyntaxKind::MAPPING_ENTRY {
+        (node.clone(), node.next_sibling_or_token())
     } else {
         (parent, node.next_sibling_or_token())
     };

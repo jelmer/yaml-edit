@@ -221,6 +221,26 @@ fn path_string(steps: &[Step]) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
+/// The range of `node` in its tree.
+fn node_range(node: &YamlNode) -> TextRange {
+    match node {
+        YamlNode::Scalar(n) => n.syntax().text_range(),
+        YamlNode::Mapping(n) => n.syntax().text_range(),
+        YamlNode::Sequence(n) => n.syntax().text_range(),
+        YamlNode::Alias(n) => n.syntax().text_range(),
+        YamlNode::TaggedNode(n) => n.syntax().text_range(),
+    }
+}
+
+/// Whether `path` leads to `node` in `doc`. A key's string form in the
+/// model is not always how a path names it (`0x10` is "16", a tag is left
+/// out), and a path that names another node, or none, would have the edit
+/// go elsewhere than the model expects.
+fn path_reaches(doc: &Document, path: &str, node: Option<YamlNode>) -> bool {
+    let found = doc.try_get_path(path).ok();
+    found.as_ref().map(node_range) == node.as_ref().map(node_range)
+}
+
 /// Whether `key` can be added to `m` as a string key without clashing with
 /// a key of another type in the model.
 fn is_string_key_free(map: &BTreeMap<String, YamlValue>, m: &Mapping, key: &str) -> bool {
@@ -443,6 +463,10 @@ fn apply_map(ctx: &Ctx, op: &MapOp, target: Option<&mut YamlValue>) -> bool {
             let Some(path) = path_string(&steps) else {
                 return false;
             };
+            let value = m.entries().nth(*i % n).and_then(|e| e.value_node());
+            if !path_reaches(ctx.doc, &path, value) {
+                return false;
+            }
             let aliased = value_aliased(*i);
             let before = ctx.doc.to_string();
             let result = match v {
@@ -472,6 +496,15 @@ fn apply_map(ctx: &Ctx, op: &MapOp, target: Option<&mut YamlValue>) -> bool {
             let Some(path) = path_string(&steps) else {
                 return false;
             };
+            let parent = path_string(base);
+            let reaches_target = parent.as_ref().is_none_or(|parent| {
+                let found = ctx.doc.try_get_path(parent).ok();
+                found.and_then(|n| n.as_mapping().map(|m| m.syntax().text_range()))
+                    == Some(ctx.node.text_range())
+            });
+            if !reaches_target {
+                return false;
+            }
             if let Some(map) = &map {
                 if !is_string_key_free(map, &m, k) {
                     return true;
@@ -575,6 +608,9 @@ fn apply_seq(ctx: &Ctx, op: &SeqOp, target: Option<&mut YamlValue>) -> bool {
             let Some(path) = path_string(&steps) else {
                 return false;
             };
+            if !path_reaches(ctx.doc, &path, s.get(i)) {
+                return false;
+            }
             let aliased = item_aliased(i);
             let before = ctx.doc.to_string();
             let result = match v {

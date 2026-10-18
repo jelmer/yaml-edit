@@ -24,13 +24,18 @@
 //! let yaml = Document::from_str("server:\n  host: localhost\n  port: 8080\n").unwrap();
 //!
 //! // Get nested values
-//! let host = yaml.try_get_path("server.host").ok();
+//! let host = yaml.try_get_path("server.host").unwrap();
+//! assert_eq!(host.to_string(), "localhost");
 //!
 //! // Set nested values (creates intermediate mappings)
 //! yaml.try_set_path("database.primary.host", "db.example.com").unwrap();
 //!
 //! // Remove nested values
 //! yaml.try_remove_path("server.port").unwrap();
+//! assert_eq!(
+//!     yaml.to_string(),
+//!     "server:\n  host: localhost\ndatabase:\n  primary:\n    host: db.example.com\n"
+//! );
 //! ```
 //!
 //! # Aliases
@@ -207,7 +212,10 @@ pub trait YamlPath {
     /// let yaml = Document::from_str("server:\n  host: localhost\n").unwrap();
     /// #[allow(deprecated)]
     /// let host = yaml.get_path("server.host");
-    /// assert!(host.is_some());
+    /// assert_eq!(host.unwrap().to_string(), "localhost");
+    /// #[allow(deprecated)]
+    /// let missing = yaml.get_path("server..host");
+    /// assert!(missing.is_none());
     /// ```
     #[deprecated(
         since = "0.4.0",
@@ -234,6 +242,14 @@ pub trait YamlPath {
     /// yaml.set_path("server.host", "localhost");
     /// #[allow(deprecated)]
     /// yaml.set_path("server.port", 8080);
+    /// assert_eq!(
+    ///     yaml.to_string(),
+    ///     "name: test\nserver:\n  host: localhost\n  port: 8080\n"
+    /// );
+    /// // A failed write is not reported.
+    /// #[allow(deprecated)]
+    /// yaml.set_path("name.first", "x");
+    /// assert_eq!(yaml.try_get_path("name").unwrap().to_string(), "test");
     /// ```
     #[deprecated(
         since = "0.4.0",
@@ -3292,5 +3308,208 @@ config:
         // is named.
         let doc = Document::from_str("5\n").unwrap();
         assert_eq!(doc.try_get_path("a"), Err(mismatch("a")));
+    }
+
+    #[test]
+    fn test_path_error_display() {
+        for (error, text) in [
+            (
+                PathError::Parse(PathParseError::UnclosedIndex),
+                "path parse error: unclosed '[' in path",
+            ),
+            (
+                PathError::Parse(PathParseError::InvalidIndex("x".to_string())),
+                "path parse error: invalid path index [x]",
+            ),
+            (
+                PathError::Parse(PathParseError::TrailingBackslash),
+                "path parse error: path ends with an unescaped '\\'",
+            ),
+            (
+                PathError::Parse(PathParseError::EmptySegment),
+                "path parse error: empty segment in path",
+            ),
+            (
+                PathError::Parse(PathParseError::MissingSeparator),
+                "path parse error: expected '.' or '[' after ']' in path",
+            ),
+            (PathError::EmptyPath, "path is empty (no segments)"),
+            (PathError::NoRoot, "document has no root to descend into"),
+            (
+                PathError::TypeMismatch { at: "a".into() },
+                "path segment \"a\" is not a container",
+            ),
+            (
+                PathError::NotFound { at: "a".into() },
+                "path segment \"a\" not found",
+            ),
+            (
+                PathError::AliasRefused {
+                    at: "a".into(),
+                    alias: "x".into(),
+                },
+                "path segment \"a\" is an alias to \"x\"; refusing to descend through it",
+            ),
+            (
+                PathError::IndexTooFar {
+                    at: "[300]".into(),
+                    len: 2,
+                    index: 300,
+                },
+                "path segment \"[300]\" would grow a sequence of 2 by 299 null entries to reach index 300",
+            ),
+            (
+                PathError::UndefinedAlias {
+                    at: "a".into(),
+                    alias: "x".into(),
+                },
+                "path segment \"a\" is an alias to undefined anchor \"x\"",
+            ),
+            (
+                PathError::InvalidMergeOperand {
+                    at: "a".into(),
+                    operand: "1".into(),
+                },
+                "looking up path segment \"a\": merge key operand \"1\" is not a mapping",
+            ),
+        ] {
+            assert_eq!(error.to_string(), text);
+        }
+    }
+
+    #[test]
+    fn test_document_root_sequence_and_scalar() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("- a\n- b\n").unwrap();
+        assert_eq!(doc.try_get_path("[1]").unwrap().to_string(), "b");
+        assert_eq!(
+            doc.try_remove_path("[1]").map(|_| ()),
+            Err(PathError::TypeMismatch { at: "[1]".into() })
+        );
+        assert_eq!(doc.try_set_path("[1]", "x"), Err(PathError::NoRoot));
+        assert_eq!(doc.to_string(), "- a\n- b\n");
+
+        let doc = Document::from_str("5\n").unwrap();
+        assert_eq!(
+            doc.try_get_path("a"),
+            Err(PathError::TypeMismatch { at: "a".into() })
+        );
+        assert_eq!(doc.try_remove_path("a").map(|_| ()), Err(PathError::NoRoot));
+
+        let doc = Document::new();
+        assert_eq!(doc.try_get_path("a"), Err(PathError::NoRoot));
+        assert_eq!(doc.try_remove_path("a").map(|_| ()), Err(PathError::NoRoot));
+    }
+
+    #[test]
+    fn test_set_path_creates_sequences_and_mappings_in_sequences() {
+        let refuse = AliasPolicy::Refuse;
+        for (src, path, expected) in [
+            ("{a: 1}", "b[0]", "{a: 1, b: [9]}"),
+            ("{a: 1}", "b.c", "{a: 1, b: {c: 9}}"),
+            ("s: [[a]]\n", "s[0][1]", "s: [[a, 9]]\n"),
+            ("s: [{a: 1}]\n", "s[0][1]", "s: [{a: 1, '1': 9}]\n"),
+            ("s:\n- a\n", "s[2].k", "s:\n- a\n- null\n- {k: 9}\n"),
+            ("s:\n- a\n", "s[2][0]", "s:\n- a\n- null\n- [9]\n"),
+            ("s:\n- a\n", "s[1][0][0]", "s:\n- a\n- [[9]]\n"),
+            ("s:\n- a\n- ~\n", "s[1].k", "s:\n- a\n- {k: 9}\n"),
+            (
+                "s:\n- a\n- {b: 1}\n",
+                "s[1][0]",
+                "s:\n- a\n- {b: 1, '0': 9}\n",
+            ),
+            ("a: ~\n", "a[0]", "a:\n  - 9\n"),
+            ("a:\n  b: 1\n", "a[0]", "a:\n  b: 1\n  '0': 9\n"),
+        ] {
+            assert_eq!(
+                set_and_check(src, path, refuse),
+                (Ok(()), expected.to_string()),
+                "{path} on {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_set_path_refusals_leave_document_alone() {
+        let mismatch = |at: &str| Err(PathError::TypeMismatch { at: at.to_string() });
+        for (src, path, err) in [
+            ("s: [a]\n", "s.k", mismatch("s")),
+            ("s: [a]\n", "s[0].k", mismatch("[0]")),
+            ("s: [!t x]\n", "s[0][0]", mismatch("[0]")),
+            ("s: [!t x]\n", "s[0].k", mismatch("[0]")),
+            ("s:\n- a\n- [b]\n", "s[1].k", mismatch("[1]")),
+            ("a: [x]\n", "a[0][0]", mismatch("[0]")),
+            ("a: !t x\n", "a.b", mismatch("a")),
+            ("a: !t x\n", "a[0]", mismatch("a")),
+            (
+                "a: 1\n",
+                "b[900000]",
+                Err(PathError::IndexTooFar {
+                    at: "[900000]".to_string(),
+                    len: 0,
+                    index: 900000,
+                }),
+            ),
+            (
+                "s: [a]\n",
+                "s[257]",
+                Err(PathError::IndexTooFar {
+                    at: "[257]".to_string(),
+                    len: 1,
+                    index: 257,
+                }),
+            ),
+        ] {
+            for policy in [AliasPolicy::Refuse, AliasPolicy::Expand] {
+                assert_eq!(
+                    set_and_check(src, path, policy),
+                    (err.clone(), src.to_string()),
+                    "{path} on {src:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_set_path_through_undefined_alias_in_sequence() {
+        assert_eq!(
+            set_and_check("s:\n- *nope\n", "s[0].a", AliasPolicy::Expand),
+            (
+                Err(PathError::UndefinedAlias {
+                    at: "[0]".to_string(),
+                    alias: "nope".to_string(),
+                }),
+                "s:\n- *nope\n".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn test_set_path_through_alias_in_sequence() {
+        let src = "x: &x {a: 1}\ns: [*x]\n";
+        assert_eq!(
+            set_and_check(src, "s[0].a", AliasPolicy::Refuse),
+            (
+                Err(PathError::AliasRefused {
+                    at: "[0]".to_string(),
+                    alias: "x".to_string()
+                }),
+                src.to_string()
+            )
+        );
+        assert_eq!(
+            set_and_check(src, "s[0].a", AliasPolicy::Follow),
+            (Ok(()), "x: &x {a: 9}\ns: [*x]\n".to_string())
+        );
+        assert_eq!(
+            set_and_check(src, "s[0].a", AliasPolicy::Expand),
+            (Ok(()), "x: &x {a: 1}\ns: [{a: 9}]\n".to_string())
+        );
+        assert_eq!(
+            set_and_check("x: &x [1]\ns:\n- *x\n", "s[0][1]", AliasPolicy::Expand),
+            (Ok(()), "x: &x [1]\ns:\n- [1, 9]\n".to_string())
+        );
     }
 }

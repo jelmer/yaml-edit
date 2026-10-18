@@ -51,36 +51,43 @@
 //! ## Entry termination
 //!
 //! Block-style MAPPING_ENTRY and SEQUENCE_ENTRY nodes are terminated by
-//! a NEWLINE. That terminator normally lives as the entry's own last
-//! token, but the parser sometimes lifts it out when a trailing comment
-//! separates it from the next sibling:
+//! a NEWLINE, the entry's own last token, after the comment ending its
+//! line if there is one. A mapping entry keeps that comment in its VALUE,
+//! a sequence entry after its item:
 //!
 //! ```text
-//! # SEQUENCE_ENTRY ends with STRING; the NEWLINE lives at the SEQUENCE
-//! # level after the following COMMENT.
 //! SEQUENCE
 //!   SEQUENCE_ENTRY
 //!     DASH "-"
+//!     WHITESPACE " "
 //!     SCALAR ("a")
-//!   WHITESPACE "  "
-//!   COMMENT "# note"
-//!   NEWLINE "\n"
+//!     WHITESPACE "  "
+//!     COMMENT "# note"
+//!     NEWLINE "\n"
 //!   SEQUENCE_ENTRY ...
 //! ```
 //!
-//! An explicit-key entry (`? key\n: value\n`) never owns the NEWLINE
-//! ending its value line: the parser leaves it to the MAPPING, right
-//! after the entry. See [`trivia`].
+//! An explicit-key entry (`? key\n: value  # c\n`) is no different: its
+//! VALUE holds the comment and the entry the NEWLINE ending the value's
+//! line. One without a `:` line (`? key  # c\n`) has the comment after
+//! its KEY, then its empty VALUE and the NEWLINE. An entry that ends in a
+//! block node, a nested block collection or a block scalar, has its line
+//! ended by that node. See [`trivia`].
 //!
 //! Two carve-outs:
 //! - The **last** entry of a block collection may lack a terminator
 //!   (unterminated sources like `a: 1\nb: 2` are legitimate YAML and
 //!   must roundtrip).
-//! - An entry ending in an **implicit-null** scalar (see below) has a
-//!   zero-width `SCALAR { NULL "" }` as its last leaf, not a NEWLINE.
-//!   That's a well-formed terminated entry; the NEWLINE lives elsewhere
-//!   in the tree (inside the KEY subtree for `? key\n`, inside the VALUE
-//!   between COLON and SCALAR for `key:\n`).
+//! - An explicit-key entry without a value whose key is a block node
+//!   (`? - a\n`) ends in the zero-width `SCALAR { NULL "" }` of its value
+//!   (see below), after the NEWLINE ending the key.
+//!
+//! An empty value never holds the lines after it. Where the parser looks
+//! past the end of the line for a value and finds none, the line break
+//! and whatever follows it are left to the entry and the collection, as
+//! after any other value: `key:\n` is `VALUE { SCALAR { NULL "" } }`
+//! followed by the entry's NEWLINE, and the INDENT, blank lines and
+//! comment lines after it belong to the collection.
 //!
 //! When a comment line is indented deeper than the collection it
 //! follows, the parser lifts the COMMENT and its NEWLINE into the parent
@@ -127,7 +134,7 @@
 //! ```text
 //! Source form                     CST shape
 //! ------------------------------- ----------------------------------------
-//! key:\n     (block mapping)      VALUE { NEWLINE, SCALAR { NULL "" } }
+//! key:\n     (block mapping)      VALUE { SCALAR { NULL "" } }, NEWLINE
 //! key:       (block mapping, EOF) VALUE { SCALAR { NULL "" } }
 //! {key}      (flow mapping)       MAPPING_ENTRY { KEY { SCALAR "key" },
 //!                                                 VALUE { SCALAR { NULL "" } } }
@@ -138,8 +145,9 @@
 //!                                                 VALUE { SCALAR { NULL "" } },
 //!                                                 COMMA }
 //! {: v}      (flow mapping)       KEY { SCALAR { NULL "" } }, COLON, VALUE ...
-//! ? key\n    (explicit key)       MAPPING_ENTRY { QUESTION, KEY ..., NEWLINE,
-//!                                                 VALUE { SCALAR { NULL "" } } }
+//! ? key\n    (explicit key)       MAPPING_ENTRY { QUESTION, KEY ...,
+//!                                                 VALUE { SCALAR { NULL "" } },
+//!                                                 NEWLINE }
 //! {? : v}    (flow explicit key)  KEY { QUESTION, WHITESPACE,
 //!                                       SCALAR { NULL "" } }, COLON, ...
 //! - \n       (block sequence)     SEQUENCE_ENTRY { DASH, WHITESPACE,
@@ -439,16 +447,9 @@ fn move_blank_lines_ahead_of_kept_scalar(entry: &SyntaxNode) {
     if !ends_with_kept_block_scalar(entry) {
         return;
     }
-    // An explicit-key entry leaves the break ending its line to the mapping.
     let Some(line_end) = entry
         .last_token()
         .filter(|t| t.kind() == SyntaxKind::NEWLINE)
-        .or_else(|| {
-            entry
-                .next_sibling_or_token()
-                .and_then(|c| c.into_token())
-                .filter(|t| t.kind() == SyntaxKind::NEWLINE)
-        })
     else {
         return;
     };

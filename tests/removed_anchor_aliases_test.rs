@@ -309,12 +309,9 @@ fn copy_of_empty_node_leaves_no_trailing_space() {
     doc.as_sequence().unwrap().remove(0);
     assert_edited(&doc, "- &x\n");
 
-    // TODO: the parser keeps the line break after an empty value inside
-    // it, so this is not compared with a re-parse.
     let doc = Document::from_str("a: &x\nb: *x\n").unwrap();
     doc.as_mapping().unwrap().remove("a");
-    assert_eq!(doc.to_string(), "b: &x\n");
-    common::assert_cst_ok(&doc);
+    assert_edited(&doc, "b: &x\n");
 }
 
 #[test]

@@ -187,12 +187,9 @@ fn set_to_empty_node_leaves_no_trailing_space() {
     sequence_at(&file, "").set(0, &null);
     assert_parser_shaped(&file, "-\n- 2\n", "- 1\n- 2\n");
 
-    // TODO: the parser keeps the line break after an empty value inside
-    // it, so this is not compared with a re-parse.
     let file = YamlFile::from_str("a: 1\nb: 2\n").unwrap();
     mapping_at(&file, "").set("a", &null);
-    assert_eq!(file.to_string(), "a:\nb: 2\n");
-    assert_file_cst_ok(&file);
+    assert_parser_shaped(&file, "a:\nb: 2\n", "a: 1\nb: 2\n");
 }
 
 #[test]
@@ -584,5 +581,27 @@ fn blank_lines_after_empty_value() {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, path).set("a", block_mapping());
         assert_parser_shaped(&file, expected_block, src);
+    }
+}
+
+/// A comment ending the last line of a value that spans lines goes with
+/// it, wherever the parser keeps it.
+#[test]
+fn comment_after_multi_line_value_goes_with_it() {
+    for (src, expected) in [
+        ("a: [x,\n  y]  # c\nb: 1\n", "a: 5\nb: 1\n"),
+        ("? a\n: [x,\n  y]  # c\nb: 1\n", "? a\n: 5\nb: 1\n"),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        mapping_at(&file, "").set("a", 5);
+        assert_parser_shaped(&file, expected, src);
+    }
+    for (src, expected) in [
+        ("- [x,\n  y]  # c\n- 1\n", "- 5\n- 1\n"),
+        ("- a: [x,\n    y]  # c\n- 1\n", "- 5\n- 1\n"),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        sequence_at(&file, "").set(0, 5);
+        assert_parser_shaped(&file, expected, src);
     }
 }

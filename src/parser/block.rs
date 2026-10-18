@@ -244,12 +244,7 @@ impl Parser<'_> {
                 p.parse_sequence_entry_value(dash_column, item_indent)
             });
 
-            // Trailing whitespace the entry's scalar left behind belongs to
-            // the entry, as does its NEWLINE terminator (DESIGN.md)
-            self.skip_whitespace();
-            if self.current() == Some(SyntaxKind::NEWLINE) {
-                self.bump();
-            }
+            self.skip_entry_line_end();
 
             // Finish SEQUENCE_ENTRY node
             self.builder.finish_node();
@@ -407,10 +402,11 @@ impl Parser<'_> {
 
             self.builder.finish_node();
 
-            self.skip_ws_and_newlines();
-
-            // Parse value if there's a colon
-            if self.current() == Some(SyntaxKind::COLON) {
+            // Parse value if there's a colon. Without one, the lines after
+            // the key's are the mapping's.
+            self.skip_line_end_trivia();
+            if self.next_content().0 == Some(SyntaxKind::COLON) {
+                self.skip_ws_and_newlines();
                 let colon_column = self.column();
                 self.bump(); // consume ':'
                 self.skip_whitespace();
@@ -458,6 +454,7 @@ impl Parser<'_> {
                 // No value, just a key - create explicit null value
                 self.emit_implicit_null_value();
             }
+            self.skip_entry_line_end();
 
             // Finish the MAPPING_ENTRY node
             self.builder.finish_node();
@@ -610,9 +607,9 @@ impl Parser<'_> {
             });
             p.builder.finish_node();
 
-            p.skip_ws_and_newlines();
-
-            if p.current() == Some(SyntaxKind::COLON) {
+            p.skip_line_end_trivia();
+            if p.next_content().0 == Some(SyntaxKind::COLON) {
+                p.skip_ws_and_newlines();
                 let colon_column = p.column();
                 p.bump(); // consume ':'
                 p.skip_whitespace();
@@ -627,6 +624,7 @@ impl Parser<'_> {
                 p.emit_implicit_null_value();
             }
         });
+        self.skip_entry_line_end();
         self.builder.finish_node();
     }
 
@@ -1173,21 +1171,26 @@ impl Parser<'_> {
                 };
                 self.scoped(ctx, |p| p.parse_mapping_value(column));
                 has_value = true;
-
-                // Capture any trailing whitespace and comment on the same line (before NEWLINE)
-                // This keeps inline comments like "value  # comment" together in the VALUE node.
-                // A block scalar ends at a line break, after which a comment
-                // is a line of the mapping.
-                if self.previous_kind != Some(SyntaxKind::NEWLINE) {
-                    if self.current() == Some(SyntaxKind::WHITESPACE) {
-                        self.bump(); // emit whitespace inside VALUE
-                    }
-                    if self.current() == Some(SyntaxKind::COMMENT) {
-                        self.bump(); // emit inline comment inside VALUE
-                    }
-                }
             } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                self.skip_ws_and_newlines();
+                // Look for the value before stepping over the lines in
+                // between: without one, those lines are the mapping's, not
+                // the empty value's.
+                let (next, indent) = self.next_content();
+                let block_value = next.is_some() && indent > base_indent.max(key_column);
+                let indentless_sequence = next == Some(SyntaxKind::DASH)
+                    && (indent == base_indent || indent == key_column)
+                    // A dash at the column of a sequence we sit in is that
+                    // sequence's next entry, which it claims before we can:
+                    // `- - k:\n  - b\n` is the two items `{k: null}` and
+                    // `b`, not one item keyed by `[b]`.
+                    && match self.ctx.sequence_entry_column {
+                        Some(column) => indent > column,
+                        None => true,
+                    };
+                let block_scalar = matches!(next, Some(SyntaxKind::PIPE | SyntaxKind::GREATER));
+                if block_value || indentless_sequence || block_scalar {
+                    self.skip_ws_and_newlines();
+                }
                 // A mapping's value is never the document's own node,
                 // whatever the caller was parsing. Left set, a block scalar
                 // here read its body as starting at column 0 and swallowed
@@ -1200,7 +1203,7 @@ impl Parser<'_> {
                 // the dash. Against the base, `- k:\n  j: 1\n` reads `j` as
                 // the value of `k`; against the key it is the sibling entry
                 // saphyr and PyYAML both give.
-                if self.current_line_indent > base_indent.max(key_column) {
+                if block_value {
                     // Nested value is more indented than the enclosing mapping's
                     // base indent - belongs to this key.
                     //
@@ -1232,18 +1235,7 @@ impl Parser<'_> {
                     ctx.mapping_block_value_column = Some(base_indent.max(key_column));
                     self.scoped(ctx, |p| p.parse_value_with_base_indent(value_indent));
                     has_value = true;
-                } else if self.current() == Some(SyntaxKind::DASH)
-                    && (self.current_line_indent == base_indent
-                        || self.current_line_indent == key_column)
-                    // A dash at the column of a sequence we sit in is that
-                    // sequence's next entry, which it claims before we can:
-                    // `- - k:\n  - b\n` is the two items `{k: null}` and
-                    // `b`, not one item keyed by `[b]`.
-                    && match self.ctx.sequence_entry_column {
-                        Some(column) => self.current_line_indent > column,
-                        None => true,
-                    }
-                {
+                } else if indentless_sequence {
                     // An indentless sequence: its entries sit at the key's
                     // own column rather than past it, so it is the key's
                     // value even though nothing is more indented. A mapping
@@ -1251,7 +1243,7 @@ impl Parser<'_> {
                     // (`- k:\n  j: 1\n`), which is why only a dash counts.
                     self.parse_sequence_with_base_indent(self.current_line_indent);
                     has_value = true;
-                } else if matches!(self.current(), Some(SyntaxKind::PIPE | SyntaxKind::GREATER)) {
+                } else if block_scalar {
                     // A block scalar header can only be this key's value,
                     // whatever its column: nothing else starts with `|` or
                     // `>`. The validator reports one not indented past the
@@ -1277,8 +1269,12 @@ impl Parser<'_> {
                 // follows is a sibling entry.
             }
 
-            // If no value present, create an implicit null scalar
-            if !has_value {
+            // If no value present, create an implicit null scalar. A
+            // comment ending the value's last line goes in the VALUE, as
+            // in `value  # comment`.
+            if has_value {
+                self.skip_line_end_trivia();
+            } else {
                 self.emit_implicit_null();
             }
 
@@ -1292,18 +1288,7 @@ impl Parser<'_> {
             self.add_error_and_recover(error_msg, SyntaxKind::COLON, ParseErrorKind::Other);
         }
 
-        // Consume any trailing inline whitespace before closing MAPPING_ENTRY
-        // Note: Inline comments are consumed within the VALUE node itself.
-        // Any COMMENT token here would be on a separate line and should not
-        // be consumed as part of this entry (it may be dedented).
-        while self.current() == Some(SyntaxKind::WHITESPACE) {
-            self.bump();
-        }
-
-        // Block-style entries own their NEWLINE terminator (DESIGN.md)
-        if self.current() == Some(SyntaxKind::NEWLINE) {
-            self.bump();
-        }
+        self.skip_entry_line_end();
 
         // Finish MAPPING_ENTRY node
         self.builder.finish_node();
@@ -1344,6 +1329,61 @@ mod tests {
             .keys()
             .map(|k| k.to_string())
             .collect()
+    }
+
+    /// The text of every block mapping entry in `src`, in document order.
+    fn entry_texts(src: &str) -> Vec<String> {
+        let file = YamlFile::from_str(src).expect("should parse");
+        rowan::ast::AstNode::syntax(&file)
+            .descendants()
+            .filter(|n| n.kind() == crate::lex::SyntaxKind::MAPPING_ENTRY)
+            .map(|n| n.to_string())
+            .collect()
+    }
+
+    /// An empty value leaves the lines after it, which the parser looked
+    /// at for a value, to the collection.
+    #[test]
+    fn test_empty_value_leaves_following_lines() {
+        assert_eq!(entry_texts("a:\n\nb: 1\n"), ["a:\n", "b: 1\n"]);
+        assert_eq!(entry_texts("a: &x\n\n  # c\nb: 1\n"), ["a: &x\n", "b: 1\n"]);
+        assert_eq!(
+            entry_texts("x:\n  a:  # c\n  b: 1\n"),
+            ["x:\n  a:  # c\n  b: 1\n", "a:  # c\n", "b: 1\n"]
+        );
+        assert_eq!(entry_texts("? a\n:\n\n# c\nb: 1\n"), ["? a\n:\n", "b: 1\n"]);
+        assert_eq!(entry_texts("? a  # c\n\nb: 1\n"), ["? a  # c\n", "b: 1\n"]);
+        assert_eq!(entry_texts("- ? a\n  b: 1\n"), ["? a\n", "b: 1\n"]);
+    }
+
+    /// A mapping entry owns the comment ending its last line, and the line
+    /// break after it, whether its key is explicit or its value on a later
+    /// line.
+    #[test]
+    fn test_mapping_entry_owns_line_end() {
+        assert_eq!(
+            entry_texts("? a\n: b  # c\nd: 1\n"),
+            ["? a\n: b  # c\n", "d: 1\n"]
+        );
+        assert_eq!(
+            entry_texts("a:\n  b  # c\nd: 1\n"),
+            ["a:\n  b  # c\n", "d: 1\n"]
+        );
+        assert_eq!(entry_texts("? - a\n# c\nd: 1\n"), ["? - a\n", "d: 1\n"]);
+    }
+
+    /// A sequence entry owns the comment ending its line, and the line
+    /// break after it, as a mapping entry does. A comment line after a
+    /// block item is the sequence's.
+    #[test]
+    fn test_sequence_entry_owns_line_comment() {
+        let file = YamlFile::from_str("- a  # c\n- |\n  x\n# d\n- b # e").unwrap();
+        let entries: Vec<String> = rowan::ast::AstNode::syntax(&file)
+            .descendants()
+            .filter(|n| n.kind() == crate::lex::SyntaxKind::SEQUENCE_ENTRY)
+            .map(|n| n.to_string())
+            .collect();
+        assert_eq!(entries, ["- a  # c\n", "- |\n  x\n", "- b # e"]);
     }
 
     // Regression: a nested explicit-key block (`? k` / `: v`) used to swallow

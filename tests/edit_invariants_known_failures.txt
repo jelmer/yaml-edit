@@ -3,22 +3,9 @@
 # Regenerate with UPDATE_KNOWN_FAILURES=1 cargo test --test edit_invariants
 5MUD d0 map0 rename[0] semantic
 5MUD d0 map0 rename[0] shape
-6KGN d0 map0 move-after-last[0] shape
-6KGN d0 map0 move-before-first[1] shape
-6KGN d0 map0 remove[0] shape
-6KGN d0 map0 reorder-reversed shape
 K3WX d0 map0 rename[0] semantic
 K3WX d0 map0 rename[0] shape
 K3WX d0 map0 rename[0] validator
-KK5P d0 map1 set-new shape
-M2N8/00 d0 map0 set-new shape
-PW8X d0 map0 move-after-last[0] shape
-PW8X d0 map0 move-before-first[1] shape
-PW8X d0 map0 reorder-reversed shape
-PW8X d0 map0 set-new shape
-PW8X d0 map1 set-new shape
-PW8X d0 map2 set-new shape
-UKK6/00 d0 map0 set-new shape
 X38W d0 map0 move-after-last[0] validator
 X38W d0 map0 move-before-first[1] validator
 X38W d0 map0 reorder-reversed validator

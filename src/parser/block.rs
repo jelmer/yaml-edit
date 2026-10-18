@@ -352,6 +352,11 @@ impl Parser {
         // the value `1`.
         let outer_floor = self.scalar_continuation_floor;
         self.scalar_continuation_floor = None;
+        // Nor does the rule of the document root or a sequence entry, where
+        // a line at the scalar's own column continues it: in
+        // `? a\n: 1\nb\n` the `b` line is not part of the value.
+        let outer_equal_indent = self.equal_indent_continues_scalar;
+        self.equal_indent_continues_scalar = false;
 
         while self.current() == Some(SyntaxKind::QUESTION) {
             // Start a MAPPING_ENTRY to wrap this key-value pair
@@ -545,6 +550,7 @@ impl Parser {
         }
 
         self.scalar_continuation_floor = outer_floor;
+        self.equal_indent_continues_scalar = outer_equal_indent;
         self.builder.finish_node();
     }
 
@@ -1436,6 +1442,39 @@ mod tests {
         let doc = file.document().expect("should have a document");
         assert_eq!(crate::validator::Validator::new().validate(&doc), vec![]);
         crate::YamlValue::from_document(&doc).expect("should convert")
+    }
+
+    /// An explicit value's plain scalar continues only on lines indented
+    /// past the `:`; a line at its column is not part of it.
+    #[test]
+    fn test_explicit_value_scalar_continuation() {
+        for (src, content, offset) in [
+            ("? a\n: 1\nb\n", "b", 8),
+            ("? a\n: 1\n[a, b]\n", "[", 8),
+            ("- ? a\n  : 1\n  b\n", "b", 14),
+            ("? a\n: 1\n\nb\n", "b", 9),
+        ] {
+            let errors: Vec<(String, u32)> = crate::Parse::parse_yaml(src)
+                .positioned_errors()
+                .iter()
+                .map(|e| (e.message.clone(), e.range.start))
+                .collect();
+            assert_eq!(
+                errors,
+                [(
+                    format!("Content after the document could not be parsed: {content:?}"),
+                    offset
+                )],
+                "{src:?}"
+            );
+        }
+        for (src, expected) in [
+            ("? a\n: 1\n b\n", "{a: 1 b}"),
+            ("- ? a\n  : 1\n   b\n", "[{a: 1 b}]"),
+            ("? a\n: 1\n? b\n", "{a: 1, b: }"),
+        ] {
+            assert_eq!(checked_value(src), checked_value(expected), "{src:?}");
+        }
     }
 
     /// A flow collection key after an explicit-key entry is the same

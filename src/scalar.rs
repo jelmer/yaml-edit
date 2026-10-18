@@ -161,6 +161,29 @@ fn push_unicode_escape(
     }
 }
 
+/// Take `min..=max` ASCII digits from the front of `rest`, returning their
+/// value and how many there were.
+fn take_number(rest: &mut &[char], min: usize, max: usize) -> Option<(u32, usize)> {
+    let len = rest
+        .iter()
+        .take(max)
+        .take_while(|c| c.is_ascii_digit())
+        .count();
+    if len < min {
+        return None;
+    }
+    let value = rest[..len].iter().collect::<String>().parse().ok()?;
+    *rest = &rest[len..];
+    Some((value, len))
+}
+
+/// Take the first character of `rest` if `accept` accepts it.
+fn take_char(rest: &mut &[char], accept: impl Fn(char) -> bool) -> Option<char> {
+    let (&c, tail) = rest.split_first().filter(|(&c, _)| accept(c))?;
+    *rest = tail;
+    Some(c)
+}
+
 /// Skip the leading white space of the lines following a line break,
 /// returning how many of those lines were empty.
 fn skip_line_prefixes(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> usize {
@@ -956,86 +979,54 @@ impl ScalarValue {
         false
     }
 
-    /// Simple pattern matching for ISO 8601 timestamps
+    /// Whether `value` is a YAML 1.1 timestamp naming a valid date and
+    /// time: a date `YYYY-MM-DD`, or
+    /// `[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}([Tt]|[ \t]+)[0-9]{1,2}:[0-9]{2}:[0-9]{2}`
+    /// followed by a fraction and time zone.
     fn matches_iso8601_pattern(value: &str) -> bool {
         let chars: Vec<char> = value.chars().collect();
-
-        // Must be at least YYYY-MM-DD (10 chars)
-        if chars.len() < 10 {
+        let rest = &mut &chars[..];
+        let Some(((year, _), (month, month_len), (day, day_len))) = (|| {
+            let year = take_number(rest, 4, 4)?;
+            take_char(rest, |c| c == '-')?;
+            let month = take_number(rest, 1, 2)?;
+            take_char(rest, |c| c == '-')?;
+            Some((year, month, take_number(rest, 1, 2)?))
+        })() else {
+            return false;
+        };
+        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let days_in_month = match month {
+            2 if leap => 29,
+            2 => 28,
+            4 | 6 | 9 | 11 => 30,
+            _ => 31,
+        };
+        if !(1..=12).contains(&month) || !(1..=days_in_month).contains(&day) {
             return false;
         }
-
-        // Check YYYY-MM-DD pattern
-        if !(chars[0..4].iter().all(|c| c.is_ascii_digit())
-            && chars[4] == '-'
-            && chars[5..7].iter().all(|c| c.is_ascii_digit())
-            && chars[7] == '-'
-            && chars[8..10].iter().all(|c| c.is_ascii_digit()))
-        {
-            return false;
+        // A date on its own has two-digit month and day.
+        if rest.is_empty() {
+            return month_len == 2 && day_len == 2;
         }
 
-        // Validate month and day ranges (basic validation)
-        let month_str: String = chars[5..7].iter().collect();
-        let day_str: String = chars[8..10].iter().collect();
-
-        let year_str: String = chars[0..4].iter().collect();
-        if let (Ok(year), Ok(month), Ok(day)) = (
-            year_str.parse::<u16>(),
-            month_str.parse::<u8>(),
-            day_str.parse::<u8>(),
-        ) {
-            let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-            let days_in_month = match month {
-                2 if leap => 29,
-                2 => 28,
-                4 | 6 | 9 | 11 => 30,
-                _ => 31,
-            };
-            if !(1..=12).contains(&month) || !(1..=days_in_month).contains(&day) {
-                return false;
+        let time = (|| {
+            if take_char(rest, |c| c == 'T' || c == 't').is_none() {
+                take_char(rest, |c| c == ' ' || c == '\t')?;
+                while take_char(rest, |c| c == ' ' || c == '\t').is_some() {}
             }
-        } else {
-            return false;
-        }
-
-        // If it's just YYYY-MM-DD, that's valid
-        if chars.len() == 10 {
-            return true;
-        }
-
-        // Check for time part: T or t or space followed by HH:MM:SS
-        if chars.len() >= 19 {
-            let sep = chars[10];
-            if (sep == 'T' || sep == 't' || sep == ' ')
-                && chars[11..13].iter().all(|c| c.is_ascii_digit())
-                && chars[13] == ':'
-                && chars[14..16].iter().all(|c| c.is_ascii_digit())
-                && chars[16] == ':'
-                && chars[17..19].iter().all(|c| c.is_ascii_digit())
-            {
-                // Validate hour, minute, second ranges
-                let hour_str: String = chars[11..13].iter().collect();
-                let minute_str: String = chars[14..16].iter().collect();
-                let second_str: String = chars[17..19].iter().collect();
-
-                if let (Ok(hour), Ok(minute), Ok(second)) = (
-                    hour_str.parse::<u8>(),
-                    minute_str.parse::<u8>(),
-                    second_str.parse::<u8>(),
-                ) {
-                    if hour > 23 || minute > 59 || second > 59 {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-
-                return Self::is_timestamp_tail(&chars[19..]);
+            let (hour, _) = take_number(rest, 1, 2)?;
+            take_char(rest, |c| c == ':')?;
+            let (minute, _) = take_number(rest, 2, 2)?;
+            take_char(rest, |c| c == ':')?;
+            Some((hour, minute, take_number(rest, 2, 2)?.0))
+        })();
+        match time {
+            Some((hour, minute, second)) if hour <= 23 && minute <= 59 && second <= 59 => {
+                Self::is_timestamp_tail(rest)
             }
+            _ => false,
         }
-
-        false
     }
 
     /// Whether `tail` is a valid fraction and time zone following the
@@ -2586,6 +2577,44 @@ mod tests {
 
         let string_scalar = ScalarValue::parse("hello world");
         assert_eq!(string_scalar.scalar_type(), ScalarType::String);
+    }
+
+    #[test]
+    fn test_yaml_1_1_timestamp_examples() {
+        // The examples of https://yaml.org/type/timestamp.html, and the
+        // one-digit and white space forms its regular expression allows.
+        for text in [
+            "2001-12-15T02:59:43.1Z",
+            "2001-12-14t21:59:43.10-05:00",
+            "2001-12-14 21:59:43.10 -5",
+            "2001-12-15 2:59:43.10",
+            "2002-12-14",
+            "2001-1-5T1:02:03Z",
+            "2001-12-14  21:59:43",
+            "2001-12-14\t21:59:43",
+        ] {
+            assert_eq!(
+                ScalarValue::parse(text).scalar_type(),
+                ScalarType::Timestamp,
+                "{text:?}"
+            );
+        }
+        for text in [
+            "2001-1-5",
+            "2001-12-14T",
+            "2001-12-14 123:59:43",
+            "2001-12-14T21:5:43",
+            "2001-12-14T21:59:4",
+            "2001-12-14x21:59:43",
+            "2001-12-14T24:00:00",
+            "2001-12-32",
+        ] {
+            assert_eq!(
+                ScalarValue::parse(text).scalar_type(),
+                ScalarType::String,
+                "{text:?}"
+            );
+        }
     }
 
     #[test]

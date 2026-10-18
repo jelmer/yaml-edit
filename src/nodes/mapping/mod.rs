@@ -6,7 +6,7 @@ pub(crate) use helpers::build_block_value_node;
 pub(crate) use helpers::flow_form;
 use helpers::{
     append_comma_space_to_entry, ensure_top_level_empty_renders_as_flow, index_after_entry_line,
-    unterminate_last_line, FlowInsertPos,
+    FlowInsertPos,
 };
 pub(crate) use helpers::{
     block_scalar_body_shift, drop_tagged_anchor, held_anchor, held_anchor_token, is_block_scalar,
@@ -16,7 +16,8 @@ pub(crate) use helpers::{
 use super::{
     ensure_trailing_newline, entry_key, entry_line_terminated, entry_value, fresh_token,
     hand_line_break_to_mapping, has_child_token, settle_lines_after_inserted_entry,
-    strip_flow_separator, trailing_newline_reachable, Lang, Sequence, SyntaxNode,
+    strip_flow_separator, trailing_newline_reachable, unterminate_last_line, Lang, Sequence,
+    SyntaxNode,
 };
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
@@ -1323,7 +1324,7 @@ impl Mapping {
             .children()
             .any(|c| c.kind() == SyntaxKind::MAPPING_ENTRY)
         {
-            collapse_empty_child_mapping_in_parent(&self.0);
+            collapse_empty_child_mapping_in_parent(&self.0, removed_terminated);
         }
 
         // The end of the input keeps its lack of a final line break.
@@ -1398,6 +1399,10 @@ impl Mapping {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn clear(&self) {
+        let terminated = self
+            .entries()
+            .last()
+            .is_some_and(|e| entry_line_terminated(e.syntax()));
         // Entries are removed one by one, as keeping aliases resolving may
         // rewrite a later key.
         while let Some((i, entry)) = self
@@ -1415,7 +1420,7 @@ impl Mapping {
             let children: Vec<_> = self.0.children_with_tokens().collect();
             self.remove_entry_at(&children, i, &entry);
         }
-        ensure_top_level_empty_renders_as_flow(&self.0);
+        ensure_top_level_empty_renders_as_flow(&self.0, terminated);
     }
 
     /// Rename a key while preserving its value and formatting.

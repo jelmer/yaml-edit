@@ -45,7 +45,10 @@ pub(super) fn value_is_block(value: &SyntaxNode) -> bool {
 /// MAPPING_ENTRY parent, no lingering tokens) so it renders as `{}`
 /// rather than empty text. The nested counterpart is
 /// [`crate::yaml::collapse_empty_child_collection_in_parent`].
-pub(super) fn ensure_top_level_empty_renders_as_flow(mapping: &SyntaxNode) {
+///
+/// `terminated` says whether the mapping's last line ended in a line break
+/// before it was drained; if so, the `{}` line gets one too.
+pub(super) fn ensure_top_level_empty_renders_as_flow(mapping: &SyntaxNode, terminated: bool) {
     if mapping
         .children()
         .any(|c| c.kind() == SyntaxKind::MAPPING_ENTRY)
@@ -77,6 +80,26 @@ pub(super) fn ensure_top_level_empty_renders_as_flow(mapping: &SyntaxNode) {
     let lbrace = fresh_token(SyntaxKind::LEFT_BRACE, "{");
     let rbrace = fresh_token(SyntaxKind::RIGHT_BRACE, "}");
     mapping.splice_children(0..0, vec![lbrace.into(), rbrace.into()]);
+
+    if !terminated {
+        return;
+    }
+    // The line break follows the node, properties included, as a parsed
+    // `{}` line has it.
+    let node = mapping
+        .parent()
+        .filter(|p| p.kind() == SyntaxKind::TAGGED_NODE)
+        .unwrap_or_else(|| mapping.clone());
+    let Some(parent) = node
+        .parent()
+        .filter(|p| matches!(p.kind(), SyntaxKind::DOCUMENT | SyntaxKind::SEQUENCE_ENTRY))
+    else {
+        // TODO: keep the line break of a drained mapping elsewhere, such as
+        // an explicit key.
+        return;
+    };
+    let at = node.index() + 1;
+    parent.splice_children(at..at, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
 }
 
 /// Index just past `entry`'s line terminator among its siblings.
@@ -718,26 +741,5 @@ impl FlowWriter {
             self.builder
                 .token(SyntaxKind::INDENT.into(), &" ".repeat(indent));
         }
-    }
-}
-
-/// Remove the line break that ends `mapping`, a block mapping whose last
-/// line had none before it was edited. One that is part
-/// of a block scalar's value stays, as removing it would change the value.
-pub(super) fn unterminate_last_line(mapping: &SyntaxNode) {
-    let Some(last) = mapping
-        .descendants_with_tokens()
-        .filter_map(|c| c.into_token())
-        .filter(|t| !t.text().is_empty())
-        .last()
-    else {
-        return;
-    };
-    let in_scalar = last
-        .parent_ancestors()
-        .take_while(|n| n != mapping)
-        .any(|n| n.kind() == SyntaxKind::SCALAR);
-    if last.kind() == SyntaxKind::NEWLINE && !in_scalar {
-        last.detach();
     }
 }

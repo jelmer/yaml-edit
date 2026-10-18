@@ -140,3 +140,24 @@ fn test_append_to_flow_sequence_keeps_trailing_comma() {
         }
     }
 }
+
+#[test]
+fn test_insert_before_flow_sequence_item() {
+    for (source, index, expected) in [
+        ("[1, 2]", 0, "[9, 1, 2]"),
+        ("[1, 2]", 1, "[1, 9, 2]"),
+        ("[1, 2,]", 1, "[1, 9, 2,]"),
+        ("[1, # x\n 2]", 1, "[1, # x\n 9, 2]"),
+        ("[a: 1, b]", 0, "[9, a: 1, b]"),
+    ] {
+        let file = YamlFile::from_str(source).unwrap();
+        let seq = file.document().unwrap().as_sequence().unwrap();
+        seq.insert(index, 9);
+        assert_eq!(
+            file.to_string(),
+            expected,
+            "insert at {index} in {source:?}"
+        );
+        assert_edited(&file, expected);
+    }
+}

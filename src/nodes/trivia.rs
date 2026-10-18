@@ -1,12 +1,16 @@
-//! Where the line break ending a block collection entry's line lives.
+//! The trivia between collection entries: the line break ending a block
+//! collection entry's line, and the separator after a flow collection entry.
 //!
-//! An entry normally owns the NEWLINE ending its last line, but the parser
-//! puts it deeper when the entry ends in a nested block value, leaves it to
-//! the mapping after an explicit-key entry (`? k\n: v\n`), and there is
-//! none at the end of unterminated input. These helpers answer and change
-//! that in one place.
+//! A block entry normally owns the NEWLINE ending its last line, but the
+//! parser puts it deeper when the entry ends in a nested block value, leaves
+//! it to the mapping after an explicit-key entry (`? k\n: v\n`), and there
+//! is none at the end of unterminated input. A flow entry owns the comma
+//! after it and the white space around that.
 
-use super::{append_children, entry_value, fresh_token, has_child_token, SyntaxNode, SyntaxToken};
+use super::{
+    append_children, entry_value, fresh_token, has_child_token, replace_children, SyntaxNode,
+    SyntaxToken,
+};
 use crate::lex::SyntaxKind;
 
 /// Where an entry's last line ends.
@@ -210,4 +214,200 @@ fn holds_line_end(node: &SyntaxNode) -> bool {
         SyntaxKind::TAGGED_NODE => node.last_child().is_some_and(|last| holds_line_end(&last)),
         _ => false,
     }
+}
+
+/// The separator a flow collection entry ends with: its comma, if any, and
+/// the white space around it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FlowSeparator(Vec<(SyntaxKind, String)>);
+
+impl FlowSeparator {
+    fn comma_space() -> Self {
+        Self(vec![
+            (SyntaxKind::COMMA, ",".to_string()),
+            (SyntaxKind::WHITESPACE, " ".to_string()),
+        ])
+    }
+
+    /// The separator `entry` ends with. `None` if a comment comes before
+    /// the comma or ends the entry, since a comma can't go after one on its
+    /// line.
+    pub(crate) fn of(entry: &SyntaxNode) -> Option<Self> {
+        let tokens = separator_tokens(entry)?;
+        Some(Self(
+            tokens
+                .iter()
+                .map(|t| (t.kind(), t.text().to_string()))
+                .collect(),
+        ))
+    }
+
+    fn build(&self) -> Vec<rowan::SyntaxElement<super::Lang>> {
+        self.0
+            .iter()
+            .map(|(kind, text)| fresh_token(*kind, text).into())
+            .collect()
+    }
+
+    /// Replace the separator `entry` ends with by `separator`. Returns
+    /// `false`, leaving `entry` alone, if its own can't be swapped (see
+    /// [`of`](Self::of)).
+    pub(crate) fn swap(entry: &SyntaxNode, separator: &Self) -> bool {
+        let Some(own) = separator_tokens(entry) else {
+            return false;
+        };
+        let end = entry.children_with_tokens().count();
+        replace_children(entry, end - own.len()..end, separator.build());
+        true
+    }
+
+    /// Append `, ` to `entry` unless it already ends with a comma.
+    pub(crate) fn ensure(entry: &SyntaxNode) {
+        let ends_with_comma = entry
+            .children_with_tokens()
+            .filter_map(|c| c.into_token())
+            .filter(|t| {
+                !matches!(
+                    t.kind(),
+                    SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
+                )
+            })
+            .last()
+            .is_some_and(|t| t.kind() == SyntaxKind::COMMA);
+        if !ends_with_comma {
+            append_children(entry, Self::comma_space().build());
+        }
+    }
+
+    /// Put a comma right after the content of `entry` if it has none,
+    /// ahead of any comment that follows it.
+    pub(crate) fn insert_comma(entry: &SyntaxNode) {
+        if has_comma(entry) {
+            return;
+        }
+        let at = entry
+            .children_with_tokens()
+            .filter(|c| c.as_node().is_some())
+            .last()
+            .map_or(0, |n| n.index() + 1);
+        let mut tokens = vec![fresh_token(SyntaxKind::COMMA, ",").into()];
+        let spaced = entry.children_with_tokens().nth(at).is_some_and(|c| {
+            matches!(
+                c.kind(),
+                SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
+            )
+        });
+        if !spaced {
+            tokens.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
+        }
+        entry.splice_children(at..at, tokens);
+    }
+
+    /// Drop the comma at the end of `entry`, which has become the last
+    /// entry. White space and line breaks after the comma go too, unless a
+    /// comment follows it.
+    pub(crate) fn strip(entry: &SyntaxNode) {
+        let Some(comma) = entry
+            .children_with_tokens()
+            .filter_map(|c| c.into_token())
+            .filter(|t| t.kind() == SyntaxKind::COMMA)
+            .last()
+        else {
+            return;
+        };
+        let mut tail = vec![comma.clone()];
+        let mut next = comma.next_sibling_or_token();
+        while let Some(c) = next {
+            let Some(t) = c.into_token() else { break };
+            next = t.next_sibling_or_token();
+            tail.push(t);
+        }
+        let only_whitespace = tail[1..].iter().all(|t| {
+            matches!(
+                t.kind(),
+                SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
+            )
+        });
+        if !only_whitespace {
+            tail.truncate(1);
+        }
+        for t in tail {
+            t.detach();
+        }
+    }
+
+    /// Make room for `new_entry` after `last`, the last entry of a flow
+    /// collection, keeping the layout of the end of the collection:
+    /// `new_entry` takes over the separator `last` ends with, trailing comma
+    /// included, and `last` gets the one between the entries before it, or
+    /// `, ` if there is none. `before_last` is the entry before `last`.
+    pub(crate) fn hand_over_end(
+        last: &SyntaxNode,
+        before_last: Option<&SyntaxNode>,
+        new_entry: &SyntaxNode,
+    ) {
+        let Some(separator) = separator_tokens(last) else {
+            // A comment ends the line of `last`, which keeps its separator;
+            // the new entry goes on the next line.
+            let comma = fresh_token(SyntaxKind::COMMA, ",").into();
+            if has_comma(last) {
+                append_children(new_entry, vec![comma]);
+            } else {
+                let space = fresh_token(SyntaxKind::WHITESPACE, " ").into();
+                append_children(last, vec![comma, space]);
+            }
+            return;
+        };
+        let usual = before_last
+            .filter(|e| has_comma(e))
+            .and_then(Self::of)
+            .unwrap_or_else(Self::comma_space);
+        for t in &separator {
+            t.detach();
+        }
+        append_children(new_entry, separator.into_iter().map(Into::into).collect());
+        append_children(last, usual.build());
+    }
+}
+
+/// Does `entry`, a flow collection entry, have a comma after it?
+pub(crate) fn has_comma(entry: &SyntaxNode) -> bool {
+    has_child_token(entry, |k| k == SyntaxKind::COMMA)
+}
+
+/// The tokens of [`FlowSeparator::of`].
+fn separator_tokens(entry: &SyntaxNode) -> Option<Vec<SyntaxToken>> {
+    let children: Vec<_> = entry.children_with_tokens().collect();
+    let start = children
+        .iter()
+        .rposition(|c| {
+            !matches!(
+                c.kind(),
+                SyntaxKind::COMMA
+                    | SyntaxKind::WHITESPACE
+                    | SyntaxKind::NEWLINE
+                    | SyntaxKind::INDENT
+            ) || c.as_node().is_some()
+        })
+        .map_or(0, |i| i + 1);
+    let separator: Vec<SyntaxToken> = children[start..]
+        .iter()
+        .filter_map(|c| c.as_token().cloned())
+        .collect();
+    let comma_in_separator = separator.iter().any(|t| t.kind() == SyntaxKind::COMMA);
+    if comma_in_separator != has_comma(entry) {
+        return None;
+    }
+    let before = children[..start]
+        .iter()
+        .rev()
+        .filter_map(|c| match c {
+            rowan::NodeOrToken::Node(n) => n.last_token(),
+            rowan::NodeOrToken::Token(t) => Some(t.clone()),
+        })
+        .next();
+    if before.is_some_and(|t| t.kind() == SyntaxKind::COMMENT) {
+        return None;
+    }
+    Some(separator)
 }

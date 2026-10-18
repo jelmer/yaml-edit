@@ -1,12 +1,12 @@
 use super::replaced_value;
 use super::{
-    append_children, entry_indices, fresh_token, has_child_token, nth_entry_index,
-    strip_flow_separator, trivia, Lang, SyntaxNode,
+    entry_indices, fresh_token, has_child_token, nth_entry_index, trivia, Lang, SyntaxNode,
 };
 use crate::as_yaml::{build_in, AsYaml, FlowQuoting, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::nodes::flow_quoting;
 use crate::nodes::mapping::{drop_tagged_anchor, held_anchor};
+use crate::nodes::trivia::FlowSeparator;
 use crate::yaml::ValueNode;
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
@@ -834,13 +834,10 @@ impl Sequence {
             return;
         };
 
-        let comma = fresh_token(SyntaxKind::COMMA, ",");
-        let sep_ws = fresh_token(SyntaxKind::WHITESPACE, " ");
-
         if index >= entry_positions.len() {
             let entry = |pos: &usize| children[*pos].as_node().expect("SEQUENCE_ENTRY");
             if let Some((last, rest)) = entry_positions.split_last() {
-                crate::nodes::hand_over_flow_end(entry(last), rest.last().map(entry), &new_entry);
+                FlowSeparator::hand_over_end(entry(last), rest.last().map(entry), &new_entry);
             }
             self.0
                 .splice_children(right_bracket_pos..right_bracket_pos, vec![new_entry.into()]);
@@ -850,7 +847,7 @@ impl Sequence {
         // Insert before the entry at `index`; the new entry carries
         // its own `, ` tail to keep the displaced entry separated.
         let target_pos = entry_positions[index];
-        append_children(&new_entry, vec![comma.into(), sep_ws.into()]);
+        FlowSeparator::ensure(&new_entry);
         self.0
             .splice_children(target_pos..target_pos, vec![new_entry.into()]);
     }
@@ -1162,15 +1159,14 @@ impl Sequence {
         self.detach_orphaned_indent(children, i);
 
         let removed = children[i].as_node().expect("SEQUENCE_ENTRY");
-        if is_last && self.is_flow_style() && !has_child_token(removed, |k| k == SyntaxKind::COMMA)
-        {
+        if is_last && self.is_flow_style() && !trivia::has_comma(removed) {
             if let Some(prev) = self
                 .0
                 .children()
                 .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
                 .last()
             {
-                strip_flow_separator(&prev);
+                FlowSeparator::strip(&prev);
             }
         }
 

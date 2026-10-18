@@ -3,11 +3,8 @@
 
 use super::helpers::FlowInsertPos;
 use super::{Mapping, MappingEntry};
-use crate::lex::SyntaxKind;
-use crate::nodes::trivia::{self, line_end};
-use crate::nodes::{
-    flow_separator, fresh_token, has_child_token, strip_flow_separator, SyntaxNode,
-};
+use crate::nodes::trivia::{self, line_end, FlowSeparator};
+use crate::nodes::SyntaxNode;
 use rowan::ast::AstNode;
 
 /// The layout that belongs to a position in a mapping rather than to the
@@ -15,32 +12,11 @@ use rowan::ast::AstNode;
 pub(super) struct SlotLayout {
     /// For each entry of a flow mapping, the separator it ends with, if
     /// that can be swapped for another entry's.
-    flow_separators: Vec<Option<Vec<(SyntaxKind, String)>>>,
+    flow_separators: Vec<Option<FlowSeparator>>,
     /// Whether the last entry of a flow mapping has a trailing comma.
     last_has_comma: bool,
     /// Whether the last entry of a block mapping ends its line.
     last_terminated: bool,
-}
-
-/// Put a comma right after the content of `entry`, a flow mapping entry
-/// that lacks one, ahead of any comment that follows it.
-fn insert_flow_comma(entry: &SyntaxNode) {
-    let at = entry
-        .children_with_tokens()
-        .filter(|c| c.as_node().is_some())
-        .last()
-        .map_or(0, |n| n.index() + 1);
-    let mut tokens = vec![fresh_token(SyntaxKind::COMMA, ",").into()];
-    let spaced = entry.children_with_tokens().nth(at).is_some_and(|c| {
-        matches!(
-            c.kind(),
-            SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
-        )
-    });
-    if !spaced {
-        tokens.push(fresh_token(SyntaxKind::WHITESPACE, " ").into());
-    }
-    entry.splice_children(at..at, tokens);
 }
 
 impl Mapping {
@@ -49,24 +25,14 @@ impl Mapping {
     pub(super) fn slot_layout(&self) -> SlotLayout {
         let entries: Vec<SyntaxNode> = self.entries().map(|e| e.0).collect();
         let flow_separators = if self.is_flow_style() {
-            entries
-                .iter()
-                .map(|e| {
-                    flow_separator(e).map(|tokens| {
-                        tokens
-                            .iter()
-                            .map(|t| (t.kind(), t.text().to_string()))
-                            .collect()
-                    })
-                })
-                .collect()
+            entries.iter().map(FlowSeparator::of).collect()
         } else {
             Vec::new()
         };
         let last = entries.last();
         SlotLayout {
             flow_separators,
-            last_has_comma: last.is_some_and(|e| has_child_token(e, |k| k == SyntaxKind::COMMA)),
+            last_has_comma: last.is_some_and(trivia::has_comma),
             last_terminated: last.map_or(true, |e| line_end(e).is_terminated()),
         }
     }
@@ -96,20 +62,10 @@ impl Mapping {
         );
         for (entry, slot) in entries.iter().zip(&layout.flow_separators) {
             let is_last = entry == last;
-            match (flow_separator(entry), slot) {
-                (Some(own), Some(slot)) => {
-                    let end = entry.children_with_tokens().count();
-                    let tokens: Vec<_> = slot
-                        .iter()
-                        .map(|(kind, text)| rowan::NodeOrToken::Token(fresh_token(*kind, text)))
-                        .collect();
-                    crate::nodes::replace_children(entry, end - own.len()..end, tokens);
-                }
-                _ if is_last && !layout.last_has_comma => strip_flow_separator(entry),
-                _ if !has_child_token(entry, |k| k == SyntaxKind::COMMA) => {
-                    insert_flow_comma(entry)
-                }
-                _ => {}
+            match slot {
+                Some(slot) if FlowSeparator::swap(entry, slot) => {}
+                _ if is_last && !layout.last_has_comma => FlowSeparator::strip(entry),
+                _ => FlowSeparator::insert_comma(entry),
             }
         }
     }

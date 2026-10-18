@@ -967,7 +967,9 @@ impl<'a> fmt::Display for PrettyDebug<'a, Mapping> {
         writeln!(f, "Mapping [")?;
 
         for (key, value) in self.0.iter() {
-            write!(f, "  {key:?}: ")?;
+            write!(f, "  ")?;
+            format_node(f, &key, 0)?;
+            write!(f, ": ")?;
             format_node(f, &value, 1)?;
             writeln!(f)?;
         }
@@ -1259,6 +1261,31 @@ mod new_debug_tests {
         // Check structure exists (exact formatting may vary)
         assert_eq!(output.lines().next(), Some("Document {"));
         assert_eq!(output.lines().last(), Some("}"));
+    }
+
+    #[test]
+    fn test_pretty_debug_shows_mapping_keys() {
+        let doc = Document::from_str("a: {b: {c: 1}}\nl: [x, [y]]\n").unwrap();
+        assert_eq!(
+            PrettyDebug(&doc).to_string(),
+            concat!(
+                "Document {\n",
+                "  Mapping [\n",
+                "    \"a\" (type: String): Mapping {\n",
+                "      \"b\" (type: String): Mapping {\n",
+                "        \"c\" (type: String): \"1\" (type: Integer)\n",
+                "      }\n",
+                "    }\n",
+                "    \"l\" (type: String): Sequence [\n",
+                "      [0]: \"x\" (type: String)\n",
+                "      [1]: Sequence [\n",
+                "        [0]: \"y\" (type: String)\n",
+                "      ]\n",
+                "    ]\n",
+                "  ]\n",
+                "}\n",
+            )
+        );
     }
 
     #[test]

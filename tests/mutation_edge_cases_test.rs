@@ -745,3 +745,11 @@ fn test_set_tagged_value_on_next_line() {
     assert_eq!(set_first("a:\n  &x !t b\nc: d\n"), "a: &x xval\nc: d\n");
     assert_eq!(set_first("a:\n  !t\nb: c\n"), "a: xval\nb: c\n");
 }
+
+#[test]
+fn test_set_item_ending_in_omitted_value() {
+    assert_eq!(set_first("-\n  ? a\n- c\n"), "-\n  xval\n- c\n");
+    assert_eq!(set_first("- ? a\n- c\n"), "- xval\n- c\n");
+    assert_eq!(set_first("- a:\n- c\n"), "- xval\n- c\n");
+    assert_eq!(set_first("-\n  - a\n  -\n- c\n"), "-\n  xval\n- c\n");
+}

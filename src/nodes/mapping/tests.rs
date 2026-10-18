@@ -2158,3 +2158,20 @@ fn test_set_copied_flow_sequence_with_cr_line_breaks() {
     a.get_mapping("b").unwrap().set("c", &value);
     crate::debug::assert_edited(&file, "a:\r  b:\r    c: [a,\r     b]\r");
 }
+
+#[test]
+fn test_set_explicit_key_value_with_cr_line_breaks() {
+    let file = YamlFile::from_str("? a\r? b\r").unwrap();
+    file.document().unwrap().as_mapping().unwrap().set("a", "x");
+    crate::debug::assert_edited(&file, "? a\r: x\r? b\r");
+}
+
+#[test]
+fn test_set_block_scalar_before_blank_line_with_cr_line_breaks() {
+    let file = YamlFile::from_str("a: 1\r    \rb: 2\r").unwrap();
+    let doc = file.document().unwrap();
+    doc.as_mapping()
+        .unwrap()
+        .set("a", ScalarValue::literal("x\n"));
+    crate::debug::assert_edited(&file, "a: |\r  x\r\rb: 2\r");
+}

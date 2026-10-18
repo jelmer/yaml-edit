@@ -174,7 +174,7 @@ fn block_scalar_body_column(scalar: &SyntaxNode) -> Option<usize> {
         return Some(crate::nodes::scalar_node::block_parent_column(scalar) + indent);
     }
     let text = scalar.text().to_string();
-    text.lines()
+    text.split(['\n', '\r'])
         .skip(1)
         .find(|line| !line.trim().is_empty())
         .map(crate::column::space_indent)

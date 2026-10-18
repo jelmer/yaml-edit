@@ -66,7 +66,7 @@ impl Parser {
         // A line between it and the first key is still ours, misindented,
         // which the validator reports.
         let indicator_column = [
-            self.sequence_entry_column,
+            self.ctx.sequence_entry_column,
             self.explicit_key_column,
             self.explicit_value_column,
         ]
@@ -83,6 +83,7 @@ impl Parser {
         let ctx = BlockCtx {
             equal_indent_continues_scalar: false,
             scalar_continuation_floor: None,
+            ..self.ctx
         };
         self.scoped(ctx, |p| {
             p.parse_block_mapping_entries(base_indent, later_entry_indent)
@@ -234,98 +235,13 @@ impl Parser {
             // A `-` on a later line continues this entry's scalar when it is
             // indented past our own dash, and opens the next entry when it is
             // not. The dash column is the only thing that tells those apart.
-            let outer_entry_column = self.sequence_entry_column;
-            self.sequence_entry_column = Some(dash_column);
-
-            // An entry's value is never the document's own node, so a block
-            // scalar here still needs an indented body: `- |\n- x\n` is two
-            // entries, not one scalar holding `- x`.
-            self.node_is_document_root = false;
-
-            // A comment is not a value. When nothing indented follows it the
-            // entry is an implicit null, just as a bare `-` is: `- # c\n- a\n`
-            // is two entries, as the YAML test suite's W42U expects, where
-            // parsing the comment as a value left an empty SEQUENCE behind.
-            // The entry's value may still be on the next line though
-            // (`- # c\n  v\n`, as in RZP5), so keep the comment and let the
-            // later-line handling below claim it.
-            if self.dedented_block_scalar_header_follows(dash_column) {
-                // `-\n|\n x\n`: the header can only be this entry's value.
-                // Its body still has to clear the dash.
-                self.skip_ws_and_newlines();
-                self.parse_value();
-            } else if self.current() == Some(SyntaxKind::COMMENT)
-                && self.comment_ends_the_entry(dash_column)
-            {
-                self.bump();
-                self.builder.start_node(SyntaxKind::SCALAR.into());
-                self.builder.token(SyntaxKind::NULL.into(), "");
-                self.builder.finish_node();
-            } else if self.current() == Some(SyntaxKind::COMMENT) {
-                // The comment belongs to this entry; its value follows.
-                self.bump();
-                if let Some(indent_level) = self.entry_value_indent(dash_column) {
-                    self.bump(); // newline
-                    while matches!(
-                        self.current(),
-                        Some(SyntaxKind::NEWLINE | SyntaxKind::COMMENT)
-                    ) || (self.current() == Some(SyntaxKind::INDENT)
-                        && (self.indent_is_blank_line() || self.indent_starts_comment_line()))
-                    {
-                        self.bump();
-                    }
-                    self.bump(); // indent
-                    self.parse_value_with_base_indent(indent_level);
-                }
-            } else if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
-                // Use item's line indent so nested mappings parse at the right
-                // level. It is one short of the column an inline value starts
-                // at, since it counts the dash but not the space after it; a
-                // mapping opening here measures its own entries from its key's
-                // column instead, which parse_mapping_key_value_pair reads.
-                self.parse_value_with_base_indent(item_indent);
-            } else if self.current() == Some(SyntaxKind::NEWLINE) {
-                // Nested content is a NEWLINE then INDENT. A bare `-` item is
-                // an implicit null; leave the NEWLINE for the terminator bump
-                // so set/remove see DASH, SCALAR, NEWLINE in that order.
-                //
-                // A blank line between the dash and its value carries no
-                // indentation of its own, so look past a run of them:
-                // `- \n\n m\n` is the entry `m`, just as `- \n m\n` is.
-                // The value has to clear our own dash's column, or the line
-                // opens the next entry rather than belonging to this one.
-                if let Some(indent_level) = self.entry_value_indent(dash_column) {
-                    self.bump(); // consume newline
-                                 // Step over the blank and comment lines the helper looked past.
-                    while matches!(
-                        self.current(),
-                        Some(SyntaxKind::NEWLINE | SyntaxKind::COMMENT)
-                    ) || (self.current() == Some(SyntaxKind::INDENT)
-                        && (self.indent_is_blank_line() || self.indent_starts_comment_line()))
-                    {
-                        self.bump();
-                    }
-                    self.bump(); // consume indent
-
-                    // The value parses at its own column, but a plain scalar
-                    // there is still a node of this sequence, so a
-                    // continuation only has to clear the *dash's* column:
-                    // `-\n   b\n  - z\n` is the single item `b - z`, as
-                    // both saphyr and PyYAML read it. Only for a scalar: a
-                    // nested collection's entries set their own column.
-                    let mut ctx = self.ctx;
-                    if self.current() != Some(SyntaxKind::DASH) {
-                        ctx.scalar_continuation_floor = Some(dash_column);
-                    }
-                    self.scoped(ctx, |p| p.parse_value_with_base_indent(indent_level));
-                } else {
-                    self.emit_implicit_null();
-                }
-            } else {
-                self.emit_implicit_null();
-            }
-
-            self.sequence_entry_column = outer_entry_column;
+            let ctx = BlockCtx {
+                sequence_entry_column: Some(dash_column),
+                ..self.ctx
+            };
+            self.scoped(ctx, |p| {
+                p.parse_sequence_entry_value(dash_column, item_indent)
+            });
 
             // Trailing whitespace the entry's scalar left behind belongs to
             // the entry, as does its NEWLINE terminator (DESIGN.md)
@@ -340,6 +256,98 @@ impl Parser {
 
         self.builder.finish_node();
         self.error_context.pop_context();
+    }
+
+    /// Parse the value of the sequence entry whose `-` at `dash_column` was
+    /// just consumed.
+    fn parse_sequence_entry_value(&mut self, dash_column: usize, item_indent: usize) {
+        // An entry's value is never the document's own node, so a block
+        // scalar here still needs an indented body: `- |\n- x\n` is two
+        // entries, not one scalar holding `- x`.
+        self.node_is_document_root = false;
+
+        // A comment is not a value. When nothing indented follows it the
+        // entry is an implicit null, just as a bare `-` is: `- # c\n- a\n`
+        // is two entries, as the YAML test suite's W42U expects, where
+        // parsing the comment as a value left an empty SEQUENCE behind.
+        // The entry's value may still be on the next line though
+        // (`- # c\n  v\n`, as in RZP5), so keep the comment and let the
+        // later-line handling below claim it.
+        if self.dedented_block_scalar_header_follows(dash_column) {
+            // `-\n|\n x\n`: the header can only be this entry's value.
+            // Its body still has to clear the dash.
+            self.skip_ws_and_newlines();
+            self.parse_value();
+        } else if self.current() == Some(SyntaxKind::COMMENT)
+            && self.comment_ends_the_entry(dash_column)
+        {
+            self.bump();
+            self.builder.start_node(SyntaxKind::SCALAR.into());
+            self.builder.token(SyntaxKind::NULL.into(), "");
+            self.builder.finish_node();
+        } else if self.current() == Some(SyntaxKind::COMMENT) {
+            // The comment belongs to this entry; its value follows.
+            self.bump();
+            if let Some(indent_level) = self.entry_value_indent(dash_column) {
+                self.bump(); // newline
+                while matches!(
+                    self.current(),
+                    Some(SyntaxKind::NEWLINE | SyntaxKind::COMMENT)
+                ) || (self.current() == Some(SyntaxKind::INDENT)
+                    && (self.indent_is_blank_line() || self.indent_starts_comment_line()))
+                {
+                    self.bump();
+                }
+                self.bump(); // indent
+                self.parse_value_with_base_indent(indent_level);
+            }
+        } else if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
+            // Use item's line indent so nested mappings parse at the right
+            // level. It is one short of the column an inline value starts
+            // at, since it counts the dash but not the space after it; a
+            // mapping opening here measures its own entries from its key's
+            // column instead, which parse_mapping_key_value_pair reads.
+            self.parse_value_with_base_indent(item_indent);
+        } else if self.current() == Some(SyntaxKind::NEWLINE) {
+            // Nested content is a NEWLINE then INDENT. A bare `-` item is
+            // an implicit null; leave the NEWLINE for the terminator bump
+            // so set/remove see DASH, SCALAR, NEWLINE in that order.
+            //
+            // A blank line between the dash and its value carries no
+            // indentation of its own, so look past a run of them:
+            // `- \n\n m\n` is the entry `m`, just as `- \n m\n` is.
+            // The value has to clear our own dash's column, or the line
+            // opens the next entry rather than belonging to this one.
+            if let Some(indent_level) = self.entry_value_indent(dash_column) {
+                self.bump(); // consume newline
+                             // Step over the blank and comment lines the helper looked past.
+                while matches!(
+                    self.current(),
+                    Some(SyntaxKind::NEWLINE | SyntaxKind::COMMENT)
+                ) || (self.current() == Some(SyntaxKind::INDENT)
+                    && (self.indent_is_blank_line() || self.indent_starts_comment_line()))
+                {
+                    self.bump();
+                }
+                self.bump(); // consume indent
+
+                // The value parses at its own column, but a plain scalar
+                // there is still a node of this sequence, so a
+                // continuation only has to clear the *dash's* column:
+                // `-\n   b\n  - z\n` is the single item `b - z`, as
+                // both saphyr and PyYAML read it. Only for a scalar: a
+                // nested collection's entries set their own column.
+                let mut ctx = self.ctx;
+                if self.current() != Some(SyntaxKind::DASH) {
+                    ctx.scalar_continuation_floor = Some(dash_column);
+                }
+                self.scoped(ctx, |p| p.parse_value_with_base_indent(indent_level));
+            } else {
+                self.emit_implicit_null();
+            }
+        } else {
+            self.emit_implicit_null();
+        }
     }
 
     pub(super) fn parse_explicit_key_mapping(&mut self, base_indent: usize) {
@@ -363,6 +371,7 @@ impl Parser {
         let ctx = BlockCtx {
             equal_indent_continues_scalar: false,
             scalar_continuation_floor: None,
+            ..self.ctx
         };
         self.scoped(ctx, |p| p.parse_explicit_key_mapping_entries(base_indent));
     }
@@ -389,87 +398,16 @@ impl Parser {
             // A `?` opening a line at this mapping's own column is its next
             // entry, not part of the key's scalar: `- ? k\n  ? c\n` is two
             // entries, as saphyr and PyYAML both read it.
-            let outer_value_column = self.mapping_value_column;
-            self.mapping_value_column = Some(question_column);
-
-            // Parse the first part of the key
-            self.parse_explicit_key_node(question_column, base_indent);
-
-            // Check if this is a multiline key (newline followed by indent)
-            // Only for scalar keys, not sequences or mappings
-            if self.current() == Some(SyntaxKind::NEWLINE) {
-                // Peek ahead to see if there's an indent after the newline
-                // Since tokens are reversed, peek at the second-to-last token
-                if self.tokens.len() >= 2 {
-                    let (next_kind, _) = &self.tokens[self.tokens.len() - 2];
-                    if *next_kind == SyntaxKind::INDENT {
-                        // Check what comes after the indent (at position len() - 3)
-                        if self.tokens.len() >= 3 {
-                            let (token_after_indent, _) = &self.tokens[self.tokens.len() - 3];
-                            // The key's own content has to clear the `?`;
-                            // a line at the indicator's column opens the
-                            // next entry instead (`- ?\n  j: 1\n` is two
-                            // entries, as saphyr reads it).
-                            let clears_indicator =
-                                self.tokens[self.tokens.len() - 2].1.len() > question_column;
-                            // If it's a DASH, this is a sequence continuation which was already
-                            // handled by parse_value() above - don't try to parse it as multiline scalar.
-                            // A comment line is the entry's trivia, as after
-                            // any other node: reading it as key content left
-                            // an empty SCALAR in the KEY (`? a\n  # c\n: v\n`).
-                            if !matches!(token_after_indent, SyntaxKind::DASH | SyntaxKind::COMMENT)
-                                && clears_indicator
-                            {
-                                // This is a multiline scalar key continuation
-                                self.bump(); // consume newline
-                                let key_indent =
-                                    self.tokens.last().map_or(0, |(_, text)| text.len());
-                                self.bump(); // consume indent
-
-                                // Unless the key is a block mapping starting
-                                // on this line: `?\n s: 1\n e: 2\n: v\n` is
-                                // keyed by `{s: 1, e: 2}`, as saphyr reads it
-                                // and as the inline `? s: 1\n  e: 2\n` spelling
-                                // already parsed. Reading it as scalar parts
-                                // stopped at the first colon and dropped every
-                                // entry after it, and the value with them.
-                                // A line starting at the colon is this
-                                // entry's own value (`? a\n: 1\n`), not part
-                                // of the key, even though is_mapping_key
-                                // counts it as the null-key entry it would be
-                                // anywhere else.
-                                if self.current() != Some(SyntaxKind::COLON)
-                                    && self.is_mapping_key()
-                                {
-                                    self.parse_mapping_with_base_indent(key_indent);
-                                }
-
-                                // Parse scalar tokens at this indentation level as part of the key
-                                while self.current().is_some()
-                                    && self.current() != Some(SyntaxKind::NEWLINE)
-                                    && self.current() != Some(SyntaxKind::COLON)
-                                {
-                                    let before = self.tokens.len();
-                                    self.parse_scalar();
-                                    if self.current() == Some(SyntaxKind::WHITESPACE) {
-                                        self.bump(); // consume whitespace between key parts
-                                    }
-                                    // Progress guard: parse_scalar() can return without
-                                    // consuming tokens for kinds it doesn't handle (e.g.
-                                    // COMMENT). Break to avoid an infinite loop.
-                                    if self.tokens.len() == before {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            let ctx = BlockCtx {
+                mapping_value_column: Some(question_column),
+                ..self.ctx
+            };
+            self.scoped(ctx, |p| {
+                p.parse_explicit_key_content(question_column, base_indent)
+            });
 
             self.builder.finish_node();
             self.explicit_key_column = outer_explicit_key;
-            self.mapping_value_column = outer_value_column;
 
             self.skip_ws_and_newlines();
 
@@ -497,15 +435,16 @@ impl Parser {
                     // A value on the colon's own line is bounded by this
                     // mapping's column, as for an implicit key: in
                     // `x:\n  ? a\n  : |\n  b: 1\n` the `b` line is not body.
-                    let outer_column = self.mapping_value_column;
+                    let mut ctx = self.ctx;
                     if !matches!(
                         self.current(),
                         Some(SyntaxKind::NEWLINE | SyntaxKind::COMMENT)
                     ) {
-                        self.mapping_value_column = Some(colon_column);
+                        ctx.mapping_value_column = Some(colon_column);
                     }
-                    self.parse_value_after_colon(true, Some(question_column));
-                    self.mapping_value_column = outer_column;
+                    self.scoped(ctx, |p| {
+                        p.parse_value_after_colon(true, Some(question_column))
+                    });
                 }
                 self.explicit_value_column = outer_explicit_value;
             } else {
@@ -564,6 +503,67 @@ impl Parser {
         self.builder.finish_node();
     }
 
+    /// Parse the key of an explicit-key entry whose `?` sits at
+    /// `question_column`, with any scalar continuation lines.
+    fn parse_explicit_key_content(&mut self, question_column: usize, base_indent: usize) {
+        self.parse_explicit_key_node(question_column, base_indent);
+
+        // A scalar key may continue on an indented line. Sequences and
+        // mappings have consumed theirs already.
+        let n = self.tokens.len();
+        if self.current() != Some(SyntaxKind::NEWLINE)
+            || n < 3
+            || self.tokens[n - 2].0 != SyntaxKind::INDENT
+        {
+            return;
+        }
+        // The key's own content has to clear the `?`; a line at the
+        // indicator's column opens the next entry instead (`- ?\n  j: 1\n` is
+        // two entries, as saphyr reads it).
+        let key_indent = self.tokens[n - 2].1.len();
+        // A dash line is a sequence continuation, which
+        // parse_explicit_key_node already handled. A comment line is the
+        // entry's trivia, as after any other node: reading it as key content
+        // left an empty SCALAR in the KEY (`? a\n  # c\n: v\n`).
+        if matches!(self.tokens[n - 3].0, SyntaxKind::DASH | SyntaxKind::COMMENT)
+            || key_indent <= question_column
+        {
+            return;
+        }
+        self.bump(); // consume newline
+        self.bump(); // consume indent
+
+        // Unless the key is a block mapping starting on this line:
+        // `?\n s: 1\n e: 2\n: v\n` is keyed by `{s: 1, e: 2}`, as saphyr
+        // reads it and as the inline `? s: 1\n  e: 2\n` spelling already
+        // parsed. Reading it as scalar parts stopped at the first colon and
+        // dropped every entry after it, and the value with them. A line
+        // starting at the colon is this entry's own value (`? a\n: 1\n`), not
+        // part of the key, even though is_mapping_key counts it as the
+        // null-key entry it would be anywhere else.
+        if self.current() != Some(SyntaxKind::COLON) && self.is_mapping_key() {
+            self.parse_mapping_with_base_indent(key_indent);
+        }
+
+        // Parse scalar tokens at this indentation level as part of the key
+        while self.current().is_some()
+            && self.current() != Some(SyntaxKind::NEWLINE)
+            && self.current() != Some(SyntaxKind::COLON)
+        {
+            let before = self.tokens.len();
+            self.parse_scalar();
+            if self.current() == Some(SyntaxKind::WHITESPACE) {
+                self.bump(); // consume whitespace between key parts
+            }
+            // Progress guard: parse_scalar() can return without consuming
+            // tokens for kinds it doesn't handle (e.g. COMMENT). Break to
+            // avoid an infinite loop.
+            if self.tokens.len() == before {
+                break;
+            }
+        }
+    }
+
     fn parse_explicit_key_entries(&mut self) {
         // Helper to continue parsing explicit key entries within a mapping
         while self.current() == Some(SyntaxKind::QUESTION) {
@@ -584,10 +584,9 @@ impl Parser {
         // scalar in the key or value must not continue onto it. Whatever
         // the enclosing value left behind does not apply: in
         // `o:\n  k: !!set\n    ? a\n    ? b\n` it let `? b` continue `a`.
-        let outer_value_column = self.mapping_value_column;
-        self.mapping_value_column = Some(question_column);
         let ctx = BlockCtx {
             scalar_continuation_floor: None,
+            mapping_value_column: Some(question_column),
             ..self.ctx
         };
         self.scoped(ctx, |p| {
@@ -612,7 +611,6 @@ impl Parser {
                 p.emit_implicit_null_value();
             }
         });
-        self.mapping_value_column = outer_value_column;
         self.builder.finish_node();
     }
 
@@ -1153,10 +1151,11 @@ impl Parser {
                 // clear the key's column too, not just the mapping's base:
                 // in `- a: !!null\n  b: c\n` the `b` line is a sibling.
                 let column = base_indent.max(key_column);
-                let outer_column = self.mapping_value_column;
-                self.mapping_value_column = Some(column);
-                self.parse_mapping_value(column);
-                self.mapping_value_column = outer_column;
+                let ctx = BlockCtx {
+                    mapping_value_column: Some(column),
+                    ..self.ctx
+                };
+                self.scoped(ctx, |p| p.parse_mapping_value(column));
                 has_value = true;
 
                 // Capture any trailing whitespace and comment on the same line (before NEWLINE)
@@ -1214,10 +1213,8 @@ impl Parser {
                     } else {
                         self.current_line_indent
                     };
-                    let outer_column = self.mapping_block_value_column;
-                    self.mapping_block_value_column = Some(base_indent.max(key_column));
+                    ctx.mapping_block_value_column = Some(base_indent.max(key_column));
                     self.scoped(ctx, |p| p.parse_value_with_base_indent(value_indent));
-                    self.mapping_block_value_column = outer_column;
                     has_value = true;
                 } else if self.current() == Some(SyntaxKind::DASH)
                     && (self.current_line_indent == base_indent
@@ -1226,7 +1223,7 @@ impl Parser {
                     // sequence's next entry, which it claims before we can:
                     // `- - k:\n  - b\n` is the two items `{k: null}` and
                     // `b`, not one item keyed by `[b]`.
-                    && match self.sequence_entry_column {
+                    && match self.ctx.sequence_entry_column {
                         Some(column) => self.current_line_indent > column,
                         None => true,
                     }
@@ -1245,15 +1242,18 @@ impl Parser {
                     // key. Its body still has to clear the key's column, so
                     // `a:\n|\nb: 1\n` keeps `b` a sibling.
                     let column = base_indent.max(key_column);
-                    let outer_value_column = self.mapping_value_column.replace(column);
-                    let outer_block_column = self.mapping_block_value_column.replace(column);
-                    if self.current() == Some(SyntaxKind::PIPE) {
-                        self.parse_literal_block_scalar();
-                    } else {
-                        self.parse_folded_block_scalar();
-                    }
-                    self.mapping_value_column = outer_value_column;
-                    self.mapping_block_value_column = outer_block_column;
+                    let ctx = BlockCtx {
+                        mapping_value_column: Some(column),
+                        mapping_block_value_column: Some(column),
+                        ..self.ctx
+                    };
+                    self.scoped(ctx, |p| {
+                        if p.current() == Some(SyntaxKind::PIPE) {
+                            p.parse_literal_block_scalar();
+                        } else {
+                            p.parse_folded_block_scalar();
+                        }
+                    });
                     has_value = true;
                 }
                 // Otherwise the "value" would be at the parent's indent or

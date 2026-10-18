@@ -63,6 +63,25 @@ pub(super) struct BlockCtx {
     /// is the tagged scalar `a b`, exactly as the untagged `x\n  a\n b\n`
     /// is `x a b`.
     pub(super) scalar_continuation_floor: Option<usize>,
+    /// Column of the `-` of the block sequence entry being parsed, if any.
+    ///
+    /// A `-` on a later line opens the next entry when it sits at this
+    /// column, and is plain-scalar content when it is indented past it:
+    /// `a:\n- x\n  - y\n` is the single item `x - y`. Comparing against the
+    /// scalar's own line cannot tell those apart, since an explicit key
+    /// (`? - a\n  - b\n`) puts its entries deeper than the scalar too.
+    pub(super) sequence_entry_column: Option<usize>,
+    /// The column of the mapping whose value is being parsed on the colon's
+    /// own line, for deciding whether a `?` on a later line opens that
+    /// mapping's next entry rather than continuing the value's scalar.
+    pub(super) mapping_value_column: Option<usize>,
+    /// The column of the mapping whose value is being parsed on a line
+    /// after its key's, the counterpart of `mapping_value_column`.
+    ///
+    /// A block scalar's indentation indicator counts from its enclosing
+    /// collection's column, and in `o:\n  k:\n    |1\n` nothing else
+    /// records that `k`'s mapping sits at column 2.
+    pub(super) mapping_block_value_column: Option<usize>,
 }
 
 /// Internal parser state
@@ -92,18 +111,6 @@ pub(super) struct Parser {
     /// same question as a document-level anchor and answers it differently,
     /// adopting the sibling the tag arm just refused.
     pub(super) annotation_in_value_position: bool,
-    /// Column of the `-` of the block sequence entry being parsed, if any.
-    ///
-    /// A `-` on a later line opens the next entry when it sits at this
-    /// column, and is plain-scalar content when it is indented past it:
-    /// `a:\n- x\n  - y\n` is the single item `x - y`. Comparing against the
-    /// scalar's own line cannot tell those apart, since an explicit key
-    /// (`? - a\n  - b\n`) puts its entries deeper than the scalar too.
-    pub(super) sequence_entry_column: Option<usize>,
-    /// The column of the mapping whose value is being parsed on the colon's
-    /// own line, for deciding whether a `?` on a later line opens that
-    /// mapping's next entry rather than continuing the value's scalar.
-    pub(super) mapping_value_column: Option<usize>,
     /// Whether the node being parsed is the document's own, with no
     /// enclosing collection.
     ///
@@ -121,13 +128,6 @@ pub(super) struct Parser {
     /// Column of the `:` whose explicit value is being parsed, if any, the
     /// counterpart of `explicit_key_column`.
     pub(super) explicit_value_column: Option<usize>,
-    /// The column of the mapping whose value is being parsed on a line
-    /// after its key's, the counterpart of `mapping_value_column`.
-    ///
-    /// A block scalar's indentation indicator counts from its enclosing
-    /// collection's column, and in `o:\n  k:\n    |1\n` nothing else
-    /// records that `k`'s mapping sits at column 2.
-    pub(super) mapping_block_value_column: Option<usize>,
     /// Current depth of nested flow collections ([...] / {...}).
     pub(super) flow_depth: usize,
     /// Depth of `parse_value_with_base_indent` recursion (block and flow).
@@ -171,12 +171,9 @@ impl Parser {
             error_context: ErrorRecoveryContext::new(text.to_string()),
             ctx: BlockCtx::default(),
             annotation_in_value_position: false,
-            sequence_entry_column: None,
-            mapping_value_column: None,
             node_is_document_root: false,
             explicit_key_column: None,
             explicit_value_column: None,
-            mapping_block_value_column: None,
             current_line_indent: 0,
             flow_depth: 0,
             nesting_depth: 0,
@@ -828,9 +825,11 @@ impl Parser {
             // `? a\n:\n|\n x\n`: the header can only be this value. Its
             // body still has to clear the mapping's column.
             self.skip_ws_and_newlines();
-            let outer_column = self.mapping_value_column.replace(column);
-            self.parse_value();
-            self.mapping_value_column = outer_column;
+            let ctx = BlockCtx {
+                mapping_value_column: Some(column),
+                ..self.ctx
+            };
+            self.scoped(ctx, |p| p.parse_value());
         } else if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
             self.parse_value();
         } else if self.current() == Some(SyntaxKind::NEWLINE) {

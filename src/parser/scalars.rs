@@ -173,7 +173,7 @@ impl Parser {
     /// has to clear to continue on the next.
     pub(super) fn plain_scalar_indent(&self) -> usize {
         self.current_line_indent
-            .max(self.mapping_value_column.unwrap_or(0))
+            .max(self.ctx.mapping_value_column.unwrap_or(0))
     }
 
     /// Consume a plain scalar inside a flow collection.
@@ -606,9 +606,10 @@ impl Parser {
         // on a later line than its key counts too: in `- a:\n   |\n  b: 1\n`
         // the line back at `a`'s column is the mapping's next entry.
         let enclosing_column = self
+            .ctx
             .sequence_entry_column
-            .max(self.mapping_value_column)
-            .max(self.mapping_block_value_column);
+            .max(self.ctx.mapping_value_column)
+            .max(self.ctx.mapping_block_value_column);
         // An explicit indentation indicator (`>2`) states the body's column
         // outright, so the first line does not get to set it: in
         // `a: >2\n   more\n  regular\n` the `regular` line is body at the
@@ -896,7 +897,7 @@ impl Parser {
                 // `- x\n  ?\n- y\n` is the two entries `x ?` and `y`, as
                 // saphyr and PyYAML both read it.
                 || (*kind == SyntaxKind::QUESTION
-                    && match self.mapping_value_column.or(self.sequence_entry_column) {
+                    && match self.ctx.mapping_value_column.or(self.ctx.sequence_entry_column) {
                         // Inside a mapping's value, or a sequence entry: only
                         // past that collection's own column, where the `?`
                         // cannot start its next node.
@@ -912,7 +913,7 @@ impl Parser {
                         }
                     })
                 || (*kind == SyntaxKind::DASH
-                    && match self.sequence_entry_column {
+                    && match self.ctx.sequence_entry_column {
                         // Inside a sequence: only past our own dash, where it
                         // cannot be the next entry.
                         Some(column) => next_line_indent > column,

@@ -786,41 +786,46 @@ impl Mapping {
 
     /// Internal unified method to set any YAML value type
     fn set_as_yaml<K: crate::AsYaml, V: crate::AsYaml>(&self, key: K, value: V) {
-        // A placeholder from `Mapping::new_pending_block` turns into a real block
-        // mapping now that it has an entry to hold. This runs before the
-        // flow_context check below so the entry is laid out as block.
-        empty_collection::convert_placeholder_to_block(&self.0);
-
-        // Detect if this mapping is in flow style (JSON format)
-        let flow_context = self.is_flow_style();
-
-        // Detect if existing entries use explicit keys
-        let use_explicit_keys = self.uses_explicit_keys();
-
         // An existing entry with this key takes the value in place.
         let existing = self
             .0
             .children()
             .filter_map(MappingEntry::cast)
             .find(|entry| entry.key().is_some_and(|k| key_content_matches(&k, &key)));
-        if let Some(entry) = existing {
-            // set_value shifts the flow form to the entry's line, so its
-            // continuation lines are given relative to that.
-            let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
-            match flow.and_then(|q| flow_form(&value, 2, q)) {
-                Some(flow) => entry.set_value(flow, flow_context),
-                None => entry.set_value(value, flow_context),
-            }
+        let Some(entry) = existing else {
+            self.insert_new(Slot::End, key, value);
             return;
-        }
-
-        // Entry doesn't exist, create a new one. Tell the constructor at
-        // what column its key will sit so a node-backed block value has its
-        // interior indentation shifted to line up under the new entry.
-        let key_indent = self.detect_indentation_level();
+        };
+        // set_value shifts the flow form to the entry's line, so its
+        // continuation lines are given relative to that.
+        let flow_context = self.is_flow_style();
         let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
-        let new_entry = MappingEntry::new_in(key, value, flow, use_explicit_keys, key_indent);
-        self.attach(&new_entry.0, Slot::End);
+        match flow.and_then(|q| flow_form(&value, 2, q)) {
+            Some(flow) => entry.set_value(flow, flow_context),
+            None => entry.set_value(value, flow_context),
+        }
+    }
+
+    /// Add an entry for `key`, which is not in this mapping yet, at `slot`,
+    /// written in the mapping's style.
+    fn insert_new(&self, slot: Slot, key: impl crate::AsYaml, value: impl crate::AsYaml) {
+        // A placeholder from `Mapping::new_pending_block` turns into a real
+        // block mapping now that it has an entry to hold, before the entry
+        // is laid out.
+        empty_collection::convert_placeholder_to_block(&self.0);
+        let flow = self
+            .is_flow_style()
+            .then(|| crate::nodes::flow_quoting(&self.0));
+        // The column of the key tells the constructor how far to shift a
+        // node-backed block value.
+        let new_entry = MappingEntry::new_in(
+            key,
+            value,
+            flow,
+            self.uses_explicit_keys(),
+            self.detect_indentation_level(),
+        );
+        self.attach(&new_entry.0, slot);
     }
 
     /// Splice `new_entry` into this mapping at `slot`.
@@ -889,17 +894,9 @@ impl Mapping {
                 });
             }
 
-            // Build the new entry with proper newline ownership
-            let flow_context = self.is_flow_style();
-            let use_explicit_keys = self.uses_explicit_keys();
-            let key_indent = self.detect_indentation_level();
-            let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
-            let new_entry =
-                MappingEntry::new_in(&key, &value, flow, use_explicit_keys, key_indent).0;
-
             match (insert_after_node, insert_before_node) {
-                (Some(after), _) => self.attach(&new_entry, Slot::After(after)),
-                (None, Some(before)) => self.attach(&new_entry, Slot::Before(before)),
+                (Some(after), _) => self.insert_new(Slot::After(after), &key, &value),
+                (None, Some(before)) => self.insert_new(Slot::Before(before), &key, &value),
                 // No ordered key is present yet, so order says nothing about
                 // where this one goes.
                 (None, None) => self.set_as_yaml(&key, &value),
@@ -1488,22 +1485,11 @@ impl Mapping {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) {
-        // As in `set_as_yaml`: a pending-block placeholder becomes a real
-        // block mapping before its first entry is laid out.
-        empty_collection::convert_placeholder_to_block(&self.0);
-
-        // Create the new mapping entry
-        let flow_context = self.is_flow_style();
-        let use_explicit_keys = self.uses_explicit_keys();
-        let key_indent = self.detect_indentation_level();
-        let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
-        let new_entry = MappingEntry::new_in(&key, &value, flow, use_explicit_keys, key_indent);
-
         let slot = self
             .entries()
             .nth(index)
             .map_or(Slot::End, |e| Slot::Before(e.0));
-        self.attach(&new_entry.0, slot);
+        self.insert_new(slot, key, value);
     }
 
     crate::nodes::ast_node_spans!("mapping");

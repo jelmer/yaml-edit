@@ -420,3 +420,17 @@ fn rename_key_keeps_anchors() {
     assert_edited(&doc, "c: 1\nb: &y p\n");
     assert_means(&doc, "c: 1\nb: p\n");
 }
+
+#[test]
+fn tagged_alias_to_block_mapping_with_flow_key() {
+    // The mapping starts with its key's `{` or `[`, but is still a block
+    // mapping, which goes on the line after the tag.
+    for (source, expected) in [
+        ("a: &a\n  {x: 1}: 2\nk: !t *a\n", "k: !t\n  {x: 1}: 2\n"),
+        ("a: &a\n  [x]: 2\nk:\n- !t *a\n", "k:\n- !t\n  [x]: 2\n"),
+    ] {
+        let doc = Document::from_str(source).unwrap();
+        doc.as_mapping().unwrap().remove("a");
+        assert_edited(&doc, expected);
+    }
+}

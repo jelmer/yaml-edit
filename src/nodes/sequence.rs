@@ -1037,42 +1037,6 @@ impl Sequence {
         new_entry
     }
 
-    /// Drop the INDENT that separated the entry just removed at child
-    /// position `i` from its sibling.
-    ///
-    /// For a non-first entry that INDENT sits before it, left over from the
-    /// previous entry's NEWLINE. For the first, the one *after* it would
-    /// become a leading INDENT inside the SEQUENCE and stack with the parent
-    /// VALUE's (`  ` + `  ` -> `    `), shifting the new first entry a level
-    /// in. A flow sequence has no such separators.
-    fn detach_orphaned_indent(
-        &self,
-        children: &[rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>],
-        i: usize,
-    ) {
-        if self.is_flow_style() {
-            return;
-        }
-        let (neighbour, range) = if i > 0 {
-            (children.get(i - 1), (i - 1)..i)
-        } else {
-            (children.get(i + 1), i..(i + 1))
-        };
-        // An INDENT that starts a comment line after the first entry is
-        // that line's own. In a drained sequence the parent's indent goes
-        // away with the collapse, so a comment line's INDENT stays too.
-        let drained = self.is_empty();
-        let is_indent = neighbour.is_some_and(|c| {
-            c.as_token().is_some_and(|t| {
-                t.kind() == SyntaxKind::INDENT
-                    && !((drained || i == 0) && crate::yaml::indents_comment_line(t))
-            })
-        });
-        if is_indent {
-            self.0.splice_children(range, vec![]);
-        }
-    }
-
     /// Remove the item at `index`, returning its value.
     ///
     /// Returns `Some(value)` if the index was in bounds, `None` otherwise.
@@ -1084,80 +1048,16 @@ impl Sequence {
     pub fn remove(&self, index: usize) -> Option<crate::as_yaml::YamlNode> {
         // Capture the value before removing so we can return it
         let removed_value = self.get(index);
-
-        // Use children_with_tokens() since splice_children() expects those indices
-        let children: Vec<_> = self.0.children_with_tokens().collect();
-
-        // The child position of the entry at `index`, which is not the index
-        // itself: INDENT tokens sit between entries.
-        let i = children
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| {
-                c.as_node()
-                    .is_some_and(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-            })
-            .map(|(i, _)| i)
+        let removed = self
+            .0
+            .children()
+            .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             .nth(index)?;
-        let removed = children[i].as_node().expect("SEQUENCE_ENTRY");
-        crate::nodes::kept_aliases::keeping_aliases(removed, None, || {
-            self.remove_entry_at(&children, i);
+        crate::nodes::kept_aliases::keeping_aliases(&removed, None, || {
+            trivia::detach_entry(&self.0, &removed);
             None
         });
         removed_value
-    }
-
-    /// Splice the entry at child index `i` out of this sequence, tidying
-    /// up the separators and line breaks around it.
-    fn remove_entry_at(
-        &self,
-        children: &[rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>],
-        i: usize,
-    ) {
-        let is_last = !children.iter().skip(i + 1).any(|c| {
-            c.as_node()
-                .is_some_and(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-        });
-        let removed_terminated =
-            trivia::line_end(children[i].as_node().expect("SEQUENCE_ENTRY")).is_terminated();
-
-        // Remove the entry first, then the INDENT that
-        // separated it from a sibling. Doing them as two
-        // separate single-child splices sidesteps a
-        // rowan iteration quirk where a multi-child
-        // splice can skip elements mid-iteration.
-        //
-        // For non-first entries the INDENT sits right
-        // before this entry (the separator after the
-        // previous entry's NEWLINE); for the first
-        // entry any INDENT is a top-level formatting
-        // one we leave alone.
-        self.0.splice_children(i..(i + 1), vec![]);
-        self.detach_orphaned_indent(children, i);
-
-        let removed = children[i].as_node().expect("SEQUENCE_ENTRY");
-        if is_last && self.is_flow_style() && !trivia::has_comma(removed) {
-            if let Some(prev) = self
-                .0
-                .children()
-                .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-                .last()
-            {
-                FlowSeparator::strip(&prev);
-            }
-        }
-
-        // The end of the input keeps its lack of a final line break.
-        if is_last && !removed_terminated && !self.is_flow_style() {
-            trivia::unterminate_last(&self.0);
-        }
-        // As in `Mapping::remove`, a drained top-level sequence is left
-        // empty.
-        if self.is_empty() {
-            render_empty(&self.0, removed_terminated, false);
-        } else if !self.is_flow_style() {
-            crate::yaml::move_leading_lines_out(&self.0);
-        }
     }
 
     /// Check if this sequence is in flow style [item1, item2]

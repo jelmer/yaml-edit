@@ -98,12 +98,11 @@ fn remove_first_item_of_sequence_in_sequence_item() {
         remove_first_from_item,
         "-\n\n  - 2\n- 3\n",
     );
-    // The comment on the removed item's line is kept, as Sequence::remove
-    // does elsewhere.
+    // The comment on the removed item's line goes with it.
     check_edit(
         "- - 1  # k\n  - 2\n- 3\n",
         remove_first_from_item,
-        "-\n  # k\n  - 2\n- 3\n",
+        "- - 2\n- 3\n",
     );
 }
 
@@ -139,7 +138,7 @@ fn remove_first_entry_of_mapping_value() {
             let top = d.as_mapping().unwrap().get_sequence("top").unwrap();
             assert!(top.remove(0).is_some());
         },
-        "top:\n# k\n- 2\n",
+        "top:\n- 2\n",
     );
 }
 

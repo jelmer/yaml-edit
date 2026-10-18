@@ -43,7 +43,6 @@
 5WE3 d0 map0 rename[1] reparse
 5WE3 d0 seq0 insert[0] cst
 5WE3 d0 seq0 insert[0] reparse
-5WE3 d0 seq0 remove[1] shape
 65WH d0 seq0 remove[0] semantic
 65WH d0 seq0 remove[0] shape
 6BFJ d0 map0 remove[0] semantic
@@ -290,7 +289,6 @@ VJP3/01 d0 map0 remove[0] semantic
 VJP3/01 d0 map0 remove[0] shape
 VJP3/01 d0 map1 clear validator
 VJP3/01 d0 map1 remove[0] validator
-W42U d0 seq1 remove[1] shape
 W5VH d0 map0 move-after-last[0] panic
 W5VH d0 map0 move-before-first[1] panic
 W5VH d0 map0 reorder-reversed panic

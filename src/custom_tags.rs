@@ -1721,4 +1721,222 @@ mod tests {
             Err(CustomTagError::new("!date", "Value must be a scalar"))
         );
     }
+
+    #[test]
+    fn test_json_handler_validate_messages() {
+        let handler = JsonHandler;
+        for (content, message) in [
+            (r#"{"a" 1}"#, "Invalid JSON value"),
+            (r#"{"a": 1, "b"}"#, "Invalid JSON value"),
+            (r#"{"a": }"#, "Invalid JSON value"),
+            (r#"{? "a": 1}"#, "Invalid JSON value"),
+            (r#"["a": 1]"#, "Invalid JSON value"),
+            ("{1: 2}", "Object keys must be strings"),
+            ("{[1]: 2}", "Object keys must be strings"),
+            ("[1,,2]", "Invalid JSON value"),
+            ("[1 2]", "Invalid JSON value"),
+            ("- 1", "Invalid JSON value"),
+            ("a: 1", "Invalid JSON value"),
+            ("--- 1", "Invalid JSON value"),
+            ("1\n--- 2", "Invalid JSON value"),
+            ("%YAML 1.2\n--- 1", "Invalid JSON value"),
+            (r#"{"a":1}x"#, "Invalid JSON value"),
+            ("", "Invalid JSON value"),
+            ("-", "Invalid JSON value"),
+            ("1e+", "Invalid JSON value"),
+            (r#"{"a": 1, "a": 2}"#, "Duplicate key"),
+            ("[1,]", "Trailing comma"),
+            ("{,}", "Trailing comma"),
+            ("[&x 1]", "Anchors are not allowed in JSON"),
+            ("[*x]", "Aliases are not allowed in JSON"),
+            ("[1] # c", "Comments are not allowed in JSON"),
+            ("[!!int 1]", "Tags are not allowed in JSON"),
+            (r#""\ud800A""#, "Unpaired surrogate in \\u escape"),
+            (r#""\udc00""#, "Unpaired surrogate in \\u escape"),
+            ("\"", "Unterminated quoted string"),
+        ] {
+            assert_eq!(
+                handler.validate(content),
+                Err(CustomTagError::with_content(
+                    "!json",
+                    message,
+                    content.trim()
+                )),
+                "{content}"
+            );
+        }
+        assert_eq!(
+            handler.deserialize("'"),
+            Err(CustomTagError::with_content(
+                "!json",
+                "Unterminated quoted string",
+                "'"
+            ))
+        );
+    }
+
+    #[test]
+    fn test_json_handler_nested_and_numbers() {
+        let handler = JsonHandler;
+        let value = handler
+            .deserialize(r#"[1, [2.5e-3, {"a": [true, null], "b": "é"}]]"#)
+            .unwrap();
+        assert_eq!(handler.validate(r#"{"a":1,"b":2}"#), Ok(()));
+        assert_eq!(
+            handler.serialize(&value).unwrap(),
+            r#"[1,[2.5e-3,{"a":[true,null],"b":"é"}]]"#
+        );
+        assert_eq!(handler.validate("1e5"), Ok(()));
+        assert_eq!(handler.validate("-1.5E+3"), Ok(()));
+    }
+
+    #[test]
+    fn test_json_handler_serialize_escapes_and_unsupported() {
+        let handler = JsonHandler;
+        assert_eq!(
+            handler.serialize(&YamlValue::scalar("a\r\u{8}\u{c}\u{1}\"\\\n\t")),
+            Ok(r#""a\r\b\f\u0001\"\\\n\t""#.to_string())
+        );
+        assert_eq!(
+            handler.serialize(&YamlValue::set()),
+            Err(CustomTagError::new(
+                "!json",
+                "Unsupported value type for JSON serialization"
+            ))
+        );
+        assert_eq!(handler.description(), "JSON data embedded in YAML");
+    }
+
+    #[test]
+    fn test_timestamp_handler_errors() {
+        let handler = TimestampHandler::new("%Y-%m-%d");
+        assert_eq!(
+            handler.serialize(&YamlValue::scalar("2024-01-15")),
+            Ok("2024-01-15".to_string())
+        );
+        assert_eq!(
+            handler.serialize(&YamlValue::scalar("today")),
+            Err(CustomTagError::with_content(
+                "!timestamp",
+                "Timestamp should contain year digits",
+                "today"
+            ))
+        );
+        assert_eq!(
+            handler.serialize(&YamlValue::sequence()),
+            Err(CustomTagError::new("!timestamp", "Value must be a scalar"))
+        );
+        assert_eq!(
+            handler.deserialize("2024-01-15"),
+            Ok(YamlValue::scalar(ScalarValue::timestamp("2024-01-15")))
+        );
+        assert_eq!(handler.description(), "Custom timestamp format handler");
+        // A format without `%Y` does not check for digits.
+        let handler = TimestampHandler::new("%H:%M");
+        assert_eq!(
+            handler.serialize(&YamlValue::scalar("noon")),
+            Ok("noon".to_string())
+        );
+        assert_eq!(handler.validate("noon"), Ok(()));
+    }
+
+    #[test]
+    fn test_compressed_binary_handler_round_trip() {
+        let handler = CompressedBinaryHandler::new(0);
+        assert_eq!(
+            handler.serialize(&YamlValue::scalar("SGk=")),
+            Ok("SGk=".to_string())
+        );
+        assert_eq!(
+            handler.serialize(&YamlValue::sequence()),
+            Err(CustomTagError::new("!compressed", "Value must be a scalar"))
+        );
+        assert_eq!(
+            handler.deserialize("COMPRESSED[3]:SGk="),
+            Ok(YamlValue::scalar("SGk="))
+        );
+        assert_eq!(
+            handler.deserialize("COMPRESSED[3"),
+            Ok(YamlValue::scalar("COMPRESSED[3"))
+        );
+        assert_eq!(handler.deserialize("SGk="), Ok(YamlValue::scalar("SGk=")));
+        assert_eq!(handler.description(), "Compressed binary data");
+    }
+
+    #[test]
+    fn test_env_var_handler_errors() {
+        let handler = EnvVarHandler;
+        assert_eq!(
+            handler.serialize(&YamlValue::scalar("HOME")),
+            Ok("HOME".to_string())
+        );
+        assert_eq!(
+            handler.serialize(&YamlValue::sequence()),
+            Err(CustomTagError::new(
+                "!env",
+                "Environment variable must be a scalar"
+            ))
+        );
+        assert_eq!(
+            handler.deserialize("YAML_EDIT_SURELY_UNSET_VARIABLE"),
+            Err(CustomTagError::with_content(
+                "!env",
+                "Environment variable not found",
+                "YAML_EDIT_SURELY_UNSET_VARIABLE"
+            ))
+        );
+        assert_eq!(handler.description(), "Environment variable substitution");
+    }
+
+    #[test]
+    fn test_default_validate_deserializes() {
+        let (parser, seen) = recording_parser();
+        assert_eq!(
+            parser.registry.validate("!rec", "bad"),
+            Err(CustomTagError::with_content("!rec", "rejected", "bad"))
+        );
+        assert_eq!(parser.registry.validate("!rec", "good"), Ok(()));
+        assert_eq!(*seen.lock().unwrap(), vec!["bad", "good"]);
+    }
+
+    #[test]
+    fn test_registry_debug_clone_unregister() {
+        let mut registry = CustomTagRegistry::new();
+        registry.register("!json", JsonHandler).unwrap();
+        registry.register("!env", EnvVarHandler).unwrap();
+        assert_eq!(
+            format!("{registry:?}"),
+            r#"CustomTagRegistry { tags: ["!env", "!json"] }"#
+        );
+        // Clones share their handlers.
+        let mut clone = registry.clone();
+        assert!(clone.unregister("!env"));
+        assert!(!clone.unregister("!env"));
+        assert!(!registry.has_tag("!env"));
+        assert_eq!(registry.registered_tags(), vec!["!json".to_string()]);
+    }
+
+    #[test]
+    fn test_custom_tag_error_display_without_content() {
+        assert_eq!(
+            CustomTagError::new("!t", "broken").to_string(),
+            "Custom tag '!t' error: broken"
+        );
+    }
+
+    #[test]
+    fn test_tag_name_with_invalid_named_handle() {
+        let mut registry = CustomTagRegistry::new();
+        for tag in ["!a_b!c", "!a.b!c", "!!", "!e!"] {
+            assert_eq!(
+                registry.register(tag, JsonHandler),
+                Err(CustomTagError::new(
+                    tag,
+                    "Invalid tag name: must be a YAML tag such as '!name', '!!name' or '!<uri>'"
+                )),
+                "{tag}"
+            );
+        }
+        assert_eq!(registry.register("!a-1!c", JsonHandler), Ok(()));
+    }
 }

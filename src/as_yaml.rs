@@ -290,13 +290,13 @@ fn resolve_scalar(scalar: crate::scalar::ScalarValue) -> ResolvedScalar {
 /// The identity of `node`, a value node or the KEY or VALUE wrapper holding
 /// one.
 ///
-/// Aliases are followed through `registry`; without one an alias is a
-/// [`ResolveError::UnresolvedAlias`](crate::anchor_resolution::ResolveError::UnresolvedAlias).
+/// Aliases are followed through `registry`; without one an alias is
+/// undefined, as no anchors are known.
 /// Returns `Ok(None)` if `node` is not a value node.
 pub(crate) fn node_identity(
     node: &SyntaxNode,
     registry: Option<&crate::anchor_resolution::AnchorRegistry>,
-) -> Result<Option<NodeIdentity>, crate::anchor_resolution::ResolveError> {
+) -> Result<Option<NodeIdentity>, crate::anchor_resolution::AliasError> {
     identity_with_tag(node, None, registry, &mut Vec::new())
 }
 
@@ -309,8 +309,8 @@ fn identity_with_tag(
     tag: Option<String>,
     registry: Option<&crate::anchor_resolution::AnchorRegistry>,
     expanding: &mut Vec<SyntaxNode>,
-) -> Result<Option<NodeIdentity>, crate::anchor_resolution::ResolveError> {
-    use crate::anchor_resolution::ResolveError;
+) -> Result<Option<NodeIdentity>, crate::anchor_resolution::AliasError> {
+    use crate::anchor_resolution::AliasError;
     use crate::lex::SyntaxKind;
     use crate::scalar::ScalarValue;
 
@@ -343,13 +343,13 @@ fn identity_with_tag(
                 return Ok(None);
             };
             let Some(registry) = registry else {
-                return Err(ResolveError::UnresolvedAlias {
+                return Err(AliasError::Undefined {
                     alias: alias.name(),
                 });
             };
             let target = registry.resolve_alias_through(&alias)?;
             if expanding.contains(target) {
-                return Err(ResolveError::RecursiveAlias {
+                return Err(AliasError::Recursive {
                     alias: alias.name(),
                 });
             }
@@ -407,7 +407,7 @@ fn identity_with_tag(
 pub(crate) fn identity_of<T: AsYaml + ?Sized>(
     v: &T,
     registry: Option<&crate::anchor_resolution::AnchorRegistry>,
-) -> Result<Option<NodeIdentity>, crate::anchor_resolution::ResolveError> {
+) -> Result<Option<NodeIdentity>, crate::anchor_resolution::AliasError> {
     match to_syntax(v) {
         Some(node) => node_identity(&node, registry),
         None => Ok(None),

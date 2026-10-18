@@ -205,6 +205,49 @@ impl std::fmt::Display for ResolveError {
 
 impl std::error::Error for ResolveError {}
 
+/// An alias that does not refer to a node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AliasError {
+    /// No anchor of the alias's name is defined before it.
+    Undefined { alias: String },
+    /// The alias refers to an anchor it is nested in.
+    Recursive { alias: String },
+}
+
+impl From<AliasError> for ResolveError {
+    fn from(err: AliasError) -> Self {
+        match err {
+            AliasError::Undefined { alias } => ResolveError::UndefinedAlias { alias },
+            AliasError::Recursive { alias } => ResolveError::RecursiveAlias { alias },
+        }
+    }
+}
+
+/// An error collecting the entries of a [`MergedMapping`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MergeError {
+    Alias(AliasError),
+    /// A merge key operand is not a mapping; holds its source text.
+    InvalidOperand {
+        operand: String,
+    },
+}
+
+impl From<AliasError> for MergeError {
+    fn from(err: AliasError) -> Self {
+        MergeError::Alias(err)
+    }
+}
+
+impl From<MergeError> for ResolveError {
+    fn from(err: MergeError) -> Self {
+        match err {
+            MergeError::Alias(err) => err.into(),
+            MergeError::InvalidOperand { operand } => ResolveError::InvalidMergeOperand { operand },
+        }
+    }
+}
+
 /// A registry of anchors defined in a YAML document
 #[derive(Debug, Clone)]
 pub struct AnchorRegistry {
@@ -316,16 +359,16 @@ impl AnchorRegistry {
     pub(crate) fn resolve_alias_through(
         &self,
         alias: &crate::yaml::Alias,
-    ) -> Result<&SyntaxNode, ResolveError> {
+    ) -> Result<&SyntaxNode, AliasError> {
         let mut alias = alias.clone();
         let mut seen = Vec::new();
         loop {
             let name = alias.name();
-            let target = self.resolve_alias(&name, alias.syntax()).ok_or_else(|| {
-                ResolveError::UndefinedAlias {
-                    alias: name.clone(),
-                }
-            })?;
+            let target =
+                self.resolve_alias(&name, alias.syntax())
+                    .ok_or_else(|| AliasError::Undefined {
+                        alias: name.clone(),
+                    })?;
             let content = if target.kind() == SyntaxKind::VALUE {
                 target.children().next()
             } else {
@@ -335,7 +378,7 @@ impl AnchorRegistry {
                 return Ok(target);
             };
             if seen.contains(target) {
-                return Err(ResolveError::RecursiveAlias { alias: name });
+                return Err(AliasError::Recursive { alias: name });
             }
             seen.push(target.clone());
             alias = next;
@@ -428,11 +471,12 @@ pub(crate) fn is_merge_key(key: &crate::as_yaml::YamlNode) -> bool {
 
 /// The identity of `key` as a mapping key, following aliases through
 /// `registry`; see [`NodeIdentity`].
-pub(crate) fn key_identity(
+fn key_identity(
     key: &crate::as_yaml::YamlNode,
-    registry: Option<&AnchorRegistry>,
-) -> Result<NodeIdentity, ResolveError> {
-    Ok(crate::as_yaml::node_identity(key.syntax(), registry)?.expect("a YamlNode is a value node"))
+    registry: &AnchorRegistry,
+) -> Result<NodeIdentity, AliasError> {
+    Ok(crate::as_yaml::node_identity(key.syntax(), Some(registry))?
+        .expect("a YamlNode is a value node"))
 }
 
 /// A view over a [`Mapping`](crate::yaml::Mapping) that transparently expands
@@ -507,6 +551,15 @@ impl<'a> MergedMapping<'a> {
         base: crate::yaml::Mapping,
         registry: &'a AnchorRegistry,
     ) -> Result<Self, ResolveError> {
+        Ok(Self::build(base, registry)?)
+    }
+
+    /// Like [`new`](Self::new), failing with the errors only a merged view
+    /// can meet.
+    pub(crate) fn build(
+        base: crate::yaml::Mapping,
+        registry: &'a AnchorRegistry,
+    ) -> Result<Self, MergeError> {
         let entries = merged_entries(&base, registry)?;
         Ok(Self {
             base,
@@ -621,7 +674,7 @@ impl std::fmt::Debug for MergedMapping<'_> {
 pub(crate) fn merge_sources(
     base: &crate::yaml::Mapping,
     registry: &AnchorRegistry,
-) -> Result<Vec<crate::yaml::Mapping>, ResolveError> {
+) -> Result<Vec<crate::yaml::Mapping>, MergeError> {
     let mut sources = Vec::new();
     collect_merge_sources(base, registry, &mut sources)?;
     Ok(sources)
@@ -631,7 +684,7 @@ fn collect_merge_sources(
     base: &crate::yaml::Mapping,
     registry: &AnchorRegistry,
     sources: &mut Vec<crate::yaml::Mapping>,
-) -> Result<(), ResolveError> {
+) -> Result<(), MergeError> {
     use crate::as_yaml::YamlNode;
 
     for (key, value) in base.iter() {
@@ -653,7 +706,7 @@ fn collect_merge_sources(
                 YamlNode::TaggedNode(tagged) => tagged.as_mapping(),
                 _ => None,
             }
-            .ok_or_else(|| ResolveError::InvalidMergeOperand {
+            .ok_or_else(|| MergeError::InvalidOperand {
                 operand: operand.to_string(),
             })?;
             if sources.iter().any(|s| s.syntax() == source.syntax()) {
@@ -672,10 +725,10 @@ fn collect_merge_sources(
 fn merged_entries(
     base: &crate::yaml::Mapping,
     registry: &AnchorRegistry,
-) -> Result<Vec<MergedEntry>, ResolveError> {
+) -> Result<Vec<MergedEntry>, MergeError> {
     let mut entries: Vec<MergedEntry> = Vec::new();
     for (key, value) in base.iter().filter(|(k, _)| !is_merge_key(k)) {
-        let identity = key_identity(&key, Some(registry))?;
+        let identity = key_identity(&key, registry)?;
         entries.push((identity, key, resolve_alias_node(value, registry)?));
     }
     for source in merge_sources(base, registry)? {
@@ -683,7 +736,7 @@ fn merged_entries(
             if is_merge_key(&key) {
                 continue;
             }
-            let identity = key_identity(&key, Some(registry))?;
+            let identity = key_identity(&key, registry)?;
             if entries.iter().any(|(k, _, _)| *k == identity) {
                 continue;
             }
@@ -705,14 +758,14 @@ type MergedEntry = (
 pub(crate) fn resolve_alias_node(
     node: crate::as_yaml::YamlNode,
     registry: &AnchorRegistry,
-) -> Result<crate::as_yaml::YamlNode, ResolveError> {
+) -> Result<crate::as_yaml::YamlNode, AliasError> {
     use crate::as_yaml::YamlNode;
 
     let YamlNode::Alias(alias) = &node else {
         return Ok(node);
     };
     let target = registry.resolve_alias_through(alias)?;
-    YamlNode::from_syntax_peeled(target.clone()).ok_or(ResolveError::UndefinedAlias {
+    YamlNode::from_syntax_peeled(target.clone()).ok_or(AliasError::Undefined {
         alias: alias.name(),
     })
 }
@@ -755,7 +808,7 @@ impl DocumentMergedExt for crate::yaml::Document {
             return Ok(None);
         };
         let registry = self.build_anchor_registry();
-        let entries = merged_entries(&mapping, &registry)?;
+        let entries = merged_entries(&mapping, &registry).map_err(ResolveError::from)?;
         Ok(Some(MergedView {
             mapping,
             registry,

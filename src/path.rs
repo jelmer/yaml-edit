@@ -749,18 +749,14 @@ fn resolve_for_read(
 ///
 /// [`AnchorRegistry::resolve_alias_through`]: crate::anchor_resolution::AnchorRegistry::resolve_alias_through
 fn undefined_alias(
-    error: crate::anchor_resolution::ResolveError,
+    error: crate::anchor_resolution::AliasError,
     segment: &PathSegment,
 ) -> PathError {
-    use crate::anchor_resolution::ResolveError;
-    match error {
-        ResolveError::UndefinedAlias { alias } | ResolveError::RecursiveAlias { alias } => {
-            PathError::UndefinedAlias {
-                at: segment_display(segment),
-                alias,
-            }
-        }
-        other => unreachable!("resolving an alias gave {other:?}"),
+    use crate::anchor_resolution::AliasError;
+    let (AliasError::Undefined { alias } | AliasError::Recursive { alias }) = error;
+    PathError::UndefinedAlias {
+        at: segment_display(segment),
+        alias,
     }
 }
 
@@ -794,37 +790,19 @@ fn lookup_merged(
     key: &str,
     segment: &PathSegment,
 ) -> Result<crate::as_yaml::YamlNode, PathError> {
-    use crate::anchor_resolution::{MappingMergedExt, ResolveError};
+    use crate::anchor_resolution::{MergeError, MergedMapping};
     if let Some(found) = lookup_own(mapping, key) {
         return Ok(found);
     }
     let at = segment_display(segment);
     let registry = registry_for(rowan::ast::AstNode::syntax(mapping));
-    let merged = mapping.merged(&registry).map_err(|e| match e {
+    let merged = MergedMapping::build(mapping.clone(), &registry).map_err(|e| match e {
         // A key holding an alias within its own anchored node is recursive.
-        ResolveError::UndefinedAlias { alias } | ResolveError::RecursiveAlias { alias } => {
-            PathError::UndefinedAlias {
-                at: at.clone(),
-                alias,
-            }
-        }
-        ResolveError::InvalidMergeOperand { operand } => PathError::InvalidMergeOperand {
+        MergeError::Alias(e) => undefined_alias(e, segment),
+        MergeError::InvalidOperand { operand } => PathError::InvalidMergeOperand {
             at: at.clone(),
             operand,
         },
-        ResolveError::KeyCollision { .. } => {
-            unreachable!("a merged view keeps keys as YAML nodes, not strings")
-        }
-        ResolveError::DuplicateKey { .. }
-        | ResolveError::InvalidSetContent { .. }
-        | ResolveError::InvalidSetMember { .. }
-        | ResolveError::NonNullSetValue { .. }
-        | ResolveError::InvalidPairsContent { .. }
-        | ResolveError::InvalidPairsItem { .. }
-        | ResolveError::UnresolvedAlias { .. }
-        | ResolveError::ExtraNode { .. } => {
-            unreachable!("a merged view does not convert values to YamlValue")
-        }
     })?;
     merged
         .get(key)

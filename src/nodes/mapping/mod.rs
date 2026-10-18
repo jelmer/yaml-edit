@@ -10,6 +10,7 @@ pub(crate) use helpers::{
     source_anchor_text,
 };
 
+use super::empty_collection::{self, render_empty};
 use super::trivia::{self, hand_line_break_to_mapping, line_end, FlowSeparator, LineEnd};
 use super::{
     entry_key, entry_value, fresh_token, has_child_token, settle_lines_after_inserted_entry, Lang,
@@ -17,10 +18,7 @@ use super::{
 };
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
-use crate::yaml::{
-    collapse_empty_child_collection_in_parent as collapse_empty_child_mapping_in_parent,
-    dump_cst_to_string, ValueNode,
-};
+use crate::yaml::{dump_cst_to_string, ValueNode};
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
 
@@ -269,20 +267,6 @@ impl Mapping {
         Mapping(SyntaxNode::new_root_mut(builder.finish()))
     }
 
-    /// Is this an empty mapping awaiting its first entry? See
-    /// [`Mapping::new_pending_block`].
-    pub(crate) fn is_block_placeholder(&self) -> bool {
-        !self
-            .0
-            .children()
-            .any(|c| c.kind() == SyntaxKind::MAPPING_ENTRY)
-            && self
-                .0
-                .children_with_tokens()
-                .filter_map(|c| c.into_token())
-                .any(|t| t.kind() == SyntaxKind::WHITESPACE && t.text().is_empty())
-    }
-
     /// Wrap a flow pair in braces, so that it reads as one mapping however
     /// many entries it ends up with: `[a: 1, b: 2]` would be two.
     fn brace_flow_pair(&self) {
@@ -526,7 +510,8 @@ impl Mapping {
         // Flow-style mappings start with LEFT_BRACE token. A block
         // placeholder is `{}` in the text but is destined to become block, so
         // it does not count as flow.
-        (has_child_token(&self.0, |k| k == SyntaxKind::LEFT_BRACE) && !self.is_block_placeholder())
+        (has_child_token(&self.0, |k| k == SyntaxKind::LEFT_BRACE)
+            && !empty_collection::is_block_placeholder(&self.0))
             || is_flow_pair(&self.0)
     }
 
@@ -705,9 +690,7 @@ impl Mapping {
         // A placeholder from `Mapping::new_pending_block` turns into a real block
         // mapping now that it has an entry to hold. This runs before the
         // flow_context check below so the entry is laid out as block.
-        if self.is_block_placeholder() && !crate::nodes::sequence::must_render_flow(&self.0) {
-            crate::yaml::convert_placeholder_to_block(&self.0);
-        }
+        empty_collection::convert_placeholder_to_block(&self.0);
 
         // Detect if this mapping is in flow style (JSON format)
         let flow_context = self.is_flow_style();
@@ -835,7 +818,7 @@ impl Mapping {
         // placeholder, strip the outer MAPPING_ENTRY's trailing NEWLINE
         // that acted as the placeholder marker (see issue #18).
         if count == 0 {
-            crate::yaml::detach_empty_collection_placeholder_newline(&self.0, new_entry);
+            empty_collection::detach_empty_collection_placeholder_newline(&self.0, new_entry);
         }
         hand_line_break_to_mapping(new_entry);
         settle_lines_after_inserted_entry(new_entry);
@@ -1274,14 +1257,14 @@ impl Mapping {
             crate::yaml::move_leading_lines_out(&self.0);
         }
 
-        // Nested mapping drained by remove: collapse to `key: {}` or
-        // `- {}` so `set_path("a.b.c", v) + remove_path(...)` doesn't
-        // leave a dangling indent scaffold. Top-level drain is left alone here
-        // -- callers may add more entries and injecting `{}` would
-        // poison subsequent block-style `set`s; `Mapping::clear`
-        // handles the explicit-empty case.
+        // A drained top-level mapping is left empty here, so that entries
+        // added later are still written in block style; `Mapping::clear`
+        // writes it as `{}`.
+        // TODO: the empty document reads back as null rather than `{}`.
+        // Writing `{}` needs a way to keep later entries in block style
+        // that does not leave the tree unlike a re-parse.
         if drained {
-            collapse_empty_child_mapping_in_parent(&self.0, removed_terminated);
+            render_empty(&self.0, removed_terminated, false);
         }
 
         // The end of the input keeps its lack of a final line break.
@@ -1377,7 +1360,7 @@ impl Mapping {
             let children: Vec<_> = self.0.children_with_tokens().collect();
             self.remove_entry_at(&children, i, &entry);
         }
-        crate::yaml::render_empty_collection_as_flow(&self.0, terminated);
+        render_empty(&self.0, terminated, true);
     }
 
     /// Rename a key while preserving its value and formatting.
@@ -1653,9 +1636,7 @@ impl Mapping {
     ) {
         // As in `set_as_yaml`: a pending-block placeholder becomes a real
         // block mapping before its first entry is laid out.
-        if self.is_block_placeholder() && !crate::nodes::sequence::must_render_flow(&self.0) {
-            crate::yaml::convert_placeholder_to_block(&self.0);
-        }
+        empty_collection::convert_placeholder_to_block(&self.0);
 
         // Create the new mapping entry
         let flow_context = self.is_flow_style();

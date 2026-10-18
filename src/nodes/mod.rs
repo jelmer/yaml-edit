@@ -674,6 +674,7 @@ pub mod alias_node;
 pub mod comment;
 pub mod directive;
 pub mod document;
+mod empty_collection;
 pub mod entry;
 mod kept_aliases;
 pub mod mapping;

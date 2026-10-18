@@ -4,6 +4,7 @@ use super::{
 };
 use crate::as_yaml::{build_in, AsYaml, FlowQuoting, YamlKind};
 use crate::lex::SyntaxKind;
+use crate::nodes::empty_collection::{self, render_empty};
 use crate::nodes::flow_quoting;
 use crate::nodes::mapping::{drop_tagged_anchor, held_anchor};
 use crate::nodes::trivia::FlowSeparator;
@@ -34,9 +35,7 @@ pub(crate) fn must_render_flow(node: &SyntaxNode) -> bool {
             // A pending-block placeholder is `{}` in the text but is headed
             // for block style, so it does not force flow on what nests inside
             // it (see `Mapping::new_pending_block`).
-            let pending =
-                crate::nodes::Mapping::cast(p.clone()).is_some_and(|m| m.is_block_placeholder());
-            if has_child_token(&p, |k| k == open) && !pending {
+            if has_child_token(&p, |k| k == open) && !empty_collection::is_block_placeholder(&p) {
                 return true;
             }
         }
@@ -350,10 +349,6 @@ fn terminator_end(children: &[rowan::SyntaxElement<Lang>], start: usize) -> usiz
         .map_or(start, |offset| start + offset + 1)
 }
 
-// The collapse helper is shared with Mapping; it lives in yaml.rs
-// as `collapse_empty_child_collection_in_parent`.
-use crate::yaml::collapse_empty_child_collection_in_parent as collapse_empty_child_sequence_in_parent;
-
 impl Sequence {
     /// Iterate over items in this sequence as raw syntax nodes.
     ///
@@ -469,20 +464,6 @@ impl Sequence {
         builder.token(SyntaxKind::RIGHT_BRACKET.into(), "]");
         builder.finish_node();
         Sequence(SyntaxNode::new_root_mut(builder.finish()))
-    }
-
-    /// Is this an empty sequence awaiting its first item? See
-    /// [`Sequence::new_pending_block`].
-    pub(crate) fn is_block_placeholder(&self) -> bool {
-        !self
-            .0
-            .children()
-            .any(|c| c.kind() == SyntaxKind::SEQUENCE_ENTRY)
-            && self
-                .0
-                .children_with_tokens()
-                .filter_map(|c| c.into_token())
-                .any(|t| t.kind() == SyntaxKind::WHITESPACE && t.text().is_empty())
     }
 
     /// Indentation string used by entries in this sequence: a
@@ -647,9 +628,7 @@ impl Sequence {
         // block sequence now that it has an item. A `[]` from the source is
         // not marked and keeps its flow style; a placeholder nested inside a
         // flow container stays flow to avoid mixed output.
-        if self.is_block_placeholder() && !must_render_flow(&self.0) {
-            crate::yaml::convert_placeholder_to_block(&self.0);
-        }
+        empty_collection::convert_placeholder_to_block(&self.0);
         if self.is_flow_style() {
             self.insert_flow(usize::MAX, value);
             return;
@@ -790,7 +769,7 @@ impl Sequence {
         // Strip the outer MAPPING_ENTRY's placeholder NEWLINE if this was
         // the first entry (see issue #18).
         if entry_is_first {
-            crate::yaml::detach_empty_collection_placeholder_newline(&self.0, &new_entry);
+            empty_collection::detach_empty_collection_placeholder_newline(&self.0, &new_entry);
         }
         crate::nodes::settle_lines_after_inserted_entry(&new_entry);
     }
@@ -860,9 +839,7 @@ impl Sequence {
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn insert(&self, index: usize, value: impl crate::AsYaml) {
         // Same rule as `push`; see there for the "why".
-        if self.is_block_placeholder() && !must_render_flow(&self.0) {
-            crate::yaml::convert_placeholder_to_block(&self.0);
-        }
+        empty_collection::convert_placeholder_to_block(&self.0);
         if self.is_flow_style() {
             self.insert_flow(index, value);
             return;
@@ -1174,12 +1151,10 @@ impl Sequence {
         if is_last && !removed_terminated && !self.is_flow_style() {
             trivia::unterminate_last(&self.0);
         }
-        // If we just drained the last entry from a block
-        // sequence under a key or in a sequence item, collapse
-        // the placeholder scaffold to `key: []` or `- []` so
-        // re-parse still finds the (now-empty) sequence there.
+        // As in `Mapping::remove`, a drained top-level sequence is left
+        // empty.
         if self.is_empty() {
-            collapse_empty_child_sequence_in_parent(&self.0, removed_terminated);
+            render_empty(&self.0, removed_terminated, false);
         } else if !self.is_flow_style() {
             crate::yaml::move_leading_lines_out(&self.0);
         }
@@ -1241,7 +1216,7 @@ impl Sequence {
                 "clear() invariant: remove(0) did not reduce length"
             );
         }
-        crate::yaml::render_empty_collection_as_flow(&self.0, terminated);
+        render_empty(&self.0, terminated, true);
     }
 
     crate::nodes::ast_node_spans!("sequence");

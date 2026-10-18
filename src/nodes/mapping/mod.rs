@@ -1070,14 +1070,15 @@ impl Mapping {
             crate::nodes::append_children(&new_entry, separator);
         } else {
             // The old line break goes, whether beside the entry or missing
-            // at the end of the input, and the new entry brings its own.
+            // at the end of the input, and the new entry brings its own. One
+            // after a comment ending the line stays, for the new entry.
             match line_end(old) {
                 LineEnd::Sibling => {
                     if let Some(newline) = old.next_sibling_or_token() {
                         newline.detach();
                     }
                 }
-                LineEnd::Open => {
+                LineEnd::Open | LineEnd::AfterComment => {
                     let last = new_entry
                         .last_child_or_token()
                         .filter(|c| c.kind() == SyntaxKind::NEWLINE);

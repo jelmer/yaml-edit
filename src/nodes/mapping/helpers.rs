@@ -41,67 +41,6 @@ pub(super) fn value_is_block(value: &SyntaxNode) -> bool {
     has_child_token(&carrier, |k| k == SyntaxKind::NEWLINE)
 }
 
-/// Inject a `{}` into a truly-orphan empty MAPPING (no entries, no
-/// MAPPING_ENTRY parent, no lingering tokens) so it renders as `{}`
-/// rather than empty text. The nested counterpart is
-/// [`crate::yaml::collapse_empty_child_collection_in_parent`].
-///
-/// `terminated` says whether the mapping's last line ended in a line break
-/// before it was drained; if so, the `{}` line gets one too.
-pub(super) fn ensure_top_level_empty_renders_as_flow(mapping: &SyntaxNode, terminated: bool) {
-    if mapping
-        .children()
-        .any(|c| c.kind() == SyntaxKind::MAPPING_ENTRY)
-    {
-        return;
-    }
-    let has_map_entry_parent = mapping
-        .parent()
-        .filter(|p| p.kind() == SyntaxKind::VALUE)
-        .and_then(|v| v.parent())
-        .is_some_and(|e| e.kind() == SyntaxKind::MAPPING_ENTRY);
-    if has_map_entry_parent {
-        return;
-    }
-    // Entries normally take their trailing NEWLINE with them when removed.
-    // An explicit-key entry's line break is a sibling, so it outlives the
-    // entry and would otherwise leave the mapping rendering as bare
-    // whitespace instead of `{}`.
-    let leftovers: Vec<_> = mapping.children_with_tokens().collect();
-    if !leftovers
-        .iter()
-        .all(|c| matches!(c.kind(), SyntaxKind::NEWLINE | SyntaxKind::INDENT))
-    {
-        return;
-    }
-    if !leftovers.is_empty() {
-        crate::nodes::replace_children(mapping, 0..leftovers.len(), vec![]);
-    }
-    let lbrace = fresh_token(SyntaxKind::LEFT_BRACE, "{");
-    let rbrace = fresh_token(SyntaxKind::RIGHT_BRACE, "}");
-    mapping.splice_children(0..0, vec![lbrace.into(), rbrace.into()]);
-
-    if !terminated {
-        return;
-    }
-    // The line break follows the node, properties included, as a parsed
-    // `{}` line has it.
-    let node = mapping
-        .parent()
-        .filter(|p| p.kind() == SyntaxKind::TAGGED_NODE)
-        .unwrap_or_else(|| mapping.clone());
-    let Some(parent) = node
-        .parent()
-        .filter(|p| matches!(p.kind(), SyntaxKind::DOCUMENT | SyntaxKind::SEQUENCE_ENTRY))
-    else {
-        // TODO: keep the line break of a drained mapping elsewhere, such as
-        // an explicit key.
-        return;
-    };
-    let at = node.index() + 1;
-    parent.splice_children(at..at, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
-}
-
 /// Index just past `entry`'s line terminator among its siblings.
 ///
 /// Entries normally own their trailing NEWLINE, so the slot after the entry

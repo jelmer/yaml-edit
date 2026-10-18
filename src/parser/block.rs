@@ -667,7 +667,10 @@ impl Parser {
             Some(SyntaxKind::REFERENCE) if !self.in_flow_context && self.is_mapping_key() => {
                 self.parse_mapping_with_base_indent(base_indent);
             }
-            Some(SyntaxKind::REFERENCE) => self.parse_alias(),
+            Some(SyntaxKind::REFERENCE) => {
+                self.parse_alias();
+                self.parse_content_after_node();
+            }
             Some(SyntaxKind::TAG) => self.parse_tagged_value_as_mapping_value(base_indent),
             Some(SyntaxKind::QUESTION) => {
                 // Explicit key indicator - parse complex mapping
@@ -681,6 +684,7 @@ impl Parser {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_flow_sequence();
+                    self.parse_content_after_node();
                 }
             }
             Some(SyntaxKind::LEFT_BRACE) => {
@@ -689,6 +693,7 @@ impl Parser {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_flow_mapping();
+                    self.parse_content_after_node();
                 }
             }
             _ => {
@@ -992,6 +997,27 @@ impl Parser {
         self.builder.finish_node(); // SCALAR
     }
 
+    /// Keep plain scalar content after a complete node on its line, as in
+    /// `[q] x` or `*a x: v`, as a second node next to it.
+    ///
+    /// It is not part of a valid node, but the validator reports it, rather
+    /// than the parser ending the node before it and stranding the rest of
+    /// the line: in a key it would start another entry on the same line,
+    /// and in a value it would be left after the document. Block context
+    /// only: a flow collection has its own separators.
+    pub(super) fn parse_content_after_node(&mut self) {
+        if self.in_flow_context {
+            return;
+        }
+        let whitespace = usize::from(self.current() == Some(SyntaxKind::WHITESPACE));
+        if self.peek_kind(whitespace).is_some_and(is_plain_scalar_kind) {
+            if whitespace == 1 {
+                self.bump();
+            }
+            self.parse_block_key_scalar();
+        }
+    }
+
     fn parse_mapping_key_value_pair(&mut self, base_indent: usize) {
         // The key's own column, read before anything is consumed. It is
         // 1-based, so step back to a column.
@@ -1003,17 +1029,7 @@ impl Parser {
         self.builder.start_node(SyntaxKind::KEY.into());
 
         self.parse_block_key_node();
-        // Content between a complete node and the colon, as in `[q] x: v`
-        // or `*a x: v`, is not part of a valid key. Keep it in the KEY as a
-        // second node, which the validator reports, rather than ending the
-        // entry before it and starting another on the same line.
-        let whitespace = usize::from(self.current() == Some(SyntaxKind::WHITESPACE));
-        if self.peek_kind(whitespace).is_some_and(is_plain_scalar_kind) {
-            if whitespace == 1 {
-                self.bump();
-            }
-            self.parse_block_key_scalar();
-        }
+        self.parse_content_after_node();
         self.builder.finish_node(); // KEY
 
         self.skip_whitespace();
@@ -1332,6 +1348,38 @@ mod tests {
     #[test]
     fn test_top_level_explicit_keys_are_unaffected() {
         assert_eq!(top_level_keys("? a\n: 1\nplain: v\n"), ["a", "plain"]);
+    }
+
+    /// Content after a flow collection value stays in the VALUE rather
+    /// than being left after the document.
+    #[test]
+    fn test_content_after_flow_value_stays_in_value() {
+        let parsed = YamlFile::from_str("k:\n  [q] x\n").unwrap();
+        assert_eq!(
+            crate::debug::tree_to_string(rowan::ast::AstNode::syntax(&parsed)),
+            "\
+DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"k\"
+      COLON: \":\"
+      VALUE
+        NEWLINE: \"\\\\n\"
+        INDENT: \"  \"
+        SEQUENCE
+          LEFT_BRACKET: \"[\"
+          SEQUENCE_ENTRY
+            SCALAR
+              STRING: \"q\"
+          RIGHT_BRACKET: \"]\"
+        WHITESPACE: \" \"
+        SCALAR
+          STRING: \"x\"
+      NEWLINE: \"\\\\n\"
+"
+        );
     }
 
     /// Content between a flow collection key and its colon stays in the

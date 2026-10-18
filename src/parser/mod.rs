@@ -469,6 +469,7 @@ impl Parser {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_alias();
+                    self.parse_content_after_node();
                 }
             }
             Some(SyntaxKind::TAG) => {
@@ -524,6 +525,7 @@ impl Parser {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_flow_sequence();
+                    self.parse_content_after_node();
                 }
             }
             Some(SyntaxKind::LEFT_BRACE) => {
@@ -534,6 +536,7 @@ impl Parser {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_flow_mapping();
+                    self.parse_content_after_node();
                 }
             }
             Some(SyntaxKind::INDENT) => {

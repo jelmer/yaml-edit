@@ -48,13 +48,25 @@ fn test_invalid_bracket_colon_combination() {
     // sequence followed by unexpected text). Degraded parsing recovers
     // the [::1] part as a flow sequence with one plain-scalar item
     // "::1" (colon-not-followed-by-whitespace is scalar content per
-    // YAML 1.2), and the `:8080` tail is reported rather than dropped
-    // from the value in silence.
+    // YAML 1.2), and keeps the `:8080` tail in the value as a second
+    // node, which the validator reports.
     let yaml = r#"ipv6: [::1]:8080"#;
 
     let parsed = YamlFile::parse(yaml);
-    assert_eq!(parsed.errors().len(), 1);
+    assert_eq!(parsed.errors(), Vec::<String>::new());
     let parsed = parsed.tree();
+    let violations: Vec<_> = yaml_edit::validator::Validator::new()
+        .validate_syntax(rowan::ast::AstNode::syntax(&parsed))
+        .into_iter()
+        .map(|v| (v.message, v.location.unwrap()))
+        .collect();
+    assert_eq!(
+        violations,
+        [(
+            "Value holds more than one node".to_string(),
+            "1:12".to_string()
+        )]
+    );
     let doc = parsed.document().expect("Should have document");
     let mapping = doc.as_mapping().expect("Should be mapping");
 
@@ -69,9 +81,7 @@ fn test_invalid_bracket_colon_combination() {
     let scalar = elem.as_scalar().expect("Element should be scalar");
     assert_eq!(scalar.as_string(), "::1");
 
-    assert_eq!(doc.to_string(), "ipv6: [::1]");
-    let reparsed = YamlFile::from_str(&doc.to_string()).expect("Output should be valid YAML");
-    assert!(reparsed.document().is_some());
+    assert_eq!(doc.to_string(), yaml);
 }
 
 #[test]

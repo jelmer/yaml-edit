@@ -720,3 +720,48 @@ fn node_followed_by_content_before_colon() {
         assert_eq!(violations, expected, "{yaml:?}");
     }
 }
+
+/// A complete node followed by plain scalar content on its line, with no
+/// colon after it, as in `[q] x`. The parser keeps the content next to the
+/// node, and the validator reports it.
+#[test]
+fn node_followed_by_content_on_its_line() {
+    use yaml_edit::validator::Validator;
+    for (yaml, expected) in [
+        ("k:\n  [q] x\n", ("Value holds more than one node", "2:7")),
+        ("k: [q] x\n", ("Value holds more than one node", "1:8")),
+        (
+            "k: {a: 1} x y\n",
+            ("Value holds more than one node", "1:11"),
+        ),
+        (
+            "a: &a 1\nk: *a x\n",
+            ("Value holds more than one node", "2:7"),
+        ),
+        ("[q] x\n", ("Document holds more than one node", "1:5")),
+        ("&a [q] x\n", ("Document holds more than one node", "1:8")),
+        (
+            "- [q] x\n",
+            ("Sequence entry holds more than one node", "1:7"),
+        ),
+        (
+            "k: !t [q] x\n",
+            ("Tagged node holds more than one node", "1:11"),
+        ),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
+        assert_eq!(file.to_string(), yaml);
+        assert_file_cst_ok(&file);
+        let violations: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| (v.message, v.location.unwrap()))
+            .collect();
+        let (message, at) = expected;
+        assert_eq!(
+            violations,
+            [(message.to_string(), at.to_string())],
+            "{yaml:?}"
+        );
+    }
+}

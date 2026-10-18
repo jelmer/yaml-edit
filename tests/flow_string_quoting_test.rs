@@ -12,8 +12,8 @@ use yaml_edit::{debug, Document, Mapping, Scalar, ScalarValue, Sequence, YamlVal
 fn reparsed_scalars(doc: &Document) -> Vec<String> {
     let reparsed = Document::from_str(&doc.to_string()).unwrap();
     assert_eq!(
-        debug::tree_to_string(doc.syntax()),
-        debug::tree_to_string(reparsed.syntax())
+        debug::shape_to_string(doc.syntax()),
+        debug::shape_to_string(reparsed.syntax())
     );
     reparsed
         .syntax()

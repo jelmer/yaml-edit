@@ -1872,8 +1872,8 @@ Repository: https://github.com/example/example.git
             let text = doc.to_string();
             let parsed = YamlFile::from_str(&text).unwrap().document().unwrap();
             assert_eq!(
-                crate::debug::tree_to_string(doc.syntax()),
-                crate::debug::tree_to_string(parsed.syntax()),
+                crate::debug::shape_to_string(doc.syntax()),
+                crate::debug::shape_to_string(parsed.syntax()),
                 "{text:?}"
             );
         }
@@ -1908,8 +1908,8 @@ Repository: https://github.com/example/example.git
                 crate::debug::roundtrip_ok(file.syntax()).unwrap();
                 let reparsed = YamlFile::from_str(expected).unwrap();
                 assert_eq!(
-                    crate::debug::tree_to_string(file.syntax()),
-                    crate::debug::tree_to_string(reparsed.syntax()),
+                    crate::debug::shape_to_string(file.syntax()),
+                    crate::debug::shape_to_string(reparsed.syntax()),
                     "{src:?}"
                 );
             }

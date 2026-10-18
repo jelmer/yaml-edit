@@ -16,8 +16,8 @@ fn assert_parser_shaped(file: &YamlFile, expected: &str, src: &str) {
     assert_file_cst_ok(file);
     let reparsed = YamlFile::from_str(expected).unwrap();
     assert_eq!(
-        debug::tree_to_string(file.syntax()),
-        debug::tree_to_string(reparsed.syntax()),
+        debug::shape_to_string(file.syntax()),
+        debug::shape_to_string(reparsed.syntax()),
         "{src:?}"
     );
 }

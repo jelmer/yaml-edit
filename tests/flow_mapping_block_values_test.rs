@@ -23,8 +23,8 @@ fn assert_parser_shaped(file: &YamlFile) {
     assert_file_cst_ok(file);
     let reparsed = YamlFile::from_str(&file.to_string()).unwrap();
     assert_eq!(
-        debug::tree_to_string(file.syntax()),
-        debug::tree_to_string(reparsed.syntax())
+        debug::shape_to_string(file.syntax()),
+        debug::shape_to_string(reparsed.syntax())
     );
 }
 

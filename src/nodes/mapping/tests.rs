@@ -1583,8 +1583,8 @@ fn test_set_block_value_keeps_implicit_null() {
     assert_eq!(doc.to_string(), "a: 1\ns:\n  ? q\n");
     let reparsed = YamlFile::from_str(&doc.to_string()).unwrap();
     assert_eq!(
-        debug::tree_to_string(doc.syntax()),
-        debug::tree_to_string(reparsed.syntax())
+        debug::shape_to_string(doc.syntax()),
+        debug::shape_to_string(reparsed.syntax())
     );
 }
 

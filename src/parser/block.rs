@@ -462,7 +462,11 @@ impl Parser<'_> {
             // Finish the MAPPING_ENTRY node
             self.builder.finish_node();
 
-            self.skip_ws_and_newlines();
+            if self.skip_whitespace_only_with_dedent_check(base_indent, false)
+                || self.absorb_entry_comments(base_indent, false)
+            {
+                break;
+            }
 
             // A following line at a shallower column closes this mapping --
             // it belongs to an enclosing one, not here.
@@ -1353,6 +1357,30 @@ mod tests {
     #[test]
     fn test_key_after_nested_explicit_key_block() {
         assert_eq!(top_level_keys("m:\n  ? a\n  : 1\nuf: v\n"), ["m", "uf"]);
+    }
+
+    /// A comment line before a dedented line ends a nested explicit-key
+    /// mapping as it ends an implicit-key one: it is left to the mapping
+    /// holding the next entry.
+    #[test]
+    fn test_comment_line_after_nested_explicit_key_block() {
+        use crate::lex::SyntaxKind;
+        use rowan::ast::AstNode;
+        for src in [
+            "x:\n  a: b\n  # c\ny: 1\n",
+            "x:\n  ? a\n  : b\n  # c\ny: 1\n",
+            "x:\n  ? a\n  : b\n\n  # c\n  # d\n\ny: 1\n",
+        ] {
+            let file = YamlFile::from_str(src).unwrap();
+            let root = file.document().unwrap().as_mapping().unwrap();
+            let comments: Vec<_> = root
+                .syntax()
+                .children_with_tokens()
+                .filter(|c| c.kind() == SyntaxKind::COMMENT)
+                .collect();
+            assert_ne!(comments, vec![], "{src:?}");
+            assert_eq!(top_level_keys(src), ["x", "y"], "{src:?}");
+        }
     }
 
     #[test]

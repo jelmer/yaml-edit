@@ -313,6 +313,29 @@ fn unterminated_explicit_key_entry_gets_line_break_in_mapping() {
     );
 }
 
+/// A block sequence key may start at the column of its `?` on the line
+/// after a comment, but a key it is renamed to has to be indented past it.
+#[test]
+fn key_after_comment_renamed_from_sequence_at_question_column() {
+    let rename_first = |m: &Mapping| {
+        let key = m.keys().next().unwrap();
+        assert!(m.rename_key(key, "new"));
+    };
+    assert_eq!(
+        edit_root("? # c\n- a\n: 1\n", rename_first),
+        "? # c\n  new\n: 1\n"
+    );
+    assert_eq!(
+        edit_root("? # c\n - a\n: 1\n", rename_first),
+        "? # c\n new\n: 1\n"
+    );
+    let file = YamlFile::from_str("x:\n  ? # c\n  - a\n  : 1\n").unwrap();
+    let doc = file.document().unwrap();
+    rename_first(&doc.as_mapping().unwrap().get_mapping("x").unwrap());
+    assert_parser_shaped(&file);
+    assert_eq!(file.to_string(), "x:\n  ? # c\n    new\n  : 1\n");
+}
+
 /// A block collection key ending the input has its line break, once the
 /// `:` line follows it, in its last entry, where the parser puts it.
 #[test]

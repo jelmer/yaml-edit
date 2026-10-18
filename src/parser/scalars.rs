@@ -964,9 +964,10 @@ impl Parser {
             // `a\n[:]\n` the colon is the flow mapping's, and the line
             // continues the scalar `a [:]`. Only the colon after the closing
             // bracket would make the line a key of ours.
-            if self.tokens.get(peek_idx).is_some_and(|(kind, _)| {
+            let after_flow = self.tokens.get(peek_idx).is_some_and(|(kind, _)| {
                 matches!(kind, SyntaxKind::LEFT_BRACKET | SyntaxKind::LEFT_BRACE)
-            }) {
+            });
+            if after_flow {
                 let mut depth = 0usize;
                 // `tokens` is in reverse order, so walking the index down
                 // reads the line forwards. An unbalanced collection runs out
@@ -986,12 +987,13 @@ impl Parser {
                 }
             }
 
-            // Skip any whitespace after the content
-            while self
-                .tokens
-                .get(check_idx)
-                .is_some_and(|(kind, _)| *kind == SyntaxKind::WHITESPACE)
-            {
+            // Skip any whitespace after the content. After a flow
+            // collection, also skip the plain scalar content that the key
+            // keeps before its colon (`[x] y: z`), as is_complex_mapping_key
+            // does.
+            while self.tokens.get(check_idx).is_some_and(|(kind, _)| {
+                *kind == SyntaxKind::WHITESPACE || (after_flow && is_plain_scalar_kind(*kind))
+            }) {
                 if check_idx == 0 {
                     break;
                 }

@@ -603,24 +603,15 @@ impl Parser {
             _ => SyntaxKind::RIGHT_BRACE,
         };
         let mut depth = 0usize;
-        let mut found_close = false;
-        for kind in rest.skip(1) {
-            if !found_close {
-                if kind == start_kind {
-                    depth += 1;
-                } else if kind == close_kind {
-                    if depth == 0 {
-                        found_close = true;
-                    } else {
-                        depth -= 1;
-                    }
+        let mut rest = rest.skip(1);
+        while let Some(kind) = rest.next() {
+            if kind == start_kind {
+                depth += 1;
+            } else if kind == close_kind {
+                if depth == 0 {
+                    return reaches_key_colon(rest);
                 }
-            } else {
-                match kind {
-                    SyntaxKind::COLON => return true,
-                    SyntaxKind::WHITESPACE => continue,
-                    _ => return false,
-                }
+                depth -= 1;
             }
         }
         false
@@ -644,26 +635,15 @@ impl Parser {
             _ => return false,
         };
 
-        let mut found_close = false;
-        for kind in self.upcoming_tokens() {
-            if !found_close {
-                if Some(kind) == start_kind {
-                    depth += 1;
-                } else if kind == close_kind {
-                    if depth == 0 {
-                        // Found matching close
-                        found_close = true;
-                    } else {
-                        depth -= 1;
-                    }
+        let mut rest = self.upcoming_tokens();
+        while let Some(kind) = rest.next() {
+            if Some(kind) == start_kind {
+                depth += 1;
+            } else if kind == close_kind {
+                if depth == 0 {
+                    return reaches_key_colon(rest);
                 }
-            } else {
-                // We've found the closing bracket/brace, now look for colon
-                match kind {
-                    SyntaxKind::WHITESPACE | SyntaxKind::INDENT => continue,
-                    SyntaxKind::COLON => return true,
-                    _ => return false,
-                }
+                depth -= 1;
             }
         }
         false
@@ -681,6 +661,12 @@ impl Parser {
         // it's clearly a structured value, otherwise parse as scalar.
         match self.current() {
             Some(SyntaxKind::DASH) if !self.in_flow_context => self.parse_sequence(),
+            // As with a flow collection below, an alias the colon of a key
+            // follows (`k: *a : v`, `k: *a x: v`) opens a mapping, which the
+            // validator reports, rather than ending the entry mid-line.
+            Some(SyntaxKind::REFERENCE) if !self.in_flow_context && self.is_mapping_key() => {
+                self.parse_mapping_with_base_indent(base_indent);
+            }
             Some(SyntaxKind::REFERENCE) => self.parse_alias(),
             Some(SyntaxKind::TAG) => self.parse_tagged_value_as_mapping_value(base_indent),
             Some(SyntaxKind::QUESTION) => {
@@ -905,16 +891,6 @@ impl Parser {
             return true;
         }
 
-        // An alias is a whole key by itself: in `*a x: v` the colon follows
-        // `x`, so `*a` is not a key. The scan below never looks at the
-        // current token, so it would accept this.
-        if self.current() == Some(SyntaxKind::REFERENCE) {
-            return self
-                .upcoming_tokens()
-                .find(|kind| *kind != SyntaxKind::WHITESPACE)
-                == Some(SyntaxKind::COLON);
-        }
-
         // Look ahead to see if there's a colon after the current token.
         // Plain scalars can contain spaces, so a key may span multiple scalar
         // tokens separated by whitespace before the terminating colon
@@ -990,21 +966,7 @@ impl Parser {
         } else if self.current() == Some(SyntaxKind::LEFT_BRACE) {
             self.parse_flow_mapping();
         } else if self.current().is_some_and(is_plain_scalar_kind) {
-            self.builder.start_node(SyntaxKind::SCALAR.into());
-            self.bump();
-            // Plain scalars can contain spaces, so absorb any following
-            // whitespace + scalar tokens until we reach the terminating colon
-            // (e.g. `abc cba: value`).
-            while self.current() == Some(SyntaxKind::WHITESPACE)
-                && self
-                    .upcoming_tokens()
-                    .next()
-                    .is_some_and(is_plain_scalar_kind)
-            {
-                self.bump(); // WHITESPACE inside the plain scalar
-                self.bump(); // next scalar segment
-            }
-            self.builder.finish_node(); // SCALAR
+            self.parse_block_key_scalar();
         } else if self.current() == Some(SyntaxKind::COLON) {
             // No key before the colon: an explicit null, spelled the same
             // zero-width way as an implicit null value.
@@ -1012,6 +974,22 @@ impl Parser {
             self.builder.token(SyntaxKind::NULL.into(), "");
             self.builder.finish_node(); // SCALAR
         }
+    }
+
+    /// A plain scalar key, which may contain spaces: `abc cba: value`.
+    fn parse_block_key_scalar(&mut self) {
+        self.builder.start_node(SyntaxKind::SCALAR.into());
+        self.bump();
+        while self.current() == Some(SyntaxKind::WHITESPACE)
+            && self
+                .upcoming_tokens()
+                .next()
+                .is_some_and(is_plain_scalar_kind)
+        {
+            self.bump(); // WHITESPACE inside the plain scalar
+            self.bump(); // next scalar segment
+        }
+        self.builder.finish_node(); // SCALAR
     }
 
     fn parse_mapping_key_value_pair(&mut self, base_indent: usize) {
@@ -1025,6 +1003,17 @@ impl Parser {
         self.builder.start_node(SyntaxKind::KEY.into());
 
         self.parse_block_key_node();
+        // Content between a complete node and the colon, as in `[q] x: v`
+        // or `*a x: v`, is not part of a valid key. Keep it in the KEY as a
+        // second node, which the validator reports, rather than ending the
+        // entry before it and starting another on the same line.
+        let whitespace = usize::from(self.current() == Some(SyntaxKind::WHITESPACE));
+        if self.peek_kind(whitespace).is_some_and(is_plain_scalar_kind) {
+            if whitespace == 1 {
+                self.bump();
+            }
+            self.parse_block_key_scalar();
+        }
         self.builder.finish_node(); // KEY
 
         self.skip_whitespace();
@@ -1196,6 +1185,24 @@ impl Parser {
     }
 }
 
+/// Whether `kinds`, the tokens after a complete key node such as a flow
+/// collection, reach the key's colon on the same line.
+///
+/// Plain scalar content in between is not part of a valid key, but the
+/// parser keeps it in the key as a second node, which the validator
+/// reports: `[q] x: v`.
+fn reaches_key_colon(kinds: impl Iterator<Item = SyntaxKind>) -> bool {
+    for kind in kinds {
+        match kind {
+            SyntaxKind::COLON => return true,
+            SyntaxKind::WHITESPACE | SyntaxKind::INDENT => continue,
+            kind if is_plain_scalar_kind(kind) => continue,
+            _ => return false,
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use crate::yaml::YamlFile;
@@ -1325,5 +1332,45 @@ mod tests {
     #[test]
     fn test_top_level_explicit_keys_are_unaffected() {
         assert_eq!(top_level_keys("? a\n: 1\nplain: v\n"), ["a", "plain"]);
+    }
+
+    /// Content between a flow collection key and its colon stays in the
+    /// KEY, so `x: v` does not become a second entry on the same line.
+    #[test]
+    fn test_content_after_flow_key_stays_in_key() {
+        let parsed = YamlFile::from_str("k:\n  [q] x: v\n").unwrap();
+        assert_eq!(
+            crate::debug::tree_to_string(rowan::ast::AstNode::syntax(&parsed)),
+            "\
+DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"k\"
+      COLON: \":\"
+      VALUE
+        NEWLINE: \"\\\\n\"
+        INDENT: \"  \"
+        MAPPING
+          MAPPING_ENTRY
+            KEY
+              SEQUENCE
+                LEFT_BRACKET: \"[\"
+                SEQUENCE_ENTRY
+                  SCALAR
+                    STRING: \"q\"
+                RIGHT_BRACKET: \"]\"
+              WHITESPACE: \" \"
+              SCALAR
+                STRING: \"x\"
+            COLON: \":\"
+            WHITESPACE: \" \"
+            VALUE
+              SCALAR
+                STRING: \"v\"
+            NEWLINE: \"\\\\n\"
+"
+        );
     }
 }

@@ -439,8 +439,8 @@ impl Validator {
             SyntaxKind::MAPPING_ENTRY => {
                 // Check for multiline implicit keys
                 self.check_implicit_key_multiline(node, violations);
-                // Check for block sequence on same line as mapping key
-                self.check_sequence_on_same_line_as_key(node, violations);
+                // Check for block collection on same line as mapping key
+                self.check_collection_on_same_line_as_key(node, violations);
             }
             SyntaxKind::SCALAR => {
                 // Check for invalid escape sequences in quoted strings
@@ -2509,15 +2509,15 @@ impl Validator {
         }
     }
 
-    /// Check for block sequence starting on same line as mapping key
+    /// Check for block sequence or mapping starting on same line as mapping key
     ///
-    /// YAML 1.2 spec section 6.3.1 requires block sequences to start on a new line
-    /// after the mapping key and colon. Example of invalid YAML:
+    /// YAML 1.2 spec section 6.3.1 requires block collections to start on a new
+    /// line after the mapping key and colon. Example of invalid YAML:
     /// ```yaml
     /// key: - a
     ///      - b
     /// ```
-    fn check_sequence_on_same_line_as_key(
+    fn check_collection_on_same_line_as_key(
         &self,
         entry_node: &SyntaxNode,
         violations: &mut Vec<Violation>,
@@ -2539,7 +2539,7 @@ impl Validator {
         // If there's no value, nothing to check
         let Some(value) = value_node else { return };
 
-        // An explicit key's value may be a compact sequence on the `:` line
+        // An explicit key's value may be a compact collection on the `:` line
         // (`? k\n: - one\n  - two\n`), which YAML 1.2 allows and PyYAML
         // accepts. Only a plain key's `:` requires the line break, so this
         // rule does not apply to an entry introduced by `?`.
@@ -2551,36 +2551,25 @@ impl Validator {
             return;
         }
 
-        // Check if the value is a block sequence
-        let mut sequence_node: Option<SyntaxNode> = None;
-        for child in value.children() {
-            if child.kind() == SyntaxKind::SEQUENCE {
-                sequence_node = Some(child);
-                break;
-            }
-        }
-
-        let Some(sequence) = sequence_node else {
+        // Only a block collection has to start on a new line, and only in
+        // block context: `[k: ? a]` holds a mapping without braces.
+        let Some(collection) = value
+            .children()
+            .find(|c| matches!(c.kind(), SyntaxKind::SEQUENCE | SyntaxKind::MAPPING))
+        else {
             return;
         };
-
-        // Check if this is a block sequence (not flow)
-        let first_token = sequence.first_token();
-        let is_flow_sequence = first_token
-            .as_ref()
-            .is_some_and(|t| t.kind() == crate::SyntaxKind::LEFT_BRACKET);
-
-        if is_flow_sequence {
-            return; // Flow sequences can be on same line
+        if starts_a_flow_collection(&collection) || in_flow_collection(entry_node) {
+            return;
         }
 
-        // Check for a NEWLINE between key (or COLON) and the sequence
+        // Check for a NEWLINE between key (or COLON) and the collection
 
         // Find the COLON token that separates key and value
         let mut found_colon = false;
         let mut has_newline = false;
 
-        // The parser puts the line break inside the VALUE when the sequence
+        // The parser puts the line break inside the VALUE when the collection
         // is indentless (`k:\n- a\n`), where the entries sit at the key's
         // own column. That is valid YAML, so look there first; the scan
         // below only sees tokens at the MAPPING_ENTRY level.
@@ -2590,7 +2579,7 @@ impl Validator {
                     has_newline = true;
                     break;
                 }
-                rowan::NodeOrToken::Node(ref n) if n == &sequence => break,
+                rowan::NodeOrToken::Node(ref n) if n == &collection => break,
                 _ => {}
             }
         }
@@ -2609,9 +2598,9 @@ impl Validator {
                     }
                 }
 
-                // Stop if we reach the sequence node
+                // Stop if we reach the collection node
                 if let rowan::NodeOrToken::Node(n) = &element {
-                    if n == &sequence {
+                    if n == &collection {
                         break;
                     }
                 }
@@ -2620,12 +2609,17 @@ impl Validator {
             }
         }
 
-        // If there's no newline between the colon and the sequence, it's invalid
+        // If there's no newline between the colon and the collection, it's invalid
         if !has_newline {
+            let what = if collection.kind() == SyntaxKind::MAPPING {
+                "mapping"
+            } else {
+                "sequence"
+            };
             violations.push(Violation::error_at(
                 Rule::Other,
-                sequence.text_range(),
-                "Block sequence cannot start on same line as mapping key",
+                collection.text_range(),
+                format!("Block {what} cannot start on same line as mapping key"),
             ));
         }
     }
@@ -4452,6 +4446,13 @@ mod tests {
                 "k: - a\n",
                 (
                     "Block sequence cannot start on same line as mapping key",
+                    "1:4",
+                ),
+            ),
+            (
+                "k: [q]: v\n",
+                (
+                    "Block mapping cannot start on same line as mapping key",
                     "1:4",
                 ),
             ),

@@ -1939,4 +1939,19 @@ mod tests {
         }
         assert_eq!(registry.register("!a-1!c", JsonHandler), Ok(()));
     }
+
+    #[test]
+    fn test_json_handler_spaces_and_false() {
+        let handler = JsonHandler;
+        assert_eq!(
+            handler.serialize(&YamlValue::scalar("a b")),
+            Ok("\"a b\"".to_string())
+        );
+        assert_eq!(handler.validate("\"a b\""), Ok(()));
+        assert_eq!(handler.validate("false"), Ok(()));
+        assert_eq!(
+            handler.deserialize("false"),
+            Ok(YamlValue::Scalar(ScalarValue::from(false)))
+        );
+    }
 }

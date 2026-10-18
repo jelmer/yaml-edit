@@ -461,7 +461,7 @@ pub(crate) fn scalar_canonical(node: &SyntaxNode) -> Option<(String, String)> {
 
 /// Spec equality of two CST nodes. An alias equals nothing, as it cannot
 /// be followed here.
-pub(crate) fn node_eq(a: &SyntaxNode, b: &SyntaxNode) -> bool {
+fn node_eq(a: &SyntaxNode, b: &SyntaxNode) -> bool {
     match (node_identity(a, None), node_identity(b, None)) {
         (Ok(Some(a)), Ok(Some(b))) => a == b,
         _ => false,

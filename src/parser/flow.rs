@@ -51,6 +51,21 @@ impl Parser<'_> {
         self.parse_scalar();
     }
 
+    /// Step from a flow `?` to its key, which may start on a later line.
+    /// The line break after an empty key (`?\n}`) is left to follow it.
+    fn skip_to_explicit_key(&mut self) {
+        match self.next_significant_kind() {
+            None
+            | Some(
+                SyntaxKind::COMMA
+                | SyntaxKind::COLON
+                | SyntaxKind::RIGHT_BRACE
+                | SyntaxKind::RIGHT_BRACKET,
+            ) => self.skip_whitespace(),
+            Some(_) => self.skip_ws_and_newlines(),
+        }
+    }
+
     /// Parse an implicit flow mapping (key: value without braces).
     /// Used inside flow sequences: [ key: value ] is valid YAML.
     fn parse_implicit_flow_mapping(&mut self) {
@@ -63,7 +78,7 @@ impl Parser<'_> {
         self.builder.start_node(SyntaxKind::KEY.into());
         if self.current() == Some(SyntaxKind::QUESTION) {
             self.bump();
-            self.skip_whitespace();
+            self.skip_to_explicit_key();
         }
         if matches!(
             self.next_significant_kind(),
@@ -288,7 +303,7 @@ impl Parser<'_> {
         // Handle explicit key indicator (?) in flow context
         if self.current() == Some(SyntaxKind::QUESTION) {
             self.bump(); // consume '?'
-            self.skip_whitespace();
+            self.skip_to_explicit_key();
         }
 
         // Missing key (`{,}`, `{: v}`, `{:}`) is an implicit-null

@@ -5,6 +5,7 @@
 
 #![allow(dead_code)]
 
+pub mod edit_checks;
 pub mod mutation_checks;
 
 use rowan::ast::AstNode;

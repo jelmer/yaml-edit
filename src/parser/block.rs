@@ -121,11 +121,7 @@ impl Parser {
             }
 
             // No mapping key found - exit
-            if !self.is_mapping_key()
-                && !self.is_complex_mapping_key()
-                && !(matches!(self.current(), Some(SyntaxKind::ANCHOR | SyntaxKind::TAG))
-                    && self.is_complex_mapping_key_after_annotations())
-            {
+            if !self.starts_block_mapping_entry() {
                 break;
             }
 
@@ -512,7 +508,7 @@ impl Parser {
             }
 
             // Check if there are more entries
-            if self.current() != Some(SyntaxKind::QUESTION) && !self.is_mapping_key() {
+            if !self.starts_block_mapping_entry() {
                 break;
             }
         }
@@ -520,7 +516,7 @@ impl Parser {
         // Continue parsing regular mapping entries if any
         while self.current().is_some()
             && !self.is_at_dedented_position(base_indent)
-            && self.is_mapping_key()
+            && self.starts_block_mapping_entry()
         {
             let tokens_before_iter = self.tokens.len();
             // is_mapping_key() returns true for QUESTION, but
@@ -601,6 +597,16 @@ impl Parser {
         self.scalar_continuation_floor = outer_floor;
         self.mapping_value_column = outer_value_column;
         self.builder.finish_node();
+    }
+
+    /// Whether the current token opens an entry of a block mapping: an
+    /// implicit key, possibly a flow collection (`[a, b]: 2`) with its
+    /// properties, or an explicit one.
+    fn starts_block_mapping_entry(&self) -> bool {
+        self.is_mapping_key()
+            || self.is_complex_mapping_key()
+            || (matches!(self.current(), Some(SyntaxKind::ANCHOR | SyntaxKind::TAG))
+                && self.is_complex_mapping_key_after_annotations())
     }
 
     /// As [`is_complex_mapping_key`](Self::is_complex_mapping_key), reading
@@ -1430,6 +1436,27 @@ mod tests {
         let doc = file.document().expect("should have a document");
         assert_eq!(crate::validator::Validator::new().validate(&doc), vec![]);
         crate::YamlValue::from_document(&doc).expect("should convert")
+    }
+
+    /// A flow collection key after an explicit-key entry is the same
+    /// mapping's next entry.
+    #[test]
+    fn test_flow_collection_key_after_explicit_key_entry() {
+        for (src, expected) in [
+            ("? a\n: 1\n[a, b]: 2\n", "{a: 1, [a, b]: 2}"),
+            ("? a\n[a, b]: 2\n", "{a: , [a, b]: 2}"),
+            ("? a\n: 1\n{a: 1}: 2\n", "{a: 1, {a: 1}: 2}"),
+            ("? a\n: 1\n&x [a, b]: 2\n", "{a: 1, &x [a, b]: 2}"),
+            ("? a\n: 1\n!!seq [a, b]: 2\n", "{a: 1, !!seq [a, b]: 2}"),
+            ("- ? a\n  : 1\n  [a, b]: 2\n", "[{a: 1, [a, b]: 2}]"),
+            ("k:\n  ? a\n  : 1\n  [a, b]: 2\n", "{k: {a: 1, [a, b]: 2}}"),
+            (
+                "? a\n: 1\n[a, b]: 2\n? c\n: 3\n[d]: 4\n",
+                "{a: 1, [a, b]: 2, c: 3, [d]: 4}",
+            ),
+        ] {
+            assert_eq!(checked_value(src), checked_value(expected), "{src:?}");
+        }
     }
 
     /// A tag ending a compact mapping's first line annotates a null when the

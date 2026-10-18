@@ -1618,13 +1618,47 @@ impl Mapping {
                 token.detach();
             }
         }
+        let old_ended_line = crate::yaml::ends_with_newline(&old_key);
         let i = old_key.index();
         node.splice_children(i..i + 1, built.children_with_tokens().collect::<Vec<_>>());
         if make_explicit {
             hand_line_break_to_mapping(node);
         }
+        if has_child_token(node, |k| k == SyntaxKind::QUESTION) {
+            Self::settle_explicit_key_line(&new_key, old_ended_line);
+        }
         crate::nodes::separate_key_from_colon(node);
         new_key
+    }
+
+    /// Fix up the line of a block explicit key whose content was replaced.
+    ///
+    /// A block key (`? - a\n`) ends its own line, while the entry holds the
+    /// line break after an inline one (`? a` NEWLINE). An empty key may
+    /// follow the `?` directly, a non-empty one needs a space.
+    fn settle_explicit_key_line(key: &SyntaxNode, old_ended_line: bool) {
+        let entry = key.parent().expect("a KEY is in an entry");
+        let before = key.prev_sibling_or_token();
+        if before
+            .as_ref()
+            .is_some_and(|c| c.kind() == SyntaxKind::QUESTION)
+            && !key.text().is_empty()
+        {
+            let i = key.index();
+            entry.splice_children(i..i, vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()]);
+        }
+        let ends_line = crate::yaml::ends_with_newline(key);
+        let after = key.next_sibling_or_token();
+        let newline_after = after.as_ref().filter(|c| c.kind() == SyntaxKind::NEWLINE);
+        if ends_line {
+            if let Some(newline) = newline_after {
+                let i = newline.index();
+                entry.splice_children(i..i + 1, vec![]);
+            }
+        } else if old_ended_line && newline_after.is_none() {
+            let i = key.index() + 1;
+            entry.splice_children(i..i, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+        }
     }
 
     /// Remove every entry other than `keep` whose key matches `key`.
@@ -1646,11 +1680,9 @@ impl Mapping {
     /// Rebuild an entry's KEY node around `new_key`, keeping the layout
     /// tokens the old one carried.
     ///
-    /// An explicit key (`? k\n  : v`) puts the `:` on its own line, and the
-    /// parser keeps that line break and indent inside KEY. They describe the
-    /// entry's layout rather than the key, so they carry over; dropped, the
-    /// entry collapses onto one line and reparses as one node. In a flow
-    /// mapping the `?` itself sits inside KEY, so it carries over too.
+    /// In a flow mapping the `?` sits inside KEY, so it carries over, as do
+    /// any tokens after the key's content. The line break before block
+    /// content (`?\n- a`) goes, as the new key is written inline.
     ///
     /// The old key's anchor stays; failing that the key takes `anchor`, or
     /// the anchor before a `new_key` node where it was copied from.
@@ -1686,7 +1718,8 @@ impl Mapping {
         }
         for trailing in old
             .children_with_tokens()
-            .skip_while(|c| !matches!(c.as_token().map(|t| t.kind()), Some(SyntaxKind::NEWLINE)))
+            .skip_while(|c| c.as_token().is_some())
+            .skip(1)
             .filter_map(|c| c.into_token())
         {
             builder.token(trailing.kind().into(), trailing.text());

@@ -133,44 +133,38 @@ impl Mapping {
             self.set(new_key, new_value);
             return true;
         }
-        // Given its own value, the entry moves as it is, comments and
-        // anchor included, as reorder_fields would move it.
-        let own_value = existing.filter(|e| {
-            let value = e.value().and_then(|v| v.children().next());
-            value.is_some() && value.as_ref() == new_value.as_node()
-        });
-        if let Some(old) = own_value {
-            let mut order: Vec<SyntaxNode> = self
-                .entries()
-                .map(|e| e.0)
-                .filter(|e| *e != old.0)
-                .collect();
+        if let Some(existing) = existing {
+            // Given its own value, the entry moves as it is, comments and
+            // anchor included, as reorder_fields would move it. Given
+            // another, it is replaced first, its old value going as with
+            // remove, so that its key moves the same way.
+            let value = existing.value().and_then(|v| v.children().next());
+            let own_value = value.is_some() && value.as_ref() == new_value.as_node();
+            let old = if own_value {
+                existing.0
+            } else {
+                self.replace_entry(&existing.0, new_key, new_value, false)
+            };
+            let mut order: Vec<SyntaxNode> =
+                self.entries().map(|e| e.0).filter(|e| *e != old).collect();
             let at = order
                 .iter()
                 .position(|e| e == target.syntax())
                 .expect("the target is in its mapping");
-            order.insert(at + usize::from(after), old.0);
+            order.insert(at + usize::from(after), old);
             self.arrange_entries(&order);
             return true;
         }
         let flow_context = self.is_flow_style();
-        // Decided before the old entry goes, as that may be the only one
-        // setting the mapping's style.
-        let use_explicit_keys = self.uses_explicit_keys();
-        let key_indent = self.detect_indentation_level();
         let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
-        let target = target.syntax().clone();
-        // Moving an entry is not appending one: the end of the mapping
-        // keeps its trailing comma, or its lack of a final line break.
-        let layout = self.slot_layout();
-        // Contract: move, not duplicate. Drop any prior entry with the
-        // same key first.
-        let moved = self.remove(new_key).is_some();
-        let entry = MappingEntry::new_in(new_key, new_value, flow, use_explicit_keys, key_indent);
-        self.insert_next_to(&entry.0, target, flow_context, after);
-        if moved {
-            self.restore_slot_layout(&layout);
-        }
+        let entry = MappingEntry::new_in(
+            new_key,
+            new_value,
+            flow,
+            self.uses_explicit_keys(),
+            self.detect_indentation_level(),
+        );
+        self.insert_next_to(&entry.0, target.syntax().clone(), flow_context, after);
         true
     }
 
@@ -187,12 +181,13 @@ impl Mapping {
 
     /// Move a key-value pair to immediately after an existing key.
     ///
-    /// If `new_key` already exists in the mapping, it is first **removed** from its
-    /// current position and then re-inserted after `after_key` with the new value -
-    /// so the key ends up at the requested position regardless of where it was before.
-    /// Passing the entry's current value, as [`get`](Self::get) returns it,
-    /// moves the entry as it is, comments and anchor included; see
-    /// [`reorder_fields`](Self::reorder_fields) for what happens to aliases.
+    /// If `new_key` already exists in the mapping, that entry is rebuilt with the
+    /// new value, the old one going as with [`remove`](Self::remove), and moved
+    /// after `after_key` - so the key ends up at the requested position regardless
+    /// of where it was before. Passing the entry's current value, as
+    /// [`get`](Self::get) returns it, moves the entry as it is, comments and
+    /// anchor included. Either way the entry moves as with
+    /// [`reorder_fields`](Self::reorder_fields), which says what happens to aliases.
     ///
     /// If `after_key` is not found, returns `false` and leaves the mapping unchanged.
     /// Returns `true` on success.
@@ -210,10 +205,8 @@ impl Mapping {
 
     /// Move a key-value pair to immediately before an existing key.
     ///
-    /// If `new_key` already exists in the mapping, it is first **removed** from its
-    /// current position and then re-inserted before `before_key` with the new value.
-    /// Passing the entry's current value moves it as it is, as with
-    /// [`move_after`](Self::move_after).
+    /// If `new_key` already exists in the mapping, that entry is moved before
+    /// `before_key`, with the new value, as with [`move_after`](Self::move_after).
     ///
     /// If `before_key` is not found, returns `false` and leaves the mapping unchanged.
     /// Returns `true` on success.

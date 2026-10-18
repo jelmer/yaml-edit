@@ -274,3 +274,22 @@ fn move_with_new_value() {
         assert_edited(&doc, expected);
     }
 }
+
+#[test]
+fn move_with_new_value_keeps_position_layout() {
+    // The entry moves as it would with its own value, comment lines and
+    // blank lines included.
+    for (source, expected) in [
+        (
+            "a: 1\n# before b\nb: 2\nc: 3\n",
+            "b: 2\nc: 3\na: 5\n# before b\n",
+        ),
+        ("a: 1\n\nb: 2\n\nc: 3\n", "b: 2\n\nc: 3\n\na: 5\n"),
+        ("a: 1  # c\nb: 2\nc: 3", "b: 2\nc: 3\na: 5"),
+        ("{a: 1, b: 2, c: 3,}\n", "{b: 2, c: 3, a: 5,}\n"),
+    ] {
+        let doc = Document::from_str(source).unwrap();
+        assert!(root(&doc).move_after("c", "a", 5));
+        assert_edited(&doc, expected);
+    }
+}

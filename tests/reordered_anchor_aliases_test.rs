@@ -29,7 +29,7 @@ fn assert_same_values(doc: &Document, source: &str) {
 
 #[test]
 fn reorder_fields_moves_anchor_to_first_alias() {
-    let cases: [(&str, &[&str], &str); 13] = [
+    let cases: [(&str, &[&str], &str); 17] = [
         (
             "a: &x 1\nb: *x\nc: 2\n",
             &["b", "a"],
@@ -80,8 +80,17 @@ fn reorder_fields_moves_anchor_to_first_alias() {
             &["derived"],
             "derived:\n  <<: &x {a: 1}\n  b: 2\nbase: *x\n",
         ),
-        // An alias cannot go in a key, so the old key keeps its anchor.
-        ("&k a: 1\nb: *k\n", &["b"], "b: &k a\n&k a: 1\n"),
+        // A key becomes an alias as a value does.
+        ("&k a: 1\nb: *k\n", &["b"], "b: &k a\n*k : 1\n"),
+        ("!t &k a: 1\nb: *k\n", &["b"], "b: !t &k a\n*k : 1\n"),
+        ("{&k a: 1, b: *k}\n", &["b"], "{b: &k a, *k : 1}\n"),
+        ("? &k a\n: 1\nb: *k\n", &["b"], "b: &k a\n? *k\n: 1\n"),
+        // An alias key takes the anchor as an alias value does.
+        (
+            "a: &a 1\nb: {*a : 2}\n",
+            &["b", "a"],
+            "b: {&a 1 : 2}\na: *a\n",
+        ),
     ];
     for (source, order, expected) in cases {
         let doc = Document::from_str(source).unwrap();
@@ -157,7 +166,7 @@ fn move_keeps_block_and_tagged_values() {
         ),
         ("a: &x 1\nb: 2\nc: *x\n", "b", "b: 2\na: &x 1\nc: *x\n"),
         ("a: &x 1\nb: 2\nc: 3\n", "b", "b: 2\na: &x 1\nc: 3\n"),
-        ("&k a: 1\nb: *k\nc: 2\n", "c", "b: &k a\nc: 2\n&k a: 1\n"),
+        ("&k a: 1\nb: *k\nc: 2\n", "c", "b: &k a\nc: 2\n*k : 1\n"),
     ];
     for (source, after, expected) in cases {
         let doc = Document::from_str(source).unwrap();
@@ -206,4 +215,75 @@ fn anchor_name_with_colon() {
     let mapping = doc.as_mapping().unwrap();
     assert!(mapping.move_after("c", "a", mapping.get("a").unwrap()));
     assert_edited(&doc, "b: &a: 1\nc: 2\na: *a:\n");
+}
+
+/// The alias key `*a`, read from another document so that only its name
+/// ties it to an entry.
+fn alias_key() -> yaml_edit::YamlNode {
+    let doc = Document::from_str("- *a\n").unwrap();
+    doc.as_sequence().unwrap().get(0).unwrap()
+}
+
+#[test]
+fn moving_alias_key_takes_anchor() {
+    for source in ["a: &a 1\n*a : 2\nc: 3\n", "{a: &a 1, *a : 2, c: 3}\n"] {
+        let doc = Document::from_str(source).unwrap();
+        assert!(doc.reorder_fields([alias_key()]));
+        assert_same_values(&doc, source);
+
+        let doc = Document::from_str(source).unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let value = mapping.get(alias_key()).unwrap();
+        assert!(mapping.move_before("a", alias_key(), value));
+        assert_same_values(&doc, source);
+
+        let doc = Document::from_str(source).unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        assert!(mapping.move_after("c", "a", mapping.get("a").unwrap()));
+        assert_same_values(&doc, source);
+    }
+
+    let doc = Document::from_str("a: &a 1\n*a : 2\nc: 3\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(mapping.move_before("a", alias_key(), mapping.get(alias_key()).unwrap()));
+    assert_edited(&doc, "&a 1 : 2\na: *a\nc: 3\n");
+
+    let doc = Document::from_str("{a: &a 1, *a : 2, c: 3}\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(mapping.move_after("c", "a", mapping.get("a").unwrap()));
+    assert_edited(&doc, "{&a 1 : 2, c: 3, a: *a}\n");
+}
+
+#[test]
+fn removing_anchor_of_alias_key_copies_it() {
+    let cases = [
+        ("a: &a 1\n*a : 2\nc: 3\n", "&a 1 : 2\nc: 3\n"),
+        ("{a: &a 1, *a : 2, c: 3}\n", "{&a 1 : 2, c: 3}\n"),
+        ("&k a: 1\nb: 2\n*k : 3\n", "b: 2\n&k a : 3\n"),
+    ];
+    for (source, expected) in cases {
+        let doc = Document::from_str(source).unwrap();
+        assert!(doc.as_mapping().unwrap().remove("a").is_some());
+        assert_edited(&doc, expected);
+    }
+}
+
+#[test]
+fn move_with_new_value_keeps_alias_key_resolving() {
+    let cases = [
+        ("a: &a 1\n*a : 2\nc: 3\n", "&a 1 : 5\na: *a\nc: 3\n"),
+        ("{a: &a 1, *a : 2, c: 3}\n", "{&a 1 : 5, a: *a, c: 3}\n"),
+    ];
+    for (source, expected) in cases {
+        let doc = Document::from_str(source).unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        assert!(mapping.move_before("a", alias_key(), 5));
+        assert_edited(&doc, expected);
+    }
+
+    // The old value still goes as with remove.
+    let doc = Document::from_str("a: &a 1\n*a : 2\nb: *a\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(mapping.move_after("b", "a", 5));
+    assert_edited(&doc, "&a 1 : 2\nb: *a\na: 5\n");
 }

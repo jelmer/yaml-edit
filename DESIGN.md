@@ -402,12 +402,16 @@ Moving entries (`reorder_fields`, and `move_after`/`move_before` given the
 entry's own value) keeps every alias resolving to the node it did. An alias
 that ends up before that node becomes a copy of it, anchor included, and
 the node becomes an alias to the copy: `a: &x 1\nb: *x\n` reordered to
-`b, a` gives `b: &x 1\na: *x\n`. The node stays as it is, a copy with its
-own anchor, if it is a key, holds other anchors, or another anchor with
-its name comes between. An alias that ends up after another anchor with
+`b, a` gives `b: &x 1\na: *x\n`. Keys are no different: `a: &a 1\n*a : 2\n`
+with `*a` moved first gives `&a 1 : 2\na: *a\n`, and `&k a: 1\nb: *k\n`
+reordered to `b, a` gives `b: &k a\n*k : 1\n`. The node stays as it is, a
+copy with its own anchor, if it holds other anchors, or another anchor
+with its name comes between. An alias that ends up after another anchor with
 its name becomes a copy, with the anchor only if later aliases need it.
-`move_after`/`move_before` given another value remove the old entry as
-`remove` does. Sequences have no reordering methods.
+`move_after`/`move_before` given another value rebuild the entry with it
+in place, the old value going as with `remove`, and then move it the same
+way, comment lines after it included, so an alias in its key keeps
+resolving too. Sequences have no reordering methods.
 
 Looking up a key that is an alias (`get`, `set`, `rename_key`, ...)
 matches an alias key of the same name, not the node it refers to, and

@@ -60,7 +60,7 @@ pub fn print_tree(node: &SyntaxNode) {
 /// Prints the CST structure with a custom starting indentation.
 pub fn print_tree_indent(node: &SyntaxNode, indent: usize) {
     let mut out = String::new();
-    tree_to_string_indent(node, indent, &mut out, None);
+    tree_to_string_indent(node, indent, &mut out, false);
     print!("{out}");
 }
 
@@ -83,71 +83,21 @@ pub fn print_tree_indent(node: &SyntaxNode, indent: usize) {
 /// ```
 pub fn tree_to_string(node: &SyntaxNode) -> String {
     let mut result = String::new();
-    tree_to_string_indent(node, 0, &mut result, None);
+    tree_to_string_indent(node, 0, &mut result, false);
     result
 }
 
-/// Like [`tree_to_string`], but with two differences that an edit leaves
-/// and re-parsing the text does not, so this is what to compare between an
+/// Like [`tree_to_string`], but without the zero-width marker that an
+/// empty `{}` or `[]` carries when it is to become a block collection once
+/// it has an entry (see [`Mapping::new_pending_block`]). Re-parsing the
+/// text cannot recover the marker, so this is what to compare between an
 /// edited tree and a re-parse of its text.
-///
-/// The zero-width marker that an empty `{}` or `[]` carries when it is to
-/// become a block collection once it has an entry (see
-/// [`Mapping::new_pending_block`]) is left out.
-///
-/// Comment lines that an edit moved to the front of the root block
-/// collection of a document without `---` are shown before the document,
-/// along with anything else ahead of them in it, as the parser puts them
-/// there. If `node` is that document or within it, they are left out.
 ///
 /// [`Mapping::new_pending_block`]: crate::Mapping::new_pending_block
 pub fn shape_to_string(node: &SyntaxNode) -> String {
-    let hoisted: Vec<_> = node
-        .ancestors()
-        .chain(node.descendants())
-        .filter(|n| n.kind() == SyntaxKind::DOCUMENT)
-        .flat_map(|d| lines_ahead_of_document(&d))
-        .collect();
     let mut result = String::new();
-    tree_to_string_indent(node, 0, &mut result, Some(&hoisted));
+    tree_to_string_indent(node, 0, &mut result, true);
     result
-}
-
-/// The tokens of `document`, one without `---`, that the parser would put
-/// before it: those up to the first entry of its root block collection, if
-/// a comment line comes before that entry.
-fn lines_ahead_of_document(document: &SyntaxNode) -> Vec<rowan::SyntaxToken<crate::yaml::Lang>> {
-    let mut tokens = Vec::new();
-    for child in document.children_with_tokens() {
-        match child {
-            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::DOC_START => return Vec::new(),
-            rowan::NodeOrToken::Token(t) => tokens.push(t),
-            rowan::NodeOrToken::Node(n) => {
-                if !matches!(n.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE) {
-                    return Vec::new();
-                }
-                tokens.extend(
-                    n.children_with_tokens()
-                        .map_while(|c| c.into_token())
-                        .take_while(|t| {
-                            matches!(
-                                t.kind(),
-                                SyntaxKind::COMMENT
-                                    | SyntaxKind::NEWLINE
-                                    | SyntaxKind::INDENT
-                                    | SyntaxKind::WHITESPACE
-                            )
-                        }),
-                );
-                break;
-            }
-        }
-    }
-    if tokens.iter().any(|t| t.kind() == SyntaxKind::COMMENT) {
-        tokens
-    } else {
-        Vec::new()
-    }
 }
 
 fn is_pending_block_marker(token: &rowan::SyntaxToken<crate::yaml::Lang>) -> bool {
@@ -158,36 +108,21 @@ fn is_pending_block_marker(token: &rowan::SyntaxToken<crate::yaml::Lang>) -> boo
             .is_some_and(|p| matches!(p.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE))
 }
 
-/// Write `node`'s children to `result`. For a shape, `hoisted` holds the
-/// tokens to show before their document rather than in it.
-fn tree_to_string_indent(
-    node: &SyntaxNode,
-    indent: usize,
-    result: &mut String,
-    hoisted: Option<&[rowan::SyntaxToken<crate::yaml::Lang>]>,
-) {
+/// Write `node`'s children to `result`, leaving out pending-block markers
+/// for a shape.
+fn tree_to_string_indent(node: &SyntaxNode, indent: usize, result: &mut String, shape: bool) {
     let prefix = "  ".repeat(indent);
-    let push_token = |result: &mut String, t: &rowan::SyntaxToken<crate::yaml::Lang>| {
-        let text = t.text().replace('\n', "\\n").replace('\r', "\\r");
-        result.push_str(&format!("{}{:?}: {:?}\n", prefix, t.kind(), text));
-    };
     for child in node.children_with_tokens() {
         match child {
             rowan::NodeOrToken::Node(n) => {
-                if let Some(hoisted) = hoisted.filter(|_| n.kind() == SyntaxKind::DOCUMENT) {
-                    for t in hoisted
-                        .iter()
-                        .filter(|t| n.text_range().contains_range(t.text_range()))
-                    {
-                        push_token(result, t);
-                    }
-                }
                 result.push_str(&format!("{}{:?}\n", prefix, n.kind()));
-                tree_to_string_indent(&n, indent + 1, result, hoisted);
+                tree_to_string_indent(&n, indent + 1, result, shape);
             }
-            rowan::NodeOrToken::Token(t)
-                if hoisted.is_some_and(|h| is_pending_block_marker(&t) || h.contains(&t)) => {}
-            rowan::NodeOrToken::Token(t) => push_token(result, &t),
+            rowan::NodeOrToken::Token(t) if shape && is_pending_block_marker(&t) => {}
+            rowan::NodeOrToken::Token(t) => {
+                let text = t.text().replace('\n', "\\n").replace('\r', "\\r");
+                result.push_str(&format!("{}{:?}: {:?}\n", prefix, t.kind(), text));
+            }
         }
     }
 }
@@ -490,9 +425,9 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                     comment.text()
                 ));
             }
-            // Blank lines and indentation after a nested collection's last
-            // entry belong to the collection holding the next one, or to
-            // the root collection at the end of the input.
+            // The lines after a nested collection's last entry belong to the
+            // collection holding the next one, or to the root collection at
+            // the end of the input.
             let nested = node
                 .ancestors()
                 .skip(1)
@@ -500,12 +435,7 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
             let trailing_line = node
                 .last_child_or_token()
                 .and_then(|c| c.into_token())
-                .filter(|t| {
-                    !t.text().is_empty()
-                        && (t.kind() != SyntaxKind::NEWLINE
-                            || t.prev_sibling_or_token()
-                                .map_or(true, |p| p.kind() != SyntaxKind::COMMENT))
-                });
+                .filter(|t| !t.text().is_empty());
             if let Some(token) = trailing_line.filter(|_| nested) {
                 return Err(format!(
                     "nested {:?} ends with {:?} {:?} after its last entry",
@@ -707,6 +637,35 @@ mod tests {
         assert_eq!(
             validate_tree(file.syntax()),
             Err("SEQUENCE holds the comment \"# c\" ending an entry's line".to_string())
+        );
+    }
+
+    /// A nested block collection ends in an entry: the lines after it are
+    /// its parent's.
+    #[test]
+    fn test_validate_tree_nested_collection_ending_in_comment() {
+        let file = YamlFile::from_str("a:\n  b: 1\n  # c\n").unwrap();
+        assert_eq!(validate_tree(file.syntax()), Ok(()));
+        let root = file.syntax().first_child().unwrap().first_child().unwrap();
+        let nested = root
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::MAPPING && n != &root)
+            .unwrap();
+        let lines: Vec<_> = root
+            .children_with_tokens()
+            .skip_while(|c| c.kind() == SyntaxKind::MAPPING_ENTRY)
+            .collect();
+        for c in &lines {
+            match c {
+                rowan::NodeOrToken::Node(n) => n.detach(),
+                rowan::NodeOrToken::Token(t) => t.detach(),
+            }
+        }
+        crate::nodes::append_children(&nested, lines);
+        assert_eq!(file.syntax().to_string(), "a:\n  b: 1\n  # c\n");
+        assert_eq!(
+            validate_tree(file.syntax()),
+            Err("nested MAPPING ends with NEWLINE \"\\n\" after its last entry".to_string())
         );
     }
 

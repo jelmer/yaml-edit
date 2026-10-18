@@ -307,10 +307,11 @@ pub(crate) fn add_dash_line_comment(entry: &SyntaxNode, comment: LineComment) {
 /// has no line above it, so the comment line goes first in the entry.
 pub(crate) fn insert_comment_line_above(entry: &SyntaxNode, comment: &str) {
     let column = crate::column::node_column(entry);
-    // The line starts in the outermost node that `entry` starts.
+    // The line starts in the outermost node that `entry` starts, within
+    // its document.
     let mut node = entry.clone();
-    while node.prev_sibling_or_token().is_none() && node.kind() != SyntaxKind::DOCUMENT {
-        match node.parent() {
+    while node.prev_sibling_or_token().is_none() {
+        match node.parent().filter(|p| p.kind() != SyntaxKind::DOCUMENT) {
             Some(parent) => node = parent,
             None => break,
         }

@@ -1352,7 +1352,7 @@ impl<T: AsYaml> AsYaml for std::collections::BTreeSet<T> {
 mod tests {
     use super::*;
     use crate::debug::assert_cst_ok;
-    use crate::yaml::{Document, YamlFile};
+    use crate::yaml::Document;
     use std::collections::BTreeSet;
     use std::str::FromStr;
 
@@ -1577,9 +1577,7 @@ key: value # inline comment
 key: value
 "#;
 
-        // yaml1 has a stream-level leading comment, so parse via YamlFile
-        // rather than Document::from_str (which rejects stream-scoped content).
-        let doc1 = YamlFile::from_str(yaml1).unwrap().document().unwrap();
+        let doc1 = Document::from_str(yaml1).unwrap();
         let doc2 = Document::from_str(yaml2).unwrap();
 
         let mapping1 = doc1.as_mapping().unwrap();

@@ -380,7 +380,8 @@ fn line_node(collection: &SyntaxNode) -> SyntaxNode {
 /// that `new_entry` is its first entry: the enclosing MAPPING_ENTRY's
 /// trailing NEWLINE for a mapping value (a `key:\n    \n` or `key: {}`
 /// line, see issue #18), or the NEWLINE after a collection that was a
-/// pending-block `{}` or `[]` elsewhere.
+/// pending-block `{}` or `[]` elsewhere. A root collection takes back the
+/// lines after it, which were the document's while it was `{}` or `[]`.
 ///
 /// The freshly built `new_entry` must be checked because it only supplies
 /// its own trailing NEWLINE for some shapes; when it does not, the
@@ -410,9 +411,17 @@ pub(crate) fn detach_empty_collection_placeholder_newline(
     if let Some(line_break) = line_break.filter(|t| t.kind() == SyntaxKind::NEWLINE) {
         line_break.detach();
     }
-    // TODO: the parser puts comment lines at the end of the document into
-    // the collection: `a: 1\n# c\n` with `a` removed and `b` set keeps
-    // `# c` in the DOCUMENT rather than the MAPPING.
+    // The lines after a root block collection up to `...` are its own.
+    if parent.kind() == SyntaxKind::DOCUMENT {
+        let lines: Vec<_> =
+            std::iter::successors(node.next_sibling_or_token(), |c| c.next_sibling_or_token())
+                .take_while(|c| c.kind() != SyntaxKind::DOC_END)
+                .collect();
+        for c in &lines {
+            c.detach();
+        }
+        super::append_children(empty_collection, lines);
+    }
 }
 
 /// The zero-width token inside `{}` or `[]` that marks an empty collection

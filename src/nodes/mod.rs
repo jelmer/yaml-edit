@@ -91,9 +91,9 @@
 //!
 //! The lines after a nested block collection's last entry, blank lines
 //! and comment lines with their INDENT, belong to the collection that
-//! holds the next entry, as the lines between its own entries do. At the
-//! end of the input, blank lines go to the root collection, while comment
-//! lines indented as far as the nested collection stay in it:
+//! holds the next entry, as the lines between its own entries do, or to
+//! the root collection at the end of the document. A nested block
+//! collection always ends in an entry:
 //!
 //! ```text
 //! # m:\n  a: 1\n    # c\n\nz: 1\n
@@ -116,11 +116,12 @@
 //!
 //! ## Document-level trivia
 //!
-//! Trivia outside the root node lives in DOCUMENT: a leading BOM and
-//! blank lines before the root, and the NEWLINE and blank lines after a
-//! scalar or flow-collection root. When a comment or directive comes
-//! first in the stream, the trivia before it is a child of the file root
-//! instead, ahead of the first DOCUMENT. A BOM must stay first in the
+//! Trivia outside the root node lives in DOCUMENT: a leading BOM, blank
+//! lines and comment lines before the root, and the NEWLINE and blank
+//! lines after a scalar or flow-collection root. The file root holds
+//! only what is outside every document: the lines before a `---` that
+//! follows a comment, or before a directive, the lines after a `...`
+//! and a stream of nothing but comments. A BOM must stay first in the
 //! stream, so `---` and directives are inserted after it.
 //!
 //! ## Implicit-null values

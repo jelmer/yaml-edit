@@ -16,27 +16,31 @@ impl Parser<'_> {
     /// Returns true when the comments ran into a dedent, meaning the
     /// collection has ended and the caller should stop.
     ///
-    /// At root level (`base_indent == 0`) every comment belongs to this
-    /// collection, indented or not, because there is no enclosing scope.
+    /// The root collection at column 0 keeps every comment, indented or
+    /// not, because there is no enclosing scope.
     fn absorb_entry_comments(&mut self, base_indent: usize, dash_lines: bool) -> bool {
         while self.current() == Some(SyntaxKind::COMMENT) {
             // A comment on its own line says nothing about the block by its
             // own column: what ends the block is the next line with content,
             // so `a:\n  - x\n# c\n  - y\n` keeps both entries. Stop only
-            // when that line really is dedented. A comment with no content
-            // after it keeps the old reading, which leaves it inside this
-            // block. A comment on the last entry's own line stays with that
-            // entry whatever follows, as it does before another entry.
+            // when that line really is dedented, or for a nested sequence
+            // does not start with a dash. A comment with no content after it
+            // ends every nested block, so that it goes to the root
+            // collection. A comment on the last entry's own line stays with
+            // that entry whatever follows, as it does before another entry.
             let own_line = matches!(
                 self.previous_kind,
                 None | Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
             );
+            let nested = self.builder.in_nested_collection();
             let dedented = own_line
                 && match self.indent_after_comment_lines() {
-                    Some(indent) => indent < base_indent,
-                    None => self.is_at_dedented_position(base_indent),
+                    Some((indent, kind)) => {
+                        indent < base_indent || (nested && dash_lines && kind != SyntaxKind::DASH)
+                    }
+                    None => nested,
                 };
-            if base_indent > 0 && dedented {
+            if (base_indent > 0 || nested) && dedented {
                 return true;
             }
             self.bump();
@@ -1663,6 +1667,65 @@ mod tests {
         ] {
             assert_eq!(checked_value(src), checked_value(expected), "{src:?}");
         }
+    }
+
+    /// Comment lines after a nested block collection's last entry with no
+    /// content after them belong to the root collection, as do those
+    /// before a line that does not continue a nested sequence.
+    #[test]
+    fn test_lines_ending_nested_collection_go_to_root() {
+        for src in [
+            "a:\n  b: 1\n  # c\n\n",
+            "a:\n  b: 1\n  # c",
+            "a:\n  b:\n    c: 1\n    # c\n  # d\n",
+            "a:\n- x\n# c\n",
+            "a:\n- x\n# c\nb: 1\n",
+            "- - a\n  # c\n",
+            "a:\n  b: 1\n  # c\n---\nx\n",
+        ] {
+            let parsed = YamlFile::from_str(src).unwrap();
+            let syntax = rowan::ast::AstNode::syntax(&parsed);
+            assert_eq!(crate::debug::validate_tree(syntax), Ok(()), "{src:?}");
+            let root = syntax.first_child().unwrap().first_child().unwrap();
+            for comment in syntax
+                .descendants_with_tokens()
+                .filter(|c| c.kind() == crate::lex::SyntaxKind::COMMENT)
+            {
+                assert_eq!(comment.parent().as_ref(), Some(&root), "{src:?}");
+            }
+        }
+
+        let parsed = YamlFile::from_str("a:\n  b: 1\n  # c\n\n").unwrap();
+        assert_eq!(
+            crate::debug::tree_to_string(rowan::ast::AstNode::syntax(&parsed)),
+            "\
+DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"a\"
+      COLON: \":\"
+      VALUE
+        NEWLINE: \"\\\\n\"
+        INDENT: \"  \"
+        MAPPING
+          MAPPING_ENTRY
+            KEY
+              SCALAR
+                STRING: \"b\"
+            COLON: \":\"
+            WHITESPACE: \" \"
+            VALUE
+              SCALAR
+                INT: \"1\"
+            NEWLINE: \"\\\\n\"
+    INDENT: \"  \"
+    COMMENT: \"# c\"
+    NEWLINE: \"\\\\n\"
+    NEWLINE: \"\\\\n\"
+"
+        );
     }
 
     /// Content after a flow collection value stays in the VALUE rather

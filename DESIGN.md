@@ -102,7 +102,7 @@ its own text: `len`, `get`, `set` and the other accessors behave the same,
 and `debug::shape_to_string` gives the same output for both. String keys and
 values are quoted where a plain scalar would be read back as something else.
 
-There are two exceptions. YAML has no block syntax for an empty collection, so
+There is one exception. YAML has no block syntax for an empty collection, so
 an empty one is written `{}` or `[]` whatever its style. One that is to be
 block style once it has entries (`Mapping::new_pending_block`, or a block
 collection whose last entry was removed or that was cleared) carries a
@@ -111,14 +111,6 @@ entry writes it as a block collection again. A `{}` or `[]` from the source
 has no such marker and stays flow. Re-parsing the text cannot recover the
 marker, so `debug::shape_to_string` leaves it out, and is what to compare an
 edited tree with a re-parse by; `debug::tree_to_string` shows it.
-
-The other is comment lines that an edit leaves at the front of the root
-block collection of a document without `---`, such as those before an entry
-moved to the front, or after a removed first entry. The parser puts such
-lines before the document, at stream level, where they would no longer be
-part of the `Document`'s text, so they stay in the collection.
-`debug::shape_to_string` shows them before the document, together with
-anything ahead of them in it, as the parser has them.
 
 ## `AsYaml` trait
 
@@ -212,8 +204,9 @@ block scalar has its line ended by that instead. The parent
 lines and comment lines between entries. Those after a nested collection's
 last entry are between entries of the collection holding the next one, and
 belong to it: in `a:\n  - x\n\nb: 1\n` the blank line is the outer
-mapping's, not the sequence's. At the end of the input, blank lines go to the
-root collection.
+mapping's, not the sequence's. At the end of the document, blank and
+comment lines go to the root collection, so a nested collection always ends
+in an entry.
 
 ```
 MAPPING_ENTRY
@@ -231,16 +224,17 @@ which the parser looks at for a value, belong to the collection.
 When inserting or replacing entries, check whether the entry already ends with
 a newline (nested collections do, scalars don't) before adding separators.
 
-Trivia outside the root collection lives at the document level: a leading BOM
-and blank lines before the root, and the newline and blank lines after a
-scalar or flow root, are children of `DOCUMENT`. Comments and directives
-before the first document are children of the file root instead. Mutations
+Trivia outside the root collection lives at the document level: a leading BOM,
+blank lines and comments before the root, and the newline and blank lines
+after a scalar or flow root, are children of `DOCUMENT`. Directives, and
+comments before a `---`, after a `...` or in a stream without a document,
+are children of the file root instead. Mutations
 that add documents or directives must keep a BOM first in the stream.
 
 A new entry at the end of a collection (`set` with a new key, `push`)
-goes after its last entry and any comment lines after that. Blank lines
-after a nested collection belong to its parent, so they stay after the
-new entry: `a:\n  x: 1\n\nb: 2\n` with `y` set in `a` gives
+goes after its last entry and any comment lines after that. Blank and
+comment lines after a nested collection belong to its parent, so they stay
+after the new entry: `a:\n  x: 1\n\nb: 2\n` with `y` set in `a` gives
 `a:\n  x: 1\n  y: 3\n\nb: 2\n`. Those ending the root collection stay
 where they are, and the new entry goes after them: `- x\n\n` with `y`
 pushed gives `- x\n\n- y\n`. Input that has no final line break

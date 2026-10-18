@@ -126,6 +126,10 @@ impl<'a> Lookahead<'a> {
     }
 }
 
+fn is_collection(kind: &rowan::SyntaxKind) -> bool {
+    *kind == SyntaxKind::MAPPING.into() || *kind == SyntaxKind::SEQUENCE.into()
+}
+
 /// A tree builder that can hold back the line breaks and indentation
 /// between the entries of a block collection until it is known which node
 /// they belong to.
@@ -171,14 +175,16 @@ impl TreeBuilder {
     }
 
     pub(super) fn finish_node(&mut self) {
-        let is_collection = |kind: &rowan::SyntaxKind| {
-            *kind == SyntaxKind::MAPPING.into() || *kind == SyntaxKind::SEQUENCE.into()
-        };
         let kind = self.open.pop().expect("a node is open");
         if is_collection(&kind) && !self.open.iter().any(is_collection) {
             self.flush();
         }
         self.inner.finish_node();
+    }
+
+    /// Whether the collection being built is inside another one.
+    pub(super) fn in_nested_collection(&self) -> bool {
+        self.open.iter().filter(|k| is_collection(k)).count() > 1
     }
 
     /// Run `f` ahead of the trivia held back, for a zero-width node that
@@ -238,7 +244,7 @@ pub(super) struct Parser<'a> {
     ///
     /// Every comment of a run gets asked about in turn, and each would
     /// otherwise rescan the rest of the run.
-    comment_run_scan: Cell<Option<(usize, usize, Option<usize>)>>,
+    comment_run_scan: Cell<Option<(usize, usize, Option<(usize, SyntaxKind)>)>>,
     /// The kind of the token emitted last.
     pub(super) previous_kind: Option<SyntaxKind>,
     /// `tokens.len()` at the root node when it starts on the `---` line.
@@ -287,20 +293,24 @@ impl<'a> Parser<'a> {
     fn parse(mut self) -> ParsedYaml {
         self.builder.start_node(SyntaxKind::ROOT.into());
 
-        // A BOM and blank lines in front of the first document's content
-        // belong to that document, so a Document round-trips them. A comment
-        // or directive makes them part of the stream prefix instead.
-        let prefix_in_document = !matches!(
-            self.next_kind_past(&[
-                SyntaxKind::BOM,
-                SyntaxKind::WHITESPACE,
-                SyntaxKind::NEWLINE,
-                SyntaxKind::INDENT,
-            ]),
-            None | Some(
-                SyntaxKind::COMMENT | SyntaxKind::DIRECTIVE | SyntaxKind::EOF | SyntaxKind::DOC_END
-            )
-        );
+        // A BOM, blank lines and comments in front of the first document's
+        // content belong to that document, so a Document round-trips them.
+        // Before a directive, a `---` after a comment or no document at all,
+        // they are part of the stream prefix instead.
+        let blank = [
+            SyntaxKind::BOM,
+            SyntaxKind::WHITESPACE,
+            SyntaxKind::NEWLINE,
+            SyntaxKind::INDENT,
+        ];
+        let prefix_in_document =
+            match self.next_kind_past(&[&blank[..], &[SyntaxKind::COMMENT]].concat()) {
+                None | Some(SyntaxKind::DIRECTIVE | SyntaxKind::EOF | SyntaxKind::DOC_END) => false,
+                Some(SyntaxKind::DOC_START) => {
+                    self.next_kind_past(&blank) == Some(SyntaxKind::DOC_START)
+                }
+                Some(_) => true,
+            };
         if !prefix_in_document {
             self.skip_tokens(&[SyntaxKind::BOM]);
             self.skip_ws_and_newlines();
@@ -380,6 +390,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::WHITESPACE,
             SyntaxKind::NEWLINE,
             SyntaxKind::INDENT,
+            SyntaxKind::COMMENT,
         ]);
 
         // Handle document start marker
@@ -852,7 +863,7 @@ impl Parser<'_> {
                                     // Content still inside the block: the
                                     // comment belongs to it, not to whatever
                                     // encloses us.
-                                    Some(indent) => indent < base_indent,
+                                    Some((indent, _)) => indent < base_indent,
                                     // Nothing follows, so the comment is a
                                     // trailer of the enclosing scope.
                                     None => true,
@@ -1268,14 +1279,15 @@ impl Parser<'_> {
         self.upcoming_tokens().next() == Some(SyntaxKind::DASH)
     }
 
-    /// Indentation of the next line that carries content, looking past any
-    /// run of comment-only and blank lines, or `None` if there is none.
+    /// Indentation and first token of the next line that carries content,
+    /// looking past any run of comment-only and blank lines, or `None` if
+    /// there is none.
     ///
     /// A comment's own column says nothing about the block it sits in: YAML
     /// lets `a:\n  - x\n# c\n  - y\n` keep both entries, because what ends
     /// the sequence is the next content line, not the comment. The caller is
     /// positioned on the COMMENT token.
-    pub(super) fn indent_after_comment_lines(&self) -> Option<usize> {
+    pub(super) fn indent_after_comment_lines(&self) -> Option<(usize, SyntaxKind)> {
         if self.current() != Some(SyntaxKind::COMMENT) {
             return None;
         }
@@ -1296,7 +1308,7 @@ impl Parser<'_> {
 
     /// The scan behind [`indent_after_comment_lines`](Self::indent_after_comment_lines),
     /// counting the tokens it reads in `consumed`.
-    fn scan_lines_after_comment(&self, consumed: &mut usize) -> Option<usize> {
+    fn scan_lines_after_comment(&self, consumed: &mut usize) -> Option<(usize, SyntaxKind)> {
         // `tokens` is in reverse order, so walk it backwards from the current
         // token to read the lines that follow.
         let mut rest = self
@@ -1336,7 +1348,7 @@ impl Parser<'_> {
                     }
                     continue;
                 }
-                _ => return Some(indent),
+                kind => return Some((indent, kind)),
             }
         }
     }

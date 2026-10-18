@@ -1,5 +1,5 @@
 //! Module-private helpers used by MappingEntry, Mapping queries, and
-//! Mapping mutations. Includes the [`FlowInsertPos`] enum, block-value
+//! Mapping mutations. Includes block-value
 //! wrapper builders, decoration walkers, and tail/comment scanners.
 //!
 //! Split out of `nodes/mapping/mod.rs` unchanged.
@@ -8,16 +8,6 @@ use crate::lex::SyntaxKind;
 use crate::nodes::{has_child_token, is_block_scalar, Scalar, SyntaxNode};
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
-
-/// Where to place a new entry inside a flow-style mapping (`{...}`).
-pub(in crate::nodes) enum FlowInsertPos {
-    /// At the end (right before the closing `}`).
-    End,
-    /// Right after this existing MAPPING_ENTRY child.
-    After(SyntaxNode),
-    /// Right before this existing MAPPING_ENTRY child.
-    Before(SyntaxNode),
-}
 
 /// Is `value` laid out block-style (key on one line, value content on
 /// subsequent lines)?

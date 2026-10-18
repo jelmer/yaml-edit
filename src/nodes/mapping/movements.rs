@@ -1,9 +1,9 @@
 //! `Mapping::move_after` / `move_before` -- pull a key out of its
 //! current position and re-insert it at a new position.
 
-use super::helpers::FlowInsertPos;
 use super::{Mapping, MappingEntry};
 use crate::lex::SyntaxKind;
+use crate::nodes::trivia::Slot;
 use crate::nodes::trivia::{self, line_end, FlowSeparator};
 use crate::nodes::{fresh_token, SyntaxNode, SyntaxToken};
 use rowan::ast::AstNode;
@@ -155,8 +155,9 @@ impl Mapping {
             self.arrange_entries(&order);
             return true;
         }
-        let flow_context = self.is_flow_style();
-        let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
+        let flow = self
+            .is_flow_style()
+            .then(|| crate::nodes::flow_quoting(&self.0));
         let entry = MappingEntry::new_in(
             new_key,
             new_value,
@@ -164,19 +165,14 @@ impl Mapping {
             self.uses_explicit_keys(),
             self.detect_indentation_level(),
         );
-        self.insert_next_to(&entry.0, target.syntax().clone(), flow_context, after);
+        let target = target.syntax().clone();
+        let slot = if after {
+            Slot::After(target)
+        } else {
+            Slot::Before(target)
+        };
+        self.attach(&entry.0, slot);
         true
-    }
-
-    /// Insert `entry` after `target`, an entry of this mapping, if `after`
-    /// is set, and before it otherwise.
-    fn insert_next_to(&self, entry: &SyntaxNode, target: SyntaxNode, flow: bool, after: bool) {
-        match (flow, after) {
-            (true, true) => self.insert_flow_entry_cst_at(entry, FlowInsertPos::After(target)),
-            (true, false) => self.insert_flow_entry_cst_at(entry, FlowInsertPos::Before(target)),
-            (false, true) => self.insert_block_entry_after(entry, &target),
-            (false, false) => self.insert_block_entry_before(entry, &target),
-        }
     }
 
     /// Move a key-value pair to immediately after an existing key.

@@ -1,8 +1,6 @@
 //! Flow-style collection parsing (`{...}` mappings and `[...]` sequences)
 //! and the shared "is the next flow element an implicit mapping?"
 //! lookahead used to distinguish `[key: value]` from `[value]`.
-//!
-//! Split out of `parser/mod.rs` unchanged.
 
 use super::block::reaches_key_colon;
 use super::scalars::is_plain_scalar_kind;
@@ -145,205 +143,179 @@ impl Parser {
     }
 
     pub(super) fn parse_flow_sequence(&mut self) {
-        self.builder.start_node(SyntaxKind::SEQUENCE.into());
-        self.error_context.push_context(ParseContext::FlowSequence);
+        self.parse_flow_collection(SyntaxKind::RIGHT_BRACKET, Self::parse_flow_sequence_entry);
+    }
 
-        if self.flow_depth_exceeded(SyntaxKind::RIGHT_BRACKET) {
+    pub(super) fn parse_flow_mapping(&mut self) {
+        self.parse_flow_collection(SyntaxKind::RIGHT_BRACE, Self::parse_flow_mapping_entry);
+    }
+
+    /// Parse the flow collection that `closer` ends, calling `entry` for
+    /// each entry until it returns false or the collection closes.
+    fn parse_flow_collection(&mut self, closer: SyntaxKind, entry: fn(&mut Self) -> bool) {
+        let (node, context, what, expected, error_kind) = match closer {
+            SyntaxKind::RIGHT_BRACKET => (
+                SyntaxKind::SEQUENCE,
+                ParseContext::FlowSequence,
+                "sequence",
+                "']' to close sequence",
+                ParseErrorKind::UnclosedFlowSequence,
+            ),
+            _ => (
+                SyntaxKind::MAPPING,
+                ParseContext::FlowMapping,
+                "mapping",
+                "'}' to close mapping",
+                ParseErrorKind::UnclosedFlowMapping,
+            ),
+        };
+        self.builder.start_node(node.into());
+        self.error_context.push_context(context);
+
+        if self.flow_depth_exceeded(closer) {
             return;
         }
         self.flow_depth += 1;
 
-        self.bump(); // consume [
-        self.skip_ws_and_newlines(); // Support comments and newlines in flow sequences
+        self.bump(); // consume the opening bracket
+        self.skip_ws_and_newlines(); // Support comments and newlines in flow collections
 
-        let prev_flow = self.in_flow_context;
-        self.in_flow_context = true;
+        let prev_flow = std::mem::replace(&mut self.in_flow_context, true);
 
-        while self.current() != Some(SyntaxKind::RIGHT_BRACKET) && self.current().is_some() {
+        while self.current() != Some(closer) && self.current().is_some() {
             let tokens_before = self.tokens.len();
-
-            // Start SEQUENCE_ENTRY node to wrap the item
-            self.builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
-
-            // Missing element (`[,]`, `[a, , c]`) is an implicit-null
-            // scalar. Emit the same zero-width `SCALAR { NULL "" }` shape
-            // block sequences and mappings use, so accessors index the
-            // same set of entries as mutators.
-            if matches!(
-                self.current(),
-                Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACKET)
-            ) {
-                self.emit_implicit_null();
-            } else if self.next_flow_element_is_implicit_mapping() {
-                // Per YAML spec, `[ key: value ]` is valid: a sequence
-                // containing an implicit single-pair mapping.
-                self.parse_implicit_flow_mapping();
-            } else {
-                self.parse_value();
+            if !entry(self) {
+                break;
             }
-
-            self.skip_ws_and_newlines(); // Support comments after values
-
-            // Flow-style SEQUENCE_ENTRY owns its COMMA terminator (except last entry)
-            if self.current() == Some(SyntaxKind::COMMA) {
-                self.bump();
-                self.skip_ws_and_newlines(); // Support comments after commas
-            }
-
-            self.builder.finish_node(); // Finish SEQUENCE_ENTRY
-
-            if self.current() != Some(SyntaxKind::RIGHT_BRACKET) && self.current().is_some() {
-                // No comma found and not at closing bracket
-                // Check if we should break to avoid infinite loops
-                if matches!(
-                    self.current(),
-                    Some(SyntaxKind::DASH | SyntaxKind::DOC_START | SyntaxKind::DOC_END)
-                ) {
-                    // These tokens indicate we've left the flow sequence context or hit invalid syntax
-                    break;
-                }
-            }
-
             // Guarantee progress: if no token was consumed this iteration we
             // would loop forever (e.g. on stray `}` inside `[...]`). Report
             // the unexpected token and skip it.
-            self.flow_progress_guard(tokens_before, "sequence");
+            self.flow_progress_guard(tokens_before, what);
         }
 
         self.in_flow_context = prev_flow;
 
-        if self.current() == Some(SyntaxKind::RIGHT_BRACKET) {
+        if self.current() == Some(closer) {
             self.bump();
         } else {
             let error_msg = self.create_detailed_error(
-                "Unclosed flow sequence",
-                "']' to close sequence",
+                &format!("Unclosed flow {what}"),
+                expected,
                 self.current_text(),
             );
-            self.add_error_and_recover(
-                error_msg,
-                SyntaxKind::RIGHT_BRACKET,
-                ParseErrorKind::UnclosedFlowSequence,
-            );
+            self.add_error_and_recover(error_msg, closer, error_kind);
         }
 
         self.flow_depth -= 1;
         self.builder.finish_node();
         self.error_context.pop_context();
     }
-    pub(super) fn parse_flow_mapping(&mut self) {
-        self.builder.start_node(SyntaxKind::MAPPING.into());
-        self.error_context.push_context(ParseContext::FlowMapping);
 
-        if self.flow_depth_exceeded(SyntaxKind::RIGHT_BRACE) {
-            return;
+    /// Step over the comments and line breaks after a flow entry, and the
+    /// comma terminating it, which the entry owns, then close the entry.
+    fn finish_flow_entry(&mut self) {
+        self.skip_ws_and_newlines(); // Support comments after values
+        if self.current() == Some(SyntaxKind::COMMA) {
+            self.bump();
+            self.skip_ws_and_newlines(); // Support comments after commas
         }
-        self.flow_depth += 1;
+        self.builder.finish_node();
+    }
 
-        self.bump(); // consume {
-        self.skip_ws_and_newlines(); // Support comments and newlines in flow mappings
+    /// Parse one entry of a flow sequence, returning false when the tokens
+    /// after it show the sequence was left without a closing bracket.
+    fn parse_flow_sequence_entry(&mut self) -> bool {
+        self.builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
 
-        let prev_flow = self.in_flow_context;
-        self.in_flow_context = true;
+        // Missing element (`[,]`, `[a, , c]`) is an implicit-null
+        // scalar. Emit the same zero-width `SCALAR { NULL "" }` shape
+        // block sequences and mappings use, so accessors index the
+        // same set of entries as mutators.
+        if matches!(
+            self.current(),
+            Some(SyntaxKind::COMMA) | Some(SyntaxKind::RIGHT_BRACKET)
+        ) {
+            self.emit_implicit_null();
+        } else if self.next_flow_element_is_implicit_mapping() {
+            // Per YAML spec, `[ key: value ]` is valid: a sequence
+            // containing an implicit single-pair mapping.
+            self.parse_implicit_flow_mapping();
+        } else {
+            self.parse_value();
+        }
 
-        while self.current() != Some(SyntaxKind::RIGHT_BRACE) && self.current().is_some() {
-            // Check for unexpected structural tokens that indicate we've left flow context
-            if matches!(
-                self.current(),
-                Some(SyntaxKind::DASH | SyntaxKind::DOC_START | SyntaxKind::DOC_END)
-            ) {
-                // These tokens indicate we've exited the flow mapping or hit invalid syntax
-                break;
-            }
+        self.finish_flow_entry();
 
-            let tokens_before = self.tokens.len();
+        // These tokens indicate we've left the flow sequence context or hit
+        // invalid syntax.
+        !matches!(
+            self.current(),
+            Some(SyntaxKind::DASH | SyntaxKind::DOC_START | SyntaxKind::DOC_END)
+        )
+    }
 
-            // Start MAPPING_ENTRY node to wrap the key-value pair
-            self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
+    /// Parse one entry of a flow mapping, returning false without consuming
+    /// anything when the mapping was left without a closing brace.
+    fn parse_flow_mapping_entry(&mut self) -> bool {
+        // These tokens indicate we've exited the flow mapping or hit invalid
+        // syntax.
+        if matches!(
+            self.current(),
+            Some(SyntaxKind::DASH | SyntaxKind::DOC_START | SyntaxKind::DOC_END)
+        ) {
+            return false;
+        }
 
-            // Parse key - wrap in KEY node
-            self.builder.start_node(SyntaxKind::KEY.into());
+        self.builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
 
-            // Handle explicit key indicator (?) in flow context
-            if self.current() == Some(SyntaxKind::QUESTION) {
-                self.bump(); // consume '?'
-                self.skip_whitespace();
-            }
+        // Parse key - wrap in KEY node
+        self.builder.start_node(SyntaxKind::KEY.into());
 
-            // Missing key (`{,}`, `{: v}`, `{:}`) is an implicit-null
-            // scalar. Emit the same zero-width `SCALAR { NULL "" }` shape
-            // used everywhere else so `KEY` always contains one value node.
-            if matches!(
-                self.current(),
-                Some(SyntaxKind::COMMA) | Some(SyntaxKind::COLON) | Some(SyntaxKind::RIGHT_BRACE)
-            ) {
-                self.emit_implicit_null();
-            } else {
-                self.parse_value();
-                self.parse_flow_content_before_colon();
-            }
-            self.builder.finish_node();
+        // Handle explicit key indicator (?) in flow context
+        if self.current() == Some(SyntaxKind::QUESTION) {
+            self.bump(); // consume '?'
+            self.skip_whitespace();
+        }
 
-            // An omitted value (`{key}`, `{key:}`) is a VALUE holding the
-            // implicit-null scalar. It goes where a value would start, right
-            // after the key or after the colon and the spaces following it,
-            // so a comment or line break before the `,` or `}` follows the
-            // VALUE as it does for any other value.
+        // Missing key (`{,}`, `{: v}`, `{:}`) is an implicit-null
+        // scalar. Emit the same zero-width `SCALAR { NULL "" }` shape
+        // used everywhere else so `KEY` always contains one value node.
+        if matches!(
+            self.current(),
+            Some(SyntaxKind::COMMA) | Some(SyntaxKind::COLON) | Some(SyntaxKind::RIGHT_BRACE)
+        ) {
+            self.emit_implicit_null();
+        } else {
+            self.parse_value();
+            self.parse_flow_content_before_colon();
+        }
+        self.builder.finish_node();
+
+        // An omitted value (`{key}`, `{key:}`) is a VALUE holding the
+        // implicit-null scalar. It goes where a value would start, right
+        // after the key or after the colon and the spaces following it,
+        // so a comment or line break before the `,` or `}` follows the
+        // VALUE as it does for any other value.
+        if self.at_flow_entry_end(SyntaxKind::RIGHT_BRACE) {
+            self.emit_implicit_null_value();
+        } else if self.next_significant_kind() == Some(SyntaxKind::COLON) {
+            self.skip_ws_and_newlines(); // Support comments after keys
+            self.bump();
+            self.skip_whitespace();
             if self.at_flow_entry_end(SyntaxKind::RIGHT_BRACE) {
                 self.emit_implicit_null_value();
-            } else if self.next_significant_kind() == Some(SyntaxKind::COLON) {
-                self.skip_ws_and_newlines(); // Support comments after keys
-                self.bump();
-                self.skip_whitespace();
-                if self.at_flow_entry_end(SyntaxKind::RIGHT_BRACE) {
-                    self.emit_implicit_null_value();
-                } else {
-                    self.skip_ws_and_newlines(); // Support comments after colons
-                    self.builder.start_node(SyntaxKind::VALUE.into());
-                    self.parse_value();
-                    self.builder.finish_node();
-                }
             } else {
-                self.emit_implicit_null_value();
+                self.skip_ws_and_newlines(); // Support comments after colons
+                self.builder.start_node(SyntaxKind::VALUE.into());
+                self.parse_value();
+                self.builder.finish_node();
             }
-
-            self.skip_ws_and_newlines(); // Support comments after values
-
-            // Flow-style entries own their COMMA terminator (except last entry)
-            if self.current() == Some(SyntaxKind::COMMA) {
-                self.bump();
-                self.skip_ws_and_newlines(); // Support comments after commas
-            }
-
-            // Finish MAPPING_ENTRY node
-            self.builder.finish_node();
-
-            // Guarantee progress: if no token was consumed this iteration we
-            // would loop forever (e.g. on stray `]` inside `{...}`). Report
-            // the unexpected token and skip it.
-            self.flow_progress_guard(tokens_before, "mapping");
-        }
-
-        self.in_flow_context = prev_flow;
-
-        if self.current() == Some(SyntaxKind::RIGHT_BRACE) {
-            self.bump();
         } else {
-            let error_msg = self.create_detailed_error(
-                "Unclosed flow mapping",
-                "'}' to close mapping",
-                self.current_text(),
-            );
-            self.add_error_and_recover(
-                error_msg,
-                SyntaxKind::RIGHT_BRACE,
-                ParseErrorKind::UnclosedFlowMapping,
-            );
+            self.emit_implicit_null_value();
         }
 
-        self.flow_depth -= 1;
-        self.builder.finish_node();
-        self.error_context.pop_context();
+        self.finish_flow_entry();
+        true
     }
 }
 

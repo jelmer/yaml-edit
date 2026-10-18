@@ -37,24 +37,13 @@ use std::cell::Cell;
 /// `{{{{...}}}}` or a long `a:\n  a:\n  ...` chain.
 pub(super) const MAX_FLOW_DEPTH: usize = 256;
 
-/// Internal parser state
+/// Context that holds for the block node being parsed and everything
+/// nested in it, unless a nested node overrides it.
 ///
-/// Fields are `pub(super)` so the topic sub-modules
-/// ([`scalars`], [`flow`], [`block`]) can add `impl Parser` blocks
-/// without going through accessor methods for every field.
-pub(super) struct Parser {
-    pub(super) tokens: Vec<(SyntaxKind, String)>,
-    pub(super) current_token_index: usize,
-    pub(super) builder: GreenNodeBuilder<'static>,
-    pub(super) errors: Vec<String>,
-    pub(super) positioned_errors: Vec<PositionedParseError>,
-    pub(super) in_flow_context: bool,
-    /// Error recovery context for better error messages
-    pub(super) error_context: ErrorRecoveryContext,
-    /// Track if we're parsing a value (to prevent nested implicit mappings)
-    pub(super) in_value_context: bool,
-    /// Track the current line's indentation level for plain scalar continuation
-    pub(super) current_line_indent: usize,
+/// Only [`Parser::scoped`] changes it, so the outer context is back in place
+/// however the nested parse returns.
+#[derive(Clone, Copy, Default)]
+pub(super) struct BlockCtx {
     /// Whether an equally indented line continues a plain scalar here.
     ///
     /// A continuation normally has to be indented past the scalar's own line,
@@ -74,15 +63,6 @@ pub(super) struct Parser {
     /// is the tagged scalar `a b`, exactly as the untagged `x\n  a\n b\n`
     /// is `x a b`.
     pub(super) scalar_continuation_floor: Option<usize>,
-    /// Whether the node being parsed sits in a block mapping's value
-    /// position, where a block body has to clear the key's column.
-    ///
-    /// A tag hands this to the anchor that may follow it: `k: !!str &a` runs
-    /// the tag arm, which declines to adopt a dedented sibling, and then
-    /// falls through to the anchor arm. Without the flag that arm asks the
-    /// same question as a document-level anchor and answers it differently,
-    /// adopting the sibling the tag arm just refused.
-    pub(super) annotation_in_value_position: bool,
     /// Column of the `-` of the block sequence entry being parsed, if any.
     ///
     /// A `-` on a later line opens the next entry when it sits at this
@@ -95,13 +75,13 @@ pub(super) struct Parser {
     /// own line, for deciding whether a `?` on a later line opens that
     /// mapping's next entry rather than continuing the value's scalar.
     pub(super) mapping_value_column: Option<usize>,
-    /// Whether the node being parsed is the document's own, with no
-    /// enclosing collection.
+    /// The column of the mapping whose value is being parsed on a line
+    /// after its key's, the counterpart of `mapping_value_column`.
     ///
-    /// A block scalar there may hold body lines at column 0 (`|\nx\ny\n` is
-    /// the scalar `x\ny`). Nested under a key it may not: `a: |\nb: 1\n` has
-    /// an empty scalar and keeps `b` as a sibling.
-    pub(super) node_is_document_root: bool,
+    /// A block scalar's indentation indicator counts from its enclosing
+    /// collection's column, and in `o:\n  k:\n    |1\n` nothing else
+    /// records that `k`'s mapping sits at column 2.
+    pub(super) mapping_block_value_column: Option<usize>,
     /// Column of the `?` whose key is being parsed, if any.
     ///
     /// A `:` line at or left of that column is the entry's value, so an
@@ -112,13 +92,64 @@ pub(super) struct Parser {
     /// Column of the `:` whose explicit value is being parsed, if any, the
     /// counterpart of `explicit_key_column`.
     pub(super) explicit_value_column: Option<usize>,
-    /// The column of the mapping whose value is being parsed on a line
-    /// after its key's, the counterpart of `mapping_value_column`.
+    /// Whether the node being parsed sits in a block mapping's value
+    /// position, where a block body has to clear the key's column.
     ///
-    /// A block scalar's indentation indicator counts from its enclosing
-    /// collection's column, and in `o:\n  k:\n    |1\n` nothing else
-    /// records that `k`'s mapping sits at column 2.
-    pub(super) mapping_block_value_column: Option<usize>,
+    /// A tag hands this to the anchor that may follow it: `k: !!str &a` runs
+    /// the tag arm, which declines to adopt a dedented sibling, and then
+    /// falls through to the anchor arm. Without the flag that arm asks the
+    /// same question as a document-level anchor and answers it differently,
+    /// adopting the sibling the tag arm just refused.
+    pub(super) annotation_in_value_position: bool,
+}
+
+/// The parser's remaining tokens in source order, the current one at 0.
+///
+/// [`Parser::tokens`] holds them reversed, so that `bump` can pop.
+#[derive(Clone, Copy)]
+pub(super) struct Lookahead<'a>(&'a [(SyntaxKind, String)]);
+
+impl<'a> Lookahead<'a> {
+    pub(super) fn len(self) -> usize {
+        self.0.len()
+    }
+
+    /// The token `n` places after the current one.
+    pub(super) fn get(self, n: usize) -> Option<&'a (SyntaxKind, String)> {
+        self.0.get(self.0.len().checked_sub(n + 1)?)
+    }
+
+    /// The kind of the token `n` places after the current one.
+    pub(super) fn kind(self, n: usize) -> Option<SyntaxKind> {
+        self.get(n).map(|(kind, _)| *kind)
+    }
+}
+
+/// Internal parser state
+///
+/// Fields are `pub(super)` so the topic sub-modules
+/// ([`scalars`], [`flow`], [`block`]) can add `impl Parser` blocks
+/// without going through accessor methods for every field.
+pub(super) struct Parser {
+    pub(super) tokens: Vec<(SyntaxKind, String)>,
+    pub(super) current_token_index: usize,
+    pub(super) builder: GreenNodeBuilder<'static>,
+    pub(super) errors: Vec<String>,
+    pub(super) positioned_errors: Vec<PositionedParseError>,
+    pub(super) in_flow_context: bool,
+    /// Error recovery context for better error messages
+    pub(super) error_context: ErrorRecoveryContext,
+    /// Track the current line's indentation level for plain scalar continuation
+    pub(super) current_line_indent: usize,
+    /// Context of the block node being parsed; see [`BlockCtx`].
+    pub(super) ctx: BlockCtx,
+    /// Whether the node being parsed is the document's own, with no
+    /// enclosing collection.
+    ///
+    /// A block scalar there may hold body lines at column 0 (`|\nx\ny\n` is
+    /// the scalar `x\ny`). Nested under a key it may not: `a: |\nb: 1\n` has
+    /// an empty scalar and keeps `b` as a sibling.
+    pub(super) node_is_document_root: bool,
     /// Current depth of nested flow collections ([...] / {...}).
     pub(super) flow_depth: usize,
     /// Depth of `parse_value_with_base_indent` recursion (block and flow).
@@ -160,16 +191,8 @@ impl Parser {
             positioned_errors: Vec::new(),
             in_flow_context: false,
             error_context: ErrorRecoveryContext::new(text.to_string()),
-            in_value_context: false,
-            equal_indent_continues_scalar: false,
-            scalar_continuation_floor: None,
-            annotation_in_value_position: false,
-            sequence_entry_column: None,
-            mapping_value_column: None,
+            ctx: BlockCtx::default(),
             node_is_document_root: false,
-            explicit_key_column: None,
-            explicit_value_column: None,
-            mapping_block_value_column: None,
             current_line_indent: 0,
             flow_depth: 0,
             nesting_depth: 0,
@@ -309,37 +332,41 @@ impl Parser {
             // anchors to the node they cover. Only on the same line, though
             // -- an annotation alone on its line opens a block node, whose
             // body keeps its own indent.
-            let root_is_plain_scalar = self.root_annotations_cover_plain_scalar();
-            let outer_floor = self.scalar_continuation_floor;
+            let root_ctx = BlockCtx {
+                equal_indent_continues_scalar: true,
+                ..self.ctx
+            };
+            let value_ctx = if self.root_annotations_cover_plain_scalar() {
+                BlockCtx {
+                    scalar_continuation_floor: Some(0),
+                    ..root_ctx
+                }
+            } else {
+                root_ctx
+            };
             let outer_root = self.node_is_document_root;
-            self.equal_indent_continues_scalar = true;
             self.node_is_document_root = true;
-            if root_is_plain_scalar {
-                self.scalar_continuation_floor = Some(0);
-            }
-            self.parse_value();
+            self.scoped(value_ctx, |p| p.parse_value());
             self.marker_line_node = None;
-            self.scalar_continuation_floor = outer_floor;
 
             // A line opening a mapping after the root node, as in
             // `a\n[x]: z\n`, neither continues that node nor starts a
             // document of its own. Keep the mapping as a second node of the
             // document, which the validator reports, rather than leaving it
             // after the document.
-            loop {
-                self.skip_ws_and_newlines();
-                if !self.opens_block_mapping() {
+            self.scoped(root_ctx, |p| loop {
+                p.skip_ws_and_newlines();
+                if !p.opens_block_mapping() {
                     break;
                 }
-                let tokens_before = self.tokens.len();
-                let base_indent = self.current_line_indent;
-                self.parse_value_with_base_indent(base_indent);
-                if self.tokens.len() == tokens_before {
+                let tokens_before = p.tokens.len();
+                let base_indent = p.current_line_indent;
+                p.parse_value_with_base_indent(base_indent);
+                if p.tokens.len() == tokens_before {
                     break;
                 }
-            }
+            });
             self.node_is_document_root = outer_root;
-            self.equal_indent_continues_scalar = false;
         }
 
         // The line break, comments and blank lines after the root node belong
@@ -401,6 +428,19 @@ impl Parser {
         }
     }
 
+    /// Run `f` with `ctx` as the block context, putting the current one
+    /// back afterwards.
+    pub(super) fn scoped<R>(&mut self, ctx: BlockCtx, f: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = std::mem::replace(&mut self.ctx, ctx);
+        let result = f(self);
+        self.ctx = outer;
+        result
+    }
+
+    pub(super) fn lookahead(&self) -> Lookahead<'_> {
+        Lookahead(&self.tokens)
+    }
+
     pub(super) fn parse_value(&mut self) {
         self.parse_value_with_base_indent(0);
     }
@@ -460,10 +500,7 @@ impl Parser {
                 // An anchor introducing a complex key belongs inside that
                 // key's KEY node, so let the mapping parser take it rather
                 // than emitting it as a sibling of the mapping.
-                if !self.in_flow_context
-                    && !self.in_value_context
-                    && self.is_complex_mapping_key_after_annotations()
-                {
+                if !self.in_flow_context && self.is_complex_mapping_key_after_annotations() {
                     self.parse_mapping_with_base_indent(base_indent);
                     self.nesting_depth -= 1;
                     return;
@@ -474,13 +511,13 @@ impl Parser {
                 // into the KEY. Emitting it here instead left it beside the
                 // mapping, where it looked like a second anchor on the same
                 // node (test suite 7BMT, U3XV).
-                if !self.in_flow_context && !self.in_value_context && self.is_mapping_key() {
+                if !self.in_flow_context && self.is_mapping_key() {
                     self.parse_mapping_with_base_indent(base_indent);
                     self.nesting_depth -= 1;
                     return;
                 }
-                let body_indent =
-                    self.tagged_block_node_indent(base_indent, self.annotation_in_value_position);
+                let body_indent = self
+                    .tagged_block_node_indent(base_indent, self.ctx.annotation_in_value_position);
                 self.bump(); // consume and emit anchor token to CST
                 let empty_flow_node = self.annotates_empty_flow_node();
                 if !empty_flow_node {
@@ -497,10 +534,11 @@ impl Parser {
                             // still a node of the collection the anchor sits
                             // in, so its continuation only has to clear the
                             // anchor's own column.
-                            let outer_floor = self.scalar_continuation_floor;
-                            self.scalar_continuation_floor = Some(base_indent);
-                            self.parse_value_with_base_indent(indent);
-                            self.scalar_continuation_floor = outer_floor;
+                            let ctx = BlockCtx {
+                                scalar_continuation_floor: Some(base_indent),
+                                ..self.ctx
+                            };
+                            self.scoped(ctx, |p| p.parse_value_with_base_indent(indent));
                         }
                     }
                     // Nothing for the anchor to adopt, and nothing after it on
@@ -516,7 +554,7 @@ impl Parser {
                 // An alias may be a mapping key (`*a : v`), as the YAML test
                 // suite's 26DV has it. Without this the alias became the
                 // value and the `: v` after it opened a null-key entry.
-                if !self.in_flow_context && !self.in_value_context && self.is_mapping_key() {
+                if !self.in_flow_context && self.is_mapping_key() {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_alias();
@@ -535,7 +573,6 @@ impl Parser {
                 // the tag shares the key's line, which a block mapping's
                 // own properties cannot.
                 if !self.in_flow_context
-                    && !self.in_value_context
                     && (self.is_mapping_key() || self.is_complex_mapping_key_after_annotations())
                 {
                     self.parse_mapping_with_base_indent(base_indent);
@@ -561,8 +598,7 @@ impl Parser {
             Some(kind) if is_plain_scalar_kind(kind) => {
                 // In flow context, always parse as scalar
                 // In block context, check if it's a mapping key
-                // But not if we're already in a value context (prevents implicit nested mappings)
-                if !self.in_flow_context && !self.in_value_context && self.is_mapping_key() {
+                if !self.in_flow_context && self.is_mapping_key() {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_scalar();
@@ -570,9 +606,7 @@ impl Parser {
             }
             Some(SyntaxKind::LEFT_BRACKET) => {
                 // Check if this is a complex key in a mapping
-                // But not if we're already in a value context
-                if !self.in_flow_context && !self.in_value_context && self.is_complex_mapping_key()
-                {
+                if !self.in_flow_context && self.is_complex_mapping_key() {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_flow_sequence();
@@ -581,9 +615,7 @@ impl Parser {
             }
             Some(SyntaxKind::LEFT_BRACE) => {
                 // Check if this is a complex key in a mapping
-                // But not if we're already in a value context
-                if !self.in_flow_context && !self.in_value_context && self.is_complex_mapping_key()
-                {
+                if !self.in_flow_context && self.is_complex_mapping_key() {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_flow_mapping();
@@ -816,9 +848,11 @@ impl Parser {
             // `? a\n:\n|\n x\n`: the header can only be this value. Its
             // body still has to clear the mapping's column.
             self.skip_ws_and_newlines();
-            let outer_column = self.mapping_value_column.replace(column);
-            self.parse_value();
-            self.mapping_value_column = outer_column;
+            let ctx = BlockCtx {
+                mapping_value_column: Some(column),
+                ..self.ctx
+            };
+            self.scoped(ctx, |p| p.parse_value());
         } else if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
             self.parse_value();
         } else if self.current() == Some(SyntaxKind::NEWLINE) {

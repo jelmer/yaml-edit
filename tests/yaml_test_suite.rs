@@ -189,8 +189,12 @@ fn run_test(test: &TestCase, verbose: bool) -> bool {
 
     let success = match parse_result {
         Ok(Ok(yaml)) if !test.should_error => {
-            // A valid document should also pass the validator.
             use rowan::ast::AstNode;
+            if let Err(e) = yaml_edit::debug::validate_tree(yaml.syntax()) {
+                println!("FAIL {}: Tree violates CST invariants: {}", test.id, e);
+                return false;
+            }
+            // A valid document should also pass the validator.
             let errors: Vec<_> = Validator::new()
                 .validate_syntax(yaml.syntax())
                 .into_iter()

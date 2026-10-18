@@ -3632,6 +3632,53 @@ mod tests {
         }
     }
 
+    /// A block mapping whose first key is a flow collection starts with
+    /// that collection's `{` or `[`, but is still a block mapping.
+    #[test]
+    fn test_block_mapping_with_flow_collection_key_locations() {
+        for yaml in [
+            "{a}: x\nb: c\n",
+            "{a: 1}: x\n[b]: c\n",
+            "k:\n  {a}: x\n  b: y\n",
+        ] {
+            assert_eq!(located(yaml), vec![], "{yaml:?}");
+        }
+        for (yaml, message, location) in [
+            (
+                "{a}: x\n b: c\n",
+                "Sibling block mapping entries have inconsistent indentation \
+                 (expected \"\", found \" \")",
+                "2:1",
+            ),
+            (
+                "--- {a}: x\n",
+                "Content on same line as document start marker",
+                "1:1",
+            ),
+            (
+                "--- [a]: x\n",
+                "Content on same line as document start marker",
+                "1:1",
+            ),
+            (
+                "k:\n \t{a}: x\n",
+                "Tabs are not allowed for indentation in YAML",
+                "2:1",
+            ),
+            (
+                "{a}: x\ny: [b,\nc]\n",
+                "Flow collection continuation line must be indented",
+                "2:4",
+            ),
+        ] {
+            assert_eq!(
+                located(yaml),
+                vec![(message.to_string(), location.to_string())],
+                "{yaml:?}"
+            );
+        }
+    }
+
     #[test]
     fn test_compact_mapping_in_explicit_entry() {
         for yaml in [

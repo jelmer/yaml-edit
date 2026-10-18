@@ -390,7 +390,9 @@ merge operands; a quoted `'*a'` is a string.
 Resolving aliases (`get_resolved`, `YamlValue::from_document`) reads an
 alias with a tag of its own as its copy would read: `k: !t *a` as
 `k: !t 1`. The tag of the alias also takes the place of any tag the node
-has: with `a: &a !u 1`, `k: !t *a` reads as `k: !t 1`.
+has: with `a: &a !u 1`, `k: !t *a` reads as `k: !t 1`. An anchor on an
+alias names the node the alias refers to, so `*b` in `b: &b *a\nc: *b\n`
+resolves, on reads and through paths, to what `*a` does.
 
 ## Error handling
 

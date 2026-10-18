@@ -268,6 +268,7 @@ impl AnchorRegistry {
                     | SyntaxKind::MAPPING
                     | SyntaxKind::SEQUENCE
                     | SyntaxKind::TAGGED_NODE
+                    | SyntaxKind::ALIAS
             ) {
                 return Some(child);
             }
@@ -297,6 +298,38 @@ impl AnchorRegistry {
             .rev()
             .find(|(anchor, _)| *anchor < position)
             .map(|(_, node)| node)
+    }
+
+    /// Look up the node that `alias` refers to like
+    /// [`resolve_alias`](Self::resolve_alias), following anchors that are
+    /// on aliases themselves, as in `&b *a`, to the node they end at.
+    pub(crate) fn resolve_alias_through(
+        &self,
+        alias: &crate::yaml::Alias,
+    ) -> Result<&SyntaxNode, ResolveError> {
+        let mut alias = alias.clone();
+        let mut seen = Vec::new();
+        loop {
+            let name = alias.name();
+            let target = self.resolve_alias(&name, alias.syntax()).ok_or_else(|| {
+                ResolveError::UndefinedAlias {
+                    alias: name.clone(),
+                }
+            })?;
+            let content = if target.kind() == SyntaxKind::VALUE {
+                target.children().next()
+            } else {
+                Some(target.clone())
+            };
+            let Some(next) = content.and_then(crate::yaml::Alias::cast) else {
+                return Ok(target);
+            };
+            if seen.contains(target) {
+                return Err(ResolveError::RecursiveAlias { alias: name });
+            }
+            seen.push(target.clone());
+            alias = next;
+        }
     }
 
     /// Check if an anchor is defined
@@ -1019,11 +1052,10 @@ fn resolve_alias_node(
     let YamlNode::Alias(alias) = &node else {
         return Ok(node);
     };
-    let name = alias.name();
-    registry
-        .resolve_alias(&name, alias.syntax())
-        .and_then(|target| YamlNode::from_syntax_peeled(target.clone()))
-        .ok_or(ResolveError::UndefinedAlias { alias: name })
+    let target = registry.resolve_alias_through(alias)?;
+    YamlNode::from_syntax_peeled(target.clone()).ok_or(ResolveError::UndefinedAlias {
+        alias: alias.name(),
+    })
 }
 
 /// Extension trait that adds [`merged`](Self::merged) to [`Mapping`](crate::yaml::Mapping).
@@ -2247,6 +2279,66 @@ m:
         ] {
             assert_eq!(doc(yaml).get_resolved("a"), Err(expected), "{yaml:?}");
         }
+    }
+
+    #[test]
+    fn get_resolved_anchored_alias() {
+        // An anchor on an alias, which YAML does not allow, names the node
+        // the alias refers to.
+        for (yaml, key, expected) in [
+            ("x: &x 1\nb: &b *x\nc: *b\n", "c", "c: 1\n"),
+            ("x: &x 1\ns: [&b *x, *b]\n", "s", "s: [1, 1]\n"),
+            ("x: &x 1\nb: &b *x\nc: !t *b\n", "c", "c: !t 1\n"),
+            ("x: &x 1\nb: !t &b *x\nc: *b\n", "c", "c: !t 1\n"),
+            (
+                "x: &x {k: 1}\nb: &b *x\nm: {<<: *b, j: 2}\n",
+                "m",
+                "m: {k: 1, j: 2}\n",
+            ),
+        ] {
+            assert_eq!(
+                doc(yaml).get_resolved(key),
+                doc(expected).get_resolved(key),
+                "{yaml:?}"
+            );
+        }
+        assert_eq!(
+            doc("x: &x 1\nb: &b *x\nc: *b\n").get_resolved("c"),
+            Ok(Some(YamlValue::from(1)))
+        );
+        assert_eq!(
+            merged_pairs("x: &x {k: 1}\nb: &b *x\nm: {<<: *b, j: *b}\n", "m"),
+            pairs(&[("j", "{k: 1}"), ("k", "1")])
+        );
+    }
+
+    #[test]
+    fn get_resolved_anchored_alias_errors() {
+        for (yaml, expected) in [
+            (
+                "c: &c *c\n",
+                ResolveError::RecursiveAlias {
+                    alias: "c".to_string(),
+                },
+            ),
+            (
+                "b: &b *nope\nc: *b\n",
+                ResolveError::UndefinedAlias {
+                    alias: "nope".to_string(),
+                },
+            ),
+        ] {
+            assert_eq!(doc(yaml).get_resolved("c"), Err(expected), "{yaml:?}");
+        }
+        let d = doc("b: &b *b\nm: {<<: *b}\n");
+        let registry = d.build_anchor_registry();
+        let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+        assert_eq!(
+            m.merged(&registry).err(),
+            Some(ResolveError::RecursiveAlias {
+                alias: "b".to_string()
+            })
+        );
     }
 
     #[test]

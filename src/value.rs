@@ -1080,6 +1080,16 @@ ordered: !!omap [first: *list]
     }
 
     #[test]
+    fn test_from_document_anchored_alias() {
+        let doc = crate::Document::from_str("x: &x 1\nb: &b *x\nc: *b\n").unwrap();
+        let expected = crate::Document::from_str("x: 1\nb: 1\nc: 1\n").unwrap();
+        assert_eq!(
+            YamlValue::from_document(&doc),
+            YamlValue::from_document(&expected)
+        );
+    }
+
+    #[test]
     fn test_from_document_alias_errors() {
         use crate::anchor_resolution::ResolveError;
         for (yaml, expected) in [

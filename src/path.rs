@@ -732,17 +732,36 @@ fn resolve_for_read(
     }
 
     let target = registry_for(current.syntax())
-        .resolve_alias(&name, current.syntax())
-        .cloned()
-        .ok_or_else(|| PathError::UndefinedAlias {
-            at: segment_display(segment),
-            alias: name.clone(),
-        })?;
+        .resolve_alias_through(alias)
+        .map_err(|e| undefined_alias(e, segment))?
+        .clone();
 
     crate::as_yaml::YamlNode::from_syntax_peeled(target).ok_or(PathError::UndefinedAlias {
         at: segment_display(segment),
         alias: name,
     })
+}
+
+/// The [`PathError`] for an alias at `segment` that
+/// [`AnchorRegistry::resolve_alias_through`] could not resolve. An alias
+/// that ends up referring to itself, as in `&a *a`, refers to no value
+/// and is undefined as well.
+///
+/// [`AnchorRegistry::resolve_alias_through`]: crate::anchor_resolution::AnchorRegistry::resolve_alias_through
+fn undefined_alias(
+    error: crate::anchor_resolution::ResolveError,
+    segment: &PathSegment,
+) -> PathError {
+    use crate::anchor_resolution::ResolveError;
+    match error {
+        ResolveError::UndefinedAlias { alias } | ResolveError::RecursiveAlias { alias } => {
+            PathError::UndefinedAlias {
+                at: segment_display(segment),
+                alias,
+            }
+        }
+        other => unreachable!("resolving an alias gave {other:?}"),
+    }
 }
 
 /// Find the first scalar key spelled `segment`, whatever type it
@@ -1033,9 +1052,9 @@ fn resolve_alias_for_write(
     };
 
     let target = registry_for(alias.syntax())
-        .resolve_alias(&name, alias.syntax())
-        .cloned()
-        .ok_or_else(undefined)?;
+        .resolve_alias_through(alias)
+        .map_err(|e| undefined_alias(e, segment))?
+        .clone();
 
     let target = if policy == AliasPolicy::Expand {
         expanded_copy(&target)
@@ -3037,6 +3056,36 @@ config:
         assert_eq!(
             outer.try_get_path("svc.timeout").unwrap().to_string(),
             "30".to_string()
+        );
+    }
+
+    #[test]
+    fn test_path_alias_to_anchored_alias() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let src = "x: &x {k: 1}\nb: &b *x\nc: *b\n";
+        let doc = Document::from_str(src).unwrap();
+        assert_eq!(doc.try_get_path("c.k").unwrap().to_string(), "1");
+
+        doc.try_set_path_with("c.k", 2, AliasPolicy::Follow)
+            .unwrap();
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), "x: &x {k: 2}\nb: &b *x\nc: *b\n");
+
+        let doc = Document::from_str(src).unwrap();
+        doc.try_set_path_with("c.k", 2, AliasPolicy::Expand)
+            .unwrap();
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), "x: &x {k: 1}\nb: &b *x\nc: {k: 2}\n");
+
+        let doc = Document::from_str("b: &b *b\nc: *b\n").unwrap();
+        assert_eq!(
+            doc.try_get_path("c.k"),
+            Err(PathError::UndefinedAlias {
+                at: "k".to_string(),
+                alias: "b".to_string()
+            })
         );
     }
 

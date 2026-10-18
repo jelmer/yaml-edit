@@ -606,6 +606,8 @@ doc3: value3
         // Should count 3 documents
         assert_eq!(counter.document_count, 3);
         assert!(counter.scalar_count >= 6); // At least 3 keys and 3 values
+        assert_eq!(counter.scalar_count, 6);
+        assert_eq!(counter.mapping_count, 3);
     }
 
     #[test]
@@ -640,5 +642,39 @@ doc3: value3
             (1, 1, 2)
         );
         assert_eq!(visited_scalars("--- !!seq [a, b]\n"), ["a", "b"]);
+    }
+
+    #[test]
+    fn test_walks_complex_keys_and_nested_sequences() {
+        assert_eq!(
+            visited_scalars("? [a, b]\n: 1\n? {k: v}\n: 2\n!t c: 3\n"),
+            ["a", "b", "1", "k", "v", "2", "c", "3"]
+        );
+        assert_eq!(visited_scalars("- [a, [b]]\n- c\n"), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_accept_on_scalar_and_sequence() {
+        use std::str::FromStr;
+        let doc = Document::from_str("- a\n- [b, c]\n").unwrap();
+        let sequence = doc.as_sequence().unwrap();
+        let mut counter = NodeCounter::default();
+        sequence.accept(&mut counter);
+        assert_eq!(
+            (
+                counter.document_count,
+                counter.sequence_count,
+                counter.scalar_count
+            ),
+            (0, 2, 3)
+        );
+        let mut collector = ScalarCollector::default();
+        sequence
+            .get(0)
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .accept(&mut collector);
+        assert_eq!(collector.scalars, ["a"]);
     }
 }

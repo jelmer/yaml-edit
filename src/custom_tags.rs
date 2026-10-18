@@ -147,9 +147,8 @@
 //!
 //! # Limitations and Notes
 //!
-//! 1. **Internal API**: The [`CustomTagHandler`] trait itself is internal. This module provides
-//!    built-in handlers that are publicly available. If you need additional tag types, please
-//!    file an issue or contribute to the library.
+//! 1. **Custom Handlers**: Besides the built-in handlers, any type implementing
+//!    [`CustomTagHandler`] can be registered.
 //!
 //! 2. **Format Preservation**: Tags are preserved during parse/serialize, but the library doesn't
 //!    validate tag semantics during normal document operations - validation must be explicitly
@@ -159,8 +158,8 @@
 //! 3. **Thread Safety**: Tag handlers are `Send + Sync` and the registry can be shared across
 //!    threads safely.
 //!
-//! 4. **Tag Naming**: Tag names must start with `!` and contain only alphanumeric characters,
-//!    hyphens, underscores, dots, colons, and forward slashes.
+//! 4. **Tag Naming**: Tag names are YAML tag properties: a shorthand such as `!name`,
+//!    `!!name` or `!handle!name`, or a verbatim tag such as `!<tag:example.com,2024:name>`.
 
 use crate::lex::SyntaxKind;
 use crate::nodes::SyntaxToken;
@@ -481,6 +480,10 @@ fn dedented_block_text(collection: &SyntaxNode) -> String {
 // Built-in custom tag handlers for common use cases
 
 /// A custom tag handler for timestamps with custom formats
+///
+/// Only a format containing `%Y-%m-%d` is checked, for three `-`-separated
+/// parts, and one containing `%Y` for a digit when serializing.
+// TODO: parse and check the content against the whole format.
 pub struct TimestampHandler {
     format: String,
 }

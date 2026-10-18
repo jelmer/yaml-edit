@@ -3537,4 +3537,24 @@ config:
         assert!(!doc.remove_path("a.b"));
         assert_eq!(doc.to_string(), "a:\n  c: 2\n");
     }
+
+    #[test]
+    fn test_set_path_growth_bound_is_exact() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("s: [a, b]\n").unwrap();
+        assert_eq!(
+            doc.try_set_path("s[258]", 1),
+            Err(PathError::IndexTooFar {
+                at: "[258]".to_string(),
+                len: 2,
+                index: 258,
+            })
+        );
+        assert_eq!(doc.try_set_path("s[257]", 1), Ok(()));
+        let s = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+        assert_eq!(s.len(), 258);
+        assert_eq!(s.get(257).unwrap().to_string(), "1");
+    }
 }

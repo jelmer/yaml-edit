@@ -1728,4 +1728,20 @@ value: 42
             ])
         );
     }
+
+    #[test]
+    #[cfg(feature = "base64")]
+    fn test_binary_tag() {
+        let document = create_test_document("a: !!binary aGk=\n");
+        assert_eq!(
+            SchemaValidator::json().validate(&document),
+            Err(vec![ValidationError::type_not_allowed(
+                "root.a",
+                "json",
+                ScalarType::Binary,
+                json_types(),
+            )])
+        );
+        assert_eq!(SchemaValidator::core().validate(&document), Ok(()));
+    }
 }

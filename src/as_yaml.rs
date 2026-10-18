@@ -290,13 +290,13 @@ fn resolve_scalar(scalar: crate::scalar::ScalarValue) -> ResolvedScalar {
 /// The identity of `node`, a value node or the KEY or VALUE wrapper holding
 /// one.
 ///
-/// Aliases are followed through `registry`; without one an alias is a
-/// [`ResolveError::UnresolvedAlias`](crate::anchor_resolution::ResolveError::UnresolvedAlias).
+/// Aliases are followed through `registry`; without one an alias is
+/// undefined, as no anchors are known.
 /// Returns `Ok(None)` if `node` is not a value node.
 pub(crate) fn node_identity(
     node: &SyntaxNode,
     registry: Option<&crate::anchor_resolution::AnchorRegistry>,
-) -> Result<Option<NodeIdentity>, crate::anchor_resolution::ResolveError> {
+) -> Result<Option<NodeIdentity>, crate::anchor_resolution::AliasError> {
     identity_with_tag(node, None, registry, &mut Vec::new())
 }
 
@@ -309,8 +309,8 @@ fn identity_with_tag(
     tag: Option<String>,
     registry: Option<&crate::anchor_resolution::AnchorRegistry>,
     expanding: &mut Vec<SyntaxNode>,
-) -> Result<Option<NodeIdentity>, crate::anchor_resolution::ResolveError> {
-    use crate::anchor_resolution::ResolveError;
+) -> Result<Option<NodeIdentity>, crate::anchor_resolution::AliasError> {
+    use crate::anchor_resolution::AliasError;
     use crate::lex::SyntaxKind;
     use crate::scalar::ScalarValue;
 
@@ -343,13 +343,13 @@ fn identity_with_tag(
                 return Ok(None);
             };
             let Some(registry) = registry else {
-                return Err(ResolveError::UnresolvedAlias {
+                return Err(AliasError::Undefined {
                     alias: alias.name(),
                 });
             };
             let target = registry.resolve_alias_through(&alias)?;
             if expanding.contains(target) {
-                return Err(ResolveError::RecursiveAlias {
+                return Err(AliasError::Recursive {
                     alias: alias.name(),
                 });
             }
@@ -407,7 +407,7 @@ fn identity_with_tag(
 pub(crate) fn identity_of<T: AsYaml + ?Sized>(
     v: &T,
     registry: Option<&crate::anchor_resolution::AnchorRegistry>,
-) -> Result<Option<NodeIdentity>, crate::anchor_resolution::ResolveError> {
+) -> Result<Option<NodeIdentity>, crate::anchor_resolution::AliasError> {
     match to_syntax(v) {
         Some(node) => node_identity(&node, registry),
         None => Ok(None),
@@ -1222,64 +1222,154 @@ impl<T: AsYaml> AsYaml for Option<T> {
     }
 }
 
-/// Emit a `!!set`: a tagged mapping with each member as a key and a null
-/// value. Returns whether the content ends with a newline.
-pub(crate) fn build_set_content<T: AsYaml>(
+/// Emit a TAGGED_NODE with `tag`, followed by the content `content` emits:
+/// on a line of its own indented past `indent` if `block` is set, after a
+/// space otherwise. Returns whether the content ends with a newline.
+pub(crate) fn build_tagged(
     builder: &mut rowan::GreenNodeBuilder,
-    members: impl ExactSizeIterator<Item = T>,
+    tag: &str,
+    block: bool,
     indent: usize,
-    flow_context: Option<FlowQuoting>,
+    content: impl FnOnce(&mut rowan::GreenNodeBuilder) -> bool,
 ) -> bool {
     use crate::lex::SyntaxKind;
-    use crate::scalar::ScalarValue;
-
-    let len = members.len();
-    // An empty mapping is written as `{}` in either context.
-    let quoting = flow_context.unwrap_or(FlowQuoting::Minimal);
-    let flow = flow_context.is_some() || len == 0;
 
     builder.start_node(SyntaxKind::TAGGED_NODE.into());
-    builder.token(SyntaxKind::TAG.into(), tag::SET);
-    if flow {
-        builder.token(SyntaxKind::WHITESPACE.into(), " ");
-    } else {
+    builder.token(SyntaxKind::TAG.into(), tag);
+    if block {
         builder.token(SyntaxKind::NEWLINE.into(), "\n");
         builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent + 2));
+    } else {
+        builder.token(SyntaxKind::WHITESPACE.into(), " ");
     }
+    let ends_with_newline = content(builder);
+    builder.finish_node(); // TAGGED_NODE
+    ends_with_newline
+}
+
+/// Emit a mapping of `entries`, in flow style quoting strings as `flow`
+/// says if it is set or there are no entries, in block style otherwise.
+/// Returns whether the content ends with a newline.
+pub(crate) fn build_mapping<K: AsYaml, V: AsYaml>(
+    builder: &mut rowan::GreenNodeBuilder,
+    entries: impl ExactSizeIterator<Item = (K, V)>,
+    indent: usize,
+    flow: Option<FlowQuoting>,
+) -> bool {
+    use crate::lex::SyntaxKind;
+
+    let len = entries.len();
+    let block = flow.is_none() && len > 0;
+    // Entries of an empty block mapping would be written as `{}`.
+    let flow = (!block).then_some(flow.unwrap_or(FlowQuoting::Minimal));
 
     builder.start_node(SyntaxKind::MAPPING.into());
-    if flow {
+    if !block {
         builder.token(SyntaxKind::LEFT_BRACE.into(), "{");
     }
-    let indent_str = " ".repeat(indent + 2);
-    for (i, member) in members.enumerate() {
-        if i > 0 && !flow {
-            builder.token(SyntaxKind::INDENT.into(), &indent_str);
+    for (i, (key, value)) in entries.enumerate() {
+        if i > 0 && block && indent > 0 {
+            // The previous entry's newline ends its line.
+            builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent));
         }
         builder.start_node(SyntaxKind::MAPPING_ENTRY.into());
         builder.start_node(SyntaxKind::KEY.into());
-        crate::nodes::build_key_content(builder, &member, indent + 2, flow.then_some(quoting));
+        crate::nodes::build_key_content(builder, &key, indent, flow);
         builder.finish_node(); // KEY
         builder.token(SyntaxKind::COLON.into(), ":");
-        builder.token(SyntaxKind::WHITESPACE.into(), " ");
-        builder.start_node(SyntaxKind::VALUE.into());
-        ScalarValue::null().build_content(builder, 0, flow);
-        builder.finish_node(); // VALUE
-        if !flow {
+        let starts_block = block && !value.is_inline();
+        let ends_with_newline = if starts_block {
+            builder.start_node(SyntaxKind::VALUE.into());
             builder.token(SyntaxKind::NEWLINE.into(), "\n");
+            builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent + 2));
+            build_in(&value, builder, indent + 2, None)
+        } else {
+            builder.token(SyntaxKind::WHITESPACE.into(), " ");
+            builder.start_node(SyntaxKind::VALUE.into());
+            // A block scalar's body has to clear the key's column.
+            build_in(&value, builder, indent, flow)
+        };
+        builder.finish_node(); // VALUE
+        if block {
+            if !ends_with_newline {
+                builder.token(SyntaxKind::NEWLINE.into(), "\n");
+            }
         } else if i + 1 < len {
             builder.token(SyntaxKind::COMMA.into(), ",");
             builder.token(SyntaxKind::WHITESPACE.into(), " ");
         }
         builder.finish_node(); // MAPPING_ENTRY
     }
-    if flow {
+    if !block {
         builder.token(SyntaxKind::RIGHT_BRACE.into(), "}");
     }
     builder.finish_node(); // MAPPING
+    block
+}
 
-    builder.finish_node(); // TAGGED_NODE
-    !flow
+/// Emit a sequence of `items`, in flow style quoting strings as `flow`
+/// says if it is set or there are no items, in block style otherwise.
+/// Returns whether the content ends with a newline.
+pub(crate) fn build_sequence<T: AsYaml>(
+    builder: &mut rowan::GreenNodeBuilder,
+    items: impl ExactSizeIterator<Item = T>,
+    indent: usize,
+    flow: Option<FlowQuoting>,
+) -> bool {
+    use crate::lex::SyntaxKind;
+
+    let len = items.len();
+    let block = flow.is_none() && len > 0;
+    let flow = (!block).then_some(flow.unwrap_or(FlowQuoting::Minimal));
+
+    builder.start_node(SyntaxKind::SEQUENCE.into());
+    if !block {
+        builder.token(SyntaxKind::LEFT_BRACKET.into(), "[");
+    }
+    for (i, item) in items.enumerate() {
+        if i > 0 && block && indent > 0 {
+            // The previous entry's newline ends its line.
+            builder.token(SyntaxKind::INDENT.into(), &" ".repeat(indent));
+        }
+        builder.start_node(SyntaxKind::SEQUENCE_ENTRY.into());
+        if block {
+            builder.token(SyntaxKind::DASH.into(), "-");
+            builder.token(SyntaxKind::WHITESPACE.into(), " ");
+            // An inline item, such as a block scalar, indents its body past
+            // the dash; a block collection aligns with its first entry.
+            let item_indent = if item.is_inline() { indent } else { indent + 2 };
+            if !build_in(&item, builder, item_indent, None) {
+                builder.token(SyntaxKind::NEWLINE.into(), "\n");
+            }
+        } else {
+            build_in(&item, builder, indent, flow);
+            if i + 1 < len {
+                builder.token(SyntaxKind::COMMA.into(), ",");
+                builder.token(SyntaxKind::WHITESPACE.into(), " ");
+            }
+        }
+        builder.finish_node(); // SEQUENCE_ENTRY
+    }
+    if !block {
+        builder.token(SyntaxKind::RIGHT_BRACKET.into(), "]");
+    }
+    builder.finish_node(); // SEQUENCE
+    block
+}
+
+/// Emit a `!!set`: a tagged mapping with each member as a key and a null
+/// value. Returns whether the content ends with a newline.
+pub(crate) fn build_set_content<T: AsYaml>(
+    builder: &mut rowan::GreenNodeBuilder,
+    members: impl ExactSizeIterator<Item = T>,
+    indent: usize,
+    flow: Option<FlowQuoting>,
+) -> bool {
+    let block = flow.is_none() && members.len() > 0;
+    build_tagged(builder, tag::SET, block, indent, |builder| {
+        let entries = members.map(|m| (m, crate::scalar::ScalarValue::null()));
+        build_mapping(builder, entries, indent + 2, flow)
+    })
 }
 
 /// A `!!set` with the members as its keys, in sorted order.

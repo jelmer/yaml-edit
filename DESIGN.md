@@ -331,12 +331,18 @@ lines that would follow it go at its end.
 
 Moving an entry (`reorder_fields`, and `move_after`/`move_before` given
 the entry's own value) takes along the comments on its lines and the
-comment and blank lines after it, up to the next entry:
-`a: 1  # c\n# d\nb: 2\n` reordered to `b, a` gives
-`b: 2\na: 1  # c\n# d\n`. Lines before the first entry stay where they
-are. In a flow mapping the commas stay with their positions, and one
+comment lines after it, up to the next entry, with any blank lines
+among them: `a: 1  # c\n# d\nb: 2\n` reordered to `b, a` gives
+`b: 2\na: 1  # c\n# d\n`. The blank lines after those belong to the
+position, so `a: 1\n\nb: 2\n` reordered gives `b: 2\n\na: 1\n`. A block
+scalar takes the blank lines after it into its value, so those of a
+position whose entry now ends in one go after the next entry that does
+not, or failing that the one before. Lines before the first entry stay
+where they are. In a flow mapping the commas stay with their positions, and one
 that has to follow an entry whose comment ends its line goes before
-that comment.
+that comment. So does the indentation of the line after such a
+comment: `{a: 1, # c\n b: 2 # d\n}` reordered gives
+`{b: 2, # d\n a: 1 # c\n}`.
 
 ## Paths, anchors and aliases
 

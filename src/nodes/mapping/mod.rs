@@ -401,9 +401,9 @@ impl Mapping {
     }
 
     /// Put the entries of this mapping in the order of `order`, which holds
-    /// each of them once. An entry takes along the comments and blank lines
-    /// that follow it up to the next entry; the layout that belongs to
-    /// positions stays put.
+    /// each of them once. An entry takes along the comment lines that
+    /// follow it up to the next entry; the layout that belongs to
+    /// positions, including the blank lines between entries, stays put.
     pub(super) fn arrange_entries(&self, order: &[SyntaxNode]) {
         // Slice the children into leading decoration, (entry, tokens
         // that follow it up to the next entry), and trailing
@@ -411,7 +411,7 @@ impl Mapping {
         // between-entry comment glued to the entry it visually
         // followed.
         let all: Vec<_> = self.0.children_with_tokens().collect();
-        let (leading, mut groups, trailing) = self.slice_into_entry_groups(&all);
+        let (leading, mut groups, mut trailing) = self.slice_into_entry_groups(&all);
         assert_eq!(
             groups.len(),
             order.len(),
@@ -430,6 +430,24 @@ impl Mapping {
                     .flatten()
             })
             .collect();
+        // The blank lines between two entries, after any comment lines
+        // that go with the entry above, belong to their position too.
+        let mut gaps: Vec<Vec<_>> = if self.is_flow_style() {
+            vec![Vec::new(); groups.len()]
+        } else {
+            let mut gaps: Vec<Vec<_>> = groups
+                .iter_mut()
+                .map(|(entry, postscript)| {
+                    let at = blank_lines_start(entry, postscript);
+                    postscript.split_off(at)
+                })
+                .collect();
+            if let Some(last) = gaps.last_mut() {
+                let end = leading_blank_lines_end(&trailing);
+                *last = trailing.drain(..end).collect();
+            }
+            gaps
+        };
 
         let ordered: Vec<_> = order
             .iter()
@@ -442,14 +460,38 @@ impl Mapping {
             })
             .collect();
 
+        // A block scalar would take the blank lines after it into its
+        // value, so they go after the next entry that can have them
+        // instead, or failing that the one before.
+        let ends_in_block_scalar: Vec<bool> = ordered
+            .iter()
+            .map(|(entry, postscript)| {
+                postscript.iter().all(is_blank) && ends_in_block_scalar(entry)
+            })
+            .collect();
+        for i in 0..gaps.len() {
+            if !ends_in_block_scalar[i] || gaps[i].is_empty() {
+                continue;
+            }
+            let home = (i + 1..gaps.len())
+                .chain((0..i).rev())
+                .find(|&j| !ends_in_block_scalar[j])
+                .expect("blank lines follow an entry that does not end in a block scalar");
+            let moved = std::mem::take(&mut gaps[i]);
+            gaps[home].extend(moved);
+        }
+
         let mut new_children = leading;
+        let last_gap = gaps.pop().unwrap_or_default();
         for (i, (entry, postscript)) in ordered.into_iter().enumerate() {
-            if let Some(indent) = i.checked_sub(1).and_then(|i| line_indents[i].clone()) {
-                new_children.push(indent);
+            if let Some(i) = i.checked_sub(1) {
+                new_children.append(&mut gaps[i]);
+                new_children.extend(line_indents[i].clone());
             }
             new_children.push(entry.into());
             new_children.extend(postscript);
         }
+        new_children.extend(last_gap);
         new_children.extend(trailing);
 
         crate::nodes::kept_aliases::keeping_aliases_moved(&self.0, None, || {
@@ -458,6 +500,54 @@ impl Mapping {
             None
         });
     }
+}
+
+type Element = rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>;
+
+fn is_blank(element: &Element) -> bool {
+    matches!(
+        element.kind(),
+        SyntaxKind::NEWLINE | SyntaxKind::WHITESPACE | SyntaxKind::INDENT
+    )
+}
+
+/// Where the blank lines in `postscript`, the elements after `entry` up to
+/// the next entry, start: after the line break that ends the last line
+/// with anything else on it.
+fn blank_lines_start(entry: &SyntaxNode, postscript: &[Element]) -> usize {
+    let last = match postscript.iter().rposition(|e| !is_blank(e)) {
+        Some(last) => last,
+        None if trailing_newline_reachable(entry) => return 0,
+        // The line break of an explicit-key entry follows it.
+        None => 0,
+    };
+    postscript[last..]
+        .iter()
+        .position(|e| e.kind() == SyntaxKind::NEWLINE)
+        .map_or(postscript.len(), |i| last + i + 1)
+}
+
+/// Where the blank lines that start `elements` end: after the last line
+/// break before anything else.
+fn leading_blank_lines_end(elements: &[Element]) -> usize {
+    let first = elements
+        .iter()
+        .position(|e| !is_blank(e))
+        .unwrap_or(elements.len());
+    elements[..first]
+        .iter()
+        .rposition(|e| e.kind() == SyntaxKind::NEWLINE)
+        .map_or(0, |i| i + 1)
+}
+
+/// Does the text of `entry` end with a block scalar?
+fn ends_in_block_scalar(entry: &SyntaxNode) -> bool {
+    entry
+        .descendants_with_tokens()
+        .filter_map(|c| c.into_token())
+        .filter(|t| !t.text().is_empty())
+        .last()
+        .is_some_and(|t| t.parent_ancestors().any(|n| is_block_scalar(&n)))
 }
 
 /// Is `node` a single pair in a flow sequence (`[a: 1]`), a flow mapping

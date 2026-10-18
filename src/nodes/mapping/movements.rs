@@ -7,7 +7,7 @@ use crate::lex::SyntaxKind;
 use crate::nodes::{
     ensure_trailing_newline, entry_line_terminated, flow_separator, fresh_token,
     hand_line_break_to_mapping, has_child_token, strip_flow_separator, unterminate_last_line,
-    SyntaxNode,
+    SyntaxNode, SyntaxToken,
 };
 use rowan::ast::AstNode;
 
@@ -17,10 +17,28 @@ pub(super) struct SlotLayout {
     /// For each entry of a flow mapping, the separator it ends with, if
     /// that can be swapped for another entry's.
     flow_separators: Vec<Option<Vec<(SyntaxKind, String)>>>,
+    /// For each entry of a flow mapping that ends its line, the
+    /// indentation of the line that follows.
+    flow_line_indents: Vec<Option<Vec<(SyntaxKind, String)>>>,
     /// Whether the last entry of a flow mapping has a trailing comma.
     last_has_comma: bool,
     /// Whether the last entry of a block mapping ends its line.
     last_terminated: bool,
+}
+
+/// The indentation of the line after `entry`, a flow mapping entry, if
+/// the entry ends with a line break followed only by that indentation.
+fn flow_line_indent(entry: &SyntaxNode) -> Option<Vec<SyntaxToken>> {
+    let children: Vec<_> = entry.children_with_tokens().collect();
+    let start = children
+        .iter()
+        .rposition(|c| !matches!(c.kind(), SyntaxKind::WHITESPACE | SyntaxKind::INDENT))?;
+    (children[start].kind() == SyntaxKind::NEWLINE).then(|| {
+        children[start + 1..]
+            .iter()
+            .filter_map(|c| c.as_token().cloned())
+            .collect()
+    })
 }
 
 /// Put a comma right after the content of `entry`, a flow mapping entry
@@ -49,24 +67,24 @@ impl Mapping {
     /// rather than entries, for [`restore_slot_layout`](Self::restore_slot_layout).
     pub(super) fn slot_layout(&self) -> SlotLayout {
         let entries: Vec<SyntaxNode> = self.entries().map(|e| e.0).collect();
-        let flow_separators = if self.is_flow_style() {
+        let texts = |tokens: Vec<SyntaxToken>| {
+            tokens
+                .iter()
+                .map(|t| (t.kind(), t.text().to_string()))
+                .collect()
+        };
+        let (flow_separators, flow_line_indents) = if self.is_flow_style() {
             entries
                 .iter()
-                .map(|e| {
-                    flow_separator(e).map(|tokens| {
-                        tokens
-                            .iter()
-                            .map(|t| (t.kind(), t.text().to_string()))
-                            .collect()
-                    })
-                })
-                .collect()
+                .map(|e| (flow_separator(e).map(texts), flow_line_indent(e).map(texts)))
+                .unzip()
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         let last = entries.last();
         SlotLayout {
             flow_separators,
+            flow_line_indents,
             last_has_comma: last.is_some_and(|e| has_child_token(e, |k| k == SyntaxKind::COMMA)),
             last_terminated: last.map_or(true, entry_line_terminated),
         }
@@ -113,6 +131,19 @@ impl Mapping {
                 }
                 _ => {}
             }
+        }
+        // The line after an entry that ends its line, after its comment,
+        // is indented as the line after that position was.
+        for (entry, slot) in entries.iter().zip(&layout.flow_line_indents) {
+            let (Some(own), Some(slot)) = (flow_line_indent(entry), slot) else {
+                continue;
+            };
+            let end = entry.children_with_tokens().count();
+            let tokens: Vec<_> = slot
+                .iter()
+                .map(|(kind, text)| rowan::NodeOrToken::Token(fresh_token(*kind, text)))
+                .collect();
+            crate::nodes::replace_children(entry, end - own.len()..end, tokens);
         }
     }
 

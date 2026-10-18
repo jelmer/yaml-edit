@@ -324,6 +324,16 @@ pub(crate) fn node_identity(
     identity_with_tag(node, None, registry, &mut Vec::new())
 }
 
+/// The identity of `key` as a mapping key, following aliases through
+/// `registry`; see [`NodeIdentity`]. Without a registry an alias is
+/// undefined.
+pub(crate) fn key_identity(
+    key: &YamlNode,
+    registry: Option<&crate::anchor_resolution::AnchorRegistry>,
+) -> Result<NodeIdentity, crate::anchor_resolution::AliasError> {
+    Ok(node_identity(key.syntax(), registry)?.expect("a YamlNode is a value node"))
+}
+
 /// The identity of `node` with `tag`, if set, in place of its own tag.
 ///
 /// `expanding` holds the anchored nodes whose aliases are being followed,

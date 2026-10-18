@@ -1366,7 +1366,7 @@ pub(crate) fn build_set_content<T: AsYaml>(
     flow: Option<FlowQuoting>,
 ) -> bool {
     let block = flow.is_none() && members.len() > 0;
-    build_tagged(builder, "!!set", block, indent, |builder| {
+    build_tagged(builder, tag::SET, block, indent, |builder| {
         let entries = members.map(|m| (m, crate::scalar::ScalarValue::null()));
         build_mapping(builder, entries, indent + 2, flow)
     })

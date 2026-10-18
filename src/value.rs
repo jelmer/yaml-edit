@@ -562,9 +562,11 @@ fn build_value(
             flow,
         ),
         YamlValue::OrderedMapping(pairs) => {
-            build_tagged_pair_seq(builder, "!!omap", pairs, indent, flow)
+            build_tagged_pair_seq(builder, crate::tag::OMAP, pairs, indent, flow)
         }
-        YamlValue::Pairs(pairs) => build_tagged_pair_seq(builder, "!!pairs", pairs, indent, flow),
+        YamlValue::Pairs(pairs) => {
+            build_tagged_pair_seq(builder, crate::tag::PAIRS, pairs, indent, flow)
+        }
         YamlValue::Tagged(tag, value) => {
             let block = value.is_block_collection() && flow.is_none();
             let content_indent = if block { indent + 2 } else { indent };

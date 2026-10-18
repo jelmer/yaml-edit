@@ -10,9 +10,7 @@ use crate::lex::SyntaxKind;
 
 fn is_block_collection(node: &SyntaxNode) -> bool {
     matches!(node.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE)
-        && node
-            .first_token()
-            .is_some_and(|t| !matches!(t.kind(), SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET))
+        && !super::starts_a_flow_collection(node)
 }
 
 /// Does `value` reach past the line its entry starts on, or open a block

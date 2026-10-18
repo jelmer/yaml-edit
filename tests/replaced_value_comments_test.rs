@@ -505,3 +505,21 @@ fn blank_lines_after_new_block_scalar() {
         assert_eq!(scalar_string(&set), scalar_string(&source), "{src:?}");
     }
 }
+
+#[test]
+fn set_over_block_mapping_with_flow_key() {
+    // A block mapping whose first key is a flow collection keeps the lines
+    // after it at its end, as one with a plain key does.
+    for (src, expected) in [
+        ("a:\n  {x: 1}: 1\n\nb: 2\n", "a: 5\n\nb: 2\n"),
+        ("a:\n  [x]: 1\n\n  # f\nb: 2\n", "a: 5\n\n  # f\nb: 2\n"),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        mapping_at(&file, "").set("a", 5);
+        assert_parser_shaped(&file, expected, src);
+    }
+    let src = "- {x: 1}: 1\n\n- 2\n";
+    let file = YamlFile::from_str(src).unwrap();
+    file.document().unwrap().as_sequence().unwrap().set(0, 5);
+    assert_parser_shaped(&file, "- 5\n\n- 2\n", src);
+}

@@ -67,7 +67,6 @@
 6PBE d0 seq0 insert[0] cst
 6PBE d0 seq0 insert[0] reparse
 6PBE d0 seq0 push shape
-6PBE d0 seq1 clear shape
 6ZKB d2 map0 remove[0] semantic
 6ZKB d2 map0 remove[0] shape
 7BUB d0 seq0 remove[1] shape
@@ -109,7 +108,6 @@
 9MMW d0 map2 rename[0] shape
 A2M4 d0 map0 remove[0] semantic
 A2M4 d0 map0 remove[0] shape
-A2M4 d0 seq0 clear shape
 A2M4 d0 seq0 insert[0] cst
 A2M4 d0 seq0 insert[0] reparse
 AB8U d0 seq0 remove[0] semantic
@@ -198,12 +196,10 @@ KK5P d0 seq3 insert[0] cst
 KK5P d0 seq3 insert[0] reparse
 KK5P d0 seq3 push cst
 KK5P d0 seq3 push reparse
-KK5P d0 seq4 clear shape
 KK5P d0 seq4 insert[0] cst
 KK5P d0 seq4 insert[0] reparse
 KK5P d0 seq4 push cst
 KK5P d0 seq4 push reparse
-KK5P d0 seq4 remove[0] shape
 L24T/00 d0 map0 remove[0] semantic
 L24T/00 d0 map0 remove[0] shape
 L24T/01 d0 map0 remove[0] semantic
@@ -230,8 +226,6 @@ M5DY d0 map0 rename[0] semantic
 M5DY d0 map0 rename[0] shape
 M5DY d0 seq0 insert[0] cst
 M5DY d0 seq0 insert[0] reparse
-M5DY d0 seq1 clear shape
-M5DY d0 seq1 remove[0] shape
 MXS3 d0 seq0 remove[0] semantic
 MXS3 d0 seq0 remove[0] shape
 NB6Z d0 map0 remove[0] semantic
@@ -264,8 +258,6 @@ RZP5 d0 map0 rename[3] shape
 RZP5 d0 seq0 insert[0] cst
 RZP5 d0 seq0 insert[0] reparse
 RZP5 d0 seq0 push shape
-RZP5 d0 seq1 clear shape
-RZP5 d0 seq1 remove[0] shape
 S4T7 d0 map0 remove[0] semantic
 S4T7 d0 map0 remove[0] shape
 S7BG d0 seq0 remove[0] semantic
@@ -294,8 +286,6 @@ V9D5 d0 map1 rename[0] validator
 V9D5 d0 map1 set-new semantic
 V9D5 d0 map1 set-new shape
 V9D5 d0 map1 set-new validator
-V9D5 d0 map3 clear shape
-V9D5 d0 map3 remove[0] shape
 VJP3/01 d0 map0 remove[0] semantic
 VJP3/01 d0 map0 remove[0] shape
 VJP3/01 d0 map1 clear validator
@@ -318,8 +308,6 @@ XW4D d0 map0 rename[3] shape
 XW4D d0 seq0 insert[0] cst
 XW4D d0 seq0 insert[0] reparse
 XW4D d0 seq0 push shape
-XW4D d0 seq1 clear shape
-XW4D d0 seq1 remove[0] shape
 Y2GN d0 map0 remove[0] semantic
 Y2GN d0 map0 remove[0] shape
 Y79Y/002 d0 seq0 remove[0] semantic

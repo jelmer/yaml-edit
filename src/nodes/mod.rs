@@ -70,7 +70,7 @@
 //!
 //! An explicit-key entry (`? key\n: value\n`) never owns the NEWLINE
 //! ending its value line: the parser leaves it to the MAPPING, right
-//! after the entry. See [`hand_line_break_to_mapping`].
+//! after the entry. See [`trivia`].
 //!
 //! Two carve-outs:
 //! - The **last** entry of a block collection may lack a terminator
@@ -107,7 +107,7 @@
 //!
 //! When inserting a new sibling entry after an existing one, mutation
 //! helpers must first ensure the predecessor is terminated
-//! (`ensure_trailing_newline` in this module).
+//! ([`trivia::terminate`]).
 //!
 //! ## Document-level trivia
 //!
@@ -449,129 +449,6 @@ pub(crate) fn append_children(
     parent.splice_children(end..end, children);
 }
 
-/// Does this subtree end with a NEWLINE leaf, or with any run of
-/// zero-width tokens (like an implicit-null NULL "") whose last
-/// non-empty predecessor is a NEWLINE?
-///
-/// `last_token()` alone can't answer this: it returns the deepest tail
-/// leaf, which may be a zero-width NULL sitting after a NEWLINE inside
-/// the same KEY subtree (`? b\n` under a tagged mapping). Walk `node`'s
-/// own token stream backwards, skipping empty tokens, and check what's
-/// there. The walk is strictly bounded to `node`'s subtree; callers
-/// don't need to worry about escaping into siblings.
-pub(crate) fn trailing_newline_reachable(node: &SyntaxNode) -> bool {
-    // rowan's descendants_with_tokens isn't DoubleEndedIterator, so
-    // materialise the (usually short) tail slice; the walk is still
-    // bounded to `node`'s subtree, avoiding prev_token()'s tree-wide
-    // reach.
-    let mut last_non_empty = None;
-    for el in node.descendants_with_tokens() {
-        if let Some(t) = el.into_token() {
-            if !t.text().is_empty() {
-                last_non_empty = Some(t);
-            }
-        }
-    }
-    last_non_empty.is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
-}
-
-/// Remove the line break that ends `collection`, a block collection whose
-/// last line had none before it was edited. One that is part of a block
-/// scalar's value stays, as removing it would change the value.
-pub(crate) fn unterminate_last_line(collection: &SyntaxNode) {
-    let Some(last) = collection
-        .descendants_with_tokens()
-        .filter_map(|c| c.into_token())
-        .filter(|t| !t.text().is_empty())
-        .last()
-    else {
-        return;
-    };
-    let in_scalar = last
-        .parent_ancestors()
-        .take_while(|n| n != collection)
-        .any(|n| n.kind() == SyntaxKind::SCALAR);
-    if last.kind() == SyntaxKind::NEWLINE && !in_scalar {
-        last.detach();
-    }
-}
-
-/// Does `entry`'s line already end in a NEWLINE, counting the sibling one
-/// that explicit-key entries carry instead of owning it themselves?
-pub(crate) fn entry_line_terminated(entry: &SyntaxNode) -> bool {
-    trailing_newline_reachable(entry)
-        || entry
-            .next_sibling_or_token()
-            .is_some_and(|s| s.kind() == SyntaxKind::NEWLINE)
-}
-
-/// Append a trailing NEWLINE token to `entry` if its line doesn't already end
-/// with one. Used when a block-style entry is about to have a new sibling
-/// appended after it (its trailing newline separates the two entries
-/// visually).
-///
-/// The new sibling must be going in immediately after `entry`: an explicit-key
-/// entry is treated as terminated by a NEWLINE that follows it as a sibling,
-/// which only separates the two if nothing is spliced in between.
-pub(crate) fn ensure_trailing_newline(entry: &SyntaxNode) {
-    if entry_line_terminated(entry) {
-        return;
-    }
-    // Callers splice the new sibling right after an explicit-key entry and
-    // then hand its break to the mapping (`hand_line_break_to_mapping`).
-    if has_child_token(entry, |k| k == SyntaxKind::QUESTION) {
-        append_children(entry, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
-    } else {
-        terminate_last_line(entry);
-    }
-}
-
-/// Move the NEWLINE that `entry` ends with out to follow it in its mapping,
-/// if `entry` is an explicit-key entry: the parser leaves the break after
-/// such an entry's value line to the mapping, along with a comment on that
-/// line and the whitespace before it. Entries built standalone carry the
-/// break themselves, so call this once one is attached.
-pub(crate) fn hand_line_break_to_mapping(entry: &SyntaxNode) {
-    if entry.kind() != SyntaxKind::MAPPING_ENTRY
-        || !has_child_token(entry, |k| k == SyntaxKind::QUESTION)
-    {
-        return;
-    }
-    let Some(parent) = entry.parent() else {
-        return;
-    };
-    let Some(newline) = entry
-        .last_child_or_token()
-        .and_then(|c| c.into_token())
-        .filter(|t| t.kind() == SyntaxKind::NEWLINE)
-    else {
-        return;
-    };
-    let value = entry_value(entry);
-    let mut line_end: Vec<SyntaxToken> =
-        std::iter::successors(newline.prev_token(), |t| t.prev_token())
-            .take_while(|t| {
-                matches!(t.kind(), SyntaxKind::WHITESPACE | SyntaxKind::COMMENT)
-                    && t.parent()
-                        .is_some_and(|p| p == *entry || Some(&p) == value.as_ref())
-            })
-            .collect();
-    if !line_end.iter().any(|t| t.kind() == SyntaxKind::COMMENT) {
-        line_end.clear();
-    }
-    line_end.reverse();
-    line_end.push(newline);
-    let moved: Vec<_> = line_end
-        .into_iter()
-        .map(|t| {
-            t.detach();
-            fresh_token(t.kind(), t.text()).into()
-        })
-        .collect();
-    let at = entry.index() + 1;
-    parent.splice_children(at..at, moved);
-}
-
 /// Lay out the lines after `entry`, a block collection entry just
 /// inserted, so that a block scalar its value ends in does not take them
 /// in.
@@ -691,68 +568,6 @@ pub(crate) fn ending_block_scalar(entry: &SyntaxNode) -> Option<SyntaxNode> {
                 .first_token()
                 .is_some_and(|t| t.text().starts_with(['|', '>']))
         })
-}
-
-/// Add the line break that ends the last line of `node`, where the parser
-/// puts it when another document follows.
-///
-/// The parser hands the break to the innermost construct still open at the
-/// end of the line: the last block entry, a block scalar, the collection
-/// holding a trailing comment line, or the spot in front of an empty value
-/// it went looking for on the next line. `node` must not already end in a
-/// NEWLINE.
-pub(crate) fn terminate_last_line(node: &SyntaxNode) {
-    let newline = || vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()];
-    let insert_before = |n: &SyntaxNode| {
-        let parent = n.parent().expect("a descendant has a parent");
-        parent.splice_children(n.index()..n.index(), newline());
-    };
-
-    let mut cur = node.clone();
-    while let Some(rowan::NodeOrToken::Node(last)) = cur.last_child_or_token() {
-        if last.text_range().is_empty() {
-            match cur.kind() {
-                SyntaxKind::MAPPING_ENTRY if has_child_token(&cur, |k| k == SyntaxKind::COLON) => {}
-                SyntaxKind::MAPPING_ENTRY | SyntaxKind::VALUE => {
-                    insert_before(&last);
-                    return;
-                }
-                _ => break,
-            }
-        } else if !holds_line_end(&last) {
-            break;
-        }
-        cur = last;
-    }
-
-    // An explicit-key entry leaves the break to its mapping.
-    if cur.kind() == SyntaxKind::MAPPING_ENTRY
-        && has_child_token(&cur, |k| k == SyntaxKind::QUESTION)
-    {
-        let parent = cur.parent().expect("a mapping entry has a mapping");
-        let after = cur.index() + 1;
-        parent.splice_children(after..after, newline());
-    } else {
-        append_children(&cur, newline());
-    }
-}
-
-/// Does the parser put the line break after `node`'s last line inside it?
-fn holds_line_end(node: &SyntaxNode) -> bool {
-    match node.kind() {
-        SyntaxKind::MAPPING | SyntaxKind::SEQUENCE => !has_child_token(node, |k| {
-            matches!(k, SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET)
-        }),
-        SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY => true,
-        SyntaxKind::SCALAR => has_child_token(node, |k| {
-            matches!(k, SyntaxKind::PIPE | SyntaxKind::GREATER)
-        }),
-        SyntaxKind::VALUE => node
-            .last_child()
-            .is_some_and(|last| last.text_range().is_empty() || holds_line_end(&last)),
-        SyntaxKind::TAGGED_NODE => node.last_child().is_some_and(|last| holds_line_end(&last)),
-        _ => false,
-    }
 }
 
 /// The `children_with_tokens()` indices of `parent`'s direct child nodes of
@@ -984,6 +799,7 @@ mod replaced_value;
 pub mod scalar_node;
 pub mod sequence;
 pub mod tagged_node;
+pub(crate) mod trivia;
 
 // Re-exports
 pub use alias_node::Alias;

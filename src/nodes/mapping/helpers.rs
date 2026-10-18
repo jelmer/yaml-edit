@@ -5,9 +5,7 @@
 //! Split out of `nodes/mapping/mod.rs` unchanged.
 
 use crate::lex::SyntaxKind;
-use crate::nodes::{
-    append_children, fresh_token, has_child_token, trailing_newline_reachable, Scalar, SyntaxNode,
-};
+use crate::nodes::{append_children, fresh_token, has_child_token, Scalar, SyntaxNode};
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
 
@@ -39,32 +37,6 @@ pub(super) fn value_is_block(value: &SyntaxNode) -> bool {
         .find(|c| c.kind() == SyntaxKind::TAGGED_NODE)
         .unwrap_or_else(|| value.clone());
     has_child_token(&carrier, |k| k == SyntaxKind::NEWLINE)
-}
-
-/// Index just past `entry`'s line terminator among its siblings.
-///
-/// Entries normally own their trailing NEWLINE, so the slot after the entry
-/// is the start of the next line. Explicit-key entries (`? k` / `: v`) are
-/// parsed without one: theirs sits beside them as a sibling, and inserting
-/// at the entry's own index would split it from its line break. A NEWLINE
-/// beside an entry that owns its own is a blank line, and stays below.
-pub(super) fn index_after_entry_line(parent: &SyntaxNode, idx: usize) -> usize {
-    let entry = parent
-        .children_with_tokens()
-        .nth(idx)
-        .and_then(|c| c.into_node())
-        .expect("idx is the position of an entry");
-    if trailing_newline_reachable(&entry) {
-        return idx + 1;
-    }
-    let follows_newline = entry
-        .next_sibling_or_token()
-        .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE);
-    if follows_newline {
-        idx + 2
-    } else {
-        idx + 1
-    }
 }
 
 /// Append a `, ` pair to the end of a MAPPING_ENTRY: the separator between

@@ -451,6 +451,38 @@ fn refill_drained_top_level_collection() {
     );
 }
 
+/// The comment and blank lines after a block root collection are part of
+/// it, so they go back into it when it is refilled.
+#[test]
+fn refill_drained_top_level_collection_with_lines_after_it() {
+    let top = |d: &Document| d.as_mapping().unwrap();
+    let seq = |d: &Document| d.as_sequence().unwrap();
+    check_edit(
+        "- a\n# d\n",
+        |d| {
+            seq(d).clear();
+            seq(d).push("x");
+        },
+        "- x\n# d\n",
+    );
+    check_edit(
+        "a: 1\n# d\n\n# e\n",
+        |d| {
+            top(d).remove("a");
+            top(d).set("x", 1);
+        },
+        "x: 1\n# d\n\n# e\n",
+    );
+    check_edit(
+        "- a\n  # d\n...\n",
+        |d| {
+            seq(d).clear();
+            seq(d).insert(0, "x");
+        },
+        "- x\n  # d\n...\n",
+    );
+}
+
 #[test]
 fn refill_drained_mapping_value() {
     let refill = |d: &Document| {

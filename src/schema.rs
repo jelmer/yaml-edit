@@ -586,10 +586,10 @@ impl SchemaValidator {
 
     /// Determine the scalar type from a tagged scalar
     fn get_tagged_node_type(&self, tagged_node: &TaggedNode) -> ScalarType {
-        match tagged_node.tag().as_deref() {
-            Some("!!timestamp") => ScalarType::Timestamp,
-            Some("!!regex") => ScalarType::Regex,
-            Some("!!binary") => {
+        match tagged_node.normalized_tag().as_deref() {
+            Some(crate::tag::TIMESTAMP) => ScalarType::Timestamp,
+            Some(crate::tag::REGEX) => ScalarType::Regex,
+            Some(crate::tag::BINARY) => {
                 #[cfg(feature = "base64")]
                 return ScalarType::Binary;
                 #[cfg(not(feature = "base64"))]
@@ -1568,6 +1568,23 @@ value: 42
                 ScalarType::Integer,
                 vec![ScalarType::String],
             )])
+        );
+    }
+
+    #[test]
+    fn test_verbatim_tags_validate_as_shorthand() {
+        let validate = |yaml: &str| {
+            SchemaValidator::json()
+                .strict()
+                .validate(&create_test_document(yaml))
+        };
+        let shorthand = validate("t: !!timestamp \"2023-12-25\"\nr: !!regex '\\d+'\n");
+        assert_eq!(shorthand.as_ref().map_err(|e| e.len()), Err(2));
+        assert_eq!(
+            validate(
+                "t: !<tag:yaml.org,2002:timestamp> \"2023-12-25\"\nr: !<tag:yaml.org,2002:regex> '\\d+'\n"
+            ),
+            shorthand,
         );
     }
 }

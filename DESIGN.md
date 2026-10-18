@@ -403,6 +403,10 @@ its name becomes a copy, with the anchor only if later aliases need it.
 `move_after`/`move_before` given another value remove the old entry as
 `remove` does. Sequences have no reordering methods.
 
+Looking up a key that is an alias (`get`, `set`, `rename_key`, ...)
+matches an alias key of the same name, not the node it refers to, and
+the string `"*a"` matches neither.
+
 An alias resolves to the closest preceding definition of its anchor in the
 same document, as the spec requires. In `<<` merge keys only alias nodes are
 merge operands; a quoted `'*a'` is a string.

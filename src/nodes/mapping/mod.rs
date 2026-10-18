@@ -564,9 +564,17 @@ pub(crate) fn is_flow_pair(node: &SyntaxNode) -> bool {
 
 /// Check whether the CST key node matches `key` using semantic equality.
 ///
+/// An alias equals no node under `yaml_eq`, so an alias key is matched by
+/// an alias of the same name instead, not by the node it refers to.
+///
 /// `key_node` may be a raw KEY wrapper; `from_syntax_peeled` unwraps it.
 pub(super) fn key_content_matches(key_node: &SyntaxNode, key: impl crate::AsYaml) -> bool {
-    match crate::as_yaml::YamlNode::from_syntax_peeled(key_node.clone()) {
+    use crate::as_yaml::YamlNode;
+    match YamlNode::from_syntax_peeled(key_node.clone()) {
+        Some(YamlNode::Alias(alias)) => key
+            .as_node()
+            .and_then(|n| crate::nodes::Alias::cast(n.clone()))
+            .is_some_and(|other| other.name() == alias.name()),
         Some(node) => crate::as_yaml::yaml_eq(&node, &key),
         None => false,
     }

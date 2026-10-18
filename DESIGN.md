@@ -113,10 +113,10 @@ marker, so `debug::shape_to_string` leaves it out, and is what to compare an
 edited tree with a re-parse by; `debug::tree_to_string` shows it.
 
 The other is comment lines that an edit leaves at the front of the root
-block mapping of a document without `---`, such as those before an entry
+block collection of a document without `---`, such as those before an entry
 moved to the front, or after a removed first entry. The parser puts such
 lines before the document, at stream level, where they would no longer be
-part of the `Document`'s text, so they stay in the mapping.
+part of the `Document`'s text, so they stay in the collection.
 `debug::shape_to_string` shows them before the document, together with
 anything ahead of them in it, as the parser has them.
 

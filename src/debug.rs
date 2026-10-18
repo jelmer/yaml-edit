@@ -96,7 +96,7 @@ pub fn tree_to_string(node: &SyntaxNode) -> String {
 /// [`Mapping::new_pending_block`]) is left out.
 ///
 /// Comment lines that an edit moved to the front of the root block
-/// mapping of a document without `---` are shown before the document,
+/// collection of a document without `---` are shown before the document,
 /// along with anything else ahead of them in it, as the parser puts them
 /// there. If `node` is that document or within it, they are left out.
 ///
@@ -114,7 +114,7 @@ pub fn shape_to_string(node: &SyntaxNode) -> String {
 }
 
 /// The tokens of `document`, one without `---`, that the parser would put
-/// before it: those up to the first entry of its root block mapping, if
+/// before it: those up to the first entry of its root block collection, if
 /// a comment line comes before that entry.
 fn lines_ahead_of_document(document: &SyntaxNode) -> Vec<rowan::SyntaxToken<crate::yaml::Lang>> {
     let mut tokens = Vec::new();
@@ -123,7 +123,7 @@ fn lines_ahead_of_document(document: &SyntaxNode) -> Vec<rowan::SyntaxToken<crat
             rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::DOC_START => return Vec::new(),
             rowan::NodeOrToken::Token(t) => tokens.push(t),
             rowan::NodeOrToken::Node(n) => {
-                if n.kind() != SyntaxKind::MAPPING {
+                if !matches!(n.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE) {
                     return Vec::new();
                 }
                 tokens.extend(

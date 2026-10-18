@@ -132,3 +132,20 @@ fn remove_first_root_entry_before_comment_line() {
         debug::shape_to_string(reparsed.syntax())
     );
 }
+
+#[test]
+fn remove_first_root_item_before_comment_line() {
+    // As for a root mapping, the comment line stays in the sequence.
+    let source = "- a\n# c\n- b\n";
+    let file = yaml_edit::YamlFile::from_str(source).unwrap();
+    let doc = file.documents().next().unwrap();
+    assert!(doc.as_sequence().unwrap().remove(0).is_some());
+    assert_eq!(file.to_string(), "# c\n- b\n");
+    assert_eq!(doc.to_string(), "# c\n- b\n");
+    common::assert_file_cst_ok(&file);
+    let reparsed = yaml_edit::YamlFile::from_str("# c\n- b\n").unwrap();
+    assert_eq!(
+        debug::shape_to_string(file.syntax()),
+        debug::shape_to_string(reparsed.syntax())
+    );
+}

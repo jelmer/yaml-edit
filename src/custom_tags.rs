@@ -314,7 +314,8 @@ impl CustomTagRegistry {
         handlers.keys().cloned().collect()
     }
 
-    /// Run `f` against the handler registered for `tag`.
+    /// Run `f` against the handler registered for `tag`. Its errors name
+    /// `tag`, since a handler cannot know what it was registered under.
     fn with_handler<T>(
         &self,
         tag: &str,
@@ -324,7 +325,10 @@ impl CustomTagRegistry {
         let handler = handlers
             .get(tag)
             .ok_or_else(|| CustomTagError::new(tag, "Tag not registered"))?;
-        f(handler.as_ref())
+        f(handler.as_ref()).map_err(|error| CustomTagError {
+            tag: tag.to_string(),
+            ..error
+        })
     }
 
     /// Serialize a value using a custom tag
@@ -1693,6 +1697,28 @@ mod tests {
                 "Invalid base64 content",
                 "COMPRESSED[6]:no base64",
             ))
+        );
+    }
+
+    #[test]
+    fn test_registry_errors_name_registered_tag() {
+        let mut registry = CustomTagRegistry::new();
+        registry
+            .register("!date", TimestampHandler::new("%Y-%m-%d"))
+            .unwrap();
+        let expected = CustomTagError::with_content("!date", "Timestamp cannot be empty", "");
+        assert_eq!(registry.validate("!date", ""), Err(expected));
+        assert_eq!(
+            registry.deserialize("!date", "x"),
+            Err(CustomTagError::with_content(
+                "!date",
+                "Expected format: %Y-%m-%d",
+                "x"
+            ))
+        );
+        assert_eq!(
+            registry.serialize("!date", &YamlValue::sequence()),
+            Err(CustomTagError::new("!date", "Value must be a scalar"))
         );
     }
 }

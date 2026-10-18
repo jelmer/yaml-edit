@@ -424,10 +424,9 @@ impl PositionedParseError {
     /// let text = "invalid:\n  - [unclosed";
     /// let parse = Parse::parse_yaml(text);
     ///
-    /// if let Some(err) = parse.positioned_errors().first() {
-    ///     let pos = err.start_position(text);
-    ///     assert_eq!(pos.line, 2);
-    /// }
+    /// let err = &parse.positioned_errors()[0];
+    /// let pos = err.start_position(text);
+    /// assert_eq!(pos.line, 2);
     /// ```
     pub fn start_position(&self, source_text: &str) -> LineColumn {
         byte_offset_to_line_column(source_text, self.range.start as usize)
@@ -635,6 +634,32 @@ mod tests {
         let err = &errors[0];
         let start = err.start_position(text);
         assert_eq!(start.line, 2);
+        assert_eq!(err.kind, ParseErrorKind::UnclosedFlowSequence);
+        assert_eq!(start, LineColumn::new(2, 14));
+        assert_eq!(err.end_position(text), LineColumn::new(2, 14));
+        assert_eq!(err.to_string(), err.message);
+    }
+
+    #[test]
+    fn test_text_position() {
+        let pos = TextPosition::new(3, 7);
+        assert_eq!(pos.len(), 4);
+        assert!(!pos.is_empty());
+        assert!(TextPosition::new(5, 5).is_empty());
+        let range = advanced::text_position_to_range(pos);
+        assert_eq!(range, rowan::TextRange::new(3.into(), 7.into()));
+        assert_eq!(advanced::text_range_to_position(range), pos);
+        let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
+        let value = doc.as_mapping().unwrap().get("b").unwrap();
+        assert_eq!(
+            advanced::syntax_node_range(value.syntax()),
+            rowan::TextRange::new(8.into(), 9.into())
+        );
+    }
+
+    #[test]
+    fn test_indentation_default() {
+        assert_eq!(Indentation::default(), Indentation::Spaces(2));
     }
 
     #[test]

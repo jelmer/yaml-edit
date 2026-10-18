@@ -81,7 +81,7 @@ fn rebuild_entry_with_value(
     let entry_children: Vec<_> = entry.children_with_tokens().collect();
     // Track the column while copying the entry, so the new value's later
     // lines line up under its first.
-    let dash_column = crate::as_yaml::source_base_indent(entry);
+    let dash_column = crate::column::node_column(entry);
     let mut column = dash_column;
 
     // Build a new SEQUENCE_ENTRY with the new value using AsYaml
@@ -555,7 +555,7 @@ impl Sequence {
                     SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
                 )
             })
-            .map_or(0, |entry| crate::as_yaml::source_base_indent(&entry));
+            .map_or(0, |entry| crate::column::node_column(&entry));
         let flow = Some(flow_quoting(&self.0));
         build_entry_value(&mut builder, &value, base, base + 2, flow);
         builder.finish_node();

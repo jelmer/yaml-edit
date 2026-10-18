@@ -326,6 +326,8 @@ impl Validator {
         // Check that a `%TAG` shorthand is only used in its own document
         check_tag_shorthand_scope(node, &mut violations);
 
+        check_explicit_key_separation(node, &mut violations);
+
         // Walk the syntax tree and check for violations
         self.validate_node(node, &mut violations);
 
@@ -2614,6 +2616,32 @@ fn tab_indent(token: &crate::nodes::SyntaxToken, in_flow: bool) -> bool {
         return false;
     }
     token.text().contains('\t')
+}
+
+/// Check that an explicit key indicator is followed by white space or a
+/// line break, as `c-mapping-key` needs. The lexer reads `{?, a}` as an
+/// explicit key all the same, as nothing else could start there.
+fn check_explicit_key_separation(node: &SyntaxNode, violations: &mut Vec<Violation>) {
+    use crate::SyntaxKind;
+
+    for question in node
+        .descendants_with_tokens()
+        .filter_map(|c| c.into_token())
+        .filter(|t| t.kind() == SyntaxKind::QUESTION)
+    {
+        let separated = std::iter::successors(question.next_token(), |t| t.next_token())
+            .find(|t| !t.text().is_empty())
+            .map_or(true, |t| {
+                matches!(t.kind(), SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE)
+            });
+        if !separated {
+            violations.push(Violation::error_at(
+                Rule::Other,
+                question.text_range(),
+                "Explicit key indicator '?' must be followed by white space".to_string(),
+            ));
+        }
+    }
 }
 
 #[cfg(test)]

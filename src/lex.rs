@@ -737,11 +737,16 @@ impl<'a, 'c> LexState<'a, 'c> {
             // that test `a: ?!!r{2}x` opened an explicit key and then read
             // `!!r` as a tag, which stranded the rest of the line; PyYAML
             // reads the value as the plain scalar `?!!r{2}x`.
+            //
+            // In a flow collection a `?` before a flow indicator cannot
+            // start a plain scalar (`ns-plain-first`), so `{?, a}` has an
+            // empty explicit key, as PyYAML reads it. The validator reports
+            // the space missing after it.
             '?' if self.node_can_start()
-                && self
-                    .chars
-                    .peek()
-                    .map_or(true, |(_, next)| is_white_or_break(*next)) =>
+                && self.chars.peek().map_or(true, |(_, next)| {
+                    is_white_or_break(*next)
+                        || (self.flow_depth > 0 && matches!(next, ',' | '[' | ']' | '{' | '}'))
+                }) =>
             {
                 self.push(QUESTION, start_idx, start_idx + 1)
             }

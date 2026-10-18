@@ -313,6 +313,19 @@ fn unterminated_explicit_key_entry_gets_line_break_in_mapping() {
     );
 }
 
+/// A block collection key ending the input has its line break, once the
+/// `:` line follows it, in its last entry, where the parser puts it.
+#[test]
+fn value_set_for_unterminated_block_key() {
+    let set_first = |m: &Mapping| {
+        let key = m.keys().next().unwrap();
+        m.set(key, 1);
+    };
+    assert_eq!(edit_root("? - a", set_first), "? - a\n: 1");
+    assert_eq!(edit_root("? x: y", set_first), "? x: y\n: 1");
+    assert_eq!(edit_root("? a", set_first), "? a\n: 1");
+}
+
 #[test]
 fn explicit_key_block_value_replaced_by_scalar_leaves_line_break_to_mapping() {
     assert_eq!(

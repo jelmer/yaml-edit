@@ -379,10 +379,22 @@ impl MappingEntry {
         // The entry's line break, if it has one, now ends the `:` line,
         // and the key's line gets one of its own. A block key ends its line
         // itself, and the entry then has none, so the `:` line gets one.
+        // One that ends the input unterminated gets its line break where
+        // the parser puts it, in its last entry.
         let mut tokens = Vec::new();
-        let key_ends_line = self.key().is_some_and(|k| trivia::ends_with_line_break(&k));
-        if !key_ends_line {
-            tokens.push(fresh_token(SyntaxKind::NEWLINE, "\n"));
+        let key = self.key();
+        let key_ends_line = key.as_ref().is_some_and(trivia::ends_with_line_break);
+        let key_line_end = key
+            .as_ref()
+            .map(trivia::line_end_holder)
+            .filter(|holder| Some(holder) != key.as_ref());
+        match key_line_end {
+            Some(holder) if !key_ends_line => crate::nodes::append_children(
+                &holder,
+                vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
+            ),
+            _ if !key_ends_line => tokens.push(fresh_token(SyntaxKind::NEWLINE, "\n")),
+            _ => {}
         }
         let indent = self.indent_of_line();
         if indent > 0 {

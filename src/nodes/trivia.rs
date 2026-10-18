@@ -484,7 +484,13 @@ pub(crate) fn unterminate_last(node: &SyntaxNode) {
 /// holding a trailing comment line. `node` must not already end in a
 /// NEWLINE.
 pub(crate) fn terminate_last_line(node: &SyntaxNode, line_break: &str) {
-    let newline = || vec![fresh_token(SyntaxKind::NEWLINE, line_break).into()];
+    let newline = vec![fresh_token(SyntaxKind::NEWLINE, line_break).into()];
+    append_children(&line_end_holder(node), newline);
+}
+
+/// The node the parser puts the line break after `node`'s last line in:
+/// the innermost node at its end that holds its line end, or `node` itself.
+pub(crate) fn line_end_holder(node: &SyntaxNode) -> SyntaxNode {
     let mut cur = node.clone();
     while let Some(rowan::NodeOrToken::Node(last)) = cur.last_child_or_token() {
         if !holds_line_end(&last) {
@@ -492,7 +498,7 @@ pub(crate) fn terminate_last_line(node: &SyntaxNode, line_break: &str) {
         }
         cur = last;
     }
-    append_children(&cur, newline());
+    cur
 }
 
 /// Does the parser put the line break after `node`'s last line inside it?

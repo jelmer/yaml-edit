@@ -490,9 +490,9 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                     comment.text()
                 ));
             }
-            // Blank lines and indentation after a nested collection's last
-            // entry belong to the collection holding the next one, or to
-            // the root collection at the end of the input.
+            // The lines after a nested collection's last entry belong to the
+            // collection holding the next one, or to the root collection at
+            // the end of the input.
             let nested = node
                 .ancestors()
                 .skip(1)
@@ -500,12 +500,7 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
             let trailing_line = node
                 .last_child_or_token()
                 .and_then(|c| c.into_token())
-                .filter(|t| {
-                    !t.text().is_empty()
-                        && (t.kind() != SyntaxKind::NEWLINE
-                            || t.prev_sibling_or_token()
-                                .map_or(true, |p| p.kind() != SyntaxKind::COMMENT))
-                });
+                .filter(|t| !t.text().is_empty());
             if let Some(token) = trailing_line.filter(|_| nested) {
                 return Err(format!(
                     "nested {:?} ends with {:?} {:?} after its last entry",
@@ -707,6 +702,35 @@ mod tests {
         assert_eq!(
             validate_tree(file.syntax()),
             Err("SEQUENCE holds the comment \"# c\" ending an entry's line".to_string())
+        );
+    }
+
+    /// A nested block collection ends in an entry: the lines after it are
+    /// its parent's.
+    #[test]
+    fn test_validate_tree_nested_collection_ending_in_comment() {
+        let file = YamlFile::from_str("a:\n  b: 1\n  # c\n").unwrap();
+        assert_eq!(validate_tree(file.syntax()), Ok(()));
+        let root = file.syntax().first_child().unwrap().first_child().unwrap();
+        let nested = root
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::MAPPING && n != &root)
+            .unwrap();
+        let lines: Vec<_> = root
+            .children_with_tokens()
+            .skip_while(|c| c.kind() == SyntaxKind::MAPPING_ENTRY)
+            .collect();
+        for c in &lines {
+            match c {
+                rowan::NodeOrToken::Node(n) => n.detach(),
+                rowan::NodeOrToken::Token(t) => t.detach(),
+            }
+        }
+        crate::nodes::append_children(&nested, lines);
+        assert_eq!(file.syntax().to_string(), "a:\n  b: 1\n  # c\n");
+        assert_eq!(
+            validate_tree(file.syntax()),
+            Err("nested MAPPING ends with NEWLINE \"\\n\" after its last entry".to_string())
         );
     }
 

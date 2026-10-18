@@ -84,7 +84,7 @@ fn test_set_two_entries_before_deeper_trailing_comment() {
 fn set_after_comment_ending_the_input() {
     assert_eq!(
         edit_src("x:\n  a: 1\n  # end", |m| m.set("b", 2)),
-        "x:\n  a: 1\n  # end\n  b: 2"
+        "x:\n  a: 1\n  b: 2\n  # end"
     );
 }
 

@@ -91,9 +91,9 @@
 //!
 //! The lines after a nested block collection's last entry, blank lines
 //! and comment lines with their INDENT, belong to the collection that
-//! holds the next entry, as the lines between its own entries do. At the
-//! end of the input, blank lines go to the root collection, while comment
-//! lines indented as far as the nested collection stay in it:
+//! holds the next entry, as the lines between its own entries do, or to
+//! the root collection at the end of the document. A nested block
+//! collection always ends in an entry:
 //!
 //! ```text
 //! # m:\n  a: 1\n    # c\n\nz: 1\n

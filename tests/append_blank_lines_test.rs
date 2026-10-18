@@ -50,7 +50,7 @@ fn nested_collection_keeps_blank_lines_at_its_end() {
             .get_mapping("a")
             .unwrap()
             .set("y", 3)),
-        "a:\n  x: 1\n  # c\n  y: 3\n\n"
+        "a:\n  x: 1\n  y: 3\n  # c\n\n"
     );
 }
 

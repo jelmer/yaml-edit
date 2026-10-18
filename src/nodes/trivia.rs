@@ -390,9 +390,8 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
 
 /// Move the lines ending `collection`, a nested block collection, out to
 /// where the parser puts them: after the entry holding it in the
-/// collection that has an entry after that. At the end of the input,
-/// comment lines stay, and the blank lines after them go to the root
-/// collection.
+/// collection that has an entry after that, or the root collection at the
+/// end of the input.
 fn move_trailing_lines_out(collection: &SyntaxNode) {
     let mut lines: Vec<_> = std::iter::successors(collection.last_child_or_token(), |c| {
         c.prev_sibling_or_token()
@@ -409,23 +408,12 @@ fn move_trailing_lines_out(collection: &SyntaxNode) {
             )
         })
         .collect();
-    let holder = match holders
+    let Some(holder) = holders
         .iter()
         .find(|e| e.next_sibling().is_some_and(|n| n.kind() == e.kind()))
-        .cloned()
-    {
-        Some(holder) => holder,
-        None => {
-            let after_comments = lines
-                .iter()
-                .rposition(|t| t.kind() == SyntaxKind::COMMENT)
-                .map_or(0, |i| i + 2);
-            lines = lines.split_off(after_comments.min(lines.len()));
-            match holders.last() {
-                Some(outermost) => outermost.clone(),
-                None => return,
-            }
-        }
+        .or(holders.last())
+    else {
+        return;
     };
     for t in &lines {
         t.detach();

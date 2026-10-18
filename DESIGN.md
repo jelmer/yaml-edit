@@ -212,8 +212,9 @@ block scalar has its line ended by that instead. The parent
 lines and comment lines between entries. Those after a nested collection's
 last entry are between entries of the collection holding the next one, and
 belong to it: in `a:\n  - x\n\nb: 1\n` the blank line is the outer
-mapping's, not the sequence's. At the end of the input, blank lines go to the
-root collection.
+mapping's, not the sequence's. At the end of the document, blank and
+comment lines go to the root collection, so a nested collection always ends
+in an entry.
 
 ```
 MAPPING_ENTRY
@@ -238,9 +239,9 @@ before the first document are children of the file root instead. Mutations
 that add documents or directives must keep a BOM first in the stream.
 
 A new entry at the end of a collection (`set` with a new key, `push`)
-goes after its last entry and any comment lines after that. Blank lines
-after a nested collection belong to its parent, so they stay after the
-new entry: `a:\n  x: 1\n\nb: 2\n` with `y` set in `a` gives
+goes after its last entry and any comment lines after that. Blank and
+comment lines after a nested collection belong to its parent, so they stay
+after the new entry: `a:\n  x: 1\n\nb: 2\n` with `y` set in `a` gives
 `a:\n  x: 1\n  y: 3\n\nb: 2\n`. Those ending the root collection stay
 where they are, and the new entry goes after them: `- x\n\n` with `y`
 pushed gives `- x\n\n- y\n`. Input that has no final line break

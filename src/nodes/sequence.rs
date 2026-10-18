@@ -2240,8 +2240,8 @@ scores:
         }
     }
 
-    /// A comment line ending the sequence stays before the new last item;
-    /// a comment on the last item's own line stays with that item.
+    /// A comment line ending the root sequence stays before the new last
+    /// item; a comment on the last item's own line stays with that item.
     #[test]
     fn test_append_after_trailing_comment() {
         let cases: &[(&str, &str, &str)] = &[
@@ -2260,20 +2260,22 @@ scores:
                 "- 1 # c\n  # d\n- x\n",
                 "- 1 # c\n  # d\n- x\n",
             ),
+            // A comment line ending a nested sequence at the end of the
+            // input is the root collection's, so it stays last.
             (
                 "a:\n  - 1\n    # c\n",
-                "a:\n  - 1\n    # c\n  - x\n",
-                "a:\n  - 1\n    # c\n  - x\n",
+                "a:\n  - 1\n  - x\n    # c\n",
+                "a:\n  - 1\n  - x\n    # c\n",
             ),
             (
                 "a:\n  - 1\n    # c",
-                "a:\n  - 1\n    # c\n  - x",
-                "a:\n  - 1\n    # c\n  - x",
+                "a:\n  - 1\n  - x\n    # c",
+                "a:\n  - 1\n  - x\n    # c",
             ),
             (
                 "a:\n- 1\n  # c\n",
-                "a:\n- 1\n  # c\n- x\n",
-                "a:\n- 1\n  # c\n- x\n",
+                "a:\n- 1\n- x\n  # c\n",
+                "a:\n- 1\n- x\n  # c\n",
             ),
             (
                 "a:\n  - 1 # c\n",
@@ -2325,8 +2327,8 @@ scores:
         let cases: &[(&str, &str, &str)] = &[
             (
                 "- - 1\n    # c\n",
-                "- - 1\n    # c\n  - x\n",
-                "- - 1\n    # c\n  - x\n",
+                "- - 1\n  - x\n    # c\n",
+                "- - 1\n  - x\n    # c\n",
             ),
             ("- - 1 # c\n", "- - 1 # c\n  - x\n", "- - 1 # c\n  - x\n"),
             (

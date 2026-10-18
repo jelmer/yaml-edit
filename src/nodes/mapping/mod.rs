@@ -4,10 +4,7 @@ mod movements;
 
 pub(crate) use helpers::build_block_value_node;
 pub(crate) use helpers::flow_form;
-use helpers::{
-    append_comma_space_to_entry, ensure_top_level_empty_renders_as_flow, index_after_entry_line,
-    FlowInsertPos,
-};
+use helpers::{append_comma_space_to_entry, index_after_entry_line, FlowInsertPos};
 pub(crate) use helpers::{
     block_scalar_body_shift, drop_tagged_anchor, held_anchor, held_anchor_token, source_anchor_text,
 };
@@ -1398,29 +1395,41 @@ impl Mapping {
         }
         // Removing the first entry promotes the next one, but the parent
         // VALUE already supplies its indent, so the INDENT now leading
-        // this mapping would double it. Drop whichever applies.
-        let orphaned_indent = indent_before.or_else(|| {
-            self.0
+        // this mapping would double it. Drop whichever applies. An INDENT
+        // that starts a comment line after the first entry is that line's
+        // own. In a drained mapping the parent's indent goes away with the
+        // collapse below, so a comment line's INDENT stays too.
+        let drained = !self
+            .0
+            .children()
+            .any(|c| c.kind() == SyntaxKind::MAPPING_ENTRY);
+        let orphaned_indent = match indent_before {
+            Some(indent) => {
+                Some(indent).filter(|t| !(drained && crate::yaml::indents_comment_line(t)))
+            }
+            None => self
+                .0
                 .children_with_tokens()
                 .next()
                 .and_then(|c| c.into_token())
-                .filter(|t| t.kind() == SyntaxKind::INDENT)
-        });
+                .filter(|t| {
+                    t.kind() == SyntaxKind::INDENT && !crate::yaml::indents_comment_line(t)
+                }),
+        };
         if let Some(indent) = orphaned_indent {
             indent.detach();
         }
+        if !drained && !self.is_flow_style() {
+            crate::yaml::move_leading_lines_out(&self.0);
+        }
 
-        // Nested mapping drained by remove: collapse to `key: {}` so
-        // `set_path("a.b.c", v) + remove_path(...)` doesn't leave a
-        // dangling indent scaffold. Top-level drain is left alone here
+        // Nested mapping drained by remove: collapse to `key: {}` or
+        // `- {}` so `set_path("a.b.c", v) + remove_path(...)` doesn't
+        // leave a dangling indent scaffold. Top-level drain is left alone here
         // -- callers may add more entries and injecting `{}` would
         // poison subsequent block-style `set`s; `Mapping::clear`
         // handles the explicit-empty case.
-        if !self
-            .0
-            .children()
-            .any(|c| c.kind() == SyntaxKind::MAPPING_ENTRY)
-        {
+        if drained {
             collapse_empty_child_mapping_in_parent(&self.0, removed_terminated);
         }
 
@@ -1517,7 +1526,7 @@ impl Mapping {
             let children: Vec<_> = self.0.children_with_tokens().collect();
             self.remove_entry_at(&children, i, &entry);
         }
-        ensure_top_level_empty_renders_as_flow(&self.0, terminated);
+        crate::yaml::render_empty_collection_as_flow(&self.0, terminated);
     }
 
     /// Rename a key while preserving its value and formatting.

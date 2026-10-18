@@ -35,6 +35,10 @@
 //! renders as doubled indentation and violates the no-stacked-INDENT
 //! check in [`crate::debug::validate_tree`].
 //!
+//! Comment and blank lines before a block collection's first entry live
+//! in the parent as well, so removing the first entry moves the lines
+//! after it out of the collection.
+//!
 //! For flow-style values (`{a: 1}`, `[1, 2]`) all separators live
 //! *inside* the flow SEQUENCE / MAPPING: the parent VALUE has no direct
 //! NEWLINE child. `value_is_block` in `mapping.rs` distinguishes the two

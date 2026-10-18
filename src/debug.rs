@@ -224,6 +224,24 @@ pub fn roundtrip_ok(node: &SyntaxNode) -> Result<(), String> {
     Ok(())
 }
 
+/// The string under which [`YamlValue`](crate::YamlValue) holds `key` as a
+/// mapping key, or `None` if `key` holds an alias, which cannot be
+/// followed here.
+///
+/// ```
+/// use yaml_edit::{debug, Document};
+/// use std::str::FromStr;
+///
+/// let doc = Document::from_str("0x10: a\n{y: 1, x: 2}: b\n").unwrap();
+/// let keys: Vec<_> = doc.as_mapping().unwrap().keys().collect();
+/// assert_eq!(debug::key_string(&keys[0]), Some("16".to_string()));
+/// assert_eq!(debug::key_string(&keys[1]), Some("{x: 2, y: 1}".to_string()));
+/// ```
+pub fn key_string(key: &YamlNode) -> Option<String> {
+    let identity = crate::as_yaml::node_identity(key.syntax(), None).ok()??;
+    Some(identity.key_string())
+}
+
 /// Panic unless `node` passes [`validate_tree`] and [`roundtrip_ok`].
 ///
 /// Unit-test counterpart of the `assert_cst_ok` helper in `tests/common`;

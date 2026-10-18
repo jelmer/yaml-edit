@@ -349,6 +349,12 @@ that comment. So does the indentation of the line after such a
 comment: `{a: 1, # c\n b: 2 # d\n}` reordered gives
 `{b: 2, # d\n a: 1 # c\n}`.
 
+Removing an entry leaves the comment and blank lines after it. If it was
+the first entry of a collection that starts on the line of a `- ` or
+`? ` indicator, those lines cannot join that line, so the collection
+starts on the next one: `- a: 1\n  # c\n  b: 2\n` with `a` removed gives
+`-\n  # c\n  b: 2\n`.
+
 ## Paths, anchors and aliases
 
 Paths look like `server.hosts[0].name`, with `\` escapes for keys that

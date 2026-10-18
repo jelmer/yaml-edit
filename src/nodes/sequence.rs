@@ -1087,8 +1087,16 @@ impl Sequence {
         } else {
             (children.get(i + 1), i..(i + 1))
         };
-        let is_indent =
-            neighbour.is_some_and(|c| c.as_token().is_some_and(|t| t.kind() == SyntaxKind::INDENT));
+        // An INDENT that starts a comment line after the first entry is
+        // that line's own. In a drained sequence the parent's indent goes
+        // away with the collapse, so a comment line's INDENT stays too.
+        let drained = self.is_empty();
+        let is_indent = neighbour.is_some_and(|c| {
+            c.as_token().is_some_and(|t| {
+                t.kind() == SyntaxKind::INDENT
+                    && !((drained || i == 0) && crate::yaml::indents_comment_line(t))
+            })
+        });
         if is_indent {
             self.0.splice_children(range, vec![]);
         }
@@ -1174,11 +1182,13 @@ impl Sequence {
             unterminate_last_line(&self.0);
         }
         // If we just drained the last entry from a block
-        // sequence under a key, collapse the placeholder
-        // scaffold to `key: []` so re-parse still finds
-        // the (now-empty) sequence at that key.
+        // sequence under a key or in a sequence item, collapse
+        // the placeholder scaffold to `key: []` or `- []` so
+        // re-parse still finds the (now-empty) sequence there.
         if self.is_empty() {
             collapse_empty_child_sequence_in_parent(&self.0, removed_terminated);
+        } else if !self.is_flow_style() {
+            crate::yaml::move_leading_lines_out(&self.0);
         }
     }
 
@@ -1212,6 +1222,12 @@ impl Sequence {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn clear(&self) {
+        let terminated = self
+            .0
+            .children()
+            .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            .last()
+            .is_some_and(|e| entry_line_terminated(&e));
         // Remove items from the beginning to avoid recalculating indices
         // Use a safety counter to prevent infinite loops
         let initial_len = self.len();
@@ -1232,6 +1248,7 @@ impl Sequence {
                 "clear() invariant: remove(0) did not reduce length"
             );
         }
+        crate::yaml::render_empty_collection_as_flow(&self.0, terminated);
     }
 
     crate::nodes::ast_node_spans!("sequence");

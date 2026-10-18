@@ -100,6 +100,13 @@ pub trait AsYaml {
     ) -> bool {
         self.build_content(builder, indent, true)
     }
+
+    /// The node this value is copied from: [`as_node`](Self::as_node), or
+    /// for a document its root.
+    #[doc(hidden)]
+    fn value_node(&self) -> Option<SyntaxNode> {
+        self.as_node().cloned()
+    }
 }
 
 /// How strings without an explicit style are quoted inside a flow
@@ -151,8 +158,8 @@ where
 /// The node backing `v`, or for a raw value, the CST it builds.
 fn to_syntax<T: AsYaml + ?Sized>(v: &T) -> Option<SyntaxNode> {
     use crate::lex::SyntaxKind;
-    if let Some(node) = v.as_node() {
-        return Some(node.clone());
+    if let Some(node) = v.value_node() {
+        return Some(node);
     }
     let mut builder = rowan::GreenNodeBuilder::new();
     builder.start_node(SyntaxKind::ROOT.into());
@@ -765,6 +772,10 @@ impl<T: AsYaml + ?Sized> AsYaml for &T {
         quoting: FlowQuoting,
     ) -> bool {
         (*self).build_flow_content(builder, indent, quoting)
+    }
+
+    fn value_node(&self) -> Option<SyntaxNode> {
+        (*self).value_node()
     }
 }
 

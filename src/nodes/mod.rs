@@ -569,7 +569,7 @@ pub(crate) fn build_key_content(
     // flow_form leaves raw values that claim to be inline alone, but a
     // string with line breaks still renders as a block scalar, and a set as
     // a block mapping below its tag. In flow context both fit on one line.
-    let spans_lines = key.as_node().is_none() && {
+    let spans_lines = key.value_node().is_none() && {
         let mut probe = rowan::GreenNodeBuilder::new();
         probe.start_node(SyntaxKind::ROOT.into());
         key.build_content(&mut probe, 0, false);

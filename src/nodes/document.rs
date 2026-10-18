@@ -158,6 +158,11 @@ impl Document {
         })
     }
 
+    fn root_yaml_node(&self) -> Option<crate::as_yaml::YamlNode> {
+        self.root_node()
+            .and_then(crate::as_yaml::YamlNode::from_syntax)
+    }
+
     /// The document's root value, stepping through a tag that annotates it.
     ///
     /// A tag says what the node beneath it means, so `!!map\n a: 1\n` is
@@ -813,30 +818,37 @@ impl Document {
     }
 }
 
+/// As a value, a document is its root node, or null if it has none.
+// TODO: Carry over comments outside the root, as after `---`; they are
+// left out.
 impl AsYaml for Document {
     fn as_node(&self) -> Option<&SyntaxNode> {
         Some(&self.0)
     }
 
     fn kind(&self) -> YamlKind {
-        YamlKind::Document
+        self.root_yaml_node()
+            .map_or(YamlKind::Scalar, |root| AsYaml::kind(&root))
     }
 
     fn build_content(
         &self,
         builder: &mut rowan::GreenNodeBuilder,
-        _indent: usize,
-        _flow_context: bool,
+        indent: usize,
+        flow_context: bool,
     ) -> bool {
-        crate::as_yaml::copy_node_content(builder, &self.0);
-        self.0
-            .last_token()
-            .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
+        match self.root_yaml_node() {
+            Some(root) => root.build_content(builder, indent, flow_context),
+            None => crate::ScalarValue::null().build_content(builder, indent, flow_context),
+        }
     }
 
     fn is_inline(&self) -> bool {
-        // Documents are never inline
-        false
+        self.root_yaml_node().map_or(true, |root| root.is_inline())
+    }
+
+    fn value_node(&self) -> Option<SyntaxNode> {
+        self.root_node()
     }
 }
 #[cfg(test)]
@@ -1902,6 +1914,83 @@ Repository: https://github.com/example/example.git
                     "{src:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn document_as_value_is_its_root() {
+        let built = || {
+            MappingBuilder::new()
+                .pair("b", 2)
+                .pair("c", 3)
+                .build_document()
+        };
+        let cases: [(&str, &dyn Fn(&YamlFile), &str); 8] = [
+            (
+                "- a\n",
+                &|f| f.document().unwrap().as_sequence().unwrap().push(built()),
+                "- a\n- b: 2\n  c: 3\n",
+            ),
+            (
+                "x: 1\n",
+                &|f| {
+                    f.document().unwrap().set("k", built());
+                },
+                "x: 1\nk:\n  b: 2\n  c: 3\n",
+            ),
+            (
+                "x: [1]\n",
+                &|f| {
+                    let doc = f.document().unwrap();
+                    doc.get("x").unwrap().as_sequence().unwrap().push(built());
+                },
+                "x: [1, {b: 2, c: 3}]\n",
+            ),
+            (
+                "- a\n",
+                &|f| {
+                    let seq = f.document().unwrap().as_sequence().unwrap();
+                    seq.push(SequenceBuilder::new().item("p").item("q").build_document());
+                },
+                "- a\n- - p\n  - q\n",
+            ),
+            (
+                "- a\n",
+                &|f| {
+                    let seq = f.document().unwrap().as_sequence().unwrap();
+                    seq.push(Document::from_str("--- |\n  text\n").unwrap());
+                },
+                "- a\n- |\n  text\n",
+            ),
+            (
+                "k: 1\n",
+                &|f| {
+                    let doc = f.document().unwrap();
+                    doc.set("k", Document::from_str("!t\nb: 2\n").unwrap());
+                },
+                "k: !t\n  b: 2\n",
+            ),
+            (
+                "k: 1\n",
+                &|f| {
+                    let doc = f.document().unwrap();
+                    doc.set("k", Document::from_str("&x\nb: 2\n").unwrap());
+                },
+                "k: &x\n  b: 2\n",
+            ),
+            (
+                "- a\n",
+                &|f| {
+                    let seq = f.document().unwrap().as_sequence().unwrap();
+                    seq.push(Document::new());
+                },
+                "- a\n- null\n",
+            ),
+        ];
+        for (input, edit, expected) in cases {
+            let file = YamlFile::from_str(input).unwrap();
+            edit(&file);
+            crate::debug::assert_edited(&file, expected);
         }
     }
 }

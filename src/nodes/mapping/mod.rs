@@ -562,8 +562,8 @@ pub(super) fn key_content_matches(key_node: &SyntaxNode, key: impl crate::AsYaml
     use crate::as_yaml::YamlNode;
     match YamlNode::from_syntax_peeled(key_node.clone()) {
         Some(YamlNode::Alias(alias)) => key
-            .as_node()
-            .and_then(|n| crate::nodes::Alias::cast(n.clone()))
+            .value_node()
+            .and_then(crate::nodes::Alias::cast)
             .is_some_and(|other| other.name() == alias.name()),
         Some(node) => crate::as_yaml::yaml_eq(&node, &key),
         None => false,
@@ -1752,7 +1752,7 @@ impl Mapping {
         let (old_anchor, tag) = key_annotations(old);
         let anchor = old_anchor
             .or_else(|| anchor.map(str::to_string))
-            .or_else(|| new_key.as_node().and_then(source_anchor_text));
+            .or_else(|| new_key.value_node().and_then(|n| source_anchor_text(&n)));
         if let Some(anchor) = anchor {
             builder.token(SyntaxKind::ANCHOR.into(), &anchor);
             builder.token(SyntaxKind::WHITESPACE.into(), " ");

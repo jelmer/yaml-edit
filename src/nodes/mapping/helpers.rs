@@ -147,7 +147,7 @@ pub(crate) fn build_block_value_node(
 /// spans several lines (a non-empty `YamlValue` collection, or a tagged
 /// one), so it can be laid out like a block node from another CST.
 pub(super) fn built_block_node(value: &impl crate::AsYaml) -> Option<SyntaxNode> {
-    if value.as_node().is_some() {
+    if value.value_node().is_some() {
         return None;
     }
     let mut builder = GreenNodeBuilder::new();
@@ -326,7 +326,7 @@ pub(crate) fn flow_form(
     if value.is_inline() {
         return None;
     }
-    let Some(node) = value.as_node() else {
+    let Some(node) = value.value_node() else {
         // A raw value has no comments to place and can be built in flow
         // style directly.
         let mut builder = GreenNodeBuilder::new();
@@ -337,7 +337,7 @@ pub(crate) fn flow_form(
         builder: GreenNodeBuilder::new(),
         pending: Vec::new(),
     };
-    writer.node(node, indent);
+    writer.node(&node, indent);
     // Comments only become pending inside a collection, which flushes them
     // before its closing bracket.
     assert!(writer.pending.is_empty(), "unplaced comments in flow form");

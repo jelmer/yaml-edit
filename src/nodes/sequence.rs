@@ -135,9 +135,9 @@ fn rebuild_entry_with_value(
         .or_else(|| new_anchor.map(str::to_string))
         .or_else(|| {
             value
-                .as_node()
+                .value_node()
                 .filter(|_| value.kind() != YamlKind::Alias)
-                .and_then(crate::nodes::mapping::source_anchor_text)
+                .and_then(|n| crate::nodes::mapping::source_anchor_text(&n))
         });
     // An anchor before the old item is rewritten along with it, unless a
     // comment separates the two, in which case it stays where it is.
@@ -305,8 +305,11 @@ fn build_entry_value(
     // its continuation lines are given relative to that.
     match flow.and_then(|q| crate::nodes::mapping::flow_form(value, 2, q)) {
         Some(flow_value) => build_in(&flow_value, builder, indent(&flow_value), flow),
-        None => match value.as_node().and_then(|n| Some((n, block_scalar_of(n)?))) {
-            Some((node, scalar)) => build_block_scalar(builder, node, &scalar, dash_column + 2),
+        None => match value
+            .value_node()
+            .and_then(|n| Some((block_scalar_of(&n)?, n)))
+        {
+            Some((scalar, node)) => build_block_scalar(builder, &node, &scalar, dash_column + 2),
             None => build_in(value, builder, indent(value), flow),
         },
     }

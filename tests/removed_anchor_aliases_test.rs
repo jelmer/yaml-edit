@@ -363,37 +363,43 @@ fn alias_with_properties_gets_a_copy() {
 }
 
 #[test]
-fn alias_with_properties_is_refused_before_the_edit() {
-    // An alias with a tag cannot take a copy of a tagged node, and one in a
-    // key has no room for its properties and a copy; the removal panics
-    // and leaves the text as it was.
-    // TODO: support these, or report them through a fallible API.
+fn tagged_alias_to_tagged_node_keeps_its_own_tag() {
+    // The tag of the alias is what was written at its place, so it takes
+    // the place of that of the node.
     let cases = [
+        ("a: &a !u 1\nk: !t *a\n", "k: !t 1\n"),
+        ("a: !u &a 1\nk: [!t *a]\nl: *a\n", "k: [!t 1]\nl: !u &a 1\n"),
+        ("a: &a !u\n  x: 1\nk: !t *a\n", "k: !t\n  x: 1\n"),
         (
-            "a: &a !u 1\nk: !t *a\n",
-            "cannot keep alias *a resolving: it has a tag, and the node it refers to has one too",
-        ),
-        (
-            "a: !u &a 1\nk: [!t *a]\n",
-            "cannot keep alias *a resolving: it has a tag, and the node it refers to has one too",
-        ),
-        (
-            "a: &a 1\n? !t *a\n: v\n",
-            "cannot keep alias *a resolving: it is a key with a tag or anchor of its own",
-        ),
-        (
-            "a: &a 1\n? &b *a\n: v\n",
-            "cannot keep alias *a resolving: it is a key with a tag or anchor of its own",
+            "a: &a !u 1\nk: !t &b *a\nl: *a\nm: *b\n",
+            "k: &b !t 1\nl: &a !u 1\nm: *b\n",
         ),
     ];
-    for (source, message) in cases {
+    for (source, expected) in cases {
         let doc = Document::from_str(source).unwrap();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            doc.as_mapping().unwrap().remove("a");
-        }));
-        let error = result.unwrap_err();
-        assert_eq!(error.downcast_ref::<String>().unwrap(), message);
-        assert_eq!(doc.to_string(), source);
+        doc.as_mapping().unwrap().remove("a");
+        assert_edited(&doc, expected);
+    }
+}
+
+#[test]
+fn key_alias_with_properties_gets_a_copy() {
+    let cases = [
+        ("a: &a 1\n? !t *a\n: v\n", "? !t 1\n: v\n"),
+        ("a: &a 1\n? &b *a\n: v\nc: *b\n", "? &b 1\n: v\nc: *b\n"),
+        (
+            "a: &a 1\n? !t &b *a\n: v\nc: *b\n",
+            "? &b !t 1\n: v\nc: *b\n",
+        ),
+        ("a: &a !u 1\n? !t *a\n: v\n", "? !t 1\n: v\n"),
+        ("a: &a\n  x: 1\n? !t *a\n: v\n", "? !t {x: 1}\n: v\n"),
+        ("a: &a 1\nb: {!t *a : v}\n", "b: {!t 1 : v}\n"),
+        ("a: &a 1\nb: {&b *a : v, c: *b}\n", "b: {&b 1 : v, c: *b}\n"),
+    ];
+    for (source, expected) in cases {
+        let doc = Document::from_str(source).unwrap();
+        doc.as_mapping().unwrap().remove("a");
+        assert_edited(&doc, expected);
     }
 }
 

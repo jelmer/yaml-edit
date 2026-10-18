@@ -114,3 +114,29 @@ fn test_append_to_flow_mapping_keeps_trailing_comma() {
         }
     }
 }
+
+#[test]
+fn test_append_to_flow_sequence_keeps_trailing_comma() {
+    for (source, expected) in [
+        ("[1, 2,]", "[1, 2, 9,]"),
+        ("[1, 2, ]\n", "[1, 2, 9, ]\n"),
+        ("[1,]", "[1, 9,]"),
+        ("[ 1, 2 ]", "[ 1, 2, 9 ]"),
+        ("[1,\n  2,\n]\n", "[1,\n  2,\n  9,\n]\n"),
+        ("[1, # x\n 2,]", "[1, # x\n 2, 9,]"),
+        ("[1, 2, # x\n]", "[1, 2, # x\n9,]"),
+        ("[1, 2 # x\n]", "[1, 2 # x\n, 9]"),
+    ] {
+        for push in [true, false] {
+            let file = YamlFile::from_str(source).unwrap();
+            let seq = file.document().unwrap().as_sequence().unwrap();
+            if push {
+                seq.push(9);
+            } else {
+                seq.insert(2, 9);
+            }
+            assert_eq!(file.to_string(), expected, "push: {push}");
+            assert_edited(&file, expected);
+        }
+    }
+}

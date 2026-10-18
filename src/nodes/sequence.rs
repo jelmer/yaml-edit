@@ -894,16 +894,9 @@ impl Sequence {
         let sep_ws = fresh_token(SyntaxKind::WHITESPACE, " ");
 
         if index >= entry_positions.len() {
-            // Append: add `, ` to the previous last entry, then
-            // splice before the `]`.
-            if let Some(&last_pos) = entry_positions.last() {
-                let last_entry = children[last_pos].as_node().expect("SEQUENCE_ENTRY");
-                let ends_with_comma = last_entry
-                    .last_token()
-                    .is_some_and(|t| t.kind() == SyntaxKind::COMMA);
-                if !ends_with_comma {
-                    append_children(last_entry, vec![comma.into(), sep_ws.into()]);
-                }
+            let entry = |pos: &usize| children[*pos].as_node().expect("SEQUENCE_ENTRY");
+            if let Some((last, rest)) = entry_positions.split_last() {
+                crate::nodes::hand_over_flow_end(entry(last), rest.last().map(entry), &new_entry);
             }
             self.0
                 .splice_children(right_bracket_pos..right_bracket_pos, vec![new_entry.into()]);

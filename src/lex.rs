@@ -1506,7 +1506,8 @@ impl BlockScalarBody {
 ///
 /// This is the column of the collection the scalar is a node of, as the
 /// parser records it: the `-` or `?` introducing it, or for a mapping value
-/// the start of its key (the `:` itself when the key is empty or explicit).
+/// the start of its key (the `:` itself when the key is empty or explicit,
+/// as an explicit key's mapping sits at its `?` and `:`).
 /// When the header opens its line, the collection is the one the previous
 /// line with content leaves open. With none, as at the document root, it
 /// is column 0, as for the parser and libyaml, although YAML 1.2 puts the
@@ -1529,12 +1530,14 @@ fn block_scalar_parent_column(tokens: &[(SyntaxKind, &str)]) -> usize {
         return match line[last].0 {
             DASH | QUESTION => column(last),
             COLON => {
-                let key_start = line[..last]
+                // The key starts after the block indicators opening the
+                // line. An explicit `:` is one of them, as its value may be
+                // a compact mapping: in `: b: |1` that sits at `b`.
+                let key = line[..last]
                     .iter()
-                    .rposition(|(kind, _)| matches!(kind, DASH | QUESTION))
-                    .map_or(0, |indicator| indicator + 1);
-                let key = (key_start..last)
-                    .find(|&index| !matches!(line[index].0, WHITESPACE | INDENT))
+                    .position(|(kind, _)| {
+                        !matches!(kind, WHITESPACE | INDENT | DASH | QUESTION | COLON)
+                    })
                     .unwrap_or(last);
                 column(key)
             }
@@ -2887,6 +2890,145 @@ double: "quoted""#;
                 (WHITESPACE, " "),
                 (LEFT_BRACKET, "["),
                 (STRING, "a"),
+                (RIGHT_BRACKET, "]"),
+                (NEWLINE, "\n"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_block_scalar_indentation_indicator_in_explicit_value() {
+        use SyntaxKind::*;
+        // The value of an explicit key counts from the mapping's column, 2
+        // here, whether the header follows the `:` or sits on its own line.
+        let head = [
+            (STRING, "x"),
+            (COLON, ":"),
+            (NEWLINE, "\n"),
+            (INDENT, "  "),
+            (QUESTION, "?"),
+            (WHITESPACE, " "),
+            (STRING, "a"),
+            (NEWLINE, "\n"),
+            (INDENT, "  "),
+            (COLON, ":"),
+        ];
+        let tail = [
+            (INDENT, "     "),
+            (STRING, "x"),
+            (NEWLINE, "\n"),
+            (INDENT, "  "),
+            (LEFT_BRACKET, "["),
+            (STRING, "a"),
+            (RIGHT_BRACKET, "]"),
+            (NEWLINE, "\n"),
+        ];
+        assert_eq!(
+            lex("x:\n  ? a\n  : |1\n     x\n  [a]\n"),
+            [
+                &head[..],
+                &[(WHITESPACE, " "), (PIPE, "|"), (INT, "1"), (NEWLINE, "\n")],
+                &tail,
+            ]
+            .concat()
+        );
+        assert_eq!(
+            lex("x:\n  ? a\n  :\n    |1\n     x\n  [a]\n"),
+            [
+                &head[..],
+                &[
+                    (NEWLINE, "\n"),
+                    (INDENT, "    "),
+                    (PIPE, "|"),
+                    (INT, "1"),
+                    (NEWLINE, "\n"),
+                ],
+                &tail,
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
+    fn test_block_scalar_indentation_indicator_in_compact_explicit_value() {
+        use SyntaxKind::*;
+        // A compact mapping after an explicit `:` sits at its first key's
+        // column, 2 here, and the indicator counts from there.
+        let head = [
+            (QUESTION, "?"),
+            (WHITESPACE, " "),
+            (STRING, "a"),
+            (NEWLINE, "\n"),
+            (COLON, ":"),
+            (WHITESPACE, " "),
+            (STRING, "b"),
+            (COLON, ":"),
+        ];
+        let tail = [
+            (INDENT, "     "),
+            (STRING, "x"),
+            (NEWLINE, "\n"),
+            (INDENT, "  "),
+            (STRING, "c"),
+            (COLON, ":"),
+            (WHITESPACE, " "),
+            (LEFT_BRACKET, "["),
+            (STRING, "d"),
+            (RIGHT_BRACKET, "]"),
+            (NEWLINE, "\n"),
+        ];
+        assert_eq!(
+            lex("? a\n: b: |1\n     x\n  c: [d]\n"),
+            [
+                &head[..],
+                &[(WHITESPACE, " "), (PIPE, "|"), (INT, "1"), (NEWLINE, "\n")],
+                &tail,
+            ]
+            .concat()
+        );
+        assert_eq!(
+            lex("? a\n: b:\n    |1\n     x\n  c: [d]\n"),
+            [
+                &head[..],
+                &[
+                    (NEWLINE, "\n"),
+                    (INDENT, "    "),
+                    (PIPE, "|"),
+                    (INT, "1"),
+                    (NEWLINE, "\n"),
+                ],
+                &tail,
+            ]
+            .concat()
+        );
+        // Inside a sequence entry the compact mapping is at column 4.
+        assert_eq!(
+            lex("- ? a\n  : b: |1\n       x\n    c: [d]\n"),
+            vec![
+                (DASH, "-"),
+                (WHITESPACE, " "),
+                (QUESTION, "?"),
+                (WHITESPACE, " "),
+                (STRING, "a"),
+                (NEWLINE, "\n"),
+                (INDENT, "  "),
+                (COLON, ":"),
+                (WHITESPACE, " "),
+                (STRING, "b"),
+                (COLON, ":"),
+                (WHITESPACE, " "),
+                (PIPE, "|"),
+                (INT, "1"),
+                (NEWLINE, "\n"),
+                (INDENT, "       "),
+                (STRING, "x"),
+                (NEWLINE, "\n"),
+                (INDENT, "    "),
+                (STRING, "c"),
+                (COLON, ":"),
+                (WHITESPACE, " "),
+                (LEFT_BRACKET, "["),
+                (STRING, "d"),
                 (RIGHT_BRACKET, "]"),
                 (NEWLINE, "\n"),
             ]

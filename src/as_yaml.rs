@@ -937,9 +937,6 @@ pub(crate) fn shift_inner_lines(text: &str, delta: isize) -> Cow<'_, str> {
     Cow::Owned(shifted)
 }
 
-// TODO: use crate::column::node_column in nodes/sequence.rs and drop this.
-pub(crate) use crate::column::node_column as source_base_indent;
-
 /// Base column to measure a copied collection's indentation from: for a
 /// flow collection, whose continuation lines are only bound to the
 /// indentation of the line it starts on, that line's indentation;

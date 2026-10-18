@@ -885,3 +885,47 @@ fn node_followed_by_content_on_later_lines() {
         );
     }
 }
+
+/// A comment line after an explicit key or value is trivia of the entry or
+/// the mapping, not part of the key.
+#[test]
+fn comment_line_after_explicit_key() {
+    use yaml_edit::validator::Validator;
+    use yaml_edit::YamlValue;
+    // Each input, and the same document without its comment line.
+    for (yaml, uncommented) in [
+        ("? a\n  # c\n: v\n", Some("? a\n: v\n")),
+        ("? [1]\n  # c\n: v\n", Some("? [1]\n: v\n")),
+        ("? a\n# c\n: v\n", Some("? a\n: v\n")),
+        ("? a\n  # c\n", Some("? a\n")),
+        ("? a\n  # c\nb: 1\n", Some("? a\nb: 1\n")),
+        ("b: 1\n? a\n  # c\n: v\n", Some("b: 1\n? a\n: v\n")),
+        ("x:\n  ? a\n    # c\n  : v\n", Some("x:\n  ? a\n  : v\n")),
+        ("? a\n: v\n  # c\nb: 1", Some("? a\n: v\nb: 1")),
+        ("? - a\n# c\n: v\n", Some("? - a\n: v\n")),
+        // In a block scalar the line is content, not a comment.
+        ("? |\n  x\n  # c\n: v", None),
+        // TODO: the comment line's INDENT stays in the key's collection, so
+        // it ends up in the key's string form ("- a\n  ").
+        ("? - a\n  # c\n: v\n", None),
+        ("? x: 1\n  # c\n: v\n", None),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
+        assert_eq!(file.to_string(), yaml);
+        assert_file_cst_ok(&file);
+        let violations: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| v.message)
+            .collect();
+        assert_eq!(violations, Vec::<String>::new(), "{yaml:?}");
+        let value = YamlValue::parse_raw(yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
+        if let Some(uncommented) = uncommented {
+            assert_eq!(
+                value,
+                YamlValue::parse_raw(uncommented).unwrap(),
+                "{yaml:?}"
+            );
+        }
+    }
+}

@@ -379,8 +379,13 @@ impl Parser {
                             let clears_indicator =
                                 self.tokens[self.tokens.len() - 2].1.len() > question_column;
                             // If it's a DASH, this is a sequence continuation which was already
-                            // handled by parse_value() above - don't try to parse it as multiline scalar
-                            if *token_after_indent != SyntaxKind::DASH && clears_indicator {
+                            // handled by parse_value() above - don't try to parse it as multiline scalar.
+                            // A comment line is the entry's trivia, as after
+                            // any other node: reading it as key content left
+                            // an empty SCALAR in the KEY (`? a\n  # c\n: v\n`).
+                            if !matches!(token_after_indent, SyntaxKind::DASH | SyntaxKind::COMMENT)
+                                && clears_indicator
+                            {
                                 // This is a multiline scalar key continuation
                                 self.bump(); // consume newline
                                 let key_indent =

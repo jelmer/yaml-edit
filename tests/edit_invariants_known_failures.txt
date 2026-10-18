@@ -1,10 +1,6 @@
 # Known failures of tests/edit_invariants.rs, as
 # <case> <document> <collection> <operation> <check>.
 # Regenerate with UPDATE_KNOWN_FAILURES=1 cargo test --test edit_invariants
-26DV d0 map3 set[0] cst
-26DV d0 map3 set[0] reparse
-26DV d0 map4 set[0] cst
-26DV d0 map4 set[0] reparse
 2AUY d0 seq0 insert[0] cst
 2AUY d0 seq0 insert[0] reparse
 35KP d0 map0 remove[0] semantic
@@ -35,12 +31,6 @@
 5MUD d0 map0 rename[0] shape
 5NYZ d0 map0 remove[0] semantic
 5NYZ d0 map0 remove[0] shape
-5T43 d0 map0 rename[0] semantic
-5T43 d0 map0 rename[0] shape
-5T43 d0 map1 rename[0] semantic
-5T43 d0 map1 rename[0] shape
-5WE3 d0 map0 rename[1] cst
-5WE3 d0 map0 rename[1] reparse
 5WE3 d0 seq0 insert[0] cst
 5WE3 d0 seq0 insert[0] reparse
 5WE3 d0 seq0 remove[1] shape
@@ -62,8 +52,6 @@
 6KGN d0 map0 reorder-reversed shape
 6PBE d0 map0 remove[0] semantic
 6PBE d0 map0 remove[0] shape
-6PBE d0 map0 rename[0] cst
-6PBE d0 map0 rename[0] reparse
 6PBE d0 seq0 insert[0] cst
 6PBE d0 seq0 insert[0] reparse
 6PBE d0 seq0 push shape
@@ -73,8 +61,6 @@
 7BUB d0 seq0 remove[1] shape
 7FWL d0 map0 remove[0] semantic
 7FWL d0 map0 remove[0] shape
-7FWL d0 map0 set[0] semantic
-7FWL d0 map0 set[0] shape
 7Z25 d1 map0 remove[0] semantic
 7Z25 d1 map0 remove[0] shape
 87E4 d0 map0 remove[0] semantic
@@ -103,10 +89,6 @@
 9KAX d5 map0 remove[0] shape
 9KAX d6 map0 remove[0] semantic
 9KAX d6 map0 remove[0] shape
-9MMW d0 map1 rename[0] semantic
-9MMW d0 map1 rename[0] shape
-9MMW d0 map2 rename[0] semantic
-9MMW d0 map2 rename[0] shape
 A2M4 d0 map0 remove[0] semantic
 A2M4 d0 map0 remove[0] shape
 A2M4 d0 seq0 clear shape
@@ -116,8 +98,6 @@ AB8U d0 seq0 remove[0] semantic
 AB8U d0 seq0 remove[0] shape
 BU8L d0 map0 remove[0] semantic
 BU8L d0 map0 remove[0] shape
-C2DT d0 map0 rename[0] semantic
-C2DT d0 map0 rename[0] shape
 C4HZ d0 seq0 insert[0] cst
 C4HZ d0 seq0 insert[0] reparse
 C4HZ d0 seq0 push shape
@@ -128,8 +108,6 @@ D88J d0 map0 remove[0] semantic
 D88J d0 map0 remove[0] shape
 D9TU d0 map0 remove[0] semantic
 D9TU d0 map0 remove[0] shape
-DC7X d0 seq0 clear validator
-DC7X d0 seq0 remove[0] validator
 DFF7 d0 map0 rename[2] semantic
 DFF7 d0 map0 rename[2] shape
 DK95/00 d0 map0 remove[0] semantic
@@ -140,10 +118,6 @@ DK95/03 d0 map0 remove[0] semantic
 DK95/03 d0 map0 remove[0] shape
 DK95/08 d0 map0 remove[0] semantic
 DK95/08 d0 map0 remove[0] shape
-E76Z d0 map0 move-before-first[1] cst
-E76Z d0 map0 move-before-first[1] reparse
-E76Z d0 map0 set[1] cst
-E76Z d0 map0 set[1] reparse
 F2C7 d0 seq0 insert[0] cst
 F2C7 d0 seq0 insert[0] reparse
 F8F9 d0 map0 remove[0] shape
@@ -153,8 +127,6 @@ FTA2 d0 seq0 remove[0] semantic
 FTA2 d0 seq0 remove[0] shape
 H3Z8 d0 map0 remove[0] semantic
 H3Z8 d0 map0 remove[0] shape
-HMQ5 d0 map0 set[0] cst
-HMQ5 d0 map0 set[0] reparse
 J7PZ d0 seq0 insert[0] cst
 J7PZ d0 seq0 insert[0] reparse
 J7PZ d0 seq0 push shape
@@ -168,20 +140,10 @@ JEF9/02 d0 seq0 remove[0] shape
 JEF9/02 d0 seq0 set[0] shape
 JQ4R d0 map0 remove[0] semantic
 JQ4R d0 map0 remove[0] shape
-K3WX d0 map0 rename[0] cst
-K3WX d0 map0 rename[0] reparse
-KK5P d0 map1 rename[0] semantic
-KK5P d0 map1 rename[0] shape
+K3WX d0 map0 rename[0] semantic
+K3WX d0 map0 rename[0] shape
+K3WX d0 map0 rename[0] validator
 KK5P d0 map1 set-new shape
-KK5P d0 map2 rename[0] semantic
-KK5P d0 map2 rename[0] shape
-KK5P d0 map3 rename[0] cst
-KK5P d0 map3 rename[0] reparse
-KK5P d0 map4 rename[0] semantic
-KK5P d0 map4 rename[0] shape
-KK5P d0 map5 rename[0] semantic
-KK5P d0 map5 rename[0] shape
-KK5P d0 map5 rename[0] validator
 KK5P d0 seq0 insert[0] cst
 KK5P d0 seq0 insert[0] reparse
 KK5P d0 seq0 push cst
@@ -219,15 +181,12 @@ M29M d0 map0 remove[0] shape
 M2N8/00 d0 map0 set-new semantic
 M2N8/00 d0 map0 set-new shape
 M2N8/00 d0 map0 set-new validator
-M2N8/00 d0 map0 set[0] semantic
 M2N8/00 d0 map0 set[0] shape
 M2N8/00 d0 seq0 push cst
 M2N8/00 d0 seq0 remove[0] semantic
 M2N8/00 d0 seq0 remove[0] shape
 M2N8/01 d0 map0 remove[0] semantic
 M2N8/01 d0 map0 remove[0] shape
-M5DY d0 map0 rename[0] semantic
-M5DY d0 map0 rename[0] shape
 M5DY d0 seq0 insert[0] cst
 M5DY d0 seq0 insert[0] reparse
 M5DY d0 seq1 clear shape
@@ -250,17 +209,9 @@ PW8X d0 map0 reorder-reversed shape
 PW8X d0 map0 set-new shape
 PW8X d0 map1 set-new shape
 PW8X d0 map2 set-new shape
-PW8X d0 seq0 set[2] semantic
-PW8X d0 seq0 set[2] shape
-PW8X d0 seq0 set[2] validator
-PW8X d0 seq0 set[3] semantic
-PW8X d0 seq0 set[3] shape
-PW8X d0 seq0 set[4] reparse
 PW8X input cst
 Q9WF d0 map0 remove[0] semantic
 Q9WF d0 map0 remove[0] shape
-Q9WF d0 map0 set-new validator
-RZP5 d0 map0 rename[3] shape
 RZP5 d0 seq0 insert[0] cst
 RZP5 d0 seq0 insert[0] reparse
 RZP5 d0 seq0 push shape
@@ -305,16 +256,11 @@ W42U d0 seq1 clear shape
 W42U d0 seq1 remove[1] cst
 W42U d0 seq1 remove[1] semantic
 W42U d0 seq1 remove[1] shape
-W5VH d0 map0 move-after-last[0] panic
-W5VH d0 map0 move-before-first[1] panic
-W5VH d0 map0 reorder-reversed panic
-X38W d0 map0 move-before-first[1] cst
-X38W d0 map0 move-before-first[1] reparse
-X38W d0 map0 set[1] cst
-X38W d0 map0 set[1] reparse
+X38W d0 map0 move-after-last[0] validator
+X38W d0 map0 move-before-first[1] validator
+X38W d0 map0 reorder-reversed validator
 X8DW d0 map0 remove[0] semantic
 X8DW d0 map0 remove[0] shape
-XW4D d0 map0 rename[3] shape
 XW4D d0 seq0 insert[0] cst
 XW4D d0 seq0 insert[0] reparse
 XW4D d0 seq0 push shape

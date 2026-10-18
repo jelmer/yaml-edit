@@ -90,17 +90,6 @@ struct Target {
     path: Option<Vec<Step>>,
 }
 
-/// The string form `YamlValue` uses for a mapping key, or `None` if it
-/// cannot be worked out here (an alias key).
-fn key_string(key: &YamlNode) -> Option<String> {
-    match key {
-        YamlNode::Scalar(s) => Some(s.as_string()),
-        YamlNode::TaggedNode(t) => Some(t.value().map_or_else(|| t.to_string(), |s| s.as_string())),
-        YamlNode::Alias(_) => None,
-        _ => Some(key.to_string()),
-    }
-}
-
 /// Record the `YamlValue` path of every collection under `node`. Collections
 /// inside keys, or under a key whose string form is unknown, get no path.
 fn semantic_paths(
@@ -118,7 +107,9 @@ fn semantic_paths(
                 }
                 if let Some(value) = entry.value_node() {
                     let child = path.clone().and_then(|p| {
-                        let k = key.as_ref().map_or(Some(String::new()), key_string)?;
+                        let k = key
+                            .as_ref()
+                            .map_or(Some(String::new()), debug::key_string)?;
                         Some([p, vec![Step::Key(k)]].concat())
                     });
                     semantic_paths(&value, child, out);
@@ -417,7 +408,7 @@ fn expected_value(
             let ks = |i: usize| -> Option<String> {
                 nth_key(&m, i)
                     .as_ref()
-                    .map_or(Some(String::new()), key_string)
+                    .map_or(Some(String::new()), debug::key_string)
             };
             match op {
                 MapOp::Remove(i) => {

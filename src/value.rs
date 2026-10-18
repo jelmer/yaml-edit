@@ -208,9 +208,9 @@ impl YamlValue {
         match self {
             YamlValue::Scalar(s) => s.tag(),
             YamlValue::Sequence(_) | YamlValue::Mapping(_) => None,
-            YamlValue::Set(_) => Some("!!set"),
-            YamlValue::OrderedMapping(_) => Some("!!omap"),
-            YamlValue::Pairs(_) => Some("!!pairs"),
+            YamlValue::Set(_) => Some(crate::tag::SET),
+            YamlValue::OrderedMapping(_) => Some(crate::tag::OMAP),
+            YamlValue::Pairs(_) => Some(crate::tag::PAIRS),
             YamlValue::Tagged(tag, _) => Some(tag),
         }
     }
@@ -587,9 +587,11 @@ impl AsYaml for YamlValue {
             YamlValue::Scalar(_) => YamlKind::Scalar,
             YamlValue::Sequence(_) => YamlKind::Sequence,
             YamlValue::Mapping(_) => YamlKind::Mapping,
-            YamlValue::Set(_) => YamlKind::Tagged(std::borrow::Cow::Borrowed("!!set")),
-            YamlValue::OrderedMapping(_) => YamlKind::Tagged(std::borrow::Cow::Borrowed("!!omap")),
-            YamlValue::Pairs(_) => YamlKind::Tagged(std::borrow::Cow::Borrowed("!!pairs")),
+            YamlValue::Set(_) => YamlKind::Tagged(std::borrow::Cow::Borrowed(crate::tag::SET)),
+            YamlValue::OrderedMapping(_) => {
+                YamlKind::Tagged(std::borrow::Cow::Borrowed(crate::tag::OMAP))
+            }
+            YamlValue::Pairs(_) => YamlKind::Tagged(std::borrow::Cow::Borrowed(crate::tag::PAIRS)),
             YamlValue::Tagged(tag, _) => YamlKind::Tagged(std::borrow::Cow::Owned(tag.clone())),
         }
     }

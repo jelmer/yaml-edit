@@ -405,15 +405,7 @@ impl Validator {
                 check_flow_collection_commas(node, violations);
                 check_flow_continuation_indent(node, violations);
             }
-            SyntaxKind::KEY => {
-                check_anchor_and_alias(node, violations);
-                check_single_content_node(node, violations);
-            }
-            SyntaxKind::SEQUENCE_ENTRY => {
-                check_anchor_and_alias(node, violations);
-                check_single_content_node(node, violations);
-            }
-            SyntaxKind::VALUE => {
+            SyntaxKind::KEY | SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::VALUE => {
                 check_anchor_and_alias(node, violations);
                 check_single_content_node(node, violations);
             }
@@ -1092,9 +1084,7 @@ fn check_trailing_content_after_quoted(node: &SyntaxNode, violations: &mut Vec<V
                 crate::SyntaxKind::NEWLINE => {
                     found_newline = true;
                 }
-                crate::SyntaxKind::WHITESPACE | crate::SyntaxKind::COMMENT => {
-                    // These are allowed after quoted strings
-                }
+                // Whitespace and comments are allowed after quoted strings
                 _ => {}
             }
         }
@@ -1777,15 +1767,9 @@ fn check_doc_start_token_content(
     while let Some(sibling) = current {
         let next = match &sibling {
             rowan::NodeOrToken::Token(t) => {
-                match t.kind() {
-                    crate::SyntaxKind::NEWLINE => {
-                        found_newline = true;
-                        break;
-                    }
-                    crate::SyntaxKind::WHITESPACE | crate::SyntaxKind::COMMENT => {
-                        // Whitespace and comments are OK
-                    }
-                    _ => {}
+                if t.kind() == crate::SyntaxKind::NEWLINE {
+                    found_newline = true;
+                    break;
                 }
                 t.next_sibling_or_token()
             }

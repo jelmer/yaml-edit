@@ -177,3 +177,36 @@ fn remove_last_item_of_sequence() {
         "o:\n  top:\n    - 1\nx: 1\n",
     );
 }
+
+#[test]
+fn clear_top_level_mapping() {
+    let clear = |d: &Document| d.as_mapping().unwrap().clear();
+    check_edit("b: 2\n", clear, "{}\n");
+    check_edit("b: 2", clear, "{}");
+    check_edit("a: 1\nb: 2\n", clear, "{}\n");
+    check_edit("a: 1\nb: 2", clear, "{}");
+    check_edit("? b\n", clear, "{}\n");
+    check_edit("b: |\n  x\n", clear, "{}\n");
+    check_edit("b:\n  c: 1\n", clear, "{}\n");
+    check_edit("--- b: 2\n", clear, "--- {}\n");
+    check_edit("!t\nb: 2\n", clear, "!t\n{}\n");
+    check_edit("!t\nb: 2", clear, "!t\n{}");
+}
+
+#[test]
+fn clear_mapping_in_sequence_item() {
+    let clear = |d: &Document| {
+        d.as_sequence()
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .clear()
+    };
+    check_edit("- b: 2\n- 3\n", clear, "- {}\n- 3\n");
+    check_edit("- a: 1\n  b: 2\n- 3\n", clear, "- {}\n- 3\n");
+    check_edit("- b: 2\n", clear, "- {}\n");
+    check_edit("- b: 2", clear, "- {}");
+    check_edit("- &a\n  b: 2\n- 3\n", clear, "- &a\n  {}\n- 3\n");
+}

@@ -1399,6 +1399,10 @@ impl Mapping {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn clear(&self) {
+        let terminated = self
+            .entries()
+            .last()
+            .is_some_and(|e| entry_line_terminated(e.syntax()));
         // Entries are removed one by one, as keeping aliases resolving may
         // rewrite a later key.
         while let Some((i, entry)) = self
@@ -1416,7 +1420,7 @@ impl Mapping {
             let children: Vec<_> = self.0.children_with_tokens().collect();
             self.remove_entry_at(&children, i, &entry);
         }
-        ensure_top_level_empty_renders_as_flow(&self.0);
+        ensure_top_level_empty_renders_as_flow(&self.0, terminated);
     }
 
     /// Rename a key while preserving its value and formatting.

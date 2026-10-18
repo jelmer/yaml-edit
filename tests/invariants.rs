@@ -518,7 +518,7 @@ fn top_level_mapping_clear_renders_flow_empty() {
     let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
     doc.as_mapping().unwrap().clear();
     assert_cst_ok(&doc);
-    assert_eq!(doc.to_string(), "{}");
+    assert_eq!(doc.to_string(), "{}\n");
     let reparsed = Document::from_str(&doc.to_string()).unwrap();
     assert!(reparsed.as_mapping().is_some());
     assert!(reparsed.as_mapping().unwrap().is_empty());

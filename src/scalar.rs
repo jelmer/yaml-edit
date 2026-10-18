@@ -1240,6 +1240,12 @@ impl ScalarValue {
         self.render(parent_column, indent, None)
     }
 
+    /// Render the scalar for a flow collection, quoted only where it has to
+    /// be.
+    pub(crate) fn to_flow_string(&self) -> String {
+        self.render(0, 2, Some(FlowQuoting::Minimal))
+    }
+
     /// The tag written in front of the content: the explicit one, or the
     /// one special data types carry when none is set.
     fn rendered_tag(&self) -> Option<&str> {

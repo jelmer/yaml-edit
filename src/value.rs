@@ -17,6 +17,12 @@ pub enum YamlValue {
     /// A sequence of values (list/array)
     Sequence(Vec<YamlValue>),
     /// A mapping of key-value pairs
+    ///
+    /// Converted from a document, each key is held by its string form:
+    /// the canonical value of a scalar (`0x10` is `"16"`, `~` is
+    /// `"null"`) and a flow rendering of a collection, with mapping
+    /// entries sorted (`{y: 1, x: 2}` is `"{x: 2, y: 1}"`). Equal keys
+    /// have the same string form, however they are written.
     Mapping(BTreeMap<String, YamlValue>),
     /// A set of unique values (!!set)
     Set(BTreeSet<String>),

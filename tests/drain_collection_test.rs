@@ -348,20 +348,12 @@ fn drain_sequence_whose_last_item_ends_in_a_comment() {
             .remove(0)
             .unwrap();
     };
-    check_edit(
-        "? a\n:\n  - x  # c\nb: 1\n",
-        clear,
-        "? a\n:\n  # c\n  []\nb: 1\n",
-    );
-    check_edit(
-        "? a\n:\n  - x  # c\nb: 1\n",
-        remove,
-        "? a\n:\n  # c\n  []\nb: 1\n",
-    );
-    check_edit("a:\n  - x  # c\nb: 1\n", clear, "a:\n  # c\n  []\nb: 1\n");
+    check_edit("? a\n:\n  - x  # c\nb: 1\n", clear, "? a\n: []\nb: 1\n");
+    check_edit("? a\n:\n  - x  # c\nb: 1\n", remove, "? a\n: []\nb: 1\n");
+    check_edit("a:\n  - x  # c\nb: 1\n", clear, "a: []\nb: 1\n");
     check_edit(
         "- - x  # c\n- 1\n",
         |d| item_sequence(d).clear(),
-        "- []\n# c\n- 1\n",
+        "- []\n- 1\n",
     );
 }

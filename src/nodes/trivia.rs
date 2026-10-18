@@ -1,5 +1,6 @@
 //! The trivia between collection entries: the line break ending a block
-//! collection entry's line, and the separator after a flow collection entry.
+//! collection entry's line, and the separator after a flow collection entry,
+//! and removing an entry along with the trivia that belongs to it.
 //!
 //! A block entry normally owns the NEWLINE ending its last line, but the
 //! parser puts it deeper when the entry ends in a nested block value, leaves
@@ -7,6 +8,7 @@
 //! is none at the end of unterminated input. A flow entry owns the comma
 //! after it and the white space around that.
 
+use super::empty_collection::render_empty;
 use super::{
     append_children, entry_value, fresh_token, has_child_token, is_block_scalar, replace_children,
     SyntaxNode, SyntaxToken,
@@ -93,6 +95,116 @@ fn last_non_empty_token(node: &SyntaxNode) -> Option<SyntaxToken> {
 /// where an entry on the next line goes.
 pub(crate) fn index_after_line(entry: &SyntaxNode) -> usize {
     entry.index() + 1 + usize::from(line_end(entry) == LineEnd::Sibling)
+}
+
+/// Splice `entry` out of `collection`, a block or flow collection, with
+/// the trivia that belongs to it.
+///
+/// In a block collection that is the INDENT before it, the comment ending
+/// its line and the line break after that when the parser put those beside
+/// it, and blank lines before it when there are blank lines after it too,
+/// so that the gap doesn't double. Comment lines around it stay. In a flow
+/// collection, the entry already holds its separator; the new last entry
+/// loses the one leading to the removed one, unless that had its own.
+pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
+    let kind = entry.kind();
+    let is_last = !std::iter::successors(entry.next_sibling(), |n| n.next_sibling())
+        .any(|n| n.kind() == kind);
+    let end = line_end(entry);
+    let flow = has_child_token(collection, |k| {
+        matches!(k, SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET)
+    });
+
+    let mut trivia = Vec::new();
+    if !flow {
+        trivia.extend(
+            entry
+                .prev_sibling_or_token()
+                .filter(|c| c.kind() == SyntaxKind::INDENT),
+        );
+        let mut after =
+            std::iter::successors(entry.next_sibling_or_token(), |c| c.next_sibling_or_token())
+                .peekable();
+        if matches!(end, LineEnd::Sibling | LineEnd::AfterComment) {
+            for c in after.by_ref() {
+                let newline = c.kind() == SyntaxKind::NEWLINE;
+                trivia.push(c);
+                if newline {
+                    break;
+                }
+            }
+        }
+        if after
+            .peek()
+            .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE)
+        {
+            trivia.extend(blank_lines_before(entry));
+        }
+    }
+
+    entry.detach();
+    for c in trivia {
+        c.detach();
+    }
+
+    let drained = !collection.children().any(|n| n.kind() == kind);
+    if flow {
+        if is_last && !has_comma(entry) {
+            if let Some(last) = collection.children().filter(|n| n.kind() == kind).last() {
+                FlowSeparator::strip(&last);
+            }
+        }
+    } else {
+        // An INDENT now leading the collection would double the indent
+        // its parent supplies, unless it starts a comment line.
+        let leading_indent = collection
+            .first_child_or_token()
+            .and_then(|c| c.into_token())
+            .filter(|t| t.kind() == SyntaxKind::INDENT && !crate::yaml::indents_comment_line(t));
+        if let Some(indent) = leading_indent {
+            indent.detach();
+        }
+        if !drained {
+            crate::yaml::move_leading_lines_out(collection);
+        }
+    }
+
+    // A drained top-level collection is left empty here, so that entries
+    // added later are still written in block style; `clear` writes it as
+    // `{}` or `[]`.
+    // TODO: the empty document reads back as null rather than `{}`.
+    // Writing `{}` needs a way to keep later entries in block style
+    // that does not leave the tree unlike a re-parse.
+    if drained {
+        render_empty(collection, end.is_terminated(), false);
+    }
+    // The end of the input keeps its lack of a final line break.
+    if is_last && !end.is_terminated() && !flow {
+        unterminate_last(collection);
+    }
+}
+
+/// The blank lines directly before `entry`, past the INDENT leading it.
+fn blank_lines_before(entry: &SyntaxNode) -> Vec<rowan::SyntaxElement<super::Lang>> {
+    let mut before =
+        std::iter::successors(entry.prev_sibling_or_token(), |c| c.prev_sibling_or_token())
+            .skip_while(|c| c.kind() == SyntaxKind::INDENT)
+            .peekable();
+    let mut newlines = Vec::new();
+    while let Some(newline) = before.next_if(|c| c.kind() == SyntaxKind::NEWLINE) {
+        newlines.push(newline);
+    }
+    // The first line break ends a line with content, unless that content
+    // holds its own: a comment line, or an explicit-key entry.
+    let ends_line = match before.next() {
+        Some(rowan::NodeOrToken::Node(n)) => !ends_with_line_break(&n),
+        Some(rowan::NodeOrToken::Token(_)) => true,
+        None => false,
+    };
+    if ends_line {
+        newlines.pop();
+    }
+    newlines
 }
 
 /// Give `entry`, an attached block collection entry, a line break ending

@@ -349,6 +349,14 @@ that comment. So does the indentation of the line after such a
 comment: `{a: 1, # c\n b: 2 # d\n}` reordered gives
 `{b: 2, # d\n a: 1 # c\n}`.
 
+Removing an entry or item takes along the comment at the end of its
+line, and leaves the comment lines before and after it: `- x\n# c\n- a  # d\n- y\n`
+with `a` removed gives `- x\n# c\n- y\n`. A comment line above an entry
+usually describes it, but removing it too would drop text the caller
+did not ask to remove. Blank lines on both sides of the entry would
+merge into a double gap, so only those after it are kept:
+`a: 1\n\nb: 2\n\nc: 3\n` with `b` removed gives `a: 1\n\nc: 3\n`.
+
 Removing an entry leaves the comment and blank lines after it. If it was
 the first entry of a collection that starts on the line of a `- ` or
 `? ` indicator, those lines cannot join that line, so the collection

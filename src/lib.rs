@@ -637,16 +637,22 @@ mod tests {
 
     #[test]
     fn test_multiline_document_byte_offsets() {
-        // Leading comment is stream-level and can't be attached to a
-        // `Document`, so parse via `YamlFile` to reach the document.
+        // The leading comment is part of the document; its mapping starts
+        // on the next line.
         let text = "# Comment\nname: Alice\n\nage: 30";
         let doc = YamlFile::from_str(text).unwrap().document().unwrap();
 
         let range = doc.byte_range();
-        assert_eq!(range.start, 10);
+        assert_eq!(range.start, 0);
         assert_eq!(range.end, 30);
 
         let start = doc.start_position(text);
+        assert_eq!(start.line, 1);
+        assert_eq!(start.column, 1);
+
+        let mapping = doc.as_mapping().unwrap();
+        assert_eq!(mapping.byte_range().start, 10);
+        let start = mapping.start_position(text);
         assert_eq!(start.line, 2);
         assert_eq!(start.column, 1);
     }

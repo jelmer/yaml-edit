@@ -152,15 +152,6 @@ pub(crate) fn move_leading_lines_out(collection: &SyntaxNode) {
     let Some(parent) = collection.parent() else {
         return;
     };
-    if parent.kind() == SyntaxKind::DOCUMENT
-        && leading.iter().any(|t| t.kind() == SyntaxKind::COMMENT)
-        && !has_child_token(&parent, |k| k == SyntaxKind::DOC_START)
-    {
-        // The parser puts them at stream level, outside the DOCUMENT, but
-        // there they would drop out of the document's text.
-        // debug::shape_to_string allows for this.
-        return;
-    }
     let starts_with_comment = leading[0].kind() == SyntaxKind::COMMENT;
     let mut lines: Vec<rowan::NodeOrToken<SyntaxNode, rowan::SyntaxToken<Lang>>> = Vec::new();
     match leading[0].prev_token() {
@@ -599,6 +590,18 @@ impl YamlFile {
             bom.detach();
             self.place_bom(bom);
         }
+        // Before the first document, the stream's blank lines, and comments
+        // unless it starts with `---`, are that document's.
+        let prefix: Vec<_> = self.0.children_with_tokens().collect();
+        if !needs_start
+            && !(has_child_token(document.syntax(), |k| k == SyntaxKind::DOC_START)
+                && has_child_token(&self.0, |k| k == SyntaxKind::COMMENT))
+        {
+            for c in &prefix {
+                c.detach();
+            }
+            crate::nodes::insert_children(document.syntax(), 0, prefix);
+        }
         crate::nodes::append_children(&self.0, vec![document.0.into()]);
     }
 
@@ -844,12 +847,85 @@ mod tests {
         );
     }
 
+    /// Comments before a document without `---` are part of it; those
+    /// before a `---`, a directive or no document are the stream's.
+    #[test]
+    fn test_leading_comment_placement() {
+        let tree =
+            |src: &str| crate::debug::tree_to_string(YamlFile::from_str(src).unwrap().syntax());
+        assert_eq!(
+            tree("# c\n\nfoo\n"),
+            "\
+DOCUMENT
+  COMMENT: \"# c\"
+  NEWLINE: \"\\\\n\"
+  NEWLINE: \"\\\\n\"
+  SCALAR
+    STRING: \"foo\"
+  NEWLINE: \"\\\\n\"
+"
+        );
+        assert_eq!(
+            tree("# c\n--- foo\n"),
+            "\
+COMMENT: \"# c\"
+NEWLINE: \"\\\\n\"
+DOCUMENT
+  DOC_START: \"---\"
+  WHITESPACE: \" \"
+  SCALAR
+    STRING: \"foo\"
+  NEWLINE: \"\\\\n\"
+"
+        );
+        assert_eq!(
+            tree("# c\n%YAML 1.2\n--- foo\n"),
+            "\
+COMMENT: \"# c\"
+NEWLINE: \"\\\\n\"
+DIRECTIVE
+  DIRECTIVE: \"%YAML 1.2\"
+NEWLINE: \"\\\\n\"
+DOCUMENT
+  DOC_START: \"---\"
+  WHITESPACE: \" \"
+  SCALAR
+    STRING: \"foo\"
+  NEWLINE: \"\\\\n\"
+"
+        );
+        assert_eq!(
+            tree("# c\n"),
+            "\
+COMMENT: \"# c\"
+NEWLINE: \"\\\\n\"
+"
+        );
+        assert_eq!(
+            tree("a\n...\n# c\nb\n"),
+            "\
+DOCUMENT
+  SCALAR
+    STRING: \"a\"
+  NEWLINE: \"\\\\n\"
+  DOC_END: \"...\"
+  NEWLINE: \"\\\\n\"
+COMMENT: \"# c\"
+NEWLINE: \"\\\\n\"
+DOCUMENT
+  SCALAR
+    STRING: \"b\"
+  NEWLINE: \"\\\\n\"
+"
+        );
+    }
+
     #[test]
     fn test_add_directive_keeps_bom_first() {
         for (src, expected) in [
             ("\u{feff}a: 1\n", "\u{feff}%YAML 1.2\n---\na: 1\n"),
             ("\u{feff}--- a\n", "\u{feff}%YAML 1.2\n--- a\n"),
-            ("\u{feff}# c\na: 1\n", "\u{feff}%YAML 1.2\n# c\n---\na: 1\n"),
+            ("\u{feff}# c\na: 1\n", "\u{feff}%YAML 1.2\n---\n# c\na: 1\n"),
             ("\u{feff}", "\u{feff}%YAML 1.2\n"),
         ] {
             let yaml = YamlFile::from_str(src).unwrap();
@@ -955,6 +1031,23 @@ mod tests {
         yaml.push_document(Document::from_str("b: 2\n").unwrap());
         assert_eq!(yaml.to_string(), "# c\nb: 2\n");
         assert_parser_shape(&yaml);
+    }
+
+    /// The lines before the first document are its own, except for comments
+    /// before its `---`.
+    #[test]
+    fn test_push_first_document_after_lines() {
+        for (src, pushed, expected) in [
+            ("# c\n", "b: 2\n", "# c\nb: 2\n"),
+            ("\n# c\n\n", "- 1\n", "\n# c\n\n- 1\n"),
+            ("# c\n", "--- b\n", "# c\n--- b\n"),
+            ("\n\n", "--- b\n", "\n\n--- b\n"),
+        ] {
+            let yaml = YamlFile::from_str(src).unwrap();
+            yaml.push_document(Document::from_str(pushed).unwrap());
+            assert_eq!(yaml.to_string(), expected, "{src:?} + {pushed:?}");
+            assert_parser_shape(&yaml);
+        }
     }
 
     #[test]

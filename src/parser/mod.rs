@@ -293,20 +293,24 @@ impl<'a> Parser<'a> {
     fn parse(mut self) -> ParsedYaml {
         self.builder.start_node(SyntaxKind::ROOT.into());
 
-        // A BOM and blank lines in front of the first document's content
-        // belong to that document, so a Document round-trips them. A comment
-        // or directive makes them part of the stream prefix instead.
-        let prefix_in_document = !matches!(
-            self.next_kind_past(&[
-                SyntaxKind::BOM,
-                SyntaxKind::WHITESPACE,
-                SyntaxKind::NEWLINE,
-                SyntaxKind::INDENT,
-            ]),
-            None | Some(
-                SyntaxKind::COMMENT | SyntaxKind::DIRECTIVE | SyntaxKind::EOF | SyntaxKind::DOC_END
-            )
-        );
+        // A BOM, blank lines and comments in front of the first document's
+        // content belong to that document, so a Document round-trips them.
+        // Before a directive, a `---` after a comment or no document at all,
+        // they are part of the stream prefix instead.
+        let blank = [
+            SyntaxKind::BOM,
+            SyntaxKind::WHITESPACE,
+            SyntaxKind::NEWLINE,
+            SyntaxKind::INDENT,
+        ];
+        let prefix_in_document =
+            match self.next_kind_past(&[&blank[..], &[SyntaxKind::COMMENT]].concat()) {
+                None | Some(SyntaxKind::DIRECTIVE | SyntaxKind::EOF | SyntaxKind::DOC_END) => false,
+                Some(SyntaxKind::DOC_START) => {
+                    self.next_kind_past(&blank) == Some(SyntaxKind::DOC_START)
+                }
+                Some(_) => true,
+            };
         if !prefix_in_document {
             self.skip_tokens(&[SyntaxKind::BOM]);
             self.skip_ws_and_newlines();
@@ -386,6 +390,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::WHITESPACE,
             SyntaxKind::NEWLINE,
             SyntaxKind::INDENT,
+            SyntaxKind::COMMENT,
         ]);
 
         // Handle document start marker

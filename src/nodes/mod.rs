@@ -116,11 +116,12 @@
 //!
 //! ## Document-level trivia
 //!
-//! Trivia outside the root node lives in DOCUMENT: a leading BOM and
-//! blank lines before the root, and the NEWLINE and blank lines after a
-//! scalar or flow-collection root. When a comment or directive comes
-//! first in the stream, the trivia before it is a child of the file root
-//! instead, ahead of the first DOCUMENT. A BOM must stay first in the
+//! Trivia outside the root node lives in DOCUMENT: a leading BOM, blank
+//! lines and comment lines before the root, and the NEWLINE and blank
+//! lines after a scalar or flow-collection root. The file root holds
+//! only what is outside every document: the lines before a `---` that
+//! follows a comment, or before a directive, the lines after a `...`
+//! and a stream of nothing but comments. A BOM must stay first in the
 //! stream, so `---` and directives are inserted after it.
 //!
 //! ## Implicit-null values

@@ -474,9 +474,11 @@ impl Parser {
                 // explicit value's at the `:`'s.
                 SyntaxKind::DASH
                     if self
+                        .ctx
                         .explicit_key_column
                         .is_some_and(|column| indent < column)
                         || self
+                            .ctx
                             .explicit_value_column
                             .is_some_and(|column| indent < column) =>
                 {
@@ -498,8 +500,9 @@ impl Parser {
                 // mapping's next entry: `? !!str\nb: 1\n` keys a null and
                 // keeps `b` a sibling, as PyYAML reads it.
                 _ if self
+                    .ctx
                     .explicit_key_column
-                    .max(self.explicit_value_column)
+                    .max(self.ctx.explicit_value_column)
                     .is_some_and(|column| indent <= column) =>
                 {
                     return None

@@ -82,6 +82,16 @@ pub(super) struct BlockCtx {
     /// collection's column, and in `o:\n  k:\n    |1\n` nothing else
     /// records that `k`'s mapping sits at column 2.
     pub(super) mapping_block_value_column: Option<usize>,
+    /// Column of the `?` whose key is being parsed, if any.
+    ///
+    /// A `:` line at or left of that column is the entry's value, so an
+    /// annotation in the key must not adopt it as the block node it
+    /// introduces: `-\n  ? &e\n  : &a\n` is one mapping, as the YAML test
+    /// suite's PW8X expects, not an anchor whose body is a nested one.
+    pub(super) explicit_key_column: Option<usize>,
+    /// Column of the `:` whose explicit value is being parsed, if any, the
+    /// counterpart of `explicit_key_column`.
+    pub(super) explicit_value_column: Option<usize>,
 }
 
 /// Internal parser state
@@ -118,16 +128,6 @@ pub(super) struct Parser {
     /// the scalar `x\ny`). Nested under a key it may not: `a: |\nb: 1\n` has
     /// an empty scalar and keeps `b` as a sibling.
     pub(super) node_is_document_root: bool,
-    /// Column of the `?` whose key is being parsed, if any.
-    ///
-    /// A `:` line at or left of that column is the entry's value, so an
-    /// annotation in the key must not adopt it as the block node it
-    /// introduces: `-\n  ? &e\n  : &a\n` is one mapping, as the YAML test
-    /// suite's PW8X expects, not an anchor whose body is a nested one.
-    pub(super) explicit_key_column: Option<usize>,
-    /// Column of the `:` whose explicit value is being parsed, if any, the
-    /// counterpart of `explicit_key_column`.
-    pub(super) explicit_value_column: Option<usize>,
     /// Current depth of nested flow collections ([...] / {...}).
     pub(super) flow_depth: usize,
     /// Depth of `parse_value_with_base_indent` recursion (block and flow).
@@ -172,8 +172,6 @@ impl Parser {
             ctx: BlockCtx::default(),
             annotation_in_value_position: false,
             node_is_document_root: false,
-            explicit_key_column: None,
-            explicit_value_column: None,
             current_line_indent: 0,
             flow_depth: 0,
             nesting_depth: 0,

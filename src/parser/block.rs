@@ -67,8 +67,8 @@ impl Parser {
         // which the validator reports.
         let indicator_column = [
             self.ctx.sequence_entry_column,
-            self.explicit_key_column,
-            self.explicit_value_column,
+            self.ctx.explicit_key_column,
+            self.ctx.explicit_value_column,
         ]
         .into_iter()
         .flatten()
@@ -113,7 +113,7 @@ impl Parser {
             // left of the `?`, but the colon opens the key's null-key entry
             // (M2N8).
             if self.current() == Some(SyntaxKind::COLON)
-                && self.explicit_key_column.is_some_and(|column| {
+                && self.ctx.explicit_key_column.is_some_and(|column| {
                     self.error_context.current_location().1.saturating_sub(1) <= column
                 })
             {
@@ -392,13 +392,12 @@ impl Parser {
             self.builder.start_node(SyntaxKind::KEY.into());
 
             // A `:` line at or left of the `?` is this entry's value, so an
-            // annotation inside the key must not adopt it.
-            let outer_explicit_key = self.explicit_key_column;
-            self.explicit_key_column = Some(question_column);
-            // A `?` opening a line at this mapping's own column is its next
-            // entry, not part of the key's scalar: `- ? k\n  ? c\n` is two
-            // entries, as saphyr and PyYAML both read it.
+            // annotation inside the key must not adopt it. A `?` opening a
+            // line at this mapping's own column is its next entry, not part
+            // of the key's scalar: `- ? k\n  ? c\n` is two entries, as saphyr
+            // and PyYAML both read it.
             let ctx = BlockCtx {
+                explicit_key_column: Some(question_column),
                 mapping_value_column: Some(question_column),
                 ..self.ctx
             };
@@ -407,7 +406,6 @@ impl Parser {
             });
 
             self.builder.finish_node();
-            self.explicit_key_column = outer_explicit_key;
 
             self.skip_ws_and_newlines();
 
@@ -416,8 +414,10 @@ impl Parser {
                 let colon_column = self.error_context.current_location().1.saturating_sub(1);
                 self.bump(); // consume ':'
                 self.skip_whitespace();
-                let outer_explicit_value = self.explicit_value_column;
-                self.explicit_value_column = Some(colon_column);
+                let value_ctx = BlockCtx {
+                    explicit_value_column: Some(colon_column),
+                    ..self.ctx
+                };
 
                 // `:\n- c\n` -- an indentless sequence value, whose entries
                 // sit at the `:`'s own column rather than past it. The shared
@@ -429,13 +429,15 @@ impl Parser {
                         self.bump();
                     }
                     self.bump(); // consume the newline
-                    self.parse_sequence_with_base_indent(base_indent);
+                    self.scoped(value_ctx, |p| {
+                        p.parse_sequence_with_base_indent(base_indent)
+                    });
                     self.builder.finish_node();
                 } else {
                     // A value on the colon's own line is bounded by this
                     // mapping's column, as for an implicit key: in
                     // `x:\n  ? a\n  : |\n  b: 1\n` the `b` line is not body.
-                    let mut ctx = self.ctx;
+                    let mut ctx = value_ctx;
                     if !matches!(
                         self.current(),
                         Some(SyntaxKind::NEWLINE | SyntaxKind::COMMENT)
@@ -446,7 +448,6 @@ impl Parser {
                         p.parse_value_after_colon(true, Some(question_column))
                     });
                 }
-                self.explicit_value_column = outer_explicit_value;
             } else {
                 // No value, just a key - create explicit null value
                 self.emit_implicit_null_value();
@@ -591,10 +592,13 @@ impl Parser {
         };
         self.scoped(ctx, |p| {
             p.builder.start_node(SyntaxKind::KEY.into());
-            let outer_explicit_key = p.explicit_key_column;
-            p.explicit_key_column = Some(question_column);
-            p.parse_explicit_key_node(question_column, question_column);
-            p.explicit_key_column = outer_explicit_key;
+            let key_ctx = BlockCtx {
+                explicit_key_column: Some(question_column),
+                ..p.ctx
+            };
+            p.scoped(key_ctx, |p| {
+                p.parse_explicit_key_node(question_column, question_column)
+            });
             p.builder.finish_node();
 
             p.skip_ws_and_newlines();
@@ -603,10 +607,13 @@ impl Parser {
                 let colon_column = p.error_context.current_location().1.saturating_sub(1);
                 p.bump(); // consume ':'
                 p.skip_whitespace();
-                let outer_explicit_value = p.explicit_value_column;
-                p.explicit_value_column = Some(colon_column);
-                p.parse_value_after_colon(false, Some(question_column));
-                p.explicit_value_column = outer_explicit_value;
+                let value_ctx = BlockCtx {
+                    explicit_value_column: Some(colon_column),
+                    ..p.ctx
+                };
+                p.scoped(value_ctx, |p| {
+                    p.parse_value_after_colon(false, Some(question_column))
+                });
             } else {
                 p.emit_implicit_null_value();
             }

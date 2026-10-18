@@ -2189,4 +2189,122 @@ m:
             "!!omap item \"a\" is not a mapping with a single entry"
         );
     }
+
+    #[test]
+    fn resolve_error_display_all_variants() {
+        let s = |x: &str| x.to_string();
+        for (error, text) in [
+            (
+                ResolveError::UndefinedAlias { alias: s("a") },
+                "alias to undefined anchor \"a\"",
+            ),
+            (
+                ResolveError::RecursiveAlias { alias: s("a") },
+                "alias \"a\" refers to an anchor it is nested in",
+            ),
+            (
+                ResolveError::InvalidMergeOperand { operand: s("1") },
+                "merge key operand \"1\" is not a mapping",
+            ),
+            (
+                ResolveError::KeyCollision {
+                    first: s("1"),
+                    second: s("'1'"),
+                },
+                "distinct keys \"1\" and \"'1'\" have the same string form",
+            ),
+            (
+                ResolveError::DuplicateKey {
+                    first: s("a"),
+                    second: s("a"),
+                },
+                "duplicate mapping key: \"a\" equals \"a\"",
+            ),
+            (
+                ResolveError::InvalidSetContent { content: s("[a]") },
+                "!!set content \"[a]\" is not a mapping",
+            ),
+            (
+                ResolveError::InvalidSetMember { member: s("[a]") },
+                "!!set member \"[a]\" is not a scalar",
+            ),
+            (
+                ResolveError::NonNullSetValue {
+                    member: s("a"),
+                    value: s("1"),
+                },
+                "!!set member \"a\" has non-null value \"1\"",
+            ),
+            (
+                ResolveError::InvalidPairsItem {
+                    tag: s("!!omap"),
+                    item: s("a"),
+                },
+                "!!omap item \"a\" is not a mapping with a single entry",
+            ),
+            (
+                ResolveError::InvalidPairsContent {
+                    tag: s("!!pairs"),
+                    content: s("{}"),
+                },
+                "!!pairs content \"{}\" is not a sequence",
+            ),
+            (
+                ResolveError::UnresolvedAlias { alias: s("a") },
+                "alias \"a\" cannot be converted without resolving it; use get_resolved to resolve aliases",
+            ),
+            (
+                ResolveError::ExtraNode { node: s("x") },
+                "node \"x\" follows another in the same place",
+            ),
+        ] {
+            assert_eq!(error.to_string(), text);
+        }
+    }
+
+    #[test]
+    fn registry_contains_and_names() {
+        let d = doc("a: &x 1\nb: &y [2]\nc: &x 3\n");
+        let registry = AnchorRegistry::from_document(&d);
+        assert!(registry.contains("x"));
+        assert!(registry.contains("y"));
+        assert!(!registry.contains("z"));
+        let mut names: Vec<_> = registry.anchor_names().collect();
+        names.sort_unstable();
+        assert_eq!(names, ["x", "y"]);
+        assert_eq!(AnchorRegistry::default().anchor_names().count(), 0);
+    }
+
+    #[test]
+    fn merged_mapping_accessors() {
+        let d = doc("s: &s {x: 1, y: 2}\nm:\n  <<: *s\n  y: 3\ne: {}\n");
+        let registry = d.build_anchor_registry();
+        let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+        let merged = m.merged(&registry).unwrap();
+        assert_eq!(merged.base().to_string(), m.to_string());
+        assert!(merged.registry().contains("s"));
+        assert!(merged.contains_key("x"));
+        assert!(!merged.contains_key("<<"));
+        assert!(!merged.contains_key("z"));
+        assert_eq!(
+            merged.values().map(|v| v.to_string()).collect::<Vec<_>>(),
+            ["3", "1"]
+        );
+        assert!(!merged.is_empty());
+        assert_eq!(format!("{merged:?}"), "MergedMapping { len: 2 }");
+        let e = d.as_mapping().unwrap().get_mapping("e").unwrap();
+        assert!(e.merged(&registry).unwrap().is_empty());
+    }
+
+    #[test]
+    fn merged_view_accessors() {
+        let d = doc("s: &s {x: 1}\n<<: *s\ny: 2\n");
+        let view = d.merged().unwrap().unwrap();
+        assert!(view.contains_key("x"));
+        assert!(view.contains_key("y"));
+        assert!(!view.contains_key("z"));
+        assert!(view.registry().contains("s"));
+        assert_eq!(format!("{view:?}"), "MergedView");
+        assert!(doc("- a\n").merged().unwrap().is_none());
+    }
 }

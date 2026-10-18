@@ -182,13 +182,13 @@ pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNo
             let at = match last_entry(collection, kind) {
                 Some(last) => {
                     elements.extend(indent());
-                    // TODO: sequences and mappings disagree on whether the
-                    // blank lines ending a collection go before or after a
-                    // new last entry.
-                    if kind == SyntaxKind::SEQUENCE_ENTRY {
-                        index_after_last_line(collection, &last)
-                    } else {
+                    // Blank lines ending a nested collection separate it
+                    // from what follows; those ending the document stay
+                    // there.
+                    if is_root(collection) {
                         end_slot_index(collection)
+                    } else {
+                        index_after_last_line(collection, &last)
                     }
                 }
                 None => {
@@ -214,6 +214,17 @@ pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNo
 /// The last entry of kind `kind` in `collection`.
 fn last_entry(collection: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
     std::iter::successors(collection.last_child(), |n| n.prev_sibling()).find(|n| n.kind() == kind)
+}
+
+/// Is `collection` the document's own node, rather than a value in
+/// another collection?
+fn is_root(collection: &SyntaxNode) -> bool {
+    !collection.ancestors().skip(1).any(|n| {
+        matches!(
+            n.kind(),
+            SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+        )
+    })
 }
 
 /// The index in `collection` where an entry after its last one goes: at

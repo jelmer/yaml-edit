@@ -699,6 +699,16 @@ impl<'a, 'c> LexState<'a, 'c> {
         end_idx
     }
 
+    /// Whether a node, and so a node property, block scalar header or
+    /// explicit key, may start here. Nothing starts inside a block scalar's
+    /// body, which is literal text: `a: |\n  >'\nb: ''\n` holds `>'`, where
+    /// reading the `>` as a header left the quote to open a quoted scalar
+    /// that ran on into `b`.
+    fn node_can_start(&self) -> bool {
+        !in_block_scalar_body(self.block_scalar, self.line_start)
+            && node_property_can_start(&self.tokens)
+    }
+
     /// Lex the token starting with `ch`, which has just been consumed.
     fn lex_char(&mut self, start_idx: usize, ch: char) {
         use SyntaxKind::*;
@@ -727,7 +737,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             // that test `a: ?!!r{2}x` opened an explicit key and then read
             // `!!r` as a tag, which stranded the rest of the line; PyYAML
             // reads the value as the plain scalar `?!!r{2}x`.
-            '?' if node_property_can_start(&self.tokens)
+            '?' if self.node_can_start()
                 && self
                     .chars
                     .peek()
@@ -775,7 +785,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             // scalars a block-context production only, so inside a flow
             // collection a `|` is plain content and `[|, x]` has two
             // entries, as saphyr reads it.
-            '|' if self.flow_depth == 0 && node_property_can_start(&self.tokens) => {
+            '|' if self.flow_depth == 0 && self.node_can_start() => {
                 self.block_scalar = Some(BlockScalarBody::new(
                     &self.tokens,
                     self.input,
@@ -783,7 +793,7 @@ impl<'a, 'c> LexState<'a, 'c> {
                 ));
                 self.push(PIPE, start_idx, start_idx + 1)
             }
-            '>' if self.flow_depth == 0 && node_property_can_start(&self.tokens) => {
+            '>' if self.flow_depth == 0 && self.node_can_start() => {
                 self.block_scalar = Some(BlockScalarBody::new(
                     &self.tokens,
                     self.input,
@@ -801,7 +811,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             }
             // Like tags, only at the start of a node: `a: x &anc` is the
             // scalar `x &anc`, not an anchored value.
-            '&' if node_property_can_start(&self.tokens) => {
+            '&' if self.node_can_start() => {
                 // Check if this is an anchor definition
                 let name = read_anchor_name_from(&mut self.chars, self.input, start_idx + 1);
                 if !name.is_empty() {
@@ -810,7 +820,7 @@ impl<'a, 'c> LexState<'a, 'c> {
                     self.push(AMPERSAND, start_idx, start_idx + 1);
                 }
             }
-            '*' if node_property_can_start(&self.tokens) => {
+            '*' if self.node_can_start() => {
                 // Check if this is an alias reference
                 let name = read_anchor_name_from(&mut self.chars, self.input, start_idx + 1);
                 if !name.is_empty() {
@@ -887,7 +897,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             // Only at the start of a node: mid-scalar a `!` is ordinary
             // content (`a: x !!b` is the scalar `x !!b`), which the
             // catch-all arm below reads with plain-scalar rules.
-            '!' if node_property_can_start(&self.tokens) => self.lex_tag(start_idx),
+            '!' if self.node_can_start() => self.lex_tag(start_idx),
 
             '%' => self.lex_percent(start_idx),
 

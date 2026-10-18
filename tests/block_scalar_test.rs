@@ -1256,3 +1256,45 @@ fn test_header_at_indicator_column_is_the_node() {
         assert_eq!(header_violations(&file), expected_violations, "{yaml:?}");
     }
 }
+
+/// A block scalar's body is literal text, so an indicator opening a body
+/// line starts nothing: a `|` or `>` there is not another header, and a
+/// quote after it does not run on into the following entries.
+#[test]
+fn test_indicators_opening_block_scalar_body_lines() {
+    use std::str::FromStr;
+    let cases = [
+        ("a: |\n  >'\nb: ''\n", ">'\n", ""),
+        ("a: |\n  |'\nb: ''\n", "|'\n", ""),
+        ("a: >\n  |\"\nb: \"\"\n", "|\"\n", ""),
+        ("a: |\n  >\n  {x\nb: c, d\n", ">\n{x\n", "c, d"),
+        ("a: |\n  &'\nb: ''\n", "&'\n", ""),
+        ("a: |\n  *'\nb: ''\n", "*'\n", ""),
+        ("a: |\n  !'\nb: ''\n", "!'\n", ""),
+        ("a: |\n  ? '\nb: ''\n", "? '\n", ""),
+        ("a: |\n  - '\nb: ''\n", "- '\n", ""),
+    ];
+    for (yaml, a, b) in cases {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let get = |key: &str| {
+            mapping
+                .get(key)
+                .and_then(|node| node.as_scalar().map(|s| s.as_string()))
+        };
+        assert_eq!(
+            (get("a"), get("b")),
+            (Some(a.to_string()), Some(b.to_string())),
+            "{yaml:?}"
+        );
+    }
+
+    let file = YamlFile::from_str("- |\n  |'\n- ''\n").unwrap();
+    let sequence = file.document().unwrap().as_sequence().unwrap();
+    let items: Vec<_> = sequence
+        .values()
+        .map(|node| node.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(items, vec!["|'\n".to_string(), String::new()]);
+}

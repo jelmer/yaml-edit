@@ -3938,7 +3938,7 @@ fifth: 5"#;
         let output = doc.to_string();
 
         // Verify exact output (note: MappingBuilder adds trailing space after non-inline value keys)
-        let expected = "name: project\nconfig:\n  server:\n    host: 0.0.0.0\n    port: 8080\n  debug: true\n  features:\n    - api\n    - web\n    - cli\n";
+        let expected = "name: project\nconfig:\n  server:\n    host: 0.0.0.0\n    port: 8080\n  debug: true\n  features:\n    - api\n    - web\n    - cli";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
@@ -3997,7 +3997,7 @@ fifth: 5"#;
         let output = doc.to_string();
 
         let expected =
-            "name: project\ntags: !!set\n  database: null\n  production: null\n  web: null\n";
+            "name: project\ntags: !!set\n  database: null\n  production: null\n  web: null";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
@@ -4059,7 +4059,7 @@ fifth: 5"#;
 
         let output = doc.to_string();
 
-        let expected = "name: project\nbuild_steps: !!omap\n  - compile: gcc main.c\n  - test: ./a.out test\n  - package: tar -czf app.tar.gz .\n";
+        let expected = "name: project\nbuild_steps: !!omap\n  - compile: gcc main.c\n  - test: ./a.out test\n  - package: tar -czf app.tar.gz .";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
@@ -4139,7 +4139,7 @@ fifth: 5"#;
 
         let output = doc.to_string();
 
-        let expected = "name: project\nconnections: !!pairs\n  - server: primary.db\n  - server: secondary.db\n  - server: tertiary.db\n  - timeout: 30\n";
+        let expected = "name: project\nconnections: !!pairs\n  - server: primary.db\n  - server: secondary.db\n  - server: tertiary.db\n  - timeout: 30";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");
@@ -4224,7 +4224,7 @@ fifth: 5"#;
         doc1.insert_after("name", "empty_list", empty_list);
         assert_cst_ok(&doc1);
         let output1 = doc1.to_string();
-        assert_eq!(output1, "name: project\nempty_list: []\n");
+        assert_eq!(output1, "name: project\nempty_list: []");
 
         // Test empty mapping - use flow-style literal
         let yaml2 = "name: project";
@@ -4238,7 +4238,7 @@ fifth: 5"#;
         doc2.insert_after("name", "empty_map", empty_map);
         assert_cst_ok(&doc2);
         let output2 = doc2.to_string();
-        assert_eq!(output2, "name: project\nempty_map: {}\n");
+        assert_eq!(output2, "name: project\nempty_map: {}");
 
         // Test empty set
         let yaml3 = "name: project";
@@ -4251,7 +4251,7 @@ fifth: 5"#;
         );
         assert_cst_ok(&doc3);
         let output3 = doc3.to_string();
-        assert_eq!(output3, "name: project\nempty_set: !!set {}\n");
+        assert_eq!(output3, "name: project\nempty_set: !!set {}");
 
         // Verify all are valid YAML
         assert!(
@@ -4291,7 +4291,7 @@ fifth: 5"#;
 
         let output = doc.to_string();
 
-        let expected = "name: project\nnested_data:\n- item1\n-\n  config:\n    - debug\n    - true\n    - 8080\n  name: service\n- 42\n";
+        let expected = "name: project\nnested_data:\n- item1\n-\n  config:\n    - debug\n    - true\n    - 8080\n  name: service\n- 42";
         assert_eq!(output, expected);
 
         let reparsed = YamlFile::from_str(&output).expect("Output should be valid YAML");

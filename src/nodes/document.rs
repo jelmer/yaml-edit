@@ -1635,8 +1635,7 @@ Repository: https://github.com/example/example.git
             let expected = "---
 Bug-Database: https://github.com/example/example/issues
 Bug-Submit: https://github.com/example/example/issues/new
-Repository: https://github.com/example/example.git
-";
+Repository: https://github.com/example/example.git";
             assert_eq!(output, expected);
         }
     }

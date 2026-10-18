@@ -151,9 +151,9 @@ pub(crate) fn entry_column(collection: &SyntaxNode) -> usize {
 /// a block scalar, the lines after it are laid out so that it does not
 /// take them in.
 ///
-/// Returns whether `entry` went after the end of input that had no final
-/// line break.
-pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNode) -> bool {
+/// Should `entry` go after the end of input that had no final line
+/// break, it ends without one.
+pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNode) {
     let kind = entry.kind();
     let column = entry_column(collection);
     let indent =
@@ -175,6 +175,7 @@ pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNo
             (next.index(), elements)
         }
         Slot::After(prev) => {
+            open_end = !line_end(&prev).is_terminated();
             terminate(&prev);
             let mut elements: Vec<_> = indent().into_iter().collect();
             elements.push(entry.clone().into());
@@ -211,7 +212,15 @@ pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNo
     }
     hand_line_break_to_mapping(entry);
     super::settle_lines_after_inserted_entry(entry);
-    open_end
+    if open_end {
+        match line_end(entry) {
+            LineEnd::Sibling => {
+                let newline = entry.next_sibling_or_token().expect("a line break follows");
+                newline.detach();
+            }
+            _ => unterminate_last(entry),
+        }
+    }
 }
 
 /// The last entry of kind `kind` in `collection`.

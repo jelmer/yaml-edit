@@ -34,7 +34,7 @@
 //! // Yet we can still mutate!
 //! mapping.set("age", 30);  // This works despite `mapping` not being `mut`
 //!
-//! assert_eq!(doc.to_string(), "name: Alice\nage: 30\n");
+//! assert_eq!(doc.to_string(), "name: Alice\nage: 30");
 //! ```
 //!
 //! ## Why This Design?

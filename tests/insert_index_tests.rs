@@ -252,7 +252,7 @@ fn test_insert_special_characters() {
 
     // Verify exact output (keys are sorted alphabetically)
     let output = yaml.to_string();
-    let expected = "key with spaces: value with spaces\nkey1: value1\nkey@symbol: value#hash\nspecial:key: value:with:colons\n";
+    let expected = "key with spaces: value with spaces\nkey1: value1\nkey@symbol: value#hash\nspecial:key: value:with:colons";
     assert_eq!(output, expected);
 }
 

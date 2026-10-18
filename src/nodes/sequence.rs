@@ -1,8 +1,7 @@
 use super::replaced_value;
 use super::{
-    append_children, ensure_trailing_newline, entry_indices, entry_line_terminated, fresh_token,
-    has_child_token, nth_entry_index, strip_flow_separator, unterminate_last_line, Lang,
-    SyntaxNode,
+    append_children, entry_indices, fresh_token, has_child_token, nth_entry_index,
+    strip_flow_separator, trivia, Lang, SyntaxNode,
 };
 use crate::as_yaml::{build_in, AsYaml, FlowQuoting, YamlKind};
 use crate::lex::SyntaxKind;
@@ -746,8 +745,8 @@ impl Sequence {
                 .last_child()
                 .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             {
-                last_entry_has_newline = entry_line_terminated(&node);
-                ensure_trailing_newline(&node);
+                last_entry_has_newline = trivia::line_end(&node).is_terminated();
+                trivia::terminate(&node);
             }
         }
 
@@ -954,7 +953,7 @@ impl Sequence {
                 c.as_node()
                     .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             }) {
-                ensure_trailing_newline(prev_entry);
+                trivia::terminate(prev_entry);
             }
         }
 
@@ -1148,7 +1147,7 @@ impl Sequence {
                 .is_some_and(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
         });
         let removed_terminated =
-            entry_line_terminated(children[i].as_node().expect("SEQUENCE_ENTRY"));
+            trivia::line_end(children[i].as_node().expect("SEQUENCE_ENTRY")).is_terminated();
 
         // Remove the entry first, then the INDENT that
         // separated it from a sibling. Doing them as two
@@ -1179,7 +1178,7 @@ impl Sequence {
 
         // The end of the input keeps its lack of a final line break.
         if is_last && !removed_terminated && !self.is_flow_style() {
-            unterminate_last_line(&self.0);
+            trivia::unterminate_last(&self.0);
         }
         // If we just drained the last entry from a block
         // sequence under a key or in a sequence item, collapse
@@ -1227,7 +1226,7 @@ impl Sequence {
             .children()
             .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             .last()
-            .is_some_and(|e| entry_line_terminated(&e));
+            .is_some_and(|e| trivia::line_end(&e).is_terminated());
         // Remove items from the beginning to avoid recalculating indices
         // Use a safety counter to prevent infinite loops
         let initial_len = self.len();

@@ -4,10 +4,9 @@
 use super::helpers::FlowInsertPos;
 use super::{Mapping, MappingEntry};
 use crate::lex::SyntaxKind;
+use crate::nodes::trivia::{self, line_end};
 use crate::nodes::{
-    ensure_trailing_newline, entry_line_terminated, flow_separator, fresh_token,
-    hand_line_break_to_mapping, has_child_token, strip_flow_separator, unterminate_last_line,
-    SyntaxNode, SyntaxToken,
+    flow_separator, fresh_token, has_child_token, strip_flow_separator, SyntaxNode, SyntaxToken,
 };
 use rowan::ast::AstNode;
 
@@ -86,7 +85,7 @@ impl Mapping {
             flow_separators,
             flow_line_indents,
             last_has_comma: last.is_some_and(|e| has_child_token(e, |k| k == SyntaxKind::COMMA)),
-            last_terminated: last.map_or(true, entry_line_terminated),
+            last_terminated: last.map_or(true, |e| line_end(e).is_terminated()),
         }
     }
 
@@ -99,13 +98,12 @@ impl Mapping {
         };
         if !self.is_flow_style() {
             for entry in rest {
-                if !entry_line_terminated(entry) {
-                    ensure_trailing_newline(entry);
-                    hand_line_break_to_mapping(entry);
+                if !line_end(entry).is_terminated() {
+                    trivia::terminate(entry);
                 }
             }
             if !layout.last_terminated {
-                unterminate_last_line(&self.0);
+                trivia::unterminate_last(&self.0);
             }
             return;
         }
@@ -212,12 +210,11 @@ impl Mapping {
     /// Insert `entry` after `target`, an entry of this mapping, if `after`
     /// is set, and before it otherwise.
     fn insert_next_to(&self, entry: &SyntaxNode, target: SyntaxNode, flow: bool, after: bool) {
-        let children: Vec<_> = self.0.children_with_tokens().collect();
         match (flow, after) {
             (true, true) => self.insert_flow_entry_cst_at(entry, FlowInsertPos::After(target)),
             (true, false) => self.insert_flow_entry_cst_at(entry, FlowInsertPos::Before(target)),
-            (false, true) => self.insert_block_entry_after(&children, entry, &target),
-            (false, false) => self.insert_block_entry_before(&children, entry, &target),
+            (false, true) => self.insert_block_entry_after(entry, &target),
+            (false, false) => self.insert_block_entry_before(entry, &target),
         }
     }
 

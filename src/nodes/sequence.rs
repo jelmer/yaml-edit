@@ -317,7 +317,7 @@ fn block_scalar_of(node: &SyntaxNode) -> Option<SyntaxNode> {
         SyntaxKind::TAGGED_NODE => node.first_child()?,
         _ => node.clone(),
     };
-    crate::nodes::mapping::is_block_scalar(&scalar).then_some(scalar)
+    crate::nodes::is_block_scalar(&scalar).then_some(scalar)
 }
 
 /// Copy `node`, the block scalar `scalar` or a tagged node holding it,

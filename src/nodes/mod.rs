@@ -763,7 +763,7 @@ fn holds_line_end(node: &SyntaxNode) -> bool {
             matches!(k, SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET)
         }),
         SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY => true,
-        SyntaxKind::SCALAR => mapping::is_block_scalar(node),
+        SyntaxKind::SCALAR => is_block_scalar(node),
         SyntaxKind::VALUE => node
             .last_child()
             .is_some_and(|last| last.text_range().is_empty() || holds_line_end(&last)),
@@ -997,10 +997,15 @@ pub mod document;
 pub mod entry;
 mod kept_aliases;
 pub mod mapping;
+mod predicates;
 mod replaced_value;
 pub mod scalar_node;
 pub mod sequence;
 pub mod tagged_node;
+
+pub(crate) use predicates::{
+    in_flow_collection, is_block_scalar, is_quoted_scalar, starts_a_flow_collection,
+};
 
 // Re-exports
 pub use alias_node::Alias;

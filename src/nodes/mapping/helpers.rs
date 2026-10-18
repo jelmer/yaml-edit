@@ -6,7 +6,8 @@
 
 use crate::lex::SyntaxKind;
 use crate::nodes::{
-    append_children, fresh_token, has_child_token, trailing_newline_reachable, Scalar, SyntaxNode,
+    append_children, fresh_token, has_child_token, is_block_scalar, trailing_newline_reachable,
+    Scalar, SyntaxNode,
 };
 use rowan::ast::AstNode;
 use rowan::GreenNodeBuilder;
@@ -196,16 +197,6 @@ pub(super) fn find_key_line_comment(entry: &SyntaxNode) -> Option<(String, Strin
         }
     }
     None
-}
-
-/// True if `source` is a block scalar (literal `|` or folded `>`) - its
-/// first token is the block indicator that must sit on the same line as
-/// the key.
-pub(crate) fn is_block_scalar(source: &SyntaxNode) -> bool {
-    source.kind() == SyntaxKind::SCALAR
-        && source
-            .first_token()
-            .is_some_and(|t| matches!(t.kind(), SyntaxKind::PIPE | SyntaxKind::GREATER))
 }
 
 /// A VALUE node built by [`build_block_value_node`].

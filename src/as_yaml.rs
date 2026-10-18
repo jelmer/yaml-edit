@@ -854,7 +854,11 @@ fn reindent_children(
                     // Inside a flow collection a line's indentation follows
                     // its line break in the same node, even when that is
                     // the end of an entry.
-                    if delta > 0 && starts_unindented_line(&t, end) && in_flow_collection(&t) {
+                    if delta > 0
+                        && starts_unindented_line(&t, end)
+                        && t.parent_ancestors()
+                            .any(|n| crate::nodes::starts_a_flow_collection(&n))
+                    {
                         builder.token(SyntaxKind::INDENT.into(), &pad(delta));
                         after_newline = false;
                     }
@@ -893,16 +897,6 @@ fn starts_unindented_line(newline: &crate::nodes::SyntaxToken, end: rowan::TextS
                 next.kind(),
                 SyntaxKind::WHITESPACE | SyntaxKind::INDENT | SyntaxKind::NEWLINE
             )
-    })
-}
-
-/// Whether `token` sits inside a flow collection.
-fn in_flow_collection(token: &crate::nodes::SyntaxToken) -> bool {
-    use crate::lex::SyntaxKind;
-    token.parent_ancestors().any(|node| {
-        node.children_with_tokens()
-            .take_while(|c| c.as_token().is_some())
-            .any(|c| matches!(c.kind(), SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET))
     })
 }
 

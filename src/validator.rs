@@ -22,7 +22,10 @@
 //! }
 //! ```
 
-use crate::nodes::has_child_token;
+use crate::nodes::{
+    has_child_token, in_flow_collection, is_block_scalar, is_quoted_scalar,
+    starts_a_flow_collection,
+};
 use crate::yaml::{Document, SyntaxNode};
 use rowan::ast::AstNode;
 use std::fmt;
@@ -200,12 +203,11 @@ fn has_content(node: &SyntaxNode) -> bool {
     })
 }
 
-/// Convert a rowan TextRange to a TextPosition.
 /// The zero-based column `token` starts at.
 ///
-/// Walks back through preceding tokens to the last NEWLINE rather than
-/// serializing the document: this runs once per DASH, and rebuilding the whole
-/// text each time made validation quadratic in the file size.
+/// Walks back through preceding tokens to the last line break rather than
+/// serializing the document: this runs for many tokens, and rebuilding the
+/// whole text each time made validation quadratic in the file size.
 fn token_column(token: &crate::nodes::SyntaxToken) -> usize {
     let mut col = 0;
     let mut cur = token.prev_token();
@@ -679,10 +681,7 @@ impl Validator {
         // A block scalar's body is literal text, though the lexer still
         // gives a `%` line there as a DIRECTIVE token: W4TN's
         // `--- |\n%!PS-Adobe-2.0`.
-        if node
-            .first_token()
-            .is_some_and(|t| matches!(t.kind(), SyntaxKind::PIPE | SyntaxKind::GREATER))
-        {
+        if is_block_scalar(node) {
             return;
         }
 
@@ -693,9 +692,9 @@ impl Validator {
         let mut prev: Option<crate::nodes::SyntaxToken> = None;
         for token in node.children_with_tokens().filter_map(|c| c.into_token()) {
             if token.kind() == SyntaxKind::DIRECTIVE {
-                let continues_plain = prev.as_ref().is_some_and(|p| {
-                    p.kind() == SyntaxKind::STRING && !p.text().starts_with(['"', '\''])
-                });
+                let continues_plain = prev
+                    .as_ref()
+                    .is_some_and(|p| p.kind() == SyntaxKind::STRING && !is_quoted_scalar(p));
                 if !continues_plain {
                     violations.push(Violation::error_at(Rule::Other, node.text_range(), "Directive in document content (missing document end marker `...` before directive)".to_string()));
                     return;
@@ -798,7 +797,7 @@ impl Validator {
     /// on the same line as the block scalar indicator.
     fn check_block_scalar_indicator(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // A plain scalar may hold a `|` or `>` token on a continuation line.
-        if !crate::nodes::mapping::is_block_scalar(node) {
+        if !is_block_scalar(node) {
             return;
         }
 
@@ -876,7 +875,7 @@ impl Validator {
     /// as a block scalar, is not valid YAML. The YAML test suite's M5C3 has
     /// the header two columns left of its tag, which is still past the key.
     fn check_block_scalar_header_indent(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        if !crate::nodes::mapping::is_block_scalar(node) {
+        if !is_block_scalar(node) {
             return;
         }
         let Some(header) = node.first_token() else {
@@ -906,7 +905,7 @@ impl Validator {
         node: &SyntaxNode,
         violations: &mut Vec<Violation>,
     ) {
-        if !crate::nodes::mapping::is_block_scalar(node) {
+        if !is_block_scalar(node) {
             return;
         }
         // An indentation indicator fixes the body's column, so a deeper
@@ -1014,10 +1013,10 @@ impl Validator {
         }) else {
             return;
         };
-        let text = token.text();
-        if text.starts_with(['"', '\'']) {
+        if is_quoted_scalar(&token) {
             return;
         }
+        let text = token.text();
 
         if crate::ScalarValue::is_legacy_octal(text) {
             let sign = if text.starts_with('-') { "-" } else { "" };
@@ -1122,7 +1121,7 @@ impl Validator {
                         let text = token.text();
 
                         // Check if this is a quoted string (starts with " or ')
-                        if !found_quoted && (text.starts_with('"') || text.starts_with('\'')) {
+                        if !found_quoted && is_quoted_scalar(&token) {
                             found_quoted = true;
 
                             // Check if quote ends in this same token
@@ -1170,25 +1169,9 @@ impl Validator {
             return;
         };
 
-        // Check if this is a quoted string (which can contain colons)
-        let is_quoted = node.first_token().is_some_and(|t| {
-            let text = t.text();
-            text.starts_with('"') || text.starts_with('\'')
-        });
-
-        // A block scalar's body is literal text, so a colon there is content
-        // just as it is in a quoted scalar: the test suite's 4WA9 is
-        // `- aaa: |2\n    xxx\n  bbb: |\n    xxx\n`.
-        if node.first_token().is_some_and(|t| {
-            matches!(
-                t.kind(),
-                crate::SyntaxKind::PIPE | crate::SyntaxKind::GREATER
-            )
-        }) {
-            return;
-        }
-
-        if is_quoted {
+        // A quoted or block scalar's colons are content: the test suite's
+        // 4WA9 is `- aaa: |2\n    xxx\n  bbb: |\n    xxx\n`.
+        if node.first_token().is_some_and(|t| is_quoted_scalar(&t)) || is_block_scalar(node) {
             return;
         }
 
@@ -1259,11 +1242,8 @@ impl Validator {
         let Some(first) = node.first_token() else {
             return;
         };
-        let is_block_header = match first.kind() {
-            SyntaxKind::PIPE | SyntaxKind::GREATER => true,
-            SyntaxKind::STRING => first.text().starts_with(['|', '>']),
-            _ => false,
-        };
+        let is_block_header = is_block_scalar(node)
+            || (first.kind() == SyntaxKind::STRING && first.text().starts_with(['|', '>']));
         if is_block_header && in_flow_collection(node) {
             violations.push(Violation::error_at(
                 Rule::Other,
@@ -1273,183 +1253,32 @@ impl Validator {
         }
     }
 
-    /// Check for tab usage in whitespace nodes
+    /// Check for a tab used as indentation among `node`'s own tokens.
     fn check_tab_usage(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        // Only check whitespace nodes - more efficient than serializing everything
-        // Check each token directly without allocation
-        for token in node.children_with_tokens() {
-            if let rowan::NodeOrToken::Token(token) = token {
-                // A block scalar whose body holds no content has nothing to
-                // continue, so a tab line there is the body's indentation,
-                // which may not be one: the test suite's Y79Y/000 is the
-                // error `foo: |\n\t\nbar: 1`.
-                if token.kind() == crate::SyntaxKind::INDENT
-                    // The tab has to *be* the indentation. After a space it
-                    // is content, which is how the suite reads R4YG's
-                    // `- >\n \t\n detected`.
-                    && token.text().starts_with('\t')
-                    && node.first_token().is_some_and(|t| {
-                        matches!(
-                            t.kind(),
-                            crate::SyntaxKind::PIPE | crate::SyntaxKind::GREATER
-                        )
-                    })
-                    // The body's first indentation, right after the header's
-                    // line break.
-                    && node
-                        .children_with_tokens()
-                        .filter_map(|c| c.into_token())
-                        .find(|t| t.kind() == crate::SyntaxKind::INDENT)
-                        .is_some_and(|first| first == token)
-                {
-                    violations.push(Violation::error_at(
-                        Rule::InvalidTabUsage,
-                        token.text_range(),
-                        "Tabs are not allowed for indentation in YAML",
-                    ));
-                    return;
-                }
-                // A quoted scalar keeps its continuation lines inside one
-                // token, so check its text directly: a continuation opening
-                // with a tab supplies no indentation at all, which
-                // DK95/01's `foo: "bar\n\tbaz"` needs. A blank tab line
-                // (DK95/04) indents nothing and is fine.
-                // Only where indentation is actually required: a quoted
-                // scalar that is the document's own node needs none, so a
-                // tab there is content (7A4E, PRH3), while one inside a
-                // mapping value must clear the key's column (DK95/01).
-                if node.kind() == crate::SyntaxKind::SCALAR
-                    && node.parent().is_some_and(|p| {
-                        matches!(
-                            p.kind(),
-                            crate::SyntaxKind::VALUE | crate::SyntaxKind::SEQUENCE_ENTRY
-                        )
-                    })
-                    && token.text().starts_with(['"', '\''])
-                    && token
-                        .text()
-                        .split('\n')
-                        .skip(1)
-                        .any(|line| line.starts_with('\t') && !line.trim().is_empty())
-                {
-                    violations.push(Violation::error_at(
-                        Rule::InvalidTabUsage,
-                        token.text_range(),
-                        "Tabs are not allowed for indentation in YAML",
-                    ));
-                    return;
-                }
-                // Only an INDENT that supplies a node's indentation can hold
-                // an illegal tab. YAML 1.2 forbids a tab in `s-indent`, but
-                // elsewhere -- inside a scalar's continuation line, or as
-                // separation at the stream's own level -- it is content or
-                // legal whitespace, which is how the test suite reads 4ZYM,
-                // HS5T, NB6Z, UV7Q, 6CA3, K54U and T5N4.
-                if !matches!(
-                    node.kind(),
-                    crate::SyntaxKind::VALUE
-                        | crate::SyntaxKind::MAPPING
-                        | crate::SyntaxKind::SEQUENCE
-                        | crate::SyntaxKind::MAPPING_ENTRY
-                        | crate::SyntaxKind::SEQUENCE_ENTRY
-                ) {
-                    continue;
-                }
-                // A flow collection at the stream's own level is not
-                // indentation-sensitive, so a tab inside one is separation
-                // whitespace (6CA3's `\t[\n\t]`). Nested in a block
-                // collection it still has to clear that block's column, as
-                // Y79Y/003's `- [\n\tfoo,` does not.
-                let is_flow = starts_a_flow_collection(node);
-                let inside_a_block = node.ancestors().skip(1).any(|a| {
-                    matches!(
-                        a.kind(),
-                        crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-                    )
-                });
-                if is_flow && !inside_a_block {
-                    continue;
-                }
-                // A tab may separate an indicator from a scalar (`- \tx`) or a
-                // flow collection (`seq:\t[]`), but a block collection after
-                // it needs `s-indent`, which forbids tabs: `-\t-` and `?\t-`
-                // are errors the test suite expects (Y79Y), while `-\t-1` is
-                // the scalar `-1`.
-                // The tab has to separate the indicator from the node on
-                // the same line; trailing whitespace before a line break
-                // (DC7X's `seq:\t`) indents nothing.
-                if token.kind() == crate::SyntaxKind::WHITESPACE
-                    && token.text().contains('\t')
-                    && !token
-                        .next_sibling_or_token()
-                        .and_then(|n| n.into_node())
-                        .and_then(|n| n.first_token())
-                        .is_some_and(|t| t.kind() == crate::SyntaxKind::NEWLINE)
-                    && token
-                        .next_sibling_or_token()
-                        .and_then(|n| n.into_node())
-                        .is_some_and(|n| {
-                            let opens_a_block = |n: &SyntaxNode| {
-                                matches!(
-                                    n.kind(),
-                                    crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-                                ) && !starts_a_flow_collection(n)
-                            };
-                            opens_a_block(&n)
-                                || (matches!(
-                                    n.kind(),
-                                    crate::SyntaxKind::VALUE | crate::SyntaxKind::KEY
-                                ) && n.children().any(|c| opens_a_block(&c)))
-                        })
-                {
-                    violations.push(Violation::error_at(
-                        Rule::InvalidTabUsage,
-                        token.text_range(),
-                        "Tabs are not allowed for indentation in YAML",
-                    ));
-                    return;
-                }
-                if token.kind() != crate::SyntaxKind::INDENT {
-                    continue;
-                }
-                // A blank or comment-only line indents nothing, so tabs
-                // there are fine (DK95/04, Y79Y/002).
-                if token.next_token().map_or(true, |t| {
-                    matches!(
-                        t.kind(),
-                        crate::SyntaxKind::NEWLINE | crate::SyntaxKind::COMMENT
-                    )
-                }) {
-                    continue;
-                }
-                // After leading spaces a tab is separation rather than
-                // indentation (DK95/00's `foo:\n \tbar`, 6HB6), unless a
-                // block collection entry follows, whose column it would move
-                // (DK95/06). In a VALUE the next sibling is the whole nested
-                // collection rather than its first entry (`a:\n \t- x`).
-                let starts_block_entry = !is_flow
-                    && token
-                        .next_sibling_or_token()
-                        .is_some_and(|n| match n.kind() {
-                            crate::SyntaxKind::MAPPING_ENTRY
-                            | crate::SyntaxKind::SEQUENCE_ENTRY => true,
-                            crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE => {
-                                !n.as_node().is_some_and(starts_a_flow_collection)
-                            }
-                            _ => false,
-                        });
-                if token.text().starts_with(' ') && !starts_block_entry {
-                    continue;
-                }
-                if token.text().contains('\t') {
-                    violations.push(Violation::error_at(
-                        Rule::InvalidTabUsage,
-                        token.text_range(),
-                        "Tabs are not allowed for indentation in YAML",
-                    ));
-                    return; // Found one, no need to keep checking
-                }
+        use crate::SyntaxKind;
+        let tab = match node.kind() {
+            SyntaxKind::SCALAR => {
+                block_scalar_tab_indent(node).or_else(|| quoted_scalar_tab_indent(node))
             }
+            // Only an INDENT that supplies a node's indentation can hold
+            // an illegal tab. YAML 1.2 forbids a tab in `s-indent`, but
+            // elsewhere -- inside a scalar's continuation line, or as
+            // separation at the stream's own level -- it is content or
+            // legal whitespace, which is how the test suite reads 4ZYM,
+            // HS5T, NB6Z, UV7Q, 6CA3, K54U and T5N4.
+            SyntaxKind::VALUE
+            | SyntaxKind::MAPPING
+            | SyntaxKind::SEQUENCE
+            | SyntaxKind::MAPPING_ENTRY
+            | SyntaxKind::SEQUENCE_ENTRY => block_tab_indent(node),
+            _ => None,
+        };
+        if let Some(token) = tab {
+            violations.push(Violation::error_at(
+                Rule::InvalidTabUsage,
+                token.text_range(),
+                "Tabs are not allowed for indentation in YAML",
+            ));
         }
     }
 
@@ -1776,11 +1605,6 @@ impl Validator {
         }
     }
 
-    /// Check for SEQUENCE_ENTRY nodes in flow sequences
-    ///
-    /// Flow sequences (using []) should not have SEQUENCE_ENTRY children.
-    /// SEQUENCE_ENTRY is only for block sequences (using -). In flow sequences,
-    /// values appear directly without the - marker.
     /// Check that a multi-line flow collection indents its continuation lines.
     ///
     /// A flow collection may span lines, but each continuation has to be
@@ -2784,36 +2608,144 @@ impl Default for Validator {
     }
 }
 
-/// Whether `node` is a flow collection, by its own delimiter.
+/// The tab indenting the body of `node`, a block scalar, if its body holds
+/// no content to continue.
 ///
-/// A flow collection holds its `{`/`[` as a direct child; `first_token()`
-/// instead descends the whole left spine, which made validating a large
-/// mapping quadratic.
-fn starts_a_flow_collection(node: &SyntaxNode) -> bool {
-    // The delimiter opens the collection, so it is among the first children;
-    // scanning them all is O(entries) and ran per entry.
+/// Then a tab line is the body's indentation, which may not be one: the
+/// test suite's Y79Y/000 is the error `foo: |\n\t\nbar: 1`.
+fn block_scalar_tab_indent(node: &SyntaxNode) -> Option<crate::nodes::SyntaxToken> {
+    if !is_block_scalar(node) {
+        return None;
+    }
+    // The body's first indentation, right after the header's line break.
+    // The tab has to *be* the indentation. After a space it is content,
+    // which is how the suite reads R4YG's `- >\n \t\n detected`.
     node.children_with_tokens()
-        .take_while(|c| c.as_token().is_some())
         .filter_map(|c| c.into_token())
-        .any(|t| {
-            matches!(
-                t.kind(),
-                crate::SyntaxKind::LEFT_BRACE | crate::SyntaxKind::LEFT_BRACKET
-            )
+        .find(|t| t.kind() == crate::SyntaxKind::INDENT)
+        .filter(|t| t.text().starts_with('\t'))
+}
+
+/// The token of `node`, a quoted scalar, whose continuation line opens with
+/// a tab where indentation is required.
+///
+/// A quoted scalar keeps its continuation lines inside one token, so its
+/// text is checked directly: a continuation opening with a tab supplies no
+/// indentation at all, which DK95/01's `foo: "bar\n\tbaz"` needs. A blank
+/// tab line (DK95/04) indents nothing and is fine. A quoted scalar that is
+/// the document's own node needs no indentation, so a tab there is content
+/// (7A4E, PRH3), while one inside a mapping value must clear the key's
+/// column (DK95/01).
+fn quoted_scalar_tab_indent(node: &SyntaxNode) -> Option<crate::nodes::SyntaxToken> {
+    if !node.parent().is_some_and(|p| {
+        matches!(
+            p.kind(),
+            crate::SyntaxKind::VALUE | crate::SyntaxKind::SEQUENCE_ENTRY
+        )
+    }) {
+        return None;
+    }
+    node.children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .find(|t| {
+            is_quoted_scalar(t)
+                && t.text()
+                    .split('\n')
+                    .skip(1)
+                    .any(|line| line.starts_with('\t') && !line.trim().is_empty())
         })
 }
 
-/// Whether `node` sits inside a flow collection.
-///
-/// The nearest collection is not enough: the single pair in `[k: v]` is a
-/// mapping without braces.
-fn in_flow_collection(node: &SyntaxNode) -> bool {
-    node.ancestors().skip(1).any(|a| {
+/// The first token of `node`, a block collection, its entry or a value,
+/// that uses a tab as indentation.
+fn block_tab_indent(node: &SyntaxNode) -> Option<crate::nodes::SyntaxToken> {
+    // A flow collection at the stream's own level is not
+    // indentation-sensitive, so a tab inside one is separation
+    // whitespace (6CA3's `\t[\n\t]`). Nested in a block collection it
+    // still has to clear that block's column, as Y79Y/003's `- [\n\tfoo,`
+    // does not.
+    let is_flow = starts_a_flow_collection(node);
+    let inside_a_block = node.ancestors().skip(1).any(|a| {
         matches!(
             a.kind(),
             crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-        ) && starts_a_flow_collection(&a)
-    })
+        )
+    });
+    if is_flow && !inside_a_block {
+        return None;
+    }
+    node.children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .find(|t| tab_before_block_collection(t) || tab_indent(t, is_flow))
+}
+
+/// Whether `token` is white space holding a tab that separates an indicator
+/// from a block collection.
+///
+/// A tab may separate an indicator from a scalar (`- \tx`) or a flow
+/// collection (`seq:\t[]`), but a block collection after it needs
+/// `s-indent`, which forbids tabs: `-\t-` and `?\t-` are errors the test
+/// suite expects (Y79Y), while `-\t-1` is the scalar `-1`. The tab has to
+/// separate the indicator from the node on the same line; trailing
+/// whitespace before a line break (DC7X's `seq:\t`) indents nothing.
+fn tab_before_block_collection(token: &crate::nodes::SyntaxToken) -> bool {
+    if token.kind() != crate::SyntaxKind::WHITESPACE || !token.text().contains('\t') {
+        return false;
+    }
+    let Some(next) = token.next_sibling_or_token().and_then(|n| n.into_node()) else {
+        return false;
+    };
+    let opens_a_block = |n: &SyntaxNode| {
+        matches!(
+            n.kind(),
+            crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
+        ) && !starts_a_flow_collection(n)
+    };
+    !next
+        .first_token()
+        .is_some_and(|t| t.kind() == crate::SyntaxKind::NEWLINE)
+        && (opens_a_block(&next)
+            || (matches!(
+                next.kind(),
+                crate::SyntaxKind::VALUE | crate::SyntaxKind::KEY
+            ) && next.children().any(|c| opens_a_block(&c))))
+}
+
+/// Whether `token` is an INDENT made of or starting with a tab, in a
+/// collection that is flow if `in_flow`.
+fn tab_indent(token: &crate::nodes::SyntaxToken, in_flow: bool) -> bool {
+    if token.kind() != crate::SyntaxKind::INDENT {
+        return false;
+    }
+    // A blank or comment-only line indents nothing, so tabs there are fine
+    // (DK95/04, Y79Y/002).
+    if token.next_token().map_or(true, |t| {
+        matches!(
+            t.kind(),
+            crate::SyntaxKind::NEWLINE | crate::SyntaxKind::COMMENT
+        )
+    }) {
+        return false;
+    }
+    // After leading spaces a tab is separation rather than indentation
+    // (DK95/00's `foo:\n \tbar`, 6HB6), unless a block collection entry
+    // follows, whose column it would move (DK95/06). In a VALUE the next
+    // sibling is the whole nested collection rather than its first entry
+    // (`a:\n \t- x`).
+    let starts_block_entry = !in_flow
+        && token
+            .next_sibling_or_token()
+            .is_some_and(|n| match n.kind() {
+                crate::SyntaxKind::MAPPING_ENTRY | crate::SyntaxKind::SEQUENCE_ENTRY => true,
+                crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE => {
+                    !n.as_node().is_some_and(starts_a_flow_collection)
+                }
+                _ => false,
+            });
+    if token.text().starts_with(' ') && !starts_block_entry {
+        return false;
+    }
+    token.text().contains('\t')
 }
 
 #[cfg(test)]

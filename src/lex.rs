@@ -471,42 +471,6 @@ fn is_chomping_indicator(line_prefix: &str) -> bool {
         .is_some_and(|b| b == b'|' || b == b'>')
 }
 
-/// Push a quoted-string token, marking it UNTERMINATED_STRING when the
-/// closing quote was never reached.
-fn push_quoted_string<'a>(
-    tokens: &mut Vec<(SyntaxKind, &'a str)>,
-    input: &'a str,
-    token_start: usize,
-    end_idx: usize,
-    found_closing: bool,
-) {
-    let kind = if found_closing {
-        SyntaxKind::STRING
-    } else {
-        SyntaxKind::UNTERMINATED_STRING
-    };
-    tokens.push((kind, &input[token_start..end_idx]));
-}
-
-/// Read a plain scalar that starts at `token_start`, whose body begins at
-/// `body_start`, classify it, and push it as one token.
-///
-/// The leading character has already been consumed by the caller's match arm
-/// (`-`, `+`, `.`, ...) and stays part of the scalar text.
-fn push_plain_scalar_from<'a>(
-    tokens: &mut Vec<(SyntaxKind, &'a str)>,
-    chars: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
-    input: &'a str,
-    token_start: usize,
-    body_start: usize,
-    flow_depth: u32,
-    absorb_spaces: bool,
-) {
-    let body = read_plain_scalar_body_from(chars, input, body_start, flow_depth, absorb_spaces);
-    let text = &input[token_start..body_start + body.len()];
-    tokens.push((classify_scalar(text), text));
-}
-
 /// `absorb_spaces` folds an internal whitespace run into the scalar when
 /// more scalar content follows, as a plain scalar spanning several words
 /// requires. A block scalar's chomping indicator (`|-`, `>-`) is a token
@@ -681,6 +645,44 @@ impl<'a, 'c> LexState<'a, 'c> {
         }
     }
 
+    /// Push a token for `input[start..end]`.
+    fn push(&mut self, kind: SyntaxKind, start: usize, end: usize) {
+        self.tokens.push((kind, &self.input[start..end]));
+    }
+
+    /// Push `input[start..end]` as a plain scalar token.
+    fn push_scalar(&mut self, start: usize, end: usize) {
+        let text = &self.input[start..end];
+        self.tokens.push((classify_scalar(text), text));
+    }
+
+    /// Push a quoted-string token, marking it UNTERMINATED_STRING when the
+    /// closing quote was never reached.
+    fn push_quoted_string(&mut self, start: usize, end: usize, found_closing: bool) {
+        let kind = if found_closing {
+            SyntaxKind::STRING
+        } else {
+            SyntaxKind::UNTERMINATED_STRING
+        };
+        self.push(kind, start, end);
+    }
+
+    /// Read a plain scalar that starts at `start`, whose body begins at
+    /// `body_start`, classify it, and push it as one token.
+    ///
+    /// The characters before `body_start` have already been consumed by the
+    /// caller (`-`, `+`, `.`, ...) and stay part of the scalar text.
+    fn push_plain_scalar(&mut self, start: usize, body_start: usize, absorb_spaces: bool) {
+        let body = read_plain_scalar_body_from(
+            &mut self.chars,
+            self.input,
+            body_start,
+            self.flow_depth,
+            absorb_spaces,
+        );
+        self.push_scalar(start, body_start + body.len());
+    }
+
     /// Lex the token starting with `ch`, which has just been consumed.
     fn lex_char(&mut self, start_idx: usize, ch: char) {
         use SyntaxKind::*;
@@ -693,8 +695,7 @@ impl<'a, 'c> LexState<'a, 'c> {
                     && start_idx == self.line_start
                     && bom_starts_document(&self.tokens, self.input, start_idx) =>
             {
-                self.tokens
-                    .push((BOM, &self.input[start_idx..start_idx + ch.len_utf8()]));
+                self.push(BOM, start_idx, start_idx + ch.len_utf8());
                 self.line_start = start_idx + ch.len_utf8();
             }
             // Context-aware hyphen handling
@@ -716,8 +717,7 @@ impl<'a, 'c> LexState<'a, 'c> {
                     .peek()
                     .map_or(true, |(_, next)| is_white_or_break(*next)) =>
             {
-                self.tokens
-                    .push((QUESTION, &self.input[start_idx..start_idx + 1]))
+                self.push(QUESTION, start_idx, start_idx + 1)
             }
             // A flow indicator inside a block scalar's body is literal
             // text, so it neither opens nor closes a collection. Read the
@@ -725,35 +725,23 @@ impl<'a, 'c> LexState<'a, 'c> {
             '[' | ']' | '{' | '}' | ','
                 if in_block_scalar_body(self.block_scalar, self.line_start) =>
             {
-                let rest = read_plain_scalar_body_from(
-                    &mut self.chars,
-                    self.input,
-                    start_idx + 1,
-                    self.flow_depth,
-                    true,
-                );
-                let text = &self.input[start_idx..start_idx + 1 + rest.len()];
-                self.tokens.push((classify_scalar(text), text));
+                self.push_plain_scalar(start_idx, start_idx + 1, true);
             }
             '[' => {
                 self.flow_depth += 1;
-                self.tokens
-                    .push((LEFT_BRACKET, &self.input[start_idx..start_idx + 1]));
+                self.push(LEFT_BRACKET, start_idx, start_idx + 1);
             }
             ']' => {
                 self.flow_depth = self.flow_depth.saturating_sub(1);
-                self.tokens
-                    .push((RIGHT_BRACKET, &self.input[start_idx..start_idx + 1]));
+                self.push(RIGHT_BRACKET, start_idx, start_idx + 1);
             }
             '{' => {
                 self.flow_depth += 1;
-                self.tokens
-                    .push((LEFT_BRACE, &self.input[start_idx..start_idx + 1]));
+                self.push(LEFT_BRACE, start_idx, start_idx + 1);
             }
             '}' => {
                 self.flow_depth = self.flow_depth.saturating_sub(1);
-                self.tokens
-                    .push((RIGHT_BRACE, &self.input[start_idx..start_idx + 1]));
+                self.push(RIGHT_BRACE, start_idx, start_idx + 1);
             }
             // A `,` separates entries only inside a flow collection. In block
             // context it is ordinary plain-scalar content (`a: x\n  ,y`), so
@@ -777,8 +765,7 @@ impl<'a, 'c> LexState<'a, 'c> {
                     self.input,
                     self.line_start,
                 ));
-                self.tokens
-                    .push((PIPE, &self.input[start_idx..start_idx + 1]))
+                self.push(PIPE, start_idx, start_idx + 1)
             }
             '>' if self.flow_depth == 0 && node_property_can_start(&self.tokens) => {
                 self.block_scalar = Some(BlockScalarBody::new(
@@ -786,8 +773,7 @@ impl<'a, 'c> LexState<'a, 'c> {
                     self.input,
                     self.line_start,
                 ));
-                self.tokens
-                    .push((GREATER, &self.input[start_idx..start_idx + 1]))
+                self.push(GREATER, start_idx, start_idx + 1)
             }
             // `<<` is a merge key only when the key is exactly `<<`, i.e. the
             // next character ends the token. Anything else starting with `<`
@@ -795,8 +781,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             // catch-all arm below, which knows the real plain-scalar rules.
             '<' if is_merge_key_at(self.input, start_idx) => {
                 self.chars.next(); // consume second <
-                self.tokens
-                    .push((MERGE_KEY, &self.input[start_idx..start_idx + 2]));
+                self.push(MERGE_KEY, start_idx, start_idx + 2);
             }
             // Like tags, only at the start of a node: `a: x &anc` is the
             // scalar `x &anc`, not an anchored value.
@@ -804,24 +789,18 @@ impl<'a, 'c> LexState<'a, 'c> {
                 // Check if this is an anchor definition
                 let name = read_anchor_name_from(&mut self.chars, self.input, start_idx + 1);
                 if !name.is_empty() {
-                    self.tokens
-                        .push((ANCHOR, &self.input[start_idx..start_idx + 1 + name.len()]));
+                    self.push(ANCHOR, start_idx, start_idx + 1 + name.len());
                 } else {
-                    self.tokens
-                        .push((AMPERSAND, &self.input[start_idx..start_idx + 1]));
+                    self.push(AMPERSAND, start_idx, start_idx + 1);
                 }
             }
             '*' if node_property_can_start(&self.tokens) => {
                 // Check if this is an alias reference
                 let name = read_anchor_name_from(&mut self.chars, self.input, start_idx + 1);
                 if !name.is_empty() {
-                    self.tokens.push((
-                        REFERENCE,
-                        &self.input[start_idx..start_idx + 1 + name.len()],
-                    ));
+                    self.push(REFERENCE, start_idx, start_idx + 1 + name.len());
                 } else {
-                    self.tokens
-                        .push((ASTERISK, &self.input[start_idx..start_idx + 1]));
+                    self.push(ASTERISK, start_idx, start_idx + 1);
                 }
             }
             // A quote is literal text in a block scalar's body, and content on
@@ -835,35 +814,15 @@ impl<'a, 'c> LexState<'a, 'c> {
                         start_idx,
                     ) =>
             {
-                let rest = read_plain_scalar_body_from(
-                    &mut self.chars,
-                    self.input,
-                    start_idx + 1,
-                    self.flow_depth,
-                    true,
-                );
-                let text = &self.input[start_idx..start_idx + 1 + rest.len()];
-                self.tokens.push((classify_scalar(text), text));
+                self.push_plain_scalar(start_idx, start_idx + 1, true);
             }
             '"' => {
                 let (end_idx, found_closing) = scan_double_quoted(&mut self.chars, start_idx);
-                push_quoted_string(
-                    &mut self.tokens,
-                    self.input,
-                    start_idx,
-                    end_idx,
-                    found_closing,
-                );
+                self.push_quoted_string(start_idx, end_idx, found_closing);
             }
             '\'' => {
                 let (end_idx, found_closing) = scan_single_quoted(&mut self.chars, start_idx);
-                push_quoted_string(
-                    &mut self.tokens,
-                    self.input,
-                    start_idx,
-                    end_idx,
-                    found_closing,
-                );
+                self.push_quoted_string(start_idx, end_idx, found_closing);
             }
 
             // Document end
@@ -893,15 +852,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             // that does not reach the body's column has left it, where a
             // comment is a comment again (T26H).
             '#' if in_block_scalar_body(self.block_scalar, self.line_start) => {
-                let rest = read_plain_scalar_body_from(
-                    &mut self.chars,
-                    self.input,
-                    start_idx + 1,
-                    self.flow_depth,
-                    true,
-                );
-                let text = &self.input[start_idx..start_idx + 1 + rest.len()];
-                self.tokens.push((classify_scalar(text), text));
+                self.push_plain_scalar(start_idx, start_idx + 1, true);
             }
             // A `#` not preceded by whitespace is scalar content wherever it
             // sits, including a continuation line whose previous token is the
@@ -911,15 +862,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             // one really is the 6.6 violation the validator reports
             // (`key: "value"# c`).
             '#' if self.hash_continues_scalar(start_idx) => {
-                let rest = read_plain_scalar_body_from(
-                    &mut self.chars,
-                    self.input,
-                    start_idx + 1,
-                    self.flow_depth,
-                    true,
-                );
-                let text = &self.input[start_idx..start_idx + 1 + rest.len()];
-                self.tokens.push((classify_scalar(text), text));
+                self.push_plain_scalar(start_idx, start_idx + 1, true);
             }
             '#' => self.lex_comment(start_idx),
 
@@ -933,8 +876,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             '%' => self.lex_percent(start_idx),
 
             // Newlines
-            '\n' => self.lex_lf(start_idx),
-            '\r' => self.lex_cr(start_idx),
+            '\n' | '\r' => self.lex_line_break(start_idx, ch),
 
             // Whitespace (spaces and tabs)
             ' ' | '\t' => self.lex_whitespace(start_idx, ch),
@@ -978,8 +920,7 @@ impl<'a, 'c> LexState<'a, 'c> {
         {
             self.chars.next();
             self.chars.next();
-            self.tokens
-                .push((DOC_START, &self.input[start_idx..start_idx + 3]));
+            self.push(DOC_START, start_idx, start_idx + 3);
         } else {
             // Check if this hyphen should be treated as a sequence marker
             // It's a sequence marker if:
@@ -1015,8 +956,7 @@ impl<'a, 'c> LexState<'a, 'c> {
                 (only_whitespace_before || after_value_indicator) && followed_by_whitespace_or_end;
 
             if is_sequence_marker {
-                self.tokens
-                    .push((DASH, &self.input[start_idx..start_idx + 1]));
+                self.push(DASH, start_idx, start_idx + 1);
             } else {
                 // This hyphen is part of a scalar value. Use the
                 // plain-scalar body reader so embedded `:` (not
@@ -1026,13 +966,9 @@ impl<'a, 'c> LexState<'a, 'c> {
                 // is a chomping indicator and stands alone, so it
                 // must not swallow the space that follows it. Same
                 // test as the `+` arm below.
-                push_plain_scalar_from(
-                    &mut self.tokens,
-                    &mut self.chars,
-                    self.input,
+                self.push_plain_scalar(
                     start_idx,
                     start_idx + 1,
-                    self.flow_depth,
                     !is_chomping_indicator(&self.input[self.line_start..start_idx]),
                 );
             }
@@ -1088,15 +1024,7 @@ impl<'a, 'c> LexState<'a, 'c> {
                         && !is_colon_a_mapping_indicator(self.input, *idx, self.flow_depth)))
         });
         if !chomping && next_starts_scalar {
-            push_plain_scalar_from(
-                &mut self.tokens,
-                &mut self.chars,
-                self.input,
-                start_idx,
-                start_idx + 1,
-                self.flow_depth,
-                true,
-            );
+            self.push_plain_scalar(start_idx, start_idx + 1, true);
         } else if !chomping && {
             // A key may be separated from its colon by spaces
             // (`+ : v`), so look past them as well.
@@ -1108,19 +1036,16 @@ impl<'a, 'c> LexState<'a, 'c> {
             // `+: v` is a mapping keyed by the plain scalar `+`, as
             // `-: v` already was. A bare PLUS left the key invisible
             // and stranded the rest of the entry.
-            let text = &self.input[start_idx..start_idx + 1];
-            self.tokens.push((classify_scalar(text), text));
+            self.push_scalar(start_idx, start_idx + 1);
         } else if chomping {
-            self.tokens
-                .push((PLUS, &self.input[start_idx..start_idx + 1]));
+            self.push(PLUS, start_idx, start_idx + 1);
         } else {
             // Nothing follows on this line to extend the body, but a
             // `+` outside a block-scalar header is still content, not
             // an indicator: `+\nx\n` is the scalar `+ x`. A bare PLUS
             // token no parse rule claims left the `+` invisible and
             // stranded whatever followed it.
-            let text = &self.input[start_idx..start_idx + 1];
-            self.tokens.push((classify_scalar(text), text));
+            self.push_scalar(start_idx, start_idx + 1);
         }
     }
 
@@ -1149,8 +1074,7 @@ impl<'a, 'c> LexState<'a, 'c> {
         if preceded_by_json_key
             || is_colon_a_mapping_indicator(self.input, start_idx, self.flow_depth)
         {
-            self.tokens
-                .push((COLON, &self.input[start_idx..start_idx + 1]));
+            self.push(COLON, start_idx, start_idx + 1);
         } else {
             // This colon starts (or continues) a plain scalar such
             // as a URL, `::vector`, or a timestamp. The shared body
@@ -1159,15 +1083,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             // and a `#` glued to content is not a comment. Do not let
             // it absorb an internal space run, though -- `: v` after
             // this colon is a value, not more key.
-            let rest = read_plain_scalar_body_from(
-                &mut self.chars,
-                self.input,
-                start_idx + 1,
-                self.flow_depth,
-                false,
-            );
-            let text = &self.input[start_idx..start_idx + 1 + rest.len()];
-            self.tokens.push((classify_scalar(text), text));
+            self.push_plain_scalar(start_idx, start_idx + 1, false);
         }
     }
 
@@ -1189,32 +1105,15 @@ impl<'a, 'c> LexState<'a, 'c> {
             self.chars.next(); // consume second .
             if self.chars.peek() == Some(&(start_idx + 2, '.')) {
                 self.chars.next(); // consume third .
-                self.tokens
-                    .push((DOC_END, &self.input[start_idx..start_idx + 3]));
+                self.push(DOC_END, start_idx, start_idx + 3);
             } else {
                 // Two dots -- continue as plain scalar body (allows
                 // embedded `-` and `:` per YAML plain-scalar rules).
-                push_plain_scalar_from(
-                    &mut self.tokens,
-                    &mut self.chars,
-                    self.input,
-                    start_idx,
-                    start_idx + 2,
-                    self.flow_depth,
-                    true,
-                );
+                self.push_plain_scalar(start_idx, start_idx + 2, true);
             }
         } else {
             // Single dot -- part of plain scalar body.
-            push_plain_scalar_from(
-                &mut self.tokens,
-                &mut self.chars,
-                self.input,
-                start_idx,
-                start_idx + 1,
-                self.flow_depth,
-                true,
-            );
+            self.push_plain_scalar(start_idx, start_idx + 1, true);
         }
     }
 
@@ -1228,7 +1127,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             end_idx = *idx + ch.len_utf8();
             self.chars.next();
         }
-        self.tokens.push((COMMENT, &self.input[start_idx..end_idx]));
+        self.push(COMMENT, start_idx, end_idx);
     }
 
     fn lex_tag(&mut self, start_idx: usize) {
@@ -1255,7 +1154,7 @@ impl<'a, 'c> LexState<'a, 'c> {
                     break;
                 }
             }
-            self.tokens.push((TAG, &self.input[start_idx..end_idx]));
+            self.push(TAG, start_idx, end_idx);
             return;
         }
 
@@ -1286,7 +1185,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             self.chars.next();
         }
 
-        self.tokens.push((TAG, &self.input[start_idx..end_idx]));
+        self.push(TAG, start_idx, end_idx);
     }
 
     fn lex_percent(&mut self, start_idx: usize) {
@@ -1303,15 +1202,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             // in block context, and an internal whitespace run stays
             // in the scalar when more content follows on the line, so
             // `r % {` is the single scalar `r % {`.
-            let rest = read_plain_scalar_body_from(
-                &mut self.chars,
-                self.input,
-                start_idx + 1,
-                self.flow_depth,
-                true,
-            );
-            let text = &self.input[start_idx..start_idx + 1 + rest.len()];
-            self.tokens.push((classify_scalar(text), text));
+            self.push_plain_scalar(start_idx, start_idx + 1, true);
         } else {
             // At the start of a line in block context, % starts a directive
             let mut end_idx = start_idx + 1;
@@ -1322,38 +1213,17 @@ impl<'a, 'c> LexState<'a, 'c> {
                 end_idx = *idx + ch.len_utf8();
                 self.chars.next();
             }
-            self.tokens
-                .push((DIRECTIVE, &self.input[start_idx..end_idx]));
+            self.push(DIRECTIVE, start_idx, end_idx);
         }
     }
 
-    fn lex_lf(&mut self, start_idx: usize) {
-        use SyntaxKind::*;
-        check_line_length(&mut self.errors, self.config, self.line_start, start_idx);
-        note_line_ending(
-            &mut self.errors,
-            self.config,
-            &mut self.detected_line_ending,
-            "\n",
-            start_idx..start_idx + 1,
-        );
-
-        self.tokens
-            .push((NEWLINE, &self.input[start_idx..start_idx + 1]));
-        self.line_start = start_idx + 1;
-        track_block_scalar_body(
-            &self.tokens,
-            self.input,
-            self.line_start,
-            &mut self.block_scalar,
-        );
-    }
-
-    fn lex_cr(&mut self, start_idx: usize) {
-        use SyntaxKind::*;
+    /// Lex a line break: `\n`, `\r\n` or a lone `\r`.
+    fn lex_line_break(&mut self, start_idx: usize, ch: char) {
         check_line_length(&mut self.errors, self.config, self.line_start, start_idx);
 
-        let (line_ending, end_pos) = if let Some((_, '\n')) = self.chars.peek() {
+        let (line_ending, end_pos) = if ch == '\n' {
+            ("\n", start_idx + 1)
+        } else if let Some((_, '\n')) = self.chars.peek() {
             self.chars.next();
             ("\r\n", start_idx + 2)
         } else {
@@ -1368,7 +1238,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             start_idx..end_pos,
         );
 
-        self.tokens.push((NEWLINE, &self.input[start_idx..end_pos]));
+        self.push(SyntaxKind::NEWLINE, start_idx, end_pos);
         self.line_start = end_pos;
         track_block_scalar_body(
             &self.tokens,
@@ -1410,10 +1280,9 @@ impl<'a, 'c> LexState<'a, 'c> {
                     category: WhitespaceErrorCategory::TabIndentation,
                 });
             }
-            self.tokens.push((INDENT, &self.input[start_idx..end_idx]));
+            self.push(INDENT, start_idx, end_idx);
         } else {
-            self.tokens
-                .push((WHITESPACE, &self.input[start_idx..end_idx]));
+            self.push(WHITESPACE, start_idx, end_idx);
         }
     }
 

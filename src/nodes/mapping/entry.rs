@@ -408,6 +408,19 @@ impl MappingEntry {
         }
     }
 
+    /// Write the `:` of a key the parser found without one, where it left
+    /// a zero-width COLON.
+    fn write_missing_colon(&self) {
+        let missing = self.0.children_with_tokens().position(|c| {
+            c.as_token()
+                .is_some_and(|t| t.kind() == SyntaxKind::COLON && t.text().is_empty())
+        });
+        if let Some(i) = missing {
+            let colon = fresh_token(SyntaxKind::COLON, ":");
+            replace_children(&self.0, i..i + 1, vec![colon.into()]);
+        }
+    }
+
     /// Replace this entry's value with a block sequence or mapping from
     /// another CST. Emits the value on the line after the key, indented to
     /// this entry's nesting depth + 2, with the source's interior
@@ -554,6 +567,7 @@ impl MappingEntry {
         if !flow_context {
             self.add_explicit_value_indicator();
         }
+        self.write_missing_colon();
 
         // A block collection or block scalar coming from another CST goes
         // through set_block_value, which does targeted CST edits to swap

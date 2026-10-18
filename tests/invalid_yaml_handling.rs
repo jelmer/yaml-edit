@@ -199,3 +199,31 @@ fn test_two_tags_on_one_node() {
         );
     }
 }
+
+/// A key the parser recovered without its `:` gets one when its value is set.
+#[test]
+fn test_set_value_of_key_missing_colon() {
+    fn set_last(src: &str, value: impl yaml_edit::AsYaml) -> String {
+        let doc = YamlFile::parse(src).tree().document().unwrap();
+        let entry = doc.as_mapping().unwrap().entries().last().unwrap();
+        entry.set_value(value, false);
+        yaml_edit::debug::validate_tree(rowan::ast::AstNode::syntax(&doc)).unwrap();
+        doc.to_string()
+    }
+    let block = YamlFile::from_str("k:\n  a: 1\n").unwrap();
+    let block = block
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("k")
+        .unwrap();
+    for (src, inline, nested) in [
+        ("<<\n", "<<: x\n", "<<:\n  a: 1\n"),
+        ("?\n<<\n", "?\n<<: x\n", "?\n<<:\n  a: 1\n"),
+        ("a: 1\n<< \n", "a: 1\n<< : x\n", "a: 1\n<< :\n  a: 1\n"),
+    ] {
+        assert_eq!(set_last(src, "x"), inline, "{src:?}");
+        assert_eq!(set_last(src, block.clone()), nested, "{src:?}");
+    }
+}

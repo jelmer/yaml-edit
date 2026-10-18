@@ -379,7 +379,31 @@ impl Mapping {
         K: crate::AsYaml,
     {
         let order_keys: Vec<K> = order.into_iter().collect();
+        let entry_has_key = |entry: &SyntaxNode, key: &K| {
+            entry
+                .children()
+                .find(|n| n.kind() == SyntaxKind::KEY)
+                .is_some_and(|k| key_content_matches(&k, key))
+        };
+        // Take each named key's entry in the order given; anything the
+        // caller did not name keeps its relative position at the end.
+        let mut rest: Vec<SyntaxNode> = self.entries().map(|e| e.0).collect();
+        let mut ordered: Vec<SyntaxNode> = order_keys
+            .iter()
+            .filter_map(|key| {
+                let pos = rest.iter().position(|entry| entry_has_key(entry, key))?;
+                Some(rest.remove(pos))
+            })
+            .collect();
+        ordered.extend(rest);
+        self.arrange_entries(&ordered);
+    }
 
+    /// Put the entries of this mapping in the order of `order`, which holds
+    /// each of them once. An entry takes along the comments and blank lines
+    /// that follow it up to the next entry; the layout that belongs to
+    /// positions stays put.
+    pub(super) fn arrange_entries(&self, order: &[SyntaxNode]) {
         // Slice the children into leading decoration, (entry, tokens
         // that follow it up to the next entry), and trailing
         // decoration. Reshuffling (entry, postscript) pairs keeps a
@@ -387,6 +411,11 @@ impl Mapping {
         // followed.
         let all: Vec<_> = self.0.children_with_tokens().collect();
         let (leading, mut groups, trailing) = self.slice_into_entry_groups(&all);
+        assert_eq!(
+            groups.len(),
+            order.len(),
+            "the order names every entry once"
+        );
         let layout = self.slot_layout();
         // The INDENT that starts an entry's line in a nested block mapping
         // belongs to that line, not to the entry before it.
@@ -401,24 +430,16 @@ impl Mapping {
             })
             .collect();
 
-        // Take each named key's group in the order given; anything the
-        // caller did not name keeps its relative position at the end.
-        let entry_has_key = |entry: &SyntaxNode, key: &K| {
-            entry
-                .children()
-                .find(|n| n.kind() == SyntaxKind::KEY)
-                .is_some_and(|k| key_content_matches(&k, key))
-        };
-        let mut ordered: Vec<_> = order_keys
+        let ordered: Vec<_> = order
             .iter()
-            .filter_map(|key| {
+            .map(|wanted| {
                 let pos = groups
                     .iter()
-                    .position(|(entry, _)| entry_has_key(entry, key))?;
-                Some(groups.remove(pos))
+                    .position(|(entry, _)| entry == wanted)
+                    .expect("the order names entries of this mapping");
+                groups.remove(pos)
             })
             .collect();
-        ordered.extend(groups);
 
         let mut new_children = leading;
         for (i, (entry, postscript)) in ordered.into_iter().enumerate() {

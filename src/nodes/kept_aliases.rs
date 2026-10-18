@@ -510,9 +510,9 @@ impl Tracker {
         // A copy of a node still in the tree only needs the anchors that
         // aliases in it refer to.
         let mut kept_outer = None;
-        for (i, copy) in copies.iter().enumerate().rev() {
+        for (original, copy) in originals.iter().zip(&copies).rev() {
             let (captures_others, used) = self.captures(copy);
-            let taken = takes_anchor && i == 0 && outer.is_some();
+            let taken = takes_anchor && *original == origin;
             if captures_others || (!in_snapshot && !used && !taken) {
                 self.live_ids.retain(|(t, _)| t != copy);
                 self.copied_anchors.retain(|t| t != copy);

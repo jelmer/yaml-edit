@@ -329,6 +329,15 @@ An entry that is not in a mapping (one returned by `Mapping::remove`, say)
 has no lines around it, so that line goes first in the entry, and the
 lines that would follow it go at its end.
 
+Moving an entry (`reorder_fields`, and `move_after`/`move_before` given
+the entry's own value) takes along the comments on its lines and the
+comment and blank lines after it, up to the next entry:
+`a: 1  # c\n# d\nb: 2\n` reordered to `b, a` gives
+`b: 2\na: 1  # c\n# d\n`. Lines before the first entry stay where they
+are. In a flow mapping the commas stay with their positions, and one
+that has to follow an entry whose comment ends its line goes before
+that comment.
+
 ## Paths, anchors and aliases
 
 Paths look like `server.hosts[0].name`, with `\` escapes for keys that

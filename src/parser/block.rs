@@ -5,7 +5,7 @@
 //! Split out of `parser/mod.rs` unchanged.
 
 use super::scalars::is_plain_scalar_kind;
-use super::Parser;
+use super::{BlockCtx, Parser};
 use crate::error_recovery::ParseContext;
 use crate::lex::SyntaxKind;
 use crate::ParseErrorKind;
@@ -58,7 +58,7 @@ impl Parser {
         // first key's own column when it is further right, or
         // `"  k:\n  j: 1\n"` reads as `{k: {j: 1}}` where saphyr and PyYAML
         // both give two sibling entries.
-        let mut base_indent = base_indent.max(self.current_line_indent);
+        let base_indent = base_indent.max(self.current_line_indent);
         // The line's indent misses a compact mapping whose key follows a
         // `-`, `?` or `:` on its line: in `? a\n: b: c\n? d\n: e\n` the
         // mapping `{b: c}` sits past the `:`, and `? d` is the enclosing
@@ -73,16 +73,27 @@ impl Parser {
         .into_iter()
         .flatten()
         .max();
-        let mut later_entry_indent = indicator_column.map(|column| {
+        let later_entry_indent = indicator_column.map(|column| {
             let key_column = self.error_context.current_location().1.saturating_sub(1);
             key_column.min(column + 1)
         });
-        let outer_equal_indent = self.equal_indent_continues_scalar;
-        self.equal_indent_continues_scalar = false;
         // A floor set for a scalar node does not carry over to the values of
         // a mapping in its place: those continue only past this mapping's
         // own column, so `k:\n  a: b\n  c\n` does not read `c` into `b`.
-        let outer_floor = self.scalar_continuation_floor.take();
+        let ctx = BlockCtx {
+            equal_indent_continues_scalar: false,
+            scalar_continuation_floor: None,
+        };
+        self.scoped(ctx, |p| {
+            p.parse_block_mapping_entries(base_indent, later_entry_indent)
+        });
+    }
+
+    fn parse_block_mapping_entries(
+        &mut self,
+        mut base_indent: usize,
+        mut later_entry_indent: Option<usize>,
+    ) {
         self.builder.start_node(SyntaxKind::MAPPING.into());
         self.error_context.push_context(ParseContext::Mapping);
 
@@ -149,8 +160,6 @@ impl Parser {
             }
         }
 
-        self.equal_indent_continues_scalar = outer_equal_indent;
-        self.scalar_continuation_floor = outer_floor;
         self.builder.finish_node();
         self.error_context.pop_context();
     }
@@ -162,9 +171,14 @@ impl Parser {
     pub(super) fn parse_sequence_with_base_indent(&mut self, base_indent: usize) {
         // A sequence entry's continuation only has to clear the sequence's
         // own column, which parse_value_with_base_indent already enforces.
-        // Put the outer rule back on the way out, as the mapping does.
-        let outer_equal_indent = self.equal_indent_continues_scalar;
-        self.equal_indent_continues_scalar = true;
+        let ctx = BlockCtx {
+            equal_indent_continues_scalar: true,
+            ..self.ctx
+        };
+        self.scoped(ctx, |p| p.parse_block_sequence_entries(base_indent));
+    }
+
+    fn parse_block_sequence_entries(&mut self, mut base_indent: usize) {
         self.builder.start_node(SyntaxKind::SEQUENCE.into());
         self.error_context.push_context(ParseContext::Sequence);
 
@@ -173,7 +187,6 @@ impl Parser {
         // `- - - a\n  - y\n` the innermost sequence is at column 4 and `y`
         // belongs to the middle one. Checking before the INDENT is consumed
         // leaves that INDENT to the sequence `y` belongs to.
-        let mut base_indent = base_indent;
         let mut first_entry = true;
         while self.current().is_some() {
             // Skip whitespace, break on dedent
@@ -300,12 +313,11 @@ impl Parser {
                     // `-\n   b\n  - z\n` is the single item `b - z`, as
                     // both saphyr and PyYAML read it. Only for a scalar: a
                     // nested collection's entries set their own column.
-                    let outer_floor = self.scalar_continuation_floor;
+                    let mut ctx = self.ctx;
                     if self.current() != Some(SyntaxKind::DASH) {
-                        self.scalar_continuation_floor = Some(dash_column);
+                        ctx.scalar_continuation_floor = Some(dash_column);
                     }
-                    self.parse_value_with_base_indent(indent_level);
-                    self.scalar_continuation_floor = outer_floor;
+                    self.scoped(ctx, |p| p.parse_value_with_base_indent(indent_level));
                 } else {
                     self.emit_implicit_null();
                 }
@@ -326,7 +338,6 @@ impl Parser {
             self.builder.finish_node();
         }
 
-        self.equal_indent_continues_scalar = outer_equal_indent;
         self.builder.finish_node();
         self.error_context.pop_context();
     }
@@ -338,9 +349,6 @@ impl Parser {
         // its entries at column 2 though its value slot was parsed from 0.
         let base_indent =
             base_indent.max(self.error_context.current_location().1.saturating_sub(1));
-        // Parse mapping with explicit key indicator '?'
-        self.builder.start_node(SyntaxKind::MAPPING.into());
-
         // Neither key nor value is the document's own node, so a block
         // scalar in either needs an indented body: `? a\n: |\nb: 1\n` keeps
         // `b` as the next entry.
@@ -349,14 +357,18 @@ impl Parser {
         // `?` and `:` lines delimit this mapping's own entries, so a scalar
         // inside one must not keep folding at an enclosing key's column: an
         // inherited floor would let `? a\n: 1\n? c\n` read `? c` as part of
-        // the value `1`.
-        let outer_floor = self.scalar_continuation_floor;
-        self.scalar_continuation_floor = None;
-        // Nor does the rule of the document root or a sequence entry, where
-        // a line at the scalar's own column continues it: in
-        // `? a\n: 1\nb\n` the `b` line is not part of the value.
-        let outer_equal_indent = self.equal_indent_continues_scalar;
-        self.equal_indent_continues_scalar = false;
+        // the value `1`. Nor does the rule of the document root or a
+        // sequence entry, where a line at the scalar's own column continues
+        // it: in `? a\n: 1\nb\n` the `b` line is not part of the value.
+        let ctx = BlockCtx {
+            equal_indent_continues_scalar: false,
+            scalar_continuation_floor: None,
+        };
+        self.scoped(ctx, |p| p.parse_explicit_key_mapping_entries(base_indent));
+    }
+
+    fn parse_explicit_key_mapping_entries(&mut self, base_indent: usize) {
+        self.builder.start_node(SyntaxKind::MAPPING.into());
 
         while self.current() == Some(SyntaxKind::QUESTION) {
             // Start a MAPPING_ENTRY to wrap this key-value pair
@@ -549,8 +561,6 @@ impl Parser {
             }
         }
 
-        self.scalar_continuation_floor = outer_floor;
-        self.equal_indent_continues_scalar = outer_equal_indent;
         self.builder.finish_node();
     }
 
@@ -574,33 +584,34 @@ impl Parser {
         // scalar in the key or value must not continue onto it. Whatever
         // the enclosing value left behind does not apply: in
         // `o:\n  k: !!set\n    ? a\n    ? b\n` it let `? b` continue `a`.
-        let outer_floor = self.scalar_continuation_floor;
         let outer_value_column = self.mapping_value_column;
-        self.scalar_continuation_floor = None;
         self.mapping_value_column = Some(question_column);
+        let ctx = BlockCtx {
+            scalar_continuation_floor: None,
+            ..self.ctx
+        };
+        self.scoped(ctx, |p| {
+            p.builder.start_node(SyntaxKind::KEY.into());
+            let outer_explicit_key = p.explicit_key_column;
+            p.explicit_key_column = Some(question_column);
+            p.parse_explicit_key_node(question_column, question_column);
+            p.explicit_key_column = outer_explicit_key;
+            p.builder.finish_node();
 
-        self.builder.start_node(SyntaxKind::KEY.into());
-        let outer_explicit_key = self.explicit_key_column;
-        self.explicit_key_column = Some(question_column);
-        self.parse_explicit_key_node(question_column, question_column);
-        self.explicit_key_column = outer_explicit_key;
-        self.builder.finish_node();
+            p.skip_ws_and_newlines();
 
-        self.skip_ws_and_newlines();
-
-        if self.current() == Some(SyntaxKind::COLON) {
-            let colon_column = self.error_context.current_location().1.saturating_sub(1);
-            self.bump(); // consume ':'
-            self.skip_whitespace();
-            let outer_explicit_value = self.explicit_value_column;
-            self.explicit_value_column = Some(colon_column);
-            self.parse_value_after_colon(false, Some(question_column));
-            self.explicit_value_column = outer_explicit_value;
-        } else {
-            self.emit_implicit_null_value();
-        }
-
-        self.scalar_continuation_floor = outer_floor;
+            if p.current() == Some(SyntaxKind::COLON) {
+                let colon_column = p.error_context.current_location().1.saturating_sub(1);
+                p.bump(); // consume ':'
+                p.skip_whitespace();
+                let outer_explicit_value = p.explicit_value_column;
+                p.explicit_value_column = Some(colon_column);
+                p.parse_value_after_colon(false, Some(question_column));
+                p.explicit_value_column = outer_explicit_value;
+            } else {
+                p.emit_implicit_null_value();
+            }
+        });
         self.mapping_value_column = outer_value_column;
         self.builder.finish_node();
     }
@@ -1189,9 +1200,9 @@ impl Parser {
                     // mapping rather than continuing an entry:
                     // `key:\n - a\ninvalid\n` is the error the YAML test
                     // suite's 6S55 and 9CWY expect, not the scalar `a invalid`.
-                    let outer_floor = self.scalar_continuation_floor;
+                    let mut ctx = self.ctx;
                     if self.current() != Some(SyntaxKind::DASH) {
-                        self.scalar_continuation_floor = Some(base_indent);
+                        ctx.scalar_continuation_floor = Some(base_indent);
                     }
                     // A lone anchor may annotate an indentless sequence, whose
                     // entries sit at the *key's* column rather than the
@@ -1205,9 +1216,8 @@ impl Parser {
                     };
                     let outer_column = self.mapping_block_value_column;
                     self.mapping_block_value_column = Some(base_indent.max(key_column));
-                    self.parse_value_with_base_indent(value_indent);
+                    self.scoped(ctx, |p| p.parse_value_with_base_indent(value_indent));
                     self.mapping_block_value_column = outer_column;
-                    self.scalar_continuation_floor = outer_floor;
                     has_value = true;
                 } else if self.current() == Some(SyntaxKind::DASH)
                     && (self.current_line_indent == base_indent

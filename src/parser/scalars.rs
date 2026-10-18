@@ -3,7 +3,7 @@
 //!
 //! Split out of `parser/mod.rs` unchanged.
 
-use super::Parser;
+use super::{BlockCtx, Parser};
 use crate::lex::{block_scalar_header, SyntaxKind};
 use crate::ParseErrorKind;
 
@@ -527,10 +527,11 @@ impl Parser {
             // The body is parsed at its own column, but a plain scalar there
             // still belongs to the collection the tag sits in, so its
             // continuation only has to clear the tag's column.
-            let outer_floor = self.scalar_continuation_floor;
-            self.scalar_continuation_floor = Some(base_indent);
-            self.parse_value_with_base_indent(indent);
-            self.scalar_continuation_floor = outer_floor;
+            let ctx = BlockCtx {
+                scalar_continuation_floor: Some(base_indent),
+                ..self.ctx
+            };
+            self.scoped(ctx, |p| p.parse_value_with_base_indent(indent));
         }
     }
 
@@ -907,7 +908,7 @@ impl Parser {
                         // either way.
                         None => {
                             next_line_indent > scalar_indent
-                                || self.scalar_continuation_floor == Some(0)
+                                || self.ctx.scalar_continuation_floor == Some(0)
                         }
                     })
                 || (*kind == SyntaxKind::DASH
@@ -929,9 +930,10 @@ impl Parser {
         // base, but the scalar belongs to the enclosing collection, so its
         // continuation only has to clear that collection's column.
         let floor = self
+            .ctx
             .scalar_continuation_floor
             .map_or(scalar_indent, |floor| floor.min(scalar_indent));
-        let deep_enough = if self.equal_indent_continues_scalar {
+        let deep_enough = if self.ctx.equal_indent_continues_scalar {
             next_line_indent >= floor
         } else {
             next_line_indent > floor

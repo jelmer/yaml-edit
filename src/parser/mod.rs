@@ -37,22 +37,13 @@ use std::cell::Cell;
 /// `{{{{...}}}}` or a long `a:\n  a:\n  ...` chain.
 pub(super) const MAX_FLOW_DEPTH: usize = 256;
 
-/// Internal parser state
+/// Context that holds for the block node being parsed and everything
+/// nested in it, unless a nested node overrides it.
 ///
-/// Fields are `pub(super)` so the topic sub-modules
-/// ([`scalars`], [`flow`], [`block`]) can add `impl Parser` blocks
-/// without going through accessor methods for every field.
-pub(super) struct Parser {
-    pub(super) tokens: Vec<(SyntaxKind, String)>,
-    pub(super) current_token_index: usize,
-    pub(super) builder: GreenNodeBuilder<'static>,
-    pub(super) errors: Vec<String>,
-    pub(super) positioned_errors: Vec<PositionedParseError>,
-    pub(super) in_flow_context: bool,
-    /// Error recovery context for better error messages
-    pub(super) error_context: ErrorRecoveryContext,
-    /// Track the current line's indentation level for plain scalar continuation
-    pub(super) current_line_indent: usize,
+/// Only [`Parser::scoped`] changes it, so the outer context is back in place
+/// however the nested parse returns.
+#[derive(Clone, Copy, Default)]
+pub(super) struct BlockCtx {
     /// Whether an equally indented line continues a plain scalar here.
     ///
     /// A continuation normally has to be indented past the scalar's own line,
@@ -72,6 +63,26 @@ pub(super) struct Parser {
     /// is the tagged scalar `a b`, exactly as the untagged `x\n  a\n b\n`
     /// is `x a b`.
     pub(super) scalar_continuation_floor: Option<usize>,
+}
+
+/// Internal parser state
+///
+/// Fields are `pub(super)` so the topic sub-modules
+/// ([`scalars`], [`flow`], [`block`]) can add `impl Parser` blocks
+/// without going through accessor methods for every field.
+pub(super) struct Parser {
+    pub(super) tokens: Vec<(SyntaxKind, String)>,
+    pub(super) current_token_index: usize,
+    pub(super) builder: GreenNodeBuilder<'static>,
+    pub(super) errors: Vec<String>,
+    pub(super) positioned_errors: Vec<PositionedParseError>,
+    pub(super) in_flow_context: bool,
+    /// Error recovery context for better error messages
+    pub(super) error_context: ErrorRecoveryContext,
+    /// Track the current line's indentation level for plain scalar continuation
+    pub(super) current_line_indent: usize,
+    /// Context of the block node being parsed; see [`BlockCtx`].
+    pub(super) ctx: BlockCtx,
     /// Whether the node being parsed sits in a block mapping's value
     /// position, where a block body has to clear the key's column.
     ///
@@ -158,8 +169,7 @@ impl Parser {
             positioned_errors: Vec::new(),
             in_flow_context: false,
             error_context: ErrorRecoveryContext::new(text.to_string()),
-            equal_indent_continues_scalar: false,
-            scalar_continuation_floor: None,
+            ctx: BlockCtx::default(),
             annotation_in_value_position: false,
             sequence_entry_column: None,
             mapping_value_column: None,
@@ -306,37 +316,41 @@ impl Parser {
             // anchors to the node they cover. Only on the same line, though
             // -- an annotation alone on its line opens a block node, whose
             // body keeps its own indent.
-            let root_is_plain_scalar = self.root_annotations_cover_plain_scalar();
-            let outer_floor = self.scalar_continuation_floor;
+            let root_ctx = BlockCtx {
+                equal_indent_continues_scalar: true,
+                ..self.ctx
+            };
+            let value_ctx = if self.root_annotations_cover_plain_scalar() {
+                BlockCtx {
+                    scalar_continuation_floor: Some(0),
+                    ..root_ctx
+                }
+            } else {
+                root_ctx
+            };
             let outer_root = self.node_is_document_root;
-            self.equal_indent_continues_scalar = true;
             self.node_is_document_root = true;
-            if root_is_plain_scalar {
-                self.scalar_continuation_floor = Some(0);
-            }
-            self.parse_value();
+            self.scoped(value_ctx, |p| p.parse_value());
             self.marker_line_node = None;
-            self.scalar_continuation_floor = outer_floor;
 
             // A line opening a mapping after the root node, as in
             // `a\n[x]: z\n`, neither continues that node nor starts a
             // document of its own. Keep the mapping as a second node of the
             // document, which the validator reports, rather than leaving it
             // after the document.
-            loop {
-                self.skip_ws_and_newlines();
-                if !self.opens_block_mapping() {
+            self.scoped(root_ctx, |p| loop {
+                p.skip_ws_and_newlines();
+                if !p.opens_block_mapping() {
                     break;
                 }
-                let tokens_before = self.tokens.len();
-                let base_indent = self.current_line_indent;
-                self.parse_value_with_base_indent(base_indent);
-                if self.tokens.len() == tokens_before {
+                let tokens_before = p.tokens.len();
+                let base_indent = p.current_line_indent;
+                p.parse_value_with_base_indent(base_indent);
+                if p.tokens.len() == tokens_before {
                     break;
                 }
-            }
+            });
             self.node_is_document_root = outer_root;
-            self.equal_indent_continues_scalar = false;
         }
 
         // The line break, comments and blank lines after the root node belong
@@ -396,6 +410,15 @@ impl Parser {
             }
             self.builder.finish_node();
         }
+    }
+
+    /// Run `f` with `ctx` as the block context, putting the current one
+    /// back afterwards.
+    pub(super) fn scoped<R>(&mut self, ctx: BlockCtx, f: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = std::mem::replace(&mut self.ctx, ctx);
+        let result = f(self);
+        self.ctx = outer;
+        result
     }
 
     pub(super) fn parse_value(&mut self) {
@@ -491,10 +514,11 @@ impl Parser {
                             // still a node of the collection the anchor sits
                             // in, so its continuation only has to clear the
                             // anchor's own column.
-                            let outer_floor = self.scalar_continuation_floor;
-                            self.scalar_continuation_floor = Some(base_indent);
-                            self.parse_value_with_base_indent(indent);
-                            self.scalar_continuation_floor = outer_floor;
+                            let ctx = BlockCtx {
+                                scalar_continuation_floor: Some(base_indent),
+                                ..self.ctx
+                            };
+                            self.scoped(ctx, |p| p.parse_value_with_base_indent(indent));
                         }
                     }
                     // Nothing for the anchor to adopt, and nothing after it on

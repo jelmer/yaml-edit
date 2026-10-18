@@ -153,7 +153,7 @@ fn move_keeps_block_and_tagged_values() {
         (
             "a: !t &x 1\nb: *x\nc: 2\n",
             "c",
-            "b: &x !t 1\nc: 2\na: *x\n",
+            "b: !t &x 1\nc: 2\na: *x\n",
         ),
         ("a: &x 1\nb: 2\nc: *x\n", "b", "b: 2\na: &x 1\nc: *x\n"),
         ("a: &x 1\nb: 2\nc: 3\n", "b", "b: 2\na: &x 1\nc: 3\n"),

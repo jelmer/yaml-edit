@@ -1,7 +1,7 @@
 //! `Mapping::move_after` / `move_before` -- pull a key out of its
 //! current position and re-insert it at a new position.
 
-use super::helpers::{held_anchor, unterminate_last_line, FlowInsertPos};
+use super::helpers::{unterminate_last_line, FlowInsertPos};
 use super::{Mapping, MappingEntry};
 use crate::lex::SyntaxKind;
 use crate::nodes::{
@@ -136,6 +136,26 @@ impl Mapping {
             self.set(new_key, new_value);
             return true;
         }
+        // Given its own value, the entry moves as it is, comments and
+        // anchor included, as reorder_fields would move it.
+        let own_value = existing.filter(|e| {
+            let value = e.value().and_then(|v| v.children().next());
+            value.is_some() && value.as_ref() == new_value.as_node()
+        });
+        if let Some(old) = own_value {
+            let mut order: Vec<SyntaxNode> = self
+                .entries()
+                .map(|e| e.0)
+                .filter(|e| *e != old.0)
+                .collect();
+            let at = order
+                .iter()
+                .position(|e| e == target.syntax())
+                .expect("the target is in its mapping");
+            order.insert(at + usize::from(after), old.0);
+            self.arrange_entries(&order);
+            return true;
+        }
         let flow_context = self.is_flow_style();
         // Decided before the old entry goes, as that may be the only one
         // setting the mapping's style.
@@ -146,32 +166,6 @@ impl Mapping {
         // Moving an entry is not appending one: the end of the mapping
         // keeps its trailing comma, or its lack of a final line break.
         let layout = self.slot_layout();
-        // Given its own value, the entry moves as it is, anchor included.
-        // TODO: a comment on the entry's line (`a: 1  # c`) is lost, as
-        // the entry is rebuilt from its key and value nodes.
-        let own_value = existing.filter(|e| {
-            let value = e.value().and_then(|v| v.children().next());
-            value.is_some() && value.as_ref() == new_value.as_node()
-        });
-        if let Some(old) = own_value {
-            let key = old.key_node().expect("an entry found by its key has one");
-            let value = old.value_node().expect("the entry has a value");
-            let anchor = old.value().and_then(|v| held_anchor(&v));
-            crate::nodes::kept_aliases::keeping_aliases_moved(&self.0, Some(&old.0), || {
-                let children: Vec<_> = self.0.children_with_tokens().collect();
-                let i = children
-                    .iter()
-                    .position(|c| c.as_node() == Some(&old.0))
-                    .expect("the entry is in its mapping");
-                self.splice_out_entry(&children, i, &old.0);
-                let entry = MappingEntry::new_in(&key, &value, flow, use_explicit_keys, key_indent);
-                self.insert_next_to(&entry.0, target, flow_context, after);
-                self.put_value(&entry, &value, anchor.as_deref());
-                self.restore_slot_layout(&layout);
-                Some(entry.0)
-            });
-            return true;
-        }
         // Contract: move, not duplicate. Drop any prior entry with the
         // same key first.
         let moved = self.remove(new_key).is_some();
@@ -201,7 +195,7 @@ impl Mapping {
     /// current position and then re-inserted after `after_key` with the new value -
     /// so the key ends up at the requested position regardless of where it was before.
     /// Passing the entry's current value, as [`get`](Self::get) returns it,
-    /// moves the entry as it is, anchor included; see
+    /// moves the entry as it is, comments and anchor included; see
     /// [`reorder_fields`](Self::reorder_fields) for what happens to aliases.
     ///
     /// If `after_key` is not found, returns `false` and leaves the mapping unchanged.

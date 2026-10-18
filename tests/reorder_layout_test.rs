@@ -149,6 +149,48 @@ fn move_in_unterminated_block_mapping() {
 }
 
 #[test]
+fn move_keeps_comments() {
+    for (source, expected) in [
+        ("a: 1  # c\nb: 2  # d", "b: 2  # d\na: 1  # c"),
+        ("a: 1  # c\nb: 2  # d\n", "b: 2  # d\na: 1  # c\n"),
+        ("a:  # c\n  x: 1\nb: 2\n", "b: 2\na:  # c\n  x: 1\n"),
+        ("? a  # c\n: 1  # e\nb: 2\n", "b: 2\n? a  # c\n: 1  # e\n"),
+        // A comment line goes with the entry above it, as in reorder_fields.
+        ("a: 1\n# c\nb: 2\n", "b: 2\na: 1\n# c\n"),
+        ("{a: 1, # c\n b: 2 # d\n}", "{b: 2, # d\na: 1 # c\n }"),
+        ("{a: 1 # c\n, b: 2 # d\n}\n", "{b: 2, # d\na: 1 # c\n}\n"),
+        ("{a: 1, b: 2 # d\n}\n", "{b: 2, # d\na: 1}\n"),
+    ] {
+        check_move(source, true, expected, root);
+        check_move(source, false, expected, root);
+    }
+    for after in [true, false] {
+        check_move(
+            "top:\n  # e\n  a: 1  # c\n  # f\n  b: 2  # d\n",
+            after,
+            "top:\n  # e\n  b: 2  # d\n  a: 1  # c\n  # f\n",
+            top,
+        );
+    }
+}
+
+#[test]
+fn reorder_keeps_comments() {
+    check_reorder(
+        "a: 1  # c\n# e\nb: 2  # d\nc: 3\n",
+        &["b", "c", "a"],
+        "b: 2  # d\nc: 3\na: 1  # c\n# e\n",
+        root,
+    );
+    check_reorder(
+        "top:\n  # e\n  a: 1\n  b: 2\n",
+        &["b", "a"],
+        "top:\n  # e\n  b: 2\n  a: 1\n",
+        top,
+    );
+}
+
+#[test]
 fn move_with_new_value() {
     for (source, expected) in [
         ("{a: 1, b: 2, }\n", "{b: 2, a: 9, }\n"),

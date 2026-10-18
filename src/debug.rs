@@ -42,7 +42,7 @@ use std::fmt;
 ///           STRING: "team"
 ///       COLON: ":"
 ///       VALUE
-///         NEWLINE: "\n"
+///         NEWLINE: "\\n"
 ///         INDENT: "  "
 ///         SEQUENCE
 ///           SEQUENCE_ENTRY
@@ -50,7 +50,7 @@ use std::fmt;
 ///             WHITESPACE: " "
 ///             SCALAR
 ///               STRING: "Alice"
-///             NEWLINE: "\n"
+///             NEWLINE: "\\n"
 /// ...
 /// ```
 pub fn print_tree(node: &SyntaxNode) {
@@ -928,6 +928,131 @@ mod tests {
         let yaml = YamlFile::from_str("name: Alice\nage: 30\n").unwrap();
         validate_tree(yaml.syntax()).expect("Tree should be valid");
     }
+
+    fn build(kind: SyntaxKind, children: &[(SyntaxKind, Option<&str>)]) -> SyntaxNode {
+        // Each child without text opens a node, `END` closes one.
+        let mut builder = rowan::GreenNodeBuilder::new();
+        builder.start_node(kind.into());
+        for (kind, text) in children {
+            match (kind, text) {
+                (SyntaxKind::ROOT, None) => builder.finish_node(),
+                (kind, None) => builder.start_node((*kind).into()),
+                (kind, Some(text)) => builder.token((*kind).into(), text),
+            }
+        }
+        builder.finish_node();
+        SyntaxNode::new_root(builder.finish())
+    }
+
+    const END: (SyntaxKind, Option<&str>) = (SyntaxKind::ROOT, None);
+
+    fn entry(key: &'static str, value: &'static str) -> Vec<(SyntaxKind, Option<&'static str>)> {
+        use SyntaxKind::*;
+        vec![
+            (MAPPING_ENTRY, None),
+            (KEY, None),
+            (SCALAR, None),
+            (STRING, Some(key)),
+            END,
+            END,
+            (COLON, Some(":")),
+            (WHITESPACE, Some(" ")),
+            (VALUE, None),
+            (SCALAR, None),
+            (STRING, Some(value)),
+            END,
+            END,
+        ]
+    }
+
+    #[test]
+    fn test_validate_tree_mapping_entry_errors() {
+        use SyntaxKind::*;
+        let mut two_keys = entry("a", "1");
+        two_keys.insert(1, (KEY, None));
+        two_keys.insert(2, END);
+        two_keys.extend([(NEWLINE, Some("\n")), END]);
+        assert_eq!(
+            validate_tree(&build(MAPPING, &two_keys)),
+            Err("MAPPING_ENTRY should have exactly 1 KEY, found 2".to_string())
+        );
+
+        let mut no_colon = entry("a", "1");
+        no_colon.remove(6);
+        no_colon.extend([(NEWLINE, Some("\n")), END]);
+        assert_eq!(
+            validate_tree(&build(MAPPING, &no_colon)),
+            Err("MAPPING_ENTRY should have exactly 1 COLON(s), found 0".to_string())
+        );
+
+        let mut two_values = entry("a", "1");
+        two_values.extend([(VALUE, None), END, (NEWLINE, Some("\n")), END]);
+        assert_eq!(
+            validate_tree(&build(MAPPING, &two_values)),
+            Err("MAPPING_ENTRY should have exactly 1 VALUE, found 2".to_string())
+        );
+
+        let mut unterminated = entry("a", "1");
+        unterminated.push(END);
+        unterminated.extend(entry("b", "2"));
+        unterminated.extend([(NEWLINE, Some("\n")), END]);
+        assert_eq!(
+            validate_tree(&build(MAPPING, &unterminated)),
+            Err(
+                "Block-style MAPPING_ENTRY not terminated by a NEWLINE (last token: Some(STRING))"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn test_validate_tree_flow_entry_may_lack_colon() {
+        use SyntaxKind::*;
+        let mut children = vec![(LEFT_BRACE, Some("{"))];
+        let mut flow_entry = entry("a", "1");
+        flow_entry.remove(6);
+        children.extend(flow_entry);
+        children.extend([END, (RIGHT_BRACE, Some("}"))]);
+        assert_eq!(validate_tree(&build(MAPPING, &children)), Ok(()));
+    }
+
+    #[test]
+    fn test_validate_tree_stacked_indents_and_double_newline() {
+        use SyntaxKind::*;
+        assert_eq!(
+            validate_tree(&build(
+                SEQUENCE,
+                &[(INDENT, Some("  ")), (INDENT, Some("  "))]
+            )),
+            Err(
+                "adjacent INDENT tokens inside SEQUENCE -- would render as stacked indentation"
+                    .to_string()
+            )
+        );
+        let mut doubled = entry("a", "1");
+        doubled.extend([(NEWLINE, Some("\n")), (NEWLINE, Some("\n")), END]);
+        assert_eq!(
+            validate_tree(&build(MAPPING, &doubled)),
+            Err(
+                "MAPPING_ENTRY ends with two NEWLINE tokens -- would render as a stray blank line: \"a: 1\\n\\n\""
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_ok_reports_parse_errors() {
+        let node = build(SyntaxKind::ROOT, &[(SyntaxKind::STRING, Some("[a"))]);
+        assert_eq!(
+            roundtrip_ok(&node),
+            Err(format!(
+                "re-parse produced 1 error(s); first: {}",
+                crate::Parse::parse_yaml("[a").positioned_errors()[0].message
+            ))
+        );
+        let file = YamlFile::from_str("a: 1\n").unwrap();
+        assert_eq!(roundtrip_ok(file.syntax()), Ok(()));
+    }
 }
 
 /// Pretty-print a YAML document showing its structure and values.
@@ -1392,6 +1517,109 @@ mod new_debug_tests {
         assert!(
             node_count >= 1,
             "expected at least one node declaration in dot output"
+        );
+    }
+
+    #[test]
+    fn test_pretty_debug_sequence_and_scalar_roots() {
+        let doc = Document::from_str("- 1\n- [2]\n").unwrap();
+        assert_eq!(
+            PrettyDebug(&doc).to_string(),
+            concat!(
+                "Document {\n",
+                "  Sequence [\n",
+                "    [0]: \"1\" (type: Integer)\n",
+                "    [1]: Sequence [\n",
+                "      [0]: \"2\" (type: Integer)\n",
+                "    ]\n",
+                "  ]\n",
+                "}\n",
+            )
+        );
+        let doc = Document::from_str("5\n").unwrap();
+        assert_eq!(
+            PrettyDebug(&doc).to_string(),
+            "Document {\n  Scalar(\"5\")\n}\n"
+        );
+    }
+
+    #[test]
+    fn test_value_inspector_kinds() {
+        let doc =
+            Document::from_str("s: 'yes'\nm: {a: 1, b: 2}\nl: [1]\nx: *a\nt: !t 1\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let inspect = |key: &str| ValueInspector(&mapping.get(key).unwrap()).to_string();
+        let header = "Value Inspector:\n===============\n";
+        assert_eq!(
+            inspect("s"),
+            format!("{header}Type: Scalar\n  Value: \"yes\"\n\nCoercion Capabilities:\n  to_i64: None\n  to_f64: None\n  to_bool: None\n")
+        );
+        assert_eq!(
+            inspect("m"),
+            format!("{header}Type: Mapping\n  Size: 2 entries\n")
+        );
+        assert_eq!(
+            inspect("l"),
+            format!("{header}Type: Sequence\n  Length: 1 items\n")
+        );
+        assert_eq!(
+            inspect("x"),
+            format!("{header}Type: Alias\n  Anchor name: a\n")
+        );
+        assert_eq!(inspect("t"), format!("{header}Type: TaggedNode\n"));
+    }
+
+    #[test]
+    fn test_visual_diff_output() {
+        let before = Document::from_str("name: Alice\nage: 30\n").unwrap();
+        let after = Document::from_str("name: Bob\nage: 30\nx: 1\n").unwrap();
+        let header = |a: &Document, b: &Document| {
+            let mut out = "Visual Diff:\n============\n\nBefore:\n-------\n".to_string();
+            for line in a.to_string().lines() {
+                out.push_str(&format!("  {line}\n"));
+            }
+            out.push_str("\nAfter:\n------\n");
+            for line in b.to_string().lines() {
+                out.push_str(&format!("  {line}\n"));
+            }
+            out + "\nChanges:\n--------\n"
+        };
+        assert_eq!(
+            VisualDiff {
+                before: &before,
+                after: &after
+            }
+            .to_string(),
+            header(&before, &after) + "Line 1: \"name: Alice\" -> \"name: Bob\"\nAdded 1 lines\n"
+        );
+        assert_eq!(
+            VisualDiff {
+                before: &after,
+                after: &before
+            }
+            .to_string(),
+            header(&after, &before) + "Line 1: \"name: Bob\" -> \"name: Alice\"\nRemoved 1 lines\n"
+        );
+    }
+
+    #[test]
+    fn test_graphviz_dot_full_output() {
+        let yaml = YamlFile::from_str("a").unwrap();
+        assert_eq!(
+            graphviz_dot(yaml.syntax()),
+            concat!(
+                "digraph CST {\n",
+                "  node [shape=box, fontname=\"Courier\"];\n",
+                "  edge [fontsize=10];\n\n",
+                "  n0 [label=\"ROOT\"];\n",
+                "  n1 [label=\"DOCUMENT\"];\n",
+                "  n0 -> n1;\n",
+                "  n2 [label=\"SCALAR\"];\n",
+                "  n1 -> n2;\n",
+                "  n3 [label=\"STRING\\n\\\"a\\\"\", shape=ellipse, style=filled, fillcolor=lightgray];\n",
+                "  n2 -> n3;\n",
+                "}\n",
+            )
         );
     }
 }

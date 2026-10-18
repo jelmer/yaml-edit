@@ -495,7 +495,7 @@ impl Parser<'_> {
             } else {
                 self.parse_mapping_key_value_pair(base_indent);
             }
-            self.skip_ws_and_newlines();
+            self.holding_trivia(Self::skip_ws_and_newlines);
             // Progress guard against any future case where the body consumes
             // nothing (e.g. recovery via synthetic-token insertion).
             if self.tokens.len() == tokens_before_iter {
@@ -575,7 +575,7 @@ impl Parser<'_> {
         // Helper to continue parsing explicit key entries within a mapping
         while self.current() == Some(SyntaxKind::QUESTION) {
             self.parse_explicit_key_entry();
-            self.skip_ws_and_newlines();
+            self.holding_trivia(Self::skip_ws_and_newlines);
         }
     }
 
@@ -1354,6 +1354,22 @@ mod tests {
         assert_eq!(entry_texts("? a\n:\n\n# c\nb: 1\n"), ["? a\n:\n", "b: 1\n"]);
         assert_eq!(entry_texts("? a  # c\n\nb: 1\n"), ["? a  # c\n", "b: 1\n"]);
         assert_eq!(entry_texts("- ? a\n  b: 1\n"), ["? a\n", "b: 1\n"]);
+    }
+
+    /// The lines after a nested collection's last entry belong to the
+    /// collection holding the next entry, or the root one at the end.
+    #[test]
+    fn test_nested_collection_leaves_following_lines() {
+        assert_eq!(
+            entry_texts("a:\n  - x\n\n  # c\nb: 1\n"),
+            ["a:\n  - x\n", "b: 1\n"]
+        );
+        assert_eq!(entry_texts("? - a\n\n: b\n"), ["? - a\n\n: b\n"]);
+        assert_eq!(entry_texts("a:\n  x: 1\n\n"), ["a:\n  x: 1\n", "x: 1\n"]);
+        assert_eq!(
+            entry_texts("a:\n  b:\n    - x\n\n  c: 1\n"),
+            ["a:\n  b:\n    - x\n\n  c: 1\n", "b:\n    - x\n", "c: 1\n"]
+        );
     }
 
     /// A mapping entry owns the comment ending its last line, and the line

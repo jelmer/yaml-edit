@@ -72,7 +72,6 @@ fn brackets(kind: SyntaxKind) -> Option<((SyntaxKind, &'static str), (SyntaxKind
 /// Replace the contents of the drained `collection` with flow-empty
 /// brackets, returning the comment lines and line breaks it held.
 fn replace_with_brackets(collection: &SyntaxNode) -> Vec<SyntaxToken> {
-    hand_trailing_indent_to_comment(collection);
     let leftovers: Vec<_> = collection
         .children_with_tokens()
         .map(|el| match el {
@@ -358,43 +357,6 @@ fn indent_past_question(collection: &SyntaxNode) {
     }
 }
 
-/// A comment line right after a block collection has its INDENT as the
-/// collection's last child, while the comment itself sits further up.
-/// Move the INDENT out, so that rewriting the collection keeps the
-/// comment's column. The parser puts it in the innermost block collection
-/// still open at the comment: the one holding `collection`, or the comment's
-/// own when that one has ended.
-fn hand_trailing_indent_to_comment(collection: &SyntaxNode) {
-    let Some(indent) = collection
-        .last_child_or_token()
-        .and_then(|el| el.into_token())
-        .filter(|t| t.kind() == SyntaxKind::INDENT)
-    else {
-        return;
-    };
-    if !crate::yaml::indents_comment_line(&indent) {
-        return;
-    }
-    let comment = indent.next_token().expect("comment after its INDENT");
-    let enclosing = collection
-        .ancestors()
-        .skip(1)
-        .find(|n| matches!(n.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE));
-    let (host, at) = match enclosing {
-        Some(e) if !comment.parent_ancestors().any(|a| a == e) => {
-            let end = e.children_with_tokens().count();
-            (e, end)
-        }
-        _ => (
-            comment.parent().expect("comment has a parent"),
-            comment.index(),
-        ),
-    };
-    let new_indent = fresh_token(SyntaxKind::INDENT, indent.text());
-    indent.detach();
-    insert_children(&host, at, vec![new_indent.into()]);
-}
-
 /// The node that carries `collection`'s line: the collection itself, the
 /// TAGGED_NODE around it, or for an explicit key the KEY, or the entry if
 /// that has no `:`.
@@ -434,32 +396,23 @@ pub(crate) fn detach_empty_collection_placeholder_newline(
     let Some(parent) = node.parent() else {
         return;
     };
-    let (holder, line_break) = if parent.kind() == SyntaxKind::VALUE {
+    let line_break = if parent.kind() == SyntaxKind::VALUE {
         let entry = parent
             .parent()
             .filter(|e| e.kind() == SyntaxKind::MAPPING_ENTRY)
             .expect("a VALUE is in a MAPPING_ENTRY");
-        let line_break = entry.last_child_or_token();
-        (entry, line_break)
+        entry.last_child_or_token()
     } else if node.kind() == SyntaxKind::MAPPING_ENTRY {
-        (node.clone(), node.last_child_or_token())
+        node.last_child_or_token()
     } else {
-        (parent, node.next_sibling_or_token())
+        node.next_sibling_or_token()
     };
     if let Some(line_break) = line_break.filter(|t| t.kind() == SyntaxKind::NEWLINE) {
         line_break.detach();
     }
-    // Comment lines after the collection's line now follow a block
-    // collection, which the parser gives their indentation.
-    // TODO: the parser also puts comment lines at the end of the document,
-    // and the indentation of one inside an explicit-key entry, into the
-    // collection: `a: 1\n# c\n` with `a` removed and `b` set keeps `# c`
-    // in the DOCUMENT rather than the MAPPING.
-    // Lines after a block scalar are the business of
-    // `settle_lines_after_inserted_entry`.
-    if holder.kind() != SyntaxKind::DOCUMENT && super::ending_block_scalar(&holder).is_none() {
-        super::replaced_value::restore_trailing_lines(&holder, Vec::new());
-    }
+    // TODO: the parser puts comment lines at the end of the document into
+    // the collection: `a: 1\n# c\n` with `a` removed and `b` set keeps
+    // `# c` in the DOCUMENT rather than the MAPPING.
 }
 
 /// The zero-width token inside `{}` or `[]` that marks an empty collection

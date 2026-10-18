@@ -1116,11 +1116,11 @@ impl Mapping {
             entry.last_child_or_token()
         }
         .filter(|c| c.kind() == SyntaxKind::NEWLINE);
-        if ends_line {
+        if ends_line && !old_ended_line {
             if let Some(newline) = newline_after {
                 newline.detach();
             }
-        } else if old_ended_line && newline_after.is_none() {
+        } else if old_ended_line && !ends_line {
             if has_colon {
                 insert_children(
                     &entry,

@@ -1,9 +1,8 @@
 //! Trivia around a value that is being replaced in its entry.
 //!
 //! Comments inside the old value go with it. The parser does not keep all
-//! of them inside the value node, though, and it keeps some trivia of the
-//! lines after the value inside it, so the replacement has to sort these
-//! out first.
+//! of them inside the value node, though, so the replacement has to sort
+//! these out first.
 
 use super::{append_children, fresh_token, insert_children, SyntaxNode, SyntaxToken};
 use crate::lex::SyntaxKind;
@@ -33,91 +32,6 @@ pub(crate) fn remove_comment_after_item(item: &SyntaxNode) {
             c.detach();
         }
     }
-}
-
-/// Detach and return the blank lines, and the indentation of a comment
-/// line, that the parser keeps at the end of the innermost collection
-/// `value` ends with. They belong to the lines after the value.
-pub(crate) fn take_trailing_lines(value: &SyntaxNode) -> Vec<SyntaxToken> {
-    let mut lines = Vec::new();
-    let mut token = value.last_token();
-    while let Some(t) = token.filter(|t| {
-        t.parent().is_some_and(|p| is_block_collection(&p)) && starts_or_is_blank_line(t)
-    }) {
-        token = t.prev_token();
-        lines.push(t);
-    }
-    lines.reverse();
-    for t in &lines {
-        t.detach();
-    }
-    lines
-}
-
-/// Is `token` the indentation of a line, or the line break of a blank
-/// one, rather than the line break ending a line with content?
-fn starts_or_is_blank_line(token: &SyntaxToken) -> bool {
-    let is_newline = |t: &SyntaxToken| t.kind() == SyntaxKind::NEWLINE;
-    let prev = token.prev_token();
-    match token.kind() {
-        SyntaxKind::INDENT | SyntaxKind::WHITESPACE => prev.is_some_and(|p| is_newline(&p)),
-        SyntaxKind::NEWLINE => prev.is_some_and(|p| {
-            is_newline(&p)
-                || (matches!(p.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE)
-                    && p.prev_token().is_some_and(|pp| is_newline(&pp)))
-        }),
-        _ => false,
-    }
-}
-
-/// Put `lines` from [`take_trailing_lines`] back after `entry`, which now
-/// holds the new value, and lay out the lines after it as the parser does
-/// after that value. A detached entry has nothing after it, so they go at
-/// its end.
-pub(crate) fn restore_trailing_lines(entry: &SyntaxNode, lines: Vec<SyntaxToken>) {
-    let elements: Vec<_> = lines
-        .iter()
-        .map(|t| fresh_token(t.kind(), t.text()).into())
-        .collect();
-    let (parent, after) = match entry.parent() {
-        Some(parent) => (parent, entry.index() + 1),
-        None => (entry.clone(), entry.children_with_tokens().count()),
-    };
-    insert_children(&parent, after, elements);
-
-    if super::ending_block_scalar(entry).is_some() {
-        settle_lines_after_block_scalar(entry);
-        return;
-    }
-    // The parser keeps blank lines and the indentation of a comment line
-    // at the end of the innermost collection still open, but leaves that
-    // of an entry's line to the collection holding the entry.
-    let Some(collection) = innermost_trailing_collection(entry) else {
-        return;
-    };
-    let starts_comment_line = |t: &SyntaxToken| {
-        t.kind() != SyntaxKind::INDENT
-            || t.next_sibling_or_token()
-                .is_some_and(|c| c.kind() == SyntaxKind::COMMENT)
-    };
-    let following: Vec<_> = parent
-        .children_with_tokens()
-        .skip(after)
-        .map_while(|c| {
-            c.into_token()
-                .filter(|t| starts_or_is_blank_line(t) && starts_comment_line(t))
-        })
-        .collect();
-    for t in &following {
-        t.detach();
-    }
-    append_children(
-        &collection,
-        following
-            .iter()
-            .map(|t| fresh_token(t.kind(), t.text()).into())
-            .collect(),
-    );
 }
 
 /// Lay out the lines after `entry`, whose value now ends in a block
@@ -256,19 +170,6 @@ fn dedent_comment_line_after(entry: &SyntaxNode, scalar: &SyntaxNode) {
             vec![fresh_token(SyntaxKind::INDENT, &" ".repeat(column)).into()],
         );
     }
-}
-
-/// The innermost block collection that ends where `entry` ends.
-fn innermost_trailing_collection(entry: &SyntaxNode) -> Option<SyntaxNode> {
-    let mut found = None;
-    let mut node = entry.clone();
-    while let Some(child) = node.last_child_or_token().and_then(|c| c.into_node()) {
-        if is_block_collection(&child) {
-            found = Some(child.clone());
-        }
-        node = child;
-    }
-    found
 }
 
 /// A line comment: the whitespace before it and its text.

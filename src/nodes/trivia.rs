@@ -165,26 +165,17 @@ pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNo
             (prev.index() + 1, elements)
         }
         Slot::End => {
+            // Blank lines after a nested collection are its parent's, so
+            // they stay after the new entry; those ending the document are
+            // the root collection's, and stay before it.
             let mut elements = Vec::new();
-            let at = match last_entry(collection, kind) {
-                Some(last) => {
-                    elements.extend(indent());
-                    // Blank lines ending a nested collection separate it
-                    // from what follows; those ending the document stay
-                    // there.
-                    if is_root(collection) {
-                        end_slot_index(collection)
-                    } else {
-                        index_after_last_line(collection, &last)
-                    }
-                }
-                None => {
-                    first = true;
-                    end_slot_index(collection)
-                }
-            };
+            if last_entry(collection, kind).is_some() {
+                elements.extend(indent());
+            } else {
+                first = true;
+            }
             elements.push(entry.clone().into());
-            let (at, opened) = end_line(collection, at);
+            let (at, opened) = end_line(collection, end_slot_index(collection));
             open_end = opened;
             (at, elements)
         }
@@ -204,19 +195,8 @@ fn last_entry(collection: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
     std::iter::successors(collection.last_child(), |n| n.prev_sibling()).find(|n| n.kind() == kind)
 }
 
-/// Is `collection` the document's own node, rather than a value in
-/// another collection?
-fn is_root(collection: &SyntaxNode) -> bool {
-    !collection.ancestors().skip(1).any(|n| {
-        matches!(
-            n.kind(),
-            SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
-        )
-    })
-}
-
 /// The index in `collection` where an entry after its last one goes: at
-/// the end, ahead of the INDENT of a comment line the parser lifted out.
+/// the end, ahead of the spaces of a last line holding nothing else.
 fn end_slot_index(collection: &SyntaxNode) -> usize {
     let count = collection.green().children().len();
     let lifted_comment_indent = collection
@@ -235,18 +215,6 @@ fn child_at(node: &SyntaxNode, i: usize) -> Option<rowan::SyntaxElement<super::L
     } else {
         node.children_with_tokens().nth(i)
     }
-}
-
-/// The index in `collection` just past the line of `last`, its last entry,
-/// or past the last comment line after it.
-fn index_after_last_line(collection: &SyntaxNode, last: &SyntaxNode) -> usize {
-    std::iter::successors(collection.last_child_or_token(), |c| {
-        c.prev_sibling_or_token()
-    })
-    .take_while(|c| c.as_node() != Some(last))
-    .find(|c| c.kind() == SyntaxKind::COMMENT)
-    .map_or_else(|| last.index(), |c| c.index())
-        + 1
 }
 
 /// End the line that the child of `collection` before index `at` is on,
@@ -383,7 +351,7 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
         if !drained {
             crate::yaml::move_leading_lines_out(collection);
             if is_last {
-                move_trailing_comment_lines_out(collection);
+                move_trailing_lines_out(collection);
             }
         }
         if let Some(prev) = &prev {
@@ -400,40 +368,45 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
     }
 }
 
-/// Move the comment lines ending `collection`, a block collection, out
-/// after the entry holding it in the collection that has an entry after
-/// that, where the parser puts comment lines before a dedented line. The
-/// blank lines and the INDENT before the first one stay. Lines with
-/// nothing after them stay too.
-fn move_trailing_comment_lines_out(collection: &SyntaxNode) {
-    let mut trailing: Vec<_> = std::iter::successors(collection.last_child_or_token(), |c| {
+/// Move the lines ending `collection`, a nested block collection, out to
+/// where the parser puts them: after the entry holding it in the
+/// collection that has an entry after that. At the end of the input,
+/// comment lines stay, and the blank lines after them go to the root
+/// collection.
+fn move_trailing_lines_out(collection: &SyntaxNode) {
+    let mut lines: Vec<_> = std::iter::successors(collection.last_child_or_token(), |c| {
         c.prev_sibling_or_token()
     })
     .map_while(|c| c.into_token())
     .collect();
-    trailing.reverse();
-    let starts_line = |t: &SyntaxToken| {
-        t.kind() == SyntaxKind::COMMENT
-            && t.prev_sibling_or_token()
-                .is_some_and(|p| matches!(p.kind(), SyntaxKind::INDENT | SyntaxKind::NEWLINE))
-    };
-    let Some(first) = trailing.iter().position(starts_line) else {
-        return;
-    };
-    let holder = collection
+    lines.reverse();
+    let holders: Vec<_> = collection
         .ancestors()
-        .skip(1)
         .filter(|n| {
             matches!(
                 n.kind(),
                 SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
             )
         })
-        .find(|e| e.next_sibling().is_some_and(|n| n.kind() == e.kind()));
-    let Some(holder) = holder else {
-        return;
+        .collect();
+    let holder = match holders
+        .iter()
+        .find(|e| e.next_sibling().is_some_and(|n| n.kind() == e.kind()))
+        .cloned()
+    {
+        Some(holder) => holder,
+        None => {
+            let after_comments = lines
+                .iter()
+                .rposition(|t| t.kind() == SyntaxKind::COMMENT)
+                .map_or(0, |i| i + 2);
+            lines = lines.split_off(after_comments.min(lines.len()));
+            match holders.last() {
+                Some(outermost) => outermost.clone(),
+                None => return,
+            }
+        }
     };
-    let lines = trailing.split_off(first);
     for t in &lines {
         t.detach();
     }

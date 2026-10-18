@@ -483,6 +483,30 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                     comment.text()
                 ));
             }
+            // Blank lines and indentation after a nested collection's last
+            // entry belong to the collection holding the next one, or to
+            // the root collection at the end of the input.
+            let nested = node
+                .ancestors()
+                .skip(1)
+                .any(|n| matches!(n.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE));
+            let trailing_line = node
+                .last_child_or_token()
+                .and_then(|c| c.into_token())
+                .filter(|t| {
+                    !t.text().is_empty()
+                        && (t.kind() != SyntaxKind::NEWLINE
+                            || t.prev_sibling_or_token()
+                                .map_or(true, |p| p.kind() != SyntaxKind::COMMENT))
+                });
+            if let Some(token) = trailing_line.filter(|_| nested) {
+                return Err(format!(
+                    "nested {:?} ends with {:?} {:?} after its last entry",
+                    node.kind(),
+                    token.kind(),
+                    token.text()
+                ));
+            }
         }
         SyntaxKind::SEQUENCE_ENTRY
             if !is_in_flow_collection(node)
@@ -510,9 +534,8 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
 ///
 /// A NEWLINE followed only by an implicit null's zero-width token counts
 /// too: in `? - a\n` the line break ends the key's sequence, and the
-/// entry's empty value comes after it. So does one followed by the INDENT
-/// of a comment line indented past the collection, which the parser
-/// leaves at the end of the collection the entry ends in.
+/// entry's empty value comes after it. So does one followed by the spaces
+/// of a block scalar's last line, which belong to its body.
 fn entry_is_terminated(entry: &SyntaxNode) -> bool {
     crate::nodes::trivia::ends_line(entry)
 }

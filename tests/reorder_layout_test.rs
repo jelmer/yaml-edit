@@ -394,3 +394,13 @@ fn reorder_comment_line_to_front_of_file() {
         );
     }
 }
+
+#[test]
+fn reorder_keeps_blank_line_after_block_value_at_its_position() {
+    check_reorder(
+        "a:\n  x: 1\n\nb: 2\n",
+        &["b", "a"],
+        "b: 2\n\na:\n  x: 1\n",
+        root,
+    );
+}

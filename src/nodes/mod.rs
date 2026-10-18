@@ -89,28 +89,26 @@
 //! followed by the entry's NEWLINE, and the INDENT, blank lines and
 //! comment lines after it belong to the collection.
 //!
-//! When a comment line is indented deeper than the collection it
-//! follows, the parser lifts the COMMENT and its NEWLINE into the parent
-//! collection but leaves the comment line's INDENT as the last child of
-//! the inner collection:
+//! The lines after a nested block collection's last entry, blank lines
+//! and comment lines with their INDENT, belong to the collection that
+//! holds the next entry, as the lines between its own entries do. At the
+//! end of the input, blank lines go to the root collection, while comment
+//! lines indented as far as the nested collection stay in it:
 //!
 //! ```text
-//! # m:\n  a: 1\n    # c\nz: 1\n
+//! # m:\n  a: 1\n    # c\n\nz: 1\n
 //! MAPPING
 //!   MAPPING_ENTRY ("m")
 //!     VALUE
 //!       ...
 //!       MAPPING
 //!         MAPPING_ENTRY ("a: 1\n")
-//!         INDENT "    "
+//!   INDENT "    "
 //!   COMMENT "# c"
+//!   NEWLINE "\n"
 //!   NEWLINE "\n"
 //!   MAPPING_ENTRY ("z") ...
 //! ```
-//!
-//! So a trailing INDENT in a collection is not necessarily at that
-//! collection's indentation; don't reuse it for a new entry without
-//! checking its width.
 //!
 //! When inserting a new sibling entry after an existing one, mutation
 //! helpers must first ensure the predecessor is terminated

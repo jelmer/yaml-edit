@@ -1899,10 +1899,6 @@ fn test_insert_after_nested_indentless_sequence() {
             "- x:\n  - 1 # c\n  y: 2\n  z: 3\n- 2\n",
         ),
         (
-            "- x:\n  - 1\n\n  z: 3\n- 2\n",
-            "- x:\n  - 1\n\n  y: 2\n  z: 3\n- 2\n",
-        ),
-        (
             "- x:\n  - | # c\n    t\n- 2\n",
             "- x:\n  - | # c\n    t\n  y: 2\n- 2\n",
         ),
@@ -1924,18 +1920,32 @@ fn test_insert_after_nested_indentless_sequence() {
         &|m| assert!(m.insert_after("x", "y", 2)),
         &|m| m.set_with_field_order("y", 2, ["x", "y", "z"]),
     ];
+    let check = |source: &str, op: &dyn Fn(&crate::Mapping), expected: &str| {
+        let yaml = YamlFile::from_str(source).unwrap();
+        let mapping = yaml
+            .syntax()
+            .descendants()
+            .filter_map(crate::Mapping::cast)
+            .find(|m| m.contains_key("x"))
+            .unwrap();
+        op(&mapping);
+        assert_edited(&yaml, expected);
+    };
     for (source, expected) in cases {
         for op in ops {
-            let yaml = YamlFile::from_str(source).unwrap();
-            let mapping = yaml
-                .syntax()
-                .descendants()
-                .filter_map(crate::Mapping::cast)
-                .find(|m| m.contains_key("x"))
-                .unwrap();
-            op(&mapping);
-            assert_edited(&yaml, expected);
+            check(source, op, expected);
         }
+    }
+    // The blank line before `z` stays there when the new entry goes before
+    // `z`, and after the new entry when it goes after `x`, as between
+    // scalar values.
+    for (i, op) in ops.into_iter().enumerate() {
+        let expected = if i < 2 {
+            "- x:\n  - 1\n\n  y: 2\n  z: 3\n- 2\n"
+        } else {
+            "- x:\n  - 1\n  y: 2\n\n  z: 3\n- 2\n"
+        };
+        check("- x:\n  - 1\n\n  z: 3\n- 2\n", op, expected);
     }
 }
 

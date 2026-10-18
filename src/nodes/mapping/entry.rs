@@ -540,13 +540,8 @@ impl MappingEntry {
         flow_context: bool,
         anchor: Option<&str>,
     ) {
-        use crate::nodes::replaced_value::{restore_trailing_lines, take_trailing_lines};
-        let trailing_lines = match self.value() {
-            Some(old) if !flow_context => take_trailing_lines(&old),
-            _ => Vec::new(),
-        };
         self.replace_value(new_value, flow_context, anchor);
-        restore_trailing_lines(&self.0, trailing_lines);
+        crate::nodes::replaced_value::settle_lines_after_block_scalar(&self.0);
         if let Some(content) = self.value().and_then(|v| v.last_child()) {
             crate::nodes::trivia::drop_space_before_empty(&content);
         }

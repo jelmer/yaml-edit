@@ -1,6 +1,6 @@
 //! The trivia between collection entries: the line break ending a block
 //! collection entry's line, and the separator after a flow collection entry,
-//! and removing an entry along with the trivia that belongs to it.
+//! and adding or removing an entry along with the trivia that belongs to it.
 //!
 //! A block entry normally owns the NEWLINE ending its last line, but the
 //! parser puts it deeper when the entry ends in a nested block value, leaves
@@ -8,7 +8,7 @@
 //! is none at the end of unterminated input. A flow entry owns the comma
 //! after it and the white space around that.
 
-use super::empty_collection::render_empty;
+use super::empty_collection::{detach_empty_collection_placeholder_newline, render_empty};
 use super::{
     append_children, entry_value, fresh_token, has_child_token, is_block_scalar, replace_children,
     SyntaxNode, SyntaxToken,
@@ -95,6 +95,146 @@ fn last_non_empty_token(node: &SyntaxNode) -> Option<SyntaxToken> {
 /// where an entry on the next line goes.
 pub(crate) fn index_after_line(entry: &SyntaxNode) -> usize {
     entry.index() + 1 + usize::from(line_end(entry) == LineEnd::Sibling)
+}
+
+/// Where a new entry goes in its collection.
+pub(crate) enum Slot {
+    /// After the last entry.
+    End,
+    /// On the line after this entry.
+    After(SyntaxNode),
+    /// In place of this entry, which moves to the next line.
+    Before(SyntaxNode),
+}
+
+/// The column at which the entries of `collection` start: the INDENT
+/// before its second entry, or failing that the column the collection
+/// starts at.
+pub(crate) fn entry_column(collection: &SyntaxNode) -> usize {
+    let mut entries = collection.children().filter(|n| {
+        matches!(
+            n.kind(),
+            SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+        )
+    });
+    entries
+        .nth(1)
+        .and_then(|second| second.prev_sibling_or_token())
+        .and_then(|c| c.into_token())
+        .filter(|t| t.kind() == SyntaxKind::INDENT)
+        .map_or_else(
+            || crate::column::node_column(collection),
+            |t| t.text().len(),
+        )
+}
+
+/// Splice `entry`, a block collection entry built standalone, into
+/// `collection` at `slot`, on a line of its own.
+///
+/// The entry before it gets a line break if it lacks one, the new entry
+/// an INDENT at the collection's column (unless it comes first, where the
+/// parser has the column outside the collection), and an explicit-key
+/// entry's line break goes to the collection. Should the new entry end in
+/// a block scalar, the lines after it are laid out so that it does not
+/// take them in.
+pub(crate) fn attach_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNode) {
+    let kind = entry.kind();
+    let column = entry_column(collection);
+    let indent =
+        || (column > 0).then(|| fresh_token(SyntaxKind::INDENT, &" ".repeat(column)).into());
+    let mut first = false;
+    let (at, elements) = match slot {
+        Slot::Before(next) => {
+            let prev = next
+                .siblings(rowan::Direction::Prev)
+                .skip(1)
+                .find(|n| n.kind() == kind);
+            if let Some(prev) = prev {
+                terminate(&prev);
+            }
+            // The INDENT before `next`, if any, is the new entry's now.
+            let mut elements = vec![entry.clone().into()];
+            elements.extend(indent());
+            (next.index(), elements)
+        }
+        Slot::After(prev) => {
+            terminate(&prev);
+            let mut elements: Vec<_> = indent().into_iter().collect();
+            elements.push(entry.clone().into());
+            (index_after_line(&prev), elements)
+        }
+        Slot::End => {
+            let last = collection.children().filter(|n| n.kind() == kind).last();
+            let mut elements = Vec::new();
+            match last {
+                Some(last) => {
+                    terminate(&last);
+                    elements.extend(indent());
+                }
+                None => first = true,
+            }
+            elements.push(entry.clone().into());
+            (end_slot_index(collection), elements)
+        }
+    };
+    collection.splice_children(at..at, elements);
+    if first {
+        detach_empty_collection_placeholder_newline(collection, entry);
+    }
+    hand_line_break_to_mapping(entry);
+    super::settle_lines_after_inserted_entry(entry);
+}
+
+/// The index in `collection` where an entry after its last one goes: at
+/// the end, ahead of the INDENT of a comment line the parser lifted out.
+fn end_slot_index(collection: &SyntaxNode) -> usize {
+    let count = collection.children_with_tokens().count();
+    let lifted_comment_indent = collection
+        .last_child_or_token()
+        .is_some_and(|c| c.kind() == SyntaxKind::INDENT);
+    count - usize::from(lifted_comment_indent)
+}
+
+/// Splice `entry`, a flow collection entry built standalone, into
+/// `collection`, a flow collection, at `slot`, with the separators that
+/// keep the entries apart.
+pub(crate) fn attach_flow_entry(collection: &SyntaxNode, slot: Slot, entry: &SyntaxNode) {
+    let at = match slot {
+        Slot::End => collection
+            .children_with_tokens()
+            .position(|c| {
+                matches!(
+                    c.kind(),
+                    SyntaxKind::RIGHT_BRACE | SyntaxKind::RIGHT_BRACKET
+                )
+            })
+            .unwrap_or_else(|| collection.children_with_tokens().count()),
+        Slot::After(prev) => prev.index() + 1,
+        Slot::Before(next) => next.index(),
+    };
+
+    let kind = entry.kind();
+    let mut entries_before: Vec<SyntaxNode> = collection
+        .children_with_tokens()
+        .take(at)
+        .filter_map(|c| c.into_node())
+        .filter(|n| n.kind() == kind)
+        .collect();
+    let has_following_entry = collection
+        .children_with_tokens()
+        .skip(at)
+        .any(|c| c.as_node().is_some_and(|n| n.kind() == kind));
+    if has_following_entry {
+        // The new entry separates from the next one with `, `, and one
+        // before it gets the same if it lacked a separator.
+        if let Some(prev) = entries_before.last() {
+            FlowSeparator::ensure(prev);
+        }
+        FlowSeparator::ensure(entry);
+    } else if let Some(last) = entries_before.pop() {
+        FlowSeparator::hand_over_end(&last, entries_before.last(), entry);
+    }
+    collection.splice_children(at..at, vec![entry.clone().into()]);
 }
 
 /// Splice `entry` out of `collection`, a block or flow collection, with

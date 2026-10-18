@@ -1,6 +1,6 @@
 //! Value wrapper that can represent any YAML value type (scalar, sequence, mapping).
 
-use crate::scalar::{ScalarStyle, ScalarValue};
+use crate::scalar::ScalarValue;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -392,146 +392,40 @@ impl YamlValue {
         self.as_scalar().and_then(ScalarValue::to_bool)
     }
 
-    /// Convert to YAML string representation
+    /// Convert to YAML string representation, written at column `indent`:
+    /// a block mapping or sequence has every line indented by `indent`, and
+    /// anything else has the lines after its first, such as the body of a
+    /// block scalar, indented past it.
     ///
     /// The text has no final line break, except where a block scalar ends
     /// it with an empty line: that line needs its line break, or the value
     /// would read back without it.
     pub fn to_yaml_string(&self, indent: usize) -> String {
-        let mut text = self.render(indent);
+        let mut builder = rowan::GreenNodeBuilder::new();
+        builder.start_node(crate::lex::SyntaxKind::ROOT.into());
+        build_value(self, &mut builder, indent, None);
+        builder.finish_node();
+        let built = SyntaxNode::new_root(builder.finish()).text().to_string();
+        let mut text = if self.is_block_collection() {
+            " ".repeat(indent)
+        } else {
+            String::new()
+        };
+        text.push_str(built.strip_suffix('\n').unwrap_or(&built));
         if text.ends_with('\n') {
             text.push('\n');
         }
         text
     }
 
-    /// Render this value with no final line break.
-    fn render(&self, indent: usize) -> String {
-        match self {
-            YamlValue::Scalar(s) => s.to_yaml_string(),
-            YamlValue::Sequence(seq) => {
-                if seq.is_empty() {
-                    "[]".to_string()
-                } else {
-                    let mut result = String::with_capacity(seq.len() * 20); // Pre-allocate
-                    let indent_str = " ".repeat(indent);
-                    for item in seq {
-                        result.push_str(&indent_str);
-                        result.push_str("  - ");
-                        item.push_entry_value(&mut result, indent + 4);
-                        result.push('\n');
-                    }
-                    result.pop();
-                    result
-                }
-            }
-            YamlValue::Mapping(map) => {
-                if map.is_empty() {
-                    "{}".to_string()
-                } else {
-                    let mut result = String::with_capacity(map.len() * 30); // Pre-allocate
-                    let indent_str = " ".repeat(indent);
-                    for (key, value) in map {
-                        result.push_str(&indent_str);
-                        result.push_str(&Self::render_key(key));
-                        result.push_str(": ");
-                        value.push_entry_value(&mut result, indent + 2);
-                        result.push('\n');
-                    }
-                    result.pop();
-                    result
-                }
-            }
-            YamlValue::Set(set) => {
-                // Sets are represented as mappings with null values
-                if set.is_empty() {
-                    "!!set {}".to_string()
-                } else {
-                    let mut result = String::from("!!set");
-                    result.push('\n');
-                    let indent_str = " ".repeat(indent);
-                    for item in set {
-                        result.push_str(&indent_str);
-                        result.push_str(&Self::render_key(item));
-                        result.push_str(": null");
-                        result.push('\n');
-                    }
-                    result.pop();
-                    result
-                }
-            }
-            YamlValue::OrderedMapping(pairs) => Self::render_tagged_pairs("!!omap", pairs, indent),
-            YamlValue::Pairs(pairs) => Self::render_tagged_pairs("!!pairs", pairs, indent),
-            YamlValue::Tagged(tag, value) => {
-                let content = value.render(indent);
-                if value.is_block_collection() {
-                    format!("{tag}\n{content}")
-                } else {
-                    format!("{tag} {content}")
-                }
-            }
-        }
-    }
-
-    /// Whether this renders as a block collection, which has to start on a
-    /// line of its own.
+    /// Whether this is written as a block collection, which has to start
+    /// on a line of its own.
     fn is_block_collection(&self) -> bool {
         match self {
             YamlValue::Sequence(seq) => !seq.is_empty(),
             YamlValue::Mapping(map) => !map.is_empty(),
             _ => false,
         }
-    }
-
-    /// Render a mapping key, which has to fit on one line.
-    fn render_key(key: &str) -> String {
-        let scalar = ScalarValue::string(key);
-        match scalar.style() {
-            ScalarStyle::Literal | ScalarStyle::Folded => {
-                ScalarValue::double_quoted(key).to_yaml_string()
-            }
-            _ => scalar.to_yaml_string(),
-        }
-    }
-
-    /// Append this value after a `key: ` or `- ` indicator, where anything
-    /// nested has to start at column `indent`.
-    fn push_entry_value(&self, result: &mut String, indent: usize) {
-        match self {
-            // The indicator's own line is `indent - 2`: a key, or a `-`.
-            YamlValue::Scalar(s) => result.push_str(&s.to_yaml_string_with_indent(indent - 2, 2)),
-            v if v.is_block_collection() => {
-                if result.ends_with(' ') {
-                    result.pop();
-                }
-                result.push('\n');
-                result.push_str(&self.render(indent));
-            }
-            // Empty collections are flow style and tagged ones open with
-            // their tag, so both stay on the indicator's line.
-            _ => result.push_str(&self.render(indent)),
-        }
-    }
-
-    /// Render `!!omap` / `!!pairs`: a tagged sequence of single-key mappings.
-    fn render_tagged_pairs(tag: &str, pairs: &[(String, YamlValue)], indent: usize) -> String {
-        if pairs.is_empty() {
-            return format!("{tag} []");
-        }
-        let mut result = String::from(tag);
-        result.push('\n');
-        let indent_str = " ".repeat(indent);
-        for (key, value) in pairs {
-            result.push_str(&indent_str);
-            result.push_str("  - ");
-            result.push_str(&Self::render_key(key));
-            result.push_str(": ");
-            // The key sits at indent + 4, so its value has to start right of it.
-            value.push_entry_value(&mut result, indent + 6);
-            result.push('\n');
-        }
-        result.pop();
-        result
     }
 }
 
@@ -853,6 +747,7 @@ impl AsYaml for &[YamlValue] {
 mod tests {
     use super::*;
     use crate::debug::assert_cst_ok;
+    use crate::scalar::ScalarStyle;
     use std::str::FromStr;
 
     fn render_as_yaml<T: crate::AsYaml>(v: &T) -> String {
@@ -1519,12 +1414,11 @@ ordered: !!omap [first: *list]
 
     #[test]
     fn test_to_yaml_string_nested_indentation() {
-        // Sequence holding a non-scalar item: nested mapping is indented by
-        // indent + 4 relative to the dash.
+        // A mapping item starts on the dash's line.
         let mut inner = BTreeMap::new();
         inner.insert("h".to_string(), YamlValue::from("x"));
         let seq = YamlValue::Sequence(vec![YamlValue::Mapping(inner)]);
-        assert_eq!(seq.to_yaml_string(0), "  -\n    h: x");
+        assert_eq!(seq.to_yaml_string(0), "- h: x");
 
         // Mapping holding a non-scalar value: nested sequence is rendered at
         // indent + 2.
@@ -1533,7 +1427,7 @@ ordered: !!omap [first: *list]
             "k".to_string(),
             YamlValue::Sequence(vec![YamlValue::from("a")]),
         );
-        assert_eq!(YamlValue::Mapping(m).to_yaml_string(0), "k:\n    - a");
+        assert_eq!(YamlValue::Mapping(m).to_yaml_string(0), "k:\n  - a");
 
         // Ordered mapping with a non-scalar value: the nested mapping has to
         // sit right of the key at indent + 4, or it becomes a sibling of it.
@@ -1547,7 +1441,7 @@ ordered: !!omap [first: *list]
             "a".to_string(),
             YamlValue::Sequence(vec![YamlValue::from("z")]),
         )]);
-        assert_eq!(pairs.to_yaml_string(0), "!!pairs\n  - a:\n        - z");
+        assert_eq!(pairs.to_yaml_string(0), "!!pairs\n  - a:\n      - z");
     }
 
     #[test]
@@ -1570,7 +1464,7 @@ ordered: !!omap [first: *list]
         let val = YamlValue::from(vec!["item1", "item2", "item3"]);
         assert!(val.is_sequence());
         let yaml = val.to_yaml_string(0);
-        assert_eq!(yaml, "  - item1\n  - item2\n  - item3");
+        assert_eq!(yaml, "- item1\n- item2\n- item3");
 
         // Empty sequence
         let val = YamlValue::sequence();
@@ -1608,8 +1502,8 @@ ordered: !!omap [first: *list]
         assert_eq!(
             out,
             "n:\n  s: |-\n    l1\n    l2\n\
-             o: !!omap\n    - a: |-\n        l1\n        l2\n\
-             q:\n    - |-\n      l1\n      l2"
+             o: !!omap\n  - a: |-\n      l1\n      l2\n\
+             q:\n  - |-\n    l1\n    l2"
         );
         assert_eq!(YamlValue::parse_raw(&out).unwrap(), v);
     }
@@ -1700,7 +1594,7 @@ ordered: !!omap [first: *list]
             YamlValue::Scalar(ScalarValue::literal("x\n\n")),
             YamlValue::from(1),
         ]);
-        assert_eq!(v.to_yaml_string(0), "  - |+\n    x\n\n  - 1");
+        assert_eq!(v.to_yaml_string(0), "- |+\n  x\n\n- 1");
         assert_eq!(YamlValue::parse_raw(&v.to_yaml_string(0)).unwrap(), v);
     }
 
@@ -1733,7 +1627,7 @@ ordered: !!omap [first: *list]
         let out = v.to_yaml_string(0);
         assert_eq!(
             out,
-            "e: {}\nl:\n    - []\ns: !!set\n  '#c': null\n  'a: b': null"
+            "e: {}\nl:\n  - []\ns: !!set\n  '#c': null\n  'a: b': null"
         );
         assert_eq!(YamlValue::parse_raw(&out).unwrap(), v);
     }
@@ -1805,8 +1699,8 @@ ordered: !!omap [first: *list]
             "k: !local\n  a: 1",
             "k: !local []",
             "k: !!map {}",
-            "k: !!seq\n    - a",
-            "!local\na: !!str 1",
+            "k: !!seq\n  - a",
+            "!local\n  a: !!str 1",
             "!local\n  - a\n  - !!int 1",
         ] {
             let v = YamlValue::parse_raw(src).unwrap();
@@ -1903,7 +1797,7 @@ ordered: !!omap [first: *list]
         let yaml = val.to_yaml_string(0);
         assert_eq!(
             yaml,
-            "database:\n  host: localhost\n  port: 5432\nfeatures:\n    - auth\n    - logging\nname: app"
+            "database:\n  host: localhost\n  port: 5432\nfeatures:\n  - auth\n  - logging\nname: app"
         );
     }
 
@@ -1917,7 +1811,7 @@ ordered: !!omap [first: *list]
         let val = YamlValue::from_set(set);
         assert!(val.is_set());
         let yaml = val.to_yaml_string(0);
-        assert_eq!(yaml, "!!set\nitem1: null\nitem2: null\nitem3: null");
+        assert_eq!(yaml, "!!set\n  item1: null\n  item2: null\n  item3: null");
 
         // Empty set
         let val = YamlValue::set();

@@ -485,6 +485,7 @@ impl Validator {
             }
             SyntaxKind::SEQUENCE_ENTRY => {
                 self.check_anchor_and_alias(node, violations);
+                self.check_single_content_node(node, violations);
             }
             SyntaxKind::VALUE => {
                 self.check_anchor_and_alias(node, violations);
@@ -492,6 +493,7 @@ impl Validator {
             }
             SyntaxKind::TAGGED_NODE => {
                 self.check_anchor_and_alias(node, violations);
+                self.check_single_content_node(node, violations);
                 self.check_tag_on_alias(node, violations);
                 self.check_collection_tag_content(node, violations);
                 self.check_pairs_items(node, violations);
@@ -500,6 +502,7 @@ impl Validator {
             }
             SyntaxKind::DOCUMENT => {
                 self.check_anchor_and_alias(node, violations);
+                self.check_single_content_node(node, violations);
                 self.check_document_level_anchors(node, violations);
                 if self.config.check_anchors {
                     self.check_undefined_aliases(node, violations);
@@ -1565,11 +1568,13 @@ impl Validator {
         }
     }
 
-    /// Check that a KEY or VALUE holds exactly one node.
+    /// Check that a node slot (a document, key, value, sequence entry or
+    /// tagged node) holds at most one node.
     ///
     /// In `? a\n 5b: 1\n` the more indented line would continue the plain
     /// scalar `a`, which then could not be an implicit key spanning lines;
     /// the parser keeps the mapping as a second node of the key instead.
+    /// Likewise the `x` of `[q] x` is kept next to the flow sequence.
     fn check_single_content_node(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         use crate::SyntaxKind;
 
@@ -1589,10 +1594,12 @@ impl Validator {
         else {
             return;
         };
-        let what = if node.kind() == SyntaxKind::KEY {
-            "Key"
-        } else {
-            "Value"
+        let what = match node.kind() {
+            SyntaxKind::DOCUMENT => "Document",
+            SyntaxKind::KEY => "Key",
+            SyntaxKind::SEQUENCE_ENTRY => "Sequence entry",
+            SyntaxKind::TAGGED_NODE => "Tagged node",
+            _ => "Value",
         };
         violations.push(Violation::error_at(
             Rule::Other,

@@ -141,6 +141,13 @@ pub enum ResolveError {
         /// The anchor name the alias references, without the `*`.
         alias: String,
     },
+    /// A document, key, value, sequence entry or tagged node holds more
+    /// than one node, as in `k: [q] x`, which YAML does not allow but the
+    /// parser accepts. A [`YamlValue`] can only keep one of them.
+    ExtraNode {
+        /// The source text of the node after the first.
+        node: String,
+    },
 }
 
 impl std::fmt::Display for ResolveError {
@@ -188,6 +195,9 @@ impl std::fmt::Display for ResolveError {
                     "alias {alias:?} cannot be converted without resolving it; \
                      use get_resolved to resolve aliases"
                 )
+            }
+            ResolveError::ExtraNode { node } => {
+                write!(f, "node {node:?} follows another in the same place")
             }
         }
     }
@@ -459,6 +469,7 @@ fn apply_merge_keys(
         // The resolved keys of this mapping and their source text.
         let mut own_keys: Vec<(YamlNode, YamlNode)> = Vec::new();
         for (key, value) in source.iter() {
+            check_single_node_in_parent(key.syntax())?;
             if registry.is_some() && is_merge_key(&key) {
                 continue;
             }
@@ -498,6 +509,49 @@ fn apply_merge_keys(
     Ok(merged_pairs)
 }
 
+/// Fail if `slot`, a node that holds a single node such as a VALUE, holds
+/// more than one, so converting it would drop the rest.
+fn check_single_node(slot: &SyntaxNode) -> Result<(), ResolveError> {
+    let extra = slot
+        .children()
+        .filter(|c| {
+            matches!(
+                c.kind(),
+                SyntaxKind::SCALAR
+                    | SyntaxKind::MAPPING
+                    | SyntaxKind::SEQUENCE
+                    | SyntaxKind::TAGGED_NODE
+                    | SyntaxKind::ALIAS
+            )
+        })
+        .nth(1);
+    match extra {
+        Some(extra) => Err(ResolveError::ExtraNode {
+            node: extra.text().to_string(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// Like [`check_single_node`], for the slot `node` sits in.
+fn check_single_node_in_parent(node: &SyntaxNode) -> Result<(), ResolveError> {
+    match node.parent() {
+        Some(parent)
+            if matches!(
+                parent.kind(),
+                SyntaxKind::DOCUMENT
+                    | SyntaxKind::KEY
+                    | SyntaxKind::VALUE
+                    | SyntaxKind::SEQUENCE_ENTRY
+                    | SyntaxKind::TAGGED_NODE
+            ) =>
+        {
+            check_single_node(&parent)
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Turn `node` into a [`YamlValue`], following aliases and applying merge
 /// keys at every level.
 ///
@@ -513,6 +567,7 @@ pub(crate) fn resolved_value(
 ) -> Result<Option<YamlValue>, ResolveError> {
     use crate::as_yaml::YamlNode;
 
+    check_single_node_in_parent(node.syntax())?;
     match node {
         YamlNode::Alias(alias) => {
             let name = alias.name();
@@ -567,6 +622,7 @@ fn resolved_tagged(
 ) -> Result<Option<YamlValue>, ResolveError> {
     use crate::as_yaml::YamlNode;
 
+    check_single_node(tagged.syntax())?;
     let content = tagged.syntax().children().find_map(YamlNode::from_syntax);
     let (Some(tag), Some(content)) = (tagged.tag(), content) else {
         return Ok(crate::scalar::ScalarValue::from_tagged(tagged).map(YamlValue::Scalar));

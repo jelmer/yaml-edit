@@ -720,3 +720,115 @@ fn node_followed_by_content_before_colon() {
         assert_eq!(violations, expected, "{yaml:?}");
     }
 }
+
+/// A complete node followed by plain scalar content on its line, with no
+/// colon after it, as in `[q] x`. The parser keeps the content next to the
+/// node, and the validator reports it.
+#[test]
+fn node_followed_by_content_on_its_line() {
+    use yaml_edit::validator::Validator;
+    for (yaml, expected) in [
+        ("k:\n  [q] x\n", ("Value holds more than one node", "2:7")),
+        ("k: [q] x\n", ("Value holds more than one node", "1:8")),
+        (
+            "k: {a: 1} x y\n",
+            ("Value holds more than one node", "1:11"),
+        ),
+        (
+            "a: &a 1\nk: *a x\n",
+            ("Value holds more than one node", "2:7"),
+        ),
+        ("[q] x\n", ("Document holds more than one node", "1:5")),
+        ("&a [q] x\n", ("Document holds more than one node", "1:8")),
+        (
+            "- [q] x\n",
+            ("Sequence entry holds more than one node", "1:7"),
+        ),
+        (
+            "k: !t [q] x\n",
+            ("Tagged node holds more than one node", "1:11"),
+        ),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
+        assert_eq!(file.to_string(), yaml);
+        assert_file_cst_ok(&file);
+        let violations: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| (v.message, v.location.unwrap()))
+            .collect();
+        let (message, at) = expected;
+        assert_eq!(
+            violations,
+            [(message.to_string(), at.to_string())],
+            "{yaml:?}"
+        );
+    }
+}
+
+/// In a flow collection, plain scalar content between a complete key node
+/// and its colon stays in the KEY, as in a block mapping, and a key with no
+/// colon after it ends its entry, as an entry missing its comma.
+#[test]
+fn flow_key_followed_by_content() {
+    use yaml_edit::validator::Validator;
+    const TWO_NODES: &str = "Key holds more than one node";
+    const NO_COMMA: &str = "Missing comma between flow collection entries";
+    for (yaml, expected) in [
+        ("a: &a 1\nb: {*a x: v}\n", vec![(TWO_NODES, "2:8")]),
+        ("a: &a 1\nb: [*a x: v]\n", vec![(TWO_NODES, "2:8")]),
+        ("{[q] x: v}\n", vec![(TWO_NODES, "1:6")]),
+        ("[[q] x y: v, b]\n", vec![(TWO_NODES, "1:6")]),
+        ("[\"q\" x: v]\n", vec![(TWO_NODES, "1:6")]),
+        ("{\"q\" x: v}\n", vec![(TWO_NODES, "1:6")]),
+        ("a: &a 1\nb: {*a x}\n", vec![(NO_COMMA, "2:8")]),
+        ("{[q] [r]}\n", vec![(NO_COMMA, "1:6")]),
+        ("a: &a 1\nb: {*a\n x: v}\n", vec![(NO_COMMA, "3:2")]),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
+        assert_eq!(file.to_string(), yaml);
+        assert_file_cst_ok(&file);
+        let violations: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| (v.message, v.location.unwrap()))
+            .collect();
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|(message, at)| (message.to_string(), at.to_string()))
+            .collect();
+        assert_eq!(violations, expected, "{yaml:?}");
+    }
+}
+
+/// A mapping line after the document's own node can be neither part of it
+/// nor a document of its own. The parser keeps the mapping as a second node
+/// of the document, and the validator reports it.
+#[test]
+fn mapping_after_root_node() {
+    use yaml_edit::validator::Validator;
+    const TWO_NODES: &str = "Document holds more than one node";
+    for (yaml, expected) in [
+        ("a\n[x]: z\n", vec![(TWO_NODES, "2:1")]),
+        ("a\nb: z\nc: d\n", vec![(TWO_NODES, "2:1")]),
+        ("a\n# c\n&x b: z\n", vec![(TWO_NODES, "3:1")]),
+        ("\"a\"\nb: z\n", vec![(TWO_NODES, "2:1")]),
+        ("- a\nb: z\n", vec![(TWO_NODES, "2:1")]),
+        ("--- a\nb: z\n...\n", vec![(TWO_NODES, "2:1")]),
+        ("this\n is\n  invalid: x\n", vec![(TWO_NODES, "3:3")]),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
+        assert_eq!(file.to_string(), yaml);
+        assert_file_cst_ok(&file);
+        let violations: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| (v.message, v.location.unwrap()))
+            .collect();
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|(message, at)| (message.to_string(), at.to_string()))
+            .collect();
+        assert_eq!(violations, expected, "{yaml:?}");
+    }
+}

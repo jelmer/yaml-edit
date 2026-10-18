@@ -11,12 +11,24 @@ fn test_preserve_invalid_flow_block_mix() {
 key1: value1
 key2: value2"#;
 
-    // The entries after {} cannot be attached to it, so the parser reports
-    // them rather than returning a value they have been dropped from. The
-    // text is still preserved for lossless editing.
+    // The entries after {} cannot be attached to it. The parser keeps them
+    // as a second node of the document, which the validator reports, and
+    // the text is preserved for lossless editing.
     let parsed = YamlFile::parse(invalid_yaml);
-    assert_eq!(parsed.errors().len(), 1);
+    assert_eq!(parsed.errors(), Vec::<String>::new());
     assert_eq!(parsed.tree().to_string(), invalid_yaml);
+    let violations: Vec<_> = yaml_edit::validator::Validator::new()
+        .validate_syntax(parsed.tree().syntax())
+        .into_iter()
+        .map(|v| (v.message, v.location.unwrap()))
+        .collect();
+    assert_eq!(
+        violations,
+        [(
+            "Document holds more than one node".to_string(),
+            "3:1".to_string()
+        )]
+    );
 }
 
 #[test]
@@ -31,10 +43,8 @@ key1: value1"#;
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
             // Add a new key - since the mapping is {}, the new key is added there
-            // The invalid content after {} is preserved in ERROR nodes
+            // The invalid content after {} is preserved as a second node
             mapping.set("key2", "value2");
-            // The input already fails to parse cleanly, so only the tree
-            // invariants apply here, not roundtrip_ok.
             debug::validate_tree(yaml.syntax()).unwrap();
         }
     }
@@ -43,7 +53,7 @@ key1: value1"#;
 
     // Setting into a flow mapping now inserts inside its `{}` (was: appended
     // a broken block-style entry after `}`). The trailing invalid block
-    // content is still preserved in ERROR nodes.
+    // content is still preserved.
     assert_eq!(result, "---\n{key2: value2}\nkey1: value1");
 }
 
@@ -62,17 +72,15 @@ version: 1.0"#;
 
     if let Some(doc) = yaml.document() {
         if let Some(mapping) = doc.as_mapping() {
-            // The mapping is empty {} - operations on it don't affect ERROR nodes
-            // which preserve "name: test\nversion: 1.0"
+            // The mapping is empty {} - operations on it don't affect the
+            // mapping after it, "name: test\nversion: 1.0"
 
             // Add a key to the empty mapping
             mapping.set("author", "John");
-            // The input already fails to parse cleanly, so only the tree
-            // invariants apply here, not roundtrip_ok.
             debug::validate_tree(yaml.syntax()).unwrap();
 
             // The new key is added inside the `{}`; invalid trailing block
-            // content stays in ERROR nodes.
+            // content stays where it was.
             let expected = "---\n{author: John}\nname: test\nversion: 1.0";
             assert_eq!(yaml.to_string(), expected);
         }
@@ -99,11 +107,11 @@ key2: value2"#;
     // Lossless round-trip: parse -> serialize -> parse -> serialize
     assert_eq!(reparsed.to_string(), invalid_yaml);
 
-    // The mapping {} is empty, but invalid content is preserved in ERROR nodes
+    // The mapping {} is empty, but invalid content is preserved after it
     if let Some(doc) = reparsed.document() {
         if let Some(mapping) = doc.as_mapping() {
             let keys: Vec<_> = mapping.keys().collect();
-            // The mapping is empty {} - invalid content is in ERROR nodes
+            // The mapping is empty {} - invalid content is in a second node
             assert_eq!(keys.len(), 0);
         }
     }

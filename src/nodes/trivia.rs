@@ -578,20 +578,9 @@ impl FlowSeparator {
         true
     }
 
-    /// Append `, ` to `entry` unless it already ends with a comma.
+    /// Append `, ` to `entry` unless it already has a comma.
     pub(crate) fn ensure(entry: &SyntaxNode) {
-        let ends_with_comma = entry
-            .children_with_tokens()
-            .filter_map(|c| c.into_token())
-            .filter(|t| {
-                !matches!(
-                    t.kind(),
-                    SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
-                )
-            })
-            .last()
-            .is_some_and(|t| t.kind() == SyntaxKind::COMMA);
-        if !ends_with_comma {
+        if !has_comma(entry) {
             append_children(entry, Self::comma_space().build());
         }
     }

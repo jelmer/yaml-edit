@@ -22,17 +22,10 @@ impl Parser<'_> {
         self.builder.start_node(SyntaxKind::SCALAR.into());
         let tokens_before = self.tokens.len();
 
-        if matches!(
-            self.current(),
-            Some(
-                SyntaxKind::STRING
-                    | SyntaxKind::UNTERMINATED_STRING
-                    | SyntaxKind::INT
-                    | SyntaxKind::FLOAT
-                    | SyntaxKind::BOOL
-                    | SyntaxKind::NULL
-            )
-        ) {
+        if self
+            .current()
+            .is_some_and(|k| is_plain_scalar_kind(k) || k == SyntaxKind::UNTERMINATED_STRING)
+        {
             if self.current() == Some(SyntaxKind::UNTERMINATED_STRING) {
                 self.add_error(
                     "Unterminated quoted string".to_string(),
@@ -989,6 +982,7 @@ pub(super) fn is_plain_scalar_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::FLOAT
             | SyntaxKind::BOOL
             | SyntaxKind::NULL
+            | SyntaxKind::MERGE_KEY
     )
 }
 

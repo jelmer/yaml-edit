@@ -544,6 +544,73 @@ mod tests {
     use std::str::FromStr;
 
     #[test]
+    fn test_unquoted_value_keeps_escapes() {
+        let doc = Document::from_str("- \"a\\\"b\"\n- 'c''d'\n- e\n").unwrap();
+        let seq = doc.as_sequence().unwrap();
+        let unquoted: Vec<_> = (0..3)
+            .map(|i| seq.get(i).unwrap().as_scalar().unwrap().unquoted_value())
+            .collect();
+        assert_eq!(unquoted, ["a\\\"b", "c''d", "e"]);
+    }
+
+    #[test]
+    fn test_typed_conversion_of_quoted_scalar_fails() {
+        let doc = Document::from_str("- '1'\n- x\n").unwrap();
+        let seq = doc.as_sequence().unwrap();
+        let quoted = seq.get(0).unwrap().as_scalar().cloned().unwrap();
+        let err = i64::try_from(&quoted).unwrap_err();
+        assert_eq!(err, super::ScalarConversionError::QuotedValue);
+        assert_eq!(
+            err.to_string(),
+            "Cannot convert quoted scalar to numeric/boolean type"
+        );
+        let plain = seq.get(1).unwrap().as_scalar().cloned().unwrap();
+        let err = i64::try_from(&plain).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Failed to parse scalar: {}",
+                match &err {
+                    super::ScalarConversionError::ParseError(msg) => msg.clone(),
+                    other => panic!("unexpected {other:?}"),
+                }
+            )
+        );
+    }
+
+    /// A multi-line plain scalar set at another indentation moves its
+    /// continuation lines with it; a block scalar's body is laid out anew.
+    #[test]
+    fn test_copy_multi_line_scalars() {
+        let src = Document::from_str("p: b\n  c\n   d\nq: |\n  x\n   y\n").unwrap();
+        let src = src.as_mapping().unwrap();
+        for (key, expected) in [
+            ("p", "top:\n  k: b\n    c\n     d\n"),
+            ("q", "top:\n  k: |\n    x\n     y\n"),
+        ] {
+            let doc = Document::from_str("top:\n  k: 1\n").unwrap();
+            let top = doc.as_mapping().unwrap().get_mapping("top").unwrap();
+            top.set("k", src.get(key).unwrap());
+            crate::debug::assert_cst_ok(&doc);
+            assert_eq!(doc.to_string(), expected);
+            assert_eq!(
+                Document::from_str(expected)
+                    .unwrap()
+                    .as_mapping()
+                    .unwrap()
+                    .get_mapping("top")
+                    .unwrap()
+                    .get("k")
+                    .unwrap()
+                    .as_scalar()
+                    .unwrap()
+                    .as_string(),
+                src.get(key).unwrap().as_scalar().unwrap().as_string()
+            );
+        }
+    }
+
+    #[test]
     fn test_unterminated_quote_as_string_does_not_panic() {
         let (doc, errors) = Document::from_str_relaxed("\"");
         assert!(!errors.is_empty());

@@ -2185,3 +2185,110 @@ fn test_set_block_scalar_before_blank_line_with_cr_line_breaks() {
         .set("a", ScalarValue::literal("x\n"));
     crate::debug::assert_edited(&file, "a: |\r  x\r\rb: 2\r");
 }
+
+#[test]
+fn test_dump_cst_debug_and_default() {
+    let file = YamlFile::from_str("a: 1\n").unwrap();
+    let doc = file.document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(
+        mapping.dump_cst(),
+        "MAPPING_ENTRY\n  KEY\n    SCALAR\n        STRING \"a\"\n    COLON \":\"\n    WHITESPACE \" \"\n  VALUE\n    SCALAR\n        INT \"1\"\n    NEWLINE \"\\n\"\n"
+    );
+    assert_eq!(format!("{mapping:?}"), "Mapping { syntax: MAPPING@0..5 }");
+    assert_eq!(super::Mapping::default().to_string(), "{}");
+    assert_eq!(crate::yaml::Sequence::default().to_string(), "[]");
+}
+
+/// A renamed key that held more than one node, which the validator
+/// rejects, is replaced whole, with nothing of the old key left between
+/// the new one and the `:`.
+#[test]
+fn test_rename_key_holding_two_nodes() {
+    let doc = YamlFile::from_str("[q] x: 1\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let old = mapping.keys().next().unwrap();
+    assert!(mapping.rename_key(old, "z"));
+    assert_cst_ok(&doc);
+    crate::debug::assert_parser_shaped(&doc);
+    assert_eq!(doc.to_string(), "z: 1\n");
+}
+
+#[test]
+fn test_modify_mapping_of_missing_or_scalar_value() {
+    let doc = YamlFile::from_str("a: 1\n").unwrap().document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(!mapping.modify_mapping("a", |_| panic!("a is no mapping")));
+    assert!(!mapping.modify_mapping("b", |_| panic!("b is missing")));
+    assert_eq!(doc.to_string(), "a: 1\n");
+}
+
+/// A block collection set as a value in a flow mapping is written in flow
+/// form.
+#[test]
+fn test_set_block_value_in_flow_mapping() {
+    let source = YamlFile::from_str("k:\n  - x\n  - y\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    let block = source.as_mapping().unwrap().get("k").unwrap();
+    let doc = YamlFile::from_str("{a: 1}\n").unwrap().document().unwrap();
+    doc.as_mapping().unwrap().set("a", block);
+    assert_cst_ok(&doc);
+    crate::debug::assert_parser_shaped(&doc);
+    assert_eq!(doc.to_string(), "{a: [x, y]}\n");
+}
+
+/// A block collection given as a new key is written in flow form.
+#[test]
+fn test_set_with_block_collection_key() {
+    let source = YamlFile::from_str("k:\n  - x\n  - y\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    let block = source.as_mapping().unwrap().get("k").unwrap();
+    let doc = YamlFile::from_str("a: 1\n").unwrap().document().unwrap();
+    doc.as_mapping().unwrap().set(block, 2);
+    assert_cst_ok(&doc);
+    crate::debug::assert_parser_shaped(&doc);
+    assert_eq!(doc.to_string(), "a: 1\n[x, y]: 2\n");
+}
+
+/// Setting the value of a block explicit key that has none writes its `:`
+/// line after the key, whose line the key ends itself.
+#[test]
+fn test_set_value_of_block_explicit_key_without_one() {
+    for (src, expected) in [
+        ("? - a\n", "? - a\n: 5\n"),
+        ("? - a\n  - b\nc: 1\n", "? - a\n  - b\n: 5\nc: 1\n"),
+        ("? a\n", "? a\n: 5\n"),
+        ("? |\n  t\n", "? |\n  t\n: 5\n"),
+        ("? [a,\n  b]\n", "? [a,\n  b]\n: 5\n"),
+        ("? - a\n? b\n", "? - a\n: 5\n? b\n"),
+    ] {
+        let doc = YamlFile::from_str(src).unwrap().document().unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let key = mapping.keys().next().unwrap();
+        mapping.set(key, 5);
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), expected, "{src:?}");
+    }
+}
+
+/// A new entry goes before the spaces of a last line that holds nothing
+/// else.
+#[test]
+fn test_set_new_key_before_trailing_space_line() {
+    for (src, expected) in [
+        ("a: 1\n  ", "a: 1\nb: 2\n  "),
+        ("a: 1\n# c\n  ", "a: 1\n# c\nb: 2\n  "),
+    ] {
+        let doc = YamlFile::from_str(src).unwrap().document().unwrap();
+        doc.as_mapping().unwrap().set("b", 2);
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), expected, "{src:?}");
+    }
+}

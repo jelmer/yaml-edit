@@ -1041,9 +1041,11 @@ fn test_set_value_of_key_missing_colon() {
         .get("k")
         .unwrap();
     for (src, inline, nested) in [
-        ("<<\n", "<<: x\n", "<<:\n  a: 1\n"),
-        ("?\n<<\n", "?\n<<: x\n", "?\n<<:\n  a: 1\n"),
-        ("a: 1\n<< \n", "a: 1\n<< : x\n", "a: 1\n<< :\n  a: 1\n"),
+        // An unclosed flow collection key runs to the end of the input,
+        // where its `:` was missing.
+        ("[{]:", "[{]:: x", "[{]::\n  a: 1\n"),
+        ("?\n[:\n", "?\n[:\n: x", "?\n[:\n:\n  a: 1\n"),
+        (":\n{:", ":\n{:: x", ":\n{::\n  a: 1\n"),
     ] {
         assert_eq!(set_last(src, "x"), inline, "{src:?}");
         assert_eq!(set_last(src, block.clone()), nested, "{src:?}");

@@ -131,6 +131,16 @@ mod tests {
     use std::str::FromStr;
 
     #[test]
+    fn test_comment_formatting() {
+        let file = YamlFile::from_str("# c\na: 1\n").unwrap();
+        let doc = file.document().unwrap();
+        let comment = doc.comments().next().unwrap();
+        assert_eq!(format!("{comment:?}"), "Comment { text: \"# c\" }");
+        assert_eq!(comment.to_string(), "# c");
+        assert_eq!(comment.syntax().kind(), crate::SyntaxKind::COMMENT);
+    }
+
+    #[test]
     fn iterates_comments_in_order() {
         let text = "# header\nkey: value # trailing\n# footer\n";
         let file = YamlFile::from_str(text).unwrap();

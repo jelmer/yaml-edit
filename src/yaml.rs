@@ -244,51 +244,11 @@ impl Set {
     ///
     /// To compare members semantically (ignoring quoting style), use
     /// [`yaml_eq`](crate::yaml_eq) on the returned nodes.
-    ///
-    /// Note: `!!set` entries appear in two CST layouts: explicit-key `? item`
-    /// (KEY/VALUE as direct MAPPING children) and implicit `item: null`
-    /// (KEY/VALUE inside MAPPING_ENTRY). Both are handled.
     pub fn members(&self) -> impl Iterator<Item = crate::as_yaml::YamlNode> + '_ {
-        // Sets are `!!set` tagged scalars whose body is a mapping where each
-        // key is a set member and values are null.
-        //
-        // Two CST layouts arise in practice:
-        //
-        // 1. Explicit-key notation (`? apple`): KEY and VALUE appear as direct
-        //    children of the MAPPING node (no MAPPING_ENTRY wrapper).
-        //
-        // 2. Implicit-key notation (`apple: null`): KEY and VALUE are wrapped
-        //    inside MAPPING_ENTRY children of the MAPPING node.
-        //
-        // We detect which layout is in use by checking for MAPPING_ENTRY
-        // children first, then falling back to bare KEY children.
-        self.inner_mapping().into_iter().flat_map(|m| {
-            let mapping_node = m.syntax().clone();
-            let has_entries = mapping_node
-                .children()
-                .any(|n| n.kind() == SyntaxKind::MAPPING_ENTRY);
-
-            if has_entries {
-                // Layout 2: MAPPING_ENTRY → KEY → content
-                mapping_node
-                    .children()
-                    .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-                    .filter_map(|entry| {
-                        entry
-                            .children()
-                            .find(|n| n.kind() == SyntaxKind::KEY)
-                            .and_then(|key| crate::nodes::held_node(&key))
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                // Layout 1: bare KEY → content (explicit `?` syntax)
-                mapping_node
-                    .children()
-                    .filter(|n| n.kind() == SyntaxKind::KEY)
-                    .filter_map(|key| crate::nodes::held_node(&key))
-                    .collect::<Vec<_>>()
-            }
-        })
+        // The members are the keys of the mapping, each with a null value.
+        self.inner_mapping()
+            .into_iter()
+            .flat_map(|m| m.keys().collect::<Vec<_>>())
     }
 
     /// Get the number of members in the set.
@@ -1041,6 +1001,85 @@ DOCUMENT
             assert_cst_ok(&file);
             assert_eq!(file.to_string(), yaml);
         }
+    }
+
+    #[test]
+    fn test_move_before_in_file() {
+        let file = YamlFile::from_str("a: 1\nb: 2\nc: 3\n").unwrap();
+        assert!(file.move_before("a", "c", 4));
+        assert_cst_ok(&file);
+        assert_eq!(file.to_string(), "c: 4\na: 1\nb: 2\n");
+        assert!(!file.move_before("z", "c", 5));
+        assert_eq!(file.to_string(), "c: 4\na: 1\nb: 2\n");
+        assert!(!YamlFile::new().move_before("a", "c", 4));
+    }
+
+    /// A snapshot is unaffected by later edits, which tree_eq notices.
+    #[test]
+    fn test_snapshot_and_tree_eq() {
+        let file = YamlFile::from_str("a: 1\n").unwrap();
+        let snapshot = file.snapshot();
+        assert!(file.tree_eq(&snapshot));
+        assert!(file.tree_eq(&YamlFile::from_str("a: 1\n").unwrap()));
+        file.set("a", 2);
+        assert!(!file.tree_eq(&snapshot));
+        assert_eq!(snapshot.to_string(), "a: 1\n");
+        assert_eq!(YamlFile::default().to_string(), "");
+    }
+
+    #[test]
+    fn test_read_relaxed_and_from_path() {
+        let (file, errors) = YamlFile::read_relaxed("a: [\n".as_bytes()).unwrap();
+        assert_eq!(file.to_string(), "a: [\n");
+        assert_eq!(
+            errors,
+            ["2:1: Unclosed flow sequence. Expected: ']' to close sequence. Found: end of input. Context: in flow sequence. Suggestion: Add ']' to close the array, or check for missing commas between elements"]
+        );
+
+        let path = std::env::temp_dir().join(format!("yaml-edit-file-{}.yaml", std::process::id()));
+        std::fs::write(&path, "a: [\n").unwrap();
+        let (file, errors) = YamlFile::from_path_relaxed(&path).unwrap();
+        assert_eq!(file.to_string(), "a: [\n");
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            YamlFile::from_path(&path),
+            Err(crate::YamlError::Parse {
+                line: Some(2),
+                column: Some(1),
+                ..
+            })
+        ));
+        std::fs::write(&path, "a: 1\n").unwrap();
+        assert_eq!(YamlFile::from_path(&path).unwrap().to_string(), "a: 1\n");
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            YamlFile::from_path_relaxed(&path).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert!(matches!(
+            YamlFile::from_path(&path),
+            Err(crate::YamlError::Io(_))
+        ));
+    }
+
+    #[test]
+    fn test_set_is_empty() {
+        let file = YamlFile::from_str("a: !!set {}\nb: !!set {x}\n").unwrap();
+        let doc = file.document().unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let set = |key: &str| {
+            mapping
+                .get(key)
+                .unwrap()
+                .as_tagged()
+                .unwrap()
+                .as_set()
+                .unwrap()
+        };
+        assert!(set("a").is_empty());
+        assert_eq!(set("a").len(), 0);
+        assert!(!set("b").is_empty());
+        assert_eq!(set("b").len(), 1);
     }
 
     #[test]

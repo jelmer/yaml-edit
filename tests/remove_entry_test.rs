@@ -292,6 +292,50 @@ fn clear_nested_sequence() {
     check_edit("top:\n  - 1\n  - 2\n", clear, "top: []\n");
 }
 
+/// Comment lines between the entries of a collection that is emptied stay
+/// before the `{}` or `[]` that takes its place.
+#[test]
+fn clear_collection_with_comment_lines_between_entries() {
+    let clear_top = |d: &Document| d.as_mapping().unwrap().get_mapping("top").unwrap().clear();
+    check_edit(
+        "top:\n  a: 1\n  # c\n  b: 2\nz: 0\n",
+        clear_top,
+        "top:\n  # c\n  {}\nz: 0\n",
+    );
+    let clear_item = |d: &Document| {
+        d.as_sequence()
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .clear()
+    };
+    check_edit(
+        "- - a\n  # c\n  - b\n- z\n",
+        clear_item,
+        "-\n  # c\n  []\n- z\n",
+    );
+    let clear_nested = |d: &Document| {
+        d.as_sequence()
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .clear()
+    };
+    check_edit(
+        "- - - a\n    # c\n    - b\n",
+        clear_nested,
+        "- -\n    # c\n    []\n",
+    );
+}
+
 #[test]
 fn clear_mapping_beside_another_node_in_a_value() {
     // The validator rejects `: :`, whose value holds a null and a mapping,

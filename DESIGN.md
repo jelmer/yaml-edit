@@ -274,8 +274,9 @@ even when the source omits it. The parser emits a zero-width
 - Block sequence entry: `- \n`, `-\n`
 - Flow sequence entry: `[a, , c]`, `[,]`, `[,,]`
 - Tag without content: `- !e\n` gives `TAGGED_NODE { TAG, SCALAR { NULL "" } }`
-- Block mapping key missing its `:`, a parse error: `a: 1\n<<\n` gives
-  `<<` a zero-width `COLON ""` as well
+- Block mapping key missing its `:`, a parse error: `[{]:`, whose flow
+  key runs to the end of the input, gives the key a zero-width `COLON ""`
+  as well
 
 Every KEY and VALUE always contains exactly one scalar or collection
 node. Mappings wrap the value in a `VALUE` node; sequences hold the

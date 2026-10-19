@@ -549,12 +549,9 @@ impl<'a> Parser<'a> {
             Some(SyntaxKind::TAG | SyntaxKind::ANCHOR) => {
                 self.is_mapping_key() || self.is_complex_mapping_key_after_annotations()
             }
-            Some(
-                SyntaxKind::REFERENCE
-                | SyntaxKind::QUESTION
-                | SyntaxKind::COLON
-                | SyntaxKind::MERGE_KEY,
-            ) => self.is_mapping_key(),
+            Some(SyntaxKind::REFERENCE | SyntaxKind::QUESTION | SyntaxKind::COLON) => {
+                self.is_mapping_key()
+            }
             Some(kind) => is_plain_scalar_kind(kind) && self.is_mapping_key(),
             None => false,
         }
@@ -678,15 +675,6 @@ impl<'a> Parser<'a> {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_tagged_value(base_indent);
-                }
-            }
-            Some(SyntaxKind::MERGE_KEY) => {
-                if self.in_flow_context {
-                    self.builder.start_node(SyntaxKind::SCALAR.into());
-                    self.bump();
-                    self.builder.finish_node();
-                } else {
-                    self.parse_mapping_with_base_indent(base_indent);
                 }
             }
             Some(SyntaxKind::QUESTION) => {
@@ -1562,16 +1550,9 @@ impl Parser<'_> {
         expected: &str,
         found: Option<&str>,
     ) -> String {
-        let mut builder = ErrorBuilder::new(base_message);
-        builder = builder.expected(expected);
-
-        if let Some(found_str) = found {
-            builder = builder.found(found_str);
-        } else if let Some(token) = self.current_text() {
-            builder = builder.found(format!("'{token}'"));
-        } else {
-            builder = builder.found("end of input");
-        }
+        let mut builder = ErrorBuilder::new(base_message)
+            .expected(expected)
+            .found(found.unwrap_or("end of input"));
 
         // Add context
         let context = match self.error_context.current_context() {
@@ -1586,8 +1567,7 @@ impl Parser<'_> {
         builder = builder.context(context);
 
         // Add helpful suggestions based on the error type
-        let suggestion = self.get_error_suggestion(base_message, expected, found);
-        if let Some(suggestion_text) = suggestion {
+        if let Some(suggestion_text) = Self::get_error_suggestion(base_message, expected) {
             builder = builder.suggestion(suggestion_text);
         }
 
@@ -1595,18 +1575,7 @@ impl Parser<'_> {
     }
 
     /// Generate helpful suggestions for common errors
-    fn get_error_suggestion(
-        &self,
-        base_message: &str,
-        expected: &str,
-        found: Option<&str>,
-    ) -> Option<String> {
-        if base_message.contains("Unterminated quoted string") {
-            return Some(
-                "Add closing quote or check for unescaped quotes within the string".to_string(),
-            );
-        }
-
+    fn get_error_suggestion(base_message: &str, expected: &str) -> Option<String> {
         if base_message.contains("Missing colon") || expected.contains("':'") {
             return Some("Add ':' after the key, or check for proper indentation".to_string());
         }
@@ -1623,20 +1592,6 @@ impl Parser<'_> {
                 "Add '}' to close the object, or check for missing commas between key-value pairs"
                     .to_string(),
             );
-        }
-
-        if let Some(found_text) = found {
-            if found_text.contains('\n') {
-                return Some(
-                    "Unexpected newline - check indentation and YAML structure".to_string(),
-                );
-            }
-
-            if found_text.contains('\t') {
-                return Some(
-                    "Tabs are not allowed in YAML - use spaces for indentation".to_string(),
-                );
-            }
         }
 
         None
@@ -1676,5 +1631,65 @@ mod tests {
                 crate::Parse::<crate::YamlFile>::parse_yaml(text);
             },
         );
+    }
+
+    /// The tree as one line: each node's kind with its children in
+    /// parentheses, each token's kind with its text.
+    fn compact(node: &crate::nodes::SyntaxNode) -> String {
+        let parts: Vec<String> = node
+            .children_with_tokens()
+            .map(|c| match c {
+                rowan::NodeOrToken::Node(n) => compact(&n),
+                rowan::NodeOrToken::Token(t) => format!("{:?}{:?}", t.kind(), t.text()),
+            })
+            .collect();
+        format!("{:?}({})", node.kind(), parts.join(" "))
+    }
+
+    /// Trees for unusual input, broken or not, that recovery paths of the
+    /// parser handle, with the number of parse errors for each.
+    #[test]
+    fn test_recovery_shapes() {
+        for (src, errors, expected) in [
+            ("a\n['x']\n", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" LEFT_BRACKET\"[\" STRING\"'x'\" RIGHT_BRACKET\"]\") NEWLINE\"\\n\")"),
+            ("a\n[\"x\"]: 1\n", 0, "DOCUMENT(SCALAR(STRING\"a\") NEWLINE\"\\n\" MAPPING(MAPPING_ENTRY(KEY(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(SCALAR(STRING\"\\\"x\\\"\")) RIGHT_BRACKET\"]\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(INT\"1\")) NEWLINE\"\\n\")))"),
+            ("a\n[\"", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" STRING\"[\\\"\"))"),
+            ("a\n['x]\n", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" STRING\"['x]\") NEWLINE\"\\n\")"),
+            ("a\n[']'\n", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" STRING\"[']'\") NEWLINE\"\\n\")"),
+            ("a\n[ #]\n", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" STRING\"[\") WHITESPACE\" \" COMMENT\"#]\" NEWLINE\"\\n\")"),
+            ("a: >0o1\n", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(GREATER\">\") SCALAR(INT\"0o1\")) NEWLINE\"\\n\")))"),
+            ("?  \n `", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(QUESTION\"?\" WHITESPACE\"  \" KEY(NEWLINE\"\\n\" INDENT\" \" SCALAR(STRING\"`\")) VALUE(SCALAR(NULL\"\")))))"),
+            ("{:\n?\ti\n\t,", 1, "DOCUMENT(MAPPING(LEFT_BRACE\"{\" MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" NEWLINE\"\\n\" VALUE(MAPPING(MAPPING_ENTRY(QUESTION\"?\" WHITESPACE\"\\t\" KEY(SCALAR(STRING\"i\") NEWLINE\"\\n\" INDENT\"\\t\" SCALAR(NULL\"\")) VALUE(SCALAR(NULL\"\"))))) COMMA\",\") RIGHT_BRACE\"\"))"),
+            ("&x[[", 2, "DOCUMENT(ANCHOR\"&x\" SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(SEQUENCE(LEFT_BRACKET\"[\" RIGHT_BRACKET\"\")) RIGHT_BRACKET\"\"))"),
+            ("&x[[]", 1, "DOCUMENT(ANCHOR\"&x\" SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(SEQUENCE(LEFT_BRACKET\"[\" RIGHT_BRACKET\"]\")) RIGHT_BRACKET\"\"))"),
+            (": ?", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" WHITESPACE\" \" VALUE(MAPPING(MAPPING_ENTRY(QUESTION\"?\" KEY(SCALAR(NULL\"\")) VALUE(SCALAR(NULL\"\"))))))))"),
+            ("?\n :", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(QUESTION\"?\" KEY(SCALAR(NULL\"\") NEWLINE\"\\n\" INDENT\" \") COLON\":\" VALUE(SCALAR(NULL\"\")))))"),
+            (" ?\n\n", 0, "DOCUMENT(INDENT\" \" MAPPING(MAPPING_ENTRY(QUESTION\"?\" KEY(SCALAR(NULL\"\")) VALUE(SCALAR(NULL\"\")) NEWLINE\"\\n\") NEWLINE\"\\n\"))"),
+            ("?\n\n", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(QUESTION\"?\" KEY(SCALAR(NULL\"\")) VALUE(SCALAR(NULL\"\")) NEWLINE\"\\n\") NEWLINE\"\\n\"))"),
+            ("&x ", 0, "DOCUMENT(ANCHOR\"&x\" WHITESPACE\" \" SCALAR(NULL\"\"))"),
+            ("-\n#\n#", 0, "DOCUMENT(SEQUENCE(SEQUENCE_ENTRY(DASH\"-\" SCALAR(NULL\"\") NEWLINE\"\\n\") COMMENT\"#\" NEWLINE\"\\n\" COMMENT\"#\"))"),
+            ("-\n#", 0, "DOCUMENT(SEQUENCE(SEQUENCE_ENTRY(DASH\"-\" SCALAR(NULL\"\") NEWLINE\"\\n\") COMMENT\"#\"))"),
+            ("]:", 0, "DOCUMENT(SCALAR(RIGHT_BRACKET\"]\") MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" VALUE(SCALAR(NULL\"\")))))"),
+            ("?\n\n\t?", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(QUESTION\"?\" KEY(NEWLINE\"\\n\" NEWLINE\"\\n\" INDENT\"\\t\" MAPPING(MAPPING_ENTRY(QUESTION\"?\" KEY(SCALAR(NULL\"\")) VALUE(SCALAR(NULL\"\"))))) VALUE(SCALAR(NULL\"\")))))"),
+            ("[?\n", 1, "DOCUMENT(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(QUESTION\"?\" NEWLINE\"\\n\" SCALAR(NULL\"\")) VALUE(SCALAR(NULL\"\"))))) RIGHT_BRACKET\"\"))"),
+            ("[?\n ", 1, "DOCUMENT(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(QUESTION\"?\" NEWLINE\"\\n\" INDENT\" \" SCALAR(NULL\"\")) VALUE(SCALAR(NULL\"\"))))) RIGHT_BRACKET\"\"))"),
+            (":\n] :", 1, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" VALUE(SCALAR(NULL\"\")) NEWLINE\"\\n\") ERROR(RIGHT_BRACKET\"]\") WHITESPACE\" \" MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" VALUE(SCALAR(NULL\"\")))))"),
+            ("[%[]:\n\n :", 0, "DOCUMENT(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"%\" LEFT_BRACKET\"[\")) VALUE(SCALAR(NULL\"\"))))) RIGHT_BRACKET\"]\") MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" VALUE(SCALAR(NULL\"\")) NEWLINE\"\\n\") NEWLINE\"\\n\") INDENT\" \" MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" VALUE(SCALAR(NULL\"\")))))"),
+            (":\t[]\t[", 1, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" WHITESPACE\"\\t\" VALUE(SEQUENCE(LEFT_BRACKET\"[\" RIGHT_BRACKET\"]\") WHITESPACE\"\\t\" SEQUENCE(LEFT_BRACKET\"[\" RIGHT_BRACKET\"\")))))"),
+            ("[.{]?[]:", 0, "DOCUMENT(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\".\" LEFT_BRACE\"{\")) VALUE(SCALAR(NULL\"\"))))) RIGHT_BRACKET\"]\") SCALAR(STRING\"?\") MAPPING(MAPPING_ENTRY(KEY(SEQUENCE(LEFT_BRACKET\"[\" RIGHT_BRACKET\"]\")) COLON\":\" VALUE(SCALAR(NULL\"\")))))"),
+            ("[: :", 1, "DOCUMENT(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(NULL\"\"))))) SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" VALUE(SCALAR(NULL\"\"))))) RIGHT_BRACKET\"\"))"),
+            ("&x\n#", 0, "DOCUMENT(ANCHOR\"&x\" SCALAR(NULL\"\") NEWLINE\"\\n\" COMMENT\"#\")"),
+            ("<<\n&x[", 0, "DOCUMENT(SCALAR(MERGE_KEY\"<<\" NEWLINE\"\\n\" ANCHOR\"&x\" LEFT_BRACKET\"[\"))"),
+            ("\t%\n-\r!\t-", 0, "DOCUMENT(INDENT\"\\t\" SCALAR(STRING\"%\" NEWLINE\"\\n\" DASH\"-\" NEWLINE\"\\r\" TAG\"!\" WHITESPACE\"\\t\" STRING\"-\"))"),
+
+        ] {
+            let parsed = crate::yaml::YamlFile::parse(src);
+            assert_eq!(parsed.errors().len(), errors, "{src:?}: {:?}", parsed.errors());
+            let file = parsed.tree();
+            let root = rowan::ast::AstNode::syntax(&file);
+            assert_eq!(compact(root), format!("ROOT({expected})"), "{src:?}");
+            assert_eq!(root.to_string(), src);
+            crate::debug::validate_tree(root).unwrap();
+        }
     }
 }

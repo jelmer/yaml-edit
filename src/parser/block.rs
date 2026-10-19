@@ -850,11 +850,6 @@ impl Parser<'_> {
             return true;
         }
 
-        // Check if this is a merge key
-        if self.current() == Some(SyntaxKind::MERGE_KEY) {
-            return true;
-        }
-
         // If current token is a dash, this is not a mapping key
         if self.current() == Some(SyntaxKind::DASH) {
             return false;
@@ -932,11 +927,7 @@ impl Parser<'_> {
             return;
         }
 
-        if self.current() == Some(SyntaxKind::MERGE_KEY) {
-            self.builder.start_node(SyntaxKind::SCALAR.into());
-            self.bump(); // consume the merge key token
-            self.builder.finish_node(); // SCALAR
-        } else if self.current() == Some(SyntaxKind::REFERENCE) {
+        if self.current() == Some(SyntaxKind::REFERENCE) {
             // Handle alias as key (*b:)
             self.parse_alias();
         } else if self.current() == Some(SyntaxKind::LEFT_BRACKET) {
@@ -1228,7 +1219,6 @@ fn starts_block_key_node(kind: SyntaxKind) -> bool {
             kind,
             SyntaxKind::ANCHOR
                 | SyntaxKind::TAG
-                | SyntaxKind::MERGE_KEY
                 | SyntaxKind::REFERENCE
                 | SyntaxKind::LEFT_BRACKET
                 | SyntaxKind::LEFT_BRACE
@@ -1528,7 +1518,6 @@ mod tests {
             ":\n|: x\n",
             "?\n: >: x\n",
             "? |b: x\n",
-            "<< <<\n",
         ] {
             let parse = YamlFile::parse(src);
             let file = parse.tree();
@@ -1544,6 +1533,11 @@ mod tests {
                 .count();
             assert_ne!(parse.errors().len() + violations, 0, "{src:?}");
         }
+        // A `<<` with more on its line is one plain scalar, not a merge key.
+        assert_eq!(
+            checked_value("<< <<\n"),
+            crate::YamlValue::Scalar(crate::ScalarValue::plain("<< <<"))
+        );
         assert_eq!(top_level_keys("a: :\nb: 1\n"), ["a", "b"]);
         assert_eq!(top_level_keys("x:\n  a: :\n  b: 1\nc: 2\n"), ["x", "c"]);
         let parsed = YamlFile::from_str("a: :\nb: 1\n").unwrap();
@@ -1942,29 +1936,17 @@ DOCUMENT
     /// a zero-width COLON where the `:` should be, whatever the key sits in.
     #[test]
     fn test_missing_colon_reads_as_omitted_value() {
-        let tree = |src: &str| {
+        let tree = |src: &str, errors: usize| {
             let parsed = YamlFile::parse(src);
-            assert_eq!(parsed.errors().len(), 1, "{src:?}: {:?}", parsed.errors());
+            assert_eq!(
+                parsed.errors().len(),
+                errors,
+                "{src:?}: {:?}",
+                parsed.errors()
+            );
             crate::debug::tree_to_string(rowan::ast::AstNode::syntax(&parsed.tree()))
         };
-        let entry = "    MAPPING_ENTRY
-      KEY
-        SCALAR
-          MERGE_KEY: \"<<\"
-      COLON: \"\"
-      VALUE
-        SCALAR
-          NULL: \"\"
-      NEWLINE: \"\\\\n\"
-";
-        assert_eq!(tree("<<\n"), format!("DOCUMENT\n  MAPPING\n{entry}"));
-        assert_eq!(
-            tree("?\n<<\n"),
-            format!(
-                "\
-DOCUMENT
-  MAPPING
-    MAPPING_ENTRY
+        let explicit_entry = "    MAPPING_ENTRY
       QUESTION: \"?\"
       KEY
         SCALAR
@@ -1973,17 +1955,56 @@ DOCUMENT
         SCALAR
           NULL: \"\"
       NEWLINE: \"\\\\n\"
-{entry}"
+";
+        // `<<` with no `:` is the plain scalar `<<`, not a merge key.
+        assert_eq!(
+            tree("<<\n", 0),
+            "DOCUMENT\n  SCALAR\n    MERGE_KEY: \"<<\"\n  NEWLINE: \"\\\\n\"\n"
+        );
+        assert_eq!(
+            tree("?\n<<\n", 1),
+            format!(
+                "DOCUMENT\n  MAPPING\n{explicit_entry}ERROR\n  MERGE_KEY: \"<<\"\n  NEWLINE: \"\\\\n\"\n"
+            )
+        );
+        // An unclosed flow collection ends the input before the key's `:`.
+        assert_eq!(
+            tree("?\n[:\n", 2),
+            format!(
+                "\
+DOCUMENT
+  MAPPING
+{explicit_entry}    MAPPING_ENTRY
+      KEY
+        SEQUENCE
+          LEFT_BRACKET: \"[\"
+          SEQUENCE_ENTRY
+            MAPPING
+              MAPPING_ENTRY
+                KEY
+                  SCALAR
+                    NULL: \"\"
+                COLON: \":\"
+                VALUE
+                  SCALAR
+                    NULL: \"\"
+            NEWLINE: \"\\\\n\"
+          RIGHT_BRACKET: \"\"
+      COLON: \"\"
+      VALUE
+        SCALAR
+          NULL: \"\"
+"
             )
         );
     }
 
-    /// The lines after a key missing its `:` are read as they would be after
-    /// any other entry, rather than swallowed into it: here, a document.
+    /// A line that is no entry of the mapping, like `<<` without its `:`,
+    /// does not swallow the lines after it: here, a document.
     #[test]
     fn test_missing_colon_keeps_following_document() {
         let parsed = YamlFile::parse("?\n<<\n---\na: 1\n");
         let docs: Vec<String> = parsed.tree().documents().map(|d| d.to_string()).collect();
-        assert_eq!(docs, ["?\n<<\n", "---\na: 1\n"]);
+        assert_eq!(docs, ["?\n", "---\na: 1\n"]);
     }
 }

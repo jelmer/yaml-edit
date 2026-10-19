@@ -1185,9 +1185,11 @@ impl Mapping {
             Some(tagged) => super::build_key_content(builder, &tagged, indent, flow),
             None => super::build_key_content(builder, new_key, indent, flow),
         }
-        for trailing in old
-            .children_with_tokens()
-            .skip_while(|c| c.as_token().is_some())
+        // What follows the old key's last node, such as the line break
+        // ending an explicit key, stays after the new one.
+        let last_node = old.last_child().expect("a KEY holds a node");
+        for trailing in last_node
+            .siblings_with_tokens(rowan::Direction::Next)
             .skip(1)
             .filter_map(|c| c.into_token())
         {

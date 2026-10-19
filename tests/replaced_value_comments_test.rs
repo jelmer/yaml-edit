@@ -601,3 +601,24 @@ fn comment_after_multi_line_value_goes_with_it() {
         assert_parser_shaped(&file, expected, src);
     }
 }
+
+/// A comment line at the body column of a block scalar written as a value
+/// moves back to the entry's column, also after blank lines, which may
+/// hold spaces.
+#[test]
+fn test_comment_line_after_blank_lines_leaves_new_block_scalar_body() {
+    for (src, expected) in [
+        ("a: 1\n\n  # c\nb: 2\n", "a: |\n  x\n\n# c\nb: 2\n"),
+        ("a: 1\n  \n  # c\nb: 2\n", "a: |\n  x\n  \n# c\nb: 2\n"),
+        ("a: 1\n  # c\nb: 2\n", "a: |\n  x\n# c\nb: 2\n"),
+        ("a: 1\n \n  # c\n", "a: |\n  x\n \n# c\n"),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        file.document()
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .set("a", "x\n");
+        assert_parser_shaped(&file, expected, src);
+    }
+}

@@ -167,7 +167,7 @@ impl Mapping {
         new_children.extend(last_gap);
         new_children.extend(trailing);
 
-        crate::nodes::kept_aliases::keeping_aliases_moved(&self.0, None, || {
+        crate::nodes::kept_aliases::keeping_aliases_moved(&self.0, || {
             crate::nodes::replace_children(&self.0, 0..all.len(), new_children);
             if lines_lead && !flow {
                 crate::yaml::move_leading_lines_out(&self.0);
@@ -176,7 +176,6 @@ impl Mapping {
             for entry in order {
                 crate::nodes::replaced_value::settle_lines_after_block_scalar(entry);
             }
-            None
         });
     }
 

@@ -78,6 +78,13 @@ mod tests {
     use std::str::FromStr;
 
     #[test]
+    fn test_directive_without_value() {
+        let file = YamlFile::from_str("%FOO\n%\n---\na\n").unwrap();
+        let parts: Vec<_> = file.directives().map(|d| (d.name(), d.value())).collect();
+        assert_eq!(parts, [(Some("FOO".to_string()), None), (None, None)]);
+    }
+
+    #[test]
     fn test_parse_yaml_version_directive() {
         let yaml = "%YAML 1.2\n---\nkey: value";
         let parsed = YamlFile::from_str(yaml).unwrap();

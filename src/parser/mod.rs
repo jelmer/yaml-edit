@@ -208,7 +208,6 @@ impl TreeBuilder {
 /// without going through accessor methods for every field.
 pub(super) struct Parser<'a> {
     pub(super) tokens: Vec<(SyntaxKind, String)>,
-    pub(super) current_token_index: usize,
     pub(super) builder: TreeBuilder,
     /// Whether [`bump`](Self::bump) holds back line breaks, indentation
     /// and white space; see [`TreeBuilder`].
@@ -265,12 +264,10 @@ impl<'a> Parser<'a> {
         }
 
         // Reverse tokens so we can use pop() to get the next token
-        let token_count = tokens.len();
         tokens.reverse();
 
         Self {
             tokens,
-            current_token_index: token_count,
             builder: TreeBuilder::new(),
             hold_trivia: false,
             errors: Vec::new(),
@@ -1160,9 +1157,6 @@ impl Parser<'_> {
                 _ => {}
             }
 
-            if self.current_token_index > 0 {
-                self.current_token_index -= 1;
-            }
             self.position += text.len();
             self.previous_kind = Some(kind);
             if self.hold_trivia
@@ -1534,15 +1528,11 @@ impl Parser<'_> {
                 self.builder.token(kind.into(), "");
             }
             RecoveryStrategy::SyncToSafePoint => {
-                // Find next safe synchronization point
-                let sync_point = self
-                    .error_context
-                    .find_sync_point(&self.tokens, self.tokens.len() - self.current_token_index);
-                let tokens_to_skip = sync_point - (self.tokens.len() - self.current_token_index);
-                for _ in 0..tokens_to_skip {
-                    if self.current().is_some() {
-                        self.bump();
-                    }
+                while self
+                    .current()
+                    .is_some_and(|kind| !self.error_context.is_sync_point(kind))
+                {
+                    self.bump();
                 }
             }
         }
@@ -1640,4 +1630,20 @@ impl Parser<'_> {
 pub(crate) fn parse(text: &str) -> ParsedYaml {
     let parser = Parser::new(text);
     parser.parse()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_to_safe_point_stops_at_next_document_marker() {
+        let mut parser = Parser::new("a\n---\nb c d e f g h\n");
+        parser.add_error_and_recover(
+            "error".to_string(),
+            SyntaxKind::QUOTE,
+            ParseErrorKind::Other,
+        );
+        assert_eq!(parser.current(), Some(SyntaxKind::DOC_START));
+    }
 }

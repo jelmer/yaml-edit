@@ -220,29 +220,32 @@ impl ErrorRecoveryContext {
         }
     }
 
+    /// Whether a token of `kind` is a safe point to resume parsing at
+    pub(crate) fn is_sync_point(&self, kind: SyntaxKind) -> bool {
+        match self.current_context() {
+            ParseContext::Document => matches!(
+                kind,
+                SyntaxKind::DOC_START | SyntaxKind::DOC_END | SyntaxKind::DIRECTIVE
+            ),
+            ParseContext::Mapping | ParseContext::Sequence => {
+                matches!(kind, SyntaxKind::DASH | SyntaxKind::NEWLINE)
+            }
+            ParseContext::FlowSequence => {
+                matches!(kind, SyntaxKind::RIGHT_BRACKET | SyntaxKind::COMMA)
+            }
+            ParseContext::FlowMapping => {
+                matches!(kind, SyntaxKind::RIGHT_BRACE | SyntaxKind::COMMA)
+            }
+            _ => kind == SyntaxKind::NEWLINE,
+        }
+    }
+
     /// Find the next safe synchronization point
     pub fn find_sync_point(&self, tokens: &[(SyntaxKind, String)], current: usize) -> usize {
-        let sync_tokens = match self.current_context() {
-            ParseContext::Document => vec![
-                SyntaxKind::DOC_START,
-                SyntaxKind::DOC_END,
-                SyntaxKind::DIRECTIVE,
-            ],
-            ParseContext::Mapping | ParseContext::Sequence => {
-                vec![SyntaxKind::DASH, SyntaxKind::NEWLINE]
-            }
-            ParseContext::FlowSequence => vec![SyntaxKind::RIGHT_BRACKET, SyntaxKind::COMMA],
-            ParseContext::FlowMapping => vec![SyntaxKind::RIGHT_BRACE, SyntaxKind::COMMA],
-            _ => vec![SyntaxKind::NEWLINE],
-        };
-
-        for (i, (kind, _)) in tokens[current..].iter().enumerate() {
-            if sync_tokens.contains(kind) {
-                return current + i;
-            }
-        }
-
-        tokens.len()
+        tokens[current..]
+            .iter()
+            .position(|(kind, _)| self.is_sync_point(*kind))
+            .map_or(tokens.len(), |i| current + i)
     }
 
     /// Get context information for error messages

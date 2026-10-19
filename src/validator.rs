@@ -1908,7 +1908,11 @@ fn check_comment_token_whitespace(
     // has no sibling before it, and the separating whitespace sits one
     // level up. Walking siblings alone reported 5 files the test suite
     // marks valid.
-    let Some(prev) = token.prev_token() else {
+    // An empty node (`? |\n# c`) has a zero-width token, which separates
+    // nothing either way.
+    let Some(prev) = std::iter::successors(token.prev_token(), |t| t.prev_token())
+        .find(|t| !t.text().is_empty())
+    else {
         return;
     };
     // A BOM leaves the comment at the start of its line, which is
@@ -3669,6 +3673,16 @@ mod tests {
         // A byte order mark may directly precede a comment line.
         let parsed = YamlFile::from_str("\u{FEFF}# c\na: 1\n").unwrap();
         assert_eq!(validator.validate_syntax(parsed.syntax()), vec![]);
+    }
+
+    #[test]
+    fn test_comment_after_empty_value() {
+        use crate::YamlFile;
+
+        // The empty value of `? |` sits between the line break and the
+        // comment, and separates nothing.
+        let parsed = YamlFile::from_str("? |\n# c\n").unwrap();
+        assert_eq!(Validator::new().validate_syntax(parsed.syntax()), vec![]);
     }
 
     #[test]

@@ -5117,3 +5117,40 @@ fn test_plain_scalar_starting_with_colon_spans_words() {
         )
     );
 }
+
+#[test]
+fn test_anchor_alone_on_value_line_before_sibling() {
+    // The anchor annotates an empty value: `b` at the key's column is a
+    // sibling entry, not the anchored node.
+    let null = || yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::parse(""));
+    let mapping = |entries: Vec<(&str, yaml_edit::YamlValue)>| {
+        yaml_edit::YamlValue::from_mapping(
+            entries
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        )
+    };
+    let one = || yaml_edit::YamlValue::from(1i64);
+    assert_eq!(
+        document_values("a:\n &x\nb: 1\n"),
+        [mapping(vec![("a", null()), ("b", one())])]
+    );
+    assert_eq!(
+        document_values("k:\n  a:\n   &x\n  b: 1\n"),
+        [mapping(vec![(
+            "k",
+            mapping(vec![("a", null()), ("b", one())])
+        )])]
+    );
+    // A more indented mapping, or a sequence at the key's column, is still
+    // the anchored value.
+    assert_eq!(
+        document_values("a:\n &x\n b: 1\n"),
+        [mapping(vec![("a", mapping(vec![("b", one())]))])]
+    );
+    assert_eq!(
+        document_values("a:\n &x\n- 1\n"),
+        [mapping(vec![("a", yaml_edit::YamlValue::from(vec![1i64]))])]
+    );
+}

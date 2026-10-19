@@ -411,11 +411,12 @@ pub(crate) fn detach_empty_collection_placeholder_newline(
     if let Some(line_break) = line_break.filter(|t| t.kind() == SyntaxKind::NEWLINE) {
         line_break.detach();
     }
-    // The lines after a root block collection up to `...` are its own.
+    // The lines after a root block collection up to `...` are its own. A
+    // second root node, which the validator rejects, is not.
     if parent.kind() == SyntaxKind::DOCUMENT {
         let lines: Vec<_> =
             std::iter::successors(node.next_sibling_or_token(), |c| c.next_sibling_or_token())
-                .take_while(|c| c.kind() != SyntaxKind::DOC_END)
+                .take_while(|c| c.as_token().is_some() && c.kind() != SyntaxKind::DOC_END)
                 .collect();
         for c in &lines {
             c.detach();

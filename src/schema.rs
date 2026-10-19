@@ -1741,4 +1741,78 @@ value: 42
         );
         assert_eq!(SchemaValidator::core().validate(&document), Ok(()));
     }
+
+    #[test]
+    fn test_custom_schema_tagged_scalar_has_tagged_type() {
+        let validator = SchemaValidator::custom(
+            CustomSchema::new("ints")
+                .allow_type(ScalarType::Integer)
+                .strict(),
+        );
+        assert_eq!(
+            validator.validate(&create_test_document("k: !!int 5\n")),
+            Ok(())
+        );
+        assert_eq!(
+            validator.validate(&create_test_document("k: !!str 5\n")),
+            Err(vec![ValidationError::type_not_allowed(
+                "root.k",
+                "ints",
+                ScalarType::String,
+                vec![ScalarType::Integer],
+            )])
+        );
+    }
+
+    #[test]
+    fn test_custom_validator_gets_tagged_scalar_content() {
+        let validator = SchemaValidator::custom(
+            CustomSchema::new("dates")
+                .allow_type(ScalarType::Timestamp)
+                .with_validator(ScalarType::Timestamp, |value, _| {
+                    if value == "2001-12-14" {
+                        CustomValidationResult::Valid
+                    } else {
+                        CustomValidationResult::invalid("date", value)
+                    }
+                }),
+        );
+        let document = create_test_document("k: !!timestamp 2001-12-14\n");
+        assert_eq!(validator.validate(&document), Ok(()));
+    }
+
+    #[test]
+    fn test_failsafe_strict_rejects_tagged_integer() {
+        let document = create_test_document("k: !!int 123\n");
+        assert_eq!(
+            SchemaValidator::failsafe().strict().validate(&document),
+            Err(vec![ValidationError::type_not_allowed(
+                "root.k",
+                "failsafe",
+                ScalarType::Integer,
+                vec![ScalarType::String],
+            )])
+        );
+    }
+
+    #[test]
+    fn test_tagged_collection_contents_are_validated() {
+        let validator = SchemaValidator::failsafe().strict();
+        let expected = |path: &str| {
+            Err(vec![ValidationError::type_not_allowed(
+                path,
+                "failsafe",
+                ScalarType::Integer,
+                vec![ScalarType::String],
+            )])
+        };
+        assert_eq!(
+            validator.validate(&create_test_document("k: !!map {a: 1}\n")),
+            expected("root.k.a")
+        );
+        assert_eq!(
+            validator.validate(&create_test_document("k: !!seq [1]\n")),
+            expected("root.k[0]")
+        );
+    }
 }

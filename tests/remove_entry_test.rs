@@ -614,6 +614,31 @@ fn test_remove_nested_between_blank_lines() {
 }
 
 #[test]
+fn test_remove_first_nested_between_blank_lines() {
+    let out = remove("x:\n\n  b: 1\n\n  c: 2\ny: 1\n", &["x"], "b");
+    assert_eq!(out, "x:\n\n  c: 2\ny: 1\n");
+    let out = remove("x: &a\n\n  b: 1\n\n  c: 2\n", &["x"], "b");
+    assert_eq!(out, "x: &a\n\n  c: 2\n");
+    // Blank lines on one side only stay.
+    let out = remove("x:\n\n  b: 1\n  c: 2\n", &["x"], "b");
+    assert_eq!(out, "x:\n\n  c: 2\n");
+    check_edit(
+        "-\n\n  b: 1\n\n  c: 2\n",
+        |d| {
+            let m = d.as_sequence().unwrap().get(0).unwrap();
+            assert!(m.as_mapping().unwrap().remove("b").is_some());
+        },
+        "-\n\n  c: 2\n",
+    );
+}
+
+#[test]
+fn test_remove_first_root_entry_keeps_spaces_of_blank_line() {
+    assert_eq!(remove("a: 1\n \t\nb: 2\n", &[], "a"), " \t\nb: 2\n");
+    assert_eq!(remove("a: 1\n    \nb: 2\n", &[], "a"), "    \nb: 2\n");
+}
+
+#[test]
 fn test_remove_keeps_single_blank_line_side() {
     assert_eq!(remove("a: 1\n\nb: 2\nc: 3\n", &[], "b"), "a: 1\n\nc: 3\n");
     assert_eq!(remove("a: 1\nb: 2\n\nc: 3\n", &[], "b"), "a: 1\n\nc: 3\n");

@@ -3988,6 +3988,8 @@ mod tests {
             "a: 1\n---\n  b: 1\n  c: 2\n",
             "  - a\n  - b\n",
             "# c\n  - a\n  - b\n",
+            // A tab before the first key is separation, not indentation.
+            "\ta: 1\n b: 2\n",
         ] {
             assert_eq!(located(yaml), vec![], "{yaml:?}");
         }

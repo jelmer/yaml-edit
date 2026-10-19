@@ -22,7 +22,7 @@
 //! }
 //! ```
 
-use crate::column::{space_indent, token_column};
+use crate::column::{space_indent, ColumnIndex};
 use crate::nodes::{
     has_child_token, in_flow_collection, is_block_scalar, is_quoted_scalar,
     starts_a_flow_collection,
@@ -208,14 +208,14 @@ fn has_content(node: &SyntaxNode) -> bool {
 /// The least indentation a continuation line of `node` needs: one more
 /// than the column of the innermost block collection entry holding it, or
 /// `None` outside any block collection.
-fn continuation_indent(node: &SyntaxNode) -> Option<usize> {
+fn continuation_indent(node: &SyntaxNode, columns: &ColumnIndex) -> Option<usize> {
     let entry = node.ancestors().skip(1).find(|a| {
         matches!(
             a.kind(),
             crate::SyntaxKind::MAPPING_ENTRY | crate::SyntaxKind::SEQUENCE_ENTRY
         ) && a.parent().is_some_and(|c| !starts_a_flow_collection(&c))
     })?;
-    Some(token_column(&entry.first_token()?) + 1)
+    Some(columns.column(&entry.first_token()?) + 1)
 }
 
 /// Is this flow entry an omitted one, i.e. does its value consist solely of
@@ -240,6 +240,11 @@ fn entry_is_empty(entry: &SyntaxNode) -> bool {
 /// Set each violation's `line:column` location from its range, using the
 /// text of the tree `node` belongs to.
 fn fill_locations(node: &SyntaxNode, violations: &mut [Violation]) {
+    // Indexing the whole stream for each of its documents made validating
+    // them one by one quadratic, even when they were all valid.
+    if violations.is_empty() {
+        return;
+    }
     let tree = node.ancestors().last().unwrap_or_else(|| node.clone());
     let index = crate::line_index::LineIndex::new(tree.text().to_string());
     for v in violations.iter_mut() {
@@ -298,20 +303,24 @@ impl Validator {
     /// Returns a list of spec violations. Empty list means strictly compliant.
     pub fn validate(&self, doc: &Document) -> Vec<Violation> {
         let mut violations = Vec::new();
+        let doc = crate::nodes::immutable_copy(doc.syntax());
 
-        // Only the directives that introduce this document apply to it.
-        if let Some((directives, document)) = directive_groups(&find_root(doc.syntax()))
-            .into_iter()
-            .find(|(_, d)| d.as_ref() == Some(doc.syntax()))
-        {
-            check_directives(&directives, document.as_ref(), &mut violations);
-        }
+        // Only the directives that introduce this document apply to it,
+        // which are those since the document before it.
+        let mut directives: Vec<SyntaxNode> = doc
+            .siblings(rowan::Direction::Prev)
+            .skip(1)
+            .take_while(|n| n.kind() != crate::SyntaxKind::DOCUMENT)
+            .filter(|n| n.kind() == crate::SyntaxKind::DIRECTIVE)
+            .collect();
+        directives.reverse();
+        check_directives(&directives, Some(&doc), &mut violations);
 
         // Walk the syntax tree and check for violations
         // This will catch ERROR nodes created by parser (including content after doc end)
-        self.validate_node(doc.syntax(), &mut violations);
+        self.validate_node(&doc, &mut violations);
 
-        fill_locations(doc.syntax(), &mut violations);
+        fill_locations(&doc, &mut violations);
         violations
     }
 
@@ -321,6 +330,7 @@ impl Validator {
     /// that may not be attached to a specific document.
     pub fn validate_syntax(&self, node: &SyntaxNode) -> Vec<Violation> {
         let mut violations = Vec::new();
+        let node = &crate::nodes::immutable_copy(node);
 
         for (directives, document) in directive_groups(&find_root(node)) {
             check_directives(&directives, document.as_ref(), &mut violations);
@@ -345,13 +355,40 @@ impl Validator {
     ///
     /// The walk is iterative, so deep nesting cannot overflow the stack.
     fn validate_node(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
-        for n in node.descendants() {
-            self.check_node(&n, violations);
+        let columns = ColumnIndex::new(node);
+        // Whether each node being walked opens a flow collection, and how
+        // many enclosing ones do; asking each node for its ancestors made
+        // the walk quadratic in the nesting depth.
+        let mut opens_flow = Vec::new();
+        let mut flow_depth = usize::from(in_flow_collection(node));
+        for event in node.preorder() {
+            match event {
+                rowan::WalkEvent::Enter(n) => {
+                    self.check_node(&n, &columns, flow_depth > 0, violations);
+                    let is_flow = matches!(
+                        n.kind(),
+                        crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
+                    ) && starts_a_flow_collection(&n);
+                    flow_depth += usize::from(is_flow);
+                    opens_flow.push(is_flow);
+                }
+                rowan::WalkEvent::Leave(_) => {
+                    flow_depth -= usize::from(opens_flow.pop() == Some(true));
+                }
+            }
         }
     }
 
     /// Run the checks for `node` itself, not those of its children.
-    fn check_node(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+    ///
+    /// `in_flow` says whether `node` sits inside a flow collection.
+    fn check_node(
+        &self,
+        node: &SyntaxNode,
+        columns: &ColumnIndex,
+        in_flow: bool,
+        violations: &mut Vec<Violation>,
+    ) {
         use crate::SyntaxKind;
 
         // Check for tabs in any node's tokens
@@ -384,22 +421,22 @@ impl Validator {
                 // Check for multiline implicit keys
                 check_implicit_key_multiline(node, violations);
                 // Check for block collection on same line as mapping key
-                check_collection_on_same_line_as_key(node, violations);
+                check_collection_on_same_line_as_key(node, in_flow, violations);
             }
             SyntaxKind::SCALAR => {
                 // Check for invalid escape sequences in quoted strings
                 check_escape_sequences(node, violations);
                 // Check for content on same line as block scalar indicator
                 check_block_scalar_indicator(node, violations);
-                check_block_scalar_header_indent(node, violations);
+                check_block_scalar_header_indent(node, columns, violations);
                 // Check block scalar content indentation consistency
                 check_block_scalar_content_indent(node, violations);
                 // Check for trailing content after quoted strings
                 check_trailing_content_after_quoted(node, violations);
                 // Check for colons in plain scalar values
                 check_colon_in_plain_scalar(node, violations);
-                check_plain_scalar_start(node, violations);
-                check_block_scalar_in_flow(node, violations);
+                check_plain_scalar_start(node, in_flow, violations);
+                check_block_scalar_in_flow(node, in_flow, violations);
                 // Check for directives inside document content (e.g. %YAML after ---)
                 check_directive_in_content(node, violations);
                 // Warn about constructs YAML 1.1 read differently
@@ -410,18 +447,18 @@ impl Validator {
             }
             SyntaxKind::MAPPING => {
                 check_flow_collection_commas(node, violations);
-                check_flow_pair_placement(node, violations);
-                check_flow_continuation_indent(node, violations);
+                check_flow_pair_placement(node, in_flow, violations);
+                check_flow_continuation_indent(node, columns, in_flow, violations);
                 check_block_mapping_entries_on_same_line(node, violations);
                 check_block_mapping_after_properties(node, violations);
-                check_mapping_entry_indentation(node, violations);
+                check_mapping_entry_indentation(node, columns, violations);
                 if self.config.check_duplicate_keys {
                     check_duplicate_keys(node, violations);
                 }
             }
             SyntaxKind::SEQUENCE => {
                 check_flow_collection_commas(node, violations);
-                check_flow_continuation_indent(node, violations);
+                check_flow_continuation_indent(node, columns, in_flow, violations);
             }
             SyntaxKind::KEY | SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::VALUE => {
                 check_anchor_and_alias(node, violations);
@@ -468,8 +505,8 @@ impl Validator {
         }
 
         // Check indentation rules
-        check_sequence_indentation(node, violations);
-        check_quoted_string_indentation(node, violations);
+        check_sequence_indentation(node, columns, violations);
+        check_quoted_string_indentation(node, columns, violations);
     }
 }
 
@@ -866,17 +903,21 @@ fn check_block_scalar_indicator(node: &SyntaxNode, violations: &mut Vec<Violatio
 /// `a: !!str\n|\n x\n` as a tagged block scalar, or of `a:\n|\n x\n`
 /// as a block scalar, is not valid YAML. The YAML test suite's M5C3 has
 /// the header two columns left of its tag, which is still past the key.
-fn check_block_scalar_header_indent(node: &SyntaxNode, violations: &mut Vec<Violation>) {
+fn check_block_scalar_header_indent(
+    node: &SyntaxNode,
+    columns: &ColumnIndex,
+    violations: &mut Vec<Violation>,
+) {
     if !is_block_scalar(node) {
         return;
     }
     let Some(header) = node.first_token() else {
         return;
     };
-    let Some(min_indent) = continuation_indent(node) else {
+    let Some(min_indent) = continuation_indent(node, columns) else {
         return;
     };
-    if token_column(&header) < min_indent {
+    if columns.column(&header) < min_indent {
         violations.push(Violation::error_at(
             Rule::Other,
             header.text_range(),
@@ -1167,14 +1208,14 @@ fn check_colon_in_plain_scalar(node: &SyntaxNode, violations: &mut Vec<Violation
 /// Outside a flow collection a `- ` usually opens a block sequence
 /// entry, but after a tag or anchor on the same line the parser reads
 /// it as a plain scalar (SY6V is `&anchor - sequence entry`).
-fn check_plain_scalar_start(node: &SyntaxNode, violations: &mut Vec<Violation>) {
+fn check_plain_scalar_start(node: &SyntaxNode, in_flow: bool, violations: &mut Vec<Violation>) {
     use crate::SyntaxKind;
 
     let Some(first) = node.first_token() else {
         return;
     };
     let text = first.text();
-    let unsafe_after_dash: &[char] = if in_flow_collection(node) {
+    let unsafe_after_dash: &[char] = if in_flow {
         &[' ', '\t', '\r', '\n', ',', '[', ']', '{', '}']
     } else {
         &[' ', '\t', '\r', '\n']
@@ -1204,7 +1245,7 @@ fn check_plain_scalar_start(node: &SyntaxNode, violations: &mut Vec<Violation>) 
 /// Flow content may only hold flow nodes. The parser reads `[k: |\n  x\n]`
 /// as a plain scalar starting with `|`, while an edit can leave a real
 /// block scalar there, so both shapes are checked.
-fn check_block_scalar_in_flow(node: &SyntaxNode, violations: &mut Vec<Violation>) {
+fn check_block_scalar_in_flow(node: &SyntaxNode, in_flow: bool, violations: &mut Vec<Violation>) {
     use crate::SyntaxKind;
 
     let Some(first) = node.first_token() else {
@@ -1212,7 +1253,7 @@ fn check_block_scalar_in_flow(node: &SyntaxNode, violations: &mut Vec<Violation>
     };
     let is_block_header = is_block_scalar(node)
         || (first.kind() == SyntaxKind::STRING && first.text().starts_with(['|', '>']));
-    if is_block_header && in_flow_collection(node) {
+    if is_block_header && in_flow {
         violations.push(Violation::error_at(
             Rule::Other,
             first.text_range(),
@@ -1315,8 +1356,8 @@ fn check_flow_collection_commas(node: &SyntaxNode, violations: &mut Vec<Violatio
 ///
 /// `[k: v]` holds a single-pair mapping, but a flow node cannot be one,
 /// so the parser's reading of `{k: ? a}` is invalid.
-fn check_flow_pair_placement(node: &SyntaxNode, violations: &mut Vec<Violation>) {
-    if starts_a_flow_collection(node) || !in_flow_collection(node) {
+fn check_flow_pair_placement(node: &SyntaxNode, in_flow: bool, violations: &mut Vec<Violation>) {
+    if starts_a_flow_collection(node) || !in_flow {
         return;
     }
     let is_sequence_entry = node
@@ -1444,7 +1485,11 @@ fn newline_between(prev: &SyntaxNode, next: &SyntaxNode) -> bool {
 ///      wrong: 2
 /// (yaml-test-suite EW3V / DMG6 / N4JP / U44R). Flag inconsistent
 /// leading indent tokens between block entries.
-fn check_mapping_entry_indentation(node: &SyntaxNode, violations: &mut Vec<Violation>) {
+fn check_mapping_entry_indentation(
+    node: &SyntaxNode,
+    columns: &ColumnIndex,
+    violations: &mut Vec<Violation>,
+) {
     // Flow mappings ({...}) don't have INDENT tokens between entries.
     if starts_a_flow_collection(node) {
         return;
@@ -1454,7 +1499,7 @@ fn check_mapping_entry_indentation(node: &SyntaxNode, violations: &mut Vec<Viola
     // two entries) must equal the expected indent. Otherwise the parser
     // has admitted a wrong-indented sibling that the YAML spec rejects
     // (see yaml-test-suite EW3V / DMG6 / N4JP / U44R).
-    let expected_indent = expected_entry_indent(node);
+    let expected_indent = expected_entry_indent(node, columns);
 
     // Only an INDENT that introduces a sibling entry states that
     // entry's indentation. One followed by a NEWLINE pads a blank
@@ -1494,7 +1539,7 @@ fn check_mapping_entry_indentation(node: &SyntaxNode, violations: &mut Vec<Viola
 /// For a nested mapping (its parent VALUE has NEWLINE + INDENT before it)
 /// that is the INDENT's text; otherwise (root, compact or explicit-entry
 /// mapping) the column of its first entry.
-fn expected_entry_indent(node: &SyntaxNode) -> String {
+fn expected_entry_indent(node: &SyntaxNode, columns: &ColumnIndex) -> String {
     // A mapping that is a sequence entry's value has its INDENT in the
     // SEQUENCE_ENTRY rather than a VALUE, in the same position relative
     // to the MAPPING. Without it the expected indent fell back to the
@@ -1543,7 +1588,7 @@ fn expected_entry_indent(node: &SyntaxNode) -> String {
             ) {
                 return None;
             }
-            Some(" ".repeat(token_column(&node.first_token()?)))
+            Some(" ".repeat(columns.column(&node.first_token()?)))
         })
         .unwrap_or_default()
 }
@@ -1554,13 +1599,18 @@ fn expected_entry_indent(node: &SyntaxNode) -> String {
 /// indented more than the block context it sits in; at column zero the
 /// content would be read as a new block node instead (yaml-test-suite
 /// 9C9N).
-fn check_flow_continuation_indent(node: &SyntaxNode, violations: &mut Vec<Violation>) {
+fn check_flow_continuation_indent(
+    node: &SyntaxNode,
+    columns: &ColumnIndex,
+    in_flow: bool,
+    violations: &mut Vec<Violation>,
+) {
     if !starts_a_flow_collection(node) {
         return;
     }
     // Only the outermost flow collection needs checking; a nested one
     // shares its lines.
-    if in_flow_collection(node) {
+    if in_flow {
         return;
     }
 
@@ -1593,7 +1643,7 @@ fn check_flow_continuation_indent(node: &SyntaxNode, violations: &mut Vec<Violat
     // a new entry of that block (9C9N's `flow: [a,\nb,\nc]`). A flow
     // collection that is the document's own node has no such neighbour,
     // so its entries may start at column zero (4ABK).
-    let Some(required) = continuation_indent(node) else {
+    let Some(required) = continuation_indent(node, columns) else {
         return;
     };
 
@@ -2227,7 +2277,11 @@ fn line_break_before_colon(entry: &SyntaxNode) -> bool {
 /// key: - a
 ///      - b
 /// ```
-fn check_collection_on_same_line_as_key(entry_node: &SyntaxNode, violations: &mut Vec<Violation>) {
+fn check_collection_on_same_line_as_key(
+    entry_node: &SyntaxNode,
+    in_flow: bool,
+    violations: &mut Vec<Violation>,
+) {
     use crate::SyntaxKind;
 
     let key_node = entry_node
@@ -2262,7 +2316,7 @@ fn check_collection_on_same_line_as_key(entry_node: &SyntaxNode, violations: &mu
     else {
         return;
     };
-    if starts_a_flow_collection(&collection) || in_flow_collection(entry_node) {
+    if starts_a_flow_collection(&collection) || in_flow {
         return;
     }
 
@@ -2306,7 +2360,11 @@ fn line_break_before_collection(
 }
 
 /// Check sequence items have consistent indentation (ZVH3)
-fn check_sequence_indentation(node: &SyntaxNode, violations: &mut Vec<Violation>) {
+fn check_sequence_indentation(
+    node: &SyntaxNode,
+    columns: &ColumnIndex,
+    violations: &mut Vec<Violation>,
+) {
     use crate::SyntaxKind;
 
     // Only check SEQUENCE nodes
@@ -2340,8 +2398,8 @@ fn check_sequence_indentation(node: &SyntaxNode, violations: &mut Vec<Violation>
     let Some((first, rest)) = dashes.split_first() else {
         return;
     };
-    let first_col = token_column(first);
-    if let Some(misplaced) = rest.iter().find(|t| token_column(t) != first_col) {
+    let first_col = columns.column(first);
+    if let Some(misplaced) = rest.iter().find(|t| columns.column(t) != first_col) {
         violations.push(Violation::error_at(
             Rule::InvalidIndentation,
             misplaced.text_range(),
@@ -2351,7 +2409,11 @@ fn check_sequence_indentation(node: &SyntaxNode, violations: &mut Vec<Violation>
 }
 
 /// Check multiline quoted strings have proper indentation (QB6E)
-fn check_quoted_string_indentation(node: &SyntaxNode, violations: &mut Vec<Violation>) {
+fn check_quoted_string_indentation(
+    node: &SyntaxNode,
+    columns: &ColumnIndex,
+    violations: &mut Vec<Violation>,
+) {
     use crate::SyntaxKind;
 
     // Only check SCALAR nodes
@@ -2396,7 +2458,7 @@ fn check_quoted_string_indentation(node: &SyntaxNode, violations: &mut Vec<Viola
     }
 
     // Continuation lines have to clear the enclosing block entry.
-    let Some(required) = continuation_indent(node) else {
+    let Some(required) = continuation_indent(node, columns) else {
         return;
     };
 
@@ -2749,6 +2811,44 @@ mod tests {
             |n| crate::YamlFile::from_str(&build(n)).unwrap(),
             |file| {
                 Validator::new().validate_syntax(file.syntax());
+            },
+        );
+    }
+
+    #[test]
+    fn test_validation_scales_linearly_with_nesting() {
+        // Each node used to look at all of its ancestors, or at all of its
+        // subtree, and the parser allows up to 256 levels.
+        assert_validation_scales_linearly(60, |n| format!("{}{}", "{".repeat(n), "}".repeat(n)));
+        assert_validation_scales_linearly(60, |n| format!("{}{}", "[".repeat(n), "]".repeat(n)));
+        assert_validation_scales_linearly(60, |n| {
+            let keys: String = (0..n).map(|i| format!(": 1, a{i}: 2}}")).collect();
+            format!("{}x{keys}", "{".repeat(n))
+        });
+        assert_validation_scales_linearly(60, |n| format!("{}x\n", "- ".repeat(n)));
+    }
+
+    #[test]
+    fn test_validation_scales_linearly_with_line_length() {
+        // Finding a token's column walked back to the start of its line.
+        assert_validation_scales_linearly(500, |n| {
+            let pairs: Vec<String> = (0..n).map(|i| format!("k{i}: v")).collect();
+            format!("[{}]\n", pairs.join(", "))
+        });
+    }
+
+    #[test]
+    fn test_validating_each_document_scales_linearly() {
+        // Locating violations indexed the whole stream for every document,
+        // even one without any.
+        crate::scaling::assert_scales_linearly(
+            "validating each document",
+            500,
+            |n| crate::YamlFile::from_str(&"---\na: 1\n".repeat(n)).unwrap(),
+            |file| {
+                for doc in file.documents() {
+                    Validator::new().validate(&doc);
+                }
             },
         );
     }

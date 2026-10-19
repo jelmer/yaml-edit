@@ -337,6 +337,36 @@ pub(crate) fn separate_key_from_colon(entry: &SyntaxNode) {
     }
 }
 
+/// The node at the place of `node` in an immutable copy of its tree.
+///
+/// A mutable rowan tree works out each node's offset by walking up to the
+/// root, so every step of a traversal costs the depth it is at. A pass that
+/// only reads a whole tree runs on a copy to stay linear in its size.
+pub(crate) fn immutable_copy(node: &SyntaxNode) -> SyntaxNode {
+    let path: Vec<(usize, rowan::TextRange)> = node
+        .ancestors()
+        .take_while(|n| n.parent().is_some())
+        .map(|n| (n.index(), n.text_range()))
+        .collect();
+    let root = node.ancestors().last().unwrap_or_else(|| node.clone());
+    let missing = "the copy has the same shape as the tree";
+    path.iter().rev().fold(
+        SyntaxNode::new_root(root.green().into_owned()),
+        |parent, &(index, range)| {
+            // Find the child by its range rather than counting through the
+            // ones before it, then step past any empty siblings beside it.
+            let mut child = parent.child_or_token_at_range(range).expect(missing);
+            while child.index() < index {
+                child = child.next_sibling_or_token().expect(missing);
+            }
+            while child.index() > index {
+                child = child.prev_sibling_or_token().expect(missing);
+            }
+            child.into_node().expect(missing)
+        },
+    )
+}
+
 /// The first direct child node of `parent` with the given `kind`, if any.
 fn child_of_kind(parent: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
     parent.children().find(|n| n.kind() == kind)

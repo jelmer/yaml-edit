@@ -2838,6 +2838,12 @@ mod tests {
     }
 
     #[test]
+    fn test_locating_violations_scales_linearly() {
+        // The column of each violation was counted from its line's start.
+        assert_validation_scales_linearly(2000, |n| format!("[{}]\n", vec!["@a"; n].join(", ")));
+    }
+
+    #[test]
     fn test_validating_each_document_scales_linearly() {
         // Locating violations indexed the whole stream for every document,
         // even one without any.

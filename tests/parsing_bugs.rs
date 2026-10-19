@@ -5373,3 +5373,45 @@ fn test_empty_sequence_item_before_final_whitespace_line() {
         )
     );
 }
+
+/// The lines between an explicit key's `?` and the block collection on a
+/// later line are the KEY's, as those after an implicit key's `:` are the
+/// VALUE's: they were put in a compact sequence (`?\n\n- a\n`), or the
+/// INDENT of its first line was (`?\n\n  - a\n`).
+#[test]
+fn test_lines_before_explicit_key_collection_are_the_keys() {
+    // The KEY's subtree, and the VALUE's after an implicit key.
+    let slot = |text: &str, kind: &str| {
+        let file = YamlFile::from_str(text).unwrap();
+        assert_file_cst_ok(&file);
+        let tree =
+            yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file));
+        let start = tree.find(&format!("      {kind}\n")).unwrap();
+        tree[start..]
+            .lines()
+            .skip(1)
+            .take_while(|l| l.starts_with("        "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for rest in [
+        "\n\n- a\n- b\n",
+        "\n\n\n- a\n",
+        "\n# c\n- a\n",
+        "\n  # c\n- a\n",
+        "\n# c\n\n- a\n",
+        " # c\n\n- a\n",
+        "\n\n  - a\n",
+        "\n  \n  - a\n",
+        "\n# c\n  - a\n",
+        "\n\n  a: 1\n",
+        "\n# c\n  a: 1\n",
+        " !t\n\n- a\n",
+        " &x\n\n- a\n",
+        " &x\n\n  a: 1\n",
+    ] {
+        let value = slot(&format!("k:{rest}"), "VALUE");
+        assert_eq!(slot(&format!("?{rest}"), "KEY"), value, "{rest:?}");
+        assert_eq!(slot(&format!("? x\n:{rest}"), "VALUE"), value, "{rest:?}");
+    }
+}

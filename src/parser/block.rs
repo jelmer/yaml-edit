@@ -398,7 +398,7 @@ impl Parser<'_> {
                 ..self.ctx
             };
             self.scoped(ctx, |p| {
-                p.parse_explicit_key_content(question_column, base_indent);
+                p.parse_explicit_key_content(question_column);
                 p.parse_rest_of_entry_line(question_column);
             });
 
@@ -425,10 +425,7 @@ impl Parser<'_> {
                 // so this one case is handled before delegating to it.
                 if self.indentless_sequence_follows(colon_column) {
                     self.builder.start_node(SyntaxKind::VALUE.into());
-                    if self.current() == Some(SyntaxKind::COMMENT) {
-                        self.bump();
-                    }
-                    self.bump(); // consume the newline
+                    self.skip_ws_and_newlines();
                     self.scoped(value_ctx, |p| {
                         p.parse_sequence_with_base_indent(base_indent)
                     });
@@ -510,8 +507,8 @@ impl Parser<'_> {
 
     /// Parse the key of an explicit-key entry whose `?` sits at
     /// `question_column`, with any scalar continuation lines.
-    fn parse_explicit_key_content(&mut self, question_column: usize, base_indent: usize) {
-        self.parse_explicit_key_node(question_column, base_indent);
+    fn parse_explicit_key_content(&mut self, question_column: usize) {
+        self.parse_explicit_key_node(question_column);
 
         // A scalar key may continue on an indented line. Sequences and
         // mappings have consumed theirs already.
@@ -600,7 +597,7 @@ impl Parser<'_> {
                 ..p.ctx
             };
             p.scoped(key_ctx, |p| {
-                p.parse_explicit_key_node(question_column, question_column);
+                p.parse_explicit_key_node(question_column);
                 p.parse_rest_of_entry_line(question_column);
             });
             p.builder.finish_node();
@@ -767,11 +764,12 @@ impl Parser<'_> {
 
     /// Parse the node an explicit key indicator introduces.
     ///
-    /// The key may sit on the indicator's own line, or start on the next
-    /// line: indentless when its dashes line up with the `?` itself, and
-    /// otherwise indented past it. With neither, the key is an implicit
-    /// null.
-    fn parse_explicit_key_node(&mut self, question_column: usize, base_indent: usize) {
+    /// The key may sit on the indicator's own line, or start on a later
+    /// line: indented past the `?`, or for a sequence, with its dashes at
+    /// the `?`'s own column. With neither, the key is an implicit null. The
+    /// lines before a key on a later line are the KEY's, as those before a
+    /// value on a later line are the VALUE's.
+    fn parse_explicit_key_node(&mut self, question_column: usize) {
         // A comment ends the indicator's line just as a line break does, so
         // the checks below still decide whether the next line is the key.
         // Left to parse_value, it took the next line whatever its column:
@@ -794,125 +792,56 @@ impl Parser<'_> {
             // has to clear the `?`.
             self.skip_ws_and_newlines();
             self.parse_value();
-        } else if self.indentless_sequence_follows(question_column) {
-            self.bump(); // consume the newline
-            self.parse_sequence_with_base_indent(base_indent);
-        } else if let Some(indent) = self.indented_sequence_indent(question_column) {
-            self.bump(); // consume the newline
-            self.bump(); // consume the indent
-            self.parse_sequence_with_base_indent(indent);
-        } else if let Some(indent) = self.indented_key_node_indent(question_column) {
-            // The same for a mapping or scalar key node: `?\n  j: 1\n` is
-            // keyed by `{j: 1}`. Emitting the implicit null first left the
-            // real key beside it in the KEY node, where every accessor read
-            // the null instead.
-            self.bump(); // consume the newline
-            self.bump(); // consume the indent
-            self.parse_value_with_base_indent(indent);
+        } else if let Some((kind, indent)) = self.key_node_line(question_column) {
+            self.skip_ws_and_newlines();
+            if kind == SyntaxKind::DASH {
+                self.parse_sequence_with_base_indent(indent);
+            } else {
+                self.parse_value_with_base_indent(indent);
+            }
         } else {
             self.emit_implicit_null();
         }
     }
 
-    /// The indentation of a non-sequence key node starting on the line after
-    /// an explicit key indicator at `question_column`, if one does.
+    /// The kind and indentation of the key node on a later line than an
+    /// explicit key indicator at `question_column`, if there is one.
     ///
-    /// A line opening at the colon is the entry's own value rather than part
-    /// of its key, so `? a\n: 1\n` is left alone.
-    ///
-    /// Indented comment lines before it say nothing about where the key is:
-    /// in `?\n # c\nk: v\n` the key is empty and `k: v` the next entry.
-    /// A sequence after them is the key's too, which
-    /// [`indented_sequence_indent`](Self::indented_sequence_indent) leaves
-    /// to this.
-    fn indented_key_node_indent(&self, question_column: usize) -> Option<usize> {
+    /// The node has to be indented past the `?`, `?\n  j: 1\n` being keyed
+    /// by `{j: 1}`, bar a sequence, whose dashes may line up with the `?`:
+    /// `?\n- a\n` and `- ?\n  - a\n` are keyed by `[a]`. Further left,
+    /// `- ?\n- a\n` dedents out of the entry. A line opening at the colon is
+    /// the entry's own value rather than part of its key, so `? a\n: 1\n`
+    /// is left alone. Blank and comment lines in between say nothing about
+    /// where the key is: in `?\n # c\nk: v\n` the key is empty and `k: v`
+    /// the next entry.
+    fn key_node_line(&self, question_column: usize) -> Option<(SyntaxKind, usize)> {
         if self.current() != Some(SyntaxKind::NEWLINE) {
             return None;
         }
-        let mut rest = self.tokens.iter().rev().skip(1);
-        let mut after_comment = false;
-        let (indent, kind) = loop {
-            match rest.next()? {
-                (SyntaxKind::NEWLINE, _) => continue,
-                (SyntaxKind::INDENT, text) => match rest.next()? {
-                    (SyntaxKind::COMMENT, _) => after_comment = true,
-                    (kind, _) => break (text.len(), *kind),
-                },
-                _ => return None,
+        let (kind, indent) = match self.next_content() {
+            (Some(SyntaxKind::DASH), indent) if indent >= question_column => {
+                (SyntaxKind::DASH, indent)
             }
+            (Some(kind), indent) if indent > question_column => (kind, indent),
+            _ => return None,
         };
-        if indent <= question_column {
-            return None;
-        }
-        match kind {
-            SyntaxKind::COLON => None,
-            SyntaxKind::DASH if !after_comment => None,
-            _ => Some(indent),
-        }
-    }
-
-    /// The indentation of a sequence starting on the line after an explicit
-    /// key indicator at `question_column`, if one does.
-    ///
-    /// `?\n  - a\n` keys the entry on `[a]`: the key's node is allowed to
-    /// start on the following line as long as it is indented past the `?`.
-    ///
-    /// In `- ?\n  - a\n` the dashes line up with the `?` instead: the
-    /// indicator sits at a column the sequence's own indentation reproduces,
-    /// so they are written out as an INDENT rather than starting the line,
-    /// and still belong to the key. An indicator starting its line can't
-    /// be matched this way.
-    fn indented_sequence_indent(&self, question_column: usize) -> Option<usize> {
-        if self.current() != Some(SyntaxKind::NEWLINE) {
-            return None;
-        }
-        let mut rest = self.tokens.iter().rev().skip(1);
-        let indent = loop {
-            match rest.next()? {
-                (SyntaxKind::NEWLINE, _) => continue,
-                (SyntaxKind::INDENT, text) => break text.len(),
-                _ => return None,
-            }
-        };
-        if indent < question_column || indent == 0 {
-            return None;
-        }
-        match rest.next()? {
-            (SyntaxKind::DASH, _) => Some(indent),
-            _ => None,
-        }
+        (kind != SyntaxKind::COLON).then_some((kind, indent))
     }
 
     /// Whether the next line opens an indentless block sequence, whose
-    /// entries sit at the current construct's own column.
+    /// entries sit at the `:`'s own column in column 0.
     ///
     /// The caller is on the NEWLINE, or a comment before it, that ends the
-    /// `?` or `:` line. A `-` straight after that line break carries no INDENT
-    /// token, which is what makes the sequence indentless.
+    /// `:` line. Blank and comment lines before the sequence say nothing
+    /// about its indentation: `? a\n:\n\n- b\n` has the value `[b]`.
     fn indentless_sequence_follows(&self, indicator_column: usize) -> bool {
-        // The dashes carry no INDENT, so they start their line: only an
-        // indicator in column 0 shares that column. Further in, `- ?\n- a\n`
-        // dedents out of the entry and the sequence is the enclosing one's.
-        let mut rest = self
-            .current()
-            .into_iter()
-            .chain(self.upcoming_tokens())
-            .peekable();
-        rest.next_if_eq(&SyntaxKind::COMMENT);
-        if rest.next() != Some(SyntaxKind::NEWLINE) || indicator_column != 0 {
-            return false;
-        }
-        // A blank line between the indicator and the sequence carries no
-        // indentation of its own, so it neither ends the entry nor stops the
-        // sequence being the indentless one: `?\n\n- a\n: v\n` is keyed by
-        // the sequence `[a]`, exactly as `?\n- a\n: v\n` is.
-        loop {
-            match rest.next() {
-                Some(SyntaxKind::NEWLINE) => continue,
-                Some(kind) => return kind == SyntaxKind::DASH,
-                None => return false,
-            }
-        }
+        indicator_column == 0
+            && matches!(
+                self.current(),
+                Some(SyntaxKind::NEWLINE | SyntaxKind::COMMENT)
+            )
+            && self.next_content() == (Some(SyntaxKind::DASH), 0)
     }
 
     pub(super) fn is_mapping_key(&self) -> bool {

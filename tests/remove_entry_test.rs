@@ -1203,8 +1203,8 @@ fn drain_compact_sequence_in_explicit_key() {
 
 #[test]
 fn remove_later_item_of_compact_sequence_in_explicit_key() {
-    // The parser puts the blank lines before a compact sequence in an
-    // explicit key in the sequence; they stay there.
+    // The blank lines before a compact sequence in an explicit key are the
+    // key's; they stay there.
     let pop = |d: &Document| {
         assert!(key_sequence(d).pop().is_some());
     };
@@ -1530,5 +1530,26 @@ fn refill_flow_collection_stays_flow() {
             m.set("c", 3);
         },
         "a: {c: 3}\n",
+    );
+}
+
+#[test]
+fn remove_first_item_of_compact_sequence_after_blank_line() {
+    let remove = |d: &Document| {
+        assert!(key_sequence(d).remove(0).is_some());
+    };
+    check_edit("?\n\n- a\n- b\n", remove, "?\n\n- b\n");
+    check_edit("?\n# c\n- a\n- b\n: v\n", remove, "?\n# c\n- b\n: v\n");
+    check_edit("? !t\n\n- a\n- b\n", remove, "? !t\n\n- b\n");
+    check_edit("?\n\n  - a\n  - b\n", remove, "?\n\n  - b\n");
+    let value_sequence = |d: &Document| {
+        let m = d.as_mapping().unwrap();
+        let v = m.values().next().unwrap();
+        v.as_sequence().cloned().unwrap()
+    };
+    check_edit(
+        "? x\n:\n\n- a\n- b\n",
+        |d| assert!(value_sequence(d).remove(0).is_some()),
+        "? x\n:\n\n- b\n",
     );
 }

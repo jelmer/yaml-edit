@@ -196,6 +196,8 @@ fn count_nodes(
 ///   by a NEWLINE -- either as their own last token, or via a trailing
 ///   comment/newline pair at the parent level, or (for MAPPING_ENTRYs)
 ///   an implicit-null value
+/// - A block MAPPING or SEQUENCE starts with its first entry: the
+///   comment and blank lines before it belong to the parent
 /// - No two adjacent INDENT tokens (would render as doubled indentation)
 /// - No two adjacent NEWLINE tokens at the tail of a MAPPING_ENTRY (would
 ///   render as a stray blank line)
@@ -459,6 +461,19 @@ fn validate_node(node: &SyntaxNode, in_flow: bool) -> Result<(), String> {
             if let Some(token) = trailing_line.filter(|_| nested) {
                 return Err(format!(
                     "nested {:?} ends with {:?} {:?} after its last entry",
+                    node.kind(),
+                    token.kind(),
+                    token.text()
+                ));
+            }
+            // The lines before its first entry belong to its parent.
+            let leading_line = node
+                .children_with_tokens()
+                .find(|c| !c.as_token().is_some_and(|t| t.text().is_empty()))
+                .and_then(|c| c.into_token());
+            if let Some(token) = leading_line {
+                return Err(format!(
+                    "{:?} starts with {:?} {:?} before its first entry",
                     node.kind(),
                     token.kind(),
                     token.text()
@@ -1039,7 +1054,18 @@ mod tests {
         assert_eq!(
             validate_tree(&build(
                 SEQUENCE,
-                &[(INDENT, Some("  ")), (INDENT, Some("  "))]
+                &[
+                    (SEQUENCE_ENTRY, None),
+                    (DASH, Some("-")),
+                    (WHITESPACE, Some(" ")),
+                    (SCALAR, None),
+                    (STRING, Some("a")),
+                    END,
+                    (NEWLINE, Some("\n")),
+                    END,
+                    (INDENT, Some("  ")),
+                    (INDENT, Some("  ")),
+                ]
             )),
             Err(
                 "adjacent INDENT tokens inside SEQUENCE -- would render as stacked indentation"

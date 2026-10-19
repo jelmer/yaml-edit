@@ -1665,4 +1665,62 @@ mod tests {
             },
         );
     }
+
+    /// The tree as one line: each node's kind with its children in
+    /// parentheses, each token's kind with its text.
+    fn compact(node: &crate::nodes::SyntaxNode) -> String {
+        let parts: Vec<String> = node
+            .children_with_tokens()
+            .map(|c| match c {
+                rowan::NodeOrToken::Node(n) => compact(&n),
+                rowan::NodeOrToken::Token(t) => format!("{:?}{:?}", t.kind(), t.text()),
+            })
+            .collect();
+        format!("{:?}({})", node.kind(), parts.join(" "))
+    }
+
+    /// Trees for unusual input, broken or not, that recovery paths of the
+    /// parser handle, with the number of parse errors for each.
+    #[test]
+    fn test_recovery_shapes() {
+        for (src, errors, expected) in [
+            ("a\n[\"", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" STRING\"[\\\"\"))"),
+            ("a\n['x]\n", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" STRING\"['x]\") NEWLINE\"\\n\")"),
+            ("a\n[']'\n", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" STRING\"[']'\") NEWLINE\"\\n\")"),
+            ("a\n[ #]\n", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" STRING\"[\") WHITESPACE\" \" COMMENT\"#]\" NEWLINE\"\\n\")"),
+            ("a: >0o1\n", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(GREATER\">\") SCALAR(INT\"0o1\")) NEWLINE\"\\n\")))"),
+            ("?  \n `", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(QUESTION\"?\" WHITESPACE\"  \" KEY(NEWLINE\"\\n\" INDENT\" \" SCALAR(STRING\"`\")) VALUE(SCALAR(NULL\"\")))))"),
+            ("{:\n?\ti\n\t,", 1, "DOCUMENT(MAPPING(LEFT_BRACE\"{\" MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" NEWLINE\"\\n\" VALUE(MAPPING(MAPPING_ENTRY(QUESTION\"?\" WHITESPACE\"\\t\" KEY(SCALAR(STRING\"i\") NEWLINE\"\\n\" INDENT\"\\t\" SCALAR(NULL\"\")) VALUE(SCALAR(NULL\"\"))))) COMMA\",\") RIGHT_BRACE\"\"))"),
+            ("&x[[", 2, "DOCUMENT(ANCHOR\"&x\" SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(SEQUENCE(LEFT_BRACKET\"[\" RIGHT_BRACKET\"\")) RIGHT_BRACKET\"\"))"),
+            ("&x[[]", 1, "DOCUMENT(ANCHOR\"&x\" SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(SEQUENCE(LEFT_BRACKET\"[\" RIGHT_BRACKET\"]\")) RIGHT_BRACKET\"\"))"),
+            (": ?", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" WHITESPACE\" \" VALUE(MAPPING(MAPPING_ENTRY(QUESTION\"?\" KEY(SCALAR(NULL\"\")) VALUE(SCALAR(NULL\"\"))))))))"),
+            ("?\n :", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(QUESTION\"?\" KEY(SCALAR(NULL\"\") NEWLINE\"\\n\" INDENT\" \") COLON\":\" VALUE(SCALAR(NULL\"\")))))"),
+            (" ?\n\n", 0, "DOCUMENT(INDENT\" \" MAPPING(MAPPING_ENTRY(QUESTION\"?\" KEY(SCALAR(NULL\"\")) VALUE(SCALAR(NULL\"\")) NEWLINE\"\\n\") NEWLINE\"\\n\"))"),
+            ("?\n\n", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(QUESTION\"?\" KEY(SCALAR(NULL\"\")) VALUE(SCALAR(NULL\"\")) NEWLINE\"\\n\") NEWLINE\"\\n\"))"),
+            ("&x ", 0, "DOCUMENT(ANCHOR\"&x\" WHITESPACE\" \" SCALAR(NULL\"\"))"),
+            ("-\n#\n#", 0, "DOCUMENT(SEQUENCE(SEQUENCE_ENTRY(DASH\"-\" SCALAR(NULL\"\") NEWLINE\"\\n\") COMMENT\"#\" NEWLINE\"\\n\" COMMENT\"#\"))"),
+            ("-\n#", 0, "DOCUMENT(SEQUENCE(SEQUENCE_ENTRY(DASH\"-\" SCALAR(NULL\"\") NEWLINE\"\\n\") COMMENT\"#\"))"),
+            ("]:", 0, "DOCUMENT(SCALAR(RIGHT_BRACKET\"]\") MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" VALUE(SCALAR(NULL\"\")))))"),
+            ("?\n\n\t?", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(QUESTION\"?\" KEY(NEWLINE\"\\n\" NEWLINE\"\\n\" INDENT\"\\t\" MAPPING(MAPPING_ENTRY(QUESTION\"?\" KEY(SCALAR(NULL\"\")) VALUE(SCALAR(NULL\"\"))))) VALUE(SCALAR(NULL\"\")))))"),
+            ("[?\n", 1, "DOCUMENT(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(QUESTION\"?\" NEWLINE\"\\n\" SCALAR(NULL\"\")) VALUE(SCALAR(NULL\"\"))))) RIGHT_BRACKET\"\"))"),
+            ("[?\n ", 1, "DOCUMENT(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(QUESTION\"?\" NEWLINE\"\\n\" INDENT\" \" SCALAR(NULL\"\")) VALUE(SCALAR(NULL\"\"))))) RIGHT_BRACKET\"\"))"),
+            (":\n] :", 1, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" VALUE(SCALAR(NULL\"\")) NEWLINE\"\\n\") ERROR(RIGHT_BRACKET\"]\") WHITESPACE\" \" MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" VALUE(SCALAR(NULL\"\")))))"),
+            ("[%[]:\n\n :", 0, "DOCUMENT(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"%\" LEFT_BRACKET\"[\")) VALUE(SCALAR(NULL\"\"))))) RIGHT_BRACKET\"]\") MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" VALUE(SCALAR(NULL\"\")) NEWLINE\"\\n\") NEWLINE\"\\n\") INDENT\" \" MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" VALUE(SCALAR(NULL\"\")))))"),
+            (":\t[]\t[", 1, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" WHITESPACE\"\\t\" VALUE(SEQUENCE(LEFT_BRACKET\"[\" RIGHT_BRACKET\"]\") WHITESPACE\"\\t\" SEQUENCE(LEFT_BRACKET\"[\" RIGHT_BRACKET\"\")))))"),
+            ("[.{]?[]:", 0, "DOCUMENT(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\".\" LEFT_BRACE\"{\")) VALUE(SCALAR(NULL\"\"))))) RIGHT_BRACKET\"]\") SCALAR(STRING\"?\") MAPPING(MAPPING_ENTRY(KEY(SEQUENCE(LEFT_BRACKET\"[\" RIGHT_BRACKET\"]\")) COLON\":\" VALUE(SCALAR(NULL\"\")))))"),
+            ("[: :", 1, "DOCUMENT(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(NULL\"\"))))) SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" VALUE(SCALAR(NULL\"\"))))) RIGHT_BRACKET\"\"))"),
+            ("&x\n#", 0, "DOCUMENT(ANCHOR\"&x\" SCALAR(NULL\"\") NEWLINE\"\\n\" COMMENT\"#\")"),
+            ("<<\n&x[", 0, "DOCUMENT(SCALAR(MERGE_KEY\"<<\" NEWLINE\"\\n\" ANCHOR\"&x\" LEFT_BRACKET\"[\"))"),
+            ("\t%\n-\r!\t-", 0, "DOCUMENT(INDENT\"\\t\" SCALAR(STRING\"%\" NEWLINE\"\\n\" DASH\"-\" NEWLINE\"\\r\" TAG\"!\" WHITESPACE\"\\t\" STRING\"-\"))"),
+
+        ] {
+            let parsed = crate::yaml::YamlFile::parse(src);
+            assert_eq!(parsed.errors().len(), errors, "{src:?}: {:?}", parsed.errors());
+            let file = parsed.tree();
+            let root = rowan::ast::AstNode::syntax(&file);
+            assert_eq!(compact(root), format!("ROOT({expected})"), "{src:?}");
+            assert_eq!(root.to_string(), src);
+            crate::debug::validate_tree(root).unwrap();
+        }
+    }
 }

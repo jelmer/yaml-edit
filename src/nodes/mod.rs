@@ -166,7 +166,9 @@
 //! Error recovery keeps to the same shapes. A node with nothing to read
 //! (`[}`, `{?`) is the zero-width null, and a token no entry can start,
 //! like the `]` of `[]:\n]:`, goes in an ERROR node beside the entries,
-//! as content after the end of a document does.
+//! as content after the end of a document does. What is left of a block
+//! entry's line after its node (`a: :`, `- [a] ]`) stays in the entry's
+//! slot, as more nodes, rather than opening another entry on that line.
 //!
 //! The zero-width `NULL ""` token renders as nothing, so round-trips are
 //! lossless. This is distinct from a programmatically-written null,

@@ -235,12 +235,7 @@ impl Parser<'_> {
             self.bump();
         }
         self.skip_line_end_trivia();
-        if self.current() == Some(SyntaxKind::NEWLINE)
-            && !matches!(
-                self.previous_kind,
-                Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
-            )
-        {
+        if self.current() == Some(SyntaxKind::NEWLINE) && !self.line_ended() {
             self.bump();
         }
         self.builder.finish_node();

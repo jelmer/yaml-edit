@@ -130,13 +130,14 @@ fn is_collection(kind: &rowan::SyntaxKind) -> bool {
     *kind == SyntaxKind::MAPPING.into() || *kind == SyntaxKind::SEQUENCE.into()
 }
 
-/// A tree builder that can hold back the line breaks and indentation
-/// between the entries of a block collection until it is known which node
-/// they belong to.
+/// A tree builder that can hold back the line breaks, indentation and
+/// comment lines between the entries of a block collection until it is
+/// known which node they belong to.
 ///
 /// They go in front of whatever is emitted next. A node finished in the
-/// meantime leaves them to its parent, so the blank lines after a nested
-/// collection's last entry end up in the collection holding the next one.
+/// meantime leaves them to its parent, so the blank and comment lines after
+/// a nested collection's last entry end up in the collection holding the
+/// next one.
 /// The outermost block collection keeps those at its end.
 pub(super) struct TreeBuilder {
     inner: GreenNodeBuilder<'static>,
@@ -786,6 +787,13 @@ impl Parser<'_> {
         // tokens are consumed. After skip_whitespace_only_with_dedent_check() consumes
         // whitespace and INDENT tokens, current_line_indent contains the correct indentation
         // level for the current line.
+        //
+        // Only a line's first token can be dedented. One after an indicator
+        // on the same line, like the inner `-` of `-  ? -`, sits right of
+        // it, though current_line_indent leaves out the space between them.
+        if !(self.previous_kind.is_none() || self.line_ended()) {
+            return false;
+        }
         if base_indent == 0 {
             // At root level (base_indent=0), any indentation means content doesn't belong at root
             self.current_line_indent > 0
@@ -810,8 +818,9 @@ impl Parser<'_> {
         self.holding_trivia(|p| p.skip_whitespace_with_dedent_check(base_indent, dash_lines))
     }
 
-    /// Run `f` with the line breaks, indentation and white space it steps
-    /// over held back for the node that comes next; see [`TreeBuilder`].
+    /// Run `f` with the line breaks, indentation, white space and comments
+    /// it steps over held back for the node that comes next; see
+    /// [`TreeBuilder`].
     pub(super) fn holding_trivia<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         let outer = std::mem::replace(&mut self.hold_trivia, true);
         let result = f(self);
@@ -925,14 +934,20 @@ impl Parser<'_> {
         ]);
     }
 
+    /// Whether the tokens consumed so far end with a line break, perhaps
+    /// followed by the next line's indentation.
+    pub(super) fn line_ended(&self) -> bool {
+        matches!(
+            self.previous_kind,
+            Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
+        )
+    }
+
     /// Step over the white space and comment ending the current line,
     /// unless the node just parsed has ended its line, as a block node does:
     /// a comment then is a line of its own.
     pub(super) fn skip_line_end_trivia(&mut self) {
-        if matches!(
-            self.previous_kind,
-            Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
-        ) {
+        if self.line_ended() {
             return;
         }
         self.skip_whitespace();
@@ -946,15 +961,40 @@ impl Parser<'_> {
     /// CST invariants in `nodes/mod.rs`). An entry ending in a block node
     /// has ended its line already.
     pub(super) fn skip_entry_line_end(&mut self) {
-        if matches!(
-            self.previous_kind,
-            Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
-        ) {
+        if self.line_ended() {
             return;
         }
         self.skip_line_end_trivia();
         if self.current() == Some(SyntaxKind::NEWLINE) {
             self.bump();
+        }
+    }
+
+    /// Read what is left of the line after the node of a block entry at
+    /// `column` as more nodes in the same slot, which the validator
+    /// reports. Opening the collection's next entry there instead left this
+    /// one without the line break ending it. Later lines belong to those
+    /// nodes only when indented past the entry.
+    pub(super) fn parse_rest_of_entry_line(&mut self, column: usize) {
+        if self.in_flow_context {
+            return;
+        }
+        while !self.line_ended() {
+            let whitespace = usize::from(self.current() == Some(SyntaxKind::WHITESPACE));
+            if matches!(
+                self.peek_kind(whitespace),
+                None | Some(SyntaxKind::NEWLINE | SyntaxKind::COMMENT)
+            ) {
+                return;
+            }
+            if whitespace == 1 {
+                self.bump();
+            }
+            let before = self.tokens.len();
+            self.parse_value_with_base_indent(column + 1);
+            if self.tokens.len() == before {
+                self.parse_stray_token("block entry");
+            }
         }
     }
 
@@ -973,6 +1013,27 @@ impl Parser<'_> {
         (None, indent)
     }
 
+    /// Whether the next content is the `:` of the explicit key whose `?`
+    /// sits at `question_column`. One opening a later line left of the `?`
+    /// is the value of an enclosing entry: in `? - ? a\n: b\n` the `: b`
+    /// line is the outer key's.
+    pub(super) fn explicit_value_follows(&self, question_column: usize) -> bool {
+        // The column of the line the next content is on, if not this one.
+        let mut line_indent = self.line_ended().then_some(self.current_line_indent);
+        for (kind, text) in self.tokens.iter().rev() {
+            match kind {
+                SyntaxKind::NEWLINE => line_indent = Some(0),
+                SyntaxKind::INDENT => line_indent = Some(text.len()),
+                SyntaxKind::BOM | SyntaxKind::WHITESPACE | SyntaxKind::COMMENT => {}
+                SyntaxKind::COLON => {
+                    return line_indent.map_or(true, |indent| indent >= question_column)
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
     /// Where the value of a `:` is, when it is on a later line indented
     /// past `mapping_column` (or at it, for an indentless sequence): the
     /// number of tokens up to the INDENT starting that line, or the line
@@ -980,7 +1041,7 @@ impl Parser<'_> {
     /// value sits, so they are stepped over: the YAML test suite's Q9WF has
     /// a column-0 comment between a flow-collection key and its indented
     /// block mapping. The caller is on the NEWLINE ending the colon's line.
-    fn value_line_after_colon(&self, mapping_column: Option<usize>) -> Option<(usize, usize)> {
+    fn value_line_after_colon(&self, mapping_column: usize) -> Option<(usize, usize)> {
         let ahead = self.lookahead();
         if ahead.kind(0) != Some(SyntaxKind::NEWLINE) {
             return None;
@@ -1001,13 +1062,12 @@ impl Parser<'_> {
         let (SyntaxKind::INDENT, text) = ahead.get(i)? else {
             // A line at column 0 has no INDENT; it holds the value only as
             // an indentless sequence of a mapping at column 0.
-            let indentless = mapping_column == Some(0) && ahead.kind(i) == Some(SyntaxKind::DASH);
+            let indentless = mapping_column == 0 && ahead.kind(i) == Some(SyntaxKind::DASH);
             return indentless.then_some((i - 1, 0));
         };
         let indent = text.len();
-        let opens_value = mapping_column.map_or(true, |column| {
-            indent > column || (indent == column && ahead.kind(i + 1) == Some(SyntaxKind::DASH))
-        });
+        let opens_value = indent > mapping_column
+            || (indent == mapping_column && ahead.kind(i + 1) == Some(SyntaxKind::DASH));
         opens_value.then_some((i, indent))
     }
 
@@ -1021,29 +1081,23 @@ impl Parser<'_> {
     /// column of the INDENT just consumed becomes the value's base indent,
     /// so content at or left of it belongs to an enclosing collection.
     ///
-    /// `mapping_column` is the column of the mapping the entry belongs to,
-    /// when known. A value on a later line has to be indented past it, bar
-    /// an indentless sequence: in `k:\n  ? a\n  :\n  b: c\n` the value of
-    /// `a` is null and `b` is its sibling.
-    pub(super) fn parse_value_after_colon(
-        &mut self,
-        track_indent: bool,
-        mapping_column: Option<usize>,
-    ) {
+    /// `mapping_column` is the column of the mapping the entry belongs to.
+    /// A value on a later line has to be indented past it, bar an
+    /// indentless sequence: in `k:\n  ? a\n  :\n  b: c\n` the value of `a`
+    /// is null and `b` is its sibling.
+    pub(super) fn parse_value_after_colon(&mut self, track_indent: bool, mapping_column: usize) {
         self.builder.start_node(SyntaxKind::VALUE.into());
         // A comment ends the colon's line just as a line break does: the
         // next line is the value only if it is indented to be one.
         if self.current() == Some(SyntaxKind::COMMENT) {
             self.bump();
         }
-        if let Some(column) =
-            mapping_column.filter(|column| self.dedented_block_scalar_header_follows(*column))
-        {
+        if self.dedented_block_scalar_header_follows(mapping_column) {
             // `? a\n:\n|\n x\n`: the header can only be this value. Its
             // body still has to clear the mapping's column.
             self.skip_ws_and_newlines();
             let ctx = BlockCtx {
-                mapping_value_column: Some(column),
+                mapping_value_column: Some(mapping_column),
                 ..self.ctx
             };
             self.scoped(ctx, |p| p.parse_value());
@@ -1063,6 +1117,7 @@ impl Parser<'_> {
             // sibling entry, which is left to the mapping.
             self.emit_implicit_null();
         }
+        self.parse_rest_of_entry_line(mapping_column);
         // A comment ending the value's last line goes in the VALUE, as in
         // a mapping entry with an implicit key.
         self.skip_line_end_trivia();
@@ -1170,7 +1225,10 @@ impl Parser<'_> {
             if self.hold_trivia
                 && matches!(
                     kind,
-                    SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE
+                    SyntaxKind::NEWLINE
+                        | SyntaxKind::INDENT
+                        | SyntaxKind::WHITESPACE
+                        | SyntaxKind::COMMENT
                 )
             {
                 self.builder.hold(kind, text);

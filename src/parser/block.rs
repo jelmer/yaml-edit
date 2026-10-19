@@ -28,10 +28,7 @@ impl Parser<'_> {
             // ends every nested block, so that it goes to the root
             // collection. A comment on the last entry's own line stays with
             // that entry whatever follows, as it does before another entry.
-            let own_line = matches!(
-                self.previous_kind,
-                None | Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
-            );
+            let own_line = self.previous_kind.is_none() || self.line_ended();
             let nested = self.builder.in_nested_collection();
             let dedented = own_line
                 && match self.indent_after_comment_lines() {
@@ -43,10 +40,14 @@ impl Parser<'_> {
             if (base_indent > 0 || nested) && dedented {
                 return true;
             }
-            self.bump();
-            if self.current() == Some(SyntaxKind::NEWLINE) {
-                self.bump();
-            }
+            // Held back, as the blank lines are, for the node that comes
+            // next: the line after them may not open an entry of ours.
+            self.holding_trivia(|p| {
+                p.bump();
+                if p.current() == Some(SyntaxKind::NEWLINE) {
+                    p.bump();
+                }
+            });
             if self.skip_whitespace_only_with_dedent_check(base_indent, dash_lines) {
                 return true;
             }
@@ -240,7 +241,8 @@ impl Parser<'_> {
                 ..self.ctx
             };
             self.scoped(ctx, |p| {
-                p.parse_sequence_entry_value(dash_column, item_indent)
+                p.parse_sequence_entry_value(dash_column, item_indent);
+                p.parse_rest_of_entry_line(dash_column);
             });
 
             self.skip_entry_line_end();
@@ -396,7 +398,8 @@ impl Parser<'_> {
                 ..self.ctx
             };
             self.scoped(ctx, |p| {
-                p.parse_explicit_key_content(question_column, base_indent)
+                p.parse_explicit_key_content(question_column, base_indent);
+                p.parse_rest_of_entry_line(question_column);
             });
 
             self.builder.finish_node();
@@ -406,10 +409,7 @@ impl Parser<'_> {
             // `?` is an enclosing entry's: in `? ? a\n: b\n` the `: b` is
             // the outer entry's value.
             self.skip_line_end_trivia();
-            let (next, next_indent) = self.next_content();
-            if next == Some(SyntaxKind::COLON)
-                && (self.current() != Some(SyntaxKind::NEWLINE) || next_indent >= question_column)
-            {
+            if self.explicit_value_follows(question_column) {
                 self.skip_ws_and_newlines();
                 let colon_column = self.column();
                 self.bump(); // consume ':'
@@ -450,9 +450,7 @@ impl Parser<'_> {
                     } else {
                         ctx.mapping_value_column = Some(colon_column);
                     }
-                    self.scoped(ctx, |p| {
-                        p.parse_value_after_colon(true, Some(question_column))
-                    });
+                    self.scoped(ctx, |p| p.parse_value_after_colon(true, question_column));
                 }
             } else {
                 // No value, just a key - create explicit null value
@@ -602,12 +600,13 @@ impl Parser<'_> {
                 ..p.ctx
             };
             p.scoped(key_ctx, |p| {
-                p.parse_explicit_key_node(question_column, question_column)
+                p.parse_explicit_key_node(question_column, question_column);
+                p.parse_rest_of_entry_line(question_column);
             });
             p.builder.finish_node();
 
             p.skip_line_end_trivia();
-            if p.next_content().0 == Some(SyntaxKind::COLON) {
+            if p.explicit_value_follows(question_column) {
                 p.skip_ws_and_newlines();
                 let colon_column = p.column();
                 p.bump(); // consume ':'
@@ -617,7 +616,7 @@ impl Parser<'_> {
                     ..p.ctx
                 };
                 p.scoped(value_ctx, |p| {
-                    p.parse_value_after_colon(false, Some(question_column))
+                    p.parse_value_after_colon(false, question_column)
                 });
             } else {
                 p.emit_implicit_null_value();
@@ -1290,6 +1289,7 @@ impl Parser<'_> {
             // comment ending the value's last line goes in the VALUE, as
             // in `value  # comment`.
             if has_value {
+                self.parse_rest_of_entry_line(base_indent.max(key_column));
                 self.skip_line_end_trivia();
             } else {
                 self.emit_implicit_null();
@@ -1306,7 +1306,10 @@ impl Parser<'_> {
             // Read as a key whose value was omitted, with a zero-width
             // COLON where the `:` should be.
             self.builder.token(SyntaxKind::COLON.into(), "");
-            self.emit_implicit_null_value();
+            self.builder.start_node(SyntaxKind::VALUE.into());
+            self.emit_implicit_null();
+            self.parse_rest_of_entry_line(base_indent.max(key_column));
+            self.builder.finish_node();
         }
 
         self.skip_entry_line_end();
@@ -1606,6 +1609,114 @@ mod tests {
         crate::YamlValue::from_document(&doc).expect("should convert")
     }
 
+    /// What is left of a block entry's line after its node is more content
+    /// of the same slot, for the validator to report, rather than another
+    /// entry opening on that line, which left this one unterminated.
+    #[test]
+    fn test_rest_of_entry_line_stays_in_slot() {
+        use rowan::ast::AstNode;
+        for src in [
+            ": :",
+            "a: :\nb: 1\n",
+            "a: ]: x\n",
+            "a: * c: x\n",
+            "a: {}{: x\n",
+            "- {: -\n- b\n",
+            "- [: -\n",
+            ":\n * c: x\n",
+            ":\n|: x\n",
+            "?\n: >: x\n",
+            "? |b: x\n",
+            "<< <<\n",
+        ] {
+            let parse = YamlFile::parse(src);
+            let file = parse.tree();
+            assert_eq!(
+                crate::debug::validate_tree(file.syntax()),
+                Ok(()),
+                "{src:?}"
+            );
+            assert_eq!(file.to_string(), src);
+            let violations = file
+                .documents()
+                .flat_map(|d| crate::validator::Validator::new().validate(&d))
+                .count();
+            assert_ne!(parse.errors().len() + violations, 0, "{src:?}");
+        }
+        assert_eq!(top_level_keys("a: :\nb: 1\n"), ["a", "b"]);
+        assert_eq!(top_level_keys("x:\n  a: :\n  b: 1\nc: 2\n"), ["x", "c"]);
+        let parsed = YamlFile::from_str("a: :\nb: 1\n").unwrap();
+        assert_eq!(
+            crate::debug::tree_to_string(parsed.syntax()),
+            "\
+DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"a\"
+      COLON: \":\"
+      WHITESPACE: \" \"
+      VALUE
+        SCALAR
+          NULL: \"\"
+        MAPPING
+          MAPPING_ENTRY
+            KEY
+              SCALAR
+                NULL: \"\"
+            COLON: \":\"
+            VALUE
+              SCALAR
+                NULL: \"\"
+            NEWLINE: \"\\\\n\"
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"b\"
+      COLON: \":\"
+      WHITESPACE: \" \"
+      VALUE
+        SCALAR
+          INT: \"1\"
+      NEWLINE: \"\\\\n\"
+"
+        );
+    }
+
+    /// A `:` line left of an explicit key's `?` is the value of an
+    /// enclosing explicit key, not of the one nested in its key.
+    #[test]
+    fn test_explicit_value_left_of_nested_explicit_key() {
+        for (src, flow) in [
+            ("? - ? a\n: b\n", "? [{? a}]\n: b\n"),
+            ("? - ? - a\n: b\n", "? [{? [a]}]\n: b\n"),
+            (
+                "x:\n  ? - ? -\n  : - c\n",
+                "x:\n  ? [{? [null]}]\n  : [c]\n",
+            ),
+        ] {
+            assert_eq!(checked_value(src), checked_value(flow), "{src:?}");
+        }
+    }
+
+    /// A sequence on the line of an explicit key is the key's, however much
+    /// space follows the indicators before it.
+    #[test]
+    fn test_compact_sequence_key_after_wide_indicators() {
+        for (src, compact) in [
+            ("-  ? -", "- ? -"),
+            ("-  ? -\n", "- ? -\n"),
+            ("-  ? - a\n", "- ? - a\n"),
+            (
+                "-   ?   - a\n        - b\n    : c\n",
+                "- ? - a\n    - b\n  : c\n",
+            ),
+        ] {
+            assert_eq!(checked_value(src), checked_value(compact), "{src:?}");
+        }
+    }
+
     /// An explicit value's plain scalar continues only on lines indented
     /// past the `:`; a line at its column is not part of it.
     #[test]
@@ -1758,6 +1869,36 @@ DOCUMENT
     NEWLINE: \"\\\\n\"
     NEWLINE: \"\\\\n\"
 "
+        );
+    }
+
+    /// Comment lines that a nested collection steps over looking for its
+    /// next entry are not its own when no entry follows: they go to the
+    /// node that comes next, here the root collection or the flow sequence.
+    #[test]
+    fn test_comment_lines_before_non_entry_leave_nested_collection() {
+        let comment_parents = |src: &str| {
+            let parsed = YamlFile::parse(src).tree();
+            let syntax = rowan::ast::AstNode::syntax(&parsed);
+            assert_eq!(crate::debug::validate_tree(syntax), Ok(()), "{src:?}");
+            assert_eq!(parsed.to_string(), src);
+            syntax
+                .descendants_with_tokens()
+                .filter(|c| c.kind() == crate::lex::SyntaxKind::COMMENT)
+                .map(|c| {
+                    let parent = c.parent().unwrap();
+                    (parent.kind(), parent.text().to_string())
+                })
+                .collect::<Vec<_>>()
+        };
+        use crate::lex::SyntaxKind::{MAPPING, SEQUENCE};
+        assert_eq!(
+            comment_parents("a:\n  b: 1\n  # c\n  0\n"),
+            [(MAPPING, "a:\n  b: 1\n  # c\n  ".to_string())]
+        );
+        assert_eq!(
+            comment_parents("[a:\n?\nb:\n# c\n"),
+            [(SEQUENCE, "[a:\n?\nb:\n# c\n".to_string())]
         );
     }
 

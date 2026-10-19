@@ -410,7 +410,8 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
             }
         }
         // A comment directly in a block collection is a line of its own:
-        // one ending an entry's line belongs to that entry.
+        // one ending an entry's line belongs to that entry. The entry may
+        // end in an implicit null after its line break, as in `? - a\n`.
         SyntaxKind::MAPPING | SyntaxKind::SEQUENCE
             if !crate::nodes::starts_a_flow_collection(node) =>
         {
@@ -419,9 +420,11 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 .filter_map(|c| c.into_token())
                 .filter(|t| t.kind() == SyntaxKind::COMMENT)
                 .find(|t| {
-                    t.prev_token().is_some_and(|p| {
-                        !matches!(p.kind(), SyntaxKind::NEWLINE | SyntaxKind::INDENT)
-                    })
+                    std::iter::successors(t.prev_token(), |p| p.prev_token())
+                        .find(|p| !p.text().is_empty())
+                        .is_some_and(|p| {
+                            !matches!(p.kind(), SyntaxKind::NEWLINE | SyntaxKind::INDENT)
+                        })
                 });
             if let Some(comment) = stray {
                 return Err(format!(
@@ -592,7 +595,8 @@ fn validate_no_stacked_indents(node: &SyntaxNode) -> Result<(), String> {
 }
 
 /// An entry should not end with two adjacent NEWLINE tokens as direct
-/// children.
+/// children. Line breaks with a node between them, as around a flow
+/// entry's value on a line of its own, are not a blank line.
 ///
 /// That shape shows up when a placeholder NEWLINE isn't stripped after a
 /// child collection gains content (see issue #18 and the sequence-under-
@@ -609,15 +613,8 @@ fn validate_no_double_trailing_newline(node: &SyntaxNode) -> Result<(), String> 
         SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
     );
     if checks_apply {
-        let tokens: Vec<_> = node
-            .children_with_tokens()
-            .filter_map(|c| c.into_token())
-            .collect();
-        let last = tokens.len();
-        if last >= 2
-            && tokens[last - 1].kind() == SyntaxKind::NEWLINE
-            && tokens[last - 2].kind() == SyntaxKind::NEWLINE
-        {
+        let kinds: Vec<_> = node.children_with_tokens().map(|c| c.kind()).collect();
+        if kinds.ends_with(&[SyntaxKind::NEWLINE, SyntaxKind::NEWLINE]) {
             return Err(format!(
                 "{:?} ends with two NEWLINE tokens -- would render as a stray blank line: {:?}",
                 node.kind(),
@@ -698,6 +695,17 @@ mod tests {
         );
     }
 
+    /// An explicit key without a value that ends in a block node ends its
+    /// line before the zero-width null of its value, so a comment after
+    /// that is a line of its own.
+    #[test]
+    fn test_validate_tree_comment_line_after_explicit_block_key() {
+        for yaml in ["? - a\n# c\n", "- ? - a\n# c\n"] {
+            let file = YamlFile::from_str(yaml).unwrap();
+            assert_eq!(validate_tree(file.syntax()), Ok(()), "{yaml:?}");
+        }
+    }
+
     /// A nested block collection ends in an entry: the lines after it are
     /// its parent's.
     #[test]
@@ -749,6 +757,38 @@ mod tests {
             validate_tree(file.syntax()),
             Err(
                 "Block-style SEQUENCE_ENTRY not terminated by a NEWLINE (last token: Some(INT))"
+                    .to_string()
+            )
+        );
+    }
+
+    /// Line breaks with a node between them are not a blank line: in a
+    /// flow entry the value may sit on its own line, between the line break
+    /// after the `:` and the one ending the entry.
+    #[test]
+    fn test_validate_tree_newlines_around_value() {
+        for yaml in ["{:\nv\n}\n", "{a:\n\nv}\n", "-\n\n  a\n"] {
+            let file = YamlFile::from_str(yaml).unwrap();
+            assert_eq!(validate_tree(file.syntax()), Ok(()), "{yaml:?}");
+        }
+        let file = YamlFile::from_str("- a\n- b\n").unwrap();
+        let entry = file
+            .syntax()
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
+            .unwrap();
+        let blank = YamlFile::from_str("- a\n").unwrap();
+        let newline = blank
+            .syntax()
+            .descendants_with_tokens()
+            .find(|c| c.kind() == SyntaxKind::NEWLINE)
+            .unwrap();
+        newline.detach();
+        crate::nodes::append_children(&entry, vec![newline]);
+        assert_eq!(
+            validate_tree(file.syntax()),
+            Err(
+                "SEQUENCE_ENTRY ends with two NEWLINE tokens -- would render as a stray blank line: \"- a\\n\\n\""
                     .to_string()
             )
         );

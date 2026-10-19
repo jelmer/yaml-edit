@@ -53,19 +53,14 @@ impl MappingEntry {
     ///
     /// Returns `None` for malformed entries that have no key.
     pub fn key_node(&self) -> Option<crate::as_yaml::YamlNode> {
-        self.key()
-            .and_then(|k| k.children().next())
-            .and_then(crate::as_yaml::YamlNode::from_syntax)
+        self.key().and_then(|k| crate::nodes::held_node(&k))
     }
 
     /// Get the value of this entry as a [`YamlNode`](crate::as_yaml::YamlNode).
     ///
     /// Returns `None` for malformed entries whose value holds no node.
     pub fn value_node(&self) -> Option<crate::as_yaml::YamlNode> {
-        self.value()
-            .children()
-            .next()
-            .and_then(crate::as_yaml::YamlNode::from_syntax)
+        crate::nodes::held_node(&self.value())
     }
 
     /// Create a new mapping entry (key-value pair) not yet attached to any mapping.

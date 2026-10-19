@@ -304,12 +304,7 @@ impl Document {
     /// underlying CST node.  Assumes the document is a mapping; yields nothing
     /// if it is not.
     pub fn keys(&self) -> impl Iterator<Item = crate::as_yaml::YamlNode> + '_ {
-        self.key_nodes().filter_map(|key_node| {
-            key_node
-                .children()
-                .next()
-                .and_then(crate::as_yaml::YamlNode::from_syntax)
-        })
+        self.key_nodes().filter_map(|k| crate::nodes::held_node(&k))
     }
 
     /// Check if the document is empty

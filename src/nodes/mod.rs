@@ -721,6 +721,15 @@ pub(crate) fn entry_value(entry: &SyntaxNode) -> Option<SyntaxNode> {
     child_of_kind(entry, SyntaxKind::VALUE)
 }
 
+/// The node a KEY, VALUE or other holder wraps, as a
+/// [`YamlNode`](crate::as_yaml::YamlNode).
+pub(crate) fn held_node(holder: &SyntaxNode) -> Option<crate::as_yaml::YamlNode> {
+    holder
+        .children()
+        .next()
+        .and_then(crate::as_yaml::YamlNode::from_syntax)
+}
+
 /// A macro to create AST node wrappers.
 macro_rules! ast_node {
     ($ast:ident, $kind:ident, $doc:expr) => {

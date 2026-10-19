@@ -12,8 +12,8 @@ pub(crate) use helpers::{
 use super::empty_collection::{self, render_empty};
 use super::trivia::{self, Slot};
 use super::{
-    entry_key, entry_value, fresh_token, has_child_token, insert_children, replace_children, Lang,
-    Sequence, SyntaxNode,
+    entry_key, entry_value, fresh_token, has_child_token, held_node, insert_children,
+    replace_children, Lang, Sequence, SyntaxNode,
 };
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
@@ -50,11 +50,7 @@ impl Mapping {
     /// [`iter`](Self::iter) for `(key, value)` pairs as `(YamlNode, YamlNode)`.
     /// For raw CST nodes, use `pairs()`.
     pub fn keys(&self) -> impl Iterator<Item = crate::as_yaml::YamlNode> + '_ {
-        self.pairs().filter_map(|(k, _)| {
-            k.children()
-                .next()
-                .and_then(crate::as_yaml::YamlNode::from_syntax)
-        })
+        self.pairs().filter_map(|(k, _)| held_node(&k))
     }
 
     /// Iterate over raw KEY/VALUE syntax nodes for each mapping entry.
@@ -181,13 +177,7 @@ impl Mapping {
     /// Use [`iter`](Self::iter) to get both the key and value simultaneously, or
     /// `pairs()` for the raw `SyntaxNode` pairs.
     pub fn values(&self) -> impl Iterator<Item = crate::as_yaml::YamlNode> + '_ {
-        self.pairs().filter_map(|(_, value_node)| {
-            // VALUE node contains the actual content as children
-            value_node
-                .children()
-                .next()
-                .and_then(crate::as_yaml::YamlNode::from_syntax)
-        })
+        self.pairs().filter_map(|(_, v)| held_node(&v))
     }
 
     /// Iterate over `(key, value)` pairs, both as [`YamlNode`](crate::as_yaml::YamlNode)s.
@@ -198,18 +188,8 @@ impl Mapping {
     pub fn iter(
         &self,
     ) -> impl Iterator<Item = (crate::as_yaml::YamlNode, crate::as_yaml::YamlNode)> + '_ {
-        self.pairs().filter_map(|(key_node, value_node)| {
-            // KEY and VALUE nodes wrap the actual content - extract children
-            let key = key_node
-                .children()
-                .next()
-                .and_then(crate::as_yaml::YamlNode::from_syntax)?;
-            let value = value_node
-                .children()
-                .next()
-                .and_then(crate::as_yaml::YamlNode::from_syntax)?;
-            Some((key, value))
-        })
+        self.pairs()
+            .filter_map(|(k, v)| Some((held_node(&k)?, held_node(&v)?)))
     }
 
     /// Create a new empty mapping

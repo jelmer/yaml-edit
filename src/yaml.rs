@@ -281,8 +281,7 @@ impl Set {
                         entry
                             .children()
                             .find(|n| n.kind() == SyntaxKind::KEY)
-                            .and_then(|key| key.children().next())
-                            .and_then(crate::as_yaml::YamlNode::from_syntax)
+                            .and_then(|key| crate::nodes::held_node(&key))
                     })
                     .collect::<Vec<_>>()
             } else {
@@ -290,11 +289,7 @@ impl Set {
                 mapping_node
                     .children()
                     .filter(|n| n.kind() == SyntaxKind::KEY)
-                    .filter_map(|key| {
-                        key.children()
-                            .next()
-                            .and_then(crate::as_yaml::YamlNode::from_syntax)
-                    })
+                    .filter_map(|key| crate::nodes::held_node(&key))
                     .collect::<Vec<_>>()
             }
         })

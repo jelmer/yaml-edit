@@ -728,32 +728,6 @@ mod tests {
     use crate::scalar::ScalarStyle;
     use std::str::FromStr;
 
-    /// Assert that converting the text `build` gives for a size takes time
-    /// linear in that size.
-    fn assert_conversion_scales_linearly(n: usize, build: impl Fn(usize) -> String) {
-        crate::scaling::assert_scales_linearly(
-            &format!("converting {:?}", build(2)),
-            n,
-            |n| crate::YamlFile::from_str(&build(n)).unwrap(),
-            |file| {
-                YamlValue::from_document(&file.document().unwrap()).unwrap();
-            },
-        );
-    }
-
-    #[test]
-    fn test_conversion_scales_linearly() {
-        // Each key was compared with every earlier one of its mapping.
-        assert_conversion_scales_linearly(2000, |n| {
-            (0..n).map(|i| format!("key{i}: value{i}\n")).collect()
-        });
-        // Walking a node of the editable tree costs its depth.
-        assert_conversion_scales_linearly(60, |n| {
-            let keys: String = (0..n).map(|i| format!("{{k{i}: ")).collect();
-            format!("{keys}x{}", "}".repeat(n))
-        });
-    }
-
     fn render_as_yaml<T: crate::AsYaml>(v: &T) -> String {
         let mut builder = rowan::GreenNodeBuilder::new();
         v.build_content(&mut builder, 0, false);

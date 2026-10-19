@@ -32,6 +32,10 @@ serde_json = "1"
 name = "yaml_stress_tests"
 harness = false
 
+[[bench]]
+name = "scaling"
+harness = false
+
 [workspace]
 members = [".", "yaml-merge3"]
 exclude = ["fuzz"]

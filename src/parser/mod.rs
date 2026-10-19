@@ -1619,20 +1619,6 @@ mod tests {
         assert_eq!(parser.current(), Some(SyntaxKind::DOC_START));
     }
 
-    #[test]
-    fn test_parsing_past_the_nesting_limit_scales_linearly() {
-        // Each entry of the innermost sequence scanned the rest of the input
-        // for the colon of an implicit key.
-        crate::scaling::assert_scales_linearly(
-            "parsing nested `[`",
-            1000,
-            |n| "[".repeat(n),
-            |text| {
-                crate::Parse::<crate::YamlFile>::parse_yaml(text);
-            },
-        );
-    }
-
     /// The tree as one line: each node's kind with its children in
     /// parentheses, each token's kind with its text.
     fn compact(node: &crate::nodes::SyntaxNode) -> String {

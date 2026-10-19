@@ -805,7 +805,17 @@ fn test_remove_last_flow_mapping_entry_keeps_trailing_comma_style() {
     let root = file.document().unwrap().as_mapping().unwrap();
     root.remove("b").unwrap();
     assert_file_cst_ok(&file);
-    assert_eq!(file.to_string(), "{a: 1, }");
+    assert_eq!(file.to_string(), "{a: 1,}");
+}
+
+#[test]
+fn remove_last_flow_entry_ending_its_line_with_comma() {
+    // The entry before takes over the line break, where the parser puts it.
+    let remove_z = |d: &Document| {
+        d.as_mapping().unwrap().remove("z").unwrap();
+    };
+    check_edit("{r, z,\n\n}", remove_z, "{r,\n\n}");
+    check_edit("{r, z: 1,\n}", remove_z, "{r,\n}");
 }
 
 #[test]

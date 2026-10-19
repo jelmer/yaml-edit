@@ -344,9 +344,14 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
 
     let drained = !collection.children().any(|n| n.kind() == kind);
     if flow {
-        if is_last && !has_comma(entry) {
-            if let Some(last) = collection.children().filter(|n| n.kind() == kind).last() {
+        // The new last entry ends as the removed one did, as an entry added
+        // at the end takes over the end of the one before it.
+        let last = collection.children().filter(|n| n.kind() == kind).last();
+        if let Some(last) = last.filter(|_| is_last) {
+            if !has_comma(entry) {
                 FlowSeparator::strip(&last);
+            } else if let Some(separator) = FlowSeparator::of(entry) {
+                FlowSeparator::swap(&last, &separator);
             }
         }
     } else {

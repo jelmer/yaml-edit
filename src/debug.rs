@@ -211,6 +211,7 @@ fn count_nodes(
 /// debug::validate_tree(yaml.syntax()).expect("Tree should be valid");
 /// ```
 pub fn validate_tree(node: &SyntaxNode) -> Result<(), String> {
+    let node = &crate::nodes::immutable_copy(node);
     // Each pass walks the tree iteratively, so deep nesting cannot overflow
     // the stack.
     node.descendants().try_for_each(|n| validate_node(&n))?;
@@ -586,6 +587,20 @@ mod tests {
     use crate::yaml::YamlFile;
     use rowan::ast::AstNode;
     use std::str::FromStr;
+
+    #[test]
+    fn test_validate_tree_scales_linearly_with_nesting() {
+        // Walking a node of the editable tree costs its depth.
+        crate::scaling::assert_scales_linearly(
+            "validate_tree",
+            60,
+            |n| {
+                let keys: String = (0..n).map(|i| format!("{{k{i}: ")).collect();
+                YamlFile::from_str(&format!("{keys}x{}", "}".repeat(n))).unwrap()
+            },
+            |file| validate_tree(file.syntax()).unwrap(),
+        );
+    }
 
     #[test]
     fn test_validate_tree_fits_a_small_stack() {

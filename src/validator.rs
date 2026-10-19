@@ -1158,6 +1158,18 @@ fn check_trailing_content_after_quoted(node: &SyntaxNode, violations: &mut Vec<V
                     found_newline = true;
                 }
                 // Whitespace and comments are allowed after quoted strings
+                crate::SyntaxKind::WHITESPACE
+                | crate::SyntaxKind::INDENT
+                | crate::SyntaxKind::COMMENT => {}
+                // Any other token is content, such as the `[` of `''[`.
+                _ if found_quote_end && !found_newline => {
+                    violations.push(Violation::error_at(
+                        Rule::Other,
+                        token.text_range(),
+                        "Trailing content after quoted string",
+                    ));
+                    return;
+                }
                 _ => {}
             }
         }
@@ -4686,6 +4698,10 @@ mod tests {
             (
                 "a: \"b\" c\n",
                 ("Trailing content after quoted string", "1:8"),
+            ),
+            (
+                "a: ''[\nb: 1\n",
+                ("Trailing content after quoted string", "1:6"),
             ),
             (
                 "x: 1\na: b: c\n",

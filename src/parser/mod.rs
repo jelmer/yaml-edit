@@ -1605,6 +1605,16 @@ mod tests {
         assert_eq!(parser.current(), Some(SyntaxKind::DOC_START));
     }
 
+    /// The nesting limit counts depth, not siblings: items holding an
+    /// anchored key, plain or complex, do not add up towards it.
+    #[test]
+    fn test_anchored_keys_do_not_count_towards_nesting_limit() {
+        for item in ["- &a k: v\n", "- &a [k]: v\n"] {
+            let parse = crate::Parse::<crate::YamlFile>::parse_yaml(&item.repeat(MAX_FLOW_DEPTH));
+            assert_eq!(parse.errors(), Vec::<String>::new(), "{item:?}");
+        }
+    }
+
     /// The tree as one line: each node's kind with its children in
     /// parentheses, each token's kind with its text.
     fn compact(node: &crate::nodes::SyntaxNode) -> String {

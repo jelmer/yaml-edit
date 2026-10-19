@@ -933,19 +933,10 @@ impl ScalarValue {
 
     /// Static version of timestamp validation
     fn is_valid_timestamp_static(value: &str) -> bool {
-        // Basic patterns for common timestamp formats
-        // ISO 8601: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS etc.
-        if Self::matches_iso8601_pattern(value) {
-            return true;
-        }
-
-        // Unix timestamp (seconds since epoch)
-        if let Ok(timestamp) = value.parse::<u64>() {
-            // Reasonable range: between 1970 and 2100
-            return timestamp > 0 && timestamp < 4_102_444_800; // 2100-01-01
-        }
-
-        false
+        // The forms of the YAML timestamp type
+        // (https://yaml.org/type/timestamp.html): YYYY-MM-DD or
+        // YYYY-MM-DDTHH:MM:SS etc. A number of seconds is not one of them.
+        Self::matches_iso8601_pattern(value)
     }
 
     /// Simple pattern matching for ISO 8601 timestamps
@@ -2764,17 +2755,25 @@ mod tests {
 
     #[test]
     fn test_unix_timestamp_bounds() {
-        // Unix epoch boundary: 0 is rejected, 1 accepted, and the upper bound
-        // (2100-01-01) is exclusive.
+        // A number of seconds is not a YAML timestamp, whatever its size.
         assert!(!ScalarValue::is_valid_timestamp_static("0"));
-        assert!(ScalarValue::is_valid_timestamp_static("1"));
-        assert!(ScalarValue::is_valid_timestamp_static("4102444799"));
+        assert!(!ScalarValue::is_valid_timestamp_static("1"));
+        assert!(!ScalarValue::is_valid_timestamp_static("4102444799"));
         assert!(!ScalarValue::is_valid_timestamp_static("4102444800"));
 
         // The instance method delegates to the static one.
         let s = ScalarValue::string("x");
-        assert!(s.is_valid_timestamp("1"));
-        assert!(!s.is_valid_timestamp("0"));
+        assert!(!s.is_valid_timestamp("1"));
+        assert!(s.is_valid_timestamp("2001-12-14"));
+
+        assert_eq!(
+            ScalarValue::from(1_700_000_000i64).coerce_to_type(ScalarType::Timestamp),
+            None
+        );
+        assert_eq!(
+            ScalarValue::string("2001-12-14").coerce_to_type(ScalarType::Timestamp),
+            Some(ScalarValue::timestamp("2001-12-14"))
+        );
     }
 
     #[test]

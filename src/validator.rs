@@ -422,6 +422,7 @@ impl Validator {
                 check_implicit_key_multiline(node, violations);
                 // Check for block collection on same line as mapping key
                 check_collection_on_same_line_as_key(node, in_flow, violations);
+                check_explicit_value_column(node, columns, in_flow, violations);
             }
             SyntaxKind::SCALAR => {
                 // Check for invalid escape sequences in quoted strings
@@ -2751,6 +2752,45 @@ fn check_explicit_key_separation(node: &SyntaxNode, violations: &mut Vec<Violati
     }
 }
 
+/// Check that the `:` of a block explicit entry that opens its line is at
+/// the column of the entry's `?`, as `l-block-map-explicit-value` needs.
+/// The parser takes one indented past it as the entry's value all the same
+/// (`? a\n : b\n`).
+fn check_explicit_value_column(
+    entry: &SyntaxNode,
+    columns: &ColumnIndex,
+    in_flow: bool,
+    violations: &mut Vec<Violation>,
+) {
+    use crate::SyntaxKind;
+
+    if in_flow {
+        return;
+    }
+    let token = |kind| {
+        entry
+            .children_with_tokens()
+            .filter_map(|c| c.into_token())
+            .find(|t| t.kind() == kind)
+    };
+    let (Some(question), Some(colon)) = (token(SyntaxKind::QUESTION), token(SyntaxKind::COLON))
+    else {
+        return;
+    };
+    let opens_line = std::iter::successors(colon.prev_token(), |t| t.prev_token())
+        .find(|t| {
+            !t.text().is_empty() && !matches!(t.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE)
+        })
+        .map_or(true, |t| t.kind() == SyntaxKind::NEWLINE);
+    if opens_line && columns.column(&colon) != columns.column(&question) {
+        violations.push(Violation::error_at(
+            Rule::Other,
+            colon.text_range(),
+            "Explicit value indicator ':' must be at the column of its '?'".to_string(),
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3402,6 +3442,38 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![("Plain scalar cannot start with ','", Rule::Other, Some(7))]
         );
+    }
+
+    #[test]
+    fn test_explicit_value_at_its_key_column() {
+        let messages = |yaml: &str| -> Vec<(String, Option<u32>)> {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.text_range.map(|r| r.start)))
+                .collect()
+        };
+        let error = "Explicit value indicator ':' must be at the column of its '?'";
+        for (yaml, start) in [
+            ("? a\n : b\n", 5),
+            ("c:\n ?  - a\n  : b\n", 13),
+            ("c:\n ?  []\n  : b\n", 12),
+        ] {
+            assert_eq!(
+                messages(yaml),
+                vec![(error.to_string(), Some(start))],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "? a\n: b\n",
+            "- ? a\n  : b\n",
+            "? - a\n  - b\n: c\n",
+            "{ ? a\n : b }\n",
+        ] {
+            assert_eq!(messages(yaml), vec![], "{yaml:?}");
+        }
     }
 
     #[test]

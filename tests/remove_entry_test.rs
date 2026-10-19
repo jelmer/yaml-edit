@@ -1143,6 +1143,36 @@ fn drain_compact_sequence_in_explicit_key() {
 }
 
 #[test]
+fn drain_compact_sequence_value_under_comment_line() {
+    // A flow collection on a line of its own has to be indented past the
+    // key, as a block sequence does not.
+    let value_sequence = |d: &Document| {
+        let m = d.as_mapping().unwrap();
+        let v = m.values().next().unwrap();
+        v.as_sequence().cloned().unwrap()
+    };
+    let pop = |d: &Document| {
+        assert!(value_sequence(d).pop().is_some());
+    };
+    let clear = |d: &Document| value_sequence(d).clear();
+    for edit in [&pop as &dyn Fn(&Document), &clear] {
+        check_edit("a:\n# c\n- x\n", edit, "a:\n# c\n  []\n");
+        check_edit("a:\n#\n \n- e: 1\n", edit, "a:\n#\n \n  []\n");
+        check_edit("? a\n:\n# c\n- x\n", edit, "? a\n:\n# c\n  []\n");
+        check_edit("a:\n# c\n- x\nb: 1\n", edit, "a:\n# c\n  []\nb: 1\n");
+    }
+    check_edit("a:\n- x\n# c\n- y\n", clear, "a:\n# c\n  []\n");
+    check_edit(
+        "x:\n  a:\n  # c\n  - x\n",
+        |d| {
+            let m = d.as_mapping().unwrap().get_mapping("x").unwrap();
+            m.get_sequence("a").unwrap().pop();
+        },
+        "x:\n  a:\n  # c\n    []\n",
+    );
+}
+
+#[test]
 fn drain_indented_collection_in_explicit_key() {
     check_edit(
         "?\n  a: 1\n: b\n",

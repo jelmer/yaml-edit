@@ -76,6 +76,9 @@ fn generate_diagnostics(
             severity: Some(match violation.severity {
                 Severity::Error => DiagnosticSeverity::ERROR,
                 Severity::Warning => DiagnosticSeverity::WARNING,
+                // Severity is non_exhaustive; show anything new as an error
+                // rather than hide it.
+                _ => DiagnosticSeverity::ERROR,
             }),
             code: Some(NumberOrString::String(format!("{:?}", violation.rule))),
             source: Some("yaml-lsp".to_string()),

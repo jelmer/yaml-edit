@@ -318,29 +318,14 @@ impl Document {
 
         // Add the mapping with all its children, except trailing newline
         builder.start_node(SyntaxKind::MAPPING.into());
-        let mapping_green = mapping.0.green();
-        let children: Vec<_> = mapping_green.children().collect();
-
-        // Check if last child is a newline token and skip it
-        let end_index = if let Some(rowan::NodeOrToken::Token(t)) = children.last() {
-            if t.kind() == SyntaxKind::NEWLINE.into() {
-                children.len() - 1
-            } else {
-                children.len()
-            }
-        } else {
-            children.len()
-        };
-
+        let children: Vec<_> = mapping.0.children_with_tokens().collect();
+        let end_index = children.len()
+            - usize::from(children.last().map(|c| c.kind()) == Some(SyntaxKind::NEWLINE));
         for child in &children[..end_index] {
             match child {
-                rowan::NodeOrToken::Node(n) => {
-                    builder.start_node(n.kind());
-                    Self::add_green_node_children(&mut builder, n);
-                    builder.finish_node();
-                }
+                rowan::NodeOrToken::Node(n) => crate::yaml::copy_node_to_builder(&mut builder, n),
                 rowan::NodeOrToken::Token(t) => {
-                    builder.token(t.kind(), t.text());
+                    builder.token(t.kind().into(), t.text());
                 }
             }
         }
@@ -350,22 +335,6 @@ impl Document {
         builder.finish_node(); // End DOCUMENT
 
         Document(SyntaxNode::new_root_mut(builder.finish()))
-    }
-
-    /// Helper method to recursively add green node children to the builder
-    fn add_green_node_children(builder: &mut GreenNodeBuilder, node: &rowan::GreenNodeData) {
-        for child in node.children() {
-            match child {
-                rowan::NodeOrToken::Node(n) => {
-                    builder.start_node(n.kind());
-                    Self::add_green_node_children(builder, n);
-                    builder.finish_node();
-                }
-                rowan::NodeOrToken::Token(t) => {
-                    builder.token(t.kind(), t.text());
-                }
-            }
-        }
     }
 
     /// Insert a key-value pair immediately after `after_key` in this document's mapping.

@@ -707,6 +707,22 @@ mod tests {
     use crate::yaml::YamlFile;
     use std::str::FromStr;
 
+    /// Replacing an item spanning lines takes the comment ending its last
+    /// line along, but leaves white space without one.
+    #[test]
+    fn test_set_multi_line_item_keeps_trailing_space() {
+        for (src, expected) in [
+            ("- [a,\n  b]   \n- c\n", "- x   \n- c\n"),
+            ("- [a,\n  b]  # x\n- c\n", "- x\n- c\n"),
+            ("-\n  [a, b]   \n", "-\n  x   \n"),
+        ] {
+            let doc = YamlFile::from_str(src).unwrap().document().unwrap();
+            assert!(doc.as_sequence().unwrap().set(0, "x"));
+            assert_cst_ok(&doc);
+            assert_eq!(doc.to_string(), expected, "{src:?}");
+        }
+    }
+
     #[test]
     fn test_set_out_of_bounds() {
         let doc = YamlFile::from_str("- a\n").unwrap().document().unwrap();

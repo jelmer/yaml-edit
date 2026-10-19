@@ -228,6 +228,44 @@ mod tests {
         assert!(tagged("p").as_ordered_mapping().is_none());
     }
 
+    /// A tagged collection copied to another column moves with it, whether
+    /// it starts on the tag's line or the next.
+    #[test]
+    fn test_copy_tagged_collection() {
+        let src = YamlFile::from_str("s: !t\n  a: 1\n  b: 2\nf: !t [1,\n     2]\n").unwrap();
+        let src = src.document().unwrap();
+        let src = src.as_mapping().unwrap();
+        for (key, set, pushed) in [
+            (
+                "s",
+                "top:\n  k: !t\n    a: 1\n    b: 2\n",
+                "- 0\n- !t\n  a: 1\n  b: 2\n",
+            ),
+            (
+                "f",
+                "top:\n  k: !t [1,\n       2]\n",
+                "- 0\n- !t [1,\n     2]\n",
+            ),
+        ] {
+            let value = src.get(key).unwrap();
+            let doc = YamlFile::from_str("top:\n  k: 0\n")
+                .unwrap()
+                .document()
+                .unwrap();
+            let top = doc.as_mapping().unwrap().get_mapping("top").unwrap();
+            top.set("k", value.clone());
+            crate::debug::assert_cst_ok(&doc);
+            crate::debug::assert_parser_shaped(&doc);
+            assert_eq!(doc.to_string(), set);
+
+            let doc = YamlFile::from_str("- 0\n").unwrap().document().unwrap();
+            doc.as_sequence().unwrap().push(value);
+            crate::debug::assert_cst_ok(&doc);
+            crate::debug::assert_parser_shaped(&doc);
+            assert_eq!(doc.to_string(), pushed);
+        }
+    }
+
     #[test]
     fn test_as_set_requires_mapping() {
         let members = |yaml: &str| {

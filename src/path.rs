@@ -692,17 +692,11 @@ fn navigate_path(
 
 /// Build an anchor registry covering the document `node` belongs to,
 /// so aliases anywhere in the document resolve even when traversal
-/// started from a nested `Mapping`.
-///
-/// Anchors are scoped to a single document, so the scan stops at the
-/// enclosing DOCUMENT rather than the whole stream. A node outside any
-/// document (e.g. a detached `Mapping`) uses its own tree root.
+/// started from a nested `Mapping`. A node outside any document (e.g. a
+/// detached `Mapping`) uses its own tree root.
 fn registry_for(node: &crate::yaml::SyntaxNode) -> crate::anchor_resolution::AnchorRegistry {
-    let scope = node
-        .ancestors()
-        .find(|n| n.kind() == crate::SyntaxKind::DOCUMENT || n.parent().is_none())
-        .unwrap_or_else(|| node.clone());
-    crate::anchor_resolution::AnchorRegistry::from_tree(&scope)
+    use crate::anchor_resolution::{document_scope, AnchorRegistry};
+    AnchorRegistry::from_tree(&document_scope(node))
 }
 
 /// Resolve `current` if it is an alias, according to `policy`.

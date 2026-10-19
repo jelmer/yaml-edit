@@ -746,6 +746,14 @@ type MergedEntry = (
     crate::as_yaml::YamlNode,
 );
 
+/// The document `node` is in, or the root of its tree outside one.
+/// Anchors are scoped to a single document.
+pub(crate) fn document_scope(node: &SyntaxNode) -> SyntaxNode {
+    node.ancestors()
+        .find(|n| n.kind() == SyntaxKind::DOCUMENT)
+        .unwrap_or_else(|| node.ancestors().last().expect("ancestors has self"))
+}
+
 /// If `node` is an alias, resolve it via `registry`; otherwise return it as-is.
 pub(crate) fn resolve_alias_node(
     node: crate::as_yaml::YamlNode,

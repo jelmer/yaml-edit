@@ -1004,6 +1004,85 @@ DOCUMENT
     }
 
     #[test]
+    fn test_move_before_in_file() {
+        let file = YamlFile::from_str("a: 1\nb: 2\nc: 3\n").unwrap();
+        assert!(file.move_before("a", "c", 4));
+        assert_cst_ok(&file);
+        assert_eq!(file.to_string(), "c: 4\na: 1\nb: 2\n");
+        assert!(!file.move_before("z", "c", 5));
+        assert_eq!(file.to_string(), "c: 4\na: 1\nb: 2\n");
+        assert!(!YamlFile::new().move_before("a", "c", 4));
+    }
+
+    /// A snapshot is unaffected by later edits, which tree_eq notices.
+    #[test]
+    fn test_snapshot_and_tree_eq() {
+        let file = YamlFile::from_str("a: 1\n").unwrap();
+        let snapshot = file.snapshot();
+        assert!(file.tree_eq(&snapshot));
+        assert!(file.tree_eq(&YamlFile::from_str("a: 1\n").unwrap()));
+        file.set("a", 2);
+        assert!(!file.tree_eq(&snapshot));
+        assert_eq!(snapshot.to_string(), "a: 1\n");
+        assert_eq!(YamlFile::default().to_string(), "");
+    }
+
+    #[test]
+    fn test_read_relaxed_and_from_path() {
+        let (file, errors) = YamlFile::read_relaxed("a: [\n".as_bytes()).unwrap();
+        assert_eq!(file.to_string(), "a: [\n");
+        assert_eq!(
+            errors,
+            ["2:1: Unclosed flow sequence. Expected: ']' to close sequence. Found: end of input. Context: in flow sequence. Suggestion: Add ']' to close the array, or check for missing commas between elements"]
+        );
+
+        let path = std::env::temp_dir().join(format!("yaml-edit-file-{}.yaml", std::process::id()));
+        std::fs::write(&path, "a: [\n").unwrap();
+        let (file, errors) = YamlFile::from_path_relaxed(&path).unwrap();
+        assert_eq!(file.to_string(), "a: [\n");
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            YamlFile::from_path(&path),
+            Err(crate::YamlError::Parse {
+                line: Some(2),
+                column: Some(1),
+                ..
+            })
+        ));
+        std::fs::write(&path, "a: 1\n").unwrap();
+        assert_eq!(YamlFile::from_path(&path).unwrap().to_string(), "a: 1\n");
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            YamlFile::from_path_relaxed(&path).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert!(matches!(
+            YamlFile::from_path(&path),
+            Err(crate::YamlError::Io(_))
+        ));
+    }
+
+    #[test]
+    fn test_set_is_empty() {
+        let file = YamlFile::from_str("a: !!set {}\nb: !!set {x}\n").unwrap();
+        let doc = file.document().unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let set = |key: &str| {
+            mapping
+                .get(key)
+                .unwrap()
+                .as_tagged()
+                .unwrap()
+                .as_set()
+                .unwrap()
+        };
+        assert!(set("a").is_empty());
+        assert_eq!(set("a").len(), 0);
+        assert!(!set("b").is_empty());
+        assert_eq!(set("b").len(), 1);
+    }
+
+    #[test]
     fn test_insert_at_index_reports_a_non_mapping_root() {
         let file = YamlFile::from_str("- a\n").unwrap();
         assert!(!file.insert_at_index(0, "k", "v"));

@@ -1024,41 +1024,20 @@ impl Parser<'_> {
         false
     }
 
-    /// Where the value of a `:` is, when it is on a later line indented
-    /// past `mapping_column` (or at it, for an indentless sequence): the
-    /// number of tokens up to the INDENT starting that line, or the line
-    /// break before it at column 0, and the indentation. Comment lines in between say nothing about where the
-    /// value sits, so they are stepped over: the YAML test suite's Q9WF has
-    /// a column-0 comment between a flow-collection key and its indented
-    /// block mapping. The caller is on the NEWLINE ending the colon's line.
-    fn value_line_after_colon(&self, mapping_column: usize) -> Option<(usize, usize)> {
-        let ahead = self.lookahead();
-        if ahead.kind(0) != Some(SyntaxKind::NEWLINE) {
+    /// The indentation of the value of a `:`, when it is on a later line
+    /// indented past `mapping_column`, or at it for an indentless sequence.
+    /// Blank and comment lines in between say nothing about where the value
+    /// sits, so they are stepped over: the YAML test suite's Q9WF has a
+    /// column-0 comment between a flow-collection key and its indented block
+    /// mapping. The caller is on the NEWLINE ending the colon's line.
+    fn value_line_after_colon(&self, mapping_column: usize) -> Option<usize> {
+        if self.current() != Some(SyntaxKind::NEWLINE) {
             return None;
         }
-        let mut i = 1;
-        loop {
-            match ahead.kind(i) {
-                Some(SyntaxKind::COMMENT) => i += 1,
-                Some(SyntaxKind::INDENT) if ahead.kind(i + 1) == Some(SyntaxKind::COMMENT) => {
-                    i += 2
-                }
-                _ => break,
-            }
-            if ahead.kind(i) == Some(SyntaxKind::NEWLINE) {
-                i += 1;
-            }
-        }
-        let (SyntaxKind::INDENT, text) = ahead.get(i)? else {
-            // A line at column 0 has no INDENT; it holds the value only as
-            // an indentless sequence of a mapping at column 0.
-            let indentless = mapping_column == 0 && ahead.kind(i) == Some(SyntaxKind::DASH);
-            return indentless.then_some((i - 1, 0));
-        };
-        let indent = text.len();
-        let opens_value = indent > mapping_column
-            || (indent == mapping_column && ahead.kind(i + 1) == Some(SyntaxKind::DASH));
-        opens_value.then_some((i, indent))
+        let (kind, indent) = self.next_content();
+        let opens_value =
+            indent > mapping_column || (indent == mapping_column && kind == Some(SyntaxKind::DASH));
+        (kind.is_some() && opens_value).then_some(indent)
     }
 
     /// Parse the VALUE node that follows a COLON in a block mapping entry.
@@ -1093,10 +1072,8 @@ impl Parser<'_> {
             self.scoped(ctx, |p| p.parse_value());
         } else if self.current().is_some() && self.current() != Some(SyntaxKind::NEWLINE) {
             self.parse_value();
-        } else if let Some((skip, indent)) = self.value_line_after_colon(mapping_column) {
-            for _ in 0..=skip {
-                self.bump();
-            }
+        } else if let Some(indent) = self.value_line_after_colon(mapping_column) {
+            self.skip_ws_and_newlines();
             if track_indent {
                 self.parse_value_with_base_indent(indent);
             } else {

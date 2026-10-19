@@ -37,3 +37,14 @@ fn test_refill_value_with_two_tags() {
     seq.push("y");
     assert_eq!(file.to_string(), "k: !a !b\n  - y\n");
 }
+
+#[test]
+fn test_remove_last_item_of_block_sequence_in_implicit_key() {
+    let file =
+        YamlFile::from_str("- [a, b ,!str\n-\n  !!null : a\n  b: !!str\n- !!s     ]\n").unwrap();
+    nth_sequence(&file, 2).remove(0);
+    assert_eq!(
+        file.to_string(),
+        "- [a, b ,!str\n[]: a\n  b: !!str\n- !!s     ]\n"
+    );
+}

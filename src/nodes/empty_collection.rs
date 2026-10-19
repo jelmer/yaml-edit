@@ -314,14 +314,15 @@ fn indent_past_question(collection: &SyntaxNode) {
     else {
         return;
     };
-    let question = key
-        .parent()
-        .and_then(|e| {
-            e.children_with_tokens()
-                .filter_map(|el| el.into_token())
-                .find(|t| t.kind() == SyntaxKind::QUESTION)
-        })
-        .expect("explicit key has a ?");
+    // An implicit key holds a block collection only in input the
+    // validator rejects, and has no `?` to indent past.
+    let Some(question) = key.parent().and_then(|e| {
+        e.children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|t| t.kind() == SyntaxKind::QUESTION)
+    }) else {
+        return;
+    };
     let Some(prev) = collection
         .prev_sibling_or_token()
         .and_then(|el| el.into_token())

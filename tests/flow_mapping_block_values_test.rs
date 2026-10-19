@@ -1,12 +1,11 @@
 //! Collections written into flow mappings, or used as keys, are rendered in
 //! flow style, since block syntax is not allowed there.
 
-use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, Mapping, ScalarValue, Sequence, YamlFile, YamlValue};
+use yaml_edit::{Mapping, ScalarValue, Sequence, YamlFile, YamlValue};
 
 mod common;
-use common::assert_file_cst_ok;
+use common::{assert_file_cst_ok, assert_file_parser_shaped};
 
 fn parse_seq(yaml: &str) -> Sequence {
     YamlFile::from_str(yaml)
@@ -15,17 +14,6 @@ fn parse_seq(yaml: &str) -> Sequence {
         .unwrap()
         .as_sequence()
         .unwrap()
-}
-
-/// Check that `file` has the same tree shape as a re-parse of its text.
-#[track_caller]
-fn assert_parser_shaped(file: &YamlFile) {
-    assert_file_cst_ok(file);
-    let reparsed = YamlFile::from_str(&file.to_string()).unwrap();
-    assert_eq!(
-        debug::shape_to_string(file.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
 }
 
 fn parse_map(yaml: &str) -> Mapping {
@@ -80,7 +68,7 @@ fn test_flow_rendering_keeps_anchors_tags_and_quotes() {
     let value =
         parse_map("p: &a 1\nq: !t [*a, 'c, d']\nr: |\n  line\ns:\n  - x, y\n  - {k: v}\nt:\n");
     root.set("y", value);
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(
         file.to_string(),
         "{x: 1, y: {p: &a 1, q: !t [*a, 'c, d'], r: \"line\\n\", s: [\"x, y\", {k: v}], t: null}}\n"
@@ -153,7 +141,7 @@ fn test_push_block_yaml_value_into_flow_sequence() {
             .get_sequence("k")
             .unwrap();
         k.push(value);
-        assert_parser_shaped(&file);
+        assert_file_parser_shaped(&file);
         assert_eq!(file.to_string(), format!("k: [1, {flow}]\n"));
     }
 }
@@ -170,7 +158,7 @@ fn test_set_block_yaml_value_in_flow_mapping() {
             .get_mapping("k")
             .unwrap();
         k.set("y", value);
-        assert_parser_shaped(&file);
+        assert_file_parser_shaped(&file);
         assert_eq!(file.to_string(), format!("k: {{x: 1, y: {flow}}}\n"));
     }
 }
@@ -185,7 +173,7 @@ fn test_set_scalar_with_flow_indicators_in_flow_mapping() {
         let file = YamlFile::from_str("{x: 1}\n").unwrap();
         let root = file.document().unwrap().as_mapping().unwrap();
         root.set("y", YamlValue::Scalar(value));
-        assert_parser_shaped(&file);
+        assert_file_parser_shaped(&file);
         assert_eq!(file.to_string(), format!("{{x: 1, y: {flow}}}\n"));
     }
 }
@@ -200,7 +188,7 @@ fn test_implicit_null_entries_keep_their_count() {
         let file = YamlFile::from_str("{x: 1}\n").unwrap();
         let root = file.document().unwrap().as_mapping().unwrap();
         root.set("y", parse_seq(block));
-        assert_parser_shaped(&file);
+        assert_file_parser_shaped(&file);
         assert_eq!(file.to_string(), format!("{{x: 1, y: {flow}}}\n"));
         let reparsed = parse_map(&file.to_string());
         assert_eq!(reparsed.get_sequence("y").unwrap().len(), len);
@@ -212,7 +200,7 @@ fn test_decorated_implicit_nulls_stay_empty() {
     let file = YamlFile::from_str("{x: 1}\n").unwrap();
     let root = file.document().unwrap().as_mapping().unwrap();
     root.set("y", parse_seq("- &n\n- !t\n"));
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(file.to_string(), "{x: 1, y: [&n, !t]}\n");
     let reparsed = parse_map(&file.to_string());
     assert_eq!(reparsed.get_sequence("y").unwrap().len(), 2);
@@ -232,7 +220,7 @@ fn test_multiline_flow_value_keeps_relative_indentation() {
         .get_mapping("k")
         .unwrap();
     k.set("n", &source);
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(file.to_string(), "k:\n  j: 1\n  n: [a,\n      b]\n");
 }
 
@@ -241,7 +229,7 @@ fn test_comments_kept_in_flow_rendering() {
     let file = YamlFile::from_str("{x: 1}\n").unwrap();
     let root = file.document().unwrap().as_mapping().unwrap();
     root.set("y", parse_map("p: 1 # keep me\nq: 2\n"));
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(file.to_string(), "{x: 1, y: {p: 1, # keep me\n  q: 2}}\n");
 }
 
@@ -259,7 +247,7 @@ fn test_comments_in_nested_and_last_entries_kept() {
         "y",
         parse_map("p:  # head\n  - 1  # one\n  # own line\n  - 2\nq: 3  # last\n# trailing\n"),
     );
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(
         file.to_string(),
         "a: {x: 1, y: {p: [  # head\n       1,  # one\n       # own line\n       2], q: 3  # last\n     # trailing\n     }}\n"
@@ -272,7 +260,7 @@ fn test_commented_sequence_key_uses_explicit_key() {
     let root = file.document().unwrap().as_mapping().unwrap();
     let key = parse_seq("- 1  # one\n- 2\n");
     root.set(&key, 1);
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(file.to_string(), "a: 1\n? [1,  # one\n  2]\n: 1\n");
 }
 
@@ -282,7 +270,7 @@ fn test_commented_sequence_key_in_flow_mapping() {
     let root = file.document().unwrap().as_mapping().unwrap();
     let key = parse_seq("- 1  # one\n- 2\n");
     root.set(&key, 1);
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(file.to_string(), "{x: 1, ? [1,  # one\n  2]: 1}\n");
     let reparsed = parse_map(&file.to_string());
     assert_eq!(reparsed.len(), 2);
@@ -292,7 +280,7 @@ fn test_commented_sequence_key_in_flow_mapping() {
     );
 
     root.set(&key, 2);
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(file.to_string(), "{x: 1, ? [1,  # one\n  2]: 2}\n");
 }
 
@@ -308,7 +296,7 @@ fn test_commented_mapping_key_in_nested_flow_mapping() {
         .unwrap();
     let key = parse_map("p: 1  # one\nq: 2\n");
     a.set(&key, 3);
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(
         file.to_string(),
         "a: {x: 1, ? {p: 1,  # one\n     q: 2}: 3}\n"
@@ -324,7 +312,7 @@ fn test_commented_explicit_key_in_value_set_into_flow_mapping() {
     let file = YamlFile::from_str("{x: 1}\n").unwrap();
     let root = file.document().unwrap().as_mapping().unwrap();
     root.set("y", parse_map("? - 1  # c\n  - 2\n: x\n"));
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(file.to_string(), "{x: 1, y: {? [1,  # c\n    2]: x}}\n");
     let reparsed = parse_map(&file.to_string());
     let y = reparsed.get_mapping("y").unwrap();
@@ -338,7 +326,7 @@ fn test_single_line_explicit_key_in_value_becomes_implicit() {
     let file = YamlFile::from_str("{x: 1}\n").unwrap();
     let root = file.document().unwrap().as_mapping().unwrap();
     root.set("y", parse_map("? - 1\n  - 2\n: x\n"));
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(file.to_string(), "{x: 1, y: {[1, 2]: x}}\n");
 }
 
@@ -347,7 +335,7 @@ fn test_commented_explicit_key_without_value_in_flow_mapping() {
     let file = YamlFile::from_str("{x: 1}\n").unwrap();
     let root = file.document().unwrap().as_mapping().unwrap();
     root.set("y", parse_map("? - 1  # c\n  - 2\n"));
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(file.to_string(), "{x: 1, y: {? [1,  # c\n    2]: null}}\n");
     let reparsed = parse_map(&file.to_string());
     let y = reparsed.get_mapping("y").unwrap();
@@ -360,6 +348,6 @@ fn test_commented_explicit_key_in_item_appended_to_flow_sequence() {
     let file = YamlFile::from_str("[1]\n").unwrap();
     let root = file.document().unwrap().as_sequence().unwrap();
     root.push(parse_map("? - 1  # c\n  - 2\n: x\n"));
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(file.to_string(), "[1, {? [1,  # c\n    2]: x}]\n");
 }

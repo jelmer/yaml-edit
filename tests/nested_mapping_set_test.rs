@@ -1,9 +1,8 @@
 //! Regression tests for issue #16: `Mapping::set` produces malformed YAML
 //! when setting block sequences in nested mappings.
 
-use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, Mapping, MappingBuilder, Sequence, SequenceBuilder, YamlFile, YamlValue};
+use yaml_edit::{Mapping, MappingBuilder, Sequence, SequenceBuilder, YamlFile, YamlValue};
 
 mod common;
 use common::{assert_cst_ok, assert_file_cst_ok};
@@ -268,14 +267,8 @@ fn scalar_over_block_scalar_keeps_line_break() {
     ] {
         let (tf, root) = parse(src);
         dig(&root, path).set("k", 5);
-        assert_file_cst_ok(&tf);
         assert_eq!(tf.to_string(), expected, "{src:?}");
-        let reparsed = YamlFile::from_str(expected).unwrap();
-        assert_eq!(
-            debug::shape_to_string(tf.syntax()),
-            debug::shape_to_string(reparsed.syntax()),
-            "{src:?}"
-        );
+        common::assert_file_parser_shaped(&tf);
     }
 }
 
@@ -303,14 +296,8 @@ fn scalar_over_block_on_key_line() {
     ] {
         let (tf, root) = parse(src);
         dig(&root, path).set("k", 5);
-        assert_file_cst_ok(&tf);
         assert_eq!(tf.to_string(), expected, "{src:?}");
-        let reparsed = YamlFile::from_str(expected).unwrap();
-        assert_eq!(
-            debug::shape_to_string(tf.syntax()),
-            debug::shape_to_string(reparsed.syntax()),
-            "{src:?}"
-        );
+        common::assert_file_parser_shaped(&tf);
     }
 }
 
@@ -393,14 +380,7 @@ fn block_yaml_values_in_mappings() {
         ] {
             let (file, root) = parse(src);
             dig(&root, path).set(key, value.clone());
-            assert_file_cst_ok(&file);
-            assert_eq!(file.to_string(), expected);
-            let reparsed = YamlFile::from_str(expected).unwrap();
-            assert_eq!(
-                debug::shape_to_string(file.syntax()),
-                debug::shape_to_string(reparsed.syntax()),
-                "{expected:?}"
-            );
+            common::assert_file_edited(&file, expected);
         }
     }
 }

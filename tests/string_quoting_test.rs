@@ -1,21 +1,104 @@
+//! Strings written by an edit must read back as the same string.
+//!
 //! Strings written into flow collections are quoted where a plain scalar
 //! would not read back as the same string there, and only there.
 
+mod common;
 use rowan::ast::AstNode;
 use std::collections::BTreeMap;
 use std::str::FromStr;
-use yaml_edit::{debug, Document, Mapping, Scalar, ScalarValue, Sequence, YamlValue};
+use yaml_edit::{
+    Document, Mapping, Scalar, ScalarType, ScalarValue, Sequence, YamlFile, YamlValue,
+};
+
+fn set_and_reparse(value: &str) -> (String, String, ScalarType) {
+    let yaml = YamlFile::from_str("k: v\n").unwrap();
+    let mapping = yaml.document().unwrap().as_mapping().unwrap();
+    mapping.set("k", value);
+    let text = yaml.to_string();
+    let reparsed = YamlFile::from_str(&text).unwrap();
+    let scalar = reparsed
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("k")
+        .unwrap()
+        .as_scalar()
+        .unwrap()
+        .clone();
+    let typed = ScalarValue::from_scalar(&scalar);
+    (text, scalar.as_string(), typed.scalar_type())
+}
+
+#[test]
+fn test_special_float_strings_are_quoted() {
+    for s in [
+        ".inf", "+.inf", "-.inf", ".Inf", "-.INF", ".nan", ".NaN", ".NAN",
+    ] {
+        assert_eq!(
+            set_and_reparse(s),
+            (format!("k: '{s}'\n"), s.to_string(), ScalarType::String),
+            "{s}"
+        );
+    }
+}
+
+#[test]
+fn test_control_characters_are_escaped() {
+    assert_eq!(
+        set_and_reparse("\u{7}bell"),
+        (
+            "k: \"\\abell\"\n".to_string(),
+            "\u{7}bell".to_string(),
+            ScalarType::String
+        )
+    );
+    assert_eq!(
+        set_and_reparse("\u{0}"),
+        (
+            "k: \"\\0\"\n".to_string(),
+            "\u{0}".to_string(),
+            ScalarType::String
+        )
+    );
+    assert_eq!(
+        set_and_reparse("\x01"),
+        (
+            "k: \"\\x01\"\n".to_string(),
+            "\x01".to_string(),
+            ScalarType::String
+        )
+    );
+}
+
+#[test]
+fn test_carriage_return_is_preserved() {
+    assert_eq!(
+        set_and_reparse("a\rb"),
+        (
+            "k: \"a\\rb\"\n".to_string(),
+            "a\rb".to_string(),
+            ScalarType::String
+        )
+    );
+    assert_eq!(
+        set_and_reparse("a\r\nb"),
+        (
+            "k: \"a\\r\\nb\"\n".to_string(),
+            "a\r\nb".to_string(),
+            ScalarType::String
+        )
+    );
+}
 
 /// Check that `doc` has the same tree as a re-parse of its text, and
 /// return the scalars the re-parse holds, in order.
 #[track_caller]
 fn reparsed_scalars(doc: &Document) -> Vec<String> {
-    let reparsed = Document::from_str(&doc.to_string()).unwrap();
-    assert_eq!(
-        debug::shape_to_string(doc.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-    reparsed
+    common::assert_parser_shaped(doc);
+    Document::from_str(&doc.to_string())
+        .unwrap()
         .syntax()
         .descendants()
         .filter_map(Scalar::cast)

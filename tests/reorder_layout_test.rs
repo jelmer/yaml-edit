@@ -404,3 +404,15 @@ fn reorder_keeps_blank_line_after_block_value_at_its_position() {
         root,
     );
 }
+
+#[test]
+fn move_next_to_itself_with_own_value() {
+    for source in ["foo:\n-\n", "foo: 1  # c\nbar: 2\n", "{foo: [a]}"] {
+        let doc = Document::from_str(source).unwrap();
+        let m = root(&doc);
+        assert!(m.move_after("foo", "foo", m.get("foo").unwrap()));
+        assert_edited(&doc, source);
+        assert!(m.move_before("foo", "foo", m.get("foo").unwrap()));
+        assert_edited(&doc, source);
+    }
+}

@@ -2241,3 +2241,18 @@ fn test_set_block_value_in_flow_mapping() {
     crate::debug::assert_parser_shaped(&doc);
     assert_eq!(doc.to_string(), "{a: [x, y]}\n");
 }
+
+/// A block collection given as a new key is written in flow form.
+#[test]
+fn test_set_with_block_collection_key() {
+    let source = YamlFile::from_str("k:\n  - x\n  - y\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    let block = source.as_mapping().unwrap().get("k").unwrap();
+    let doc = YamlFile::from_str("a: 1\n").unwrap().document().unwrap();
+    doc.as_mapping().unwrap().set(block, 2);
+    assert_cst_ok(&doc);
+    crate::debug::assert_parser_shaped(&doc);
+    assert_eq!(doc.to_string(), "a: 1\n[x, y]: 2\n");
+}

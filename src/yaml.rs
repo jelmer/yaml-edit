@@ -4518,13 +4518,17 @@ server:
     // Tests for next_flow_element_is_implicit_mapping lookahead function
     mod lookahead_tests {
         use crate::lex::lex;
-        use crate::parser::has_implicit_mapping_pattern;
+        use crate::parser::implicit_mapping_starts;
 
         /// Helper to test lookahead without creating full parser
         fn check_implicit_mapping(yaml: &str) -> bool {
             let flow = format!("[{yaml}]");
             let tokens = lex(&flow);
-            has_implicit_mapping_pattern(tokens[1..tokens.len() - 1].iter().map(|(kind, _)| *kind))
+            let kinds: Vec<_> = tokens[1..tokens.len() - 1]
+                .iter()
+                .map(|(kind, _)| *kind)
+                .collect();
+            implicit_mapping_starts(&kinds).first() == Some(&true)
         }
 
         #[test]

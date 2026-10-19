@@ -19,8 +19,7 @@ mod scalars;
 
 use scalars::is_plain_scalar_kind;
 
-#[cfg(test)]
-pub(crate) use flow::has_implicit_mapping_pattern;
+pub(crate) use flow::implicit_mapping_starts;
 
 use crate::{
     error_recovery::{ErrorBuilder, ErrorRecoveryContext, ParseContext, RecoveryStrategy},
@@ -209,6 +208,9 @@ impl TreeBuilder {
 /// without going through accessor methods for every field.
 pub(super) struct Parser<'a> {
     pub(super) tokens: Vec<(SyntaxKind, String)>,
+    /// For each of `tokens`, whether a flow element starting there is an
+    /// implicit mapping; see [`implicit_mapping_starts`].
+    implicit_mapping_starts: Vec<bool>,
     pub(super) builder: TreeBuilder,
     /// Whether [`bump`](Self::bump) holds back line breaks, indentation
     /// and white space; see [`TreeBuilder`].
@@ -263,11 +265,16 @@ impl<'a> Parser<'a> {
             tokens.push((kind, token_text.to_string()));
         }
 
+        let kinds: Vec<SyntaxKind> = tokens.iter().map(|(kind, _)| *kind).collect();
+        let mut implicit_mapping_starts = implicit_mapping_starts(&kinds);
+
         // Reverse tokens so we can use pop() to get the next token
         tokens.reverse();
+        implicit_mapping_starts.reverse();
 
         Self {
             tokens,
+            implicit_mapping_starts,
             builder: TreeBuilder::new(),
             hold_trivia: false,
             positioned_errors: Vec::new(),
@@ -1678,5 +1685,19 @@ mod tests {
             ParseErrorKind::Other,
         );
         assert_eq!(parser.current(), Some(SyntaxKind::DOC_START));
+    }
+
+    #[test]
+    fn test_parsing_past_the_nesting_limit_scales_linearly() {
+        // Each entry of the innermost sequence scanned the rest of the input
+        // for the colon of an implicit key.
+        crate::scaling::assert_scales_linearly(
+            "parsing nested `[`",
+            1000,
+            |n| "[".repeat(n),
+            |text| {
+                crate::Parse::<crate::YamlFile>::parse_yaml(text);
+            },
+        );
     }
 }

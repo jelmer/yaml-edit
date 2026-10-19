@@ -16,7 +16,6 @@ use crate::nodes::{
     entry_key, entry_value, fresh_token, has_child_token, insert_children, replace_children,
     trivia, Lang, SyntaxNode,
 };
-use crate::yaml::add_node_children_to;
 use rowan::GreenNodeBuilder;
 
 impl MappingEntry {
@@ -236,7 +235,7 @@ impl MappingEntry {
                 builder.token(SyntaxKind::WHITESPACE.into(), " ");
             }
             builder.start_node(block.node.kind().into());
-            add_node_children_to(&mut builder, &block.node);
+            crate::as_yaml::copy_node_content(&mut builder, &block.node);
             builder.finish_node();
             block.ends_with_newline
         } else {

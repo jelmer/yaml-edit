@@ -351,24 +351,8 @@ pub(crate) fn extract_tagged_node(node: &SyntaxNode) -> Option<TaggedNode> {
 /// Copy a syntax node and all its children recursively to a builder.
 pub(crate) fn copy_node_to_builder(builder: &mut GreenNodeBuilder, node: &SyntaxNode) {
     builder.start_node(node.kind().into());
-    add_node_children_to(builder, node);
+    crate::as_yaml::copy_node_content(builder, node);
     builder.finish_node();
-}
-
-// Helper function to recursively add node children to a builder
-pub(crate) fn add_node_children_to(builder: &mut GreenNodeBuilder, node: &SyntaxNode) {
-    for child in node.children_with_tokens() {
-        match child {
-            rowan::NodeOrToken::Node(child_node) => {
-                builder.start_node(child_node.kind().into());
-                add_node_children_to(builder, &child_node);
-                builder.finish_node();
-            }
-            rowan::NodeOrToken::Token(token) => {
-                builder.token(token.kind().into(), token.text());
-            }
-        }
-    }
 }
 
 // Debug helper to dump CST structure

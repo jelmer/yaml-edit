@@ -222,7 +222,7 @@ fn emit_block_value(
     if wrap {
         crate::yaml::copy_node_to_builder(builder, &block.node);
     } else {
-        crate::yaml::add_node_children_to(builder, &block.node);
+        crate::as_yaml::copy_node_content(builder, &block.node);
     }
     block.ends_with_newline
 }

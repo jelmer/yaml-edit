@@ -504,7 +504,7 @@ impl FlowWriter {
             self.builder.token(SyntaxKind::QUESTION.into(), "?");
             self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
         }
-        crate::yaml::add_node_children_to(&mut self.builder, &written);
+        crate::as_yaml::copy_node_content(&mut self.builder, &written);
         self.builder.finish_node();
         if crate::nodes::ends_in_property_name(&written) {
             self.builder.token(SyntaxKind::WHITESPACE.into(), " ");

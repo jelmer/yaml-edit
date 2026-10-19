@@ -309,6 +309,24 @@ fn clear_mapping_beside_another_node_in_a_value() {
 }
 
 #[test]
+fn remove_first_root_entry_of_later_document() {
+    // A document without a `---` holds the lines before its root only at
+    // the start of the stream; after a `...` they are the stream's.
+    for (source, expected) in [
+        ("...\nk:\n\nb:\n", "...\n\nb:\n"),
+        ("...\nk:\n# c\nb:\n", "...\n# c\nb:\n"),
+        ("a\n...\nk:\n\nb:\n", "a\n...\n\nb:\n"),
+        ("---\nk:\n\nb:\n", "---\n\nb:\n"),
+        ("k:\n\nb:\n", "\nb:\n"),
+    ] {
+        let file = YamlFile::from_str(source).unwrap();
+        let doc = file.documents().last().unwrap();
+        assert!(doc.as_mapping().unwrap().remove("k").is_some());
+        assert_file_edited(&file, expected);
+    }
+}
+
+#[test]
 fn remove_entry_after_blank_line() {
     // A blank line before the removed entry stays, as it does when the
     // entry is not last. Unterminated, it ends the input in place of the

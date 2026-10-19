@@ -20,13 +20,9 @@ impl Parser<'_> {
 
     pub(super) fn parse_scalar(&mut self) {
         self.builder.start_node(SyntaxKind::SCALAR.into());
+        let tokens_before = self.tokens.len();
 
         if matches!(
-            self.current(),
-            Some(SyntaxKind::QUOTE | SyntaxKind::SINGLE_QUOTE)
-        ) {
-            self.parse_quoted_scalar();
-        } else if matches!(
             self.current(),
             Some(
                 SyntaxKind::STRING
@@ -51,38 +47,13 @@ impl Parser<'_> {
         } else {
             self.parse_untyped_scalar();
         }
+        // Nothing here to read (`[}`, `{?`): the node is empty, which is
+        // the implicit null.
+        if self.tokens.len() == tokens_before {
+            self.builder.token(SyntaxKind::NULL.into(), "");
+        }
 
         self.builder.finish_node();
-    }
-
-    /// Consume a `"..."` / `'...'` scalar whose quotes the lexer left as
-    /// separate QUOTE tokens, reporting an unterminated one.
-    fn parse_quoted_scalar(&mut self) {
-        let quote_type = self
-            .current()
-            .expect("current token is Some: checked by the caller's matches! guard");
-        self.bump(); // opening quote
-
-        // Consume all tokens until the closing quote
-        while self.current().is_some() && self.current() != Some(quote_type) {
-            self.bump();
-        }
-
-        if self.current() == Some(quote_type) {
-            self.bump(); // closing quote
-        } else {
-            let expected_quote = if quote_type == SyntaxKind::QUOTE {
-                "\""
-            } else {
-                "'"
-            };
-            let error_msg = self.create_detailed_error(
-                "Unterminated quoted string",
-                &format!("closing quote {expected_quote}"),
-                self.current_text(),
-            );
-            self.add_error_and_recover(error_msg, quote_type, ParseErrorKind::UnterminatedString);
-        }
     }
 
     /// Consume a plain scalar in block context.
@@ -323,7 +294,7 @@ impl Parser<'_> {
         self.peek_kind(n) == Some(SyntaxKind::COLON)
             && matches!(
                 self.peek_kind(n + 1),
-                Some(
+                None | Some(
                     SyntaxKind::COMMA
                         | SyntaxKind::RIGHT_BRACE
                         | SyntaxKind::RIGHT_BRACKET

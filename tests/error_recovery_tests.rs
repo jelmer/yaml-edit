@@ -190,3 +190,170 @@ config:
     let expected = "\nname: John\nage: 30\nitems:\n  - apple\n  - banana\nconfig:\n  host: localhost\n  port: 8080\n";
     assert_eq!(content, expected);
 }
+
+fn parsed_tree(text: &str) -> String {
+    use rowan::ast::AstNode;
+    let parsed = YamlFile::parse(text);
+    let root = parsed.tree().syntax().clone();
+    yaml_edit::debug::validate_tree(&root).unwrap();
+    yaml_edit::debug::tree_to_string(&root)
+}
+
+#[test]
+fn test_unclosed_flow_sequence_pair_at_end_of_input() {
+    assert_eq!(
+        parsed_tree("[c:"),
+        r#"DOCUMENT
+  SEQUENCE
+    LEFT_BRACKET: "["
+    SEQUENCE_ENTRY
+      MAPPING
+        MAPPING_ENTRY
+          KEY
+            SCALAR
+              STRING: "c"
+          COLON: ":"
+          VALUE
+            SCALAR
+              NULL: ""
+    RIGHT_BRACKET: ""
+"#
+    );
+}
+
+#[test]
+fn test_unclosed_flow_mapping_pair_at_end_of_input() {
+    assert_eq!(
+        parsed_tree("{c:"),
+        r#"DOCUMENT
+  MAPPING
+    LEFT_BRACE: "{"
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: "c"
+      COLON: ":"
+      VALUE
+        SCALAR
+          NULL: ""
+    RIGHT_BRACE: ""
+"#
+    );
+}
+
+#[test]
+fn test_stray_token_in_block_mapping() {
+    let parsed = YamlFile::parse("[]:\n]:");
+    assert_eq!(
+        parsed.errors(),
+        vec!["2:1: Unexpected token in mapping: \"]\"".to_string()]
+    );
+    assert_eq!(
+        parsed_tree("[]:\n]:"),
+        r#"DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SEQUENCE
+          LEFT_BRACKET: "["
+          RIGHT_BRACKET: "]"
+      COLON: ":"
+      VALUE
+        SCALAR
+          NULL: ""
+      NEWLINE: "\\n"
+    ERROR
+      RIGHT_BRACKET: "]"
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          NULL: ""
+      COLON: ":"
+      VALUE
+        SCALAR
+          NULL: ""
+"#
+    );
+}
+
+#[test]
+fn test_stray_token_in_explicit_key_mapping() {
+    let parsed = YamlFile::parse("?\n] ?:");
+    assert_eq!(
+        parsed.errors(),
+        vec!["2:1: Unexpected token in explicit-key mapping: \"]\"".to_string()]
+    );
+    assert_eq!(
+        parsed_tree("?\n] ?:"),
+        r#"DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      QUESTION: "?"
+      KEY
+        SCALAR
+          NULL: ""
+      VALUE
+        SCALAR
+          NULL: ""
+      NEWLINE: "\\n"
+    ERROR
+      RIGHT_BRACKET: "]"
+    WHITESPACE: " "
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: "?"
+      COLON: ":"
+      VALUE
+        SCALAR
+          NULL: ""
+"#
+    );
+}
+
+#[test]
+fn test_stray_token_in_flow_sequence() {
+    let parsed = YamlFile::parse("[a, }]");
+    assert_eq!(
+        parsed.errors(),
+        vec!["1:5: Unexpected token in flow sequence: \"}\"".to_string()]
+    );
+    assert_eq!(
+        parsed_tree("[a, }]"),
+        r#"DOCUMENT
+  SEQUENCE
+    LEFT_BRACKET: "["
+    SEQUENCE_ENTRY
+      SCALAR
+        STRING: "a"
+      COMMA: ","
+      WHITESPACE: " "
+    SEQUENCE_ENTRY
+      SCALAR
+        NULL: ""
+    ERROR
+      RIGHT_BRACE: "}"
+    RIGHT_BRACKET: "]"
+"#
+    );
+}
+
+#[test]
+fn test_unclosed_flow_mapping_empty_explicit_key() {
+    assert_eq!(
+        parsed_tree("{?"),
+        r#"DOCUMENT
+  MAPPING
+    LEFT_BRACE: "{"
+    MAPPING_ENTRY
+      KEY
+        QUESTION: "?"
+        SCALAR
+          NULL: ""
+      VALUE
+        SCALAR
+          NULL: ""
+    RIGHT_BRACE: ""
+"#
+    );
+}

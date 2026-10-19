@@ -208,7 +208,6 @@ impl TreeBuilder {
 /// without going through accessor methods for every field.
 pub(super) struct Parser<'a> {
     pub(super) tokens: Vec<(SyntaxKind, String)>,
-    pub(super) current_token_index: usize,
     pub(super) builder: TreeBuilder,
     /// Whether [`bump`](Self::bump) holds back line breaks, indentation
     /// and white space; see [`TreeBuilder`].
@@ -265,12 +264,10 @@ impl<'a> Parser<'a> {
         }
 
         // Reverse tokens so we can use pop() to get the next token
-        let token_count = tokens.len();
         tokens.reverse();
 
         Self {
             tokens,
-            current_token_index: token_count,
             builder: TreeBuilder::new(),
             hold_trivia: false,
             errors: Vec::new(),
@@ -564,9 +561,14 @@ impl<'a> Parser<'a> {
                 format!("Collection nested too deeply (limit {MAX_FLOW_DEPTH})"),
                 ParseErrorKind::Other,
             );
+            // The token goes in a scalar, so that the slot still holds a node.
+            self.builder.start_node(SyntaxKind::SCALAR.into());
             if self.current().is_some() {
                 self.bump();
+            } else {
+                self.builder.token(SyntaxKind::NULL.into(), "");
             }
+            self.builder.finish_node();
             return;
         }
         self.nesting_depth += 1;
@@ -1160,9 +1162,6 @@ impl Parser<'_> {
                 _ => {}
             }
 
-            if self.current_token_index > 0 {
-                self.current_token_index -= 1;
-            }
             self.position += text.len();
             self.previous_kind = Some(kind);
             if self.hold_trivia
@@ -1212,10 +1211,11 @@ impl Parser<'_> {
     }
 
     /// Whether only whitespace, comments and line breaks stand between here
-    /// and the `,` or `closer` that ends a flow entry.
+    /// and the `,` or `closer` that ends a flow entry, or the end of an
+    /// input that left the collection unclosed.
     pub(super) fn at_flow_entry_end(&self, closer: SyntaxKind) -> bool {
         let next = self.next_significant_kind();
-        next == Some(SyntaxKind::COMMA) || next == Some(closer)
+        next.is_none() || next == Some(SyntaxKind::COMMA) || next == Some(closer)
     }
 
     /// Iterator over upcoming tokens starting from the next token (not current)
@@ -1503,6 +1503,19 @@ impl Parser<'_> {
         self.positioned_errors.push(positioned_error);
     }
 
+    /// Report the current token, which nothing in `what` can start, and
+    /// hold it in an ERROR node.
+    pub(super) fn parse_stray_token(&mut self, what: &str) {
+        let unexpected = self.current_text().unwrap_or("").to_string();
+        self.add_error(
+            format!("Unexpected token in {what}: {unexpected:?}"),
+            ParseErrorKind::Other,
+        );
+        self.builder.start_node(SyntaxKind::ERROR.into());
+        self.bump();
+        self.builder.finish_node();
+    }
+
     /// Add an error with recovery
     pub(super) fn add_error_and_recover(
         &mut self,
@@ -1534,15 +1547,11 @@ impl Parser<'_> {
                 self.builder.token(kind.into(), "");
             }
             RecoveryStrategy::SyncToSafePoint => {
-                // Find next safe synchronization point
-                let sync_point = self
-                    .error_context
-                    .find_sync_point(&self.tokens, self.tokens.len() - self.current_token_index);
-                let tokens_to_skip = sync_point - (self.tokens.len() - self.current_token_index);
-                for _ in 0..tokens_to_skip {
-                    if self.current().is_some() {
-                        self.bump();
-                    }
+                while self
+                    .current()
+                    .is_some_and(|kind| !self.error_context.is_sync_point(kind))
+                {
+                    self.bump();
                 }
             }
         }
@@ -1640,4 +1649,20 @@ impl Parser<'_> {
 pub(crate) fn parse(text: &str) -> ParsedYaml {
     let parser = Parser::new(text);
     parser.parse()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_to_safe_point_stops_at_next_document_marker() {
+        let mut parser = Parser::new("a\n---\nb c d e f g h\n");
+        parser.add_error_and_recover(
+            "error".to_string(),
+            SyntaxKind::QUOTE,
+            ParseErrorKind::Other,
+        );
+        assert_eq!(parser.current(), Some(SyntaxKind::DOC_START));
+    }
 }

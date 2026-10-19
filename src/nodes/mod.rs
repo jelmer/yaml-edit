@@ -163,6 +163,11 @@
 //! `SEQUENCE_ENTRY` child (matching how each shape wraps its non-null
 //! values -- sequences never had a wrapper, mappings always did).
 //!
+//! Error recovery keeps to the same shapes. A node with nothing to read
+//! (`[}`, `{?`) is the zero-width null, and a token no entry can start,
+//! like the `]` of `[]:\n]:`, goes in an ERROR node beside the entries,
+//! as content after the end of a document does.
+//!
 //! The zero-width `NULL ""` token renders as nothing, so round-trips are
 //! lossless. This is distinct from a programmatically-written null,
 //! which uses `SCALAR { NULL "null" }` (textual, four characters) so

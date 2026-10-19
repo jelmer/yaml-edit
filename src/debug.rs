@@ -336,6 +336,7 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
     {
         validate_flow_entry_end(node)?;
     }
+    validate_children(node)?;
     match node.kind() {
         SyntaxKind::MAPPING_ENTRY => {
             let keys: Vec<_> = node
@@ -464,6 +465,52 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Every KEY, VALUE and SEQUENCE_ENTRY holds a node, an omitted one being
+/// the implicit null, and every SCALAR a token. A collection holds its
+/// entries, with the trivia between them and its delimiters; a token no
+/// entry could start goes in an ERROR node.
+fn validate_children(node: &SyntaxNode) -> Result<(), String> {
+    match node.kind() {
+        SyntaxKind::KEY | SyntaxKind::VALUE | SyntaxKind::SEQUENCE_ENTRY
+            if node.first_child().is_none() =>
+        {
+            Err(format!("{:?} holds no node", node.kind()))
+        }
+        SyntaxKind::SCALAR if node.first_token().is_none() => Err("SCALAR holds no token".into()),
+        SyntaxKind::MAPPING | SyntaxKind::SEQUENCE => {
+            let entry = if node.kind() == SyntaxKind::MAPPING {
+                SyntaxKind::MAPPING_ENTRY
+            } else {
+                SyntaxKind::SEQUENCE_ENTRY
+            };
+            let flow = crate::nodes::starts_a_flow_collection(node);
+            let stray = node.children_with_tokens().find(|c| match c {
+                rowan::NodeOrToken::Node(n) => n.kind() != entry && n.kind() != SyntaxKind::ERROR,
+                rowan::NodeOrToken::Token(t) => match t.kind() {
+                    SyntaxKind::WHITESPACE
+                    | SyntaxKind::NEWLINE
+                    | SyntaxKind::INDENT
+                    | SyntaxKind::COMMENT => false,
+                    SyntaxKind::LEFT_BRACE
+                    | SyntaxKind::RIGHT_BRACE
+                    | SyntaxKind::LEFT_BRACKET
+                    | SyntaxKind::RIGHT_BRACKET => !flow,
+                    _ => true,
+                },
+            });
+            match stray {
+                Some(c) => Err(format!(
+                    "{:?} holds {:?} outside its entries",
+                    node.kind(),
+                    c.kind()
+                )),
+                None => Ok(()),
+            }
+        }
+        _ => Ok(()),
+    }
 }
 
 /// A flow entry ends with the line of its comma, or of its content if it
@@ -703,6 +750,61 @@ mod tests {
             crate::nodes::insert_children(&entry, index, vec![value.into()]);
             assert_eq!(file.syntax().to_string(), "a:\n<<\n");
         }
+    }
+
+    #[test]
+    fn test_validate_tree_empty_slots() {
+        let file = YamlFile::from_str("a: [b]\n").unwrap();
+        let find = |kind| {
+            file.syntax()
+                .descendants()
+                .find(|n| n.kind() == kind)
+                .unwrap()
+        };
+        for kind in [
+            SyntaxKind::KEY,
+            SyntaxKind::VALUE,
+            SyntaxKind::SEQUENCE_ENTRY,
+        ] {
+            let slot = find(kind);
+            let node = slot.first_child().unwrap();
+            let index = node.index();
+            node.detach();
+            assert_eq!(
+                validate_tree(file.syntax()),
+                Err(format!("{kind:?} holds no node"))
+            );
+            crate::nodes::insert_children(&slot, index, vec![node.into()]);
+        }
+        let token = find(SyntaxKind::SCALAR).first_token().unwrap();
+        token.detach();
+        assert_eq!(
+            validate_tree(file.syntax()),
+            Err("SCALAR holds no token".to_string())
+        );
+    }
+
+    /// A token no entry starts with goes in an ERROR node.
+    #[test]
+    fn test_validate_tree_stray_token_in_collection() {
+        let file = YamlFile::parse("[]:\n]:").tree();
+        assert_eq!(validate_tree(file.syntax()), Ok(()));
+        let error = file
+            .syntax()
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::ERROR)
+            .unwrap();
+        let mapping = error.parent().unwrap();
+        let token = error.first_token().unwrap();
+        let index = error.index();
+        error.detach();
+        token.detach();
+        crate::nodes::insert_children(&mapping, index, vec![token.into()]);
+        assert_eq!(file.syntax().to_string(), "[]:\n]:");
+        assert_eq!(
+            validate_tree(file.syntax()),
+            Err("MAPPING holds RIGHT_BRACKET outside its entries".to_string())
+        );
     }
 
     #[test]

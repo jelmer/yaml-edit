@@ -4708,6 +4708,28 @@ server:
         assert!(parse.has_errors());
     }
 
+    /// Past the nesting limit every key, value and sequence entry still
+    /// holds a node.
+    #[test]
+    fn test_parse_deeply_nested_slots_hold_a_node() {
+        for input in ["{".repeat(300), "{a: ".repeat(300), "[".repeat(300)] {
+            let parse = crate::Parse::parse_yaml(&input);
+            let empty: Vec<_> = parse
+                .tree()
+                .syntax()
+                .descendants()
+                .filter(|n| {
+                    matches!(
+                        n.kind(),
+                        SyntaxKind::KEY | SyntaxKind::VALUE | SyntaxKind::SEQUENCE_ENTRY
+                    ) && n.first_child().is_none()
+                })
+                .map(|n| n.kind())
+                .collect();
+            assert_eq!(empty, Vec::<SyntaxKind>::new(), "{input:?}");
+        }
+    }
+
     #[test]
     fn test_parse_deeply_nested_flow_sequence_does_not_blow_up() {
         let input = "[".repeat(2000);

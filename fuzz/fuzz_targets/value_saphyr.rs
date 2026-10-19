@@ -143,6 +143,8 @@ fn same(mine: &Value, theirs: &Value) -> bool {
                 .iter()
                 .map(|(k, v)| match k.as_str() {
                     "" if anchored_empty_key => ("null", v),
+                    // The empty block scalar bug above, in a key (`? |`).
+                    "\n" if a.iter().any(|(k, _)| k.is_empty()) => ("", v),
                     k => (k, v),
                 })
                 .collect();
@@ -158,14 +160,19 @@ fn same(mine: &Value, theirs: &Value) -> bool {
 
 /// Whether a string in `y` has a line that is a document marker, which
 /// saphyr 0.0.12 takes into a block scalar indented by zero spaces
-/// (`|\nx\n--- y\n`) where the spec ends the document.
+/// (`|\nx\n--- y\n`) where the spec ends the document. A folded scalar
+/// joins the marker to the line before it (`>\nx\n---\n` is `x ---`), so
+/// a marker after a space counts too.
 // TODO: drop once saphyr ends block scalars at document markers.
 fn holds_marker_line(y: &Yaml) -> bool {
     match y {
         Yaml::Value(Scalar::String(s)) => s.split('\n').any(|line| {
-            ["---", "..."].iter().any(|m| {
-                line.strip_prefix(m)
-                    .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t']))
+            let folded = line.match_indices(' ').map(|(i, _)| &line[i + 1..]);
+            std::iter::once(line).chain(folded).any(|line| {
+                ["---", "..."].iter().any(|m| {
+                    line.strip_prefix(m)
+                        .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t']))
+                })
             })
         }),
         Yaml::Sequence(items) => items.iter().any(holds_marker_line),
@@ -194,12 +201,18 @@ fuzz_target!(|data: &[u8]| {
     let Ok(input) = std::str::from_utf8(data) else {
         return;
     };
-    // saphyr 0.0.12 reads `++2` as the integer 2.
-    // TODO: drop once saphyr types such scalars as strings.
+    // saphyr 0.0.12 reads `++2` as the integer 2, and `0x-5` as -5.
+    // It also keeps a line break for a last line of only spaces that has
+    // none (`|\n f\n `), reading `f\n\n`.
+    // TODO: drop once saphyr types such scalars as strings and chomps
+    // that line.
+    let last_line = input.rsplit('\n').next().unwrap_or_default();
     if input.len() > 10_000
         || saphyr_input::unsuitable(input)
         || input.contains("++")
         || input.contains("+-")
+        || ["0x-", "0x+", "0o-", "0o+"].iter().any(|p| input.contains(p))
+        || (!last_line.is_empty() && last_line.trim_matches([' ', '\t']).is_empty())
     {
         return;
     }

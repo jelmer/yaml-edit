@@ -1,7 +1,7 @@
 //! Moving entries around a mapping: `Mapping::reorder_fields`,
 //! `move_after` and `move_before`.
 
-use super::{Mapping, MappingEntry};
+use super::Mapping;
 use crate::lex::SyntaxKind;
 use crate::nodes::trivia::Slot;
 use crate::nodes::trivia::{self, ends_with_line_break, FlowSeparator};
@@ -233,7 +233,7 @@ impl Mapping {
     /// Move-or-insert `new_key: new_value` next to the entry for `ref_key`:
     /// after it if `after` is set, before it otherwise. Returns `false` if
     /// `ref_key` is not present (nothing to anchor on).
-    fn move_around(
+    pub(super) fn move_around(
         &self,
         ref_key: &impl crate::AsYaml,
         new_key: &impl crate::AsYaml,
@@ -271,23 +271,13 @@ impl Mapping {
             self.arrange_entries(&order);
             return true;
         }
-        let flow = self
-            .is_flow_style()
-            .then(|| crate::nodes::flow_quoting(&self.0));
-        let entry = MappingEntry::new_in(
-            new_key,
-            new_value,
-            flow,
-            self.uses_explicit_keys(),
-            self.detect_indentation_level(),
-        );
         let target = target.syntax().clone();
         let slot = if after {
             Slot::After(target)
         } else {
             Slot::Before(target)
         };
-        self.attach(&entry.0, slot);
+        self.insert_new(slot, new_key, new_value);
         true
     }
 

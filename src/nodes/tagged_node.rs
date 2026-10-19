@@ -208,6 +208,26 @@ mod tests {
         }
     }
 
+    /// `!!omap` and `!!pairs` each read only their own tag.
+    #[test]
+    fn test_ordered_mapping_and_pairs_check_the_tag() {
+        let yaml = YamlFile::from_str("o: !!omap [{a: 1}]\np: !!pairs [{a: 1}, {a: 2}]\n").unwrap();
+        let doc = yaml.documents().next().unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let tagged =
+            |key: &str| crate::yaml::TaggedNode::cast(mapping.get_node(key).unwrap()).unwrap();
+        let keys = |entries: Vec<crate::yaml::MappingEntry>| {
+            entries
+                .iter()
+                .map(|e| e.key().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(keys(tagged("o").as_ordered_mapping().unwrap()), ["a"]);
+        assert!(tagged("o").as_pairs().is_none());
+        assert_eq!(keys(tagged("p").as_pairs().unwrap()), ["a", "a"]);
+        assert!(tagged("p").as_ordered_mapping().is_none());
+    }
+
     #[test]
     fn test_as_set_requires_mapping() {
         let members = |yaml: &str| {

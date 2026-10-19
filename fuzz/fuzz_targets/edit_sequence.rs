@@ -19,7 +19,7 @@
 //!   the model is taken from the edited document again.
 //!
 //! Edits of other input only have to not panic. Set `EDIT_SEQUENCE_TRACE`
-//! to print each edit before it is made.
+//! to print each edit, and the tree it is made on, before it is made.
 
 use arbitrary::{Result as ArbResult, Unstructured};
 use libfuzzer_sys::fuzz_target;
@@ -744,6 +744,7 @@ fuzz_target!(|data: &[u8]| {
                 "input {input:?}, doc {doc_index}, edit {}",
                 log.last().unwrap()
             );
+            eprintln!("{}", debug::tree_to_string(file.syntax()));
         }
         let expected = apply(&ctx, &op, model.as_ref());
         let context = format!("input {input:?}, doc {doc_index}, edits {log:#?}");

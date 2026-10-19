@@ -28,10 +28,7 @@ impl Parser<'_> {
             // ends every nested block, so that it goes to the root
             // collection. A comment on the last entry's own line stays with
             // that entry whatever follows, as it does before another entry.
-            let own_line = matches!(
-                self.previous_kind,
-                None | Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
-            );
+            let own_line = self.previous_kind.is_none() || self.line_ended();
             let nested = self.builder.in_nested_collection();
             let dedented = own_line
                 && match self.indent_after_comment_lines() {

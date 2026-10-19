@@ -791,10 +791,7 @@ impl Parser<'_> {
         // Only a line's first token can be dedented. One after an indicator
         // on the same line, like the inner `-` of `-  ? -`, sits right of
         // it, though current_line_indent leaves out the space between them.
-        if !matches!(
-            self.previous_kind,
-            None | Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
-        ) {
+        if !(self.previous_kind.is_none() || self.line_ended()) {
             return false;
         }
         if base_indent == 0 {
@@ -937,14 +934,20 @@ impl Parser<'_> {
         ]);
     }
 
+    /// Whether the tokens consumed so far end with a line break, perhaps
+    /// followed by the next line's indentation.
+    pub(super) fn line_ended(&self) -> bool {
+        matches!(
+            self.previous_kind,
+            Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
+        )
+    }
+
     /// Step over the white space and comment ending the current line,
     /// unless the node just parsed has ended its line, as a block node does:
     /// a comment then is a line of its own.
     pub(super) fn skip_line_end_trivia(&mut self) {
-        if matches!(
-            self.previous_kind,
-            Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
-        ) {
+        if self.line_ended() {
             return;
         }
         self.skip_whitespace();
@@ -958,10 +961,7 @@ impl Parser<'_> {
     /// CST invariants in `nodes/mod.rs`). An entry ending in a block node
     /// has ended its line already.
     pub(super) fn skip_entry_line_end(&mut self) {
-        if matches!(
-            self.previous_kind,
-            Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
-        ) {
+        if self.line_ended() {
             return;
         }
         self.skip_line_end_trivia();
@@ -979,10 +979,7 @@ impl Parser<'_> {
         if self.in_flow_context {
             return;
         }
-        while !matches!(
-            self.previous_kind,
-            Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
-        ) {
+        while !self.line_ended() {
             let whitespace = usize::from(self.current() == Some(SyntaxKind::WHITESPACE));
             if matches!(
                 self.peek_kind(whitespace),
@@ -1022,11 +1019,7 @@ impl Parser<'_> {
     /// line is the outer key's.
     pub(super) fn explicit_value_follows(&self, question_column: usize) -> bool {
         // The column of the line the next content is on, if not this one.
-        let mut line_indent = matches!(
-            self.previous_kind,
-            Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
-        )
-        .then_some(self.current_line_indent);
+        let mut line_indent = self.line_ended().then_some(self.current_line_indent);
         for (kind, text) in self.tokens.iter().rev() {
             match kind {
                 SyntaxKind::NEWLINE => line_indent = Some(0),

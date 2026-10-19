@@ -20,24 +20,44 @@ pub(crate) fn token_column(token: &SyntaxToken) -> usize {
 pub(crate) struct ColumnIndex {
     /// The start of each token, in order, with its column.
     starts: Vec<(rowan::TextSize, usize)>,
+    /// The offset of each `\n` and `\r`, in order.
+    line_breaks: Vec<rowan::TextSize>,
 }
 
 impl ColumnIndex {
     pub(crate) fn new(node: &SyntaxNode) -> Self {
         let mut column = node.first_token().map_or(0, |t| token_column(&t));
         let mut starts = Vec::new();
+        let mut line_breaks = Vec::new();
         for token in node
             .descendants_with_tokens()
             .filter_map(|e| e.into_token())
         {
-            starts.push((token.text_range().start(), column));
+            let start = token.text_range().start();
+            starts.push((start, column));
+            line_breaks.extend(
+                token
+                    .text()
+                    .match_indices(['\n', '\r'])
+                    .map(|(i, _)| start + rowan::TextSize::try_from(i).expect("offset in a token")),
+            );
             column = if token.kind() == SyntaxKind::BOM {
                 0
             } else {
                 column_after(column, token.text())
             };
         }
-        Self { starts }
+        Self {
+            starts,
+            line_breaks,
+        }
+    }
+
+    /// Whether the text in `range`, which lies in the indexed subtree,
+    /// holds a line break.
+    pub(crate) fn has_line_break(&self, range: rowan::TextRange) -> bool {
+        let i = self.line_breaks.partition_point(|&b| b < range.start());
+        self.line_breaks.get(i).is_some_and(|&b| b < range.end())
     }
 
     /// The zero-based column `token` starts at, as [`token_column`] gives it.

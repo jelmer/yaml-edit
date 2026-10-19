@@ -415,7 +415,7 @@ impl Validator {
             }
             SyntaxKind::MAPPING_ENTRY => {
                 // Check for multiline implicit keys
-                check_implicit_key_multiline(node, violations);
+                check_implicit_key_multiline(node, columns, violations);
                 // Check for block collection on same line as mapping key
                 check_collection_on_same_line_as_key(node, in_flow, violations);
                 check_explicit_value_column(node, columns, in_flow, violations);
@@ -2225,7 +2225,11 @@ fn check_omap_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
 ///   2. A quoted STRING token whose source text contains a raw '\n'
 ///      (yaml-test-suite 7LBH / D49Q / JKF3). The whole quoted body
 ///      is one lex token, so a NEWLINE-token check misses it.
-fn check_implicit_key_multiline(entry_node: &SyntaxNode, violations: &mut Vec<Violation>) {
+fn check_implicit_key_multiline(
+    entry_node: &SyntaxNode,
+    columns: &ColumnIndex,
+    violations: &mut Vec<Violation>,
+) {
     // Explicit-key entries (`? key\n : value`) are allowed to span
     // multiple lines by construction; the QUESTION indicator makes
     // them explicit rather than implicit.
@@ -2259,13 +2263,7 @@ fn check_implicit_key_multiline(entry_node: &SyntaxNode, violations: &mut Vec<Vi
         let multiline_key = entry_node
             .children()
             .filter(|c| c.kind() == crate::SyntaxKind::KEY)
-            .find(|key| {
-                key.descendants_with_tokens()
-                    .filter_map(|el| el.into_token())
-                    .any(|t| {
-                        t.kind() == crate::SyntaxKind::NEWLINE || t.text().contains(['\n', '\r'])
-                    })
-            });
+            .find(|key| columns.has_line_break(key.text_range()));
         if let Some(key) = multiline_key {
             // Only report once per entry
             violations.push(Violation::error_at(
@@ -2915,6 +2913,15 @@ mod tests {
             format!("{}x{keys}", "{".repeat(n))
         });
         assert_validation_scales_linearly(60, |n| format!("{}x\n", "- ".repeat(n)));
+    }
+
+    #[test]
+    fn test_validation_scales_linearly_with_nested_implicit_keys() {
+        // Each implicit key was searched for a line break through all the
+        // keys nested in it.
+        assert_validation_scales_linearly(60, |n| {
+            format!("{}x{}", "[".repeat(n), "]: 1".repeat(n))
+        });
     }
 
     #[test]

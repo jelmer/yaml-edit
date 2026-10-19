@@ -437,6 +437,7 @@ impl Validator {
                 // Check for colons in plain scalar values
                 check_colon_in_plain_scalar(node, violations);
                 check_plain_scalar_start(node, in_flow, violations);
+                check_flow_indicator_in_plain_scalar(node, in_flow, violations);
                 check_block_scalar_in_flow(node, in_flow, violations);
                 // Check for directives inside document content (e.g. %YAML after ---)
                 check_directive_in_content(node, violations);
@@ -1237,6 +1238,35 @@ fn check_plain_scalar_start(node: &SyntaxNode, in_flow: bool, violations: &mut V
             Rule::Other,
             first.text_range(),
             format!("Plain scalar cannot start with {start:?}"),
+        ));
+    }
+}
+
+/// Check that a plain scalar in a flow collection does not hold a `{` or
+/// `[`, which open a collection there. The parser keeps the one in
+/// `[a{b]` in the scalar.
+fn check_flow_indicator_in_plain_scalar(
+    node: &SyntaxNode,
+    in_flow: bool,
+    violations: &mut Vec<Violation>,
+) {
+    use crate::SyntaxKind;
+
+    if !in_flow {
+        return;
+    }
+    if let Some(open) = node
+        .children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .find(|t| matches!(t.kind(), SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET))
+    {
+        violations.push(Violation::error_at(
+            Rule::Other,
+            open.text_range(),
+            format!(
+                "Plain scalar in a flow collection cannot contain {:?}",
+                open.text()
+            ),
         ));
     }
 }
@@ -3472,6 +3502,44 @@ mod tests {
             "? - a\n  - b\n: c\n",
             "{ ? a\n : b }\n",
         ] {
+            assert_eq!(messages(yaml), vec![], "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn test_flow_indicator_in_a_flow_plain_scalar() {
+        let messages = |yaml: &str| -> Vec<(String, Option<u32>)> {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.text_range.map(|r| r.start)))
+                .collect()
+        };
+        for (yaml, error, start) in [
+            (
+                "[a{b]\n",
+                "Plain scalar in a flow collection cannot contain \"{\"",
+                2,
+            ),
+            (
+                "{a[b}\n",
+                "Plain scalar in a flow collection cannot contain \"[\"",
+                2,
+            ),
+            (
+                "- {ye\"k \"{ye\"k \":vaa_e }\n",
+                "Plain scalar in a flow collection cannot contain \"{\"",
+                9,
+            ),
+        ] {
+            assert_eq!(
+                messages(yaml),
+                vec![(error.to_string(), Some(start))],
+                "{yaml:?}"
+            );
+        }
+        for yaml in ["a{b: [c]\n", "[a, {b: c}]\n", "[\"a{b\"]\n"] {
             assert_eq!(messages(yaml), vec![], "{yaml:?}");
         }
     }

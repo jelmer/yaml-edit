@@ -1828,6 +1828,96 @@ Repository: https://github.com/example/example.git";
         }
     }
 
+    #[test]
+    fn test_from_str_ignoring_comments_errors() {
+        match Document::from_str_ignoring_comments("a: [\n") {
+            Err(crate::error::YamlError::Parse {
+                message,
+                line,
+                column,
+            }) => {
+                assert_eq!(
+                    message,
+                    "Unclosed flow sequence. Expected: ']' to close sequence. Found: end of input. Context: in flow sequence. Suggestion: Add ']' to close the array, or check for missing commas between elements"
+                );
+                assert_eq!((line, column), (Some(2), Some(1)));
+            }
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+        match Document::from_str_ignoring_comments("a\n---\nb\n") {
+            Err(crate::error::YamlError::InvalidOperation { operation, .. }) => {
+                assert_eq!(operation, "Document::from_str_ignoring_comments");
+            }
+            other => panic!("expected multiple documents to be refused, got {other:?}"),
+        }
+    }
+
+    /// A stream holding no document but a `...` cannot be a Document
+    /// without dropping the marker.
+    #[test]
+    fn test_from_str_refuses_document_end_without_document() {
+        match Document::from_str("...\n") {
+            Err(crate::error::YamlError::InvalidOperation { operation, reason }) => {
+                assert_eq!(operation, "Document::from_str");
+                assert_eq!(
+                    reason,
+                    "Input contains stream-level content outside a document: \"...\". Use YamlFile::from_str() to preserve it."
+                );
+            }
+            other => panic!("expected the stream to be refused, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_file_relaxed_and_to_file() {
+        let dir = std::env::temp_dir().join(format!("yaml-edit-doc-{}", std::process::id()));
+        let path = dir.join("sub").join("doc.yaml");
+        // to_file creates the directory and ends the file with a newline.
+        let doc = Document::from_str("a: 1").unwrap();
+        doc.to_file(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a: 1\n");
+
+        std::fs::write(&path, "a: [\n").unwrap();
+        let (doc, errors) = Document::from_file_relaxed(&path).unwrap();
+        assert_eq!(doc.to_string(), "a: [\n");
+        assert_eq!(
+            errors,
+            ["2:1: Unclosed flow sequence. Expected: ']' to close sequence. Found: end of input. Context: in flow sequence. Suggestion: Add ']' to close the array, or check for missing commas between elements"]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            Document::from_file_relaxed(&path).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn test_len_and_comments() {
+        let doc = Document::from_str("# c\na: 1  # d\nb: [1, # e\n  2]\n").unwrap();
+        assert_eq!(doc.len(), 2);
+        assert_eq!(
+            doc.comments()
+                .map(|c| c.text().to_string())
+                .collect::<Vec<_>>(),
+            ["# c", "# d", "# e"]
+        );
+        assert_eq!(Document::from_str("- a\n").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_set_with_field_order_on_non_mapping_root() {
+        let doc = Document::from_str("- a\n").unwrap();
+        assert!(!doc.set_with_field_order("k", "v", ["k"]));
+        assert_eq!(doc.to_string(), "- a\n");
+    }
+
+    #[test]
+    fn test_get_string_of_tagged_value() {
+        let doc = Document::from_str("a: !!str 1\nb: !t [x]\n").unwrap();
+        assert_eq!(doc.get_string("a"), Some("1".to_string()));
+        assert_eq!(doc.get_string("b"), None);
+    }
+
     /// A mapping keeps the lines after its last entry in a document made
     /// from it.
     #[test]

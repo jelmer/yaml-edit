@@ -752,7 +752,8 @@ impl<'a, 'c> LexState<'a, 'c> {
                 .rev()
                 .find(|(_, (kind, _))| !matches!(kind, WHITESPACE | INDENT | NEWLINE))
                 .is_some_and(|(i, (kind, _))| {
-                    i >= self.block_scalar_end && matches!(kind, STRING | INT | FLOAT | BOOL | NULL)
+                    i >= self.block_scalar_end
+                        && matches!(kind, STRING | INT | FLOAT | BOOL | NULL | MERGE_KEY)
                 })
     }
 
@@ -1485,7 +1486,17 @@ fn parent_column(tokens: &[(SyntaxKind, &str)]) -> Option<usize> {
         let Some(last) = line.iter().rposition(|(kind, _)| {
             !matches!(
                 kind,
-                WHITESPACE | INDENT | COMMENT | TAG | ANCHOR | STRING | INT | FLOAT | BOOL | NULL
+                WHITESPACE
+                    | INDENT
+                    | COMMENT
+                    | TAG
+                    | ANCHOR
+                    | STRING
+                    | INT
+                    | FLOAT
+                    | BOOL
+                    | NULL
+                    | MERGE_KEY
             )
         }) else {
             continue;

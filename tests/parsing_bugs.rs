@@ -5543,3 +5543,15 @@ fn test_colon_after_quote_inside_flow_plain_scalar() {
         ])]
     );
 }
+
+#[test]
+fn test_plain_scalar_continuing_merge_key_text() {
+    // `<<` that is no key is a plain scalar like any other, so the line
+    // after it continues it, and the comment line after that ends it.
+    assert_eq!(
+        document_values("<<\n|\n# c\n"),
+        [yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain(
+            "<< |"
+        ))]
+    );
+}

@@ -4229,6 +4229,37 @@ fn test_unterminated_quote_after_a_quoted_scalar() {
     }
 }
 
+/// A `!`, `&` or `*` on a line continuing a plain scalar is content of that
+/// scalar. Lexed as a tag, anchor or alias it took a `:` after it into its
+/// name, so `{ a\n  !b: 1 }` had the key `a !b:` and no value.
+#[test]
+fn test_property_on_a_continuation_line_leaves_the_colon() {
+    for (yaml, key) in [
+        ("{ a\n  !b: 1 }\n", "a !b"),
+        ("{ a\n  &b: 1 }\n", "a &b"),
+        ("{ a\n  *b: 1 }\n", "a *b"),
+        ("{ f\"foo\"\n  !bar: 1 }\n", "f\"foo\" !bar"),
+    ] {
+        let doc = yaml_edit::Document::from_str(yaml).unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let entries: Vec<_> = mapping.iter().collect();
+        assert_eq!(entries.len(), 1, "{yaml:?}");
+        assert_eq!(entries[0].0.as_scalar().unwrap().as_string(), key);
+        assert_eq!(entries[0].1.as_scalar().unwrap().as_string(), "1");
+    }
+
+    // Setting the value of such a key writes text that reads back the same.
+    let doc = yaml_edit::Document::from_str("{ f\"foo\"\n  !bar }\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    mapping.set("f\"foo\" !bar", 1);
+    assert_eq!(doc.to_string(), "{ f\"foo\"\n  !bar: 1 }\n");
+    let reparsed = yaml_edit::Document::from_str(&doc.to_string()).unwrap();
+    assert_eq!(
+        yaml_edit::debug::shape_to_string(rowan::ast::AstNode::syntax(&doc)),
+        yaml_edit::debug::shape_to_string(rowan::ast::AstNode::syntax(&reparsed))
+    );
+}
+
 /// A document's root block scalar may put its body at column 0, since the
 /// root sits at indentation -1. Such a body is literal text up to the next
 /// document marker.

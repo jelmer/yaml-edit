@@ -727,6 +727,14 @@ impl<'a, 'c> LexState<'a, 'c> {
             && node_property_can_start(&self.tokens)
     }
 
+    /// Whether a tag, anchor or alias may start at `idx`. A line continuing
+    /// a plain scalar is inside that node already, so there they are
+    /// content, read by plain-scalar rules: as a tag `!b:` in
+    /// `{ a\n  !b: 1 }` took the `:` that follows the key.
+    fn property_can_start(&self, idx: usize) -> bool {
+        self.node_can_start() && !self.opens_plain_scalar_continuation_line(idx)
+    }
+
     /// Whether a block scalar header may start at `idx`.
     fn block_scalar_header_can_start(&self, idx: usize) -> bool {
         self.flow_depth == 0
@@ -886,7 +894,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             }
             // Like tags, only at the start of a node: `a: x &anc` is the
             // scalar `x &anc`, not an anchored value.
-            '&' if self.node_can_start() => {
+            '&' if self.property_can_start(start_idx) => {
                 // Check if this is an anchor definition
                 let name = read_anchor_name_from(&mut self.chars, self.input, start_idx + 1);
                 if !name.is_empty() {
@@ -895,7 +903,7 @@ impl<'a, 'c> LexState<'a, 'c> {
                     self.push(AMPERSAND, start_idx, start_idx + 1);
                 }
             }
-            '*' if self.node_can_start() => {
+            '*' if self.property_can_start(start_idx) => {
                 // Check if this is an alias reference
                 let name = read_anchor_name_from(&mut self.chars, self.input, start_idx + 1);
                 if !name.is_empty() {
@@ -963,7 +971,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             // Only at the start of a node: mid-scalar a `!` is ordinary
             // content (`a: x !!b` is the scalar `x !!b`), which the
             // catch-all arm below reads with plain-scalar rules.
-            '!' if self.node_can_start() => self.lex_tag(start_idx),
+            '!' if self.property_can_start(start_idx) => self.lex_tag(start_idx),
 
             '%' => self.lex_percent(start_idx),
 

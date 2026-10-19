@@ -38,7 +38,7 @@ Before implementing any feature or fix:
 
 ## Common Pitfalls
 
-See [DESIGN.md - Common Pitfalls](DESIGN.md#common-pitfalls-and-solutions) for detailed explanations. Quick reminders:
+See [DESIGN.md - Common Pitfalls](DESIGN.md#common-pitfalls-and-solutions) for detailed explanations, and [rowan.md](rowan.md) for rowan bugs to work around (for example, use `nodes::replace_children` rather than `splice_children` for ranges of more than one child). Quick reminders:
 
 ### Don't rebuild nodes
 
@@ -111,5 +111,6 @@ fn test_preserves_comments() {
 
 - [DESIGN.md](DESIGN.md) - Architecture and patterns
 - [rowan docs](https://docs.rs/rowan/) - The CST library
+- [rowan.md](rowan.md) - Known rowan quirks and how the crate avoids them
 - [YAML 1.2 Spec](https://yaml.org/spec/1.2.2/) - Language specification
 - Examples in `examples/` directory

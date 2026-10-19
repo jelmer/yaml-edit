@@ -1291,7 +1291,11 @@ impl Parser<'_> {
                 "':' after key",
                 self.current_text(),
             );
-            self.add_error_and_recover(error_msg, SyntaxKind::COLON, ParseErrorKind::Other);
+            self.add_error(error_msg, ParseErrorKind::Other);
+            // Read as a key whose value was omitted, with a zero-width
+            // COLON where the `:` should be.
+            self.builder.token(SyntaxKind::COLON.into(), "");
+            self.emit_implicit_null_value();
         }
 
         self.skip_entry_line_end();
@@ -1863,5 +1867,54 @@ DOCUMENT
             NEWLINE: \"\\\\n\"
 "
         );
+    }
+
+    /// A key without its `:` is read as a key whose value was omitted, with
+    /// a zero-width COLON where the `:` should be, whatever the key sits in.
+    #[test]
+    fn test_missing_colon_reads_as_omitted_value() {
+        let tree = |src: &str| {
+            let parsed = YamlFile::parse(src);
+            assert_eq!(parsed.errors().len(), 1, "{src:?}: {:?}", parsed.errors());
+            crate::debug::tree_to_string(rowan::ast::AstNode::syntax(&parsed.tree()))
+        };
+        let entry = "    MAPPING_ENTRY
+      KEY
+        SCALAR
+          MERGE_KEY: \"<<\"
+      COLON: \"\"
+      VALUE
+        SCALAR
+          NULL: \"\"
+      NEWLINE: \"\\\\n\"
+";
+        assert_eq!(tree("<<\n"), format!("DOCUMENT\n  MAPPING\n{entry}"));
+        assert_eq!(
+            tree("?\n<<\n"),
+            format!(
+                "\
+DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      QUESTION: \"?\"
+      KEY
+        SCALAR
+          NULL: \"\"
+      VALUE
+        SCALAR
+          NULL: \"\"
+      NEWLINE: \"\\\\n\"
+{entry}"
+            )
+        );
+    }
+
+    /// The lines after a key missing its `:` are read as they would be after
+    /// any other entry, rather than swallowed into it: here, a document.
+    #[test]
+    fn test_missing_colon_keeps_following_document() {
+        let parsed = YamlFile::parse("?\n<<\n---\na: 1\n");
+        let docs: Vec<String> = parsed.tree().documents().map(|d| d.to_string()).collect();
+        assert_eq!(docs, ["?\n<<\n", "---\na: 1\n"]);
     }
 }

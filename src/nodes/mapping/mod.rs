@@ -104,11 +104,8 @@ impl Mapping {
     /// not exist. For most use cases prefer [`get`](Self::get).
     pub(crate) fn get_node(&self, key: impl crate::AsYaml) -> Option<SyntaxNode> {
         self.find_entry_by_key(key)
-            .and_then(|entry| entry.value())
-            .and_then(|value_node| {
-                // VALUE nodes wrap the actual content, return the content instead
-                value_node.children().next()
-            })
+            // VALUE nodes wrap the actual content, return the content instead
+            .and_then(|entry| entry.value().children().next())
     }
 
     /// Get the value for `key` as a nested [`Mapping`].
@@ -745,7 +742,7 @@ impl Mapping {
         keep_anchor: bool,
     ) -> SyntaxNode {
         let kept = MappingEntry::cast(old.clone())
-            .and_then(|e| e.value())
+            .map(|e| e.value())
             .filter(|_| keep_anchor && value.kind() != YamlKind::Alias)
             .and_then(|v| held_anchor_token(&v));
         let anchor = kept.as_ref().map(|t| t.text().to_string());
@@ -756,7 +753,7 @@ impl Mapping {
             let entry = MappingEntry(self.splice_in_entry(old, key, &value));
             self.put_value(&entry, &value, anchor.as_deref());
             new = Some(entry.0.clone());
-            entry.value()
+            Some(entry.value())
         });
         new.expect("the edit ran")
     }

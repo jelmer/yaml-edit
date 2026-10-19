@@ -256,7 +256,7 @@ impl Mapping {
             // anchor included, as reorder_fields would move it. Given
             // another, it is replaced first, its old value going as with
             // remove, so that its key moves the same way.
-            let value = existing.value().and_then(|v| v.children().next());
+            let value = existing.value().children().next();
             let own_value = value.is_some() && value == new_value.value_node();
             let old = if own_value {
                 existing.0

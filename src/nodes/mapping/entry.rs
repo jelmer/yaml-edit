@@ -43,10 +43,10 @@ impl MappingEntry {
     /// Return the raw `VALUE` wrapper node of this entry.
     ///
     /// The returned node has kind `VALUE` and wraps the actual value content
-    /// (a scalar, mapping, or sequence node). Returns `None` for malformed
-    /// entries that have no value node.
-    pub(crate) fn value(&self) -> Option<SyntaxNode> {
-        entry_value(&self.0)
+    /// (a scalar, mapping, or sequence node). The parser gives every entry
+    /// one, an implicit null where the value is omitted.
+    pub(crate) fn value(&self) -> SyntaxNode {
+        entry_value(&self.0).expect("MAPPING_ENTRY without a VALUE")
     }
 
     /// Get the key of this entry as a [`YamlNode`](crate::as_yaml::YamlNode).
@@ -60,10 +60,11 @@ impl MappingEntry {
 
     /// Get the value of this entry as a [`YamlNode`](crate::as_yaml::YamlNode).
     ///
-    /// Returns `None` for malformed entries that have no value.
+    /// Returns `None` for malformed entries whose value holds no node.
     pub fn value_node(&self) -> Option<crate::as_yaml::YamlNode> {
         self.value()
-            .and_then(|v| v.children().next())
+            .children()
+            .next()
             .and_then(crate::as_yaml::YamlNode::from_syntax)
     }
 
@@ -301,18 +302,16 @@ impl MappingEntry {
         crate::column::node_column(&self.0)
     }
 
-    /// Index of the entry's VALUE child in its own children list, if any.
-    fn value_index(&self) -> Option<usize> {
-        self.0
-            .children_with_tokens()
-            .position(|c| c.as_node().is_some_and(|n| n.kind() == SyntaxKind::VALUE))
+    /// Index of the entry's VALUE child in its own children list.
+    fn value_index(&self) -> usize {
+        self.value().index()
     }
 
     /// True if the entry's VALUE opens with a key-line comment, as the
     /// parser lays out `key:  # note` followed by a block collection.
     fn value_starts_with_comment(&self) -> bool {
         self.value()
-            .and_then(|v| v.first_token())
+            .first_token()
             .is_some_and(|t| t.kind() == SyntaxKind::COMMENT)
     }
 
@@ -373,9 +372,7 @@ impl MappingEntry {
         if !has(SyntaxKind::QUESTION) || has(SyntaxKind::COLON) {
             return;
         }
-        let Some(value_idx) = self.value_index() else {
-            return;
-        };
+        let value_idx = self.value_index();
         // The entry's line break, if it has one, now ends the `:` line,
         // and the key's line gets one of its own. A block key ends its line
         // itself, and the entry then has none, so the `:` line gets one.
@@ -408,6 +405,19 @@ impl MappingEntry {
         }
     }
 
+    /// Write the `:` of a key the parser found without one, where it left
+    /// a zero-width COLON.
+    fn write_missing_colon(&self) {
+        let missing = self.0.children_with_tokens().position(|c| {
+            c.as_token()
+                .is_some_and(|t| t.kind() == SyntaxKind::COLON && t.text().is_empty())
+        });
+        if let Some(i) = missing {
+            let colon = fresh_token(SyntaxKind::COLON, ":");
+            replace_children(&self.0, i..i + 1, vec![colon.into()]);
+        }
+    }
+
     /// Replace this entry's value with a block sequence or mapping from
     /// another CST. Emits the value on the line after the key, indented to
     /// this entry's nesting depth + 2, with the source's interior
@@ -421,9 +431,7 @@ impl MappingEntry {
         let block = build_block_value_node(source, self.indent_of_line() + 2, anchor);
         let value_ends_with_newline = block.ends_with_newline;
 
-        let Some(value_idx) = self.value_index() else {
-            return;
-        };
+        let value_idx = self.value_index();
         // The WHITESPACE between COLON and VALUE, if any.
         let ws_between = self
             .0
@@ -509,18 +517,13 @@ impl MappingEntry {
     pub fn set_value(&self, new_value: impl crate::AsYaml, flow_context: bool) {
         // An alias cannot carry an anchor; the first alias to the old one
         // gets a copy of the old value instead.
-        let kept = self
-            .value()
-            .filter(|_| new_value.kind() != crate::as_yaml::YamlKind::Alias)
-            .and_then(|v| held_anchor_token(&v));
+        let old = self.value();
+        let kept =
+            held_anchor_token(&old).filter(|_| new_value.kind() != crate::as_yaml::YamlKind::Alias);
         let anchor = kept.as_ref().map(|t| t.text().to_string());
-        let Some(old) = self.value() else {
-            self.replace_value_under(new_value, flow_context, anchor.as_deref());
-            return;
-        };
         crate::nodes::kept_aliases::keeping_aliases(&old, kept, || {
             self.replace_value_under(new_value, flow_context, anchor.as_deref());
-            self.value()
+            Some(self.value())
         });
     }
 
@@ -535,7 +538,7 @@ impl MappingEntry {
     ) {
         self.replace_value(new_value, flow_context, anchor);
         crate::nodes::replaced_value::settle_lines_after_block_scalar(&self.0);
-        if let Some(content) = self.value().and_then(|v| v.last_child()) {
+        if let Some(content) = self.value().last_child() {
             trivia::drop_space_before_empty(&content);
         }
     }
@@ -554,6 +557,7 @@ impl MappingEntry {
         if !flow_context {
             self.add_explicit_value_indicator();
         }
+        self.write_missing_colon();
 
         // A block collection or block scalar coming from another CST goes
         // through set_block_value, which does targeted CST edits to swap
@@ -591,8 +595,8 @@ impl MappingEntry {
         let anchor = old_anchor
             .map(str::to_string)
             .or_else(|| new_value.value_node().and_then(|n| source_anchor_text(&n)));
-        let old_was_block = self.value().is_some_and(|v| value_is_block(&v));
-        let trailing_comment = (old_was_block || self.value().is_some_and(|v| has_comment(&v)))
+        let old_was_block = value_is_block(&self.value());
+        let trailing_comment = (old_was_block || has_comment(&self.value()))
             .then(|| find_key_line_comment(&self.0))
             .flatten();
         let mut value_builder = GreenNodeBuilder::new();
@@ -649,52 +653,34 @@ impl MappingEntry {
 
         // Targeted splice: replace the VALUE child in place; siblings and
         // surrounding tokens (comments, alignment WS) survive untouched.
-        if let Some(value_idx) = self.value_index() {
-            // A block scalar's body ends with the entry's line break.
-            let old_ends_line = match crate::nodes::ending_block_scalar(&self.0) {
-                Some(scalar) => trivia::ends_line(&scalar),
-                None => trivia::ends_with_line_break(&self.0),
-            };
-            let old_omitted = self.value().is_some_and(|v| v.text_range().is_empty());
-            let new_omitted = new_value_node.text_range().is_empty();
-            // The space before a key-line comment that was all the old
-            // value had now goes before the new value, which carries the
-            // comment with its own.
-            let mut at = value_idx..value_idx + 1;
-            let mut replacement = vec![new_value_node.clone().into()];
-            let space_before = value_idx
-                .checked_sub(1)
-                .and_then(|i| self.0.children_with_tokens().nth(i))
-                .is_some_and(|c| c.kind() == SyntaxKind::WHITESPACE);
-            if self.value_starts_with_comment() && space_before {
-                at.start -= 1;
-                replacement.insert(0, fresh_token(SyntaxKind::WHITESPACE, " ").into());
-            }
-            let value_idx = at.start + replacement.len() - 1;
-            replace_children(&self.0, at, replacement);
-            if old_omitted && !new_omitted {
-                self.separate_filled_value(value_idx, flow_context);
-            }
-            if old_ends_line {
-                trivia::terminate(&self.0);
-            }
-            return;
+        let value_idx = self.value_index();
+        // A block scalar's body ends with the entry's line break.
+        let old_ends_line = match crate::nodes::ending_block_scalar(&self.0) {
+            Some(scalar) => trivia::ends_line(&scalar),
+            None => trivia::ends_with_line_break(&self.0),
+        };
+        let old_omitted = self.value().text_range().is_empty();
+        let new_omitted = new_value_node.text_range().is_empty();
+        // The space before a key-line comment that was all the old
+        // value had now goes before the new value, which carries the
+        // comment with its own.
+        let mut at = value_idx..value_idx + 1;
+        let mut replacement = vec![new_value_node.clone().into()];
+        let space_before = value_idx
+            .checked_sub(1)
+            .and_then(|i| self.0.children_with_tokens().nth(i))
+            .is_some_and(|c| c.kind() == SyntaxKind::WHITESPACE);
+        if self.value_starts_with_comment() && space_before {
+            at.start -= 1;
+            replacement.insert(0, fresh_token(SyntaxKind::WHITESPACE, " ").into());
         }
-
-        // No VALUE node in this entry (malformed input). Insert one right
-        // after the COLON with a leading WHITESPACE.
-        if let Some(colon_idx) = self
-            .0
-            .children_with_tokens()
-            .position(|c| c.as_token().is_some_and(|t| t.kind() == SyntaxKind::COLON))
-        {
-            let insert_at = colon_idx + 1;
-            let ws = fresh_token(SyntaxKind::WHITESPACE, " ");
-            insert_children(
-                &self.0,
-                insert_at,
-                vec![ws.into(), new_value_node.clone().into()],
-            );
+        let value_idx = at.start + replacement.len() - 1;
+        replace_children(&self.0, at, replacement);
+        if old_omitted && !new_omitted {
+            self.separate_filled_value(value_idx, flow_context);
+        }
+        if old_ends_line {
+            trivia::terminate(&self.0);
         }
     }
 
@@ -705,9 +691,7 @@ impl MappingEntry {
     /// survives, and append a trailing NEWLINE if the entry doesn't
     /// already end with one.
     fn rebuild_with_inline_value(&self, new_value_node: &SyntaxNode) {
-        let Some(value_idx) = self.value_index() else {
-            return;
-        };
+        let value_idx = self.value_index();
 
         // Right after the COLON of an old block VALUE there is only trailing
         // whitespace and possibly a key-line comment (`k:  # note\n  - block`),
@@ -732,7 +716,7 @@ impl MappingEntry {
         }
 
         // Swap VALUE (its index may have moved if we detached above).
-        let value_idx = self.value_index().expect("VALUE was here a moment ago");
+        let value_idx = self.value_index();
         replace_children(
             &self.0,
             value_idx..value_idx + 1,

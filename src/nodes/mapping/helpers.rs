@@ -472,14 +472,7 @@ impl FlowWriter {
                 _ => {}
             }
         }
-        if !has_value {
-            self.colon();
-            self.builder.start_node(SyntaxKind::VALUE.into());
-            self.builder.start_node(SyntaxKind::SCALAR.into());
-            self.builder.token(SyntaxKind::NULL.into(), "null");
-            self.builder.finish_node();
-            self.builder.finish_node();
-        }
+        assert!(has_value, "MAPPING_ENTRY without a VALUE");
     }
 
     /// Write a KEY, as an explicit key if comments break it over several

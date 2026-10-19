@@ -66,6 +66,11 @@ indicator, or a tab used for indentation still parses, and the tree
 round-trips byte-identically. Parse errors are reserved for input that cannot
 be turned into a sensible tree.
 
+Edits do what they are asked even when the result is invalid YAML: an edit to
+a collection that is a mapping key can make it equal to a sibling key, which
+the validator then reports as a duplicate key, as it would for two keys set
+to the same name by hand.
+
 `Validator` walks the tree and reports spec violations with positions. A new
 spec check goes into the validator, with a test, and not into the parser. The
 YAML test suite harness counts an invalid case as handled when either the

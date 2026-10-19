@@ -1,4 +1,5 @@
 use rowan::ast::AstNode;
+use yaml_edit::validator::{Rule, Validator};
 use yaml_edit::YamlFile;
 
 mod common;
@@ -1146,5 +1147,45 @@ fn test_comment_lines_after_a_bare_explicit_key() {
     assert_eq!(
         yaml_edit::debug::shape_to_string(file.syntax()),
         yaml_edit::debug::shape_to_string(reparsed.syntax())
+    );
+}
+
+/// An edit to a collection that is a key does what it is asked even when
+/// that makes the key equal to another one; the validator then reports the
+/// duplicate.
+#[test]
+fn test_edit_inside_key_making_it_a_duplicate() {
+    let file = "? [a]\n: 1\n? []\n: 2\n".parse::<YamlFile>().unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let key = mapping.iter().next().unwrap().0;
+    assert_eq!(
+        key.as_sequence()
+            .unwrap()
+            .pop()
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "a"
+    );
+    assert_eq!(file.to_string(), "? []\n: 1\n? []\n: 2\n");
+    assert_file_cst_ok(&file);
+    let reparsed = file.to_string().parse::<YamlFile>().unwrap();
+    assert_eq!(
+        yaml_edit::debug::shape_to_string(file.syntax()),
+        yaml_edit::debug::shape_to_string(reparsed.syntax())
+    );
+    let violations: Vec<_> = Validator::new()
+        .validate_syntax(reparsed.syntax())
+        .into_iter()
+        .map(|v| (v.rule, v.to_string()))
+        .collect();
+    assert_eq!(
+        violations,
+        vec![(
+            Rule::DuplicateKeys,
+            "[ERROR] 3:1: Duplicate key: \"[]\" (semantically equal to \"[]\") (DuplicateKeys)"
+                .to_string()
+        )]
     );
 }

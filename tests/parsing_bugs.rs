@@ -5525,3 +5525,21 @@ fn test_merge_key_token_outside_a_key_is_a_scalar() {
     assert_eq!(document_values("a\n<<\n"), [plain("a <<")]);
     assert_eq!(document_values("<<\n  a\n"), [plain("<< a")]);
 }
+
+#[test]
+fn test_colon_after_quote_inside_flow_plain_scalar() {
+    // The quote is plain scalar content, not the end of a JSON-like key, so
+    // the `:` after it needs a space to be an indicator.
+    assert_eq!(
+        document_values("[p\":a]\n"),
+        [yaml_edit::YamlValue::from_sequence(vec![
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain("p\":a"))
+        ])]
+    );
+    assert_eq!(
+        document_values("[p':a]\n"),
+        [yaml_edit::YamlValue::from_sequence(vec![
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain("p':a"))
+        ])]
+    );
+}

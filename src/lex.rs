@@ -332,6 +332,13 @@ fn is_colon_a_mapping_indicator(input: &str, colon_idx: usize, flow_depth: u32) 
     {
         return true;
     }
+    is_colon_followed_by_separator(input, colon_idx, flow_depth)
+}
+
+/// Is the `:` at `input[colon_idx]` followed by what makes it a mapping
+/// indicator after content that is not a JSON-like node, such as a plain
+/// scalar's own text?
+fn is_colon_followed_by_separator(input: &str, colon_idx: usize, flow_depth: u32) -> bool {
     let after = input[colon_idx + 1..].chars().next();
     match after {
         None => true,
@@ -667,7 +674,9 @@ impl<'a, 'c> LexState<'a, 'c> {
             if is_white_or_break(ch) {
                 break;
             }
-            if ch == ':' && is_colon_a_mapping_indicator(input, idx, flow_depth) {
+            // What comes before the `:` is this scalar's text, even a quote
+            // in it: `[p":a]` holds the scalar `p":a`.
+            if ch == ':' && is_colon_followed_by_separator(input, idx, flow_depth) {
                 break;
             }
             if ch == '#' && is_hash_a_comment_start(input, idx) {

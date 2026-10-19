@@ -266,33 +266,14 @@ impl CustomSchema {
         let content = scalar_value.value();
         let scalar_type = scalar_value.scalar_type();
 
-        // Check if type is allowed
-        if !self.allows_type(scalar_type) {
-            if self.allow_coercion {
-                // Try coercion to allowed types
-                let coerced = self
-                    .allowed_types
-                    .iter()
-                    .any(|&t| scalar_value.coerce_to_type(t).is_some());
-                if !coerced {
-                    return Err(ValidationError::coercion_failed(
-                        path,
-                        &self.name,
-                        scalar_type,
-                        self.allowed_types.clone(),
-                    ));
-                }
-            } else {
-                return Err(ValidationError::type_not_allowed(
-                    path,
-                    &self.name,
-                    scalar_type,
-                    self.allowed_types.clone(),
-                ));
-            }
-        }
+        check_type(
+            scalar_value,
+            &self.allowed_types,
+            self.allow_coercion,
+            path,
+            &self.name,
+        )?;
 
-        // Run custom validator if present
         if let Some(validator) = self.custom_validators.get(&scalar_type) {
             let result = validator(content, path);
             if let CustomValidationResult::Invalid { constraint, reason } = result {
@@ -306,6 +287,39 @@ impl CustomSchema {
         }
 
         Ok(())
+    }
+}
+
+/// Check that `value` has one of the `allowed` types or, if `coerce` is
+/// set, can be coerced to one of them.
+fn check_type(
+    value: &ScalarValue,
+    allowed: &[ScalarType],
+    coerce: bool,
+    path: &str,
+    schema_name: &str,
+) -> Result<(), ValidationError> {
+    let scalar_type = value.scalar_type();
+    if allowed.contains(&scalar_type) {
+        return Ok(());
+    }
+    if !coerce {
+        return Err(ValidationError::type_not_allowed(
+            path,
+            schema_name,
+            scalar_type,
+            allowed.to_vec(),
+        ));
+    }
+    if allowed.iter().any(|&t| value.coerce_to_type(t).is_some()) {
+        Ok(())
+    } else {
+        Err(ValidationError::coercion_failed(
+            path,
+            schema_name,
+            scalar_type,
+            allowed.to_vec(),
+        ))
     }
 }
 
@@ -508,37 +522,20 @@ impl SchemaValidator {
         coerce_only: bool,
         errors: &mut Vec<ValidationError>,
     ) {
-        if let (Schema::Custom(custom_schema), false) = (&self.schema, coerce_only) {
-            if let Err(error) = custom_schema.validate_scalar_value(value, path) {
-                errors.push(error);
+        let result = match &self.schema {
+            Schema::Custom(custom_schema) if !coerce_only => {
+                custom_schema.validate_scalar_value(value, path)
             }
-            return;
-        }
-
-        let scalar_type = value.scalar_type();
-        if self.schema.allows_scalar_type(scalar_type) {
-            return;
-        }
-        let allowed_types = self.schema.allowed_scalar_types();
-        // A tagged scalar has its type written out, so it is not coerced
-        if tagged || self.strict {
-            errors.push(ValidationError::type_not_allowed(
+            // A tagged scalar has its type written out, so it is not coerced
+            _ => check_type(
+                value,
+                &self.schema.allowed_scalar_types(),
+                !tagged && !self.strict,
                 path,
                 self.schema.name(),
-                scalar_type,
-                allowed_types,
-            ));
-        } else if !allowed_types
-            .iter()
-            .any(|&t| value.coerce_to_type(t).is_some())
-        {
-            errors.push(ValidationError::coercion_failed(
-                path,
-                self.schema.name(),
-                scalar_type,
-                allowed_types,
-            ));
-        }
+            ),
+        };
+        errors.extend(result.err());
     }
 }
 

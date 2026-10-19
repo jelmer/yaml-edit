@@ -839,28 +839,10 @@ impl Parser<'_> {
                     // Check next token for indentation
                     match self.current() {
                         Some(SyntaxKind::INDENT) => {
-                            // A blank line's indentation says nothing about the
-                            // block we are in, so never read it as a dedent.
-                            // Neither does a comment's: what ends the block is
-                            // the next line that carries content, so an
-                            // indented comment gets the same treatment as one
-                            // at column 0 below.
-                            let blank_line =
-                                self.indent_is_blank_line() || self.indent_starts_comment_line();
-                            if !blank_line && dash_lines && !self.indent_starts_dash_line() {
+                            if self.indent_ends_block(base_indent, dash_lines, true) {
                                 return true;
                             }
-                            if let Some((_, text)) = self.tokens.last() {
-                                if !blank_line && text.len() < base_indent {
-                                    // Dedent detected - don't consume the indent token
-                                    return true;
-                                }
-                                if !blank_line && base_indent == 0 && !text.is_empty() {
-                                    // At root level, any indentation means content doesn't belong at root
-                                    return true;
-                                }
-                            }
-                            self.bump(); // consume indent if at appropriate level
+                            self.bump();
                         }
                         Some(SyntaxKind::COMMENT) => {
                             // COMMENT at column 0 (no INDENT after NEWLINE).
@@ -902,15 +884,8 @@ impl Parser<'_> {
                 }
                 Some(SyntaxKind::INDENT) => {
                     // Standalone indent token (NEWLINE was consumed by prior entry)
-                    let blank_line =
-                        self.indent_is_blank_line() || self.indent_starts_comment_line();
-                    if !blank_line && dash_lines && !self.indent_starts_dash_line() {
+                    if self.indent_ends_block(base_indent, dash_lines, false) {
                         return true;
-                    }
-                    if let Some((_, text)) = self.tokens.last() {
-                        if !blank_line && text.len() < base_indent {
-                            return true; // dedent detected
-                        }
                     }
                     self.bump();
                 }
@@ -921,6 +896,24 @@ impl Parser<'_> {
             }
         }
         false
+    }
+
+    /// Whether the current INDENT ends the block at `base_indent`.
+    ///
+    /// Blank and comment lines never do: what ends the block is the next line
+    /// that carries content. At root level, any indentation at `line_start`
+    /// means the content doesn't belong at root.
+    fn indent_ends_block(&self, base_indent: usize, dash_lines: bool, line_start: bool) -> bool {
+        if self.indent_is_blank_line() || self.indent_starts_comment_line() {
+            return false;
+        }
+        if dash_lines && !self.indent_starts_dash_line() {
+            return true;
+        }
+        let Some((_, text)) = self.tokens.last() else {
+            return false;
+        };
+        text.len() < base_indent || (line_start && base_indent == 0 && !text.is_empty())
     }
 
     pub(super) fn skip_ws_and_newlines(&mut self) {

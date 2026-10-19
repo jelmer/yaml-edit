@@ -922,11 +922,7 @@ impl ScalarValue {
     /// the type when the content is a valid spelling of it; any other tag, or
     /// content the tag cannot resolve, gives a string.
     pub(crate) fn from_tagged(tagged: &crate::yaml::TaggedNode) -> Option<Self> {
-        let scalar = match tagged.value() {
-            Some(inner) => Self::from_scalar(&inner),
-            // A tag with no content, as in `k: !!null`
-            None => Self::plain(tagged.as_string()?),
-        };
+        let scalar = Self::from_scalar(&tagged.value()?);
         Some(match tagged.tag() {
             Some(tag) => scalar.with_resolved_tag(tag),
             None => Self {

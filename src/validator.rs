@@ -22,6 +22,7 @@
 //! }
 //! ```
 
+use crate::as_yaml::SharedIdentities;
 use crate::column::{space_indent, ColumnIndex};
 use crate::nodes::{
     child_token, has_child_token, in_flow_collection, is_block_scalar, is_quoted_scalar,
@@ -209,13 +210,44 @@ fn has_content(node: &SyntaxNode) -> bool {
 /// than the column of the innermost block collection entry holding it, or
 /// `None` outside any block collection.
 fn continuation_indent(node: &SyntaxNode, columns: &ColumnIndex) -> Option<usize> {
-    let entry = node.ancestors().skip(1).find(|a| {
-        matches!(
-            a.kind(),
-            crate::SyntaxKind::MAPPING_ENTRY | crate::SyntaxKind::SEQUENCE_ENTRY
-        ) && a.parent().is_some_and(|c| !starts_a_flow_collection(&c))
-    })?;
+    let entry = node.ancestors().skip(1).find(is_block_entry)?;
     Some(columns.column(&entry.first_token()?) + 1)
+}
+
+/// Whether `node` is an entry of a collection without flow delimiters.
+fn is_block_entry(node: &SyntaxNode) -> bool {
+    matches!(
+        node.kind(),
+        crate::SyntaxKind::MAPPING_ENTRY | crate::SyntaxKind::SEQUENCE_ENTRY
+    ) && node.parent().is_some_and(|c| !starts_a_flow_collection(&c))
+}
+
+/// What a node being walked passes on to the nodes in it.
+#[derive(Clone, Copy)]
+struct Scope {
+    /// Whether they sit inside a flow collection.
+    in_flow: bool,
+    /// The least indentation their continuation lines need, as
+    /// [`continuation_indent`] gives it.
+    continuation_indent: Option<usize>,
+}
+
+impl Scope {
+    /// The scope of the nodes in `node`, which sits in this one.
+    fn enter(self, node: &SyntaxNode, columns: &ColumnIndex) -> Self {
+        let opens_flow = matches!(
+            node.kind(),
+            crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
+        ) && starts_a_flow_collection(node);
+        Scope {
+            in_flow: self.in_flow || opens_flow,
+            continuation_indent: if is_block_entry(node) {
+                columns.column_at(node.text_range().start()).map(|c| c + 1)
+            } else {
+                self.continuation_indent
+            },
+        }
+    }
 }
 
 /// Is this flow entry an omitted one, i.e. does its value consist solely of
@@ -352,40 +384,38 @@ impl Validator {
     /// The walk is iterative, so deep nesting cannot overflow the stack.
     fn validate_node(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         let columns = ColumnIndex::new(node);
-        // Whether each node being walked opens a flow collection, and how
-        // many enclosing ones do; asking each node for its ancestors made
-        // the walk quadratic in the nesting depth.
-        let mut opens_flow = Vec::new();
-        let mut flow_depth = usize::from(in_flow_collection(node));
+        let mut identities = SharedIdentities::default();
+        // The scope of each node being walked; asking each node for its
+        // ancestors made the walk quadratic in the nesting depth.
+        let mut scopes = vec![Scope {
+            in_flow: in_flow_collection(node),
+            continuation_indent: continuation_indent(node, &columns),
+        }];
         for event in node.preorder() {
             match event {
                 rowan::WalkEvent::Enter(n) => {
-                    self.check_node(&n, &columns, flow_depth > 0, violations);
-                    let is_flow = matches!(
-                        n.kind(),
-                        crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-                    ) && starts_a_flow_collection(&n);
-                    flow_depth += usize::from(is_flow);
-                    opens_flow.push(is_flow);
+                    let scope = *scopes.last().expect("the walk's own scope stays");
+                    self.check_node(&n, &columns, &mut identities, scope, violations);
+                    scopes.push(scope.enter(&n, &columns));
                 }
                 rowan::WalkEvent::Leave(_) => {
-                    flow_depth -= usize::from(opens_flow.pop() == Some(true));
+                    scopes.pop();
                 }
             }
         }
     }
 
     /// Run the checks for `node` itself, not those of its children.
-    ///
-    /// `in_flow` says whether `node` sits inside a flow collection.
     fn check_node(
         &self,
         node: &SyntaxNode,
         columns: &ColumnIndex,
-        in_flow: bool,
+        identities: &mut SharedIdentities,
+        scope: Scope,
         violations: &mut Vec<Violation>,
     ) {
         use crate::SyntaxKind;
+        let in_flow = scope.in_flow;
 
         // Check for tabs in any node's tokens
         if self.config.check_tabs {
@@ -415,7 +445,7 @@ impl Validator {
             }
             SyntaxKind::MAPPING_ENTRY => {
                 // Check for multiline implicit keys
-                check_implicit_key_multiline(node, violations);
+                check_implicit_key_multiline(node, columns, violations);
                 // Check for block collection on same line as mapping key
                 check_collection_on_same_line_as_key(node, in_flow, violations);
                 check_explicit_value_column(node, columns, in_flow, violations);
@@ -425,7 +455,7 @@ impl Validator {
                 check_escape_sequences(node, violations);
                 // Check for content on same line as block scalar indicator
                 check_block_scalar_indicator(node, violations);
-                check_block_scalar_header_indent(node, columns, violations);
+                check_block_scalar_header_indent(node, columns, scope, violations);
                 // Check block scalar content indentation consistency
                 check_block_scalar_content_indent(node, violations);
                 // Check for trailing content after quoted strings
@@ -446,17 +476,17 @@ impl Validator {
             SyntaxKind::MAPPING => {
                 check_flow_collection_commas(node, violations);
                 check_flow_pair_placement(node, in_flow, violations);
-                check_flow_continuation_indent(node, columns, in_flow, violations);
+                check_flow_continuation_indent(node, scope, violations);
                 check_block_mapping_entries_on_same_line(node, violations);
                 check_block_mapping_after_properties(node, violations);
                 check_mapping_entry_indentation(node, columns, violations);
                 if self.config.check_duplicate_keys {
-                    check_duplicate_keys(node, violations);
+                    check_duplicate_keys(node, identities, violations);
                 }
             }
             SyntaxKind::SEQUENCE => {
                 check_flow_collection_commas(node, violations);
-                check_flow_continuation_indent(node, columns, in_flow, violations);
+                check_flow_continuation_indent(node, scope, violations);
             }
             SyntaxKind::KEY | SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::VALUE => {
                 check_anchor_and_alias(node, violations);
@@ -469,7 +499,7 @@ impl Validator {
                 check_multiple_tags(node, violations);
                 check_collection_tag_content(node, violations);
                 check_pairs_items(node, violations);
-                check_omap_keys(node, violations);
+                check_omap_keys(node, identities, violations);
                 check_set_values(node, violations);
             }
             SyntaxKind::DOCUMENT => {
@@ -504,7 +534,7 @@ impl Validator {
 
         // Check indentation rules
         check_sequence_indentation(node, columns, violations);
-        check_quoted_string_indentation(node, columns, violations);
+        check_quoted_string_indentation(node, scope, violations);
     }
 }
 
@@ -928,6 +958,7 @@ fn check_block_scalar_indicator(node: &SyntaxNode, violations: &mut Vec<Violatio
 fn check_block_scalar_header_indent(
     node: &SyntaxNode,
     columns: &ColumnIndex,
+    scope: Scope,
     violations: &mut Vec<Violation>,
 ) {
     if !is_block_scalar(node) {
@@ -936,7 +967,7 @@ fn check_block_scalar_header_indent(
     let Some(header) = node.first_token() else {
         return;
     };
-    let Some(min_indent) = continuation_indent(node, columns) else {
+    let Some(min_indent) = scope.continuation_indent else {
         return;
     };
     if columns.column(&header) < min_indent {
@@ -1660,8 +1691,7 @@ fn expected_entry_indent(node: &SyntaxNode, columns: &ColumnIndex) -> String {
 /// 9C9N).
 fn check_flow_continuation_indent(
     node: &SyntaxNode,
-    columns: &ColumnIndex,
-    in_flow: bool,
+    scope: Scope,
     violations: &mut Vec<Violation>,
 ) {
     if !starts_a_flow_collection(node) {
@@ -1669,7 +1699,7 @@ fn check_flow_continuation_indent(
     }
     // Only the outermost flow collection needs checking; a nested one
     // shares its lines.
-    if in_flow {
+    if scope.in_flow {
         return;
     }
 
@@ -1702,7 +1732,7 @@ fn check_flow_continuation_indent(
     // a new entry of that block (9C9N's `flow: [a,\nb,\nc]`). A flow
     // collection that is the document's own node has no such neighbour,
     // so its entries may start at column zero (4ABK).
-    let Some(required) = continuation_indent(node, columns) else {
+    let Some(required) = scope.continuation_indent else {
         return;
     };
 
@@ -2166,7 +2196,11 @@ fn check_pairs_items(node: &SyntaxNode, violations: &mut Vec<Violation>) {
 /// Like other content that does not suit a YAML 1.1 type, a repeated
 /// key is only a warning. Keys compare as in
 /// [`Self::check_duplicate_keys`].
-fn check_omap_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
+fn check_omap_keys(
+    node: &SyntaxNode,
+    identities: &mut SharedIdentities,
+    violations: &mut Vec<Violation>,
+) {
     use crate::SyntaxKind;
 
     let Some(tagged) = crate::yaml::TaggedNode::cast(node.clone()) else {
@@ -2195,9 +2229,9 @@ fn check_omap_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
         let key = entry.children().find(|n| n.kind() == SyntaxKind::KEY)?;
         Some((key, entry.text_range()))
     });
-    let mut seen: Vec<(crate::as_yaml::NodeIdentity, SyntaxNode)> = Vec::new();
+    let mut seen: Vec<(usize, SyntaxNode)> = Vec::new();
     for (key, range) in keys {
-        let Some(identity) = key_identity(&key) else {
+        let Some(identity) = key_identity(&key, identities) else {
             continue;
         };
         if let Some((_, first)) = seen.iter().find(|(k, _)| *k == identity) {
@@ -2225,7 +2259,11 @@ fn check_omap_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
 ///   2. A quoted STRING token whose source text contains a raw '\n'
 ///      (yaml-test-suite 7LBH / D49Q / JKF3). The whole quoted body
 ///      is one lex token, so a NEWLINE-token check misses it.
-fn check_implicit_key_multiline(entry_node: &SyntaxNode, violations: &mut Vec<Violation>) {
+fn check_implicit_key_multiline(
+    entry_node: &SyntaxNode,
+    columns: &ColumnIndex,
+    violations: &mut Vec<Violation>,
+) {
     // Explicit-key entries (`? key\n : value`) are allowed to span
     // multiple lines by construction; the QUESTION indicator makes
     // them explicit rather than implicit.
@@ -2259,13 +2297,7 @@ fn check_implicit_key_multiline(entry_node: &SyntaxNode, violations: &mut Vec<Vi
         let multiline_key = entry_node
             .children()
             .filter(|c| c.kind() == crate::SyntaxKind::KEY)
-            .find(|key| {
-                key.descendants_with_tokens()
-                    .filter_map(|el| el.into_token())
-                    .any(|t| {
-                        t.kind() == crate::SyntaxKind::NEWLINE || t.text().contains(['\n', '\r'])
-                    })
-            });
+            .find(|key| columns.has_line_break(key.text_range()));
         if let Some(key) = multiline_key {
             // Only report once per entry
             violations.push(Violation::error_at(
@@ -2454,7 +2486,7 @@ fn check_sequence_indentation(
 /// Check multiline quoted strings have proper indentation (QB6E)
 fn check_quoted_string_indentation(
     node: &SyntaxNode,
-    columns: &ColumnIndex,
+    scope: Scope,
     violations: &mut Vec<Violation>,
 ) {
     use crate::SyntaxKind;
@@ -2501,7 +2533,7 @@ fn check_quoted_string_indentation(
     }
 
     // Continuation lines have to clear the enclosing block entry.
-    let Some(required) = continuation_indent(node, columns) else {
+    let Some(required) = scope.continuation_indent else {
         return;
     };
 
@@ -2539,7 +2571,11 @@ fn check_quoted_string_indentation(
 /// - `null`, `~`, and empty key are all duplicates (all null)
 /// - Works with complex keys (sequences, mappings) as well
 /// - A key that is or holds an alias equals nothing
-fn check_duplicate_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
+fn check_duplicate_keys(
+    node: &SyntaxNode,
+    identities: &mut SharedIdentities,
+    violations: &mut Vec<Violation>,
+) {
     use crate::SyntaxKind;
     use std::collections::HashMap;
 
@@ -2551,12 +2587,8 @@ fn check_duplicate_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
             Some((key, child.text_range()))
         })
         .collect();
-    // A key's identity and text cover its whole subtree, so computing them
-    // for the key of each level of `{{{...}}}` made validation quadratic in
-    // the nesting depth. Only keys of the same kind can be equal, so a key
-    // with no other of its kind is left alone.
-    // TODO: two collection keys on every level still cost the depth times
-    // the size, as each level works out the identities below it again.
+    // Only keys of the same kind can be equal, so a key with no other of
+    // its kind is left alone.
     let kinds: Vec<Option<SyntaxKind>> = keys.iter().map(|(key, _)| identity_kind(key)).collect();
     let mut kind_counts: HashMap<SyntaxKind, usize> = HashMap::new();
     for kind in kinds.iter().flatten() {
@@ -2572,12 +2604,12 @@ fn check_duplicate_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
     };
 
     // Key identity -> index of the first key with it
-    let mut seen: HashMap<crate::as_yaml::NodeIdentity, usize> = HashMap::new();
+    let mut seen: HashMap<usize, usize> = HashMap::new();
     for (i, (key, range)) in keys.iter().enumerate() {
         if !kinds[i].is_some_and(|kind| kind_counts[&kind] > 1) {
             continue;
         }
-        let Some(identity) = key_identity(key) else {
+        let Some(identity) = key_identity(key, identities) else {
             continue;
         };
         match seen.entry(identity) {
@@ -2602,9 +2634,11 @@ fn check_duplicate_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
 /// The identity of mapping key `key`, or `None` if it is or holds an alias.
 ///
 /// Such a key is compared with nothing: the YAML test suite has
-/// `{&a [a]: 1, *a : 2}` as valid (X38W).
-fn key_identity(key: &SyntaxNode) -> Option<crate::as_yaml::NodeIdentity> {
-    crate::as_yaml::node_identity(key, None).ok().flatten()
+/// `{&a [a]: 1, *a : 2}` as valid (X38W). The identities of the nodes in
+/// `key` are kept in `identities` for the keys among them, which would
+/// otherwise work them out again on every level of nested collection keys.
+fn key_identity(key: &SyntaxNode, identities: &mut SharedIdentities) -> Option<usize> {
+    identities.identity(key).ok().flatten()
 }
 
 /// The kind of the node that gives `node`, a key or a node in one, its
@@ -2915,6 +2949,39 @@ mod tests {
             format!("{}x{keys}", "{".repeat(n))
         });
         assert_validation_scales_linearly(60, |n| format!("{}x\n", "- ".repeat(n)));
+    }
+
+    #[test]
+    fn test_duplicate_key_detection_scales_linearly_with_nested_keys() {
+        // Each mapping worked out the identities of all the keys nested in
+        // its own two collection keys again. Each level nests twice.
+        assert_validation_scales_linearly(30, |n| {
+            format!("{}x{}", "{[0]: 1, [".repeat(n), "]: 1}".repeat(n))
+        });
+        assert_validation_scales_linearly(30, |n| {
+            format!("{}x{}", "{{0: 1}: 1, {a: ".repeat(n), "}: 1}".repeat(n))
+        });
+    }
+
+    #[test]
+    fn test_validation_scales_linearly_with_nested_multiline_scalars() {
+        // Each multi-line scalar looked through all its ancestors for the
+        // block entry its continuation lines have to clear.
+        assert_validation_scales_linearly(60, |n| {
+            format!("{}x{}", "{\"a\nb\": ".repeat(n), "}".repeat(n))
+        });
+        assert_validation_scales_linearly(60, |n| {
+            format!("k: {}x{}", "[\"a\n b\", ".repeat(n), "]".repeat(n))
+        });
+    }
+
+    #[test]
+    fn test_validation_scales_linearly_with_nested_implicit_keys() {
+        // Each implicit key was searched for a line break through all the
+        // keys nested in it.
+        assert_validation_scales_linearly(60, |n| {
+            format!("{}x{}", "[".repeat(n), "]: 1".repeat(n))
+        });
     }
 
     #[test]

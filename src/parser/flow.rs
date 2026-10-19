@@ -10,12 +10,8 @@ use crate::lex::SyntaxKind;
 use crate::ParseErrorKind;
 
 impl Parser<'_> {
-    /// Checks if the upcoming tokens form an implicit mapping pattern (key: value).
-    ///
-    /// This scans forward through the token buffer to detect if there's a colon at
-    /// depth 0 (not nested inside brackets/braces) before hitting a comma or closing bracket.
-    ///
-    /// Scans from current token forward through upcoming tokens.
+    /// Whether the next flow element is an implicit mapping (`key: value`):
+    /// a colon at its own nesting level before any comma or closing bracket.
     ///
     /// # Examples
     /// - `[ 'key' : value ]` → true (colon at depth 0)
@@ -24,13 +20,12 @@ impl Parser<'_> {
     /// - `[ {a: 1}, b ]` → false (colon is inside braces, not at depth 0)
     fn next_flow_element_is_implicit_mapping(&self) -> bool {
         // A `?` opens a single pair with an explicit key, `:` or not.
-        if self.current() == Some(SyntaxKind::QUESTION) {
-            return true;
-        }
-        // Chain current token with upcoming tokens (no allocation needed)
-        let tokens = std::iter::once(self.current().unwrap_or(SyntaxKind::EOF))
-            .chain(self.upcoming_tokens());
-        has_implicit_mapping_pattern(tokens)
+        self.current() == Some(SyntaxKind::QUESTION)
+            || self
+                .tokens
+                .len()
+                .checked_sub(1)
+                .is_some_and(|i| self.implicit_mapping_starts[i])
     }
 
     /// Keep plain scalar content between a complete key node and its colon,
@@ -338,40 +333,36 @@ impl Parser<'_> {
     }
 }
 
-/// Standalone helper to detect implicit mapping pattern in flow collections.
-/// Takes an iterator of SyntaxKind tokens (in reverse order, as stored in Parser).
-/// Returns true if there's a colon at depth 0 before any comma or closing bracket.
-pub(crate) fn has_implicit_mapping_pattern(tokens: impl Iterator<Item = SyntaxKind>) -> bool {
-    let mut depth = 0;
-
-    for kind in tokens {
-        match kind {
-            // Opening brackets/braces increase nesting depth
-            SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET => {
-                depth += 1;
-            }
-            // Closing brackets/braces decrease nesting depth
+/// For each token of `kinds`, whether a flow element starting there is an
+/// implicit mapping: whether a colon follows at its nesting level before a
+/// comma or a closing bracket at that level.
+///
+/// Worked out for all tokens in one pass from the end, since scanning ahead
+/// from each one made deeply nested input quadratic.
+pub(crate) fn implicit_mapping_starts(kinds: &[SyntaxKind]) -> Vec<bool> {
+    let mut starts = vec![false; kinds.len()];
+    // Closing brackets not yet matched with an opening one before them.
+    let mut closers = Vec::new();
+    for (i, kind) in kinds.iter().enumerate().rev() {
+        let from = match kind {
+            // A nested collection is skipped as a whole, so the answer is
+            // that of the token after its closing bracket. Unclosed, it
+            // runs to the end of the input without a colon at this level.
+            SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET => closers.pop().map(|c| c + 1),
             SyntaxKind::RIGHT_BRACE | SyntaxKind::RIGHT_BRACKET => {
-                if depth == 0 {
-                    // Closing bracket at our level - end of element without finding colon
-                    return false;
-                }
-                depth -= 1;
+                closers.push(i);
+                None
             }
-            // At depth 0 (not inside nested collections), check for colon or separator
-            SyntaxKind::COLON if depth == 0 => {
-                // Found colon at our level - this is an implicit mapping
-                return true;
+            SyntaxKind::COLON => {
+                starts[i] = true;
+                None
             }
-            SyntaxKind::COMMA if depth == 0 => {
-                // Found separator at our level - not a mapping
-                return false;
-            }
-            // Skip whitespace, newlines, and other tokens
-            _ => {}
+            SyntaxKind::COMMA => None,
+            _ => Some(i + 1),
+        };
+        if let Some(from) = from {
+            starts[i] = starts.get(from).copied().unwrap_or(false);
         }
     }
-
-    // Reached end of tokens without finding colon or separator
-    false
+    starts
 }

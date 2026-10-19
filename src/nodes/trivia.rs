@@ -295,6 +295,10 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
     let prev = std::iter::successors(entry.prev_sibling(), |n| n.prev_sibling())
         .find(|n| n.kind() == kind);
     let terminated = ends_with_line_break(entry);
+    let root = collection
+        .ancestors()
+        .last()
+        .filter(|root| root.text_range().end() == entry.text_range().end());
     let flow = has_child_token(collection, |k| {
         matches!(k, SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET)
     });
@@ -378,9 +382,10 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
     if drained {
         render_empty(collection, line_break(entry).as_deref());
     }
-    // The end of the input keeps its lack of a final line break.
+    // The end of the input keeps its lack of a final line break, which
+    // may now come after the lines moved out of the collection.
     if is_last && !terminated && !flow {
-        unterminate_last(collection);
+        unterminate_last(root.as_ref().unwrap_or(collection));
     }
 }
 

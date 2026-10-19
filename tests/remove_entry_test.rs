@@ -1268,6 +1268,21 @@ fn remove_later_item_of_compact_sequence_in_explicit_key() {
 }
 
 #[test]
+fn pop_unterminated_item_after_lines_in_mapping_value() {
+    // The lines before the removed item leave the sequence, so it is the
+    // last of them that loses its line break. Taking the item's own left
+    // the blank line after the sequence, where the parser would not, and
+    // joined a comment line to the item.
+    let pop = |d: &Document| {
+        let v = d.as_mapping().unwrap().values().next().unwrap();
+        assert!(v.as_sequence().unwrap().pop().is_some());
+    };
+    check_edit(":\n -\n\n -", pop, ":\n -\n");
+    check_edit(":\r -\r\r -", pop, ":\r -\r");
+    check_edit("a:\n - x\n # c\n - y", pop, "a:\n - x\n # c");
+}
+
+#[test]
 fn drain_compact_sequence_value_under_comment_line() {
     // A flow collection on a line of its own has to be indented past the
     // key, as a block sequence does not.

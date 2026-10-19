@@ -1651,6 +1651,8 @@ mod tests {
     #[test]
     fn test_recovery_shapes() {
         for (src, errors, expected) in [
+            ("a\n['x']\n", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" LEFT_BRACKET\"[\" STRING\"'x'\" RIGHT_BRACKET\"]\") NEWLINE\"\\n\")"),
+            ("a\n[\"x\"]: 1\n", 0, "DOCUMENT(SCALAR(STRING\"a\") NEWLINE\"\\n\" MAPPING(MAPPING_ENTRY(KEY(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(SCALAR(STRING\"\\\"x\\\"\")) RIGHT_BRACKET\"]\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(INT\"1\")) NEWLINE\"\\n\")))"),
             ("a\n[\"", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" STRING\"[\\\"\"))"),
             ("a\n['x]\n", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" STRING\"['x]\") NEWLINE\"\\n\")"),
             ("a\n[']'\n", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" STRING\"[']'\") NEWLINE\"\\n\")"),

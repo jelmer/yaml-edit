@@ -24,7 +24,7 @@
 
 use crate::column::{space_indent, ColumnIndex};
 use crate::nodes::{
-    has_child_token, in_flow_collection, is_block_scalar, is_quoted_scalar,
+    child_token, has_child_token, in_flow_collection, is_block_scalar, is_quoted_scalar,
     starts_a_flow_collection,
 };
 use crate::tag;
@@ -255,10 +255,6 @@ fn fill_locations(node: &SyntaxNode, violations: &mut [Violation]) {
     }
 }
 
-fn range_to_text_position(range: rowan::TextRange) -> crate::TextPosition {
-    crate::TextPosition::new(u32::from(range.start()), u32::from(range.end()))
-}
-
 impl Violation {
     /// An error-severity violation covering `range` in the source.
     ///
@@ -267,7 +263,7 @@ impl Violation {
         Violation {
             message: message.into(),
             location: None,
-            text_range: Some(range_to_text_position(range)),
+            text_range: Some(range.into()),
             severity: Severity::Error,
             rule,
         }
@@ -1182,11 +1178,7 @@ fn check_trailing_content_after_quoted(node: &SyntaxNode, violations: &mut Vec<V
 /// without being quoted. This indicates an attempt to create a nested mapping
 /// within a plain scalar, which is invalid.
 fn check_colon_in_plain_scalar(node: &SyntaxNode, violations: &mut Vec<Violation>) {
-    let Some(colon) = node
-        .children_with_tokens()
-        .filter_map(|c| c.into_token())
-        .find(|t| t.kind() == crate::SyntaxKind::COLON)
-    else {
+    let Some(colon) = child_token(node, crate::SyntaxKind::COLON) else {
         return;
     };
 
@@ -1794,11 +1786,7 @@ fn check_undefined_aliases(document: &SyntaxNode, violations: &mut Vec<Violation
 fn check_anchor_and_alias(node: &SyntaxNode, violations: &mut Vec<Violation>) {
     use crate::SyntaxKind;
 
-    let Some(anchor) = node
-        .children_with_tokens()
-        .filter_map(|c| c.into_token())
-        .find(|t| t.kind() == SyntaxKind::ANCHOR)
-    else {
+    let Some(anchor) = child_token(node, SyntaxKind::ANCHOR) else {
         return;
     };
     let is_alias = |n: &SyntaxNode| n.kind() == SyntaxKind::ALIAS;
@@ -1826,11 +1814,7 @@ fn check_tag_on_alias(node: &SyntaxNode, violations: &mut Vec<Violation>) {
     {
         return;
     }
-    let Some(tag) = node
-        .children_with_tokens()
-        .filter_map(|c| c.into_token())
-        .find(|t| t.kind() == crate::SyntaxKind::TAG)
-    else {
+    let Some(tag) = child_token(node, crate::SyntaxKind::TAG) else {
         return;
     };
     violations.push(Violation::error_at(
@@ -2052,11 +2036,7 @@ fn check_collection_tag_content(node: &SyntaxNode, violations: &mut Vec<Violatio
         Some(tag::PAIRS) if tagged.as_sequence().is_none() => "!!pairs content is not a sequence",
         _ => return,
     };
-    let Some(tag) = node
-        .children_with_tokens()
-        .filter_map(|c| c.into_token())
-        .find(|t| t.kind() == crate::SyntaxKind::TAG)
-    else {
+    let Some(tag) = child_token(node, crate::SyntaxKind::TAG) else {
         return;
     };
     violations.push(Violation::warning_at(
@@ -2343,11 +2323,7 @@ fn check_collection_on_same_line_as_key(
     // (`? k\n: - one\n  - two\n`), which YAML 1.2 allows and PyYAML
     // accepts. Only a plain key's `:` requires the line break, so this
     // rule does not apply to an entry introduced by `?`.
-    if entry_node
-        .children_with_tokens()
-        .filter_map(|c| c.into_token())
-        .any(|t| t.kind() == SyntaxKind::QUESTION)
-    {
+    if has_child_token(entry_node, |k| k == SyntaxKind::QUESTION) {
         return;
     }
 
@@ -2640,10 +2616,7 @@ fn block_scalar_tab_indent(node: &SyntaxNode) -> Option<crate::nodes::SyntaxToke
     // The body's first indentation, right after the header's line break.
     // The tab has to *be* the indentation. After a space it is content,
     // which is how the suite reads R4YG's `- >\n \t\n detected`.
-    node.children_with_tokens()
-        .filter_map(|c| c.into_token())
-        .find(|t| t.kind() == crate::SyntaxKind::INDENT)
-        .filter(|t| t.text().starts_with('\t'))
+    child_token(node, crate::SyntaxKind::INDENT).filter(|t| t.text().starts_with('\t'))
 }
 
 /// The token of `node`, a quoted scalar, whose continuation line opens with
@@ -2823,14 +2796,10 @@ fn check_explicit_value_column(
     if in_flow {
         return;
     }
-    let token = |kind| {
-        entry
-            .children_with_tokens()
-            .filter_map(|c| c.into_token())
-            .find(|t| t.kind() == kind)
-    };
-    let (Some(question), Some(colon)) = (token(SyntaxKind::QUESTION), token(SyntaxKind::COLON))
-    else {
+    let (Some(question), Some(colon)) = (
+        child_token(entry, SyntaxKind::QUESTION),
+        child_token(entry, SyntaxKind::COLON),
+    ) else {
         return;
     };
     let opens_line = std::iter::successors(colon.prev_token(), |t| t.prev_token())

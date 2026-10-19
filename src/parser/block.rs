@@ -240,7 +240,8 @@ impl Parser<'_> {
                 ..self.ctx
             };
             self.scoped(ctx, |p| {
-                p.parse_sequence_entry_value(dash_column, item_indent)
+                p.parse_sequence_entry_value(dash_column, item_indent);
+                p.parse_rest_of_entry_line(dash_column);
             });
 
             self.skip_entry_line_end();
@@ -396,7 +397,8 @@ impl Parser<'_> {
                 ..self.ctx
             };
             self.scoped(ctx, |p| {
-                p.parse_explicit_key_content(question_column, base_indent)
+                p.parse_explicit_key_content(question_column, base_indent);
+                p.parse_rest_of_entry_line(question_column);
             });
 
             self.builder.finish_node();
@@ -450,9 +452,7 @@ impl Parser<'_> {
                     } else {
                         ctx.mapping_value_column = Some(colon_column);
                     }
-                    self.scoped(ctx, |p| {
-                        p.parse_value_after_colon(true, Some(question_column))
-                    });
+                    self.scoped(ctx, |p| p.parse_value_after_colon(true, question_column));
                 }
             } else {
                 // No value, just a key - create explicit null value
@@ -602,7 +602,8 @@ impl Parser<'_> {
                 ..p.ctx
             };
             p.scoped(key_ctx, |p| {
-                p.parse_explicit_key_node(question_column, question_column)
+                p.parse_explicit_key_node(question_column, question_column);
+                p.parse_rest_of_entry_line(question_column);
             });
             p.builder.finish_node();
 
@@ -617,7 +618,7 @@ impl Parser<'_> {
                     ..p.ctx
                 };
                 p.scoped(value_ctx, |p| {
-                    p.parse_value_after_colon(false, Some(question_column))
+                    p.parse_value_after_colon(false, question_column)
                 });
             } else {
                 p.emit_implicit_null_value();
@@ -1290,6 +1291,7 @@ impl Parser<'_> {
             // comment ending the value's last line goes in the VALUE, as
             // in `value  # comment`.
             if has_value {
+                self.parse_rest_of_entry_line(base_indent.max(key_column));
                 self.skip_line_end_trivia();
             } else {
                 self.emit_implicit_null();
@@ -1306,7 +1308,10 @@ impl Parser<'_> {
             // Read as a key whose value was omitted, with a zero-width
             // COLON where the `:` should be.
             self.builder.token(SyntaxKind::COLON.into(), "");
-            self.emit_implicit_null_value();
+            self.builder.start_node(SyntaxKind::VALUE.into());
+            self.emit_implicit_null();
+            self.parse_rest_of_entry_line(base_indent.max(key_column));
+            self.builder.finish_node();
         }
 
         self.skip_entry_line_end();
@@ -1604,6 +1609,81 @@ mod tests {
         let doc = file.document().expect("should have a document");
         assert_eq!(crate::validator::Validator::new().validate(&doc), vec![]);
         crate::YamlValue::from_document(&doc).expect("should convert")
+    }
+
+    /// What is left of a block entry's line after its node is more content
+    /// of the same slot, for the validator to report, rather than another
+    /// entry opening on that line, which left this one unterminated.
+    #[test]
+    fn test_rest_of_entry_line_stays_in_slot() {
+        use rowan::ast::AstNode;
+        for src in [
+            ": :",
+            "a: :\nb: 1\n",
+            "a: ]: x\n",
+            "a: * c: x\n",
+            "a: {}{: x\n",
+            "- {: -\n- b\n",
+            "- [: -\n",
+            ":\n * c: x\n",
+            ":\n|: x\n",
+            "?\n: >: x\n",
+            "? |b: x\n",
+            "<< <<\n",
+        ] {
+            let parse = YamlFile::parse(src);
+            let file = parse.tree();
+            assert_eq!(
+                crate::debug::validate_tree(file.syntax()),
+                Ok(()),
+                "{src:?}"
+            );
+            assert_eq!(file.to_string(), src);
+            let violations = file
+                .documents()
+                .flat_map(|d| crate::validator::Validator::new().validate(&d))
+                .count();
+            assert_ne!(parse.errors().len() + violations, 0, "{src:?}");
+        }
+        assert_eq!(top_level_keys("a: :\nb: 1\n"), ["a", "b"]);
+        assert_eq!(top_level_keys("x:\n  a: :\n  b: 1\nc: 2\n"), ["x", "c"]);
+        let parsed = YamlFile::from_str("a: :\nb: 1\n").unwrap();
+        assert_eq!(
+            crate::debug::tree_to_string(parsed.syntax()),
+            "\
+DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"a\"
+      COLON: \":\"
+      WHITESPACE: \" \"
+      VALUE
+        SCALAR
+          NULL: \"\"
+        MAPPING
+          MAPPING_ENTRY
+            KEY
+              SCALAR
+                NULL: \"\"
+            COLON: \":\"
+            VALUE
+              SCALAR
+                NULL: \"\"
+            NEWLINE: \"\\\\n\"
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"b\"
+      COLON: \":\"
+      WHITESPACE: \" \"
+      VALUE
+        SCALAR
+          INT: \"1\"
+      NEWLINE: \"\\\\n\"
+"
+        );
     }
 
     /// A sequence on the line of an explicit key is the key's, however much

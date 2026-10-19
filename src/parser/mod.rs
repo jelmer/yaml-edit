@@ -968,6 +968,37 @@ impl Parser<'_> {
         }
     }
 
+    /// Read what is left of the line after the node of a block entry at
+    /// `column` as more nodes in the same slot, which the validator
+    /// reports. Opening the collection's next entry there instead left this
+    /// one without the line break ending it. Later lines belong to those
+    /// nodes only when indented past the entry.
+    pub(super) fn parse_rest_of_entry_line(&mut self, column: usize) {
+        if self.in_flow_context {
+            return;
+        }
+        while !matches!(
+            self.previous_kind,
+            Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
+        ) {
+            let whitespace = usize::from(self.current() == Some(SyntaxKind::WHITESPACE));
+            if matches!(
+                self.peek_kind(whitespace),
+                None | Some(SyntaxKind::NEWLINE | SyntaxKind::COMMENT)
+            ) {
+                return;
+            }
+            if whitespace == 1 {
+                self.bump();
+            }
+            let before = self.tokens.len();
+            self.parse_value_with_base_indent(column + 1);
+            if self.tokens.len() == before {
+                self.parse_stray_token("block entry");
+            }
+        }
+    }
+
     /// The token [`skip_ws_and_newlines`](Self::skip_ws_and_newlines)
     /// would stop at, and the indentation of its line.
     pub(super) fn next_content(&self) -> (Option<SyntaxKind>, usize) {
@@ -990,7 +1021,7 @@ impl Parser<'_> {
     /// value sits, so they are stepped over: the YAML test suite's Q9WF has
     /// a column-0 comment between a flow-collection key and its indented
     /// block mapping. The caller is on the NEWLINE ending the colon's line.
-    fn value_line_after_colon(&self, mapping_column: Option<usize>) -> Option<(usize, usize)> {
+    fn value_line_after_colon(&self, mapping_column: usize) -> Option<(usize, usize)> {
         let ahead = self.lookahead();
         if ahead.kind(0) != Some(SyntaxKind::NEWLINE) {
             return None;
@@ -1011,13 +1042,12 @@ impl Parser<'_> {
         let (SyntaxKind::INDENT, text) = ahead.get(i)? else {
             // A line at column 0 has no INDENT; it holds the value only as
             // an indentless sequence of a mapping at column 0.
-            let indentless = mapping_column == Some(0) && ahead.kind(i) == Some(SyntaxKind::DASH);
+            let indentless = mapping_column == 0 && ahead.kind(i) == Some(SyntaxKind::DASH);
             return indentless.then_some((i - 1, 0));
         };
         let indent = text.len();
-        let opens_value = mapping_column.map_or(true, |column| {
-            indent > column || (indent == column && ahead.kind(i + 1) == Some(SyntaxKind::DASH))
-        });
+        let opens_value = indent > mapping_column
+            || (indent == mapping_column && ahead.kind(i + 1) == Some(SyntaxKind::DASH));
         opens_value.then_some((i, indent))
     }
 
@@ -1031,29 +1061,23 @@ impl Parser<'_> {
     /// column of the INDENT just consumed becomes the value's base indent,
     /// so content at or left of it belongs to an enclosing collection.
     ///
-    /// `mapping_column` is the column of the mapping the entry belongs to,
-    /// when known. A value on a later line has to be indented past it, bar
-    /// an indentless sequence: in `k:\n  ? a\n  :\n  b: c\n` the value of
-    /// `a` is null and `b` is its sibling.
-    pub(super) fn parse_value_after_colon(
-        &mut self,
-        track_indent: bool,
-        mapping_column: Option<usize>,
-    ) {
+    /// `mapping_column` is the column of the mapping the entry belongs to.
+    /// A value on a later line has to be indented past it, bar an
+    /// indentless sequence: in `k:\n  ? a\n  :\n  b: c\n` the value of `a`
+    /// is null and `b` is its sibling.
+    pub(super) fn parse_value_after_colon(&mut self, track_indent: bool, mapping_column: usize) {
         self.builder.start_node(SyntaxKind::VALUE.into());
         // A comment ends the colon's line just as a line break does: the
         // next line is the value only if it is indented to be one.
         if self.current() == Some(SyntaxKind::COMMENT) {
             self.bump();
         }
-        if let Some(column) =
-            mapping_column.filter(|column| self.dedented_block_scalar_header_follows(*column))
-        {
+        if self.dedented_block_scalar_header_follows(mapping_column) {
             // `? a\n:\n|\n x\n`: the header can only be this value. Its
             // body still has to clear the mapping's column.
             self.skip_ws_and_newlines();
             let ctx = BlockCtx {
-                mapping_value_column: Some(column),
+                mapping_value_column: Some(mapping_column),
                 ..self.ctx
             };
             self.scoped(ctx, |p| p.parse_value());
@@ -1073,6 +1097,7 @@ impl Parser<'_> {
             // sibling entry, which is left to the mapping.
             self.emit_implicit_null();
         }
+        self.parse_rest_of_entry_line(mapping_column);
         // A comment ending the value's last line goes in the VALUE, as in
         // a mapping entry with an implicit key.
         self.skip_line_end_trivia();

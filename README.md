@@ -213,13 +213,13 @@ use yaml_edit::path::YamlPath;
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 # let doc = Document::from_str("server:\n  host: localhost\nservers:\n  - host: a")?;
 // Get nested values
-let host = doc.get_path("server.host");
+let host = doc.try_get_path("server.host")?;
 
 // Set nested values (creates intermediate mappings)
-doc.set_path("database.credentials.username", "admin");
+doc.try_set_path("database.credentials.username", "admin")?;
 
 // Array indexing
-doc.get_path("servers[0].host");
+let first = doc.try_get_path("servers[0].host")?;
 # Ok(())
 # }
 ```

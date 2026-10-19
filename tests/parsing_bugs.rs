@@ -4141,6 +4141,42 @@ fn test_quote_opening_a_plain_continuation_line_is_content() {
     );
 }
 
+/// A line at the column of the mapping a plain scalar is in starts its
+/// next entry rather than continuing the scalar, so a quote there opens a
+/// quoted scalar, which here does not end. The lexer read the quote as
+/// content, giving the plain keys `'b` and `'uantity` that the validator
+/// accepted.
+#[test]
+fn test_quote_at_the_mapping_column_after_a_plain_scalar() {
+    for (yaml, error) in [
+        (
+            "a: 1\n'b: 2\n",
+            "2:1: Content after the document could not be parsed: \"'b: 2\\n\"",
+        ),
+        (
+            "- item: x\n  'uantity: 1",
+            "2:3: Content after the document could not be parsed: \"'uantity: 1\"",
+        ),
+    ] {
+        let parsed = yaml_edit::YamlFile::parse(yaml);
+        assert_eq!(parsed.errors(), [error.to_string()], "{yaml:?}");
+    }
+
+    // Indented past the mapping's column the line continues the scalar.
+    let doc = yaml_edit::Document::from_str("- item: x\n   'uantity\n").unwrap();
+    let item = doc.as_sequence().unwrap().get(0).unwrap();
+    assert_eq!(
+        item.as_mapping()
+            .unwrap()
+            .get("item")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "x 'uantity"
+    );
+}
+
 /// A document's root block scalar may put its body at column 0, since the
 /// root sits at indentation -1. Such a body is literal text up to the next
 /// document marker.

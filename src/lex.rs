@@ -738,11 +738,17 @@ impl<'a, 'c> LexState<'a, 'c> {
     ///
     /// Such a line either continues that scalar or starts a new implicit
     /// key, and an implicit key fits on one line.
+    /// In block context the line has to be indented past the collection
+    /// the scalar is in: at its column a line starts the next entry, as in
+    /// `a: 1\n'b: 2\n`.
     fn opens_plain_scalar_continuation_line(&self, idx: usize) -> bool {
         use SyntaxKind::*;
         self.input[self.line_start..idx]
             .chars()
             .all(|c| c == ' ' || c == '\t')
+            && (self.flow_depth > 0
+                || parent_column(&self.tokens)
+                    .map_or(true, |column| idx - self.line_start > column))
             && self
                 .tokens
                 .iter()
@@ -1563,31 +1569,33 @@ impl BlockScalarBody {
         Self {
             header_line_start: line_start,
             header_token: tokens.len(),
-            parent_column: block_scalar_parent_column(tokens),
+            parent_column: parent_column(tokens).unwrap_or(0),
             min_indent,
             indent: None,
         }
     }
 }
 
-/// The column a block scalar's indentation indicator counts from, given
-/// the tokens lexed before its header.
+/// The column of the block collection a node starting after `tokens` is a
+/// node of, or `None` at the document root.
 ///
-/// This is the column of the collection the scalar is a node of, as the
-/// parser records it: the `-` or `?` introducing it, or for a mapping value
-/// the start of its key (the `:` itself when the key is empty or explicit,
-/// as an explicit key's mapping sits at its `?` and `:`).
-/// When the header opens its line, the collection is the one the previous
-/// line with content leaves open. With none, as at the document root, it
-/// is column 0, as for the parser and libyaml, although YAML 1.2 puts the
-/// root at -1.
-fn block_scalar_parent_column(tokens: &[(SyntaxKind, &str)]) -> usize {
+/// This is the column as the parser records it: the `-` or `?`
+/// introducing the node, or for a mapping value the start of its key (the
+/// `:` itself when the key is empty or explicit, as an explicit key's
+/// mapping sits at its `?` and `:`). When the node opens its line, or
+/// continues a plain scalar, the collection is the one the last line with
+/// an indicator leaves open. A block scalar's indentation indicator counts
+/// from this column, taking the root's as 0 as the parser and libyaml do,
+/// although YAML 1.2 puts the root at -1.
+fn parent_column(tokens: &[(SyntaxKind, &str)]) -> Option<usize> {
     use SyntaxKind::*;
     for line in tokens.rsplit(|(kind, _)| matches!(kind, NEWLINE | BOM)) {
-        let Some(last) = line
-            .iter()
-            .rposition(|(kind, _)| !matches!(kind, WHITESPACE | INDENT | COMMENT | TAG | ANCHOR))
-        else {
+        let Some(last) = line.iter().rposition(|(kind, _)| {
+            !matches!(
+                kind,
+                WHITESPACE | INDENT | COMMENT | TAG | ANCHOR | STRING | INT | FLOAT | BOOL | NULL
+            )
+        }) else {
             continue;
         };
         let column = |index: usize| -> usize {
@@ -1597,7 +1605,7 @@ fn block_scalar_parent_column(tokens: &[(SyntaxKind, &str)]) -> usize {
                 .sum()
         };
         return match line[last].0 {
-            DASH | QUESTION => column(last),
+            DASH | QUESTION => Some(column(last)),
             COLON => {
                 // The key starts after the block indicators opening the
                 // line. An explicit `:` is one of them, as its value may be
@@ -1608,12 +1616,13 @@ fn block_scalar_parent_column(tokens: &[(SyntaxKind, &str)]) -> usize {
                         !matches!(kind, WHITESPACE | INDENT | DASH | QUESTION | COLON)
                     })
                     .unwrap_or(last);
-                column(key)
+                Some(column(key))
             }
-            _ => 0,
+            DOC_START => None,
+            _ => Some(0),
         };
     }
-    0
+    None
 }
 
 /// Read a block scalar header's indicators from the tokens following its

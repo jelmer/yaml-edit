@@ -22,6 +22,7 @@
 //! }
 //! ```
 
+use crate::as_yaml::SharedIdentities;
 use crate::column::{space_indent, ColumnIndex};
 use crate::nodes::{
     child_token, has_child_token, in_flow_collection, is_block_scalar, is_quoted_scalar,
@@ -352,6 +353,7 @@ impl Validator {
     /// The walk is iterative, so deep nesting cannot overflow the stack.
     fn validate_node(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         let columns = ColumnIndex::new(node);
+        let mut identities = SharedIdentities::default();
         // Whether each node being walked opens a flow collection, and how
         // many enclosing ones do; asking each node for its ancestors made
         // the walk quadratic in the nesting depth.
@@ -360,7 +362,7 @@ impl Validator {
         for event in node.preorder() {
             match event {
                 rowan::WalkEvent::Enter(n) => {
-                    self.check_node(&n, &columns, flow_depth > 0, violations);
+                    self.check_node(&n, &columns, &mut identities, flow_depth > 0, violations);
                     let is_flow = matches!(
                         n.kind(),
                         crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
@@ -382,6 +384,7 @@ impl Validator {
         &self,
         node: &SyntaxNode,
         columns: &ColumnIndex,
+        identities: &mut SharedIdentities,
         in_flow: bool,
         violations: &mut Vec<Violation>,
     ) {
@@ -451,7 +454,7 @@ impl Validator {
                 check_block_mapping_after_properties(node, violations);
                 check_mapping_entry_indentation(node, columns, violations);
                 if self.config.check_duplicate_keys {
-                    check_duplicate_keys(node, violations);
+                    check_duplicate_keys(node, identities, violations);
                 }
             }
             SyntaxKind::SEQUENCE => {
@@ -469,7 +472,7 @@ impl Validator {
                 check_multiple_tags(node, violations);
                 check_collection_tag_content(node, violations);
                 check_pairs_items(node, violations);
-                check_omap_keys(node, violations);
+                check_omap_keys(node, identities, violations);
                 check_set_values(node, violations);
             }
             SyntaxKind::DOCUMENT => {
@@ -2166,7 +2169,11 @@ fn check_pairs_items(node: &SyntaxNode, violations: &mut Vec<Violation>) {
 /// Like other content that does not suit a YAML 1.1 type, a repeated
 /// key is only a warning. Keys compare as in
 /// [`Self::check_duplicate_keys`].
-fn check_omap_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
+fn check_omap_keys(
+    node: &SyntaxNode,
+    identities: &mut SharedIdentities,
+    violations: &mut Vec<Violation>,
+) {
     use crate::SyntaxKind;
 
     let Some(tagged) = crate::yaml::TaggedNode::cast(node.clone()) else {
@@ -2195,9 +2202,9 @@ fn check_omap_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
         let key = entry.children().find(|n| n.kind() == SyntaxKind::KEY)?;
         Some((key, entry.text_range()))
     });
-    let mut seen: Vec<(crate::as_yaml::NodeIdentity, SyntaxNode)> = Vec::new();
+    let mut seen: Vec<(usize, SyntaxNode)> = Vec::new();
     for (key, range) in keys {
-        let Some(identity) = key_identity(&key) else {
+        let Some(identity) = key_identity(&key, identities) else {
             continue;
         };
         if let Some((_, first)) = seen.iter().find(|(k, _)| *k == identity) {
@@ -2537,7 +2544,11 @@ fn check_quoted_string_indentation(
 /// - `null`, `~`, and empty key are all duplicates (all null)
 /// - Works with complex keys (sequences, mappings) as well
 /// - A key that is or holds an alias equals nothing
-fn check_duplicate_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
+fn check_duplicate_keys(
+    node: &SyntaxNode,
+    identities: &mut SharedIdentities,
+    violations: &mut Vec<Violation>,
+) {
     use crate::SyntaxKind;
     use std::collections::HashMap;
 
@@ -2549,12 +2560,8 @@ fn check_duplicate_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
             Some((key, child.text_range()))
         })
         .collect();
-    // A key's identity and text cover its whole subtree, so computing them
-    // for the key of each level of `{{{...}}}` made validation quadratic in
-    // the nesting depth. Only keys of the same kind can be equal, so a key
-    // with no other of its kind is left alone.
-    // TODO: two collection keys on every level still cost the depth times
-    // the size, as each level works out the identities below it again.
+    // Only keys of the same kind can be equal, so a key with no other of
+    // its kind is left alone.
     let kinds: Vec<Option<SyntaxKind>> = keys.iter().map(|(key, _)| identity_kind(key)).collect();
     let mut kind_counts: HashMap<SyntaxKind, usize> = HashMap::new();
     for kind in kinds.iter().flatten() {
@@ -2570,12 +2577,12 @@ fn check_duplicate_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
     };
 
     // Key identity -> index of the first key with it
-    let mut seen: HashMap<crate::as_yaml::NodeIdentity, usize> = HashMap::new();
+    let mut seen: HashMap<usize, usize> = HashMap::new();
     for (i, (key, range)) in keys.iter().enumerate() {
         if !kinds[i].is_some_and(|kind| kind_counts[&kind] > 1) {
             continue;
         }
-        let Some(identity) = key_identity(key) else {
+        let Some(identity) = key_identity(key, identities) else {
             continue;
         };
         match seen.entry(identity) {
@@ -2600,9 +2607,11 @@ fn check_duplicate_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
 /// The identity of mapping key `key`, or `None` if it is or holds an alias.
 ///
 /// Such a key is compared with nothing: the YAML test suite has
-/// `{&a [a]: 1, *a : 2}` as valid (X38W).
-fn key_identity(key: &SyntaxNode) -> Option<crate::as_yaml::NodeIdentity> {
-    crate::as_yaml::node_identity(key, None).ok().flatten()
+/// `{&a [a]: 1, *a : 2}` as valid (X38W). The identities of the nodes in
+/// `key` are kept in `identities` for the keys among them, which would
+/// otherwise work them out again on every level of nested collection keys.
+fn key_identity(key: &SyntaxNode, identities: &mut SharedIdentities) -> Option<usize> {
+    identities.identity(key).ok().flatten()
 }
 
 /// The kind of the node that gives `node`, a key or a node in one, its
@@ -2913,6 +2922,18 @@ mod tests {
             format!("{}x{keys}", "{".repeat(n))
         });
         assert_validation_scales_linearly(60, |n| format!("{}x\n", "- ".repeat(n)));
+    }
+
+    #[test]
+    fn test_duplicate_key_detection_scales_linearly_with_nested_keys() {
+        // Each mapping worked out the identities of all the keys nested in
+        // its own two collection keys again. Each level nests twice.
+        assert_validation_scales_linearly(30, |n| {
+            format!("{}x{}", "{[0]: 1, [".repeat(n), "]: 1}".repeat(n))
+        });
+        assert_validation_scales_linearly(30, |n| {
+            format!("{}x{}", "{{0: 1}: 1, {a: ".repeat(n), "}: 1}".repeat(n))
+        });
     }
 
     #[test]

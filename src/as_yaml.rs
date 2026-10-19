@@ -191,21 +191,25 @@ fn to_syntax<T: AsYaml + ?Sized>(v: &T) -> Option<SyntaxNode> {
 /// The identity of a node under YAML node equality: its resolved tag and
 /// canonical content, with aliases followed. Two nodes are equal, and so
 /// the same mapping key, exactly when their identities are.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct NodeIdentity(Identity<NodeIdentity>);
+
+/// A node's identity, with that of each node in it given as a `T`.
 ///
 /// Mapping entries are kept sorted, since mappings are unordered.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum NodeIdentity {
+pub(crate) enum Identity<T> {
     Scalar {
         tag: String,
         value: String,
     },
     Sequence {
         tag: String,
-        items: Vec<NodeIdentity>,
+        items: Vec<T>,
     },
     Mapping {
         tag: String,
-        entries: Vec<(NodeIdentity, NodeIdentity)>,
+        entries: Vec<(T, T)>,
     },
     /// An alias that is not followed, as for [`lookup_identity`].
     Alias {
@@ -221,9 +225,9 @@ impl NodeIdentity {
     ///
     /// Equal nodes have the same string form, however they are written.
     pub(crate) fn key_string(&self) -> String {
-        match self {
-            NodeIdentity::Scalar { value, .. } => value.clone(),
-            collection => collection.flow_text(),
+        match &self.0 {
+            Identity::Scalar { value, .. } => value.clone(),
+            _ => self.flow_text(),
         }
     }
 
@@ -238,11 +242,11 @@ impl NodeIdentity {
                 format!("{tag} {content}")
             }
         };
-        match self {
-            NodeIdentity::Scalar { tag, value } if tag == tag::STR => {
+        match &self.0 {
+            Identity::Scalar { tag, value } if tag == tag::STR => {
                 ScalarValue::string(value.as_str()).to_flow_string()
             }
-            NodeIdentity::Scalar { tag, value } => {
+            Identity::Scalar { tag, value } => {
                 let plain = resolve_scalar(ScalarValue::parse(value.as_str()));
                 if !value.is_empty() && plain.tag == *tag && plain.value == *value {
                     value.clone()
@@ -253,18 +257,18 @@ impl NodeIdentity {
                     )
                 }
             }
-            NodeIdentity::Sequence { tag, items } => {
+            Identity::Sequence { tag, items } => {
                 let items: Vec<_> = items.iter().map(Self::flow_text).collect();
                 tagged(tag, tag::SEQ, format!("[{}]", items.join(", ")))
             }
-            NodeIdentity::Mapping { tag, entries } => {
+            Identity::Mapping { tag, entries } => {
                 let entries: Vec<_> = entries
                     .iter()
                     .map(|(k, v)| format!("{}: {}", k.flow_text(), v.flow_text()))
                     .collect();
                 tagged(tag, tag::MAP, format!("{{{}}}", entries.join(", ")))
             }
-            NodeIdentity::Alias { tag, name } => match tag {
+            Identity::Alias { tag, name } => match tag {
                 Some(tag) => format!("{tag} *{name}"),
                 None => format!("*{name}"),
             },
@@ -329,12 +333,12 @@ fn resolve_scalar(scalar: crate::scalar::ScalarValue) -> ResolvedScalar {
 pub(crate) fn node_identity(
     node: &SyntaxNode,
     registry: Option<&crate::anchor_resolution::AnchorRegistry>,
-) -> Result<Option<NodeIdentity>, crate::anchor_resolution::AliasError> {
+) -> IdentityResult<NodeIdentity> {
     let aliases = match registry {
         Some(registry) => Aliases::Follow(registry),
         None => Aliases::Undefined,
     };
-    identity_with_tag(node, None, aliases, &mut Vec::new())
+    identity_with_tag(node, None, aliases, &mut Vec::new(), &mut Trees)
 }
 
 /// The identity of `node` for looking it up as a key among a mapping's
@@ -344,7 +348,7 @@ pub(crate) fn node_identity(
 ///
 /// Returns `None` if `node` is not a value node.
 pub(crate) fn lookup_identity(node: &SyntaxNode) -> Option<NodeIdentity> {
-    identity_with_tag(node, None, Aliases::ByName, &mut Vec::new())
+    identity_with_tag(node, None, Aliases::ByName, &mut Vec::new(), &mut Trees)
         .expect("aliases are not followed")
 }
 
@@ -359,6 +363,9 @@ enum Aliases<'a> {
     ByName,
 }
 
+/// The identity of a node, `None` if it is not a value node.
+pub(crate) type IdentityResult<T> = Result<Option<T>, crate::anchor_resolution::AliasError>;
+
 /// The identity of `key` as a mapping key, following aliases through
 /// `registry`; see [`NodeIdentity`]. Without a registry an alias is
 /// undefined.
@@ -369,16 +376,109 @@ pub(crate) fn key_identity(
     Ok(node_identity(key.syntax(), registry)?.expect("a YamlNode is a value node"))
 }
 
+/// Makes the identity of a node out of those of the nodes in it.
+trait IdentityBuilder {
+    type Id: Ord;
+
+    fn build(&mut self, identity: Identity<Self::Id>) -> Self::Id;
+
+    /// The identity worked out before for `node`, written without a tag
+    /// from outside it.
+    fn known(&self, _node: &SyntaxNode) -> Option<IdentityResult<Self::Id>> {
+        None
+    }
+
+    fn remember(&mut self, _node: &SyntaxNode, _identity: &IdentityResult<Self::Id>) {}
+}
+
+/// Builds each identity as a [`NodeIdentity`] of its own.
+struct Trees;
+
+impl IdentityBuilder for Trees {
+    type Id = NodeIdentity;
+
+    fn build(&mut self, identity: Identity<NodeIdentity>) -> NodeIdentity {
+        NodeIdentity(identity)
+    }
+}
+
+/// The identities of the nodes of one tree, as numbers that are equal
+/// exactly when the identities are.
+///
+/// A node's identity covers all the nodes in it. Each of those is worked
+/// out once and then shared, so finding the identities of nested keys
+/// takes time linear in the size of the tree. Aliases are undefined, as
+/// for [`node_identity`] without a registry.
+#[derive(Default)]
+pub(crate) struct SharedIdentities {
+    numbers: std::collections::HashMap<Identity<usize>, usize>,
+    nodes: std::collections::HashMap<SyntaxNode, IdentityResult<usize>>,
+}
+
+impl SharedIdentities {
+    /// The identity of `node`, as [`node_identity`] without a registry
+    /// gives it.
+    pub(crate) fn identity(&mut self, node: &SyntaxNode) -> IdentityResult<usize> {
+        identity_with_tag(node, None, Aliases::Undefined, &mut Vec::new(), self)
+    }
+}
+
+impl IdentityBuilder for SharedIdentities {
+    type Id = usize;
+
+    fn build(&mut self, identity: Identity<usize>) -> usize {
+        let next = self.numbers.len();
+        *self.numbers.entry(identity).or_insert(next)
+    }
+
+    fn known(&self, node: &SyntaxNode) -> Option<IdentityResult<usize>> {
+        self.nodes.get(node).cloned()
+    }
+
+    fn remember(&mut self, node: &SyntaxNode, identity: &IdentityResult<usize>) {
+        self.nodes.insert(node.clone(), identity.clone());
+    }
+}
+
 /// The identity of `node` with `tag`, if set, in place of its own tag.
 ///
 /// `expanding` holds the anchored nodes whose aliases are being followed,
 /// so an alias within its own anchored node is reported as recursive.
-fn identity_with_tag(
+fn identity_with_tag<B: IdentityBuilder>(
     node: &SyntaxNode,
     tag: Option<String>,
     aliases: Aliases,
     expanding: &mut Vec<SyntaxNode>,
-) -> Result<Option<NodeIdentity>, crate::anchor_resolution::AliasError> {
+    builder: &mut B,
+) -> IdentityResult<B::Id> {
+    use crate::lex::SyntaxKind;
+
+    // A tag from outside changes the identity, so only one without is
+    // shared, and only that of a node with others in it saves any work.
+    let holds_nodes = matches!(
+        node.kind(),
+        SyntaxKind::MAPPING | SyntaxKind::SEQUENCE | SyntaxKind::TAGGED_NODE
+    );
+    if tag.is_some() || !holds_nodes {
+        return build_identity(node, tag, aliases, expanding, builder);
+    }
+    if let Some(identity) = builder.known(node) {
+        return identity;
+    }
+    let identity = build_identity(node, None, aliases, expanding, builder);
+    builder.remember(node, &identity);
+    identity
+}
+
+/// [`identity_with_tag`], without looking for an identity worked out
+/// before.
+fn build_identity<B: IdentityBuilder>(
+    node: &SyntaxNode,
+    tag: Option<String>,
+    aliases: Aliases,
+    expanding: &mut Vec<SyntaxNode>,
+    builder: &mut B,
+) -> IdentityResult<B::Id> {
     use crate::anchor_resolution::AliasError;
     use crate::lex::SyntaxKind;
     use crate::scalar::ScalarValue;
@@ -387,9 +487,13 @@ fn identity_with_tag(
         Some(tag) => scalar.with_resolved_tag(tag),
         None => scalar,
     };
+    let scalar = |builder: &mut B, scalar: ScalarValue, tag: Option<String>| {
+        let ResolvedScalar { tag, value } = resolve_scalar(with_tag(scalar, tag));
+        builder.build(Identity::Scalar { tag, value })
+    };
     match node.kind() {
         SyntaxKind::KEY | SyntaxKind::VALUE => match node.first_child() {
-            Some(content) => identity_with_tag(&content, tag, aliases, expanding),
+            Some(content) => identity_with_tag(&content, tag, aliases, expanding, builder),
             None => Ok(None),
         },
         SyntaxKind::TAGGED_NODE => {
@@ -400,11 +504,8 @@ fn identity_with_tag(
             // the place of the node's own.
             let tag = tag.or_else(|| tagged.tag());
             match node.first_child() {
-                Some(content) => identity_with_tag(&content, tag, aliases, expanding),
-                None => Ok(ScalarValue::from_tagged(&tagged).map(|scalar| {
-                    let ResolvedScalar { tag, value } = resolve_scalar(with_tag(scalar, tag));
-                    NodeIdentity::Scalar { tag, value }
-                })),
+                Some(content) => identity_with_tag(&content, tag, aliases, expanding, builder),
+                None => Ok(ScalarValue::from_tagged(&tagged).map(|s| scalar(builder, s, tag))),
             }
         }
         SyntaxKind::ALIAS => {
@@ -414,10 +515,10 @@ fn identity_with_tag(
             let registry = match aliases {
                 Aliases::Follow(registry) => registry,
                 Aliases::ByName => {
-                    return Ok(Some(NodeIdentity::Alias {
+                    return Ok(Some(builder.build(Identity::Alias {
                         tag,
                         name: alias.name(),
-                    }))
+                    })))
                 }
                 Aliases::Undefined => {
                     return Err(AliasError::Undefined {
@@ -432,33 +533,32 @@ fn identity_with_tag(
                 });
             }
             expanding.push(target.clone());
-            let identity = identity_with_tag(target, tag, aliases, expanding);
+            let identity = identity_with_tag(target, tag, aliases, expanding, builder);
             expanding.pop();
             identity
         }
-        SyntaxKind::SCALAR => Ok(Scalar::cast(node.clone()).map(|scalar| {
-            let ResolvedScalar { tag, value } =
-                resolve_scalar(with_tag(ScalarValue::from_scalar(&scalar), tag));
-            NodeIdentity::Scalar { tag, value }
-        })),
+        SyntaxKind::SCALAR => {
+            Ok(Scalar::cast(node.clone())
+                .map(|s| scalar(builder, ScalarValue::from_scalar(&s), tag)))
+        }
         SyntaxKind::MAPPING => {
             let Some(mapping) = Mapping::cast(node.clone()) else {
                 return Ok(None);
             };
             let mut entries = Vec::new();
             for (key, value) in mapping.pairs() {
-                let key = identity_with_tag(&key, None, aliases, expanding)?;
-                let value = identity_with_tag(&value, None, aliases, expanding)?;
+                let key = identity_with_tag(&key, None, aliases, expanding, builder)?;
+                let value = identity_with_tag(&value, None, aliases, expanding, builder)?;
                 let (Some(key), Some(value)) = (key, value) else {
                     return Ok(None);
                 };
                 entries.push((key, value));
             }
             entries.sort();
-            Ok(Some(NodeIdentity::Mapping {
+            Ok(Some(builder.build(Identity::Mapping {
                 tag: collection_tag(tag, tag::MAP),
                 entries,
-            }))
+            })))
         }
         SyntaxKind::SEQUENCE => {
             let Some(sequence) = Sequence::cast(node.clone()) else {
@@ -466,15 +566,16 @@ fn identity_with_tag(
             };
             let mut items = Vec::new();
             for item in sequence.items() {
-                let Some(item) = identity_with_tag(&item, None, aliases, expanding)? else {
+                let Some(item) = identity_with_tag(&item, None, aliases, expanding, builder)?
+                else {
                     return Ok(None);
                 };
                 items.push(item);
             }
-            Ok(Some(NodeIdentity::Sequence {
+            Ok(Some(builder.build(Identity::Sequence {
                 tag: collection_tag(tag, tag::SEQ),
                 items,
-            }))
+            })))
         }
         _ => Ok(None),
     }
@@ -498,7 +599,7 @@ pub(crate) fn identity_of<T: AsYaml + ?Sized>(
 /// Returns `None` for anything that is not a scalar.
 pub(crate) fn scalar_canonical(node: &SyntaxNode) -> Option<(String, String)> {
     match node_identity(node, None) {
-        Ok(Some(NodeIdentity::Scalar { tag, value })) => Some((tag, value)),
+        Ok(Some(NodeIdentity(Identity::Scalar { tag, value }))) => Some((tag, value)),
         _ => None,
     }
 }

@@ -838,19 +838,11 @@ impl Parser<'_> {
                             // block: what ends it is the next line with
                             // content. `a:\n  - x\n# c\n  - y\n` keeps both
                             // entries, as both saphyr and PyYAML read it.
-                            if base_indent > 0 {
-                                return match self.indent_after_comment_lines() {
-                                    // Content still inside the block: the
-                                    // comment belongs to it, not to whatever
-                                    // encloses us.
-                                    Some(indent) => indent < base_indent,
-                                    // Nothing follows, so the comment is a
-                                    // trailer of the enclosing scope.
-                                    None => true,
-                                };
-                            }
-                            // base_indent==0, let caller handle the comment
-                            return false;
+                            // With nothing after it, the comment goes to the
+                            // root collection however many blocks end here.
+                            return self
+                                .indent_after_comment_lines()
+                                .is_some_and(|indent| indent < base_indent);
                         }
                         Some(SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE) => {
                             // More whitespace, continue loop
@@ -1664,6 +1656,7 @@ mod tests {
             ("a: |-x\n", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(PIPE\"|\") SCALAR(STRING\"-x\")) NEWLINE\"\\n\")))"),
             ("a: b:\n &x c: d\n", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(STRING\"b\" COLON\":\")) NEWLINE\"\\n\") INDENT\" \" MAPPING_ENTRY(KEY(ANCHOR\"&x\" WHITESPACE\" \" SCALAR(STRING\"c\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(STRING\"d\")) NEWLINE\"\\n\")))"),
             ("a\nb : c\n", 0, "DOCUMENT(SCALAR(STRING\"a\") NEWLINE\"\\n\" MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"b\")) WHITESPACE\" \" COLON\":\" WHITESPACE\" \" VALUE(SCALAR(STRING\"c\")) NEWLINE\"\\n\")))"),
+            (" a: 1\n\n# c\n", 0, "DOCUMENT(INDENT\" \" MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(INT\"1\")) NEWLINE\"\\n\") NEWLINE\"\\n\" COMMENT\"# c\" NEWLINE\"\\n\"))"),
             ("\t%\n-\r!\t-", 0, "DOCUMENT(INDENT\"\\t\" SCALAR(STRING\"%\" NEWLINE\"\\n\" DASH\"-\" NEWLINE\"\\r\" TAG\"!\" WHITESPACE\"\\t\" STRING\"-\"))"),
 
         ] {

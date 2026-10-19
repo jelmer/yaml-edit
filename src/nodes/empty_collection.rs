@@ -42,11 +42,7 @@ pub(crate) fn render_empty(collection: &SyntaxNode, line_break: Option<&str>) {
     {
         return;
     }
-    let node = collection
-        .parent()
-        .filter(|p| p.kind() == SyntaxKind::TAGGED_NODE)
-        .unwrap_or_else(|| collection.clone());
-    match node.parent().map(|p| p.kind()) {
+    match outer_node(collection).parent().map(|p| p.kind()) {
         Some(SyntaxKind::VALUE) => render_as_value(collection, line_break),
         Some(SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::KEY | SyntaxKind::DOCUMENT) | None => {
             render_in_place(collection, line_break)
@@ -184,11 +180,8 @@ fn render_as_value(collection: &SyntaxNode, line_break: Option<&str>) {
     // A tag sits between the VALUE and the collection; the rewrite
     // happens inside the TAGGED_NODE so the tag survives.
     let host = collection.parent().expect("a mapping value has a parent");
-    let value_node = if host.kind() == SyntaxKind::TAGGED_NODE {
-        host.parent().expect("a tagged mapping value has a VALUE")
-    } else {
-        host.clone()
-    };
+    let outer = outer_node(collection);
+    let value_node = outer.parent().expect("a mapping value has a VALUE");
     let entry_node = value_node
         .parent()
         .filter(|p| p.kind() == SyntaxKind::MAPPING_ENTRY)
@@ -283,7 +276,7 @@ fn render_as_value(collection: &SyntaxNode, line_break: Option<&str>) {
     }
     replace_children(&host, start..end, replacement);
     if !comment.is_empty() {
-        let after_host = host.index() + 1;
+        let after_host = outer.index() + 1;
         insert_children(&value_node, after_host, comment);
     }
 
@@ -355,14 +348,22 @@ fn indent_past_question(collection: &SyntaxNode) {
     }
 }
 
+/// `collection`, or the outermost TAGGED_NODE around it. Input with more
+/// than one tag or anchor on a node, which the validator rejects, nests
+/// them.
+fn outer_node(collection: &SyntaxNode) -> SyntaxNode {
+    collection
+        .ancestors()
+        .take_while(|n| n == collection || n.kind() == SyntaxKind::TAGGED_NODE)
+        .last()
+        .expect("ancestors has self")
+}
+
 /// The node that carries `collection`'s line: the collection itself, the
 /// TAGGED_NODE around it, or for an explicit key the KEY, or the entry if
 /// that has no `:`.
 fn line_node(collection: &SyntaxNode) -> SyntaxNode {
-    let node = collection
-        .parent()
-        .filter(|p| p.kind() == SyntaxKind::TAGGED_NODE)
-        .unwrap_or_else(|| collection.clone());
+    let node = outer_node(collection);
     let Some(key) = node.parent().filter(|p| p.kind() == SyntaxKind::KEY) else {
         return node;
     };
@@ -461,11 +462,7 @@ pub(crate) fn convert_placeholder_to_block(collection: &SyntaxNode) {
     let Some(host) = collection.parent() else {
         return;
     };
-    let node = if host.kind() == SyntaxKind::TAGGED_NODE {
-        host.clone()
-    } else {
-        collection.clone()
-    };
+    let node = outer_node(collection);
     let Some(value) = node.parent().filter(|p| p.kind() == SyntaxKind::VALUE) else {
         return;
     };

@@ -143,6 +143,7 @@ fn finish_nested(
             builder.start_node_at(value_start, SyntaxKind::VALUE.into());
             builder.finish_node();
         }
+        builder.finish_node();
         return;
     }
     builder.token(SyntaxKind::WHITESPACE.into(), " ");
@@ -153,7 +154,15 @@ fn finish_nested(
     if value_start.is_some() {
         builder.finish_node();
     }
-    builder.token(SyntaxKind::NEWLINE.into(), "\n");
+    finish_entry(builder, false);
+}
+
+/// Close the current entry, terminating its line unless its value did.
+fn finish_entry(builder: &mut GreenNodeBuilder<'static>, ends_with_newline: bool) {
+    if !ends_with_newline {
+        builder.token(SyntaxKind::NEWLINE.into(), "\n");
+    }
+    builder.finish_node();
 }
 
 /// Finish a top-level collection and its document.
@@ -242,14 +251,6 @@ impl SequenceBuilder {
         self.builder.token(SyntaxKind::DASH.into(), "-");
     }
 
-    /// Close the current entry, terminating its line unless its value did.
-    fn finish_entry(&mut self, ends_with_newline: bool) {
-        if !ends_with_newline {
-            self.builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        self.builder.finish_node();
-    }
-
     /// Add a value to the sequence. Accepts any type implementing [`AsYaml`]:
     /// `&str`, `String`, `i64`, `bool`, `f64`, CST nodes, etc.
     pub fn item(mut self, value: impl AsYaml) -> Self {
@@ -273,7 +274,7 @@ impl SequenceBuilder {
                 value.build_content(&mut self.builder, indent, false)
             }
         };
-        self.finish_entry(ends_with_newline);
+        finish_entry(&mut self.builder, ends_with_newline);
         self
     }
 
@@ -286,7 +287,6 @@ impl SequenceBuilder {
         let filled = f(SequenceBuilder::nested(self.builder, self.indent + 2));
         self.builder = filled.builder;
         finish_nested(&mut self.builder, SyntaxKind::SEQUENCE, filled.start, None);
-        self.builder.finish_node();
         self
     }
 
@@ -299,7 +299,6 @@ impl SequenceBuilder {
         let filled = f(MappingBuilder::nested(self.builder, self.indent + 2));
         self.builder = filled.builder;
         finish_nested(&mut self.builder, SyntaxKind::MAPPING, filled.start, None);
-        self.builder.finish_node();
         self
     }
 
@@ -323,7 +322,7 @@ impl SequenceBuilder {
         self.start_entry();
         let ends_with_newline =
             emit_block_value(&mut self.builder, node.syntax(), self.indent + 2, false);
-        self.finish_entry(ends_with_newline);
+        finish_entry(&mut self.builder, ends_with_newline);
         self
     }
 
@@ -384,14 +383,6 @@ impl MappingBuilder {
         start_mapping_entry(&mut self.builder, key);
     }
 
-    /// Close the current entry, terminating its line unless its value did.
-    fn finish_entry(&mut self, ends_with_newline: bool) {
-        if !ends_with_newline {
-            self.builder.token(SyntaxKind::NEWLINE.into(), "\n");
-        }
-        self.builder.finish_node();
-    }
-
     /// Add a key-value pair. The value can be any type implementing [`AsYaml`]:
     /// `&str`, `String`, `i64`, `bool`, `f64`, CST nodes, etc.
     ///
@@ -419,7 +410,7 @@ impl MappingBuilder {
                 ends
             }
         };
-        self.finish_entry(ends_with_newline);
+        finish_entry(&mut self.builder, ends_with_newline);
         self
     }
 
@@ -438,7 +429,6 @@ impl MappingBuilder {
             filled.start,
             Some(value_start),
         );
-        self.builder.finish_node();
         self
     }
 
@@ -457,7 +447,6 @@ impl MappingBuilder {
             filled.start,
             Some(value_start),
         );
-        self.builder.finish_node();
         self
     }
 

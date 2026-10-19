@@ -828,23 +828,34 @@ impl Parser<'_> {
     ///
     /// A line opening at the colon is the entry's own value rather than part
     /// of its key, so `? a\n: 1\n` is left alone.
+    ///
+    /// Indented comment lines before it say nothing about where the key is:
+    /// in `?\n # c\nk: v\n` the key is empty and `k: v` the next entry.
+    /// A sequence after them is the key's too, which
+    /// [`indented_sequence_indent`](Self::indented_sequence_indent) leaves
+    /// to this.
     fn indented_key_node_indent(&self, question_column: usize) -> Option<usize> {
         if self.current() != Some(SyntaxKind::NEWLINE) {
             return None;
         }
         let mut rest = self.tokens.iter().rev().skip(1);
-        let indent = loop {
+        let mut after_comment = false;
+        let (indent, kind) = loop {
             match rest.next()? {
                 (SyntaxKind::NEWLINE, _) => continue,
-                (SyntaxKind::INDENT, text) => break text.len(),
+                (SyntaxKind::INDENT, text) => match rest.next()? {
+                    (SyntaxKind::COMMENT, _) => after_comment = true,
+                    (kind, _) => break (text.len(), *kind),
+                },
                 _ => return None,
             }
         };
         if indent <= question_column {
             return None;
         }
-        match rest.next()? {
-            (SyntaxKind::COLON, _) | (SyntaxKind::DASH, _) => None,
+        match kind {
+            SyntaxKind::COLON => None,
+            SyntaxKind::DASH if !after_comment => None,
             _ => Some(indent),
         }
     }

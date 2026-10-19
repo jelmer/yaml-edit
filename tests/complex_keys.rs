@@ -1124,3 +1124,27 @@ fn test_value_left_of_a_nested_explicit_key() {
         assert_eq!(file.to_string(), yaml);
     }
 }
+
+/// Indented comment lines after a bare `?` do not make the next line its
+/// key. `?\n # c\nk: v\n` gave the key an empty block mapping, which no
+/// edit could write back, so the entry before `k` read back differently
+/// once entries were moved.
+#[test]
+fn test_comment_lines_after_a_bare_explicit_key() {
+    let yaml = "?\n # c\nk: v\n";
+    let file = yaml.parse::<YamlFile>().unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let entries: Vec<_> = mapping.iter().collect();
+    assert_eq!(entries.len(), 2);
+    assert!(entries[0].0.as_scalar().unwrap().is_null());
+    assert_eq!(entries[1].0.as_scalar().unwrap().as_string(), "k");
+
+    mapping.reorder_fields(["k"]);
+    assert_eq!(file.to_string(), " # c\nk: v\n?\n");
+    assert_file_cst_ok(&file);
+    let reparsed = file.to_string().parse::<YamlFile>().unwrap();
+    assert_eq!(
+        yaml_edit::debug::shape_to_string(file.syntax()),
+        yaml_edit::debug::shape_to_string(reparsed.syntax())
+    );
+}

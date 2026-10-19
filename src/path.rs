@@ -841,11 +841,13 @@ fn segment_key(segment: &PathSegment) -> String {
     }
 }
 
-/// The document's root content if it is a mapping or a sequence.
-fn collection_root(doc: &crate::yaml::Document) -> Option<crate::as_yaml::YamlNode> {
+/// The document's root content, which a path descends from.
+fn root_node(doc: &crate::yaml::Document) -> Result<crate::as_yaml::YamlNode, PathError> {
     doc.as_mapping()
         .map(crate::as_yaml::YamlNode::Mapping)
         .or_else(|| doc.as_sequence().map(crate::as_yaml::YamlNode::Sequence))
+        .or_else(|| doc.as_scalar().map(crate::as_yaml::YamlNode::Scalar))
+        .ok_or(PathError::NoRoot)
 }
 
 // Implementation for Document
@@ -857,10 +859,7 @@ impl YamlPath for crate::yaml::Document {
     ) -> Result<crate::as_yaml::YamlNode, PathError> {
         let segments = path_segments_required(path)?;
 
-        let root = collection_root(self)
-            .or_else(|| self.as_scalar().map(crate::as_yaml::YamlNode::Scalar))
-            .ok_or(PathError::NoRoot)?;
-        navigate_path(root, &segments, policy)
+        navigate_path(root_node(self)?, &segments, policy)
     }
 
     fn try_set_path_with(
@@ -885,8 +884,7 @@ impl YamlPath for crate::yaml::Document {
     ) -> Result<crate::as_yaml::YamlNode, PathError> {
         let segments = path_segments_required(path)?;
 
-        let root = collection_root(self).ok_or(PathError::NoRoot)?;
-        remove_path_impl(root, None, &segments, policy)
+        remove_path_impl(root_node(self)?, None, &segments, policy)
     }
 }
 
@@ -1394,6 +1392,26 @@ mod tests {
                 "{path:?}"
             );
             assert_eq!(doc.to_string(), source, "{path:?}");
+        }
+    }
+
+    #[test]
+    fn remove_path_on_scalar_root_is_a_type_mismatch() {
+        use crate::Document;
+        use std::str::FromStr;
+
+        for source in ["42\n", "!!str x\n"] {
+            let doc = Document::from_str(source).unwrap();
+            for (path, at) in [("a", "a"), ("[0]", "[0]"), ("a.b", "a")] {
+                let expected = Err(PathError::TypeMismatch { at: at.to_string() });
+                assert_eq!(doc.try_remove_path(path), expected, "{source:?} {path:?}");
+                assert_eq!(
+                    doc.try_get_path(path).map(|_| ()),
+                    expected.map(|_: crate::as_yaml::YamlNode| ()),
+                    "{source:?} {path:?}"
+                );
+            }
+            assert_eq!(doc.to_string(), source);
         }
     }
 
@@ -3345,7 +3363,10 @@ config:
             doc.try_get_path("a"),
             Err(PathError::TypeMismatch { at: "a".into() })
         );
-        assert_eq!(doc.try_remove_path("a").map(|_| ()), Err(PathError::NoRoot));
+        assert_eq!(
+            doc.try_remove_path("a").map(|_| ()),
+            Err(PathError::TypeMismatch { at: "a".into() })
+        );
 
         let doc = Document::new();
         assert_eq!(doc.try_get_path("a"), Err(PathError::NoRoot));

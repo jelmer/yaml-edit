@@ -5,14 +5,15 @@ mod movements;
 pub(crate) use helpers::build_block_value_node;
 pub(crate) use helpers::flow_form;
 pub(crate) use helpers::{
-    block_scalar_body_shift, drop_tagged_anchor, held_anchor, held_anchor_token, source_anchor_text,
+    block_scalar_body_shift, drop_tagged_anchor, held_anchor_token, kept_anchor_token,
+    source_anchor_text,
 };
 
 use super::empty_collection::{self, render_empty};
 use super::trivia::{self, Slot};
 use super::{
-    entry_key, entry_value, fresh_token, has_child_token, insert_children, replace_children, Lang,
-    Sequence, SyntaxNode,
+    entry_key, entry_value, fresh_token, has_child_token, held_node, insert_children,
+    replace_children, Lang, Sequence, SyntaxNode,
 };
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
@@ -49,11 +50,7 @@ impl Mapping {
     /// [`iter`](Self::iter) for `(key, value)` pairs as `(YamlNode, YamlNode)`.
     /// For raw CST nodes, use `pairs()`.
     pub fn keys(&self) -> impl Iterator<Item = crate::as_yaml::YamlNode> + '_ {
-        self.pairs().filter_map(|(k, _)| {
-            k.children()
-                .next()
-                .and_then(crate::as_yaml::YamlNode::from_syntax)
-        })
+        self.pairs().filter_map(|(k, _)| held_node(&k))
     }
 
     /// Iterate over raw KEY/VALUE syntax nodes for each mapping entry.
@@ -180,13 +177,7 @@ impl Mapping {
     /// Use [`iter`](Self::iter) to get both the key and value simultaneously, or
     /// `pairs()` for the raw `SyntaxNode` pairs.
     pub fn values(&self) -> impl Iterator<Item = crate::as_yaml::YamlNode> + '_ {
-        self.pairs().filter_map(|(_, value_node)| {
-            // VALUE node contains the actual content as children
-            value_node
-                .children()
-                .next()
-                .and_then(crate::as_yaml::YamlNode::from_syntax)
-        })
+        self.pairs().filter_map(|(_, v)| held_node(&v))
     }
 
     /// Iterate over `(key, value)` pairs, both as [`YamlNode`](crate::as_yaml::YamlNode)s.
@@ -197,18 +188,8 @@ impl Mapping {
     pub fn iter(
         &self,
     ) -> impl Iterator<Item = (crate::as_yaml::YamlNode, crate::as_yaml::YamlNode)> + '_ {
-        self.pairs().filter_map(|(key_node, value_node)| {
-            // KEY and VALUE nodes wrap the actual content - extract children
-            let key = key_node
-                .children()
-                .next()
-                .and_then(crate::as_yaml::YamlNode::from_syntax)?;
-            let value = value_node
-                .children()
-                .next()
-                .and_then(crate::as_yaml::YamlNode::from_syntax)?;
-            Some((key, value))
-        })
+        self.pairs()
+            .filter_map(|(k, v)| Some((held_node(&k)?, held_node(&v)?)))
     }
 
     /// Create a new empty mapping
@@ -558,7 +539,12 @@ impl Mapping {
     /// );
     /// ```
     pub fn set(&self, key: impl crate::AsYaml, value: impl crate::AsYaml) {
-        self.set_as_yaml(key, value);
+        // An existing entry with this key takes the value in place.
+        let Some(entry) = self.find_entry_by_key(&key) else {
+            self.insert_new(Slot::End, key, value);
+            return;
+        };
+        self.styled_value(&value, |v, flow_context| entry.set_value(v, flow_context));
     }
 
     /// Detect if this mapping uses explicit key indicators (?)
@@ -577,25 +563,18 @@ impl Mapping {
         false
     }
 
-    /// Internal unified method to set any YAML value type
-    fn set_as_yaml<K: crate::AsYaml, V: crate::AsYaml>(&self, key: K, value: V) {
-        // An existing entry with this key takes the value in place.
-        let existing = self
-            .0
-            .children()
-            .filter_map(MappingEntry::cast)
-            .find(|entry| entry.key().is_some_and(|k| key_content_matches(&k, &key)));
-        let Some(entry) = existing else {
-            self.insert_new(Slot::End, key, value);
-            return;
-        };
-        // set_value shifts the flow form to the entry's line, so its
-        // continuation lines are given relative to that.
+    /// Hand `put` `value` as an entry of this mapping holds it, in flow form
+    /// in a flow mapping, and whether the mapping is flow. The flow form is
+    /// shifted to the entry's line when put in, so its continuation lines
+    /// are given relative to that.
+    fn styled_value(&self, value: &impl crate::AsYaml, put: impl FnOnce(&dyn crate::AsYaml, bool)) {
         let flow_context = self.is_flow_style();
-        let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
-        match flow.and_then(|q| flow_form(&value, 2, q)) {
-            Some(flow) => entry.set_value(flow, flow_context),
-            None => entry.set_value(value, flow_context),
+        let flow = flow_context
+            .then(|| crate::nodes::flow_quoting(&self.0))
+            .and_then(|q| flow_form(value, 2, q));
+        match &flow {
+            Some(flow) => put(flow, flow_context),
+            None => put(value, flow_context),
         }
     }
 
@@ -649,55 +628,37 @@ impl Mapping {
 
         // An existing key just takes the new value, wherever it sits.
         if self.find_entry_by_key(&key).is_some() {
-            self.set_as_yaml(&key, &value);
+            self.set(&key, &value);
             return;
         }
 
-        // Key doesn't exist, need to find the correct insertion position based on field order.
-        // Find position of this key in the field order (if it matches any)
-        let key_position_in_order = field_order
+        let Some(key_index) = field_order
             .iter()
-            .position(|field| crate::as_yaml::yaml_eq(&key, field));
-
-        if let Some(key_index) = key_position_in_order {
-            // Key is in the field order, find the right position to insert
-            let mut insert_after_node: Option<SyntaxNode> = None;
-            let mut insert_before_node: Option<SyntaxNode> = None;
-
-            // The nearest preceding field that is actually present decides
-            // where the new entry goes.
-            for field in field_order.iter().take(key_index).rev() {
-                if let Some(entry) = self.find_entry_by_key(field) {
-                    insert_after_node = Some(entry.0);
-                    break;
-                }
-            }
-
-            // If no predecessor found, look for the first existing key in document order
-            // that comes after this one in field_order
-            if insert_after_node.is_none() {
-                // Nothing precedes it, so go before the first present field
-                // that the order puts after it.
-                insert_before_node = self.entries().find_map(|entry| {
-                    let key_node = entry.key()?;
-                    let pos = field_order
-                        .iter()
-                        .position(|field| key_content_matches(&key_node, field))?;
-                    (pos > key_index).then_some(entry.0)
-                });
-            }
-
-            match (insert_after_node, insert_before_node) {
-                (Some(after), _) => self.insert_new(Slot::After(after), &key, &value),
-                (None, Some(before)) => self.insert_new(Slot::Before(before), &key, &value),
-                // No ordered key is present yet, so order says nothing about
-                // where this one goes.
-                (None, None) => self.set_as_yaml(&key, &value),
-            }
-        } else {
-            // Key is not in field order, append at the end using CST
-            self.set_as_yaml(&key, &value);
-        }
+            .position(|field| crate::as_yaml::yaml_eq(&key, field))
+        else {
+            self.insert_new(Slot::End, key, value);
+            return;
+        };
+        // The nearest preceding field that is present decides where the new
+        // entry goes. With none, it goes before the first present field that
+        // the order puts after it, and with no ordered key present at the end.
+        let before_later = || {
+            self.entries().find_map(|entry| {
+                let key_node = entry.key()?;
+                let pos = field_order
+                    .iter()
+                    .position(|field| key_content_matches(&key_node, field))?;
+                (pos > key_index).then_some(Slot::Before(entry.0))
+            })
+        };
+        let slot = field_order[..key_index]
+            .iter()
+            .rev()
+            .find_map(|field| self.find_entry_by_key(field))
+            .map(|entry| Slot::After(entry.0))
+            .or_else(before_later)
+            .unwrap_or(Slot::End);
+        self.insert_new(slot, key, value);
     }
 
     /// Detect the indentation level (in spaces) used by entries in this mapping.
@@ -744,8 +705,8 @@ impl Mapping {
     ) -> SyntaxNode {
         let kept = MappingEntry::cast(old.clone())
             .map(|e| e.value())
-            .filter(|_| keep_anchor && value.kind() != YamlKind::Alias)
-            .and_then(|v| held_anchor_token(&v));
+            .filter(|_| keep_anchor)
+            .and_then(|v| kept_anchor_token(&v, &value));
         let anchor = kept.as_ref().map(|t| t.text().to_string());
         let mut new = None;
         crate::nodes::kept_aliases::keeping_aliases(old, kept, || {
@@ -767,12 +728,9 @@ impl Mapping {
         value: impl crate::AsYaml,
         anchor: Option<&str>,
     ) {
-        let flow_context = self.is_flow_style();
-        let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
-        match flow.and_then(|q| flow_form(&value, 2, q)) {
-            Some(flow) => entry.replace_value_under(flow, flow_context, anchor),
-            None => entry.replace_value_under(&value, flow_context, anchor),
-        }
+        self.styled_value(&value, |v, flow_context| {
+            entry.replace_value_under(v, flow_context, anchor)
+        });
     }
 
     /// The edit of [`replace_entry`](Self::replace_entry), without the
@@ -784,10 +742,10 @@ impl Mapping {
         value: impl crate::AsYaml,
     ) -> SyntaxNode {
         let flow_context = self.is_flow_style();
-        let new_entry = MappingEntry::new_at_indent(
+        let new_entry = MappingEntry::new_in(
             key,
             value,
-            flow_context,
+            flow_context.then(|| crate::nodes::flow_quoting(&self.0)),
             self.uses_explicit_keys(),
             self.detect_indentation_level(),
         )
@@ -1269,17 +1227,7 @@ impl Mapping {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        // Check if the new key already exists - if so, just update it
-        if self.find_entry_by_key(&key).is_some() {
-            self.set_as_yaml(&key, &value);
-            return self.find_entry_by_key(&after_key).is_some();
-        }
-
-        // Key doesn't exist yet - delegate to move_after, which already contains
-        // the correct insertion logic (including newline handling for entries
-        // that lack a trailing newline). The two methods differ only in what
-        // they do when the key *already* exists.
-        self.move_after(after_key, key, value)
+        self.insert_around(after_key, key, value, true)
     }
 
     /// Insert a key-value pair immediately before an existing key.
@@ -1299,18 +1247,24 @@ impl Mapping {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        // Key exists → update in-place (don't move).
-        if self.find_entry_by_key(&key).is_some() {
-            self.set_as_yaml(&key, &value);
-            // Only return true if before_key also exists (contract: false when
-            // reference key is not found).
-            return self.find_entry_by_key(&before_key).is_some();
-        }
+        self.insert_around(before_key, key, value, false)
+    }
 
-        // Key doesn't exist yet - delegate to move_before, which already contains
-        // the correct insertion logic. The two methods differ only in what they do
-        // when the key *already* exists.
-        self.move_before(before_key, key, value)
+    /// Shared body of [`insert_after`](Self::insert_after) and
+    /// [`insert_before`](Self::insert_before): an existing `key` is updated
+    /// where it is, a new one goes next to `ref_key`.
+    fn insert_around(
+        &self,
+        ref_key: impl crate::AsYaml,
+        key: impl crate::AsYaml,
+        value: impl crate::AsYaml,
+        after: bool,
+    ) -> bool {
+        if self.find_entry_by_key(&key).is_some() {
+            self.set(&key, &value);
+            return self.find_entry_by_key(&ref_key).is_some();
+        }
+        self.move_around(&ref_key, &key, &value, after)
     }
 
     /// Insert a key-value pair at a specific index (0-based).
@@ -1329,7 +1283,7 @@ impl Mapping {
     ) {
         // Check if the key already exists - if so, just update it
         if self.find_entry_by_key(&key).is_some() {
-            self.set_as_yaml(&key, &value);
+            self.set(&key, &value);
             return;
         }
         self.insert_new_entry_at(index, key, value);

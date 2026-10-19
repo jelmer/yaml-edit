@@ -213,7 +213,6 @@ pub(super) struct Parser<'a> {
     /// Whether [`bump`](Self::bump) holds back line breaks, indentation
     /// and white space; see [`TreeBuilder`].
     hold_trivia: bool,
-    pub(super) errors: Vec<String>,
     pub(super) positioned_errors: Vec<PositionedParseError>,
     pub(super) in_flow_context: bool,
     /// The stack of contexts that picks an error recovery strategy.
@@ -271,7 +270,6 @@ impl<'a> Parser<'a> {
             tokens,
             builder: TreeBuilder::new(),
             hold_trivia: false,
-            errors: Vec::new(),
             positioned_errors: Vec::new(),
             in_flow_context: false,
             error_context: ErrorRecoveryContext::new(String::new()),
@@ -348,7 +346,6 @@ impl<'a> Parser<'a> {
 
         ParsedYaml {
             green_node: self.builder.finish(),
-            errors: self.errors,
             positioned_errors: self.positioned_errors,
         }
     }
@@ -839,28 +836,10 @@ impl Parser<'_> {
                     // Check next token for indentation
                     match self.current() {
                         Some(SyntaxKind::INDENT) => {
-                            // A blank line's indentation says nothing about the
-                            // block we are in, so never read it as a dedent.
-                            // Neither does a comment's: what ends the block is
-                            // the next line that carries content, so an
-                            // indented comment gets the same treatment as one
-                            // at column 0 below.
-                            let blank_line =
-                                self.indent_is_blank_line() || self.indent_starts_comment_line();
-                            if !blank_line && dash_lines && !self.indent_starts_dash_line() {
+                            if self.indent_ends_block(base_indent, dash_lines, true) {
                                 return true;
                             }
-                            if let Some((_, text)) = self.tokens.last() {
-                                if !blank_line && text.len() < base_indent {
-                                    // Dedent detected - don't consume the indent token
-                                    return true;
-                                }
-                                if !blank_line && base_indent == 0 && !text.is_empty() {
-                                    // At root level, any indentation means content doesn't belong at root
-                                    return true;
-                                }
-                            }
-                            self.bump(); // consume indent if at appropriate level
+                            self.bump();
                         }
                         Some(SyntaxKind::COMMENT) => {
                             // COMMENT at column 0 (no INDENT after NEWLINE).
@@ -902,15 +881,8 @@ impl Parser<'_> {
                 }
                 Some(SyntaxKind::INDENT) => {
                     // Standalone indent token (NEWLINE was consumed by prior entry)
-                    let blank_line =
-                        self.indent_is_blank_line() || self.indent_starts_comment_line();
-                    if !blank_line && dash_lines && !self.indent_starts_dash_line() {
+                    if self.indent_ends_block(base_indent, dash_lines, false) {
                         return true;
-                    }
-                    if let Some((_, text)) = self.tokens.last() {
-                        if !blank_line && text.len() < base_indent {
-                            return true; // dedent detected
-                        }
                     }
                     self.bump();
                 }
@@ -921,6 +893,24 @@ impl Parser<'_> {
             }
         }
         false
+    }
+
+    /// Whether the current INDENT ends the block at `base_indent`.
+    ///
+    /// Blank and comment lines never do: what ends the block is the next line
+    /// that carries content. At root level, any indentation at `line_start`
+    /// means the content doesn't belong at root.
+    fn indent_ends_block(&self, base_indent: usize, dash_lines: bool, line_start: bool) -> bool {
+        if self.indent_is_blank_line() || self.indent_starts_comment_line() {
+            return false;
+        }
+        if dash_lines && !self.indent_starts_dash_line() {
+            return true;
+        }
+        let Some((_, text)) = self.tokens.last() else {
+            return false;
+        };
+        text.len() < base_indent || (line_start && base_indent == 0 && !text.is_empty())
     }
 
     pub(super) fn skip_ws_and_newlines(&mut self) {
@@ -1389,6 +1379,17 @@ impl Parser<'_> {
         if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
             return None;
         }
+        Self::content_line_ahead(rest)
+    }
+
+    /// Indentation and first token of the next line in `rest`, which starts
+    /// at a line start, that carries content.
+    ///
+    /// Blank and comment lines are stepped over, as their indentation is not
+    /// significant.
+    fn content_line_ahead<'a>(
+        mut rest: impl Iterator<Item = (SyntaxKind, &'a String)>,
+    ) -> Option<(usize, SyntaxKind)> {
         loop {
             let mut indent = 0;
             let mut token = rest.next()?;
@@ -1397,17 +1398,15 @@ impl Parser<'_> {
                 token = rest.next()?;
             }
             match token.0 {
-                // A blank line's indentation is not significant either; its
-                // NEWLINE is the one we just read.
+                // A blank line, whose NEWLINE is the one just read.
                 SyntaxKind::NEWLINE => continue,
                 // The document ends here, just as at the end of the input.
                 SyntaxKind::DOC_START | SyntaxKind::DOC_END => return None,
-                // Another comment line: step over its line break too.
+                // A comment line: step over its line break too.
                 SyntaxKind::COMMENT => {
                     if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
                         return None;
                     }
-                    continue;
                 }
                 kind => return Some((indent, kind)),
             }
@@ -1456,43 +1455,14 @@ impl Parser<'_> {
     }
 
     /// The indentation of the next line with content in `rest`, which starts
-    /// at a line start, if it clears `dash_column`. Blank and comment lines
-    /// are stepped over, as their indentation is not significant.
+    /// at a line start, if it clears `dash_column`. A comment line says
+    /// nothing, at any column: `-\n# c\n  x: 1\n` is the entry `{x: 1}`.
     fn value_indent_on_later_line<'a>(
-        mut rest: impl Iterator<Item = (SyntaxKind, &'a String)>,
+        rest: impl Iterator<Item = (SyntaxKind, &'a String)>,
         dash_column: usize,
     ) -> Option<usize> {
-        loop {
-            match rest.next() {
-                // A blank line: its own line break is the one we just read.
-                Some((SyntaxKind::NEWLINE, _)) => continue,
-                // Neither does a comment line say anything, at any column:
-                // `-\n# c\n  x: 1\n` is the entry `{x: 1}`.
-                Some((SyntaxKind::COMMENT, _)) => {
-                    if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
-                        return None;
-                    }
-                }
-                Some((SyntaxKind::INDENT, text)) => {
-                    let indent = text.len();
-                    // An indent that only leads a blank or comment line says
-                    // nothing about where the value sits, nor does one
-                    // ending the input.
-                    match rest.next() {
-                        Some((SyntaxKind::NEWLINE, _)) | None => continue,
-                        Some((SyntaxKind::COMMENT, _)) => {
-                            if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
-                                return None;
-                            }
-                            continue;
-                        }
-                        _ => {}
-                    }
-                    return (indent > dash_column).then_some(indent);
-                }
-                _ => return None,
-            }
-        }
+        let (indent, _) = Self::content_line_ahead(rest)?;
+        (indent > dash_column).then_some(indent)
     }
 
     /// Whether a block scalar header not indented past `indicator_column`
@@ -1508,33 +1478,16 @@ impl Parser<'_> {
             .tokens
             .iter()
             .rev()
-            .map(|(kind, text)| (*kind, text.len()))
+            .map(|(kind, text)| (*kind, text))
             .peekable();
         rest.next_if(|(kind, _)| *kind == SyntaxKind::COMMENT);
         if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
             return false;
         }
-        loop {
-            let mut indent = 0;
-            let mut token = rest.next();
-            if let Some((SyntaxKind::INDENT, len)) = token {
-                indent = len;
-                token = rest.next();
-            }
-            match token {
-                // A blank line, whose indentation is not significant.
-                Some((SyntaxKind::NEWLINE, _)) => continue,
-                Some((SyntaxKind::COMMENT, _)) => {
-                    if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
-                        return false;
-                    }
-                }
-                Some((SyntaxKind::PIPE | SyntaxKind::GREATER, _)) => {
-                    return indent <= indicator_column
-                }
-                _ => return false,
-            }
-        }
+        matches!(
+            Self::content_line_ahead(rest),
+            Some((indent, SyntaxKind::PIPE | SyntaxKind::GREATER)) if indent <= indicator_column
+        )
     }
 
     /// Whether the INDENT at the current position is only the leading
@@ -1561,7 +1514,6 @@ impl Parser<'_> {
             kind,
         };
 
-        self.errors.push(positioned_error.message.clone());
         self.positioned_errors.push(positioned_error);
     }
 

@@ -390,6 +390,14 @@ pub(crate) fn has_child_token(parent: &SyntaxNode, pred: impl Fn(SyntaxKind) -> 
         .any(|el| el.as_token().is_some_and(|t| pred(t.kind())))
 }
 
+/// The first direct child token of `parent` with the given `kind`, if any.
+pub(crate) fn child_token(parent: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxToken> {
+    parent
+        .children_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|t| t.kind() == kind)
+}
+
 /// Replace the children of `parent` in `range` with `children`.
 ///
 /// rowan 0.16's `SyntaxNode::splice_children` detaches the range while
@@ -711,6 +719,15 @@ pub(crate) fn entry_key(entry: &SyntaxNode) -> Option<SyntaxNode> {
 /// The `VALUE` child of a `MAPPING_ENTRY` or `SEQUENCE_ENTRY`.
 pub(crate) fn entry_value(entry: &SyntaxNode) -> Option<SyntaxNode> {
     child_of_kind(entry, SyntaxKind::VALUE)
+}
+
+/// The node a KEY, VALUE or other holder wraps, as a
+/// [`YamlNode`](crate::as_yaml::YamlNode).
+pub(crate) fn held_node(holder: &SyntaxNode) -> Option<crate::as_yaml::YamlNode> {
+    holder
+        .children()
+        .next()
+        .and_then(crate::as_yaml::YamlNode::from_syntax)
 }
 
 /// A macro to create AST node wrappers.

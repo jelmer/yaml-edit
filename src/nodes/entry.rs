@@ -239,7 +239,7 @@ fn key_as_yaml_node<K: AsYaml>(key: &K) -> Option<YamlNode> {
     key.build_content(&mut builder, 0, false);
     builder.finish_node();
     let root = crate::nodes::SyntaxNode::new_root(builder.finish());
-    root.children().next().and_then(YamlNode::from_syntax)
+    crate::nodes::held_node(&root)
 }
 
 #[cfg(test)]

@@ -215,6 +215,17 @@ pub(crate) fn digits_to_decimal(digits: &str, radix: u32) -> String {
     )
 }
 
+/// Like [`digits_to_decimal`], with a `-` in front when `negative` unless
+/// the value is zero.
+pub(crate) fn signed_digits_to_decimal(digits: &str, radix: u32, negative: bool) -> String {
+    let magnitude = digits_to_decimal(digits, radix);
+    if negative && magnitude != "0" {
+        format!("-{magnitude}")
+    } else {
+        magnitude
+    }
+}
+
 /// Convert a number given as `(radix, digit)` places, most significant
 /// first, to decimal without an upper bound on its value. Each place has
 /// its own radix, so mixed-radix numbers such as base 60 `1:30` work too.
@@ -636,7 +647,7 @@ impl ScalarValue {
             }
             ScalarType::Timestamp => {
                 // Basic timestamp format validation
-                if self.is_valid_timestamp(&self.value) {
+                if Self::is_valid_timestamp(&self.value) {
                     Some(ScalarValue::timestamp(&self.value))
                 } else {
                     None
@@ -663,12 +674,7 @@ impl ScalarValue {
     /// values are spelled the same.
     pub(crate) fn canonical_integer(value: &str) -> Option<String> {
         let (radix, digits, is_negative) = Self::split_core_int(value)?;
-        let magnitude = digits_to_decimal(digits, radix);
-        Some(if is_negative && magnitude != "0" {
-            format!("-{magnitude}")
-        } else {
-            magnitude
-        })
+        Some(signed_digits_to_decimal(digits, radix, is_negative))
     }
 
     /// Split a YAML 1.2 core schema integer into its radix, its digits and
@@ -775,9 +781,7 @@ impl ScalarValue {
     /// additionally recognises timestamps.
     pub fn classify_plain(value: &str) -> CoreScalarType {
         match value {
-            "true" | "false" | "True" | "False" | "TRUE" | "FALSE" => {
-                return CoreScalarType::Boolean
-            }
+            _ if Self::parse_bool(value).is_some() => return CoreScalarType::Boolean,
             "null" | "Null" | "NULL" | "~" | "" => return CoreScalarType::Null,
             _ => {}
         }
@@ -815,9 +819,7 @@ impl ScalarValue {
     /// text the core schema reads as a string is checked for a timestamp.
     pub fn auto_detect_type(value: &str) -> ScalarType {
         match Self::classify_plain(value) {
-            CoreScalarType::String if Self::is_valid_timestamp_static(value) => {
-                ScalarType::Timestamp
-            }
+            CoreScalarType::String if Self::is_valid_timestamp(value) => ScalarType::Timestamp,
             other => other.into(),
         }
     }
@@ -958,12 +960,7 @@ impl ScalarValue {
     }
 
     /// Basic timestamp format validation
-    fn is_valid_timestamp(&self, value: &str) -> bool {
-        Self::is_valid_timestamp_static(value)
-    }
-
-    /// Static version of timestamp validation
-    fn is_valid_timestamp_static(value: &str) -> bool {
+    fn is_valid_timestamp(value: &str) -> bool {
         // The forms of the YAML timestamp type
         // (https://yaml.org/type/timestamp.html): YYYY-MM-DD or
         // YYYY-MM-DDTHH:MM:SS etc. A number of seconds is not one of them.
@@ -1277,20 +1274,15 @@ impl ScalarValue {
                 match self.scalar_type {
                     // With an explicit tag, the content can stay plain even
                     // where it would otherwise resolve to another type.
-                    ScalarType::String if self.tag.is_some() => {
-                        if Self::needs_double_quotes(&self.value) {
-                            self.to_double_quoted()
-                        } else if Self::needs_quoting_as_tagged(&self.value) {
-                            self.to_single_quoted(parent_column + indent)
-                        } else {
-                            self.value.clone()
-                        }
-                    }
                     ScalarType::String => {
-                        // For strings, quote if the content looks like a special value
+                        let needs_quoting = if self.tag.is_some() {
+                            Self::needs_quoting_as_tagged(&self.value)
+                        } else {
+                            Self::needs_quoting(&self.value)
+                        };
                         if Self::needs_double_quotes(&self.value) {
                             self.to_double_quoted()
-                        } else if Self::needs_quoting(&self.value) {
+                        } else if needs_quoting {
                             self.to_single_quoted(parent_column + indent)
                         } else {
                             self.value.clone()
@@ -1601,7 +1593,7 @@ fn build_block_scalar(builder: &mut rowan::GreenNodeBuilder, text: &str) {
 impl ScalarValue {
     /// Emit the scalar, inside a flow collection quoting strings as `flow`
     /// says if it is set.
-    fn build(
+    pub(crate) fn build(
         &self,
         builder: &mut rowan::GreenNodeBuilder,
         indent: usize,
@@ -2796,16 +2788,16 @@ mod tests {
     #[test]
     fn test_unix_timestamp_bounds() {
         // A number of seconds is not a YAML timestamp, whatever its size.
-        assert!(!ScalarValue::is_valid_timestamp_static("0"));
-        assert!(!ScalarValue::is_valid_timestamp_static("1"));
-        assert!(!ScalarValue::is_valid_timestamp_static("4102444799"));
-        assert!(!ScalarValue::is_valid_timestamp_static("4102444800"));
+        assert!(!ScalarValue::is_valid_timestamp("0"));
+        assert!(!ScalarValue::is_valid_timestamp("1"));
+        assert!(!ScalarValue::is_valid_timestamp("4102444799"));
+        assert!(!ScalarValue::is_valid_timestamp("4102444800"));
+        assert!(ScalarValue::is_valid_timestamp("2001-12-14"));
 
-        // The instance method delegates to the static one.
-        let s = ScalarValue::string("x");
-        assert!(!s.is_valid_timestamp("1"));
-        assert!(s.is_valid_timestamp("2001-12-14"));
-
+        // Coercion to a timestamp uses the same check.
+        assert!(ScalarValue::string("1")
+            .coerce_to_type(ScalarType::Timestamp)
+            .is_none());
         assert_eq!(
             ScalarValue::from(1_700_000_000i64).coerce_to_type(ScalarType::Timestamp),
             None

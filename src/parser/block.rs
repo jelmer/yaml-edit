@@ -801,14 +801,6 @@ impl Parser<'_> {
             self.bump(); // consume the newline
             self.bump(); // consume the indent
             self.parse_sequence_with_base_indent(indent);
-        } else if let Some(indent) = self.aligned_sequence_indent(question_column) {
-            // `- ?\n  - a\n`: the `?` sits at a column the sequence's own
-            // indentation reproduces, so the dashes are written out as an
-            // INDENT rather than starting the line. They still belong to
-            // the key.
-            self.bump(); // consume the newline
-            self.bump(); // consume the indent
-            self.parse_sequence_with_base_indent(indent);
         } else if let Some(indent) = self.indented_key_node_indent(question_column) {
             // The same for a mapping or scalar key node: `?\n  j: 1\n` is
             // keyed by `{j: 1}`. Emitting the implicit null first left the
@@ -859,37 +851,17 @@ impl Parser<'_> {
         }
     }
 
-    /// As [`indented_sequence_indent`](Self::indented_sequence_indent), for a
-    /// sequence whose dashes line up with the `?` itself.
-    ///
-    /// The indicator only looks indentless when it starts its line; nested in
-    /// a sequence entry, the same alignment arrives as an INDENT token.
-    fn aligned_sequence_indent(&self, question_column: usize) -> Option<usize> {
-        if self.current() != Some(SyntaxKind::NEWLINE) || question_column == 0 {
-            return None;
-        }
-        let mut rest = self.tokens.iter().rev().skip(1);
-        let indent = loop {
-            match rest.next()? {
-                (SyntaxKind::NEWLINE, _) => continue,
-                (SyntaxKind::INDENT, text) => break text.len(),
-                _ => return None,
-            }
-        };
-        if indent != question_column {
-            return None;
-        }
-        match rest.next()? {
-            (SyntaxKind::DASH, _) => Some(indent),
-            _ => None,
-        }
-    }
-
     /// The indentation of a sequence starting on the line after an explicit
     /// key indicator at `question_column`, if one does.
     ///
     /// `?\n  - a\n` keys the entry on `[a]`: the key's node is allowed to
     /// start on the following line as long as it is indented past the `?`.
+    ///
+    /// In `- ?\n  - a\n` the dashes line up with the `?` instead: the
+    /// indicator sits at a column the sequence's own indentation reproduces,
+    /// so they are written out as an INDENT rather than starting the line,
+    /// and still belong to the key. An indicator starting its line can't
+    /// be matched this way.
     fn indented_sequence_indent(&self, question_column: usize) -> Option<usize> {
         if self.current() != Some(SyntaxKind::NEWLINE) {
             return None;
@@ -902,7 +874,7 @@ impl Parser<'_> {
                 _ => return None,
             }
         };
-        if indent <= question_column {
+        if indent < question_column || indent == 0 {
             return None;
         }
         match rest.next()? {

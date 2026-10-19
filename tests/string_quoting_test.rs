@@ -247,6 +247,22 @@ fn test_strings_in_double_quoted_flow_mapping() {
 }
 
 #[test]
+fn test_replaced_entry_in_double_quoted_flow_mapping() {
+    let source = "{\"a\": \"x\", \"b\": \"y\"}\n";
+    let doc = Document::from_str(source).unwrap();
+    doc.as_mapping()
+        .unwrap()
+        .insert_at_index_preserving(0, "b", "z");
+    assert_eq!(doc.to_string(), "{\"a\": \"x\", \"b\": \"z\"}\n");
+    assert_eq!(reparsed_scalars(&doc), ["a", "x", "b", "z"]);
+
+    let doc = Document::from_str(source).unwrap();
+    assert!(doc.as_mapping().unwrap().move_before("a", "b", "z"));
+    assert_eq!(doc.to_string(), "{\"b\": \"z\", \"a\": \"x\"}\n");
+    assert_eq!(reparsed_scalars(&doc), ["b", "z", "a", "x"]);
+}
+
+#[test]
 fn test_strings_in_double_quoted_flow_sequence() {
     let doc = Document::from_str("x: [\"a\", 1]\n").unwrap();
     let s = seq(&doc);

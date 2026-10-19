@@ -16,6 +16,7 @@
 //! takes the place of any tag the node has.
 
 use super::{SyntaxNode, SyntaxToken};
+use crate::anchor_resolution::document_scope;
 use crate::lex::SyntaxKind;
 use rowan::ast::AstNode;
 use std::collections::{HashMap, HashSet};
@@ -156,13 +157,6 @@ pub(crate) fn keeping_aliases_moved(
             .extend(new_aliases.into_iter().zip(rebuilt_aliases));
     }
     tracker.repair();
-}
-
-/// The document `node` is in, or the root of its tree outside one.
-fn document_scope(node: &SyntaxNode) -> SyntaxNode {
-    node.ancestors()
-        .find(|n| n.kind() == SyntaxKind::DOCUMENT)
-        .unwrap_or_else(|| node.ancestors().last().expect("ancestors has self"))
 }
 
 /// The anchors and aliases under `scope` in document order, with the index

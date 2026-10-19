@@ -225,20 +225,24 @@ pub(crate) fn source_anchor_text(source: &SyntaxNode) -> Option<String> {
     None
 }
 
-/// The anchor among the properties of the node `holder` (a VALUE or
+/// The anchor token among the properties of the node `holder` (a VALUE or
 /// SEQUENCE_ENTRY) holds: before the node, or after the tag of a tagged
 /// node.
-pub(crate) fn held_anchor(holder: &SyntaxNode) -> Option<String> {
-    held_anchor_token(holder).map(|t| t.text().to_string())
-}
-
-/// The token of [`held_anchor`].
 pub(crate) fn held_anchor_token(holder: &SyntaxNode) -> Option<crate::nodes::SyntaxToken> {
     let tagged = holder
         .children()
         .next()
         .filter(|n| n.kind() == SyntaxKind::TAGGED_NODE);
     own_anchor(holder).or_else(|| tagged.and_then(|n| own_anchor(&n)))
+}
+
+/// The [`held_anchor_token`] that goes on `new_value` when it replaces
+/// the node `holder` holds; none for an alias, which cannot carry an anchor.
+pub(crate) fn kept_anchor_token(
+    holder: &SyntaxNode,
+    new_value: &impl crate::AsYaml,
+) -> Option<crate::nodes::SyntaxToken> {
+    held_anchor_token(holder).filter(|_| new_value.kind() != crate::as_yaml::YamlKind::Alias)
 }
 
 /// The ANCHOR token among the children of `node` before its first node.
@@ -500,7 +504,7 @@ impl FlowWriter {
             self.builder.token(SyntaxKind::QUESTION.into(), "?");
             self.builder.token(SyntaxKind::WHITESPACE.into(), " ");
         }
-        crate::yaml::add_node_children_to(&mut self.builder, &written);
+        crate::as_yaml::copy_node_content(&mut self.builder, &written);
         self.builder.finish_node();
         if crate::nodes::ends_in_property_name(&written) {
             self.builder.token(SyntaxKind::WHITESPACE.into(), " ");

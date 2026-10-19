@@ -15,8 +15,6 @@ use std::str::FromStr;
 pub(crate) struct ParsedYaml {
     /// The immutable green-tree root produced by the parser.
     pub(crate) green_node: rowan::GreenNode,
-    /// Human-readable error messages for syntax errors encountered during parsing.
-    pub(crate) errors: Vec<String>,
     /// Structured parse errors with source positions.
     pub(crate) positioned_errors: Vec<PositionedParseError>,
 }
@@ -283,8 +281,7 @@ impl Set {
                         entry
                             .children()
                             .find(|n| n.kind() == SyntaxKind::KEY)
-                            .and_then(|key| key.children().next())
-                            .and_then(crate::as_yaml::YamlNode::from_syntax)
+                            .and_then(|key| crate::nodes::held_node(&key))
                     })
                     .collect::<Vec<_>>()
             } else {
@@ -292,11 +289,7 @@ impl Set {
                 mapping_node
                     .children()
                     .filter(|n| n.kind() == SyntaxKind::KEY)
-                    .filter_map(|key| {
-                        key.children()
-                            .next()
-                            .and_then(crate::as_yaml::YamlNode::from_syntax)
-                    })
+                    .filter_map(|key| crate::nodes::held_node(&key))
                     .collect::<Vec<_>>()
             }
         })
@@ -330,52 +323,17 @@ fn extract_content_node(wrapper: &SyntaxNode) -> Option<SyntaxNode> {
     }
 }
 
-/// Smart cast that handles wrapper nodes automatically
-fn smart_cast<T: AstNode<Language = Lang>>(node: SyntaxNode) -> Option<T> {
-    extract_content_node(&node).and_then(T::cast)
-}
-
-/// Extract a Scalar from any node (handles wrappers automatically)
-pub(crate) fn extract_scalar(node: &SyntaxNode) -> Option<Scalar> {
-    smart_cast(node.clone())
-}
-
-/// Extract a Mapping from any node (handles wrappers automatically)
-pub(crate) fn extract_mapping(node: &SyntaxNode) -> Option<Mapping> {
-    smart_cast(node.clone())
-}
-
-/// Extract a Sequence from any node (handles wrappers automatically)
-pub(crate) fn extract_sequence(node: &SyntaxNode) -> Option<Sequence> {
-    smart_cast(node.clone())
-}
-
-/// Extract a TaggedNode from any node (handles wrappers automatically)
-pub(crate) fn extract_tagged_node(node: &SyntaxNode) -> Option<TaggedNode> {
-    smart_cast(node.clone())
+/// Cast the content of `node` to `T`, looking through a VALUE or KEY
+/// wrapper.
+pub(crate) fn extract<T: AstNode<Language = Lang>>(node: &SyntaxNode) -> Option<T> {
+    extract_content_node(node).and_then(T::cast)
 }
 
 /// Copy a syntax node and all its children recursively to a builder.
 pub(crate) fn copy_node_to_builder(builder: &mut GreenNodeBuilder, node: &SyntaxNode) {
     builder.start_node(node.kind().into());
-    add_node_children_to(builder, node);
+    crate::as_yaml::copy_node_content(builder, node);
     builder.finish_node();
-}
-
-// Helper function to recursively add node children to a builder
-pub(crate) fn add_node_children_to(builder: &mut GreenNodeBuilder, node: &SyntaxNode) {
-    for child in node.children_with_tokens() {
-        match child {
-            rowan::NodeOrToken::Node(child_node) => {
-                builder.start_node(child_node.kind().into());
-                add_node_children_to(builder, &child_node);
-                builder.finish_node();
-            }
-            rowan::NodeOrToken::Token(token) => {
-                builder.token(token.kind().into(), token.text());
-            }
-        }
-    }
 }
 
 // Debug helper to dump CST structure

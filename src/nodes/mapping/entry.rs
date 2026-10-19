@@ -6,7 +6,7 @@
 
 use super::helpers::{
     build_block_value_node, built_block_node, drop_tagged_anchor, find_key_line_comment, flow_form,
-    has_comment, held_anchor_token, source_anchor_text, value_is_block,
+    has_comment, kept_anchor_token, source_anchor_text, value_is_block,
 };
 use super::{key_content_matches, MappingEntry};
 use crate::as_yaml::{build_in, FlowQuoting};
@@ -16,7 +16,6 @@ use crate::nodes::{
     entry_key, entry_value, fresh_token, has_child_token, insert_children, replace_children,
     trivia, Lang, SyntaxNode,
 };
-use crate::yaml::add_node_children_to;
 use rowan::GreenNodeBuilder;
 
 impl MappingEntry {
@@ -53,19 +52,14 @@ impl MappingEntry {
     ///
     /// Returns `None` for malformed entries that have no key.
     pub fn key_node(&self) -> Option<crate::as_yaml::YamlNode> {
-        self.key()
-            .and_then(|k| k.children().next())
-            .and_then(crate::as_yaml::YamlNode::from_syntax)
+        self.key().and_then(|k| crate::nodes::held_node(&k))
     }
 
     /// Get the value of this entry as a [`YamlNode`](crate::as_yaml::YamlNode).
     ///
     /// Returns `None` for malformed entries whose value holds no node.
     pub fn value_node(&self) -> Option<crate::as_yaml::YamlNode> {
-        self.value()
-            .children()
-            .next()
-            .and_then(crate::as_yaml::YamlNode::from_syntax)
+        crate::nodes::held_node(&self.value())
     }
 
     /// Create a new mapping entry (key-value pair) not yet attached to any mapping.
@@ -241,7 +235,7 @@ impl MappingEntry {
                 builder.token(SyntaxKind::WHITESPACE.into(), " ");
             }
             builder.start_node(block.node.kind().into());
-            add_node_children_to(&mut builder, &block.node);
+            crate::as_yaml::copy_node_content(&mut builder, &block.node);
             builder.finish_node();
             block.ends_with_newline
         } else {
@@ -518,8 +512,7 @@ impl MappingEntry {
         // An alias cannot carry an anchor; the first alias to the old one
         // gets a copy of the old value instead.
         let old = self.value();
-        let kept =
-            held_anchor_token(&old).filter(|_| new_value.kind() != crate::as_yaml::YamlKind::Alias);
+        let kept = kept_anchor_token(&old, &new_value);
         let anchor = kept.as_ref().map(|t| t.text().to_string());
         crate::nodes::kept_aliases::keeping_aliases(&old, kept, || {
             self.replace_value_under(new_value, flow_context, anchor.as_deref());

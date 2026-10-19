@@ -438,47 +438,19 @@ impl fmt::Display for YamlValue {
 }
 
 // Convenience conversions from common types
-impl From<String> for YamlValue {
-    fn from(value: String) -> Self {
-        YamlValue::Scalar(ScalarValue::from(value))
-    }
+macro_rules! impl_from_scalar {
+    ($($t:ty),*) => {
+        $(
+            impl From<$t> for YamlValue {
+                fn from(value: $t) -> Self {
+                    YamlValue::Scalar(ScalarValue::from(value))
+                }
+            }
+        )*
+    };
 }
 
-impl From<&str> for YamlValue {
-    fn from(value: &str) -> Self {
-        YamlValue::Scalar(ScalarValue::from(value))
-    }
-}
-
-impl From<i32> for YamlValue {
-    fn from(value: i32) -> Self {
-        YamlValue::Scalar(ScalarValue::from(value))
-    }
-}
-
-impl From<i64> for YamlValue {
-    fn from(value: i64) -> Self {
-        YamlValue::Scalar(ScalarValue::from(value))
-    }
-}
-
-impl From<f32> for YamlValue {
-    fn from(value: f32) -> Self {
-        YamlValue::Scalar(ScalarValue::from(value))
-    }
-}
-
-impl From<f64> for YamlValue {
-    fn from(value: f64) -> Self {
-        YamlValue::Scalar(ScalarValue::from(value))
-    }
-}
-
-impl From<bool> for YamlValue {
-    fn from(value: bool) -> Self {
-        YamlValue::Scalar(ScalarValue::from(value))
-    }
-}
+impl_from_scalar!(String, &str, i32, i64, f32, f64, bool);
 
 impl From<ScalarValue> for YamlValue {
     fn from(value: ScalarValue) -> Self {

@@ -4260,6 +4260,36 @@ fn test_property_on_a_continuation_line_leaves_the_colon() {
     );
 }
 
+/// A quote opening a line that continues a plain scalar is content, even
+/// when it closes on that line. Whether it did decided whether it was, so
+/// adding an entry after `"c` in a flow mapping, which put a closing quote
+/// on its line, made the text read back differently.
+#[test]
+fn test_quote_on_a_flow_continuation_line_is_content() {
+    let doc = yaml_edit::Document::from_str("[b\n \"x\", c]\n").unwrap();
+    let items: Vec<_> = doc
+        .as_sequence()
+        .unwrap()
+        .values()
+        .map(|v| v.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(items, ["b \"x\"", "c"]);
+
+    let doc = yaml_edit::Document::from_str("{a: b\n \"c\n}\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "b \"c"
+    );
+    mapping.set("k\r", 1);
+    assert_eq!(doc.to_string(), "{a: b\n \"c, \"k\\r\": 1\n}\n");
+    let reparsed = yaml_edit::Document::from_str(&doc.to_string()).unwrap();
+    assert_eq!(
+        yaml_edit::debug::shape_to_string(rowan::ast::AstNode::syntax(&doc)),
+        yaml_edit::debug::shape_to_string(rowan::ast::AstNode::syntax(&reparsed))
+    );
+}
+
 /// A document's root block scalar may put its body at column 0, since the
 /// root sits at indentation -1. Such a body is literal text up to the next
 /// document marker.

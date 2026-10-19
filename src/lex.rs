@@ -411,22 +411,6 @@ fn scan_single_quoted(
     (end_idx, false)
 }
 
-/// Whether the quote at `quote_idx` closes on its own line.
-fn quote_closes_on_line(input: &str, quote_idx: usize) -> bool {
-    let line = input[quote_idx..]
-        .split(['\n', '\r'])
-        .next()
-        .unwrap_or_default();
-    let mut rest = line.char_indices().peekable();
-    let quote = rest.next().map(|(_, c)| c);
-    let (_, closes_on_line) = if quote == Some('"') {
-        scan_double_quoted(&mut rest, 0)
-    } else {
-        scan_single_quoted(&mut rest, 0)
-    };
-    closes_on_line
-}
-
 /// Whether the flow collection opening at `open_idx` closes on its line.
 fn flow_collection_closes_on_line(input: &str, open_idx: usize) -> bool {
     let line = input[open_idx..]
@@ -913,14 +897,13 @@ impl<'a, 'c> LexState<'a, 'c> {
                 }
             }
             // A quote is literal text in a block scalar's body, and content on
-            // a line continuing a plain scalar, as the flow indicators above.
-            // A quote that does not close on its own line cannot start an
-            // implicit key: `a: b\n  'c\nd: 1\n` holds `b 'c`, where scanning
-            // it as quoted ran on to the next quote in the file.
+            // a line continuing a plain scalar, as the flow indicators above:
+            // `a: b\n  'c\nd: 1\n` holds `b 'c`, where scanning it as quoted
+            // ran on to the next quote in the file, and `[b\n "x", c]` holds
+            // `b "x"`.
             '"' | '\''
                 if in_block_scalar_body(self.block_scalar, self.line_start)
-                    || (self.opens_plain_scalar_continuation_line(start_idx)
-                        && !quote_closes_on_line(self.input, start_idx)) =>
+                    || self.opens_plain_scalar_continuation_line(start_idx) =>
             {
                 self.push_plain_scalar(start_idx, start_idx + 1, true);
             }

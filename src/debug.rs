@@ -211,10 +211,13 @@ fn count_nodes(
 /// debug::validate_tree(yaml.syntax()).expect("Tree should be valid");
 /// ```
 pub fn validate_tree(node: &SyntaxNode) -> Result<(), String> {
-    validate_node(node)?;
-    validate_no_stacked_indents(node)?;
-    validate_no_double_trailing_newline(node)?;
-    Ok(())
+    // Each pass walks the tree iteratively, so deep nesting cannot overflow
+    // the stack.
+    node.descendants().try_for_each(|n| validate_node(&n))?;
+    node.descendants()
+        .try_for_each(|n| validate_no_stacked_indents(&n))?;
+    node.descendants()
+        .try_for_each(|n| validate_no_double_trailing_newline(&n))
 }
 
 /// Roundtrip check: `parse(node.to_string()).to_string()` must equal
@@ -458,11 +461,6 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
         _ => {}
     }
 
-    // Recursively validate children
-    for child in node.children() {
-        validate_node(&child)?;
-    }
-
     Ok(())
 }
 
@@ -520,7 +518,7 @@ fn is_last_entry_in_parent(entry: &SyntaxNode) -> bool {
     true
 }
 
-/// Walk every node and reject adjacent INDENT tokens.
+/// Reject adjacent INDENT tokens among the children of `node`.
 ///
 /// Two INDENTs concatenate at render time -- the sequence-under-empty-key
 /// bug (fixed for #38) manifested exactly this way (parent VALUE's INDENT
@@ -539,10 +537,7 @@ fn validate_no_stacked_indents(node: &SyntaxNode) -> Result<(), String> {
                 prev_was_indent = true;
             }
             rowan::NodeOrToken::Token(_) => prev_was_indent = false,
-            rowan::NodeOrToken::Node(n) => {
-                prev_was_indent = false;
-                validate_no_stacked_indents(n)?;
-            }
+            rowan::NodeOrToken::Node(_) => prev_was_indent = false,
         }
     }
     Ok(())
@@ -582,9 +577,6 @@ fn validate_no_double_trailing_newline(node: &SyntaxNode) -> Result<(), String> 
             ));
         }
     }
-    for child in node.children() {
-        validate_no_double_trailing_newline(&child)?;
-    }
     Ok(())
 }
 
@@ -594,6 +586,28 @@ mod tests {
     use crate::yaml::YamlFile;
     use rowan::ast::AstNode;
     use std::str::FromStr;
+
+    #[test]
+    fn test_validate_tree_fits_a_small_stack() {
+        // The walk used to recurse once per node.
+        let text = format!("{}{}", "[{".repeat(127), "}]".repeat(127));
+        let green = YamlFile::from_str(&text)
+            .unwrap()
+            .syntax()
+            .green()
+            .into_owned();
+        // Dropping the last reference to a tree recurses through it, so
+        // keep one out here.
+        let tree = green.clone();
+        std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || validate_tree(&SyntaxNode::new_root_mut(tree)))
+            .unwrap()
+            .join()
+            .unwrap()
+            .unwrap();
+        drop(green);
+    }
 
     /// A comment ending an entry's line belongs to the entry, not to the
     /// collection beside it.

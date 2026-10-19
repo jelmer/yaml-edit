@@ -341,7 +341,17 @@ impl Validator {
         violations
     }
 
+    /// Check `node` and everything below it, in document order.
+    ///
+    /// The walk is iterative, so deep nesting cannot overflow the stack.
     fn validate_node(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        for n in node.descendants() {
+            self.check_node(&n, violations);
+        }
+    }
+
+    /// Run the checks for `node` itself, not those of its children.
+    fn check_node(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         use crate::SyntaxKind;
 
         // Check for tabs in any node's tokens
@@ -460,11 +470,6 @@ impl Validator {
         // Check indentation rules
         check_sequence_indentation(node, violations);
         check_quoted_string_indentation(node, violations);
-
-        // Recursively validate child nodes
-        for child in node.children() {
-            self.validate_node(&child, violations);
-        }
     }
 }
 
@@ -2747,6 +2752,37 @@ mod tests {
             },
         );
     }
+
+    #[test]
+    fn test_deep_nesting_fits_a_small_stack() {
+        // The walk used to recurse once per node, which overflowed the stack
+        // under the fuzzer's address sanitizer on 200 nested `[`.
+        let text = format!("{}{}", "[{".repeat(127), "}]".repeat(127));
+        let green = crate::YamlFile::from_str(&text)
+            .unwrap()
+            .syntax()
+            .green()
+            .into_owned();
+        // Dropping the last reference to a tree recurses through it, so
+        // keep one out here.
+        let tree = green.clone();
+        let violations = std::thread::Builder::new()
+            .stack_size(SMALL_STACK)
+            .spawn(move || {
+                Validator::new()
+                    .validate_syntax(&SyntaxNode::new_root_mut(tree))
+                    .len()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(violations, 0);
+        drop(green);
+    }
+
+    /// A stack small enough to overflow when walking a tree recurses
+    /// through all of its levels.
+    const SMALL_STACK: usize = 64 * 1024;
 
     #[test]
     fn test_validator_accepts_well_formed_flow_collections() {

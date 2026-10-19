@@ -5266,6 +5266,33 @@ fn test_closing_flow_indicator_on_plain_scalar_continuation_line() {
 }
 
 #[test]
+fn test_closed_flow_collection_on_plain_scalar_continuation_line() {
+    // A collection closing on the line only reads as one when it is an
+    // implicit key. `[]` followed by more content, or `{` closed by `]`,
+    // is content, and so is the `[` or quote after it.
+    assert_eq!(
+        document_values("2\n[][\n---\n"),
+        [
+            yaml_edit::YamlValue::from("2 []["),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("$\n{]{\n---\n"),
+        [
+            yaml_edit::YamlValue::from("$ {]{"),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("e\n[]' # c\n"),
+        [yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain(
+            "e []'"
+        ))]
+    );
+}
+
+#[test]
 fn test_indicator_line_on_plain_scalar_continuation_line() {
     // Neither is a `-` or `?` opening such a line an indicator, so a `[`
     // after it opens no flow collection either.

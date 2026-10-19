@@ -411,22 +411,33 @@ fn scan_single_quoted(
     (end_idx, false)
 }
 
-/// Whether the flow collection opening at `open_idx` closes on its line.
-fn flow_collection_closes_on_line(input: &str, open_idx: usize) -> bool {
+/// Whether the flow collection opening at `open_idx` starts an implicit
+/// key: it closes on its line, with the brackets matching, and a `:`
+/// mapping indicator follows on that line.
+fn flow_collection_is_implicit_key(input: &str, open_idx: usize) -> bool {
     let line = input[open_idx..]
         .split(['\n', '\r'])
         .next()
         .unwrap_or_default();
     let mut chars = line.char_indices().peekable();
-    let mut depth = 0u32;
+    let mut closers = Vec::new();
     let mut prev = ' ';
     while let Some((idx, ch)) = chars.next() {
         match ch {
-            '[' | '{' => depth += 1,
+            '[' => closers.push(']'),
+            '{' => closers.push('}'),
             ']' | '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return true;
+                if closers.pop() != Some(ch) {
+                    return false;
+                }
+                if closers.is_empty() {
+                    // The `:` need not follow straight away: `[q] x: v` is a
+                    // key holding two nodes, which the validator reports.
+                    let rest = &line[idx + 1..];
+                    let comment = [" #", "\t#"].iter().filter_map(|c| rest.find(c)).min();
+                    return rest[..comment.unwrap_or(rest.len())]
+                        .match_indices(':')
+                        .any(|(i, _)| is_colon_a_mapping_indicator(line, idx + 1 + i, 0));
                 }
             }
             // A quote mid-scalar (`[a'b]`) is content.
@@ -792,14 +803,15 @@ impl<'a, 'c> LexState<'a, 'c> {
                 self.push_plain_scalar(start_idx, start_idx + 1, true);
             }
             // So is one opening a line after a plain scalar, unless it opens
-            // a collection that closes on that line, as an implicit key has
-            // to: opening a collection in `f\n[\n---\n` hid the `---` that
-            // ends the document, as one after a `]` did in `f\n]{\n---\n`.
+            // a collection that is an implicit key: opening a collection in
+            // `f\n[\n---\n` hid the `---` that ends the document, as one
+            // after a `]` did in `f\n]{\n---\n` and after `[]` in
+            // `f\n[][\n---\n`.
             '[' | '{' | ']' | '}'
                 if self.flow_depth == 0
                     && self.opens_plain_scalar_continuation_line(start_idx)
                     && !(matches!(ch, '[' | '{')
-                        && flow_collection_closes_on_line(self.input, start_idx)) =>
+                        && flow_collection_is_implicit_key(self.input, start_idx)) =>
             {
                 self.push_plain_scalar(start_idx, start_idx + 1, true);
             }

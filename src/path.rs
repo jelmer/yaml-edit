@@ -1151,130 +1151,180 @@ fn set_path_on_mapping<V: crate::AsYaml>(
     // name, write to an existing scalar key spelled the same.
     let key = segment_key(&segments[0]);
     if mapping.contains_key(key.as_str()) {
-        return set_path_at_key(mapping, key.as_str(), segments, value, policy);
+        return set_path_in_slot(Slot::Key(mapping, key.as_str()), segments, value, policy);
     }
     match spelled_key(mapping.keys(), &key) {
-        Some(existing) => set_path_at_key(mapping, &existing, segments, value, policy),
-        None => set_path_at_key(mapping, key.as_str(), segments, value, policy),
+        Some(existing) => set_path_in_slot(Slot::Key(mapping, &existing), segments, value, policy),
+        None => set_path_in_slot(Slot::Key(mapping, key.as_str()), segments, value, policy),
     }
 }
 
-/// [`set_path_on_mapping`] once the key for `segments[0]` is chosen.
-fn set_path_at_key<K: crate::AsYaml + Copy, V: crate::AsYaml>(
-    mapping: &Mapping,
-    first_key: K,
+/// The place a write continues from: the value of a mapping entry or a
+/// sequence item.
+enum Slot<'a, K> {
+    Key(&'a Mapping, K),
+    Index(&'a crate::yaml::Sequence, usize),
+}
+
+impl<K: crate::AsYaml + Copy> Slot<'_, K> {
+    fn get(&self) -> Option<crate::as_yaml::YamlNode> {
+        match *self {
+            Slot::Key(mapping, key) => mapping.get(key),
+            Slot::Index(sequence, index) => sequence.get(index),
+        }
+    }
+
+    fn set(&self, value: impl crate::AsYaml) {
+        match *self {
+            Slot::Key(mapping, key) => mapping.set(key, value),
+            Slot::Index(sequence, index) => {
+                sequence.set(index, value);
+            }
+        }
+    }
+
+    /// The container node and the `children_with_tokens` index of the
+    /// entry holding this slot, which must exist.
+    fn entry(&self) -> (&crate::yaml::SyntaxNode, usize) {
+        match *self {
+            Slot::Key(mapping, key) => (
+                &mapping.0,
+                mapping
+                    .find_entry_index_by_key(key)
+                    .expect("get just found this key"),
+            ),
+            Slot::Index(sequence, index) => (
+                &sequence.0,
+                crate::nodes::nth_entry_index(
+                    &sequence.0,
+                    crate::SyntaxKind::SEQUENCE_ENTRY,
+                    index,
+                )
+                .expect("get just found this index"),
+            ),
+        }
+    }
+
+    /// Put an empty sequence or mapping in the slot. Under a mapping the
+    /// parent's style is matched so block content is not mixed into a flow
+    /// container. Under a sequence it is a flow-empty `[]` or `{}`, which
+    /// has no pending-block marker and so stays flow through the
+    /// subsequent set.
+    fn insert_container(&self, sequence: bool) {
+        match *self {
+            Slot::Key(mapping, key) => match (sequence, mapping.is_flow_style()) {
+                (true, true) => mapping.set(key, crate::yaml::Sequence::new_flow()),
+                (true, false) => mapping.set(key, crate::yaml::Sequence::new_pending_block()),
+                (false, true) => mapping.set(key, Mapping::new_flow()),
+                (false, false) => mapping.set(key, Mapping::new_pending_block()),
+            },
+            Slot::Index(..) if sequence => self.set(
+                crate::builder::SequenceBuilder::new()
+                    .build_document()
+                    .as_sequence()
+                    .expect("SequenceBuilder always produces a sequence"),
+            ),
+            Slot::Index(..) => self.set(
+                crate::builder::MappingBuilder::new()
+                    .build_document()
+                    .as_mapping()
+                    .expect("MappingBuilder always produces a mapping"),
+            ),
+        }
+    }
+}
+
+/// Continue a write at `slot`, which `segments[0]` addressed: set the
+/// value there if this is the last segment, otherwise descend into the
+/// container held there, creating one as needed.
+fn set_path_in_slot<K: crate::AsYaml + Copy, V: crate::AsYaml>(
+    slot: Slot<'_, K>,
     segments: &[PathSegment],
     value: V,
     policy: AliasPolicy,
 ) -> Result<(), PathError> {
     if segments.len() == 1 {
-        // Base case: set directly. Replacing an alias outright is not
-        // writing *through* it -- no other alias is affected -- so it
-        // needs no policy check.
-        mapping.set(first_key, value);
+        // Replacing an alias outright is not writing *through* it -- no
+        // other alias is affected -- so it needs no policy check.
+        slot.set(value);
         return Ok(());
     }
+    let (at, rest) = (&segments[0], &segments[1..]);
+    let mismatch = || PathError::TypeMismatch {
+        at: segment_display(at),
+    };
+    let existing = slot.get();
 
     // An intermediate alias: either refuse, follow it into the anchored
     // node, or replace it here with an anchor-free copy and continue in
     // that copy.
-    if let Some(crate::as_yaml::YamlNode::Alias(alias)) = mapping.get(first_key) {
-        let resolved = resolve_alias_for_write(&alias, &segments[0], policy)?;
+    if let Some(crate::as_yaml::YamlNode::Alias(alias)) = &existing {
+        let resolved = resolve_alias_for_write(alias, at, policy)?;
         if policy != AliasPolicy::Expand {
-            return set_path_on_node(resolved, &segments[1..], value, policy, &segments[0]);
+            return set_path_on_node(resolved, rest, value, policy, at);
         }
-        let child = mapping
-            .find_entry_index_by_key(first_key)
-            .expect("get just found this key");
-        return undo_child_on_err(&mapping.0, child, || {
-            mapping.set(first_key, resolved);
-            // Re-read through the mapping so we descend into the copy
+        let (container, child) = slot.entry();
+        return undo_child_on_err(container, child, || {
+            slot.set(resolved);
+            // Re-read through the container so we descend into the copy
             // that now lives in the tree, not the detached one.
-            let target = mapping
-                .get(first_key)
-                .expect("set keeps the entry for this key");
-            set_path_on_node(target, &segments[1..], value, policy, &segments[0])
+            let target = slot.get().expect("set keeps the entry");
+            set_path_on_node(target, rest, value, policy, at)
         });
     }
 
-    // What container does the next segment expect at `first_key`?
-    let next_wants_sequence = matches!(segments[1], PathSegment::Index(_));
-
-    // Reject descending through a scalar. `get(first_key)` returns the
-    // existing value if any; if it's a non-null scalar we'd have to
-    // overwrite user data to continue. Null placeholders are treated
-    // as "vacant" and get replaced by the appropriate container.
-    if let Some(existing) = mapping.get(first_key) {
-        if existing.as_scalar().is_some_and(|sc| !sc.is_null()) {
-            return Err(PathError::TypeMismatch {
-                at: segment_display(&segments[0]),
-            });
-        }
+    // Descending through a scalar would overwrite user data, unless it is
+    // a null placeholder (one the user wrote, or one pushed to grow a
+    // sequence), which is replaced by the appropriate container.
+    if existing
+        .as_ref()
+        .and_then(|n| n.as_scalar())
+        .is_some_and(|sc| !sc.is_null())
+    {
+        return Err(mismatch());
     }
 
-    let existing = mapping.get(first_key);
-
-    if next_wants_sequence {
-        if let Some(nested) = existing.as_ref().and_then(node_as_sequence) {
-            return set_path_on_sequence(&nested, &segments[1..], value, policy);
+    let wants_sequence = matches!(rest[0], PathSegment::Index(_));
+    if wants_sequence {
+        if let Some(nested) = existing.as_ref().and_then(|n| n.sequence_content()) {
+            return set_path_on_sequence(&nested, rest, value, policy);
         }
-        // Index on an existing mapping is a key (`m.0` / `m[0]`), same
-        // as get_path. Do not replace the mapping with a sequence.
-        if let Some(nested) = existing.as_ref().and_then(node_as_mapping) {
-            return set_path_on_mapping(&nested, &segments[1..], value, policy);
-        }
-        if existing.as_ref().is_some_and(|n| !is_replaceable_scalar(n)) {
-            return Err(PathError::TypeMismatch {
-                at: segment_display(&segments[0]),
-            });
-        }
-        // A sequence created here starts empty, so an index past the
-        // growth bound is known to fail. Say so before writing anything:
-        // creating the key first left `k:\n  \n` behind, a half-built
-        // entry that no longer reparses as the sequence it claimed.
-        if let PathSegment::Index(index) = segments[1] {
-            if index >= MAX_INDEX_GROWTH {
-                return Err(PathError::IndexTooFar {
-                    at: segment_display(&segments[1]),
-                    len: 0,
-                    index,
-                });
-            }
-        }
-        // Match the parent's style so we don't mix block content into a flow
-        // container.
-        if mapping.is_flow_style() {
-            mapping.set(first_key, crate::yaml::Sequence::new_flow());
-        } else {
-            mapping.set(first_key, crate::yaml::Sequence::new_pending_block());
-        }
-        let nested = mapping
-            .get_sequence(first_key)
-            .expect("we just inserted this key as a sequence");
-        return set_path_on_sequence(&nested, &segments[1..], value, policy);
     }
-
-    if let Some(nested) = existing.as_ref().and_then(node_as_mapping) {
-        return set_path_on_mapping(&nested, &segments[1..], value, policy);
+    // Index on an existing mapping is a key (`m.0` / `m[0]`), same as
+    // get_path. Do not replace the mapping with a sequence.
+    if let Some(nested) = existing.as_ref().and_then(|n| n.mapping_content()) {
+        return set_path_on_mapping(&nested, rest, value, policy);
     }
     if existing.as_ref().is_some_and(|n| !is_replaceable_scalar(n)) {
-        return Err(PathError::TypeMismatch {
-            at: segment_display(&segments[0]),
-        });
+        return Err(mismatch());
     }
 
-    // Match the parent's style so we don't mix block content into a flow
-    // container.
-    if mapping.is_flow_style() {
-        mapping.set(first_key, Mapping::new_flow());
+    // A sequence created under a key starts empty, so an index past the
+    // growth bound is known to fail. Say so before writing anything:
+    // creating the key first left `k:\n  \n` behind, a half-built entry
+    // that no longer reparses as the sequence it claimed.
+    if let (Slot::Key(..), PathSegment::Index(index)) = (&slot, &rest[0]) {
+        if *index >= MAX_INDEX_GROWTH {
+            return Err(PathError::IndexTooFar {
+                at: segment_display(&rest[0]),
+                len: 0,
+                index: *index,
+            });
+        }
+    }
+    slot.insert_container(wants_sequence);
+    let created = slot.get();
+    if wants_sequence {
+        let nested = created
+            .and_then(|n| n.sequence_content())
+            .expect("we just inserted a sequence here");
+        set_path_on_sequence(&nested, rest, value, policy)
     } else {
-        mapping.set(first_key, Mapping::new_pending_block());
+        let nested = created
+            .and_then(|n| n.mapping_content())
+            .expect("we just inserted a mapping here");
+        set_path_on_mapping(&nested, rest, value, policy)
     }
-
-    let nested = mapping
-        .get_mapping(first_key)
-        .expect("we just inserted this key as a mapping");
-    set_path_on_mapping(&nested, &segments[1..], value, policy)
 }
 
 /// Set a value at a path on a sequence, growing it and creating intermediate
@@ -1320,92 +1370,12 @@ fn set_path_on_sequence<V: crate::AsYaml>(
         sequence.extend_with(crate::scalar::ScalarValue::null(), growth);
     }
 
-    if segments.len() == 1 {
-        // Replacing an alias entry outright affects no other alias, so
-        // no policy check here (mirrors the mapping base case).
-        sequence.set(index, value);
-        return Ok(());
-    }
-
-    // Same alias handling as the mapping case: refuse, follow into the
-    // anchored node, or swap in an anchor-free copy and descend there.
-    if let Some(crate::as_yaml::YamlNode::Alias(alias)) = sequence.get(index) {
-        let resolved = resolve_alias_for_write(&alias, &segments[0], policy)?;
-        if policy != AliasPolicy::Expand {
-            return set_path_on_node(resolved, &segments[1..], value, policy, &segments[0]);
-        }
-        let child =
-            crate::nodes::nth_entry_index(&sequence.0, crate::SyntaxKind::SEQUENCE_ENTRY, index)
-                .expect("get just found this index");
-        return undo_child_on_err(&sequence.0, child, || {
-            sequence.set(index, resolved);
-            let target = sequence
-                .get(index)
-                .expect("set keeps the entry at this index");
-            set_path_on_node(target, &segments[1..], value, policy, &segments[0])
-        });
-    }
-
-    // Descending through an existing scalar is fine when that scalar is
-    // a null placeholder (either one we just pushed to grow the
-    // sequence, or an existing `null` the user chose). Reject only when
-    // we'd have to overwrite a non-null user value.
-    if let Some(existing) = sequence.get(index) {
-        if existing.as_scalar().is_some_and(|sc| !sc.is_null()) {
-            return Err(PathError::TypeMismatch {
-                at: segment_display(&segments[0]),
-            });
-        }
-    }
-
-    let next_wants_sequence = matches!(segments[1], PathSegment::Index(_));
-    let existing = sequence.get(index);
-
-    if next_wants_sequence {
-        if let Some(nested) = existing.as_ref().and_then(node_as_sequence) {
-            return set_path_on_sequence(&nested, &segments[1..], value, policy);
-        }
-        if let Some(nested) = existing.as_ref().and_then(node_as_mapping) {
-            return set_path_on_mapping(&nested, &segments[1..], value, policy);
-        }
-        if existing.as_ref().is_some_and(|n| !is_replaceable_scalar(n)) {
-            return Err(PathError::TypeMismatch {
-                at: segment_display(&segments[0]),
-            });
-        }
-        // Nested-sequence-under-sequence: use SequenceBuilder to
-        // create a flow-empty `[]`, which has no pending-block marker and
-        // so stays flow through the subsequent set.
-        let flow_empty = crate::builder::SequenceBuilder::new()
-            .build_document()
-            .as_sequence()
-            .expect("SequenceBuilder always produces a sequence");
-        sequence.set(index, flow_empty);
-        let nested = sequence
-            .get(index)
-            .and_then(|n| n.as_sequence().cloned())
-            .expect("we just inserted a sequence at this index");
-        return set_path_on_sequence(&nested, &segments[1..], value, policy);
-    }
-
-    if let Some(nested) = existing.as_ref().and_then(node_as_mapping) {
-        return set_path_on_mapping(&nested, &segments[1..], value, policy);
-    }
-    if existing.as_ref().is_some_and(|n| !is_replaceable_scalar(n)) {
-        return Err(PathError::TypeMismatch {
-            at: segment_display(&segments[0]),
-        });
-    }
-    let flow_empty = crate::builder::MappingBuilder::new()
-        .build_document()
-        .as_mapping()
-        .expect("MappingBuilder always produces a mapping");
-    sequence.set(index, flow_empty);
-    let nested = sequence
-        .get(index)
-        .and_then(|n| n.as_mapping().cloned())
-        .expect("we just inserted a mapping at this index");
-    set_path_on_mapping(&nested, &segments[1..], value, policy)
+    set_path_in_slot(
+        Slot::<&str>::Index(sequence, index),
+        segments,
+        value,
+        policy,
+    )
 }
 
 #[cfg(test)]

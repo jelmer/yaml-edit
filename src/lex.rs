@@ -1010,76 +1010,15 @@ impl<'a, 'c> LexState<'a, 'c> {
     }
 
     fn lex_plus(&mut self, start_idx: usize) {
-        use SyntaxKind::*;
-        // `+` is a chomping indicator when it appears inside a
-        // block-scalar header (`|+`, `|2+`, `>+`, `>2+`). Detect
-        // that by looking at the current line: the last non-digit
-        // byte before this `+` must be `|` or `>`. Otherwise, if
-        // the next char begins a plain-scalar body (digit, `.`,
-        // letter, ...) this `+` is a sign prefix and belongs in
-        // the same scalar token -- so `+.INF` lexes as one FLOAT
-        // rather than PLUS + FLOAT. A bare `+` followed by
-        // whitespace stays PLUS.
-        let chomping = is_chomping_indicator(&self.input[self.line_start..start_idx]);
-        // Outside a flow collection the flow indicators are ordinary
-        // scalar content, a `:` not followed by whitespace is never a
-        // mapping indicator, and a quote no longer opens a quoted
-        // scalar once this one has begun. All of them continue the
-        // body: `a+[b]`, `a {b+:c}` and `+'a'` are each one scalar,
-        // as the `-` spellings already were. These are the same
-        // exceptions the body reader itself makes.
-        let next_starts_scalar = self.chars.peek().is_some_and(|(idx, c)| {
-            // A space does not end the scalar when more scalar
-            // content follows on the same line: `+ x: v` is keyed
-            // `+ x`, exactly as `a x: v` is keyed `a x`. The body
-            // reader makes the same test before absorbing a run.
-            if is_white_or_break(*c) {
-                return *c != '\n'
-                    && *c != '\r'
-                    && plain_scalar_continues_past_whitespace(self.input, *idx, self.flow_depth);
-            }
-            !is_white_or_break(*c)
-                && (!is_yaml_special(*c)
-                    // Everything the body reader keeps as content
-                    // starts a body: quotes, signs, and the node
-                    // properties and block headers, which are
-                    // indicators only at the start of a node. So
-                    // `+?`, `+|` and `+&` are each one scalar, as
-                    // `+x` already was.
-                    || matches!(
-                        c,
-                        '\'' | '"' | '+' | '-' | '?' | '|' | '>' | '&' | '*' | '!' | '%'
-                    )
-                    // A `#` glued to the sign is content, not a
-                    // comment: `+#: v` is keyed `+#`.
-                    || (*c == '#' && !is_hash_a_comment_start(self.input, *idx))
-                    || (self.flow_depth == 0 && matches!(c, '[' | ']' | '{' | '}' | ','))
-                    || (*c == ':'
-                        && !is_colon_a_mapping_indicator(self.input, *idx, self.flow_depth)))
-        });
-        if !chomping && next_starts_scalar {
-            self.push_plain_scalar(start_idx, start_idx + 1, true);
-        } else if !chomping && {
-            // A key may be separated from its colon by spaces
-            // (`+ : v`), so look past them as well.
-            let rest = &self.input[start_idx + 1..];
-            let gap = rest.len() - rest.trim_start_matches([' ', '\t']).len();
-            rest[gap..].starts_with(':')
-                && is_colon_a_mapping_indicator(self.input, start_idx + 1 + gap, self.flow_depth)
-        } {
-            // `+: v` is a mapping keyed by the plain scalar `+`, as
-            // `-: v` already was. A bare PLUS left the key invisible
-            // and stranded the rest of the entry.
-            self.push_scalar(start_idx, start_idx + 1);
-        } else if chomping {
-            self.push(PLUS, start_idx, start_idx + 1);
+        // `+` is a chomping indicator when it closes a block-scalar header
+        // (`|+`, `|2+`, `>+`, `>2+`). Anywhere else it is content, so it
+        // starts a plain scalar: `+.INF` is one FLOAT, `+ x: v` is keyed
+        // `+ x`, and `+: v` is keyed `+`. A bare PLUS token no parse rule
+        // claims would leave the `+` invisible.
+        if is_chomping_indicator(&self.input[self.line_start..start_idx]) {
+            self.push(SyntaxKind::PLUS, start_idx, start_idx + 1);
         } else {
-            // Nothing follows on this line to extend the body, but a
-            // `+` outside a block-scalar header is still content, not
-            // an indicator: `+\nx\n` is the scalar `+ x`. A bare PLUS
-            // token no parse rule claims left the `+` invisible and
-            // stranded whatever followed it.
-            self.push_scalar(start_idx, start_idx + 1);
+            self.push_plain_scalar(start_idx, start_idx + 1, true);
         }
     }
 

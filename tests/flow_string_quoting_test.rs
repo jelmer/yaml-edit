@@ -336,6 +336,13 @@ fn test_rename_json_like_key_before_adjacent_colon() {
             "{ z # comment\n  : bar }\n",
             vec!["z", "bar"],
         ),
+        (
+            "{\"a\"\n:?b}\n",
+            "a",
+            YamlValue::from("z"),
+            "{z\n: ?b}\n",
+            vec!["z", "?b"],
+        ),
     ] {
         let doc = Document::from_str(source).unwrap();
         let m = doc.as_mapping().unwrap_or_else(|| {

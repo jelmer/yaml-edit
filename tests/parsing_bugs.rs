@@ -5238,6 +5238,61 @@ fn test_flow_indicator_on_plain_scalar_continuation_line() {
 }
 
 #[test]
+fn test_closing_flow_indicator_on_plain_scalar_continuation_line() {
+    // A `]` or `}` opening such a line is content as well, and so is a `{`
+    // or `[` after it: lexing them as indicators opened a flow collection
+    // that took the `---` into the scalar.
+    assert_eq!(
+        document_values("m\n]{\n---\n"),
+        [
+            yaml_edit::YamlValue::from("m ]{"),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("m\n} [\n---\n"),
+        [
+            yaml_edit::YamlValue::from("m } ["),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("- m\n  }[\n---\n"),
+        [
+            yaml_edit::YamlValue::from_sequence(vec![yaml_edit::YamlValue::from("m }[")]),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+}
+
+#[test]
+fn test_indicator_line_on_plain_scalar_continuation_line() {
+    // Neither is a `-` or `?` opening such a line an indicator, so a `[`
+    // after it opens no flow collection either.
+    assert_eq!(
+        document_values("e\n- [\n---\n"),
+        [
+            yaml_edit::YamlValue::from("e - ["),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("n\n-\n{\n---\n"),
+        [
+            yaml_edit::YamlValue::from("n - {"),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("j\n? [\n---\n"),
+        [
+            yaml_edit::YamlValue::from("j ? ["),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+}
+
+#[test]
 fn test_block_scalar_indicator_on_plain_scalar_continuation_line() {
     // A `|` or `>` continuing a plain scalar is content, not a block scalar
     // header, so the lines after it are not a block scalar body.

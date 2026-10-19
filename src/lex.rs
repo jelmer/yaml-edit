@@ -757,7 +757,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             ':' => self.lex_colon(start_idx),
             // An explicit-key indicator, like the node properties below, only
             // at the start of a node: `a ?b` is the scalar `a ?b`, not a key
-            // indicator inside it.
+            // indicator inside it, and so is `a\n? b`.
             //
             // Per YAML 1.2 `c-complex-mapping-key` the `?` must also be
             // followed by a space or a line break to be an indicator. Without
@@ -769,7 +769,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             // start a plain scalar (`ns-plain-first`), so `{?, a}` has an
             // empty explicit key, as PyYAML reads it. The validator reports
             // the space missing after it.
-            '?' if self.node_can_start()
+            '?' if self.property_can_start(start_idx)
                 && self.chars.peek().map_or(true, |(_, next)| {
                     is_white_or_break(*next)
                         || (self.flow_depth > 0 && matches!(next, ',' | '[' | ']' | '{' | '}'))
@@ -791,13 +791,15 @@ impl<'a, 'c> LexState<'a, 'c> {
             {
                 self.push_plain_scalar(start_idx, start_idx + 1, true);
             }
-            // So is one opening a line after a plain scalar, unless it closes
-            // on that line, as an implicit key has to: opening a collection
-            // in `f\n[\n---\n` hid the `---` that ends the document.
-            '[' | '{'
+            // So is one opening a line after a plain scalar, unless it opens
+            // a collection that closes on that line, as an implicit key has
+            // to: opening a collection in `f\n[\n---\n` hid the `---` that
+            // ends the document, as one after a `]` did in `f\n]{\n---\n`.
+            '[' | '{' | ']' | '}'
                 if self.flow_depth == 0
                     && self.opens_plain_scalar_continuation_line(start_idx)
-                    && !flow_collection_closes_on_line(self.input, start_idx) =>
+                    && !(matches!(ch, '[' | '{')
+                        && flow_collection_closes_on_line(self.input, start_idx)) =>
             {
                 self.push_plain_scalar(start_idx, start_idx + 1, true);
             }
@@ -986,8 +988,12 @@ impl<'a, 'c> LexState<'a, 'c> {
                 .peek()
                 .map_or(true, |(_, next_ch)| is_white_or_break(*next_ch));
 
-            let is_sequence_marker =
-                (only_whitespace_before || after_value_indicator) && followed_by_whitespace_or_end;
+            // A line continuing a plain scalar holds content: `e\n- [` is
+            // the scalar `e - [`.
+            let is_sequence_marker = ((only_whitespace_before
+                && !self.opens_plain_scalar_continuation_line(start_idx))
+                || after_value_indicator)
+                && followed_by_whitespace_or_end;
 
             if is_sequence_marker {
                 self.push(DASH, start_idx, start_idx + 1);
@@ -2668,14 +2674,15 @@ double: "quoted""#;
         assert_eq!(tokens[0], (SyntaxKind::INDENT, "  "));
         assert_eq!(tokens[1], (SyntaxKind::DASH, "-"));
 
-        // Test nested sequences
+        // The indented lines continue the plain scalar `item1`, so their
+        // dashes are content: the value is `item1 - nested1 - nested2`.
         let input = "- item1\n  - nested1\n  - nested2\n- item2";
         let tokens = lex(input);
         let dash_tokens: Vec<_> = tokens
             .iter()
             .filter(|(kind, _)| *kind == SyntaxKind::DASH)
             .collect();
-        assert_eq!(dash_tokens.len(), 4); // Four sequence markers
+        assert_eq!(dash_tokens.len(), 2);
 
         // Test sequence with hyphenated values
         let input = "- first-item\n- second-item";
@@ -2971,15 +2978,16 @@ double: "quoted""#;
             .iter()
             .any(|(kind, text)| *kind == SyntaxKind::STRING && *text == "This is a multi-"));
 
-        // Test continuation with sequence-like line
+        // A line continuing a plain scalar is content, dash included.
         let input = "text: value\n  - but this is not a sequence";
         let tokens = lex(input);
-        // The dash after indentation should be treated as a sequence marker
-        let indent_dash: Vec<_> = tokens
-            .windows(2)
-            .filter(|w| w[0].0 == SyntaxKind::INDENT && w[1].0 == SyntaxKind::DASH)
-            .collect();
-        assert_eq!(indent_dash.len(), 1);
+        assert_eq!(
+            &tokens[tokens.len() - 2..],
+            [
+                (SyntaxKind::INDENT, "  "),
+                (SyntaxKind::STRING, "- but this is not a sequence"),
+            ]
+        );
     }
 
     #[test]

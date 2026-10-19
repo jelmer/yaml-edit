@@ -1676,7 +1676,7 @@ mod tests {
             ("a\nb : c\n", 0, "DOCUMENT(SCALAR(STRING\"a\") NEWLINE\"\\n\" MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"b\")) WHITESPACE\" \" COLON\":\" WHITESPACE\" \" VALUE(SCALAR(STRING\"c\")) NEWLINE\"\\n\")))"),
             (" a: 1\n\n# c\n", 0, "DOCUMENT(INDENT\" \" MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(INT\"1\")) NEWLINE\"\\n\") NEWLINE\"\\n\" COMMENT\"# c\" NEWLINE\"\\n\"))"),
             ("- - x\n  y\n", 1, "DOCUMENT(SEQUENCE(SEQUENCE_ENTRY(DASH\"-\" WHITESPACE\" \" SEQUENCE(SEQUENCE_ENTRY(DASH\"-\" WHITESPACE\" \" SCALAR(STRING\"x\") NEWLINE\"\\n\")))) INDENT\"  \") ERROR(STRING\"y\" NEWLINE\"\\n\")"),
-            ("\t%\n-\r!\t-", 0, "DOCUMENT(INDENT\"\\t\" SCALAR(STRING\"%\" NEWLINE\"\\n\" DASH\"-\" NEWLINE\"\\r\" TAG\"!\" WHITESPACE\"\\t\" STRING\"-\"))"),
+            ("\t%\n-\r!\t-", 0, "DOCUMENT(INDENT\"\\t\" SCALAR(STRING\"%\" NEWLINE\"\\n\" STRING\"-\" NEWLINE\"\\r\" STRING\"!\\t-\"))"),
 
         ] {
             let parsed = crate::yaml::YamlFile::parse(src);

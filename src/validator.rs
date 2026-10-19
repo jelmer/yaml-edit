@@ -831,6 +831,10 @@ fn check_block_scalar_indicator(node: &SyntaxNode, violations: &mut Vec<Violatio
     // Check if any STRING tokens appear before the first NEWLINE after the indicator
     let mut found_indicator = false;
     let mut found_newline = false;
+    // The header ends at the first white space or comment; the lexer can
+    // split its indicators over several tokens (`|+-` is PLUS and "-").
+    let mut in_header = true;
+    let mut chomping_indicators = 0;
 
     for child in node.children_with_tokens() {
         if let rowan::NodeOrToken::Token(token) = child {
@@ -885,8 +889,28 @@ fn check_block_scalar_indicator(node: &SyntaxNode, violations: &mut Vec<Violatio
                         ));
                         return;
                     }
-                    // WHITESPACE, COMMENT, and chomping/indentation indicators are OK
+                    crate::SyntaxKind::WHITESPACE | crate::SyntaxKind::COMMENT => {
+                        in_header = false;
+                    }
                     _ => {}
+                }
+                if in_header
+                    && matches!(
+                        token.kind(),
+                        crate::SyntaxKind::PLUS
+                            | crate::SyntaxKind::STRING
+                            | crate::SyntaxKind::INT
+                    )
+                {
+                    chomping_indicators += token.text().matches(['+', '-']).count();
+                    if chomping_indicators > 1 {
+                        violations.push(Violation::error_at(
+                            Rule::Other,
+                            token.text_range(),
+                            "Block scalar header has more than one chomping indicator",
+                        ));
+                        return;
+                    }
                 }
             }
         }
@@ -4711,6 +4735,41 @@ mod tests {
                 vec![(expected.0.to_string(), Some(expected.1.to_string()))],
                 "{yaml:?}"
             );
+        }
+    }
+
+    #[test]
+    fn test_block_scalar_header_has_one_chomping_indicator() {
+        let violations = |yaml: &str| -> Vec<_> {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location))
+                .collect()
+        };
+        for (yaml, location) in [
+            ("a: |+-\n  x\n", "1:6"),
+            ("a: >++\n  x\n", "1:6"),
+            ("a: |2+-\n  x\n", "1:7"),
+            ("a: |+2-\n  x\n", "1:6"),
+        ] {
+            assert_eq!(
+                violations(yaml),
+                vec![(
+                    "Block scalar header has more than one chomping indicator".to_string(),
+                    Some(location.to_string())
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "a: |+\n  x\n",
+            "a: |2-\n  x\n",
+            "a: |-2\n  x\n",
+            "a: >+ # c\n  x\n",
+        ] {
+            assert_eq!(violations(yaml), vec![], "{yaml:?}");
         }
     }
 

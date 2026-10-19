@@ -8,7 +8,7 @@
 use rowan::ast::AstNode;
 use rowan::TextRange;
 use std::collections::{BTreeSet, HashMap};
-use yaml_edit::validator::{Severity, Validator};
+use yaml_edit::validator::{Rule, Severity, Validator, Violation};
 use yaml_edit::{debug, Document, Lang, Mapping, SyntaxKind, YamlFile, YamlNode, YamlValue};
 
 pub type SyntaxNode = rowan::SyntaxNode<Lang>;
@@ -28,6 +28,8 @@ pub struct Target {
     /// Where the collection sits in the document's `YamlValue`, if the
     /// semantic check applies to it.
     pub path: Option<Vec<Step>>,
+    /// Whether the collection is inside a mapping key.
+    pub in_key: bool,
 }
 
 /// Record the `YamlValue` path of every collection under `node`. Collections
@@ -134,6 +136,7 @@ pub fn targets(doc: &Document) -> Vec<Target> {
             range,
             label,
             path,
+            in_key: node.ancestors().any(|n| n.kind() == SyntaxKind::KEY),
         });
     }
     out
@@ -222,11 +225,29 @@ pub fn cst_ok(file: &YamlFile) -> Result<(), String> {
     debug::roundtrip_ok(file.syntax())
 }
 
-pub fn validator_errors(file: &YamlFile) -> Vec<String> {
+pub fn validator_errors(file: &YamlFile) -> Vec<Violation> {
     Validator::new()
         .validate_syntax(file.syntax())
         .into_iter()
         .filter(|v| v.severity == Severity::Error)
+        .collect()
+}
+
+pub fn duplicate_key_count(errors: &[Violation]) -> usize {
+    errors
+        .iter()
+        .filter(|v| v.rule == Rule::DuplicateKeys)
+        .count()
+}
+
+/// The messages of `errors`, leaving out duplicate keys if there are no
+/// more than `allowed_duplicate_keys` of them. An edit inside a key can
+/// make it equal to another key, as renaming a key by hand can.
+pub fn unexpected_errors(errors: &[Violation], allowed_duplicate_keys: usize) -> Vec<String> {
+    let allowed = duplicate_key_count(errors) <= allowed_duplicate_keys;
+    errors
+        .iter()
+        .filter(|v| !(allowed && v.rule == Rule::DuplicateKeys))
         .map(|v| v.to_string())
         .collect()
 }

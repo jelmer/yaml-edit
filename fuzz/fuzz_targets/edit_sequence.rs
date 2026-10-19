@@ -13,7 +13,9 @@
 //! After every edit of input that the validator accepts:
 //! - the CST passes `debug::validate_tree` and `debug::roundtrip_ok`;
 //! - the text parses to the same tree (`debug::shape_to_string`);
-//! - the validator accepts it;
+//! - the validator accepts it, apart from duplicate keys: an edit inside a
+//!   key may make it equal to another key, and later edits must not add
+//!   more;
 //! - its `YamlValue` equals a model of the document updated alongside it.
 //!   Where an edit cannot be modelled (merge keys, aliases to what changed),
 //!   the model is taken from the edited document again.
@@ -644,6 +646,8 @@ fn check(
     file: &YamlFile,
     doc_index: usize,
     input_valid: bool,
+    in_key: bool,
+    duplicate_keys: &mut usize,
     expected: Option<&YamlValue>,
     context: &str,
 ) -> Option<YamlValue> {
@@ -663,6 +667,9 @@ fn check(
         panic!("{context}: tree differs from a re-parse\noutput: {output:?}\nedited:\n{edited}\nre-parsed:\n{fresh}");
     }
     let errors = validator_errors(&reparsed);
+    let allowed = if in_key { usize::MAX } else { *duplicate_keys };
+    *duplicate_keys = duplicate_key_count(&errors);
+    let errors = unexpected_errors(&errors, allowed);
     if !errors.is_empty() {
         panic!("{context}: validator rejects the output: {errors:?}\noutput: {output:?}");
     }
@@ -711,6 +718,7 @@ fuzz_target!(|data: &[u8]| {
     let doc = file.documents().nth(doc_index).unwrap();
     let mut model = YamlValue::from_document(&doc).ok();
     let mut log = Vec::new();
+    let mut duplicate_keys = 0;
     let trace = std::env::var_os("EDIT_SEQUENCE_TRACE").is_some();
     for _ in 0..12 {
         if u.is_empty() {
@@ -748,6 +756,14 @@ fuzz_target!(|data: &[u8]| {
         }
         let expected = apply(&ctx, &op, model.as_ref());
         let context = format!("input {input:?}, doc {doc_index}, edits {log:#?}");
-        model = check(&file, doc_index, input_valid, expected.as_ref(), &context);
+        model = check(
+            &file,
+            doc_index,
+            input_valid,
+            target.in_key,
+            &mut duplicate_keys,
+            expected.as_ref(),
+            &context,
+        );
     }
 });

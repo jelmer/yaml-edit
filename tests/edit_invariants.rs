@@ -7,7 +7,8 @@
 //! - `cst`: the tree passes `debug::validate_tree` and `debug::roundtrip_ok`;
 //! - `shape`: the tree is the same as a re-parse of its text;
 //! - `validator`: the validator accepts the output (skipped when it already
-//!   rejects the input);
+//!   rejects the input), apart from duplicate keys after an edit inside a
+//!   key;
 //! - `semantic`: the `YamlValue` of the output is that of the input with the
 //!   same operation applied to it (skipped where that cannot be worked out,
 //!   see `semantic_paths` and `expected_value`);
@@ -350,7 +351,8 @@ fn check_op(
     });
     if input_valid {
         check("validator", &|| {
-            let errors = validator_errors(&reparsed);
+            let allowed = if target.in_key { usize::MAX } else { 0 };
+            let errors = unexpected_errors(&validator_errors(&reparsed), allowed);
             if errors.is_empty() {
                 Ok(())
             } else {

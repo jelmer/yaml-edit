@@ -1166,10 +1166,8 @@ impl<'a, 'c> LexState<'a, 'c> {
             // as a URL, `::vector`, or a timestamp. The shared body
             // reader knows the rules: a `:` not followed by space is
             // content, flow indicators are content in block context,
-            // and a `#` glued to content is not a comment. Do not let
-            // it absorb an internal space run, though -- `: v` after
-            // this colon is a value, not more key.
-            self.push_plain_scalar(start_idx, start_idx + 1, false);
+            // and a `#` glued to content is not a comment.
+            self.push_plain_scalar(start_idx, start_idx + 1, true);
         }
     }
 

@@ -5083,3 +5083,37 @@ fn test_block_scalar_indicator_on_plain_scalar_continuation_line() {
         )]
     );
 }
+
+#[test]
+fn test_plain_scalar_starting_with_colon_spans_words() {
+    // `:o` starts a plain scalar, which runs on past the space, so the `[`
+    // in it is content and the key is `:o [d`.
+    assert_eq!(
+        document_values(":o [d: f\n"),
+        [yaml_edit::YamlValue::from_mapping(
+            [(
+                ":o [d".to_string(),
+                yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain("f"))
+            )]
+            .into()
+        )]
+    );
+    let file = YamlFile::from_str(":o p: f\n").unwrap();
+    assert_eq!(
+        yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file)),
+        concat!(
+            "DOCUMENT\n",
+            "  MAPPING\n",
+            "    MAPPING_ENTRY\n",
+            "      KEY\n",
+            "        SCALAR\n",
+            "          STRING: \":o p\"\n",
+            "      COLON: \":\"\n",
+            "      WHITESPACE: \" \"\n",
+            "      VALUE\n",
+            "        SCALAR\n",
+            "          STRING: \"f\"\n",
+            "      NEWLINE: \"\\\\n\"\n",
+        )
+    );
+}

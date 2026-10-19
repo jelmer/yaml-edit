@@ -2335,6 +2335,208 @@ double: "quoted""#;
         assert_eq!(plus_tokens[0].1, "+");
     }
 
+    /// A `+` is a chomping indicator only where it closes a block scalar
+    /// header, and otherwise starts a plain scalar.
+    #[test]
+    fn test_plus_tokens() {
+        use SyntaxKind::*;
+        let cases: Vec<(&str, Vec<(SyntaxKind, &str)>)> = vec![
+            (
+                "+ x: v\n",
+                vec![
+                    (STRING, "+ x"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "v"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "+\tx: v\n",
+                vec![
+                    (STRING, "+\tx"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "v"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "+ \n",
+                vec![(STRING, "+"), (WHITESPACE, " "), (NEWLINE, "\n")],
+            ),
+            (
+                "+ #c\n",
+                vec![
+                    (STRING, "+"),
+                    (WHITESPACE, " "),
+                    (COMMENT, "#c"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            ("+[b]\n", vec![(STRING, "+[b]"), (NEWLINE, "\n")]),
+            (
+                "[+[b]]\n",
+                vec![
+                    (LEFT_BRACKET, "["),
+                    (STRING, "+"),
+                    (LEFT_BRACKET, "["),
+                    (STRING, "b"),
+                    (RIGHT_BRACKET, "]"),
+                    (RIGHT_BRACKET, "]"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            ("+'a'\n", vec![(STRING, "+'a'"), (NEWLINE, "\n")]),
+            ("+?\n", vec![(STRING, "+?"), (NEWLINE, "\n")]),
+            ("+|\n", vec![(STRING, "+|"), (NEWLINE, "\n")]),
+            (
+                "+#: v\n",
+                vec![
+                    (STRING, "+#"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "v"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "+ #: v\n",
+                vec![
+                    (STRING, "+"),
+                    (WHITESPACE, " "),
+                    (COMMENT, "#: v"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "+: v\n",
+                vec![
+                    (STRING, "+"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "v"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "+ : v\n",
+                vec![
+                    (STRING, "+"),
+                    (WHITESPACE, " "),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "v"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            ("+:x\n", vec![(STRING, "+:x"), (NEWLINE, "\n")]),
+            (
+                "+\nx\n",
+                vec![
+                    (STRING, "+"),
+                    (NEWLINE, "\n"),
+                    (STRING, "x"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "+\r\nx\n",
+                vec![
+                    (STRING, "+"),
+                    (NEWLINE, "\r\n"),
+                    (STRING, "x"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "- |+\n  x\n",
+                vec![
+                    (DASH, "-"),
+                    (WHITESPACE, " "),
+                    (PIPE, "|"),
+                    (PLUS, "+"),
+                    (NEWLINE, "\n"),
+                    (INDENT, "  "),
+                    (STRING, "x"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "/|+: v\n",
+                vec![
+                    (STRING, "/|+"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "v"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            ("i:|+\n", vec![(STRING, "i:|+"), (NEWLINE, "\n")]),
+            ("+.INF\n", vec![(FLOAT, "+.INF"), (NEWLINE, "\n")]),
+            (
+                "{+, a}\n",
+                vec![
+                    (LEFT_BRACE, "{"),
+                    (STRING, "+"),
+                    (COMMA, ","),
+                    (WHITESPACE, " "),
+                    (STRING, "a"),
+                    (RIGHT_BRACE, "}"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            ("+,\n", vec![(STRING, "+,"), (NEWLINE, "\n")]),
+            (
+                "a: 1+2\n",
+                vec![
+                    (STRING, "a"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "1+2"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            ("i:|2+\n", vec![(STRING, "i:|2+"), (NEWLINE, "\n")]),
+            (
+                "x: a |2+\n",
+                vec![
+                    (STRING, "x"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "a |2+"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "k: |2+\n",
+                vec![
+                    (STRING, "k"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (PIPE, "|"),
+                    (INT, "2"),
+                    (PLUS, "+"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "- |2+\n",
+                vec![
+                    (DASH, "-"),
+                    (WHITESPACE, " "),
+                    (PIPE, "|"),
+                    (INT, "2"),
+                    (PLUS, "+"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(lex(input), expected, "lexing {input:?}");
+        }
+    }
+
     #[test]
     fn test_block_scalar_indicators() {
         // Test literal with chomping indicators

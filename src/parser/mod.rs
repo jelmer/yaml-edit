@@ -1550,16 +1550,9 @@ impl Parser<'_> {
         expected: &str,
         found: Option<&str>,
     ) -> String {
-        let mut builder = ErrorBuilder::new(base_message);
-        builder = builder.expected(expected);
-
-        if let Some(found_str) = found {
-            builder = builder.found(found_str);
-        } else if let Some(token) = self.current_text() {
-            builder = builder.found(format!("'{token}'"));
-        } else {
-            builder = builder.found("end of input");
-        }
+        let mut builder = ErrorBuilder::new(base_message)
+            .expected(expected)
+            .found(found.unwrap_or("end of input"));
 
         // Add context
         let context = match self.error_context.current_context() {
@@ -1574,8 +1567,7 @@ impl Parser<'_> {
         builder = builder.context(context);
 
         // Add helpful suggestions based on the error type
-        let suggestion = self.get_error_suggestion(base_message, expected, found);
-        if let Some(suggestion_text) = suggestion {
+        if let Some(suggestion_text) = Self::get_error_suggestion(base_message, expected) {
             builder = builder.suggestion(suggestion_text);
         }
 
@@ -1583,18 +1575,7 @@ impl Parser<'_> {
     }
 
     /// Generate helpful suggestions for common errors
-    fn get_error_suggestion(
-        &self,
-        base_message: &str,
-        expected: &str,
-        found: Option<&str>,
-    ) -> Option<String> {
-        if base_message.contains("Unterminated quoted string") {
-            return Some(
-                "Add closing quote or check for unescaped quotes within the string".to_string(),
-            );
-        }
-
+    fn get_error_suggestion(base_message: &str, expected: &str) -> Option<String> {
         if base_message.contains("Missing colon") || expected.contains("':'") {
             return Some("Add ':' after the key, or check for proper indentation".to_string());
         }
@@ -1611,20 +1592,6 @@ impl Parser<'_> {
                 "Add '}' to close the object, or check for missing commas between key-value pairs"
                     .to_string(),
             );
-        }
-
-        if let Some(found_text) = found {
-            if found_text.contains('\n') {
-                return Some(
-                    "Unexpected newline - check indentation and YAML structure".to_string(),
-                );
-            }
-
-            if found_text.contains('\t') {
-                return Some(
-                    "Tabs are not allowed in YAML - use spaces for indentation".to_string(),
-                );
-            }
         }
 
         None

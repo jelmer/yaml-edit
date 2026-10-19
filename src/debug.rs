@@ -213,8 +213,23 @@ fn count_nodes(
 pub fn validate_tree(node: &SyntaxNode) -> Result<(), String> {
     let node = &crate::nodes::immutable_copy(node);
     // Each pass walks the tree iteratively, so deep nesting cannot overflow
-    // the stack.
-    node.descendants().try_for_each(|n| validate_node(&n))?;
+    // the stack. Whether each node being walked is in a flow collection is
+    // passed down, as asking each one would walk all its ancestors.
+    let mut in_flow = vec![crate::nodes::in_flow_collection(node)];
+    for event in node.preorder() {
+        match event {
+            rowan::WalkEvent::Enter(n) => {
+                let outer = *in_flow.last().expect("the walk's own entry stays");
+                validate_node(&n, outer)?;
+                let opens_flow = matches!(n.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE)
+                    && crate::nodes::starts_a_flow_collection(&n);
+                in_flow.push(outer || opens_flow);
+            }
+            rowan::WalkEvent::Leave(_) => {
+                in_flow.pop();
+            }
+        }
+    }
     node.descendants()
         .try_for_each(|n| validate_no_stacked_indents(&n))?;
     node.descendants()
@@ -332,11 +347,12 @@ pub(crate) fn assert_parser_shaped(node: &impl rowan::ast::AstNode<Language = cr
     );
 }
 
-fn validate_node(node: &SyntaxNode) -> Result<(), String> {
+/// Check `node`, which is in a flow collection if `in_flow`.
+fn validate_node(node: &SyntaxNode, in_flow: bool) -> Result<(), String> {
     if matches!(
         node.kind(),
         SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
-    ) && crate::nodes::in_flow_collection(node)
+    ) && in_flow
     {
         validate_flow_entry_end(node)?;
     }
@@ -364,7 +380,6 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 .filter(|c| c.as_token().is_some_and(|t| t.kind() == SyntaxKind::COLON))
                 .collect();
             let is_explicit_key = has_child_token(node, |k| k == SyntaxKind::QUESTION);
-            let in_flow = crate::nodes::in_flow_collection(node);
             let expected_colons = if is_explicit_key || in_flow {
                 0..=1
             } else {
@@ -399,10 +414,7 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
             // The last entry of a mapping is allowed to lack a
             // terminator: an unterminated source doc (`a: 1\nb: 2`)
             // is legitimate YAML and must roundtrip.
-            if !crate::nodes::in_flow_collection(node)
-                && !is_last_entry_in_parent(node)
-                && !entry_is_terminated(node)
-            {
+            if !in_flow && !is_last_entry_in_parent(node) && !entry_is_terminated(node) {
                 return Err(format!(
                     "Block-style MAPPING_ENTRY not terminated by a NEWLINE (last token: {:?})",
                     node.last_token().map(|t| t.kind())
@@ -454,9 +466,7 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
             }
         }
         SyntaxKind::SEQUENCE_ENTRY
-            if !crate::nodes::in_flow_collection(node)
-                && !is_last_entry_in_parent(node)
-                && !entry_is_terminated(node) =>
+            if !in_flow && !is_last_entry_in_parent(node) && !entry_is_terminated(node) =>
         {
             return Err(format!(
                 "Block-style SEQUENCE_ENTRY not terminated by a NEWLINE (last token: {:?})",
@@ -642,6 +652,13 @@ mod tests {
                 let keys: String = (0..n).map(|i| format!("{{k{i}: ")).collect();
                 YamlFile::from_str(&format!("{keys}x{}", "}".repeat(n))).unwrap()
             },
+            |file| validate_tree(file.syntax()).unwrap(),
+        );
+        // Each entry looked through all its ancestors for a flow collection.
+        crate::scaling::assert_scales_linearly(
+            "validate_tree",
+            60,
+            |n| YamlFile::from_str(&format!("{}x\n", "- ".repeat(n))).unwrap(),
             |file| validate_tree(file.syntax()).unwrap(),
         );
     }

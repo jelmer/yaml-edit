@@ -852,11 +852,22 @@ impl Parser<'_> {
         // A lone tag parses its body with the body line's own column as the
         // base, but the scalar belongs to the enclosing collection, so its
         // continuation only has to clear that collection's column.
+        //
+        // Inside a sequence entry the line has to clear the entry's dash
+        // too, which the scalar's line misses for a compact sequence: in
+        // `- - a\n  b\n` the inner `-` is at column 2, where `b` cannot
+        // continue `a`.
         let floor = self
             .ctx
             .scalar_continuation_floor
             .map_or(scalar_indent, |floor| floor.min(scalar_indent));
-        if self.ctx.equal_indent_continues_scalar {
+        if self
+            .ctx
+            .sequence_entry_column
+            .is_some_and(|column| line_indent <= column)
+        {
+            false
+        } else if self.ctx.equal_indent_continues_scalar {
             line_indent >= floor
         } else {
             line_indent > floor

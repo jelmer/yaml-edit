@@ -4177,6 +4177,42 @@ fn test_quote_at_the_mapping_column_after_a_plain_scalar() {
     );
 }
 
+/// An item of a compact sequence continues only on lines indented past its
+/// own `-`, not just past the line it starts on. `- - a\n  b\n` read `b`
+/// into `a`, and after an item was inserted before `a`, putting it on a
+/// line of its own, the re-parse no longer did.
+#[test]
+fn test_compact_sequence_item_continuation_clears_its_dash() {
+    for (yaml, error) in [
+        (
+            "- - a\n  b\n",
+            "2:3: Content after the document could not be parsed: \"b\"",
+        ),
+        (
+            "? - a\n  b\n",
+            "2:3: Content after the document could not be parsed: \"b\"",
+        ),
+    ] {
+        let parsed = yaml_edit::YamlFile::parse(yaml);
+        assert_eq!(parsed.errors(), [error.to_string()], "{yaml:?}");
+    }
+
+    let doc = yaml_edit::Document::from_str("- - a\n   b\n").unwrap();
+    let outer = doc.as_sequence().unwrap();
+    let inner = outer.get(0).unwrap();
+    assert_eq!(
+        inner
+            .as_sequence()
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "a b"
+    );
+}
+
 /// A document's root block scalar may put its body at column 0, since the
 /// root sits at indentation -1. Such a body is literal text up to the next
 /// document marker.

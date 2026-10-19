@@ -2256,3 +2256,24 @@ fn test_set_with_block_collection_key() {
     crate::debug::assert_parser_shaped(&doc);
     assert_eq!(doc.to_string(), "a: 1\n[x, y]: 2\n");
 }
+
+/// Setting the value of a block explicit key that has none writes its `:`
+/// line after the key, whose line the key ends itself.
+#[test]
+fn test_set_value_of_block_explicit_key_without_one() {
+    for (src, expected) in [
+        ("? - a\n", "? - a\n: 5\n"),
+        ("? - a\n  - b\nc: 1\n", "? - a\n  - b\n: 5\nc: 1\n"),
+        ("? a\n", "? a\n: 5\n"),
+        ("? |\n  t\n", "? |\n  t\n: 5\n"),
+        ("? [a,\n  b]\n", "? [a,\n  b]\n: 5\n"),
+        ("? - a\n? b\n", "? - a\n: 5\n? b\n"),
+    ] {
+        let doc = YamlFile::from_str(src).unwrap().document().unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let key = mapping.keys().next().unwrap();
+        mapping.set(key, 5);
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), expected, "{src:?}");
+    }
+}

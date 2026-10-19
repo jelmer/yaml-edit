@@ -723,6 +723,32 @@ mod tests {
         }
     }
 
+    /// A block mapping set as a bare `-` item starts on the dash's line,
+    /// and a tab in the comment after a replaced item stays.
+    #[test]
+    fn test_set_item_after_bare_dash_and_before_comment() {
+        let src = YamlFile::from_str("k:\n  a: 1\n  b: [x,\n    y]\n").unwrap();
+        let block = src
+            .document()
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get("k")
+            .unwrap();
+        let doc = YamlFile::from_str("-\n- b\n").unwrap().document().unwrap();
+        assert!(doc.as_sequence().unwrap().set(0, block));
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), "- a: 1\n  b: [x,\n    y]\n- b\n");
+
+        let doc = YamlFile::from_str("- x  # a\tb\n")
+            .unwrap()
+            .document()
+            .unwrap();
+        assert!(doc.as_sequence().unwrap().set(0, "y"));
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), "- y  # a\tb\n");
+    }
+
     #[test]
     fn test_set_out_of_bounds() {
         let doc = YamlFile::from_str("- a\n").unwrap().document().unwrap();

@@ -774,6 +774,17 @@ fn lookup_own(mapping: &Mapping, key: &str) -> Option<crate::as_yaml::YamlNode> 
         .or_else(|| mapping.get(spelled_key(mapping.keys(), key)?))
 }
 
+/// Remove `key` from `mapping`, returning the value it held. The value is
+/// read before removal, so it is the node that was in the tree.
+fn take_value(
+    mapping: &Mapping,
+    key: impl crate::AsYaml + Copy,
+) -> Option<crate::as_yaml::YamlNode> {
+    let value = mapping.get(key)?;
+    mapping.remove(key);
+    Some(value)
+}
+
 /// Look up `key` in `mapping`, falling back to the keys it inherits
 /// through `<<:` merge keys.
 ///
@@ -932,18 +943,11 @@ fn remove_path_impl(
         }
     })?;
     let key = segment_key(seg);
-    let not_found = || PathError::NotFound {
-        at: segment_display(seg),
-    };
-    // Grab the value before removal so we can return it.
-    if let Some(value) = mapping.get(key.as_str()) {
-        mapping.remove(key.as_str());
-        return Ok(value);
-    }
-    let key = spelled_key(mapping.keys(), &key).ok_or_else(not_found)?;
-    let value = mapping.get(&key).ok_or_else(not_found)?;
-    mapping.remove(&key);
-    Ok(value)
+    take_value(&mapping, key.as_str())
+        .or_else(|| take_value(&mapping, &spelled_key(mapping.keys(), &key)?))
+        .ok_or_else(|| PathError::NotFound {
+            at: segment_display(seg),
+        })
 }
 
 // Implementation for Mapping

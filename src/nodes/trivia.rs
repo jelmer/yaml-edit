@@ -318,7 +318,18 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
             .next_sibling_or_token()
             .is_some_and(|c| c.kind() == SyntaxKind::NEWLINE)
         {
-            trivia.extend(blank_lines_before(entry));
+            // The blank lines before a nested collection's first entry are
+            // in front of the collection, after the line holding its key
+            // or indicator.
+            let first =
+                std::iter::successors(entry.prev_sibling_or_token(), |c| c.prev_sibling_or_token())
+                    .all(|c| c.kind() == SyntaxKind::INDENT);
+            match collection.parent() {
+                Some(holder) if first && !flow && holder.kind() != SyntaxKind::DOCUMENT => {
+                    trivia.extend(blank_lines_before(collection, true))
+                }
+                _ => trivia.extend(blank_lines_before(entry, false)),
+            }
         }
     }
 
@@ -428,10 +439,15 @@ fn line_indentation_before(entry: &SyntaxNode) -> Option<Vec<rowan::SyntaxElemen
     starts_line.then_some(indentation)
 }
 
-/// The blank lines directly before `entry`, past the INDENT leading it.
-fn blank_lines_before(entry: &SyntaxNode) -> Vec<rowan::SyntaxElement<super::Lang>> {
+/// The blank lines directly before `node`, past the INDENT leading it.
+/// `starts_in_line` says whether its parent starts in the middle of a line,
+/// as a VALUE after its key's `:` does.
+fn blank_lines_before(
+    node: &SyntaxNode,
+    starts_in_line: bool,
+) -> Vec<rowan::SyntaxElement<super::Lang>> {
     let mut before =
-        std::iter::successors(entry.prev_sibling_or_token(), |c| c.prev_sibling_or_token())
+        std::iter::successors(node.prev_sibling_or_token(), |c| c.prev_sibling_or_token())
             .skip_while(|c| c.kind() == SyntaxKind::INDENT)
             .peekable();
     let mut newlines = Vec::new();
@@ -443,7 +459,7 @@ fn blank_lines_before(entry: &SyntaxNode) -> Vec<rowan::SyntaxElement<super::Lan
     let ends_line = match before.next() {
         Some(rowan::NodeOrToken::Node(n)) => !ends_with_line_break(&n),
         Some(rowan::NodeOrToken::Token(_)) => true,
-        None => false,
+        None => starts_in_line,
     };
     if ends_line {
         newlines.pop();

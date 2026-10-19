@@ -2710,24 +2710,31 @@ fn quoted_scalar_tab_indent(node: &SyntaxNode) -> Option<crate::nodes::SyntaxTok
 /// The first token of `node`, a block collection, its entry or a value,
 /// that uses a tab as indentation.
 fn block_tab_indent(node: &SyntaxNode) -> Option<crate::nodes::SyntaxToken> {
+    let is_flow = starts_a_flow_collection(node);
+    let tab = node
+        .children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .find(|t| tab_before_block_collection(t) || tab_indent(t, is_flow))?;
     // A flow collection at the stream's own level is not
-    // indentation-sensitive, so a tab inside one is separation
+    // indentation-sensitive, so a tab anywhere inside one is separation
     // whitespace (6CA3's `\t[\n\t]`). Nested in a block collection it
     // still has to clear that block's column, as Y79Y/003's `- [\n\tfoo,`
-    // does not.
-    let is_flow = starts_a_flow_collection(node);
-    let inside_a_block = node.ancestors().skip(1).any(|a| {
-        matches!(
-            a.kind(),
-            crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-        )
-    });
-    if is_flow && !inside_a_block {
+    // does not. Block collections cannot sit inside flow ones, so the
+    // outermost collection tells the two apart. Only a candidate tab pays
+    // for the walk up, so deep nesting without tabs stays linear.
+    let outermost = node
+        .ancestors()
+        .filter(|a| {
+            matches!(
+                a.kind(),
+                crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
+            )
+        })
+        .last();
+    if outermost.is_some_and(|c| starts_a_flow_collection(&c)) {
         return None;
     }
-    node.children_with_tokens()
-        .filter_map(|c| c.into_token())
-        .find(|t| tab_before_block_collection(t) || tab_indent(t, is_flow))
+    Some(tab)
 }
 
 /// Whether `token` is white space holding a tab that separates an indicator
@@ -4994,6 +5001,34 @@ mod tests {
                 "{yaml:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_tab_in_root_flow_collection_is_separation() {
+        // Anywhere inside a flow collection at the stream's own level a
+        // leading tab is separation, as in 6CA3.
+        for yaml in [
+            "{a:\n\tb}\n",
+            "[[\n\ta]]\n",
+            "{a: [\n\tb]}\n",
+            "{?\n\ta}\n",
+            "[k:\n\tv]\n",
+        ] {
+            assert_eq!(located(yaml), vec![], "{yaml:?}");
+        }
+        assert_eq!(
+            located("a: {b:\n\tc}\n"),
+            vec![
+                (
+                    "Flow collection continuation line must be indented".to_string(),
+                    "1:4".to_string()
+                ),
+                (
+                    "Tabs are not allowed for indentation in YAML".to_string(),
+                    "2:1".to_string()
+                ),
+            ]
+        );
     }
 
     #[test]

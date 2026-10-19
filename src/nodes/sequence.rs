@@ -158,9 +158,19 @@ fn rebuild_entry_with_value(
                 panic!("unexpected {:?} in a SEQUENCE_ENTRY", n.kind())
             }
             rowan::NodeOrToken::Token(t) => {
-                // Copy tokens as-is
-                builder.token(t.kind().into(), t.text());
-                column = crate::column::column_after(column, t.text());
+                // A block collection on the dash's line is indented by the
+                // white space after the dash, where a tab is not allowed.
+                let text = if after_dash
+                    && t.kind() == SyntaxKind::WHITESPACE
+                    && block_collection
+                    && anchor.is_none()
+                {
+                    t.text().replace('\t', " ")
+                } else {
+                    t.text().to_string()
+                };
+                builder.token(t.kind().into(), &text);
+                column = crate::column::column_after(column, &text);
                 after_dash = t.kind() == SyntaxKind::DASH;
             }
         }
@@ -657,12 +667,12 @@ impl Sequence {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn clear(&self) {
-        let terminated = self
+        let line_break = self
             .0
             .children()
             .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
             .last()
-            .is_some_and(|e| trivia::ends_with_line_break(&e));
+            .and_then(|e| trivia::line_break(&e));
         // Remove items from the beginning to avoid recalculating indices
         // Use a safety counter to prevent infinite loops
         let initial_len = self.len();
@@ -683,7 +693,7 @@ impl Sequence {
                 "clear() invariant: remove(0) did not reduce length"
             );
         }
-        render_empty(&self.0, terminated);
+        render_empty(&self.0, line_break.as_deref());
     }
 
     crate::nodes::ast_node_spans!("sequence");

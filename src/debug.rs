@@ -332,7 +332,7 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
     if matches!(
         node.kind(),
         SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
-    ) && is_in_flow_collection(node)
+    ) && crate::nodes::in_flow_collection(node)
     {
         validate_flow_entry_end(node)?;
     }
@@ -359,7 +359,7 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 .filter(|c| c.as_token().is_some_and(|t| t.kind() == SyntaxKind::COLON))
                 .collect();
             let is_explicit_key = has_child_token(node, |k| k == SyntaxKind::QUESTION);
-            let in_flow = is_in_flow_collection(node);
+            let in_flow = crate::nodes::in_flow_collection(node);
             let expected_colons = if is_explicit_key || in_flow {
                 0..=1
             } else {
@@ -394,7 +394,7 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
             // The last entry of a mapping is allowed to lack a
             // terminator: an unterminated source doc (`a: 1\nb: 2`)
             // is legitimate YAML and must roundtrip.
-            if !is_in_flow_collection(node)
+            if !crate::nodes::in_flow_collection(node)
                 && !is_last_entry_in_parent(node)
                 && !entry_is_terminated(node)
             {
@@ -446,7 +446,7 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
             }
         }
         SyntaxKind::SEQUENCE_ENTRY
-            if !is_in_flow_collection(node)
+            if !crate::nodes::in_flow_collection(node)
                 && !is_last_entry_in_parent(node)
                 && !entry_is_terminated(node) =>
         {
@@ -586,24 +586,6 @@ fn validate_no_double_trailing_newline(node: &SyntaxNode) -> Result<(), String> 
         validate_no_double_trailing_newline(&child)?;
     }
     Ok(())
-}
-
-fn is_in_flow_collection(node: &SyntaxNode) -> bool {
-    // Look at the parent MAPPING or SEQUENCE node
-    let mut current = node.parent();
-    while let Some(parent) = current {
-        match parent.kind() {
-            // Flow collections carry their opening bracket as a direct child.
-            SyntaxKind::MAPPING => {
-                return has_child_token(&parent, |k| k == SyntaxKind::LEFT_BRACE)
-            }
-            SyntaxKind::SEQUENCE => {
-                return has_child_token(&parent, |k| k == SyntaxKind::LEFT_BRACKET)
-            }
-            _ => current = parent.parent(),
-        }
-    }
-    false
 }
 
 #[cfg(test)]

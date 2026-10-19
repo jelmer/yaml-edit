@@ -172,3 +172,30 @@ another_good: value
         }
     }
 }
+
+/// A node has at most one tag; the parser keeps a second one as a tagged
+/// node of its own, which the validator reports.
+#[test]
+fn test_two_tags_on_one_node() {
+    for (yaml, location) in [
+        ("!a !b\n- x\n", "1:1"),
+        ("k: !a !b x\n", "1:4"),
+        ("- !a\n  !b\n  - x\n", "1:3"),
+    ] {
+        let parsed = YamlFile::parse(yaml);
+        assert_eq!(parsed.errors(), Vec::<String>::new());
+        let violations: Vec<_> = yaml_edit::validator::Validator::new()
+            .validate_syntax(rowan::ast::AstNode::syntax(&parsed.tree()))
+            .into_iter()
+            .map(|v| (v.message, v.location.unwrap()))
+            .collect();
+        assert_eq!(
+            violations,
+            [(
+                "Multiple tags on the same node".to_string(),
+                location.to_string()
+            )],
+            "{yaml:?}"
+        );
+    }
+}

@@ -125,13 +125,11 @@ impl Scalar {
             let content = &text[1..text.len() - 1];
             let unescaped = content.replace("''", "'");
             // Only fold lines if actually multi-line
-            if unescaped.contains('\n') {
+            if unescaped.contains(['\n', '\r']) {
                 // A line break folds to a space, or to one newline per empty
                 // line after it, and takes the white space around it along.
-                let lines: Vec<&str> = unescaped
-                    .split('\n')
-                    .map(|line| line.strip_suffix('\r').unwrap_or(line))
-                    .collect();
+                let unescaped = normalize_line_breaks(&unescaped);
+                let lines: Vec<&str> = unescaped.split('\n').collect();
                 let last = lines.len() - 1;
                 let mut result = lines[0].trim_end_matches([' ', '\t']).to_string();
                 let mut empty_lines = 0;
@@ -225,10 +223,11 @@ impl Scalar {
         let base_indent = match explicit_indent {
             Some(explicit) => parent_column + explicit,
             // With no content line at all, every line is empty however
-            // many spaces it holds.
+            // many spaces it holds. A tab is not indentation, so a line
+            // with one is not empty: `|\n \t\n` is "\t\n".
             None => content_lines
                 .iter()
-                .find(|line| !line.trim().is_empty())
+                .find(|line| !line.trim_start_matches(' ').is_empty())
                 .map_or(usize::MAX, |line| crate::column::space_indent(line)),
         };
 
@@ -251,7 +250,12 @@ impl Scalar {
                 .nth(strip)
                 .map_or(line.len(), |(i, _)| i);
             let stripped = &line[strip_bytes..];
-            if stripped.is_empty() {
+            // A line indented less than the body holds no content, so tabs
+            // after its spaces are white space too.
+            let less_indented = leading_spaces < base_indent;
+            if stripped.is_empty()
+                || (less_indented && stripped.trim_start_matches([' ', '\t']).is_empty())
+            {
                 empty_lines += 1;
                 continue;
             }

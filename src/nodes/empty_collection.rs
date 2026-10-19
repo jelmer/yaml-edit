@@ -22,12 +22,13 @@ type Element = rowan::NodeOrToken<SyntaxNode, SyntaxToken>;
 /// `key: !t {}  # c`. Elsewhere, as a sequence item, explicit key or
 /// document root, it stays where it is. Comment lines are kept.
 ///
-/// `terminated` says whether the collection's last line ended in a line
-/// break before it was drained; if so, the flow-empty line gets one too.
+/// `line_break` is the line break that ended the collection's last line
+/// before it was drained, if it had one; the flow-empty line ends with it
+/// too.
 ///
 /// The result carries the pending-block marker, so that the collection
 /// returns to block style when it gets an entry again.
-pub(crate) fn render_empty(collection: &SyntaxNode, terminated: bool) {
+pub(crate) fn render_empty(collection: &SyntaxNode, line_break: Option<&str>) {
     let Some((open, _)) = brackets(collection.kind()) else {
         return;
     };
@@ -46,9 +47,9 @@ pub(crate) fn render_empty(collection: &SyntaxNode, terminated: bool) {
         .filter(|p| p.kind() == SyntaxKind::TAGGED_NODE)
         .unwrap_or_else(|| collection.clone());
     match node.parent().map(|p| p.kind()) {
-        Some(SyntaxKind::VALUE) => render_as_value(collection, terminated),
+        Some(SyntaxKind::VALUE) => render_as_value(collection, line_break),
         Some(SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::KEY | SyntaxKind::DOCUMENT) | None => {
-            render_in_place(collection, terminated)
+            render_in_place(collection, line_break)
         }
         Some(kind) => panic!("unexpected {kind:?} holding a block collection"),
     }
@@ -111,7 +112,7 @@ fn copies(tokens: &[SyntaxToken]) -> Vec<Element> {
 
 /// [`render_empty`] for a collection that is a sequence item, explicit key,
 /// document root or detached.
-fn render_in_place(collection: &SyntaxNode, terminated: bool) {
+fn render_in_place(collection: &SyntaxNode, line_break: Option<&str>) {
     // Entries take their trailing NEWLINE with them when removed. Comment
     // lines that followed an entry stay after the flow-empty line,
     // indented as they were.
@@ -131,15 +132,16 @@ fn render_in_place(collection: &SyntaxNode, terminated: bool) {
 
     indent_past_question(collection);
 
-    if !terminated && tail.is_empty() {
+    if line_break.is_none() && tail.is_empty() {
         return;
     }
+    let newline = || fresh_token(SyntaxKind::NEWLINE, line_break.unwrap_or("\n"));
     // The line break follows the node, properties included, as a parsed
     // flow-empty line has it. It ends an explicit-key entry without a `:`,
     // and its comment lines follow that in the mapping.
     let node = line_node(collection);
     if node.kind() == SyntaxKind::MAPPING_ENTRY {
-        append_children(&node, vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()]);
+        append_children(&node, vec![newline().into()]);
         match node.parent() {
             Some(mapping) => insert_children(&mapping, node.index() + 1, tail),
             None => append_children(&node, tail),
@@ -151,18 +153,14 @@ fn render_in_place(collection: &SyntaxNode, terminated: bool) {
         // comment lines at its end.
         if !tail.is_empty() {
             let end = node.children_with_tokens().count();
-            let mut lines = vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()];
+            let mut lines = vec![newline().into()];
             lines.extend(tail);
             insert_children(&node, end, lines);
         }
         return;
     };
     let at = node.index() + 1;
-    insert_children(
-        &parent,
-        at,
-        vec![fresh_token(SyntaxKind::NEWLINE, "\n").into()],
-    );
+    insert_children(&parent, at, vec![newline().into()]);
     if tail.is_empty() {
         return;
     }
@@ -182,7 +180,7 @@ fn render_in_place(collection: &SyntaxNode, terminated: bool) {
 /// renders as `key: {}` instead of an unterminated `key:\n    `. With
 /// comment lines before or inside the collection, which cannot share the
 /// key's line, the flow-empty takes the collection's place instead.
-fn render_as_value(collection: &SyntaxNode, terminated: bool) {
+fn render_as_value(collection: &SyntaxNode, line_break: Option<&str>) {
     // A tag sits between the VALUE and the collection; the rewrite
     // happens inside the TAGGED_NODE so the tag survives.
     let host = collection.parent().expect("a mapping value has a parent");
@@ -250,8 +248,8 @@ fn render_as_value(collection: &SyntaxNode, terminated: bool) {
         replacement.push(collection.clone().into());
         let index = collection.index();
         replace_children(&host, index..index + 1, replacement);
-        if terminated {
-            trivia::terminate(&entry_node);
+        if let Some(line_break) = line_break {
+            trivia::terminate_with(&entry_node, line_break);
         }
         return;
     }
@@ -304,8 +302,8 @@ fn render_as_value(collection: &SyntaxNode, terminated: bool) {
         }
     }
 
-    if terminated {
-        trivia::terminate(&entry_node);
+    if let Some(line_break) = line_break {
+        trivia::terminate_with(&entry_node, line_break);
     }
 }
 

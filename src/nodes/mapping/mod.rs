@@ -903,16 +903,16 @@ impl Mapping {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn clear(&self) {
-        let terminated = self
+        let line_break = self
             .entries()
             .last()
-            .is_some_and(|e| trivia::ends_with_line_break(e.syntax()));
+            .and_then(|e| trivia::line_break(e.syntax()));
         // Entries are removed one by one, as keeping aliases resolving may
         // rewrite a later key.
         while let Some(entry) = self.entries().next() {
             self.remove_entry(entry.syntax());
         }
-        render_empty(&self.0, terminated);
+        render_empty(&self.0, line_break.as_deref());
     }
 
     /// Rename a key while preserving its value and formatting.
@@ -1198,8 +1198,29 @@ impl Mapping {
             builder.token(SyntaxKind::ANCHOR.into(), &anchor);
             builder.token(SyntaxKind::WHITESPACE.into(), " ");
         }
-        for t in comment_lines.into_iter().flatten() {
+        // On a line of its own, only a block sequence may start at the
+        // column of the `?`; anything else has to be indented past it.
+        let mut lines = comment_lines.unwrap_or_default();
+        let line_indent = match lines.last() {
+            Some(t) if t.kind() == SyntaxKind::INDENT => {
+                lines = &lines[..lines.len() - 1];
+                Some(t.text())
+            }
+            _ => None,
+        };
+        let block_sequence =
+            new_key.kind() == crate::as_yaml::YamlKind::Sequence && !new_key.is_inline();
+        let deeper = " ".repeat(indent + 2);
+        let line_indent = match line_indent {
+            Some(text) if block_sequence || text.len() > indent => Some(text),
+            _ if comment_lines.is_some() && !block_sequence => Some(deeper.as_str()),
+            other => other,
+        };
+        for t in lines {
             builder.token(t.kind().into(), t.text());
+        }
+        if let Some(text) = line_indent {
+            builder.token(SyntaxKind::INDENT.into(), text);
         }
         match tag.and_then(|tag| retagged_key(&tag, new_key, flow)) {
             Some(tagged) => super::build_key_content(builder, &tagged, indent, flow),

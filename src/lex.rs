@@ -472,9 +472,12 @@ fn plus_closes_block_scalar_header(line_prefix: &str) -> bool {
     // Step back over any explicit indentation digits to the `|` or `>` this
     // `+` would close; only the value's start may precede that.
     let head = line_prefix.trim_end_matches(|c: char| c.is_ascii_digit());
+    // A `:` or `-` is an indicator only with white space after it: in
+    // `i:|+` the `:` is content too.
     head.strip_suffix(['|', '>']).is_some_and(|before| {
-        let before = before.trim_end_matches([' ', '\t']);
-        before.is_empty() || before.ends_with(':') || before.ends_with('-')
+        let trimmed = before.trim_end_matches([' ', '\t']);
+        trimmed.is_empty()
+            || (trimmed.len() < before.len() && (trimmed.ends_with(':') || trimmed.ends_with('-')))
     })
 }
 
@@ -1295,7 +1298,8 @@ impl<'a, 'c> LexState<'a, 'c> {
 
         // Determine if this is structural indentation
         // Check for any line break: \n, \r\n (already consumed \n), or \r alone
-        let is_indentation = start_idx == 0
+        // A line also starts after a BOM, which takes no column.
+        let is_indentation = start_idx == self.line_start
             || (start_idx > 0
                 && (self.input.as_bytes()[start_idx - 1] == b'\n'
                     || self.input.as_bytes()[start_idx - 1] == b'\r'));

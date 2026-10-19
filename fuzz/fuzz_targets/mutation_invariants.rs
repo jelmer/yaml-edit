@@ -156,7 +156,7 @@ fn apply(doc: &Document, op: &Op) {
         }
         Op::Rename(a, b) => {
             let renamed = mapping.rename_key(as_str(a), as_str(b));
-            assert_mapping_rename_stuck(&mapping, as_str(b), renamed, doc);
+            assert_mapping_rename_stuck(&mapping, as_str(a), as_str(b), renamed, doc);
         }
         Op::Clear => {
             mapping.clear();
@@ -266,7 +266,6 @@ fn apply(doc: &Document, op: &Op) {
         }
     }
 }
-
 
 fn assert_ok(doc: &Document) {
     let syntax = doc.syntax();

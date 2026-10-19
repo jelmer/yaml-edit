@@ -1269,17 +1269,7 @@ impl Mapping {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        // Check if the new key already exists - if so, just update it
-        if self.find_entry_by_key(&key).is_some() {
-            self.set_as_yaml(&key, &value);
-            return self.find_entry_by_key(&after_key).is_some();
-        }
-
-        // Key doesn't exist yet - delegate to move_after, which already contains
-        // the correct insertion logic (including newline handling for entries
-        // that lack a trailing newline). The two methods differ only in what
-        // they do when the key *already* exists.
-        self.move_after(after_key, key, value)
+        self.insert_around(after_key, key, value, true)
     }
 
     /// Insert a key-value pair immediately before an existing key.
@@ -1299,18 +1289,24 @@ impl Mapping {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        // Key exists → update in-place (don't move).
+        self.insert_around(before_key, key, value, false)
+    }
+
+    /// Shared body of [`insert_after`](Self::insert_after) and
+    /// [`insert_before`](Self::insert_before): an existing `key` is updated
+    /// where it is, a new one goes next to `ref_key`.
+    fn insert_around(
+        &self,
+        ref_key: impl crate::AsYaml,
+        key: impl crate::AsYaml,
+        value: impl crate::AsYaml,
+        after: bool,
+    ) -> bool {
         if self.find_entry_by_key(&key).is_some() {
             self.set_as_yaml(&key, &value);
-            // Only return true if before_key also exists (contract: false when
-            // reference key is not found).
-            return self.find_entry_by_key(&before_key).is_some();
+            return self.find_entry_by_key(&ref_key).is_some();
         }
-
-        // Key doesn't exist yet - delegate to move_before, which already contains
-        // the correct insertion logic. The two methods differ only in what they do
-        // when the key *already* exists.
-        self.move_before(before_key, key, value)
+        self.move_around(&ref_key, &key, &value, after)
     }
 
     /// Insert a key-value pair at a specific index (0-based).

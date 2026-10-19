@@ -1666,6 +1666,8 @@ mod tests {
             ("[: :", 1, "DOCUMENT(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(NULL\"\"))))) SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" VALUE(SCALAR(NULL\"\"))))) RIGHT_BRACKET\"\"))"),
             ("&x\n#", 0, "DOCUMENT(ANCHOR\"&x\" SCALAR(NULL\"\") NEWLINE\"\\n\" COMMENT\"#\")"),
             ("<<\n&x[", 0, "DOCUMENT(SCALAR(MERGE_KEY\"<<\" NEWLINE\"\\n\" ANCHOR\"&x\" LEFT_BRACKET\"[\"))"),
+            ("a: |x1\n", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(PIPE\"|\") SCALAR(STRING\"x1\")) NEWLINE\"\\n\")))"),
+            ("a: |-x\n", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(PIPE\"|\") SCALAR(STRING\"-x\")) NEWLINE\"\\n\")))"),
             ("\t%\n-\r!\t-", 0, "DOCUMENT(INDENT\"\\t\" SCALAR(STRING\"%\" NEWLINE\"\\n\" DASH\"-\" NEWLINE\"\\r\" TAG\"!\" WHITESPACE\"\\t\" STRING\"-\"))"),
 
         ] {

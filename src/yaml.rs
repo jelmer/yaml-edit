@@ -244,51 +244,11 @@ impl Set {
     ///
     /// To compare members semantically (ignoring quoting style), use
     /// [`yaml_eq`](crate::yaml_eq) on the returned nodes.
-    ///
-    /// Note: `!!set` entries appear in two CST layouts: explicit-key `? item`
-    /// (KEY/VALUE as direct MAPPING children) and implicit `item: null`
-    /// (KEY/VALUE inside MAPPING_ENTRY). Both are handled.
     pub fn members(&self) -> impl Iterator<Item = crate::as_yaml::YamlNode> + '_ {
-        // Sets are `!!set` tagged scalars whose body is a mapping where each
-        // key is a set member and values are null.
-        //
-        // Two CST layouts arise in practice:
-        //
-        // 1. Explicit-key notation (`? apple`): KEY and VALUE appear as direct
-        //    children of the MAPPING node (no MAPPING_ENTRY wrapper).
-        //
-        // 2. Implicit-key notation (`apple: null`): KEY and VALUE are wrapped
-        //    inside MAPPING_ENTRY children of the MAPPING node.
-        //
-        // We detect which layout is in use by checking for MAPPING_ENTRY
-        // children first, then falling back to bare KEY children.
-        self.inner_mapping().into_iter().flat_map(|m| {
-            let mapping_node = m.syntax().clone();
-            let has_entries = mapping_node
-                .children()
-                .any(|n| n.kind() == SyntaxKind::MAPPING_ENTRY);
-
-            if has_entries {
-                // Layout 2: MAPPING_ENTRY → KEY → content
-                mapping_node
-                    .children()
-                    .filter(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
-                    .filter_map(|entry| {
-                        entry
-                            .children()
-                            .find(|n| n.kind() == SyntaxKind::KEY)
-                            .and_then(|key| crate::nodes::held_node(&key))
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                // Layout 1: bare KEY → content (explicit `?` syntax)
-                mapping_node
-                    .children()
-                    .filter(|n| n.kind() == SyntaxKind::KEY)
-                    .filter_map(|key| crate::nodes::held_node(&key))
-                    .collect::<Vec<_>>()
-            }
-        })
+        // The members are the keys of the mapping, each with a null value.
+        self.inner_mapping()
+            .into_iter()
+            .flat_map(|m| m.keys().collect::<Vec<_>>())
     }
 
     /// Get the number of members in the set.

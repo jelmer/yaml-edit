@@ -15,8 +15,6 @@ use std::str::FromStr;
 pub(crate) struct ParsedYaml {
     /// The immutable green-tree root produced by the parser.
     pub(crate) green_node: rowan::GreenNode,
-    /// Human-readable error messages for syntax errors encountered during parsing.
-    pub(crate) errors: Vec<String>,
     /// Structured parse errors with source positions.
     pub(crate) positioned_errors: Vec<PositionedParseError>,
 }

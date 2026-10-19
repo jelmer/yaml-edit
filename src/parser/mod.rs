@@ -213,7 +213,6 @@ pub(super) struct Parser<'a> {
     /// Whether [`bump`](Self::bump) holds back line breaks, indentation
     /// and white space; see [`TreeBuilder`].
     hold_trivia: bool,
-    pub(super) errors: Vec<String>,
     pub(super) positioned_errors: Vec<PositionedParseError>,
     pub(super) in_flow_context: bool,
     /// The stack of contexts that picks an error recovery strategy.
@@ -271,7 +270,6 @@ impl<'a> Parser<'a> {
             tokens,
             builder: TreeBuilder::new(),
             hold_trivia: false,
-            errors: Vec::new(),
             positioned_errors: Vec::new(),
             in_flow_context: false,
             error_context: ErrorRecoveryContext::new(String::new()),
@@ -348,7 +346,6 @@ impl<'a> Parser<'a> {
 
         ParsedYaml {
             green_node: self.builder.finish(),
-            errors: self.errors,
             positioned_errors: self.positioned_errors,
         }
     }
@@ -1554,7 +1551,6 @@ impl Parser<'_> {
             kind,
         };
 
-        self.errors.push(positioned_error.message.clone());
         self.positioned_errors.push(positioned_error);
     }
 

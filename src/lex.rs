@@ -459,23 +459,6 @@ fn is_chomping_indicator(line_prefix: &str) -> bool {
         .is_some_and(|b| b == b'|' || b == b'>')
 }
 
-/// Whether a `+` following `line_prefix`, the text of its line before it,
-/// closes a block scalar header (`|+`, `>2+`) and so is a chomping
-/// indicator. The header has to *open* the value for that: in `/|+:` the
-/// pipe is scalar content, so the `+` is content too and the key is `/|+`.
-fn plus_closes_block_scalar_header(line_prefix: &str) -> bool {
-    // Step back over any explicit indentation digits to the `|` or `>` this
-    // `+` would close; only the value's start may precede that.
-    let head = line_prefix.trim_end_matches(|c: char| c.is_ascii_digit());
-    // A `:` or `-` is an indicator only with white space after it: in
-    // `i:|+` the `:` is content too.
-    head.strip_suffix(['|', '>']).is_some_and(|before| {
-        let trimmed = before.trim_end_matches([' ', '\t']);
-        trimmed.is_empty()
-            || (trimmed.len() < before.len() && (trimmed.ends_with(':') || trimmed.ends_with('-')))
-    })
-}
-
 /// Tokenize YAML input with whitespace validation
 pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
     let (tokens, _) = lex_with_validation(input);
@@ -640,8 +623,9 @@ impl<'a, 'c> LexState<'a, 'c> {
     /// requires. A block scalar's chomping indicator (`|-`, `>-`) is a token
     /// in its own right, so that caller passes false.
     ///
-    /// `stop_at_chomping_plus` ends the body at a `+` closing a block scalar
-    /// header, so that `|2+` keeps the `+` as its own token.
+    /// `stop_at_chomping_plus` ends the body at a `+` after nothing but
+    /// digits, for a scalar that is a block scalar header's indentation
+    /// indicator, so that `|2+` keeps the `+` as its own token.
     fn read_plain_scalar_body(
         &mut self,
         start_idx: usize,
@@ -680,7 +664,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             }
             if stop_at_chomping_plus
                 && ch == '+'
-                && plus_closes_block_scalar_header(&input[self.line_start..idx])
+                && input[start_idx..idx].bytes().all(|b| b.is_ascii_digit())
             {
                 break;
             }
@@ -1342,10 +1326,11 @@ impl<'a, 'c> LexState<'a, 'c> {
     fn lex_plain_scalar(&mut self, start_idx: usize, ch: char) {
         // Only a header's indentation indicator can precede its chomping
         // `+`. A `|` reaching here is content: `1\n|+\n` is `1 |+`.
-        let after_header = matches!(
-            self.tokens.last(),
-            Some((SyntaxKind::PIPE | SyntaxKind::GREATER, _))
-        );
+        let after_header = ch.is_ascii_digit()
+            && matches!(
+                self.tokens.last(),
+                Some((SyntaxKind::PIPE | SyntaxKind::GREATER, _))
+            );
         let end = self.read_plain_scalar_body(start_idx + ch.len_utf8(), true, after_header);
         self.push_scalar(start_idx, end);
     }
@@ -2533,6 +2518,28 @@ double: "quoted""#;
             ),
         ];
         for (input, expected) in cases {
+            assert_eq!(lex(input), expected, "lexing {input:?}");
+        }
+    }
+
+    /// A header's chomping `+` stands alone after node properties and
+    /// an explicit key's `?` too.
+    #[test]
+    fn test_chomping_plus_after_properties() {
+        use SyntaxKind::*;
+        for (input, before) in [
+            ("? |2+\n", vec![(QUESTION, "?")]),
+            ("!t |2+\n", vec![(TAG, "!t")]),
+            ("&a |2+\n", vec![(ANCHOR, "&a")]),
+        ] {
+            let mut expected = before;
+            expected.extend([
+                (WHITESPACE, " "),
+                (PIPE, "|"),
+                (INT, "2"),
+                (PLUS, "+"),
+                (NEWLINE, "\n"),
+            ]);
             assert_eq!(lex(input), expected, "lexing {input:?}");
         }
     }

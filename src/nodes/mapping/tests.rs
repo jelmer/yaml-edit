@@ -2277,3 +2277,18 @@ fn test_set_value_of_block_explicit_key_without_one() {
         assert_eq!(doc.to_string(), expected, "{src:?}");
     }
 }
+
+/// A new entry goes before the spaces of a last line that holds nothing
+/// else.
+#[test]
+fn test_set_new_key_before_trailing_space_line() {
+    for (src, expected) in [
+        ("a: 1\n  ", "a: 1\nb: 2\n  "),
+        ("a: 1\n# c\n  ", "a: 1\n# c\nb: 2\n  "),
+    ] {
+        let doc = YamlFile::from_str(src).unwrap().document().unwrap();
+        doc.as_mapping().unwrap().set("b", 2);
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), expected, "{src:?}");
+    }
+}

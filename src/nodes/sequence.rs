@@ -749,6 +749,26 @@ mod tests {
         assert_eq!(doc.to_string(), "- y  # a\tb\n");
     }
 
+    /// A pushed item goes before the spaces of a last line that holds
+    /// nothing else.
+    #[test]
+    fn test_push_before_trailing_space_line() {
+        for (src, expected) in [
+            ("- a\n  ", "- a\n- b\n  "),
+            ("- a\n# c\n  ", "- a\n# c\n- b\n  "),
+            ("x:\n  - a\n  ", "x:\n  - a\n  - b\n  "),
+        ] {
+            let doc = YamlFile::from_str(src).unwrap().document().unwrap();
+            let seq = match doc.as_sequence() {
+                Some(seq) => seq,
+                None => doc.as_mapping().unwrap().get_sequence("x").unwrap(),
+            };
+            seq.push("b");
+            assert_cst_ok(&doc);
+            assert_eq!(doc.to_string(), expected, "{src:?}");
+        }
+    }
+
     #[test]
     fn test_set_out_of_bounds() {
         let doc = YamlFile::from_str("- a\n").unwrap().document().unwrap();

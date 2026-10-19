@@ -934,20 +934,8 @@ impl<'a, 'c> LexState<'a, 'c> {
             //     COMMENT token so downstream error reporting has
             //     something to point at.
             //
-            // A `#` glued to the tail of *plain-scalar* content is different:
-            // `:#: v` is a mapping keyed `:#`, as saphyr reads it. Continue
-            // the scalar rather than starting a comment, which the catch-all
-            // arm already does for `a#: v`.
-            // A `#` not preceded by whitespace is scalar content wherever it
-            // sits, including a continuation line whose previous token is the
-            // INDENT (`safe: a!"#$%\n     !"#$%` -- test suite FBC9).
-            //
-            // A quoted scalar ends at its closing quote, so a `#` glued to
-            // one really is the 6.6 violation the validator reports
-            // (`key: "value"# c`).
-            '#' if self.hash_continues_scalar(start_idx) => {
-                self.push_plain_scalar(start_idx, start_idx + 1, true);
-            }
+            // A `#` glued to plain-scalar content never gets here: the
+            // scalar reader takes it in (`a#: v`, `:#: v`).
             '#' => self.lex_comment(start_idx),
 
             // Tags
@@ -968,28 +956,6 @@ impl<'a, 'c> LexState<'a, 'c> {
             // Everything else is scalar content
             _ => self.lex_plain_scalar(start_idx, ch),
         }
-    }
-
-    /// Whether the `#` at `start_idx` continues scalar content rather than
-    /// starting a comment.
-    fn hash_continues_scalar(&self, start_idx: usize) -> bool {
-        use SyntaxKind::*;
-        !is_hash_a_comment_start(self.input, start_idx)
-            // A BOM is a document prefix, which a comment may follow.
-            && !matches!(self.tokens.last(), Some((BOM, _)))
-            && {
-                // The character before decides, but it has to belong to
-                // scalar content: glued to a flow delimiter (`c,#x`) the
-                // `#` is still the 6.6 violation CVW2 expects.
-                let prev = self.input[..start_idx].chars().next_back();
-                prev.is_some_and(|c| !is_yaml_special(c) || matches!(c, '!' | '"' | '\''))
-            }
-            && !self.tokens.last().is_some_and(|(k, text)| {
-                matches!(k, STRING | UNTERMINATED_STRING)
-                    && text.starts_with(['"', '\''])
-                    // Only when the quote really ends at this `#`.
-                    && self.input[..start_idx].ends_with(['"', '\''])
-            })
     }
 
     fn lex_dash(&mut self, start_idx: usize) {

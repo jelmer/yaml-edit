@@ -300,8 +300,18 @@ impl TextPosition {
     }
 
     /// Get the length of this text range
+    ///
+    /// # Panics
+    ///
+    /// Panics if `end` is before `start`, as converting such a position to
+    /// a [`rowan::TextRange`] does.
     pub fn len(&self) -> u32 {
-        self.end - self.start
+        self.end.checked_sub(self.start).unwrap_or_else(|| {
+            panic!(
+                "TextPosition end {} is before its start {}",
+                self.end, self.start
+            )
+        })
     }
 
     /// Check if this range is empty
@@ -698,6 +708,18 @@ mod tests {
 
         let server_pos = server_mapping.start_position(text);
         assert!(server_pos.line > 0);
+    }
+
+    #[test]
+    fn test_text_position_len() {
+        assert_eq!(TextPosition::new(3, 7).len(), 4);
+        assert_eq!(TextPosition::new(3, 3).len(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "TextPosition end 2 is before its start 5")]
+    fn test_text_position_len_end_before_start() {
+        TextPosition::new(5, 2).len();
     }
 
     #[test]

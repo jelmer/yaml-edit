@@ -1158,6 +1158,18 @@ fn check_trailing_content_after_quoted(node: &SyntaxNode, violations: &mut Vec<V
                     found_newline = true;
                 }
                 // Whitespace and comments are allowed after quoted strings
+                crate::SyntaxKind::WHITESPACE
+                | crate::SyntaxKind::INDENT
+                | crate::SyntaxKind::COMMENT => {}
+                // Any other token is content, such as the `[` of `''[`.
+                _ if found_quote_end && !found_newline => {
+                    violations.push(Violation::error_at(
+                        Rule::Other,
+                        token.text_range(),
+                        "Trailing content after quoted string",
+                    ));
+                    return;
+                }
                 _ => {}
             }
         }
@@ -2695,28 +2707,42 @@ fn block_tab_indent(node: &SyntaxNode) -> Option<crate::nodes::SyntaxToken> {
 /// `s-indent`, which forbids tabs: `-\t-` and `?\t-` are errors the test
 /// suite expects (Y79Y), while `-\t-1` is the scalar `-1`. The tab has to
 /// separate the indicator from the node on the same line; trailing
-/// whitespace before a line break (DC7X's `seq:\t`) indents nothing.
+/// whitespace before a line break (DC7X's `seq:\t`) or a comment
+/// (`a:\t#`) indents nothing.
 fn tab_before_block_collection(token: &crate::nodes::SyntaxToken) -> bool {
-    if token.kind() != crate::SyntaxKind::WHITESPACE || !token.text().contains('\t') {
+    use crate::SyntaxKind;
+    if token.kind() != SyntaxKind::WHITESPACE || !token.text().contains('\t') {
         return false;
     }
     let Some(next) = token.next_sibling_or_token().and_then(|n| n.into_node()) else {
         return false;
     };
     let opens_a_block = |n: &SyntaxNode| {
-        matches!(
-            n.kind(),
-            crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-        ) && !starts_a_flow_collection(n)
+        matches!(n.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE)
+            && !starts_a_flow_collection(n)
     };
-    !next
-        .first_token()
-        .is_some_and(|t| t.kind() == crate::SyntaxKind::NEWLINE)
-        && (opens_a_block(&next)
-            || (matches!(
-                next.kind(),
-                crate::SyntaxKind::VALUE | crate::SyntaxKind::KEY
-            ) && next.children().any(|c| opens_a_block(&c))))
+    let collection = if opens_a_block(&next) {
+        next
+    } else if matches!(next.kind(), SyntaxKind::VALUE | SyntaxKind::KEY) {
+        match next.children().find(opens_a_block) {
+            Some(c) => c,
+            None => return false,
+        }
+    } else {
+        return false;
+    };
+    let first_entry = collection
+        .children()
+        .find(|c| {
+            matches!(
+                c.kind(),
+                SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY
+            )
+        })
+        .map_or(collection.text_range().start(), |e| e.text_range().start());
+    !std::iter::successors(token.next_token(), |t| t.next_token())
+        .take_while(|t| t.text_range().start() < first_entry)
+        .any(|t| t.kind() == SyntaxKind::NEWLINE)
 }
 
 /// Whether `token` is an INDENT made of or starting with a tab, in a
@@ -4674,6 +4700,10 @@ mod tests {
                 ("Trailing content after quoted string", "1:8"),
             ),
             (
+                "a: ''[\nb: 1\n",
+                ("Trailing content after quoted string", "1:6"),
+            ),
+            (
                 "x: 1\na: b: c\n",
                 (
                     "Plain scalar value cannot contain mapping syntax (colon)",
@@ -4866,6 +4896,22 @@ mod tests {
                 vec!["Tabs are not allowed for indentation in YAML".to_string()],
                 "{yaml:?}"
             );
+        }
+    }
+
+    #[test]
+    fn test_tab_before_comment_is_separation() {
+        // The block collection starts on the next line, so the tab
+        // separates the indicator from the comment.
+        for yaml in [
+            "a:\t#\n  b: c\n",
+            "a:\t&x #c\n  b: c\n",
+            "-\t#c\n  - x\n",
+            "?\t#c\n  - x\n",
+            "a: #\n  b: c\n",
+            "a:\t\n  b: c\n",
+        ] {
+            assert_eq!(messages(yaml), Vec::<String>::new(), "{yaml:?}");
         }
     }
 

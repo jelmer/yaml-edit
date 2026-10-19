@@ -131,6 +131,10 @@ impl ValueNode for TaggedNode {
 /// starts on the line after it, so that the lines do not join the
 /// indicator's: `- a: 1\n  # c\n  b: 2\n` with `a` removed gives
 /// `-\n  # c\n  b: 2\n`.
+///
+/// TODO: The parser keeps the blank lines before a compact sequence in an
+/// explicit key (`?\n\n- a\n`) in the sequence, so moving them out after
+/// its first item is removed gives a tree that differs from a re-parse.
 pub(crate) fn move_leading_lines_out(collection: &SyntaxNode) {
     let leading: Vec<_> = collection
         .children_with_tokens()
@@ -182,8 +186,20 @@ pub(crate) fn move_leading_lines_out(collection: &SyntaxNode) {
             .map(|t| crate::nodes::fresh_token(t.kind(), t.text()).into()),
     );
     crate::nodes::replace_children(collection, 0..leading.len(), vec![]);
-    let at = collection.index();
-    crate::nodes::insert_children(&parent, at, lines);
+    // Only the stream's first document holds the lines before its root;
+    // after a `...` or another document, they are the stream's unless a
+    // `---` comes first.
+    let (host, at) = match parent.parent() {
+        Some(root)
+            if parent.kind() == SyntaxKind::DOCUMENT
+                && parent.prev_sibling_or_token().is_some()
+                && collection.prev_sibling_or_token().is_none() =>
+        {
+            (root, parent.index())
+        }
+        _ => (parent, collection.index()),
+    };
+    crate::nodes::insert_children(&host, at, lines);
 }
 
 /// Whether `indent` starts a comment line.

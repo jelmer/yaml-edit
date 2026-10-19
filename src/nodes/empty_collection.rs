@@ -42,11 +42,16 @@ pub(crate) fn render_empty(collection: &SyntaxNode, line_break: Option<&str>) {
     {
         return;
     }
-    match outer_node(collection).parent().map(|p| p.kind()) {
-        Some(SyntaxKind::VALUE) => render_as_value(collection, line_break),
-        Some(SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::KEY | SyntaxKind::DOCUMENT) | None => {
-            render_in_place(collection, line_break)
-        }
+    let parent = outer_node(collection).parent();
+    // A value holding another node besides, which the validator rejects,
+    // has no key's line for the collection to move up onto.
+    let alone = parent.as_ref().is_some_and(|p| p.children().count() == 1);
+    match parent.map(|p| p.kind()) {
+        Some(SyntaxKind::VALUE) if alone => render_as_value(collection, line_break),
+        Some(
+            SyntaxKind::VALUE | SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::KEY | SyntaxKind::DOCUMENT,
+        )
+        | None => render_in_place(collection, line_break),
         Some(kind) => panic!("unexpected {kind:?} holding a block collection"),
     }
 }
@@ -107,7 +112,7 @@ fn copies(tokens: &[SyntaxToken]) -> Vec<Element> {
 }
 
 /// [`render_empty`] for a collection that is a sequence item, explicit key,
-/// document root or detached.
+/// document root, detached, or not alone in a mapping value.
 fn render_in_place(collection: &SyntaxNode, line_break: Option<&str>) {
     // Entries take their trailing NEWLINE with them when removed. Comment
     // lines that followed an entry stay after the flow-empty line,
@@ -126,7 +131,7 @@ fn render_in_place(collection: &SyntaxNode, line_break: Option<&str>) {
         .unwrap_or(leftovers.len());
     let tail = copies(&leftovers[tail_start..]);
 
-    indent_past_question(collection);
+    indent_past_parent(collection);
 
     if line_break.is_none() && tail.is_empty() {
         return;
@@ -230,17 +235,19 @@ fn render_as_value(collection: &SyntaxNode, line_break: Option<&str>) {
     if comment_lines || !inner.is_empty() {
         let mut replacement = copies(inner);
         if !inner.is_empty() {
-            let indent = collection
+            replacement.push(fresh_token(SyntaxKind::NEWLINE, "\n").into());
+            if let Some(indent) = collection
                 .prev_sibling_or_token()
                 .and_then(|el| el.into_token())
                 .filter(|t| t.kind() == SyntaxKind::INDENT)
-                .expect("block collection under a comment line is indented");
-            replacement.push(fresh_token(SyntaxKind::NEWLINE, "\n").into());
-            replacement.push(fresh_token(SyntaxKind::INDENT, indent.text()).into());
+            {
+                replacement.push(fresh_token(SyntaxKind::INDENT, indent.text()).into());
+            }
         }
         replacement.push(collection.clone().into());
         let index = collection.index();
         replace_children(&host, index..index + 1, replacement);
+        indent_past_parent(collection);
         if let Some(line_break) = line_break {
             trivia::terminate_with(&entry_node, line_break);
         }
@@ -300,27 +307,34 @@ fn render_as_value(collection: &SyntaxNode, line_break: Option<&str>) {
     }
 }
 
-/// A block sequence in an explicit key may start on the line after the
-/// `?`, at the `?`'s own column, but a flow collection there would end the
-/// key. Indent `collection` past the `?` if it sits there.
-fn indent_past_question(collection: &SyntaxNode) {
+/// A block sequence in an explicit key or a mapping value may start on a
+/// line of its own at the column of the `?` or the key, but a flow
+/// collection there would end the entry. Indent `collection` past that
+/// column if it sits there.
+fn indent_past_parent(collection: &SyntaxNode) {
     let Some(host) = collection.parent() else {
         return;
     };
-    let Some(key) = host
+    let Some(slot) = host
         .ancestors()
         .find(|n| n.kind() != SyntaxKind::TAGGED_NODE)
-        .filter(|n| n.kind() == SyntaxKind::KEY)
     else {
         return;
     };
-    // An implicit key holds a block collection only in input the
-    // validator rejects, and has no `?` to indent past.
-    let Some(question) = key.parent().and_then(|e| {
-        e.children_with_tokens()
+    let Some(entry) = slot.parent() else {
+        return;
+    };
+    let indicator = match slot.kind() {
+        // An implicit key holds a block collection only in input the
+        // validator rejects, and has no `?` to indent past.
+        SyntaxKind::KEY => entry
+            .children_with_tokens()
             .filter_map(|el| el.into_token())
-            .find(|t| t.kind() == SyntaxKind::QUESTION)
-    }) else {
+            .find(|t| t.kind() == SyntaxKind::QUESTION),
+        SyntaxKind::VALUE => entry.first_token(),
+        _ => None,
+    };
+    let Some(indicator) = indicator else {
         return;
     };
     let Some(prev) = collection
@@ -334,7 +348,7 @@ fn indent_past_question(collection: &SyntaxNode) {
         SyntaxKind::INDENT => Some(prev),
         _ => return,
     };
-    let column = crate::column::token_column(&question);
+    let column = crate::column::token_column(&indicator);
     if indent
         .as_ref()
         .is_some_and(|t| t.text().chars().count() > column)

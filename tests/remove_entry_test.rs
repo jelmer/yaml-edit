@@ -293,6 +293,40 @@ fn clear_nested_sequence() {
 }
 
 #[test]
+fn clear_mapping_beside_another_node_in_a_value() {
+    // The validator rejects `: :`, whose value holds a null and a mapping,
+    // but the edit must still be made.
+    use rowan::ast::AstNode;
+    let doc = Document::from_str(": :\n").unwrap();
+    let inner = doc
+        .syntax()
+        .descendants()
+        .filter_map(yaml_edit::Mapping::cast)
+        .nth(1)
+        .unwrap();
+    inner.clear();
+    assert_eq!(doc.to_string(), ": {}\n");
+}
+
+#[test]
+fn remove_first_root_entry_of_later_document() {
+    // A document without a `---` holds the lines before its root only at
+    // the start of the stream; after a `...` they are the stream's.
+    for (source, expected) in [
+        ("...\nk:\n\nb:\n", "...\n\nb:\n"),
+        ("...\nk:\n# c\nb:\n", "...\n# c\nb:\n"),
+        ("a\n...\nk:\n\nb:\n", "a\n...\n\nb:\n"),
+        ("---\nk:\n\nb:\n", "---\n\nb:\n"),
+        ("k:\n\nb:\n", "\nb:\n"),
+    ] {
+        let file = YamlFile::from_str(source).unwrap();
+        let doc = file.documents().last().unwrap();
+        assert!(doc.as_mapping().unwrap().remove("k").is_some());
+        assert_file_edited(&file, expected);
+    }
+}
+
+#[test]
 fn remove_entry_after_blank_line() {
     // A blank line before the removed entry stays, as it does when the
     // entry is not last. Unterminated, it ends the input in place of the
@@ -1139,6 +1173,48 @@ fn drain_compact_sequence_in_explicit_key() {
             k.as_sequence().unwrap().remove(0);
         },
         "x:\n  ?\n    []\n  : b\n",
+    );
+}
+
+#[test]
+fn remove_later_item_of_compact_sequence_in_explicit_key() {
+    // The parser puts the blank lines before a compact sequence in an
+    // explicit key in the sequence; they stay there.
+    let pop = |d: &Document| {
+        assert!(key_sequence(d).pop().is_some());
+    };
+    check_edit("?\n\n\n- a\n- b\n", pop, "?\n\n\n- a\n");
+    check_edit("?\r\r\r- a\n-\r", pop, "?\r\r\r- a\n");
+    check_edit("?\n\n- a\n- b\n- c\n: v\n", pop, "?\n\n- a\n- b\n: v\n");
+}
+
+#[test]
+fn drain_compact_sequence_value_under_comment_line() {
+    // A flow collection on a line of its own has to be indented past the
+    // key, as a block sequence does not.
+    let value_sequence = |d: &Document| {
+        let m = d.as_mapping().unwrap();
+        let v = m.values().next().unwrap();
+        v.as_sequence().cloned().unwrap()
+    };
+    let pop = |d: &Document| {
+        assert!(value_sequence(d).pop().is_some());
+    };
+    let clear = |d: &Document| value_sequence(d).clear();
+    for edit in [&pop as &dyn Fn(&Document), &clear] {
+        check_edit("a:\n# c\n- x\n", edit, "a:\n# c\n  []\n");
+        check_edit("a:\n#\n \n- e: 1\n", edit, "a:\n#\n \n  []\n");
+        check_edit("? a\n:\n# c\n- x\n", edit, "? a\n:\n# c\n  []\n");
+        check_edit("a:\n# c\n- x\nb: 1\n", edit, "a:\n# c\n  []\nb: 1\n");
+    }
+    check_edit("a:\n- x\n# c\n- y\n", clear, "a:\n# c\n  []\n");
+    check_edit(
+        "x:\n  a:\n  # c\n  - x\n",
+        |d| {
+            let m = d.as_mapping().unwrap().get_mapping("x").unwrap();
+            m.get_sequence("a").unwrap().pop();
+        },
+        "x:\n  a:\n  # c\n    []\n",
     );
 }
 

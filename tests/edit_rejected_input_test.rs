@@ -63,3 +63,11 @@ fn test_refill_root_sequence_followed_by_mapping() {
         yaml_edit::debug::shape_to_string(reparsed.syntax())
     );
 }
+
+#[test]
+fn test_clear_sequence_with_anchor_text_in_scalar() {
+    // `&SS` is part of the plain scalar, so `*SS` refers to nothing.
+    let file = YamlFile::from_str("- f\n  - &SS Sammy\nrb: *SS\n").unwrap();
+    nth_sequence(&file, 0).clear();
+    assert_eq!(file.to_string(), "[]\nrb: *SS\n");
+}

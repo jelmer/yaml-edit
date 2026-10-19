@@ -5046,3 +5046,40 @@ fn test_flow_indicator_on_plain_scalar_continuation_line() {
     let file = YamlFile::from_str("a: b\n[x]: y\n").unwrap();
     assert_eq!(file.document().unwrap().as_mapping().unwrap().len(), 2);
 }
+
+#[test]
+fn test_block_scalar_indicator_on_plain_scalar_continuation_line() {
+    // A `|` or `>` continuing a plain scalar is content, not a block scalar
+    // header, so the lines after it are not a block scalar body.
+    assert_eq!(
+        document_values("1\n|x\n  # t\n"),
+        [yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain(
+            "1 |x"
+        ))]
+    );
+    assert_eq!(
+        document_values("1\n|+\n"),
+        [yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain(
+            "1 |+"
+        ))]
+    );
+    assert_eq!(
+        document_values("a\n>\n  b\n"),
+        [yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain(
+            "a > b"
+        ))]
+    );
+    assert_eq!(
+        document_values("a: b\n  |\n  # c\nd: 1\n"),
+        [yaml_edit::YamlValue::from_mapping(
+            [
+                (
+                    "a".to_string(),
+                    yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain("b |"))
+                ),
+                ("d".to_string(), yaml_edit::YamlValue::from(1i64)),
+            ]
+            .into()
+        )]
+    );
+}

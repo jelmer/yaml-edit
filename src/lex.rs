@@ -727,6 +727,13 @@ impl<'a, 'c> LexState<'a, 'c> {
             && node_property_can_start(&self.tokens)
     }
 
+    /// Whether a block scalar header may start at `idx`.
+    fn block_scalar_header_can_start(&self, idx: usize) -> bool {
+        self.flow_depth == 0
+            && self.node_can_start()
+            && !self.opens_plain_scalar_continuation_line(idx)
+    }
+
     /// Whether the character at `idx` opens a line following a plain scalar.
     ///
     /// Such a line either continues that scalar or starts a new implicit
@@ -844,7 +851,10 @@ impl<'a, 'c> LexState<'a, 'c> {
             // scalars a block-context production only, so inside a flow
             // collection a `|` is plain content and `[|, x]` has two
             // entries, as saphyr reads it.
-            '|' if self.flow_depth == 0 && self.node_can_start() => {
+            //
+            // A line after a plain scalar continues it, as a block scalar
+            // cannot be an implicit key: `1\n|x\n  # t\n` is `1 |x`.
+            '|' if self.block_scalar_header_can_start(start_idx) => {
                 self.block_scalar = Some(BlockScalarBody::new(
                     &self.tokens,
                     self.input,
@@ -852,7 +862,7 @@ impl<'a, 'c> LexState<'a, 'c> {
                 ));
                 self.push(PIPE, start_idx, start_idx + 1)
             }
-            '>' if self.flow_depth == 0 && self.node_can_start() => {
+            '>' if self.block_scalar_header_can_start(start_idx) => {
                 self.block_scalar = Some(BlockScalarBody::new(
                     &self.tokens,
                     self.input,
@@ -1368,7 +1378,13 @@ impl<'a, 'c> LexState<'a, 'c> {
     }
 
     fn lex_plain_scalar(&mut self, start_idx: usize, ch: char) {
-        let end = self.read_plain_scalar_body(start_idx + ch.len_utf8(), true, true);
+        // Only a header's indentation indicator can precede its chomping
+        // `+`. A `|` reaching here is content: `1\n|+\n` is `1 |+`.
+        let after_header = matches!(
+            self.tokens.last(),
+            Some((SyntaxKind::PIPE | SyntaxKind::GREATER, _))
+        );
+        let end = self.read_plain_scalar_body(start_idx + ch.len_utf8(), true, after_header);
         self.push_scalar(start_idx, end);
     }
 

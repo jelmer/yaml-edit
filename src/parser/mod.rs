@@ -973,8 +973,8 @@ impl Parser<'_> {
 
     /// Where the value of a `:` is, when it is on a later line indented
     /// past `mapping_column` (or at it, for an indentless sequence): the
-    /// number of tokens up to the INDENT starting that line, and the
-    /// indentation. Comment lines in between say nothing about where the
+    /// number of tokens up to the INDENT starting that line, or the line
+    /// break before it at column 0, and the indentation. Comment lines in between say nothing about where the
     /// value sits, so they are stepped over: the YAML test suite's Q9WF has
     /// a column-0 comment between a flow-collection key and its indented
     /// block mapping. The caller is on the NEWLINE ending the colon's line.
@@ -997,7 +997,10 @@ impl Parser<'_> {
             }
         }
         let (SyntaxKind::INDENT, text) = ahead.get(i)? else {
-            return None;
+            // A line at column 0 has no INDENT; it holds the value only as
+            // an indentless sequence of a mapping at column 0.
+            let indentless = mapping_column == Some(0) && ahead.kind(i) == Some(SyntaxKind::DASH);
+            return indentless.then_some((i - 1, 0));
         };
         let indent = text.len();
         let opens_value = mapping_column.map_or(true, |column| {

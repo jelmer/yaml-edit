@@ -33,7 +33,7 @@ pub(crate) fn keeping_aliases(
 ) {
     if !removed
         .descendants_with_tokens()
-        .any(|c| c.kind() == SyntaxKind::ANCHOR)
+        .any(|c| c.as_token().is_some_and(is_anchor))
     {
         edit();
         return;
@@ -133,7 +133,7 @@ pub(crate) fn keeping_aliases_moved(
         let new_anchors: Vec<_> = copy
             .descendants_with_tokens()
             .filter_map(|c| c.into_token())
-            .filter(|t| t.kind() == SyntaxKind::ANCHOR)
+            .filter(is_anchor)
             .collect();
         assert_eq!(
             new_anchors.len(),
@@ -172,7 +172,7 @@ fn scan(scope: &SyntaxNode) -> (Vec<SyntaxToken>, Vec<(SyntaxNode, Option<usize>
     let mut latest: HashMap<String, usize> = HashMap::new();
     for element in scope.descendants_with_tokens() {
         match element {
-            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::ANCHOR => {
+            rowan::NodeOrToken::Token(t) if is_anchor(&t) => {
                 latest.insert(anchor_name(&t).to_string(), anchors.len());
                 anchors.push(t);
             }
@@ -184,6 +184,13 @@ fn scan(scope: &SyntaxNode) -> (Vec<SyntaxToken>, Vec<(SyntaxNode, Option<usize>
         }
     }
     (anchors, aliases)
+}
+
+/// Whether `token` is an anchor. In a multi-line plain scalar such as
+/// `f\n  - &a b` the parser keeps `&a` as an ANCHOR token, but it is text.
+fn is_anchor(token: &SyntaxToken) -> bool {
+    token.kind() == SyntaxKind::ANCHOR
+        && token.parent().map(|p| p.kind()) != Some(SyntaxKind::SCALAR)
 }
 
 fn anchor_name(anchor: &SyntaxToken) -> &str {
@@ -218,7 +225,7 @@ fn copied_anchors(anchor: Option<&SyntaxToken>, node: &SyntaxNode) -> Vec<Syntax
         .chain(
             node.descendants_with_tokens()
                 .filter_map(|c| c.into_token())
-                .filter(|t| t.kind() == SyntaxKind::ANCHOR),
+                .filter(is_anchor),
         )
         .collect()
 }
@@ -395,7 +402,7 @@ impl Tracker {
         let elements: Vec<_> = self.scope.descendants_with_tokens().collect();
         for element in elements {
             match element {
-                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::ANCHOR => {
+                rowan::NodeOrToken::Token(t) if is_anchor(&t) => {
                     latest.insert(anchor_name(&t).to_string(), t);
                 }
                 rowan::NodeOrToken::Node(alias) if alias.kind() == SyntaxKind::ALIAS => {
@@ -465,7 +472,7 @@ impl Tracker {
         let mut copies: Vec<_> = holder
             .descendants_with_tokens()
             .filter_map(|c| c.into_token())
-            .filter(|t| t.kind() == SyntaxKind::ANCHOR)
+            .filter(is_anchor)
             .collect();
         if let Some((_, id)) = own_anchor {
             let copy = copies.remove(0);
@@ -548,7 +555,7 @@ impl Tracker {
         // Anchors inside the node would go with it.
         if holder
             .descendants_with_tokens()
-            .any(|c| c.kind() == SyntaxKind::ANCHOR && c.as_token() != Some(origin))
+            .any(|c| c.as_token().is_some_and(|t| is_anchor(t) && t != origin))
         {
             return;
         }
@@ -557,7 +564,7 @@ impl Tracker {
             .scope
             .descendants_with_tokens()
             .filter_map(|c| c.into_token())
-            .filter(|t| t.kind() == SyntaxKind::ANCHOR && anchor_name(t) == name)
+            .filter(|t| is_anchor(t) && anchor_name(t) == name)
             .any(|t| {
                 t.text_range().start() > copy.text_range().start()
                     && t.text_range().start() < origin.text_range().start()
@@ -583,9 +590,7 @@ impl Tracker {
         let mut latest = None;
         for element in self.scope.descendants_with_tokens() {
             match element {
-                rowan::NodeOrToken::Token(t)
-                    if t.kind() == SyntaxKind::ANCHOR && anchor_name(&t) == name =>
-                {
+                rowan::NodeOrToken::Token(t) if is_anchor(&t) && anchor_name(&t) == name => {
                     latest = Some(t);
                 }
                 rowan::NodeOrToken::Node(n) if n == *alias => break,
@@ -612,7 +617,7 @@ impl Tracker {
             match element {
                 rowan::NodeOrToken::Token(t) if t == *anchor => after = true,
                 rowan::NodeOrToken::Token(t)
-                    if after && t.kind() == SyntaxKind::ANCHOR && anchor_name(&t) == name =>
+                    if after && is_anchor(&t) && anchor_name(&t) == name =>
                 {
                     break;
                 }

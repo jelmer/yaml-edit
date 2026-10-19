@@ -445,3 +445,12 @@ fn tagged_alias_to_block_mapping_with_flow_key() {
         assert_edited(&doc, expected);
     }
 }
+
+#[test]
+fn remove_item_with_anchor_text_in_plain_scalar() {
+    // The second item is the plain scalar `f - &SS Sammy`, which defines
+    // no anchor.
+    let doc = Document::from_str("- &SS x\n- f\n  - &SS Sammy\n- *SS\n").unwrap();
+    doc.as_sequence().unwrap().remove(1);
+    assert_edited(&doc, "- &SS x\n- *SS\n");
+}

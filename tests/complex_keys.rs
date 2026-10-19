@@ -1079,3 +1079,23 @@ fn test_annotated_sequence_in_explicit_key_at_question_column() {
     let second = sequence.get(1).unwrap();
     assert_eq!(second.as_scalar().unwrap().as_string(), "a");
 }
+
+#[test]
+fn test_explicit_key_after_implicit_with_indentless_sequence_value() {
+    for (yaml, len) in [
+        ("a: 1\n? b\n:\n- x\n", 2),
+        ("a: 1\n? b\n: # c\n- x\n", 2),
+        ("a: 1\n? b\n:\n# c\n- x\n", 2),
+        ("a: 1\n? b\n:\n- x\nc: 2\n", 3),
+    ] {
+        let doc = yaml.parse::<YamlFile>().unwrap();
+        assert_eq!(doc.to_string(), yaml);
+        assert_file_cst_ok(&doc);
+        let mapping = doc.document().unwrap().as_mapping().unwrap();
+        assert_eq!(mapping.len(), len, "{yaml:?}");
+        let value = mapping.get("b").unwrap();
+        let value = value.as_sequence().unwrap();
+        assert_eq!(value.len(), 1, "{yaml:?}");
+        assert_eq!(value.get(0).unwrap().as_scalar().unwrap().as_string(), "x");
+    }
+}

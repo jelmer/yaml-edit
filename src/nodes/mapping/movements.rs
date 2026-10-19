@@ -243,21 +243,19 @@ impl Mapping {
         let Some(target) = self.find_entry_by_key(ref_key) else {
             return false;
         };
-        let existing = self.find_entry_by_key(new_key);
-        if existing
-            .as_ref()
-            .is_some_and(|e| e.syntax() == target.syntax())
-        {
-            self.set(new_key, new_value);
-            return true;
-        }
-        if let Some(existing) = existing {
+        if let Some(existing) = self.find_entry_by_key(new_key) {
             // Given its own value, the entry moves as it is, comments and
             // anchor included, as reorder_fields would move it. Given
             // another, it is replaced first, its old value going as with
             // remove, so that its key moves the same way.
             let value = existing.value().children().next();
             let own_value = value.is_some() && value == new_value.value_node();
+            if existing.syntax() == target.syntax() {
+                if !own_value {
+                    self.set(new_key, new_value);
+                }
+                return true;
+            }
             let old = if own_value {
                 existing.0
             } else {

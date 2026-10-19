@@ -923,3 +923,17 @@ fn block_key_renamed_keeps_the_lines_after_it() {
         assert_eq!(text, expected, "{source:?}");
     }
 }
+
+#[test]
+fn test_set_value_ending_in_block_key_without_colon() {
+    let out = edit_root("complex1:\n  ? - a", |m| {
+        m.set("complex1", m.get("complex1").unwrap());
+    });
+    // TODO: Replacing an unterminated block value adds a final line
+    // break, as it does for any block value.
+    assert_eq!(out, "complex1:\n  ? - a\n");
+    let out = edit_root("complex1:\n  ? - a", |m| {
+        m.set("b", 1);
+    });
+    assert_eq!(out, "complex1:\n  ? - a\nb: 1");
+}

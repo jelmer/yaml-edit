@@ -493,13 +493,24 @@ pub(crate) fn terminate_last_line(node: &SyntaxNode, line_break: &str) {
 /// the innermost node at its end that holds its line end, or `node` itself.
 pub(crate) fn line_end_holder(node: &SyntaxNode) -> SyntaxNode {
     let mut cur = node.clone();
-    while let Some(rowan::NodeOrToken::Node(last)) = cur.last_child_or_token() {
+    while let Some(last) = last_line_node(&cur) {
         if !holds_line_end(&last) {
             break;
         }
         cur = last;
     }
     cur
+}
+
+/// The child of `node` its last line ends in, if that is a node. An
+/// explicit-key entry without a `:` ends in its KEY, before the empty
+/// VALUE.
+fn last_line_node(node: &SyntaxNode) -> Option<SyntaxNode> {
+    let last = node.last_child_or_token()?.into_node()?;
+    if last.kind() == SyntaxKind::VALUE && !has_child_token(node, |k| k == SyntaxKind::COLON) {
+        return node.children().find(|c| c.kind() == SyntaxKind::KEY);
+    }
+    Some(last)
 }
 
 /// Does the parser put the line break after `node`'s last line inside it?
@@ -510,8 +521,9 @@ fn holds_line_end(node: &SyntaxNode) -> bool {
         }),
         SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY => true,
         SyntaxKind::SCALAR => is_block_scalar(node),
-        SyntaxKind::VALUE => node.last_child().is_some_and(|last| holds_line_end(&last)),
-        SyntaxKind::TAGGED_NODE => node.last_child().is_some_and(|last| holds_line_end(&last)),
+        SyntaxKind::KEY | SyntaxKind::VALUE | SyntaxKind::TAGGED_NODE => {
+            node.last_child().is_some_and(|last| holds_line_end(&last))
+        }
         _ => false,
     }
 }

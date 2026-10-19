@@ -4313,6 +4313,24 @@ fn test_entry_after_an_annotated_compact_entry() {
     );
 }
 
+/// A block scalar's body has to be indented past the mapping the scalar is
+/// a value of, not just past the header's line. In `- a: |+\n\n  b: !t ''\n`
+/// the lexer took the `b` line for body text and read `!t ''` as literal
+/// content, while the parser made it the mapping's next entry.
+#[test]
+fn test_block_scalar_body_past_a_compact_mapping() {
+    for (yaml, expected) in [
+        ("- a: |+\n\n  b: !t ''\n", "!t ''"),
+        ("- a: |\n  b: [1]\n", "[1]"),
+    ] {
+        let doc = yaml_edit::Document::from_str(yaml).unwrap();
+        let item = doc.as_sequence().unwrap().get(0).unwrap();
+        let b = item.as_mapping().unwrap().get("b").unwrap();
+        assert_eq!(b.to_string(), expected, "{yaml:?}");
+        assert!(b.as_scalar().is_none(), "{yaml:?}");
+    }
+}
+
 /// A document's root block scalar may put its body at column 0, since the
 /// root sits at indentation -1. Such a body is literal text up to the next
 /// document marker.

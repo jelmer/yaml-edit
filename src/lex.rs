@@ -1526,7 +1526,9 @@ struct BlockScalarBody {
     parent_column: usize,
     /// Leftmost column a body line may start at. A document's root block
     /// scalar sits at indentation -1, so its body may start at column 0;
-    /// any other body has to be indented past its header's line.
+    /// any other body has to be indented past its header's line and the
+    /// collection it is a node of: in `- a: |\n  b: 1\n` the `b` line is
+    /// the mapping's next entry.
     min_indent: usize,
     /// The body's own column, set by an explicit indentation indicator or
     /// else by its first content line.
@@ -1552,15 +1554,16 @@ impl BlockScalarBody {
                         | SyntaxKind::ANCHOR
                 )
             });
+        let parent_column = parent_column(tokens).unwrap_or(0);
         let min_indent = if is_root {
             0
         } else {
-            line_indent(input, line_start) + 1
+            line_indent(input, line_start).max(parent_column) + 1
         };
         Self {
             header_line_start: line_start,
             header_token: tokens.len(),
-            parent_column: parent_column(tokens).unwrap_or(0),
+            parent_column,
             min_indent,
             indent: None,
         }

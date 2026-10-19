@@ -210,13 +210,44 @@ fn has_content(node: &SyntaxNode) -> bool {
 /// than the column of the innermost block collection entry holding it, or
 /// `None` outside any block collection.
 fn continuation_indent(node: &SyntaxNode, columns: &ColumnIndex) -> Option<usize> {
-    let entry = node.ancestors().skip(1).find(|a| {
-        matches!(
-            a.kind(),
-            crate::SyntaxKind::MAPPING_ENTRY | crate::SyntaxKind::SEQUENCE_ENTRY
-        ) && a.parent().is_some_and(|c| !starts_a_flow_collection(&c))
-    })?;
+    let entry = node.ancestors().skip(1).find(is_block_entry)?;
     Some(columns.column(&entry.first_token()?) + 1)
+}
+
+/// Whether `node` is an entry of a collection without flow delimiters.
+fn is_block_entry(node: &SyntaxNode) -> bool {
+    matches!(
+        node.kind(),
+        crate::SyntaxKind::MAPPING_ENTRY | crate::SyntaxKind::SEQUENCE_ENTRY
+    ) && node.parent().is_some_and(|c| !starts_a_flow_collection(&c))
+}
+
+/// What a node being walked passes on to the nodes in it.
+#[derive(Clone, Copy)]
+struct Scope {
+    /// Whether they sit inside a flow collection.
+    in_flow: bool,
+    /// The least indentation their continuation lines need, as
+    /// [`continuation_indent`] gives it.
+    continuation_indent: Option<usize>,
+}
+
+impl Scope {
+    /// The scope of the nodes in `node`, which sits in this one.
+    fn enter(self, node: &SyntaxNode, columns: &ColumnIndex) -> Self {
+        let opens_flow = matches!(
+            node.kind(),
+            crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
+        ) && starts_a_flow_collection(node);
+        Scope {
+            in_flow: self.in_flow || opens_flow,
+            continuation_indent: if is_block_entry(node) {
+                columns.column_at(node.text_range().start()).map(|c| c + 1)
+            } else {
+                self.continuation_indent
+            },
+        }
+    }
 }
 
 /// Is this flow entry an omitted one, i.e. does its value consist solely of
@@ -354,41 +385,37 @@ impl Validator {
     fn validate_node(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         let columns = ColumnIndex::new(node);
         let mut identities = SharedIdentities::default();
-        // Whether each node being walked opens a flow collection, and how
-        // many enclosing ones do; asking each node for its ancestors made
-        // the walk quadratic in the nesting depth.
-        let mut opens_flow = Vec::new();
-        let mut flow_depth = usize::from(in_flow_collection(node));
+        // The scope of each node being walked; asking each node for its
+        // ancestors made the walk quadratic in the nesting depth.
+        let mut scopes = vec![Scope {
+            in_flow: in_flow_collection(node),
+            continuation_indent: continuation_indent(node, &columns),
+        }];
         for event in node.preorder() {
             match event {
                 rowan::WalkEvent::Enter(n) => {
-                    self.check_node(&n, &columns, &mut identities, flow_depth > 0, violations);
-                    let is_flow = matches!(
-                        n.kind(),
-                        crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-                    ) && starts_a_flow_collection(&n);
-                    flow_depth += usize::from(is_flow);
-                    opens_flow.push(is_flow);
+                    let scope = *scopes.last().expect("the walk's own scope stays");
+                    self.check_node(&n, &columns, &mut identities, scope, violations);
+                    scopes.push(scope.enter(&n, &columns));
                 }
                 rowan::WalkEvent::Leave(_) => {
-                    flow_depth -= usize::from(opens_flow.pop() == Some(true));
+                    scopes.pop();
                 }
             }
         }
     }
 
     /// Run the checks for `node` itself, not those of its children.
-    ///
-    /// `in_flow` says whether `node` sits inside a flow collection.
     fn check_node(
         &self,
         node: &SyntaxNode,
         columns: &ColumnIndex,
         identities: &mut SharedIdentities,
-        in_flow: bool,
+        scope: Scope,
         violations: &mut Vec<Violation>,
     ) {
         use crate::SyntaxKind;
+        let in_flow = scope.in_flow;
 
         // Check for tabs in any node's tokens
         if self.config.check_tabs {
@@ -428,7 +455,7 @@ impl Validator {
                 check_escape_sequences(node, violations);
                 // Check for content on same line as block scalar indicator
                 check_block_scalar_indicator(node, violations);
-                check_block_scalar_header_indent(node, columns, violations);
+                check_block_scalar_header_indent(node, columns, scope, violations);
                 // Check block scalar content indentation consistency
                 check_block_scalar_content_indent(node, violations);
                 // Check for trailing content after quoted strings
@@ -449,7 +476,7 @@ impl Validator {
             SyntaxKind::MAPPING => {
                 check_flow_collection_commas(node, violations);
                 check_flow_pair_placement(node, in_flow, violations);
-                check_flow_continuation_indent(node, columns, in_flow, violations);
+                check_flow_continuation_indent(node, scope, violations);
                 check_block_mapping_entries_on_same_line(node, violations);
                 check_block_mapping_after_properties(node, violations);
                 check_mapping_entry_indentation(node, columns, violations);
@@ -459,7 +486,7 @@ impl Validator {
             }
             SyntaxKind::SEQUENCE => {
                 check_flow_collection_commas(node, violations);
-                check_flow_continuation_indent(node, columns, in_flow, violations);
+                check_flow_continuation_indent(node, scope, violations);
             }
             SyntaxKind::KEY | SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::VALUE => {
                 check_anchor_and_alias(node, violations);
@@ -507,7 +534,7 @@ impl Validator {
 
         // Check indentation rules
         check_sequence_indentation(node, columns, violations);
-        check_quoted_string_indentation(node, columns, violations);
+        check_quoted_string_indentation(node, scope, violations);
     }
 }
 
@@ -931,6 +958,7 @@ fn check_block_scalar_indicator(node: &SyntaxNode, violations: &mut Vec<Violatio
 fn check_block_scalar_header_indent(
     node: &SyntaxNode,
     columns: &ColumnIndex,
+    scope: Scope,
     violations: &mut Vec<Violation>,
 ) {
     if !is_block_scalar(node) {
@@ -939,7 +967,7 @@ fn check_block_scalar_header_indent(
     let Some(header) = node.first_token() else {
         return;
     };
-    let Some(min_indent) = continuation_indent(node, columns) else {
+    let Some(min_indent) = scope.continuation_indent else {
         return;
     };
     if columns.column(&header) < min_indent {
@@ -1663,8 +1691,7 @@ fn expected_entry_indent(node: &SyntaxNode, columns: &ColumnIndex) -> String {
 /// 9C9N).
 fn check_flow_continuation_indent(
     node: &SyntaxNode,
-    columns: &ColumnIndex,
-    in_flow: bool,
+    scope: Scope,
     violations: &mut Vec<Violation>,
 ) {
     if !starts_a_flow_collection(node) {
@@ -1672,7 +1699,7 @@ fn check_flow_continuation_indent(
     }
     // Only the outermost flow collection needs checking; a nested one
     // shares its lines.
-    if in_flow {
+    if scope.in_flow {
         return;
     }
 
@@ -1705,7 +1732,7 @@ fn check_flow_continuation_indent(
     // a new entry of that block (9C9N's `flow: [a,\nb,\nc]`). A flow
     // collection that is the document's own node has no such neighbour,
     // so its entries may start at column zero (4ABK).
-    let Some(required) = continuation_indent(node, columns) else {
+    let Some(required) = scope.continuation_indent else {
         return;
     };
 
@@ -2459,7 +2486,7 @@ fn check_sequence_indentation(
 /// Check multiline quoted strings have proper indentation (QB6E)
 fn check_quoted_string_indentation(
     node: &SyntaxNode,
-    columns: &ColumnIndex,
+    scope: Scope,
     violations: &mut Vec<Violation>,
 ) {
     use crate::SyntaxKind;
@@ -2506,7 +2533,7 @@ fn check_quoted_string_indentation(
     }
 
     // Continuation lines have to clear the enclosing block entry.
-    let Some(required) = continuation_indent(node, columns) else {
+    let Some(required) = scope.continuation_indent else {
         return;
     };
 
@@ -2933,6 +2960,18 @@ mod tests {
         });
         assert_validation_scales_linearly(30, |n| {
             format!("{}x{}", "{{0: 1}: 1, {a: ".repeat(n), "}: 1}".repeat(n))
+        });
+    }
+
+    #[test]
+    fn test_validation_scales_linearly_with_nested_multiline_scalars() {
+        // Each multi-line scalar looked through all its ancestors for the
+        // block entry its continuation lines have to clear.
+        assert_validation_scales_linearly(60, |n| {
+            format!("{}x{}", "{\"a\nb\": ".repeat(n), "}".repeat(n))
+        });
+        assert_validation_scales_linearly(60, |n| {
+            format!("k: {}x{}", "[\"a\n b\", ".repeat(n), "]".repeat(n))
         });
     }
 

@@ -62,13 +62,19 @@ impl ColumnIndex {
 
     /// The zero-based column `token` starts at, as [`token_column`] gives it.
     pub(crate) fn column(&self, token: &SyntaxToken) -> usize {
+        self.column_at(token.text_range().start())
+            .unwrap_or_else(|| token_column(token))
+    }
+
+    /// The zero-based column of the indexed token starting at `offset`.
+    pub(crate) fn column_at(&self, offset: rowan::TextSize) -> Option<usize> {
         // Tokens sharing a start are empty ones before a real one, and so
         // share its column too.
-        let start = token.text_range().start();
-        match self.starts.binary_search_by_key(&start, |&(s, _)| s) {
-            Ok(i) => self.starts[i].1,
-            Err(_) => token_column(token),
-        }
+        let i = self
+            .starts
+            .binary_search_by_key(&offset, |&(s, _)| s)
+            .ok()?;
+        Some(self.starts[i].1)
     }
 }
 

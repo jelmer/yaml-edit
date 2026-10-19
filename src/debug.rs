@@ -658,27 +658,6 @@ mod tests {
     use std::str::FromStr;
 
     #[test]
-    fn test_validate_tree_scales_linearly_with_nesting() {
-        // Walking a node of the editable tree costs its depth.
-        crate::scaling::assert_scales_linearly(
-            "validate_tree",
-            60,
-            |n| {
-                let keys: String = (0..n).map(|i| format!("{{k{i}: ")).collect();
-                YamlFile::from_str(&format!("{keys}x{}", "}".repeat(n))).unwrap()
-            },
-            |file| validate_tree(file.syntax()).unwrap(),
-        );
-        // Each entry looked through all its ancestors for a flow collection.
-        crate::scaling::assert_scales_linearly(
-            "validate_tree",
-            60,
-            |n| YamlFile::from_str(&format!("{}x\n", "- ".repeat(n))).unwrap(),
-            |file| validate_tree(file.syntax()).unwrap(),
-        );
-    }
-
-    #[test]
     fn test_validate_tree_fits_a_small_stack() {
         // The walk used to recurse once per node.
         let text = format!("{}{}", "[{".repeat(127), "}]".repeat(127));

@@ -458,8 +458,8 @@ the node becomes an alias to the copy: `a: &x 1\nb: *x\n` reordered to
 `b, a` gives `b: &x 1\na: *x\n`. Keys are no different: `a: &a 1\n*a : 2\n`
 with `*a` moved first gives `&a 1 : 2\na: *a\n`, and `&k a: 1\nb: *k\n`
 reordered to `b, a` gives `b: &k a\n*k : 1\n`. The node stays as it is, a
-copy with its own anchor, if it holds other anchors, or another anchor
-with its name comes between. An alias that ends up after another anchor with
+copy with its own anchor, if it holds other anchors that the copy does
+not keep, or another anchor with one of their names comes between. An alias that ends up after another anchor with
 its name becomes a copy, with the anchor only if later aliases need it.
 `move_after`/`move_before` given another value rebuild the entry with it
 in place, the old value going as with `remove`, and then move it the same

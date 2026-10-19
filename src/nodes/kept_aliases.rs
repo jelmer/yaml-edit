@@ -97,8 +97,9 @@ pub(crate) fn keeping_aliases(
 ///
 /// Where an alias now comes before the node it referred to, the alias
 /// becomes a copy of that node, anchor included, and the node becomes an
-/// alias if it can: it has to be a value, sequence item or key without
-/// anchors inside, and no other anchor with its name may come between.
+/// alias if it can: it has to be a value, sequence item or key, the copy
+/// has to have kept the anchors inside it, and no other anchor with one of
+/// their names may come between.
 /// Otherwise the node keeps its anchor too.
 pub(crate) fn keeping_aliases_moved(
     within: &SyntaxNode,
@@ -552,26 +553,36 @@ impl Tracker {
         }) else {
             return;
         };
-        // Anchors inside the node would go with it.
-        if holder
-            .descendants_with_tokens()
-            .any(|c| c.as_token().is_some_and(|t| is_anchor(t) && t != origin))
-        {
-            return;
+        let copy_anchors = copied_anchors(None, &copy.parent().expect("an anchor has a parent"));
+        // Each anchor in the node needs one in the copy for aliases to it to
+        // resolve to, with no other anchor with its name between them.
+        let mut takers = Vec::new();
+        for anchor in copied_anchors(None, &holder) {
+            let anchor_id = self.live_id(&anchor);
+            let Some(taker) = copy_anchors
+                .iter()
+                .find(|c| self.live_id(c) == anchor_id)
+                .cloned()
+            else {
+                return;
+            };
+            let name = anchor_name(&anchor);
+            let redefined = self
+                .scope
+                .descendants_with_tokens()
+                .filter_map(|c| c.into_token())
+                .filter(|t| is_anchor(t) && anchor_name(t) == name)
+                .any(|t| {
+                    t.text_range().start() > taker.text_range().start()
+                        && t.text_range().start() < anchor.text_range().start()
+                        && !t.parent_ancestors().any(|a| a == holder)
+                });
+            if redefined {
+                return;
+            }
+            takers.push((taker, anchor_id));
         }
         let name = anchor_name(origin).to_string();
-        let redefined = self
-            .scope
-            .descendants_with_tokens()
-            .filter_map(|c| c.into_token())
-            .filter(|t| is_anchor(t) && anchor_name(t) == name)
-            .any(|t| {
-                t.text_range().start() > copy.text_range().start()
-                    && t.text_range().start() < origin.text_range().start()
-            });
-        if redefined {
-            return;
-        }
         // A key would otherwise keep its anchor, as a renamed key does.
         super::detach_anchor(origin);
         let holder = replace_in_holder(&holder, crate::yaml::Alias::new(&name), None);
@@ -579,7 +590,9 @@ impl Tracker {
             .into_iter()
             .next()
             .expect("the holder was just given an alias");
-        self.origins[id] = Origin::Live(copy.clone());
+        for (taker, anchor_id) in takers {
+            self.origins[anchor_id] = Origin::Live(taker);
+        }
         self.live_expected.push((alias.clone(), Some(id)));
         self.copied_aliases.push(alias);
     }

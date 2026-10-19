@@ -1,11 +1,3 @@
 # Known failures of tests/edit_invariants.rs, as
 # <case> <document> <collection> <operation> <check>.
 # Regenerate with UPDATE_KNOWN_FAILURES=1 cargo test --test edit_invariants
-5MUD d0 map0 rename[0] semantic
-5MUD d0 map0 rename[0] shape
-K3WX d0 map0 rename[0] semantic
-K3WX d0 map0 rename[0] shape
-K3WX d0 map0 rename[0] validator
-X38W d0 map0 move-after-last[0] validator
-X38W d0 map0 move-before-first[1] validator
-X38W d0 map0 reorder-reversed validator

@@ -328,6 +328,14 @@ fn test_rename_json_like_key_before_adjacent_colon() {
             "{z: b, \"c\":d}\n",
             vec!["z", "b", "c", "d"],
         ),
+        // K3WX from the YAML test suite, with the `:` on a line of its own.
+        (
+            "{ \"foo\" # comment\n  :bar }\n",
+            "foo",
+            YamlValue::from("z"),
+            "{ z # comment\n  : bar }\n",
+            vec!["z", "bar"],
+        ),
     ] {
         let doc = Document::from_str(source).unwrap();
         let m = doc.as_mapping().unwrap_or_else(|| {

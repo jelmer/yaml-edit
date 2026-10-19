@@ -402,9 +402,14 @@ impl Parser<'_> {
             self.builder.finish_node();
 
             // Parse value if there's a colon. Without one, the lines after
-            // the key's are the mapping's.
+            // the key's are the mapping's. One on a later line left of the
+            // `?` is an enclosing entry's: in `? ? a\n: b\n` the `: b` is
+            // the outer entry's value.
             self.skip_line_end_trivia();
-            if self.next_content().0 == Some(SyntaxKind::COLON) {
+            let (next, next_indent) = self.next_content();
+            if next == Some(SyntaxKind::COLON)
+                && (self.current() != Some(SyntaxKind::NEWLINE) || next_indent >= question_column)
+            {
                 self.skip_ws_and_newlines();
                 let colon_column = self.column();
                 self.bump(); // consume ':'

@@ -1099,3 +1099,28 @@ fn test_explicit_key_after_implicit_with_indentless_sequence_value() {
         assert_eq!(value.get(0).unwrap().as_scalar().unwrap().as_string(), "x");
     }
 }
+
+/// A `:` on a later line left of a nested `?` is the value of the entry
+/// enclosing it. `? ? a\n: b\n` gave the inner entry the value `b` and
+/// left the outer one without, so setting the outer value wrote text that
+/// re-parsed differently.
+#[test]
+fn test_value_left_of_a_nested_explicit_key() {
+    for (yaml, inner_key, inner_value) in [
+        ("? ? \n: v\n", "", ""),
+        ("? ? a\n: v\n", "a", ""),
+        ("? ? a\n  : b\n: v\n", "a", "b"),
+    ] {
+        let file = yaml.parse::<YamlFile>().unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let entries: Vec<_> = mapping.iter().collect();
+        assert_eq!(entries.len(), 1, "{yaml:?}");
+        assert_eq!(entries[0].1.as_scalar().unwrap().as_string(), "v");
+        let key = entries[0].0.as_mapping().unwrap();
+        let inner: Vec<_> = key.iter().collect();
+        assert_eq!(inner.len(), 1, "{yaml:?}");
+        assert_eq!(inner[0].0.as_scalar().unwrap().as_string(), inner_key);
+        assert_eq!(inner[0].1.as_scalar().unwrap().as_string(), inner_value);
+        assert_eq!(file.to_string(), yaml);
+    }
+}

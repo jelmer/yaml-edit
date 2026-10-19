@@ -361,19 +361,7 @@ impl Schema {
 
     /// Check if a scalar type is allowed in this schema
     pub fn allows_scalar_type(&self, scalar_type: ScalarType) -> bool {
-        match self {
-            Schema::Failsafe => matches!(scalar_type, ScalarType::String),
-            Schema::Json => matches!(
-                scalar_type,
-                ScalarType::String
-                    | ScalarType::Integer
-                    | ScalarType::Float
-                    | ScalarType::Boolean
-                    | ScalarType::Null
-            ),
-            Schema::Core => true, // Core schema allows all types
-            Schema::Custom(custom) => custom.allows_type(scalar_type),
-        }
+        self.allowed_scalar_types().contains(&scalar_type)
     }
 
     /// Get the allowed scalar types for this schema

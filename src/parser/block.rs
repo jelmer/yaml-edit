@@ -157,12 +157,7 @@ impl Parser<'_> {
             // delimiter such as `}` followed by `:`, and synthetic-token
             // recovery never advances).
             if self.tokens.len() == tokens_before_iter {
-                let unexpected = self.current_text().unwrap_or("").to_string();
-                self.add_error(
-                    format!("Unexpected token in mapping: {unexpected:?}"),
-                    ParseErrorKind::Other,
-                );
-                self.bump();
+                self.parse_stray_token("mapping");
             }
         }
 
@@ -503,12 +498,7 @@ impl Parser<'_> {
             // Progress guard against any future case where the body consumes
             // nothing (e.g. recovery via synthetic-token insertion).
             if self.tokens.len() == tokens_before_iter {
-                let unexpected = self.current_text().unwrap_or("").to_string();
-                self.add_error(
-                    format!("Unexpected token in explicit-key mapping: {unexpected:?}"),
-                    ParseErrorKind::Other,
-                );
-                self.bump();
+                self.parse_stray_token("explicit-key mapping");
             }
         }
 
@@ -1124,6 +1114,11 @@ impl Parser<'_> {
     }
 
     fn parse_mapping_key_value_pair(&mut self, base_indent: usize) {
+        // No key starts with the token (`]:`): leave it to the caller to
+        // report as stray rather than read an empty key.
+        if !self.current().is_some_and(starts_block_key_node) {
+            return;
+        }
         // The key's own column, read before anything is consumed. It is
         // 1-based, so step back to a column.
         let key_column = self.column();
@@ -1303,6 +1298,22 @@ impl Parser<'_> {
         // Finish MAPPING_ENTRY node
         self.builder.finish_node();
     }
+}
+
+/// Whether a token of `kind` starts the node of an implicit block key, as
+/// [`Parser::parse_block_key_node`] reads it.
+fn starts_block_key_node(kind: SyntaxKind) -> bool {
+    is_plain_scalar_kind(kind)
+        || matches!(
+            kind,
+            SyntaxKind::ANCHOR
+                | SyntaxKind::TAG
+                | SyntaxKind::MERGE_KEY
+                | SyntaxKind::REFERENCE
+                | SyntaxKind::LEFT_BRACKET
+                | SyntaxKind::LEFT_BRACE
+                | SyntaxKind::COLON
+        )
 }
 
 /// Whether `kinds`, the tokens after a complete key node such as a flow

@@ -240,3 +240,99 @@ fn test_unclosed_flow_mapping_pair_at_end_of_input() {
 "#
     );
 }
+
+#[test]
+fn test_stray_token_in_block_mapping() {
+    let parsed = YamlFile::parse("[]:\n]:");
+    assert_eq!(
+        parsed.errors(),
+        vec!["2:1: Unexpected token in mapping: \"]\"".to_string()]
+    );
+    assert_eq!(
+        parsed_tree("[]:\n]:"),
+        r#"DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SEQUENCE
+          LEFT_BRACKET: "["
+          RIGHT_BRACKET: "]"
+      COLON: ":"
+      VALUE
+        SCALAR
+          NULL: ""
+      NEWLINE: "\\n"
+    ERROR
+      RIGHT_BRACKET: "]"
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          NULL: ""
+      COLON: ":"
+      VALUE
+        SCALAR
+          NULL: ""
+"#
+    );
+}
+
+#[test]
+fn test_stray_token_in_explicit_key_mapping() {
+    let parsed = YamlFile::parse("?\n] ?:");
+    assert_eq!(
+        parsed.errors(),
+        vec!["2:1: Unexpected token in explicit-key mapping: \"]\"".to_string()]
+    );
+    assert_eq!(
+        parsed_tree("?\n] ?:"),
+        r#"DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      QUESTION: "?"
+      KEY
+        SCALAR
+          NULL: ""
+      VALUE
+        SCALAR
+          NULL: ""
+      NEWLINE: "\\n"
+    ERROR
+      RIGHT_BRACKET: "]"
+    WHITESPACE: " "
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: "?"
+      COLON: ":"
+      VALUE
+        SCALAR
+          NULL: ""
+"#
+    );
+}
+
+#[test]
+fn test_stray_token_in_flow_sequence() {
+    let parsed = YamlFile::parse("[a, }]");
+    assert_eq!(
+        parsed.errors(),
+        vec!["1:5: Unexpected token in flow sequence: \"}\"".to_string()]
+    );
+    assert_eq!(
+        parsed_tree("[a, }]"),
+        r#"DOCUMENT
+  SEQUENCE
+    LEFT_BRACKET: "["
+    SEQUENCE_ENTRY
+      SCALAR
+        STRING: "a"
+      COMMA: ","
+      WHITESPACE: " "
+    SEQUENCE_ENTRY
+      SCALAR
+    ERROR
+      RIGHT_BRACE: "}"
+    RIGHT_BRACKET: "]"
+"#
+    );
+}

@@ -149,12 +149,7 @@ impl Parser<'_> {
         if self.tokens.len() != tokens_before {
             return;
         }
-        let unexpected = self.current_text().unwrap_or("").to_string();
-        self.add_error(
-            format!("Unexpected token in flow {what}: {unexpected:?}"),
-            ParseErrorKind::Other,
-        );
-        self.bump();
+        self.parse_stray_token(&format!("flow {what}"));
     }
 
     pub(super) fn parse_flow_sequence(&mut self) {

@@ -1498,6 +1498,19 @@ impl Parser<'_> {
         self.positioned_errors.push(positioned_error);
     }
 
+    /// Report the current token, which nothing in `what` can start, and
+    /// hold it in an ERROR node.
+    pub(super) fn parse_stray_token(&mut self, what: &str) {
+        let unexpected = self.current_text().unwrap_or("").to_string();
+        self.add_error(
+            format!("Unexpected token in {what}: {unexpected:?}"),
+            ParseErrorKind::Other,
+        );
+        self.builder.start_node(SyntaxKind::ERROR.into());
+        self.bump();
+        self.builder.finish_node();
+    }
+
     /// Add an error with recovery
     pub(super) fn add_error_and_recover(
         &mut self,

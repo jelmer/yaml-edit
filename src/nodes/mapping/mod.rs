@@ -558,7 +558,12 @@ impl Mapping {
     /// );
     /// ```
     pub fn set(&self, key: impl crate::AsYaml, value: impl crate::AsYaml) {
-        self.set_as_yaml(key, value);
+        // An existing entry with this key takes the value in place.
+        let Some(entry) = self.find_entry_by_key(&key) else {
+            self.insert_new(Slot::End, key, value);
+            return;
+        };
+        self.styled_value(&value, |v, flow_context| entry.set_value(v, flow_context));
     }
 
     /// Detect if this mapping uses explicit key indicators (?)
@@ -577,25 +582,18 @@ impl Mapping {
         false
     }
 
-    /// Internal unified method to set any YAML value type
-    fn set_as_yaml<K: crate::AsYaml, V: crate::AsYaml>(&self, key: K, value: V) {
-        // An existing entry with this key takes the value in place.
-        let existing = self
-            .0
-            .children()
-            .filter_map(MappingEntry::cast)
-            .find(|entry| entry.key().is_some_and(|k| key_content_matches(&k, &key)));
-        let Some(entry) = existing else {
-            self.insert_new(Slot::End, key, value);
-            return;
-        };
-        // set_value shifts the flow form to the entry's line, so its
-        // continuation lines are given relative to that.
+    /// Hand `put` `value` as an entry of this mapping holds it, in flow form
+    /// in a flow mapping, and whether the mapping is flow. The flow form is
+    /// shifted to the entry's line when put in, so its continuation lines
+    /// are given relative to that.
+    fn styled_value(&self, value: &impl crate::AsYaml, put: impl FnOnce(&dyn crate::AsYaml, bool)) {
         let flow_context = self.is_flow_style();
-        let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
-        match flow.and_then(|q| flow_form(&value, 2, q)) {
-            Some(flow) => entry.set_value(flow, flow_context),
-            None => entry.set_value(value, flow_context),
+        let flow = flow_context
+            .then(|| crate::nodes::flow_quoting(&self.0))
+            .and_then(|q| flow_form(value, 2, q));
+        match &flow {
+            Some(flow) => put(flow, flow_context),
+            None => put(value, flow_context),
         }
     }
 
@@ -649,7 +647,7 @@ impl Mapping {
 
         // An existing key just takes the new value, wherever it sits.
         if self.find_entry_by_key(&key).is_some() {
-            self.set_as_yaml(&key, &value);
+            self.set(&key, &value);
             return;
         }
 
@@ -692,11 +690,11 @@ impl Mapping {
                 (None, Some(before)) => self.insert_new(Slot::Before(before), &key, &value),
                 // No ordered key is present yet, so order says nothing about
                 // where this one goes.
-                (None, None) => self.set_as_yaml(&key, &value),
+                (None, None) => self.set(&key, &value),
             }
         } else {
             // Key is not in field order, append at the end using CST
-            self.set_as_yaml(&key, &value);
+            self.set(&key, &value);
         }
     }
 
@@ -767,12 +765,9 @@ impl Mapping {
         value: impl crate::AsYaml,
         anchor: Option<&str>,
     ) {
-        let flow_context = self.is_flow_style();
-        let flow = flow_context.then(|| crate::nodes::flow_quoting(&self.0));
-        match flow.and_then(|q| flow_form(&value, 2, q)) {
-            Some(flow) => entry.replace_value_under(flow, flow_context, anchor),
-            None => entry.replace_value_under(&value, flow_context, anchor),
-        }
+        self.styled_value(&value, |v, flow_context| {
+            entry.replace_value_under(v, flow_context, anchor)
+        });
     }
 
     /// The edit of [`replace_entry`](Self::replace_entry), without the
@@ -1303,7 +1298,7 @@ impl Mapping {
         after: bool,
     ) -> bool {
         if self.find_entry_by_key(&key).is_some() {
-            self.set_as_yaml(&key, &value);
+            self.set(&key, &value);
             return self.find_entry_by_key(&ref_key).is_some();
         }
         self.move_around(&ref_key, &key, &value, after)
@@ -1325,7 +1320,7 @@ impl Mapping {
     ) {
         // Check if the key already exists - if so, just update it
         if self.find_entry_by_key(&key).is_some() {
-            self.set_as_yaml(&key, &value);
+            self.set(&key, &value);
             return;
         }
         self.insert_new_entry_at(index, key, value);

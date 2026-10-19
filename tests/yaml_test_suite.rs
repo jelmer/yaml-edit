@@ -602,12 +602,7 @@ const FUZZ_FOUND_VALUES: &[(&str, &str, &str)] = &[
 
 /// Names in `FUZZ_FOUND_VALUES` that are not read correctly yet. Once one
 /// is fixed, `fuzz_found_values` fails until it is removed from here.
-const KNOWN_FUZZ_FOUND_FAILURES: &[&str] = &[
-    "anchor-on-own-line",
-    "comment-after-plain-continuation",
-    "flow-indicator-in-plain-before-document-marker",
-    "flow-indicator-in-plain-key-after-colon",
-];
+const KNOWN_FUZZ_FOUND_FAILURES: &[&str] = &[];
 
 #[test]
 fn fuzz_found_values() {

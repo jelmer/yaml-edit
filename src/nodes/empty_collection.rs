@@ -20,7 +20,9 @@ type Element = rowan::NodeOrToken<SyntaxNode, SyntaxToken>;
 /// handles to it stay attached. As a mapping value it moves up onto the
 /// key's line, with its node properties and a comment ending that line:
 /// `key: !t {}  # c`. Elsewhere, as a sequence item, explicit key or
-/// document root, it stays where it is. Comment lines are kept.
+/// document root, it stays where it is. A root collection keeps the
+/// comment lines after its last entry; a nested one has none left, as
+/// they move out while its first and last entries go.
 ///
 /// `line_break` is the line break that ended the collection's last line
 /// before it was drained, if it had one; the flow-empty line ends with it
@@ -43,6 +45,14 @@ pub(crate) fn render_empty(collection: &SyntaxNode, line_break: Option<&str>) {
         return;
     }
     let parent = outer_node(collection).parent();
+    assert!(
+        parent
+            .as_ref()
+            .is_some_and(|p| p.kind() == SyntaxKind::DOCUMENT)
+            || !has_child_token(collection, |k| k == SyntaxKind::COMMENT),
+        "comment lines left in a drained nested {:?}",
+        collection.kind()
+    );
     // A value holding another node besides, which the validator rejects,
     // has no key's line for the collection to move up onto.
     let alone = parent.as_ref().is_some_and(|p| p.children().count() == 1);
@@ -114,8 +124,8 @@ fn copies(tokens: &[SyntaxToken]) -> Vec<Element> {
 /// [`render_empty`] for a collection that is a sequence item, explicit key,
 /// document root, detached, or not alone in a mapping value.
 fn render_in_place(collection: &SyntaxNode, line_break: Option<&str>) {
-    // Entries take their trailing NEWLINE with them when removed. Comment
-    // lines that followed an entry stay after the flow-empty line,
+    // Entries take their trailing NEWLINE with them when removed. The
+    // comment lines of a root collection stay after the flow-empty line,
     // indented as they were.
     let leftovers = replace_with_brackets(collection);
     let tail_start = leftovers
@@ -138,49 +148,26 @@ fn render_in_place(collection: &SyntaxNode, line_break: Option<&str>) {
     }
     let newline = || fresh_token(SyntaxKind::NEWLINE, line_break.unwrap_or("\n"));
     // The line break follows the node, properties included, as a parsed
-    // flow-empty line has it. It ends an explicit-key entry without a `:`,
-    // and its comment lines follow that in the mapping.
+    // flow-empty line has it. It ends an explicit-key entry without a `:`.
     let node = line_node(collection);
     if node.kind() == SyntaxKind::MAPPING_ENTRY {
         append_children(&node, vec![newline().into()]);
-        match node.parent() {
-            Some(mapping) => insert_children(&mapping, node.index() + 1, tail),
-            None => append_children(&node, tail),
-        }
         return;
     }
+    // A detached collection has no line of its own.
     let Some(parent) = node.parent() else {
-        // A detached collection has no line of its own; it keeps its
-        // comment lines at its end.
-        if !tail.is_empty() {
-            let end = node.children_with_tokens().count();
-            let mut lines = vec![newline().into()];
-            lines.extend(tail);
-            insert_children(&node, end, lines);
-        }
         return;
     };
-    let at = node.index() + 1;
-    insert_children(&parent, at, vec![newline().into()]);
-    if tail.is_empty() {
-        return;
-    }
-    // A parsed comment line after a sequence item belongs to the sequence;
-    // a detached item keeps it at its end.
-    let (host, at) = match parent.parent() {
-        Some(sequence) if parent.kind() == SyntaxKind::SEQUENCE_ENTRY => {
-            (sequence, parent.index() + 1)
-        }
-        _ => (parent, at + 1),
-    };
-    insert_children(&host, at, tail);
+    let mut lines = vec![newline().into()];
+    lines.extend(tail);
+    insert_children(&parent, node.index() + 1, lines);
 }
 
 /// [`render_empty`] for a mapping value: replace the `NEWLINE INDENT
 /// COLLECTION` scaffold with an inline ` {}` or ` []`, so the entry
 /// renders as `key: {}` instead of an unterminated `key:\n    `. With
-/// comment lines before or inside the collection, which cannot share the
-/// key's line, the flow-empty takes the collection's place instead.
+/// comment lines before the collection, which cannot share the key's
+/// line, the flow-empty takes the collection's place instead.
 fn render_as_value(collection: &SyntaxNode, line_break: Option<&str>) {
     // A tag sits between the VALUE and the collection; the rewrite
     // happens inside the TAGGED_NODE so the tag survives.
@@ -214,39 +201,9 @@ fn render_as_value(collection: &SyntaxNode, line_break: Option<&str>) {
         }
     }
 
-    // Comment lines left inside the drained collection are kept too,
-    // minus the indentation and line ends around them.
-    let leftovers = replace_with_brackets(collection);
-    let start = leftovers
-        .iter()
-        .position(|t| !matches!(t.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE))
-        .unwrap_or(leftovers.len());
-    let end = leftovers
-        .iter()
-        .rposition(|t| {
-            !matches!(
-                t.kind(),
-                SyntaxKind::INDENT | SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE
-            )
-        })
-        .map_or(start, |i| i + 1);
-    let inner = &leftovers[start..end];
+    replace_with_brackets(collection);
 
-    if comment_lines || !inner.is_empty() {
-        let mut replacement = copies(inner);
-        if !inner.is_empty() {
-            replacement.push(fresh_token(SyntaxKind::NEWLINE, "\n").into());
-            if let Some(indent) = collection
-                .prev_sibling_or_token()
-                .and_then(|el| el.into_token())
-                .filter(|t| t.kind() == SyntaxKind::INDENT)
-            {
-                replacement.push(fresh_token(SyntaxKind::INDENT, indent.text()).into());
-            }
-        }
-        replacement.push(collection.clone().into());
-        let index = collection.index();
-        replace_children(&host, index..index + 1, replacement);
+    if comment_lines {
         indent_past_parent(collection);
         if let Some(line_break) = line_break {
             trivia::terminate_with(&entry_node, line_break);

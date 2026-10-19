@@ -114,30 +114,9 @@ pub trait YamlVisitor {
     /// You can call it explicitly if you override `visit_mapping` and want to
     /// preserve the default traversal behavior.
     fn walk_mapping(&mut self, mapping: &Mapping) {
-        use crate::yaml::{extract_mapping, extract_scalar, extract_sequence, extract_tagged_node};
-
         for (key_node, value_node) in mapping.pairs() {
-            // Visit key
-            if let Some(scalar) = extract_scalar(&key_node) {
-                self.visit_scalar(&scalar);
-            } else if let Some(tagged) = extract_tagged_node(&key_node) {
-                self.visit_tagged_node(&tagged);
-            } else if let Some(sequence) = extract_sequence(&key_node) {
-                self.visit_sequence(&sequence);
-            } else if let Some(mapping) = extract_mapping(&key_node) {
-                self.visit_mapping(&mapping);
-            }
-
-            // Visit value
-            if let Some(scalar) = extract_scalar(&value_node) {
-                self.visit_scalar(&scalar);
-            } else if let Some(tagged) = extract_tagged_node(&value_node) {
-                self.visit_tagged_node(&tagged);
-            } else if let Some(nested_mapping) = extract_mapping(&value_node) {
-                self.visit_mapping(&nested_mapping);
-            } else if let Some(nested_sequence) = extract_sequence(&value_node) {
-                self.visit_sequence(&nested_sequence);
-            }
+            visit_node(self, &key_node);
+            visit_node(self, &value_node);
         }
     }
 
@@ -147,19 +126,24 @@ pub trait YamlVisitor {
     /// You can call it explicitly if you override `visit_sequence` and want to
     /// preserve the default traversal behavior.
     fn walk_sequence(&mut self, sequence: &Sequence) {
-        use crate::yaml::{extract_mapping, extract_scalar, extract_sequence, extract_tagged_node};
-
         for item in sequence.items() {
-            if let Some(scalar) = extract_scalar(&item) {
-                self.visit_scalar(&scalar);
-            } else if let Some(tagged) = extract_tagged_node(&item) {
-                self.visit_tagged_node(&tagged);
-            } else if let Some(nested_mapping) = extract_mapping(&item) {
-                self.visit_mapping(&nested_mapping);
-            } else if let Some(nested_sequence) = extract_sequence(&item) {
-                self.visit_sequence(&nested_sequence);
-            }
+            visit_node(self, &item);
         }
+    }
+}
+
+/// Visit the scalar, tagged node, mapping or sequence `node` is or wraps.
+fn visit_node<V: YamlVisitor + ?Sized>(visitor: &mut V, node: &crate::yaml::SyntaxNode) {
+    use crate::yaml::extract;
+
+    if let Some(scalar) = extract(node) {
+        visitor.visit_scalar(&scalar);
+    } else if let Some(tagged) = extract(node) {
+        visitor.visit_tagged_node(&tagged);
+    } else if let Some(mapping) = extract(node) {
+        visitor.visit_mapping(&mapping);
+    } else if let Some(sequence) = extract(node) {
+        visitor.visit_sequence(&sequence);
     }
 }
 

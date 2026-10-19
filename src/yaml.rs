@@ -323,29 +323,10 @@ fn extract_content_node(wrapper: &SyntaxNode) -> Option<SyntaxNode> {
     }
 }
 
-/// Smart cast that handles wrapper nodes automatically
-fn smart_cast<T: AstNode<Language = Lang>>(node: SyntaxNode) -> Option<T> {
-    extract_content_node(&node).and_then(T::cast)
-}
-
-/// Extract a Scalar from any node (handles wrappers automatically)
-pub(crate) fn extract_scalar(node: &SyntaxNode) -> Option<Scalar> {
-    smart_cast(node.clone())
-}
-
-/// Extract a Mapping from any node (handles wrappers automatically)
-pub(crate) fn extract_mapping(node: &SyntaxNode) -> Option<Mapping> {
-    smart_cast(node.clone())
-}
-
-/// Extract a Sequence from any node (handles wrappers automatically)
-pub(crate) fn extract_sequence(node: &SyntaxNode) -> Option<Sequence> {
-    smart_cast(node.clone())
-}
-
-/// Extract a TaggedNode from any node (handles wrappers automatically)
-pub(crate) fn extract_tagged_node(node: &SyntaxNode) -> Option<TaggedNode> {
-    smart_cast(node.clone())
+/// Cast the content of `node` to `T`, looking through a VALUE or KEY
+/// wrapper.
+pub(crate) fn extract<T: AstNode<Language = Lang>>(node: &SyntaxNode) -> Option<T> {
+    extract_content_node(node).and_then(T::cast)
 }
 
 /// Copy a syntax node and all its children recursively to a builder.

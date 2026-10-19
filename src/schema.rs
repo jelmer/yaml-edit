@@ -469,12 +469,12 @@ impl SchemaValidator {
         coerce_only: bool,
         errors: &mut Vec<ValidationError>,
     ) {
-        use crate::yaml::{extract_mapping, extract_scalar, extract_sequence, extract_tagged_node};
+        use crate::yaml::{extract, Mapping, Scalar, Sequence};
 
-        if let Some(scalar) = extract_scalar(node) {
+        if let Some(scalar) = extract::<Scalar>(node) {
             let value = ScalarValue::from_scalar(&scalar);
             self.check_scalar(&value, false, path, coerce_only, errors);
-        } else if let Some(tagged_node) = extract_tagged_node(node) {
+        } else if let Some(tagged_node) = extract::<TaggedNode>(node) {
             if let Some(content) = tagged_node
                 .as_sequence()
                 .map(|s| s.syntax().clone())
@@ -484,11 +484,11 @@ impl SchemaValidator {
             } else if let Some(value) = tagged_scalar_value(&tagged_node) {
                 self.check_scalar(&value, true, path, coerce_only, errors);
             }
-        } else if let Some(sequence) = extract_sequence(node) {
+        } else if let Some(sequence) = extract::<Sequence>(node) {
             for (i, item) in sequence.items().enumerate() {
                 self.check_node(&item, &format!("{path}[{i}]"), coerce_only, errors);
             }
-        } else if let Some(mapping) = extract_mapping(node) {
+        } else if let Some(mapping) = extract::<Mapping>(node) {
             // The schema applies to the values, not the keys
             for (key_node, value_node) in mapping.pairs() {
                 let key_name = key_node.text().to_string().trim().to_string();

@@ -42,11 +42,16 @@ pub(crate) fn render_empty(collection: &SyntaxNode, line_break: Option<&str>) {
     {
         return;
     }
-    match outer_node(collection).parent().map(|p| p.kind()) {
-        Some(SyntaxKind::VALUE) => render_as_value(collection, line_break),
-        Some(SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::KEY | SyntaxKind::DOCUMENT) | None => {
-            render_in_place(collection, line_break)
-        }
+    let parent = outer_node(collection).parent();
+    // A value holding another node besides, which the validator rejects,
+    // has no key's line for the collection to move up onto.
+    let alone = parent.as_ref().is_some_and(|p| p.children().count() == 1);
+    match parent.map(|p| p.kind()) {
+        Some(SyntaxKind::VALUE) if alone => render_as_value(collection, line_break),
+        Some(
+            SyntaxKind::VALUE | SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::KEY | SyntaxKind::DOCUMENT,
+        )
+        | None => render_in_place(collection, line_break),
         Some(kind) => panic!("unexpected {kind:?} holding a block collection"),
     }
 }
@@ -107,7 +112,7 @@ fn copies(tokens: &[SyntaxToken]) -> Vec<Element> {
 }
 
 /// [`render_empty`] for a collection that is a sequence item, explicit key,
-/// document root or detached.
+/// document root, detached, or not alone in a mapping value.
 fn render_in_place(collection: &SyntaxNode, line_break: Option<&str>) {
     // Entries take their trailing NEWLINE with them when removed. Comment
     // lines that followed an entry stay after the flow-empty line,

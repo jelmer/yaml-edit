@@ -293,6 +293,22 @@ fn clear_nested_sequence() {
 }
 
 #[test]
+fn clear_mapping_beside_another_node_in_a_value() {
+    // The validator rejects `: :`, whose value holds a null and a mapping,
+    // but the edit must still be made.
+    use rowan::ast::AstNode;
+    let doc = Document::from_str(": :\n").unwrap();
+    let inner = doc
+        .syntax()
+        .descendants()
+        .filter_map(yaml_edit::Mapping::cast)
+        .nth(1)
+        .unwrap();
+    inner.clear();
+    assert_eq!(doc.to_string(), ": {}\n");
+}
+
+#[test]
 fn remove_entry_after_blank_line() {
     // A blank line before the removed entry stays, as it does when the
     // entry is not last. Unterminated, it ends the input in place of the

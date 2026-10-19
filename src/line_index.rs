@@ -13,18 +13,38 @@ use crate::LineColumn;
 pub(crate) struct LineIndex<T: AsRef<str>> {
     text: T,
     line_starts: Vec<usize>,
+    /// The number of byte order marks each line starts with.
+    leading_boms: Vec<usize>,
+    /// The offsets of the bytes that continue a multi-byte character, so
+    /// that a column takes no walk along its line.
+    continuation_bytes: Vec<usize>,
 }
 
 impl<T: AsRef<str>> LineIndex<T> {
     pub(crate) fn new(text: T) -> Self {
         let bytes = text.as_ref().as_bytes();
         let mut line_starts = vec![0];
+        let mut continuation_bytes = Vec::new();
         for (i, &b) in bytes.iter().enumerate() {
             if b == b'\n' || (b == b'\r' && bytes.get(i + 1) != Some(&b'\n')) {
                 line_starts.push(i + 1);
+            } else if b & 0xC0 == 0x80 {
+                continuation_bytes.push(i);
             }
         }
-        Self { text, line_starts }
+        let leading_boms = line_starts
+            .iter()
+            .map(|&start| {
+                let line = &text.as_ref()[start..];
+                (line.len() - line.trim_start_matches('\u{FEFF}').len()) / '\u{FEFF}'.len_utf8()
+            })
+            .collect();
+        Self {
+            text,
+            line_starts,
+            leading_boms,
+            continuation_bytes,
+        }
     }
 
     pub(crate) fn text(&self) -> &str {
@@ -56,11 +76,12 @@ impl<T: AsRef<str>> LineIndex<T> {
 
     fn column_in_line(&self, line: usize, offset: usize) -> usize {
         let start = self.line_starts[line];
-        self.text()[start..]
-            .char_indices()
-            .take_while(|&(i, _)| start + i < offset)
-            .skip_while(|&(_, c)| c == '\u{FEFF}')
-            .count()
+        let offset = offset.clamp(start, self.text().len());
+        // Every character before `offset` has its first byte there.
+        let continuations = self.continuation_bytes.partition_point(|&i| i < offset)
+            - self.continuation_bytes.partition_point(|&i| i < start);
+        let chars = offset - start - continuations;
+        chars - chars.min(self.leading_boms[line])
     }
 }
 
@@ -87,6 +108,21 @@ mod tests {
                 LineColumn::new(4, 2),
             ]
         );
+    }
+
+    #[test]
+    fn test_columns_match_counting_characters() {
+        let text = "\u{FEFF}\u{FEFF}\u{e9}a\u{FEFF}\r\n\u{1F600}b\rc\u{e9}\n\u{FEFF}";
+        let index = LineIndex::new(text);
+        for offset in 0..=text.len() + 2 {
+            let start = index.line_start(offset);
+            let expected = text[start..]
+                .char_indices()
+                .take_while(|&(i, _)| start + i < offset)
+                .skip_while(|&(_, c)| c == '\u{FEFF}')
+                .count();
+            assert_eq!(index.column(offset), expected, "offset {offset}");
+        }
     }
 
     #[test]

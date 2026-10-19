@@ -10,6 +10,7 @@ use crate::lex::SyntaxKind;
 use crate::value::YamlValue;
 use crate::yaml::SyntaxNode;
 use rowan::ast::AstNode;
+use std::collections::hash_map::{Entry, HashMap};
 
 /// The identity of `key` as a mapping key, following aliases through
 /// `registry`; see [`NodeIdentity`]. Without a registry, an alias is a
@@ -67,8 +68,7 @@ fn apply_merge_keys(
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<std::collections::BTreeMap<String, YamlValue>, ResolveError> {
     let mut merged_pairs = std::collections::BTreeMap::new();
-    // The identity of each key, its string form and the key as written.
-    let mut seen: Vec<(NodeIdentity, String, YamlNode)> = Vec::new();
+    let mut seen = SeenKeys::default();
     let sources = match registry {
         Some(registry) => merge_sources(mapping, registry)?,
         None => Vec::new(),
@@ -76,25 +76,29 @@ fn apply_merge_keys(
     for source in std::iter::once(mapping).chain(&sources) {
         // The identities of the keys of this mapping, and the keys as
         // written.
-        let mut own_keys: Vec<(NodeIdentity, YamlNode)> = Vec::new();
+        let mut own_keys: HashMap<NodeIdentity, YamlNode> = HashMap::new();
         for (key, value) in source.iter() {
             check_single_node_in_parent(key.syntax())?;
             if registry.is_some() && is_merge_key(&key) {
                 continue;
             }
             let identity = key_identity(&key, registry)?;
-            if let Some((_, first)) = own_keys.iter().find(|(k, _)| *k == identity) {
-                return Err(ResolveError::DuplicateKey {
-                    first: first.to_string(),
-                    second: key.to_string(),
-                });
+            match own_keys.entry(identity.clone()) {
+                Entry::Occupied(first) => {
+                    return Err(ResolveError::DuplicateKey {
+                        first: first.get().to_string(),
+                        second: key.to_string(),
+                    });
+                }
+                Entry::Vacant(slot) => {
+                    slot.insert(key.clone());
+                }
             }
-            own_keys.push((identity.clone(), key.clone()));
             // An earlier mapping, the base or a merged one, shadows this key.
-            if seen.iter().any(|(k, _, _)| *k == identity) {
+            if seen.by_identity.contains_key(&identity) {
                 continue;
             }
-            let key_str = record_unique_key(&mut seen, identity, key)?;
+            let key_str = seen.record(identity, key)?;
             if let Some(yaml_value) = resolved_value(value, registry, expanding)? {
                 merged_pairs.insert(key_str, yaml_value);
             }
@@ -295,7 +299,7 @@ fn resolved_set(
         }
     }
     let mut members = std::collections::BTreeSet::new();
-    let mut seen = Vec::new();
+    let mut seen = SeenKeys::default();
     for member in mapping.keys() {
         let Some(YamlValue::Scalar(_)) = resolved_value(member.clone(), registry, expanding)?
         else {
@@ -304,7 +308,7 @@ fn resolved_set(
             });
         };
         let identity = key_identity(&member, registry)?;
-        members.insert(record_unique_key(&mut seen, identity, member)?);
+        members.insert(seen.record(identity, member)?);
     }
     Ok(members)
 }
@@ -320,7 +324,7 @@ fn resolved_pairs(
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<Vec<(String, YamlValue)>, ResolveError> {
     let mut pairs = Vec::new();
-    let mut seen = Vec::new();
+    let mut seen = SeenKeys::default();
     for item in seq.values() {
         let entries = match resolved_value(item.clone(), registry, expanding)? {
             Some(YamlValue::Mapping(entries)) => Some(entries),
@@ -339,7 +343,7 @@ fn resolved_pairs(
         })?;
         if crate::tag::normalize(tag) == crate::tag::OMAP {
             let key = pair_key(tag, &item, registry)?;
-            record_unique_key(&mut seen, key_identity(&key, registry)?, key)?;
+            seen.record(key_identity(&key, registry)?, key)?;
         }
         pairs.extend(entries);
     }
@@ -373,31 +377,37 @@ fn pair_key(
     key.ok_or_else(invalid)
 }
 
-/// Add `key`, as written, with identity `identity`, to the `seen` keys of
-/// one mapping, `!!set` or `!!omap`, as (identity, string form, key as
-/// written), and return its string form.
-///
-/// A key equal to one seen before is a [`ResolveError::DuplicateKey`], and
-/// a distinct key with the same string form a
-/// [`ResolveError::KeyCollision`].
-fn record_unique_key(
-    seen: &mut Vec<(NodeIdentity, String, YamlNode)>,
-    identity: NodeIdentity,
-    key: YamlNode,
-) -> Result<String, ResolveError> {
-    if let Some((_, _, first)) = seen.iter().find(|(k, _, _)| *k == identity) {
-        return Err(ResolveError::DuplicateKey {
-            first: first.to_string(),
-            second: key.to_string(),
-        });
+/// The keys seen so far in one mapping, `!!set` or `!!omap`, as written,
+/// by their identity and by their string form.
+#[derive(Default)]
+struct SeenKeys {
+    by_identity: HashMap<NodeIdentity, YamlNode>,
+    by_string: HashMap<String, YamlNode>,
+}
+
+impl SeenKeys {
+    /// Add `key`, as written, with identity `identity`, and return its
+    /// string form.
+    ///
+    /// A key equal to one seen before is a [`ResolveError::DuplicateKey`],
+    /// and a distinct key with the same string form a
+    /// [`ResolveError::KeyCollision`].
+    fn record(&mut self, identity: NodeIdentity, key: YamlNode) -> Result<String, ResolveError> {
+        if let Some(first) = self.by_identity.get(&identity) {
+            return Err(ResolveError::DuplicateKey {
+                first: first.to_string(),
+                second: key.to_string(),
+            });
+        }
+        let key_str = identity.key_string();
+        if let Some(first) = self.by_string.get(&key_str) {
+            return Err(ResolveError::KeyCollision {
+                first: first.to_string(),
+                second: key.to_string(),
+            });
+        }
+        self.by_identity.insert(identity, key.clone());
+        self.by_string.insert(key_str.clone(), key);
+        Ok(key_str)
     }
-    let key_str = identity.key_string();
-    if let Some((_, _, first)) = seen.iter().find(|(_, s, _)| *s == key_str) {
-        return Err(ResolveError::KeyCollision {
-            first: first.to_string(),
-            second: key.to_string(),
-        });
-    }
-    seen.push((identity, key_str.clone(), key));
-    Ok(key_str)
 }

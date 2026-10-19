@@ -13,6 +13,45 @@ pub(crate) fn token_column(token: &SyntaxToken) -> usize {
     line_prefix(token.prev_token()).chars().count()
 }
 
+/// The columns of all tokens of a subtree, worked out in one pass.
+///
+/// [`token_column`] walks back to the start of the line, so asking it for
+/// many tokens of one long line costs the square of its length.
+pub(crate) struct ColumnIndex {
+    /// The start of each token, in order, with its column.
+    starts: Vec<(rowan::TextSize, usize)>,
+}
+
+impl ColumnIndex {
+    pub(crate) fn new(node: &SyntaxNode) -> Self {
+        let mut column = node.first_token().map_or(0, |t| token_column(&t));
+        let mut starts = Vec::new();
+        for token in node
+            .descendants_with_tokens()
+            .filter_map(|e| e.into_token())
+        {
+            starts.push((token.text_range().start(), column));
+            column = if token.kind() == SyntaxKind::BOM {
+                0
+            } else {
+                column_after(column, token.text())
+            };
+        }
+        Self { starts }
+    }
+
+    /// The zero-based column `token` starts at, as [`token_column`] gives it.
+    pub(crate) fn column(&self, token: &SyntaxToken) -> usize {
+        // Tokens sharing a start are empty ones before a real one, and so
+        // share its column too.
+        let start = token.text_range().start();
+        match self.starts.binary_search_by_key(&start, |&(s, _)| s) {
+            Ok(i) => self.starts[i].1,
+            Err(_) => token_column(token),
+        }
+    }
+}
+
 /// The zero-based column `node` starts at.
 ///
 /// For a MAPPING or SEQUENCE this is the column of its first entry; for a
@@ -142,6 +181,35 @@ mod tests {
                 ("\n".to_string(), 3),
             ]
         );
+    }
+
+    #[test]
+    fn test_column_index() {
+        for text in [
+            "- \u{e9}\r\n- x\n",
+            "\u{FEFF}a: {b: \u{e9}, c: [1,\n  2]}\r  d: \"x\n  y\"\n",
+            "--- |\n  text\n...\n\u{FEFF}--- - a\n    - b\n",
+            "k:\n    # c\n  - \u{FEFF}x\n",
+            // The parser leaves an empty SEQUENCE in the inner `?` key, past
+            // which rowan's `prev_token` cannot see, so `token_column`
+            // starts the line there.
+            "---\n- ? - a\n    - - ? - - b\n            - c\n        : d\n      - e\n  : 23\n",
+        ] {
+            let file = YamlFile::from_str(text).unwrap();
+            let index = ColumnIndex::new(file.syntax());
+            let lines = crate::line_index::LineIndex::new(text);
+            for token in file
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|e| e.into_token())
+            {
+                assert_eq!(
+                    index.column(&token),
+                    lines.column(token.text_range().start().into()),
+                    "{token:?} in {text:?}"
+                );
+            }
+        }
     }
 
     #[test]

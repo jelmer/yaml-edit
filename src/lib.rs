@@ -197,6 +197,8 @@ mod parse;
 mod parser;
 pub mod path;
 mod scalar;
+#[cfg(test)]
+mod scaling;
 mod schema;
 mod tag;
 pub mod validator;

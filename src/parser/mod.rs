@@ -1418,9 +1418,10 @@ impl Parser<'_> {
                 Some((SyntaxKind::INDENT, text)) => {
                     let indent = text.len();
                     // An indent that only leads a blank or comment line says
-                    // nothing about where the value sits.
+                    // nothing about where the value sits, nor does one
+                    // ending the input.
                     match rest.next() {
-                        Some((SyntaxKind::NEWLINE, _)) => continue,
+                        Some((SyntaxKind::NEWLINE, _)) | None => continue,
                         Some((SyntaxKind::COMMENT, _)) => {
                             if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
                                 return None;

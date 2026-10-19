@@ -5154,3 +5154,32 @@ fn test_anchor_alone_on_value_line_before_sibling() {
         [mapping(vec![("a", yaml_edit::YamlValue::from(vec![1i64]))])]
     );
 }
+
+#[test]
+fn test_empty_sequence_item_before_final_whitespace_line() {
+    // The final line holds only white space and has no line break, so the
+    // item is an implicit null, as it is when the line has one.
+    let text = "- a\n-\n  ";
+    let file = YamlFile::from_str(text).unwrap();
+    assert_file_cst_ok(&file);
+    assert_eq!(file.to_string(), text);
+    assert_eq!(
+        yaml_edit::debug::tree_to_string(rowan::ast::AstNode::syntax(&file)),
+        concat!(
+            "DOCUMENT\n",
+            "  SEQUENCE\n",
+            "    SEQUENCE_ENTRY\n",
+            "      DASH: \"-\"\n",
+            "      WHITESPACE: \" \"\n",
+            "      SCALAR\n",
+            "        STRING: \"a\"\n",
+            "      NEWLINE: \"\\\\n\"\n",
+            "    SEQUENCE_ENTRY\n",
+            "      DASH: \"-\"\n",
+            "      SCALAR\n",
+            "        NULL: \"\"\n",
+            "      NEWLINE: \"\\\\n\"\n",
+            "    INDENT: \"  \"\n",
+        )
+    );
+}

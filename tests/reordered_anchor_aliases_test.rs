@@ -2,21 +2,10 @@
 //! an anchor that would come after an alias to it moves to that alias.
 
 mod common;
+use common::assert_edited;
 
-use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, Document, YamlValue};
-
-#[track_caller]
-fn assert_edited(doc: &Document, expected: &str) {
-    assert_eq!(doc.to_string(), expected);
-    common::assert_cst_ok(doc);
-    let reparsed = Document::from_str(expected).unwrap();
-    assert_eq!(
-        debug::shape_to_string(doc.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-}
+use yaml_edit::{Document, YamlValue};
 
 #[track_caller]
 fn assert_same_values(doc: &Document, source: &str) {

@@ -1,12 +1,11 @@
 //! Removing the last entry of a flow collection drops the separator that
 //! the entry before it carried.
 
-use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, YamlFile};
+use yaml_edit::YamlFile;
 
 mod common;
-use common::assert_file_cst_ok;
+use common::{assert_file_cst_ok, assert_file_edited};
 
 #[test]
 fn test_remove_last_flow_mapping_entry() {
@@ -57,17 +56,6 @@ fn test_remove_last_flow_sequence_item() {
     assert_eq!(reparsed.document().unwrap().as_sequence().unwrap().len(), 2);
 }
 
-#[track_caller]
-fn assert_edited(file: &YamlFile, expected: &str) {
-    assert_eq!(file.to_string(), expected);
-    assert_file_cst_ok(file);
-    let reparsed = YamlFile::from_str(expected).unwrap();
-    assert_eq!(
-        debug::shape_to_string(file.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-}
-
 const MAPPING_APPENDS: &[(&str, &str)] = &[
     ("{a: 1, b: 2,}", "{a: 1, b: 2, c: 9,}"),
     ("{a: 1, b: 2, }\n", "{a: 1, b: 2, c: 9, }\n"),
@@ -110,7 +98,7 @@ fn test_append_to_flow_mapping_keeps_trailing_comma() {
             let file = YamlFile::from_str(source).unwrap();
             insert(&flow_mapping(&file));
             assert_eq!(file.to_string(), expected, "{name} on {source:?}");
-            assert_edited(&file, expected);
+            assert_file_edited(&file, expected);
         }
     }
 }
@@ -136,7 +124,7 @@ fn test_append_to_flow_sequence_keeps_trailing_comma() {
                 seq.insert(2, 9);
             }
             assert_eq!(file.to_string(), expected, "push: {push}");
-            assert_edited(&file, expected);
+            assert_file_edited(&file, expected);
         }
     }
 }
@@ -158,7 +146,7 @@ fn test_insert_before_flow_sequence_item() {
             expected,
             "insert at {index} in {source:?}"
         );
-        assert_edited(&file, expected);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -169,5 +157,5 @@ fn test_insert_into_flow_mapping_after_comment() {
     let file = YamlFile::from_str(source).unwrap();
     flow_mapping(&file).insert_at_index(1, "c", 9);
     assert_eq!(file.to_string(), expected);
-    assert_edited(&file, expected);
+    assert_file_edited(&file, expected);
 }

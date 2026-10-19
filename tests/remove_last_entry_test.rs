@@ -3,10 +3,10 @@
 //! without one otherwise, and the entries before it whole.
 
 mod common;
+use common::check_edit;
 
-use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, Document};
+use yaml_edit::Document;
 
 #[track_caller]
 fn check_remove(source: &str, expected: &str) {
@@ -15,12 +15,7 @@ fn check_remove(source: &str, expected: &str) {
     let mapping = root.get_mapping("top").unwrap_or(root);
     assert!(mapping.remove("b").is_some());
     assert_eq!(doc.to_string(), expected, "removing b from {source:?}");
-    common::assert_cst_ok(&doc);
-    let reparsed = Document::from_str(expected).unwrap();
-    assert_eq!(
-        debug::shape_to_string(doc.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
+    common::assert_parser_shaped(&doc);
 }
 
 #[test]
@@ -55,19 +50,6 @@ fn remove_terminated_last_entry() {
     check_remove("a: 1\nb:\n", "a: 1\n");
     check_remove("a: 1\nb: |\n  x\n", "a: 1\n");
     check_remove("a:\n  x: 1\nb: 2\n", "a:\n  x: 1\n");
-}
-
-#[track_caller]
-fn check_edit(source: &str, edit: impl Fn(&Document), expected: &str) {
-    let doc = Document::from_str(source).unwrap();
-    edit(&doc);
-    assert_eq!(doc.to_string(), expected, "editing {source:?}");
-    common::assert_cst_ok(&doc);
-    let reparsed = Document::from_str(expected).unwrap();
-    assert_eq!(
-        debug::shape_to_string(doc.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
 }
 
 #[test]

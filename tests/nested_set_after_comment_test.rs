@@ -3,12 +3,11 @@
 //! The parser leaves that comment line's INDENT at the end of the nested
 //! mapping and lifts the comment itself to the parent.
 
-use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, Mapping, YamlFile};
+use yaml_edit::{Mapping, YamlFile};
 
 mod common;
-use common::assert_file_cst_ok;
+use common::{assert_file_cst_ok, assert_file_parser_shaped};
 
 const SRC: &str = "x:\n  a: 1\n  # end\ny: 1\n";
 
@@ -20,14 +19,8 @@ fn edit_src(src: &str, f: impl FnOnce(&Mapping)) -> String {
     let file = YamlFile::from_str(src).unwrap();
     let root = file.document().unwrap().as_mapping().unwrap();
     f(&root.get_mapping("x").unwrap());
-    assert_file_cst_ok(&file);
-    let out = file.to_string();
-    let reparsed = YamlFile::from_str(&out).unwrap();
-    assert_eq!(
-        debug::shape_to_string(file.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-    out
+    assert_file_parser_shaped(&file);
+    file.to_string()
 }
 
 fn assert_x_keys(yaml: &str, expected: &[&str]) {

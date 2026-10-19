@@ -3,23 +3,10 @@
 //! be empty text.
 
 mod common;
+use common::check_edit;
 
-use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, Document};
-
-#[track_caller]
-fn check_edit(source: &str, edit: impl Fn(&Document), expected: &str) {
-    let doc = Document::from_str(source).unwrap();
-    edit(&doc);
-    assert_eq!(doc.to_string(), expected, "editing {source:?}");
-    common::assert_cst_ok(&doc);
-    let reparsed = Document::from_str(expected).unwrap();
-    assert_eq!(
-        debug::shape_to_string(doc.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-}
+use yaml_edit::Document;
 
 #[test]
 fn edit_through_handle_to_drained_nested_collection() {

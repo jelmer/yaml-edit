@@ -2,23 +2,10 @@
 //! leaves comment lines before and after it.
 
 mod common;
+use common::check_edit;
 
-use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, Document};
-
-#[track_caller]
-fn check_edit(source: &str, edit: impl Fn(&Document), expected: &str) {
-    let doc = Document::from_str(source).unwrap();
-    edit(&doc);
-    assert_eq!(doc.to_string(), expected, "editing {source:?}");
-    common::assert_cst_ok(&doc);
-    let reparsed = Document::from_str(expected).unwrap();
-    assert_eq!(
-        debug::shape_to_string(doc.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-}
+use yaml_edit::Document;
 
 fn remove_top(index: usize) -> impl Fn(&Document) {
     move |d| assert!(d.as_sequence().unwrap().remove(index).is_some())
@@ -162,12 +149,7 @@ fn remove_first_root_entry_before_comment_line() {
     assert!(doc.as_mapping().unwrap().remove("a").is_some());
     assert_eq!(file.to_string(), "# c\nb: 2\n");
     assert_eq!(doc.to_string(), "# c\nb: 2\n");
-    common::assert_file_cst_ok(&file);
-    let reparsed = yaml_edit::YamlFile::from_str("# c\nb: 2\n").unwrap();
-    assert_eq!(
-        debug::shape_to_string(file.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
+    common::assert_file_parser_shaped(&file);
 }
 
 #[test]
@@ -179,10 +161,5 @@ fn remove_first_root_item_before_comment_line() {
     assert!(doc.as_sequence().unwrap().remove(0).is_some());
     assert_eq!(file.to_string(), "# c\n- b\n");
     assert_eq!(doc.to_string(), "# c\n- b\n");
-    common::assert_file_cst_ok(&file);
-    let reparsed = yaml_edit::YamlFile::from_str("# c\n- b\n").unwrap();
-    assert_eq!(
-        debug::shape_to_string(file.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
+    common::assert_file_parser_shaped(&file);
 }

@@ -4,18 +4,17 @@
 use rowan::ast::AstNode;
 use std::collections::BTreeMap;
 use std::str::FromStr;
-use yaml_edit::{debug, Document, Mapping, Scalar, ScalarValue, Sequence, YamlValue};
+use yaml_edit::{Document, Mapping, Scalar, ScalarValue, Sequence, YamlValue};
+
+mod common;
 
 /// Check that `doc` has the same tree as a re-parse of its text, and
 /// return the scalars the re-parse holds, in order.
 #[track_caller]
 fn reparsed_scalars(doc: &Document) -> Vec<String> {
-    let reparsed = Document::from_str(&doc.to_string()).unwrap();
-    assert_eq!(
-        debug::shape_to_string(doc.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-    reparsed
+    common::assert_parser_shaped(doc);
+    Document::from_str(&doc.to_string())
+        .unwrap()
         .syntax()
         .descendants()
         .filter_map(Scalar::cast)

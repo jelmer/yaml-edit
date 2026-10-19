@@ -6,22 +6,10 @@
 
 mod common;
 
-use common::{assert_cst_ok, assert_file_cst_ok};
+use common::{assert_cst_ok, assert_file_cst_ok, assert_parser_shaped};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::{debug, Document, Mapping, YamlFile};
-
-/// Like `assert_cst_ok`, and also require the tree to match a re-parse of
-/// its text.
-#[track_caller]
-fn check_shape(doc: &Document) {
-    assert_cst_ok(doc);
-    let reparsed = Document::from_str(&doc.to_string()).unwrap();
-    assert_eq!(
-        debug::shape_to_string(doc.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-}
 
 #[test]
 fn parsed_document_is_valid() {
@@ -365,7 +353,7 @@ fn mapping_remove_only_nested_entry_keeps_comment() {
         .get_mapping("a")
         .unwrap()
         .remove("x");
-    check_shape(&doc);
+    assert_parser_shaped(&doc);
     assert_eq!(doc.to_string(), "a: &a {} # c\nb: 2\n");
 }
 
@@ -377,7 +365,7 @@ fn mapping_remove_only_nested_entry_keeps_tag_and_comment() {
         .get_mapping("a")
         .unwrap()
         .remove("x");
-    check_shape(&doc);
+    assert_parser_shaped(&doc);
     assert_eq!(doc.to_string(), "a: !t &a {} # c\nb: 2\n");
 }
 
@@ -389,7 +377,7 @@ fn mapping_remove_only_nested_entry_keeps_property_spacing() {
         .get_mapping("a")
         .unwrap()
         .remove("x");
-    check_shape(&doc);
+    assert_parser_shaped(&doc);
     assert_eq!(doc.to_string(), "a: !t  &a {}\nb: 2\n");
 }
 
@@ -398,7 +386,7 @@ fn sequence_remove_only_item_keeps_tag() {
     let doc = Document::from_str("s: !t\n  - a\nb: 2\n").unwrap();
     let seq = doc.as_mapping().unwrap().get_sequence("s").unwrap();
     seq.remove(0);
-    check_shape(&doc);
+    assert_parser_shaped(&doc);
     assert_eq!(doc.to_string(), "s: !t []\nb: 2\n");
 }
 

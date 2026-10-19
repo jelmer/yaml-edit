@@ -3,23 +3,12 @@
 //! becomes a copy of the anchored node.
 
 mod common;
+use common::assert_edited;
 
-use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::anchor_resolution::DocumentResolvedExt;
 use yaml_edit::path::YamlPath;
-use yaml_edit::{debug, Alias, Document, YamlFile, YamlValue};
-
-#[track_caller]
-fn assert_edited(doc: &Document, expected: &str) {
-    assert_eq!(doc.to_string(), expected);
-    common::assert_cst_ok(doc);
-    let reparsed = Document::from_str(expected).unwrap();
-    assert_eq!(
-        debug::shape_to_string(doc.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-}
+use yaml_edit::{Alias, Document, YamlFile, YamlValue};
 
 /// Assert that `doc` resolves to the same value as `meaning`, a document
 /// without aliases.

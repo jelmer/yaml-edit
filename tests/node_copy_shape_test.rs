@@ -3,10 +3,10 @@
 
 use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, validator::Validator, MappingEntry, YamlFile, YamlNode};
+use yaml_edit::{validator::Validator, MappingEntry, YamlFile, YamlNode};
 
 mod common;
-use common::assert_file_cst_ok;
+use common::{assert_file_edited, assert_parser_shaped};
 
 fn value_of(src: &str, key: &str) -> YamlNode {
     let file = YamlFile::from_str(src).unwrap();
@@ -18,21 +18,10 @@ fn value_of(src: &str, key: &str) -> YamlNode {
         .unwrap()
 }
 
-#[track_caller]
-fn assert_parser_shaped(file: &YamlFile, expected: &str) {
-    assert_eq!(file.to_string(), expected);
-    assert_file_cst_ok(file);
-    let reparsed = YamlFile::from_str(expected).unwrap();
-    assert_eq!(
-        debug::shape_to_string(file.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-}
-
-/// Like [`assert_parser_shaped`], and the result has no spec violations.
+/// Like [`assert_file_edited`], and the result has no spec violations.
 #[track_caller]
 fn assert_valid_copy(file: &YamlFile, expected: &str) {
-    assert_parser_shaped(file, expected);
+    assert_file_edited(file, expected);
     assert_eq!(Validator::new().validate_syntax(file.syntax()), vec![]);
 }
 
@@ -41,7 +30,7 @@ fn test_set_scalar_node_value() {
     let file = YamlFile::from_str("a: 1\n").unwrap();
     let mapping = file.document().unwrap().as_mapping().unwrap();
     mapping.set("b", value_of("k: v\n", "k"));
-    assert_parser_shaped(&file, "a: 1\nb: v\n");
+    assert_file_edited(&file, "a: 1\nb: v\n");
     assert_eq!(mapping.get("b").unwrap().to_string(), "v");
 }
 
@@ -59,7 +48,7 @@ fn test_rename_key_to_scalar_node() {
     let file = YamlFile::from_str("a: 1\n").unwrap();
     let mapping = file.document().unwrap().as_mapping().unwrap();
     assert!(mapping.rename_key("a", key));
-    assert_parser_shaped(&file, "k: 1\n");
+    assert_file_edited(&file, "k: 1\n");
     assert!(mapping.contains_key("k"));
 }
 
@@ -68,7 +57,7 @@ fn test_set_alias_node_value() {
     let file = YamlFile::from_str("a: &x 1\n").unwrap();
     let mapping = file.document().unwrap().as_mapping().unwrap();
     mapping.set("b", value_of("a: &x 1\nb: *x\n", "b"));
-    assert_parser_shaped(&file, "a: &x 1\nb: *x\n");
+    assert_file_edited(&file, "a: &x 1\nb: *x\n");
 }
 
 #[test]
@@ -77,7 +66,7 @@ fn test_set_tagged_node_value() {
     let mapping = file.document().unwrap().as_mapping().unwrap();
     let tagged = value_of("c: !t v\n", "c");
     mapping.set("b", tagged.as_tagged().unwrap());
-    assert_parser_shaped(&file, "a: 1\nb: !t v\n");
+    assert_file_edited(&file, "a: 1\nb: !t v\n");
 }
 
 /// Indent every non-blank line of `text` after the first by two more
@@ -137,7 +126,7 @@ fn test_set_block_value_node() {
                 root
             };
             mapping.set(key, &source);
-            assert_parser_shaped(&file, &expected);
+            assert_file_edited(&file, &expected);
         }
     }
 }
@@ -161,7 +150,7 @@ fn test_set_block_value_node_keeps_key_line_comment() {
                 .as_mapping()
                 .unwrap()
                 .set("k", &source);
-            assert_parser_shaped(&file, &format!("{expected}j: 2\n"));
+            assert_file_edited(&file, &format!("{expected}j: 2\n"));
         }
     }
 }
@@ -176,11 +165,7 @@ fn test_builder_pair_block_value_node() {
             .build_document();
         let expected = format!("n:{value}j: 1\n");
         assert_eq!(doc.to_string(), expected);
-        let reparsed = yaml_edit::Document::from_str(&expected).unwrap();
-        assert_eq!(
-            debug::shape_to_string(doc.syntax()),
-            debug::shape_to_string(reparsed.syntax())
-        );
+        assert_parser_shaped(&doc);
     }
 }
 
@@ -451,7 +436,7 @@ fn test_set_sequence_item_to_block_scalar() {
             None => root.as_mapping().unwrap().get_sequence("a").unwrap(),
         };
         sequence.set(0, value_of("k: |\n      text\n", "k"));
-        assert_parser_shaped(&file, expected);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -488,7 +473,7 @@ fn test_set_tagged_node_value_keeps_properties_and_comments() {
                 root
             };
             mapping.set(key, &source);
-            assert_parser_shaped(&file, &expected);
+            assert_file_edited(&file, &expected);
         }
     }
 }
@@ -512,12 +497,12 @@ fn test_set_implicitly_tagged_scalar_value() {
         let file = YamlFile::from_str("a: 1\n").unwrap();
         let mapping = file.document().unwrap().as_mapping().unwrap();
         mapping.set("b", &value);
-        assert_parser_shaped(&file, expected);
+        assert_file_edited(&file, expected);
 
         let file = YamlFile::from_str("a: 1\n").unwrap();
         let mapping = file.document().unwrap().as_mapping().unwrap();
         mapping.set("b", YamlValue::Scalar(value));
-        assert_parser_shaped(&file, expected);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -538,7 +523,7 @@ fn test_set_implicitly_tagged_scalar_key_matches_tagged_key() {
         let file = YamlFile::from_str(src).unwrap();
         let mapping = file.document().unwrap().as_mapping().unwrap();
         mapping.set(ScalarValue::timestamp("2001-12-14"), 2);
-        assert_parser_shaped(&file, expected);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -582,7 +567,7 @@ fn test_set_tagged_scalar_key_in_block_mapping() {
     let mapping = file.document().unwrap().as_mapping().unwrap();
     mapping.set(ScalarValue::timestamp("2001-12-14"), 2);
     mapping.set(ScalarValue::regex("^a+$"), 3);
-    assert_parser_shaped(&file, "a: 1\n!!timestamp 2001-12-14: 2\n!!regex ^a+$: 3\n");
+    assert_file_edited(&file, "a: 1\n!!timestamp 2001-12-14: 2\n!!regex ^a+$: 3\n");
 }
 
 /// Continuation lines of a multi-line quoted scalar inside a copied

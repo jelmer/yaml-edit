@@ -3,23 +3,10 @@
 //! parser puts them.
 
 mod common;
+use common::check_edit;
 
-use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, Document, YamlFile};
-
-#[track_caller]
-fn check_edit(source: &str, edit: impl Fn(&Document), expected: &str) {
-    let doc = Document::from_str(source).unwrap();
-    edit(&doc);
-    assert_eq!(doc.to_string(), expected, "editing {source:?}");
-    common::assert_cst_ok(&doc);
-    let reparsed = Document::from_str(expected).unwrap();
-    assert_eq!(
-        debug::shape_to_string(doc.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-}
+use yaml_edit::{Document, YamlFile};
 
 fn item(d: &Document) -> yaml_edit::YamlNode {
     d.as_sequence().unwrap().get(0).unwrap()
@@ -160,12 +147,7 @@ fn remove_first_entry_of_document_root() {
         let file = YamlFile::from_str(source).unwrap();
         let m = file.document().unwrap().as_mapping().unwrap();
         assert!(m.remove("a").is_some());
-        assert_eq!(file.to_string(), expected);
-        let reparsed = YamlFile::from_str(expected).unwrap();
-        assert_eq!(
-            debug::shape_to_string(file.syntax()),
-            debug::shape_to_string(reparsed.syntax())
-        );
+        common::assert_file_edited(&file, expected);
     };
     check("---\na: 1\n# c\nb: 2\n", "---\n# c\nb: 2\n");
     check("a: 1\n\nb: 2\n", "\nb: 2\n");

@@ -654,11 +654,7 @@ fn test_set_omitted_flow_value_before_line_break() {
         let yaml = YamlFile::from_str(input).unwrap();
         yaml.document().unwrap().as_mapping().unwrap().set("m", 5);
         assert_eq!(yaml.to_string(), expected, "input: {input:?}");
-        assert_file_cst_ok(&yaml);
-        assert_eq!(
-            debug::shape_to_string(yaml.syntax()),
-            debug::shape_to_string(YamlFile::from_str(expected).unwrap().syntax())
-        );
+        common::assert_file_parser_shaped(&yaml);
     }
 }
 
@@ -670,11 +666,7 @@ fn test_set_omitted_implicit_flow_pair_value_before_line_break() {
         let seq = yaml.document().unwrap().as_sequence().unwrap();
         seq.get(0).unwrap().as_mapping().unwrap().set("a", 5);
         assert_eq!(yaml.to_string(), expected, "input: {input:?}");
-        assert_file_cst_ok(&yaml);
-        assert_eq!(
-            debug::shape_to_string(yaml.syntax()),
-            debug::shape_to_string(YamlFile::from_str(expected).unwrap().syntax())
-        );
+        common::assert_file_parser_shaped(&yaml);
     }
 }
 
@@ -701,11 +693,7 @@ fn test_set_flow_value_keeps_trailing_comment_once() {
         let yaml = YamlFile::from_str(input).unwrap();
         yaml.document().unwrap().as_mapping().unwrap().set("m", 5);
         assert_eq!(yaml.to_string(), expected, "input: {input:?}");
-        assert_file_cst_ok(&yaml);
-        assert_eq!(
-            debug::shape_to_string(yaml.syntax()),
-            debug::shape_to_string(YamlFile::from_str(expected).unwrap().syntax())
-        );
+        common::assert_file_parser_shaped(&yaml);
     }
 }
 

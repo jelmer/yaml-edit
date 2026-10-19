@@ -1,19 +1,7 @@
 mod common;
-use common::{assert_cst_ok, assert_file_cst_ok};
-use rowan::ast::AstNode;
+use common::{assert_cst_ok, assert_file_cst_ok, assert_file_parser_shaped};
 use std::str::FromStr;
-use yaml_edit::{debug, Mapping, YamlFile};
-
-/// Check that `file` has the same tree shape as a re-parse of its text.
-#[track_caller]
-fn assert_parser_shaped(file: &YamlFile) {
-    assert_file_cst_ok(file);
-    let reparsed = YamlFile::from_str(&file.to_string()).unwrap();
-    assert_eq!(
-        debug::shape_to_string(file.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-}
+use yaml_edit::{Mapping, YamlFile};
 
 /// Apply `edit` to the root mapping of `source`, check the result is shaped
 /// as the parser would shape it, and return its text.
@@ -21,7 +9,7 @@ fn assert_parser_shaped(file: &YamlFile) {
 fn edit_root(source: &str, edit: impl FnOnce(&Mapping)) -> String {
     let file = YamlFile::from_str(source).unwrap();
     edit(&file.document().unwrap().as_mapping().unwrap());
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     file.to_string()
 }
 
@@ -129,7 +117,7 @@ fn test_explicit_key_set_nested_keeps_indent() {
         .get_mapping("outer")
         .unwrap();
     outer.set("b", "9");
-    assert_parser_shaped(&doc);
+    assert_file_parser_shaped(&doc);
     assert_eq!(doc.to_string(), "outer:\n  ? a\n  : 1\n  ? b\n  : '9'\n");
 }
 
@@ -147,7 +135,7 @@ fn test_explicit_key_insert_at_index_middle_keeps_indent() {
         .get_mapping("outer")
         .unwrap();
     outer.insert_at_index(1, "b", "9");
-    assert_parser_shaped(&doc);
+    assert_file_parser_shaped(&doc);
     assert_eq!(
         doc.to_string(),
         "outer:\n  ? a\n  : 1\n  ? b\n  : '9'\n  ? c\n  : 2\n"
@@ -168,7 +156,7 @@ fn test_explicit_key_insert_at_index_first_keeps_indent() {
         .get_mapping("outer")
         .unwrap();
     outer.insert_at_index(0, "a", "9");
-    assert_parser_shaped(&doc);
+    assert_file_parser_shaped(&doc);
     assert_eq!(
         doc.to_string(),
         "outer:\n  ? a\n  : '9'\n  ? b\n  : 1\n  ? c\n  : 2\n"
@@ -332,7 +320,7 @@ fn key_after_comment_renamed_from_sequence_at_question_column() {
     let file = YamlFile::from_str("x:\n  ? # c\n  - a\n  : 1\n").unwrap();
     let doc = file.document().unwrap();
     rename_first(&doc.as_mapping().unwrap().get_mapping("x").unwrap());
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(file.to_string(), "x:\n  ? # c\n    new\n  : 1\n");
 }
 
@@ -382,9 +370,9 @@ fn nested_explicit_key_set_then_renamed_matches_parser() {
         .get_mapping("m")
         .unwrap();
     m.set("u", "0");
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert!(m.rename_key("u", "z"));
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(file.to_string(), "m:\n  ? a\n  : 1\n  ? z\n  : '0'\n");
 }
 
@@ -485,7 +473,7 @@ fn nested_explicit_key_entry_inserted_and_moved() {
         let file = YamlFile::from_str(source).unwrap();
         let root = file.document().unwrap().as_mapping().unwrap();
         edit(&root.get_mapping("outer").unwrap());
-        assert_parser_shaped(&file);
+        assert_file_parser_shaped(&file);
         file.to_string()
     };
     assert_eq!(
@@ -544,7 +532,7 @@ fn entry_replaced_at_index_keeps_mapping_layout() {
         let root = file.document().unwrap().as_mapping().unwrap();
         let m = root.get_mapping("m").unwrap_or(root);
         m.insert_at_index_preserving(1, key, 5);
-        assert_parser_shaped(&file);
+        assert_file_parser_shaped(&file);
         assert_eq!(file.to_string(), expected, "{source:?}");
     }
 }
@@ -644,7 +632,7 @@ fn nested_key_renamed_to_one_spanning_lines_becomes_explicit() {
         .get_mapping("m")
         .unwrap();
     assert!(m.rename_key("a", &key));
-    assert_parser_shaped(&file);
+    assert_file_parser_shaped(&file);
     assert_eq!(file.to_string(), "m:\n  ? \"x\n      y\"\n  : 1\n  b: 2\n");
 }
 
@@ -847,7 +835,7 @@ fn explicit_block_or_empty_key_renamed_keeps_colon_line() {
         let m = root.get_mapping("m").unwrap_or(root);
         let key = m.keys().next().unwrap();
         assert!(m.rename_key(&key, "z"), "{source:?}");
-        assert_parser_shaped(&file);
+        assert_file_parser_shaped(&file);
         assert_eq!(file.to_string(), expected, "{source:?}");
         let doc = yaml_edit::Document::from_str(expected).unwrap();
         assert_eq!(
@@ -870,7 +858,7 @@ fn comment_before_explicit_key_kept_on_rename() {
         let m = file.document().unwrap().as_mapping().unwrap();
         let key = m.keys().next().unwrap();
         assert!(m.rename_key(&key, "z"), "{source:?}");
-        assert_parser_shaped(&file);
+        assert_file_parser_shaped(&file);
         assert_eq!(file.to_string(), expected, "{source:?}");
         let doc = yaml_edit::Document::from_str(expected).unwrap();
         assert_eq!(

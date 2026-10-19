@@ -2,13 +2,12 @@
 //! another column. The indicator counts from the parent's column, so the
 //! body has to move with the parent for the value to stay the same.
 
-use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::path::YamlPath;
-use yaml_edit::{debug, YamlFile, YamlNode};
+use yaml_edit::{YamlFile, YamlNode};
 
 mod common;
-use common::assert_file_cst_ok;
+use common::assert_file_edited;
 
 fn scalar_string(node: &YamlNode) -> String {
     match node {
@@ -26,13 +25,7 @@ fn node_at(src: &str, path: &str) -> YamlNode {
 
 #[track_caller]
 fn assert_moved(file: &YamlFile, expected: &str, path: &str, source: &YamlNode) {
-    assert_eq!(file.to_string(), expected);
-    assert_file_cst_ok(file);
-    let reparsed = YamlFile::from_str(expected).unwrap();
-    assert_eq!(
-        debug::shape_to_string(file.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
+    assert_file_edited(file, expected);
     assert_eq!(
         scalar_string(&node_at(expected, path)),
         scalar_string(source)

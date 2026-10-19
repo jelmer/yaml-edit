@@ -1,24 +1,17 @@
 //! Where an entry added at the end of a collection goes when the
 //! collection ends in blank lines.
 
-use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, Mapping, Sequence, YamlFile};
+use yaml_edit::{Mapping, Sequence, YamlFile};
 
 mod common;
-use common::assert_file_cst_ok;
+use common::assert_file_parser_shaped;
 
 fn edit(source: &str, f: impl FnOnce(&YamlFile)) -> String {
     let file = YamlFile::from_str(source).unwrap();
     f(&file);
-    assert_file_cst_ok(&file);
-    let out = file.to_string();
-    let reparsed = YamlFile::from_str(&out).unwrap();
-    assert_eq!(
-        debug::shape_to_string(file.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-    out
+    assert_file_parser_shaped(&file);
+    file.to_string()
 }
 
 fn root_mapping(file: &YamlFile) -> Mapping {

@@ -6,6 +6,8 @@
 use std::str::FromStr;
 use yaml_edit::YamlFile;
 
+mod common;
+
 #[test]
 fn test_flow_sequence_with_comments() {
     // Comments after elements in flow sequences
@@ -310,17 +312,10 @@ fn test_comment_after_directive() {
 /// re-parse of its text has, and return the text.
 #[track_caller]
 fn edited(source: &str, edit: impl FnOnce(&yaml_edit::Document)) -> String {
-    use rowan::ast::AstNode;
     let doc = yaml_edit::Document::from_str(source).unwrap();
     edit(&doc);
-    let text = doc.to_string();
-    let reparsed = yaml_edit::Document::from_str(&text).unwrap();
-    assert_eq!(
-        yaml_edit::debug::shape_to_string(doc.syntax()),
-        yaml_edit::debug::shape_to_string(reparsed.syntax())
-    );
-    yaml_edit::debug::validate_tree(doc.syntax()).unwrap();
-    text
+    common::assert_parser_shaped(&doc);
+    doc.to_string()
 }
 
 /// A comment line between two flow entries describes the one below it, as

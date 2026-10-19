@@ -2,23 +2,12 @@
 //! resolve.
 
 mod common;
+use common::assert_edited;
 
-use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::anchor_resolution::DocumentResolvedExt;
 use yaml_edit::path::YamlPath;
-use yaml_edit::{debug, Document, YamlValue};
-
-#[track_caller]
-fn assert_edited(doc: &Document, expected: &str) {
-    assert_eq!(doc.to_string(), expected);
-    common::assert_cst_ok(doc);
-    let reparsed = Document::from_str(expected).unwrap();
-    assert_eq!(
-        debug::shape_to_string(doc.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-}
+use yaml_edit::{Document, YamlValue};
 
 /// The value `key` of `source`, a node with whatever anchor and tag it has.
 fn node_from(source: &str, key: &str) -> yaml_edit::YamlNode {

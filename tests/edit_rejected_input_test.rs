@@ -6,6 +6,8 @@ use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::{Sequence, SyntaxKind, YamlFile};
 
+mod common;
+
 fn nth_sequence(file: &YamlFile, n: usize) -> Sequence {
     file.syntax()
         .descendants()
@@ -56,12 +58,7 @@ fn test_refill_root_sequence_followed_by_mapping() {
     seq.remove(0);
     assert_eq!(file.to_string(), " []\nb: 1");
     seq.insert(0, "y");
-    assert_eq!(file.to_string(), " - y\nb: 1");
-    let reparsed = YamlFile::from_str(&file.to_string()).unwrap();
-    assert_eq!(
-        yaml_edit::debug::shape_to_string(file.syntax()),
-        yaml_edit::debug::shape_to_string(reparsed.syntax())
-    );
+    common::assert_file_edited(&file, " - y\nb: 1");
 }
 
 #[test]

@@ -8,18 +8,11 @@ use yaml_edit::path::YamlPath;
 use yaml_edit::{debug, Mapping, MappingBuilder, MappingEntry, Sequence, YamlFile, YamlNode};
 
 mod common;
-use common::assert_file_cst_ok;
 
 #[track_caller]
 fn assert_parser_shaped(file: &YamlFile, expected: &str, src: &str) {
     assert_eq!(file.to_string(), expected, "{src:?}");
-    assert_file_cst_ok(file);
-    let reparsed = YamlFile::from_str(expected).unwrap();
-    assert_eq!(
-        debug::shape_to_string(file.syntax()),
-        debug::shape_to_string(reparsed.syntax()),
-        "{src:?}"
-    );
+    common::assert_file_parser_shaped(file);
 }
 
 /// The mapping at `path` in `file`, following mapping keys and sequence

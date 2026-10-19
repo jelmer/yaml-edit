@@ -717,24 +717,12 @@ fn resolve_for_read(
     let crate::as_yaml::YamlNode::Alias(alias) = &current else {
         return Ok(current);
     };
-    let name = alias.name();
-
-    if policy == AliasPolicy::Refuse {
-        return Err(PathError::AliasRefused {
-            at: segment_display(segment),
-            alias: name,
-        });
-    }
-
-    let target = registry_for(current.syntax())
-        .resolve_alias_through(alias)
-        .map_err(|e| undefined_alias(e, segment))?
-        .clone();
-
-    crate::as_yaml::YamlNode::from_syntax_peeled(target).ok_or(PathError::UndefinedAlias {
-        at: segment_display(segment),
-        alias: name,
-    })
+    // A read leaves the tree alone, so there is nothing to expand into.
+    let policy = match policy {
+        AliasPolicy::Expand => AliasPolicy::Follow,
+        policy => policy,
+    };
+    resolve_alias(alias, segment, policy)
 }
 
 /// The [`PathError`] for an alias at `segment` that
@@ -990,45 +978,35 @@ impl YamlPath for Mapping {
     }
 }
 
-/// Resolve an alias encountered as an intermediate segment of a write.
+/// Resolve an alias that `segment` descends through.
 ///
 /// Under [`AliasPolicy::Refuse`] this is an error. Under
 /// [`AliasPolicy::Follow`] it returns the anchored node itself, so
 /// writes land on the shared value. Under [`AliasPolicy::Expand`] it
 /// returns a detached, anchor-free copy of the anchored node (see
 /// [`expanded_copy`]), which the caller substitutes for the alias.
-fn resolve_alias_for_write(
+fn resolve_alias(
     alias: &crate::yaml::Alias,
     segment: &PathSegment,
     policy: AliasPolicy,
 ) -> Result<crate::as_yaml::YamlNode, PathError> {
     use rowan::ast::AstNode;
 
-    let name = alias.name();
     if policy == AliasPolicy::Refuse {
         return Err(PathError::AliasRefused {
             at: segment_display(segment),
-            alias: name,
+            alias: alias.name(),
         });
     }
-
-    let undefined = || PathError::UndefinedAlias {
-        at: segment_display(segment),
-        alias: name.clone(),
-    };
-
-    let target = registry_for(alias.syntax())
-        .resolve_alias_through(alias)
-        .map_err(|e| undefined_alias(e, segment))?
-        .clone();
-
-    let target = if policy == AliasPolicy::Expand {
-        expanded_copy(&target)
-    } else {
-        target
-    };
-
-    crate::as_yaml::YamlNode::from_syntax_peeled(target).ok_or_else(undefined)
+    let registry = registry_for(alias.syntax());
+    crate::anchor_resolution::resolve_alias_with(alias, &registry, |target| {
+        if policy == AliasPolicy::Expand {
+            expanded_copy(target)
+        } else {
+            target.clone()
+        }
+    })
+    .map_err(|e| undefined_alias(e, segment))
 }
 
 /// Build a detached copy of an anchored node to substitute for an alias.
@@ -1233,7 +1211,7 @@ fn set_path_in_slot<K: crate::AsYaml + Copy, V: crate::AsYaml>(
     // node, or replace it here with an anchor-free copy and continue in
     // that copy.
     if let Some(crate::as_yaml::YamlNode::Alias(alias)) = &existing {
-        let resolved = resolve_alias_for_write(alias, at, policy)?;
+        let resolved = resolve_alias(alias, at, policy)?;
         if policy != AliasPolicy::Expand {
             return set_path_on_node(resolved, rest, value, policy, at);
         }
@@ -3111,7 +3089,7 @@ config:
                 panic!("b is not an alias in {src:?}");
             };
             let segment = PathSegment::Key("b".to_string());
-            let copy = resolve_alias_for_write(&alias, &segment, AliasPolicy::Expand).unwrap();
+            let copy = resolve_alias(&alias, &segment, AliasPolicy::Expand).unwrap();
             assert_eq!(copy.to_string(), "!!map\nk: 1\n", "{src:?}");
         }
     }

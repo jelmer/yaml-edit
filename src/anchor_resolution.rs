@@ -756,8 +756,18 @@ pub(crate) fn resolve_alias_node(
     let YamlNode::Alias(alias) = &node else {
         return Ok(node);
     };
-    let target = registry.resolve_alias_through(alias)?;
-    YamlNode::from_syntax_peeled(target.clone()).ok_or(AliasError::Undefined {
+    resolve_alias_with(alias, registry, SyntaxNode::clone)
+}
+
+/// Resolve `alias` via `registry` to the node built from `adjust` applied
+/// to the anchored node.
+pub(crate) fn resolve_alias_with(
+    alias: &crate::yaml::Alias,
+    registry: &AnchorRegistry,
+    adjust: impl FnOnce(&SyntaxNode) -> SyntaxNode,
+) -> Result<crate::as_yaml::YamlNode, AliasError> {
+    let target = adjust(registry.resolve_alias_through(alias)?);
+    crate::as_yaml::YamlNode::from_syntax_peeled(target).ok_or(AliasError::Undefined {
         alias: alias.name(),
     })
 }

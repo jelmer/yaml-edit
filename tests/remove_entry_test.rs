@@ -580,6 +580,12 @@ fn test_remove_nested_between_blank_lines() {
 }
 
 #[test]
+fn test_remove_first_root_entry_keeps_spaces_of_blank_line() {
+    assert_eq!(remove("a: 1\n \t\nb: 2\n", &[], "a"), " \t\nb: 2\n");
+    assert_eq!(remove("a: 1\n    \nb: 2\n", &[], "a"), "    \nb: 2\n");
+}
+
+#[test]
 fn test_remove_keeps_single_blank_line_side() {
     assert_eq!(remove("a: 1\n\nb: 2\nc: 3\n", &[], "b"), "a: 1\n\nc: 3\n");
     assert_eq!(remove("a: 1\nb: 2\n\nc: 3\n", &[], "b"), "a: 1\n\nc: 3\n");

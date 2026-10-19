@@ -340,7 +340,12 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
         let leading_indent = collection
             .first_child_or_token()
             .and_then(|c| c.into_token())
-            .filter(|t| t.kind() == SyntaxKind::INDENT && !crate::yaml::indents_comment_line(t));
+            .filter(|t| t.kind() == SyntaxKind::INDENT && !crate::yaml::indents_comment_line(t))
+            // The spaces of a blank line are not the indentation.
+            .filter(|t| {
+                t.next_token()
+                    .is_some_and(|n| n.kind() != SyntaxKind::NEWLINE)
+            });
         if let Some(indent) = leading_indent {
             indent.detach();
         }

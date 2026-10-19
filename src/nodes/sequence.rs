@@ -1,7 +1,7 @@
 use super::replaced_value;
 use super::{
-    fresh_token, has_child_token, insert_children, nth_entry_index, replace_children, trivia, Lang,
-    SyntaxNode,
+    fresh_token, insert_children, nth_entry_index, replace_children, starts_a_flow_collection,
+    trivia, Lang, SyntaxNode,
 };
 use crate::as_yaml::{build_in, AsYaml, FlowQuoting, YamlKind};
 use crate::lex::SyntaxKind;
@@ -18,24 +18,14 @@ ast_node!(Sequence, SEQUENCE, "A YAML sequence (list)");
 /// True if `node` cannot be rendered as a block collection: any
 /// flow ancestor forbids it.
 pub(crate) fn must_render_flow(node: &SyntaxNode) -> bool {
-    let mut cur = node.parent();
-    while let Some(p) = cur {
-        let opener = match p.kind() {
-            SyntaxKind::MAPPING => Some(SyntaxKind::LEFT_BRACE),
-            SyntaxKind::SEQUENCE => Some(SyntaxKind::LEFT_BRACKET),
-            _ => None,
-        };
-        if let Some(open) = opener {
-            // A pending-block placeholder is `{}` in the text but is headed
-            // for block style, so it does not force flow on what nests inside
-            // it (see `Mapping::new_pending_block`).
-            if has_child_token(&p, |k| k == open) && !empty_collection::is_block_placeholder(&p) {
-                return true;
-            }
-        }
-        cur = p.parent();
-    }
-    false
+    // A pending-block placeholder is `{}` in the text but is headed for
+    // block style, so it does not force flow on what nests inside it (see
+    // `Mapping::new_pending_block`).
+    node.ancestors().skip(1).any(|p| {
+        matches!(p.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE)
+            && starts_a_flow_collection(&p)
+            && !empty_collection::is_block_placeholder(&p)
+    })
 }
 
 /// Rebuild `entry` with `value` in place of the node it currently holds,
@@ -622,7 +612,7 @@ impl Sequence {
 
     /// Check if this sequence is in flow style [item1, item2]
     pub fn is_flow_style(&self) -> bool {
-        has_child_token(&self.0, |k| k == SyntaxKind::LEFT_BRACKET)
+        starts_a_flow_collection(&self.0)
     }
 
     /// Remove and return the last item in this sequence.

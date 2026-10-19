@@ -4,8 +4,8 @@
 //! placeholder turns back into a block collection when it gets its first.
 
 use super::{
-    append_children, fresh_token, has_child_token, insert_children, replace_children, trivia,
-    SyntaxNode, SyntaxToken,
+    append_children, fresh_token, has_child_token, insert_children, replace_children,
+    starts_a_flow_collection, trivia, SyntaxNode, SyntaxToken,
 };
 use crate::lex::SyntaxKind;
 use rowan::ast::AstNode;
@@ -31,10 +31,8 @@ type Element = rowan::NodeOrToken<SyntaxNode, SyntaxToken>;
 /// The result carries the pending-block marker, so that the collection
 /// returns to block style when it gets an entry again.
 pub(crate) fn render_empty(collection: &SyntaxNode, line_break: Option<&str>) {
-    let Some((open, _)) = brackets(collection.kind()) else {
-        return;
-    };
-    if has_child_token(collection, |k| k == open.0)
+    if brackets(collection.kind()).is_none()
+        || starts_a_flow_collection(collection)
         || collection.children().any(|c| {
             matches!(
                 c.kind(),

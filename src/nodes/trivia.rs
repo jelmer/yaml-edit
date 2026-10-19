@@ -10,7 +10,7 @@
 use super::empty_collection::{detach_empty_collection_placeholder_newline, render_empty};
 use super::{
     append_children, fresh_token, has_child_token, insert_children, is_block_scalar,
-    replace_children, SyntaxNode, SyntaxToken,
+    replace_children, starts_a_flow_collection, SyntaxNode, SyntaxToken,
 };
 use crate::lex::SyntaxKind;
 
@@ -299,9 +299,7 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
         .ancestors()
         .last()
         .filter(|root| root.text_range().end() == entry.text_range().end());
-    let flow = has_child_token(collection, |k| {
-        matches!(k, SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET)
-    });
+    let flow = starts_a_flow_collection(collection);
 
     let mut trivia = Vec::new();
     if !flow || terminated {
@@ -551,9 +549,7 @@ fn last_line_node(node: &SyntaxNode) -> Option<SyntaxNode> {
 /// Does the parser put the line break after `node`'s last line inside it?
 fn holds_line_end(node: &SyntaxNode) -> bool {
     match node.kind() {
-        SyntaxKind::MAPPING | SyntaxKind::SEQUENCE => !has_child_token(node, |k| {
-            matches!(k, SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET)
-        }),
+        SyntaxKind::MAPPING | SyntaxKind::SEQUENCE => !starts_a_flow_collection(node),
         SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY => true,
         SyntaxKind::SCALAR => is_block_scalar(node),
         SyntaxKind::KEY | SyntaxKind::VALUE | SyntaxKind::TAGGED_NODE => {

@@ -215,6 +215,17 @@ pub(crate) fn digits_to_decimal(digits: &str, radix: u32) -> String {
     )
 }
 
+/// Like [`digits_to_decimal`], with a `-` in front when `negative` unless
+/// the value is zero.
+pub(crate) fn signed_digits_to_decimal(digits: &str, radix: u32, negative: bool) -> String {
+    let magnitude = digits_to_decimal(digits, radix);
+    if negative && magnitude != "0" {
+        format!("-{magnitude}")
+    } else {
+        magnitude
+    }
+}
+
 /// Convert a number given as `(radix, digit)` places, most significant
 /// first, to decimal without an upper bound on its value. Each place has
 /// its own radix, so mixed-radix numbers such as base 60 `1:30` work too.
@@ -663,12 +674,7 @@ impl ScalarValue {
     /// values are spelled the same.
     pub(crate) fn canonical_integer(value: &str) -> Option<String> {
         let (radix, digits, is_negative) = Self::split_core_int(value)?;
-        let magnitude = digits_to_decimal(digits, radix);
-        Some(if is_negative && magnitude != "0" {
-            format!("-{magnitude}")
-        } else {
-            magnitude
-        })
+        Some(signed_digits_to_decimal(digits, radix, is_negative))
     }
 
     /// Split a YAML 1.2 core schema integer into its radix, its digits and

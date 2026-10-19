@@ -33,7 +33,7 @@
 //! rule's suggestions instead, which use the decimal there.
 
 use crate::lex::SyntaxKind;
-use crate::scalar::{digits_to_decimal, places_to_decimal, CoreScalarType, ScalarValue};
+use crate::scalar::{places_to_decimal, signed_digits_to_decimal, CoreScalarType, ScalarValue};
 use crate::yaml::{Document, SyntaxNode};
 use rowan::ast::AstNode;
 
@@ -174,9 +174,10 @@ pub(crate) fn yaml_1_1_number(text: &str) -> Option<(String, SyntaxKind)> {
     };
     let negative = sign == "-";
     let decimal = |digits: &str, radix: u32| {
-        let value = digits_to_decimal(digits, radix);
-        let minus = if negative && value != "0" { "-" } else { "" };
-        (format!("{minus}{value}"), SyntaxKind::INT)
+        (
+            signed_digits_to_decimal(digits, radix, negative),
+            SyntaxKind::INT,
+        )
     };
 
     if let Some(digits) = body.strip_prefix("0b") {

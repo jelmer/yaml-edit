@@ -561,9 +561,14 @@ impl<'a> Parser<'a> {
                 format!("Collection nested too deeply (limit {MAX_FLOW_DEPTH})"),
                 ParseErrorKind::Other,
             );
+            // The token goes in a scalar, so that the slot still holds a node.
+            self.builder.start_node(SyntaxKind::SCALAR.into());
             if self.current().is_some() {
                 self.bump();
+            } else {
+                self.builder.token(SyntaxKind::NULL.into(), "");
             }
+            self.builder.finish_node();
             return;
         }
         self.nesting_depth += 1;

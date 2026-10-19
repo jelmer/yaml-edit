@@ -130,13 +130,14 @@ fn is_collection(kind: &rowan::SyntaxKind) -> bool {
     *kind == SyntaxKind::MAPPING.into() || *kind == SyntaxKind::SEQUENCE.into()
 }
 
-/// A tree builder that can hold back the line breaks and indentation
-/// between the entries of a block collection until it is known which node
-/// they belong to.
+/// A tree builder that can hold back the line breaks, indentation and
+/// comment lines between the entries of a block collection until it is
+/// known which node they belong to.
 ///
 /// They go in front of whatever is emitted next. A node finished in the
-/// meantime leaves them to its parent, so the blank lines after a nested
-/// collection's last entry end up in the collection holding the next one.
+/// meantime leaves them to its parent, so the blank and comment lines after
+/// a nested collection's last entry end up in the collection holding the
+/// next one.
 /// The outermost block collection keeps those at its end.
 pub(super) struct TreeBuilder {
     inner: GreenNodeBuilder<'static>,
@@ -820,8 +821,9 @@ impl Parser<'_> {
         self.holding_trivia(|p| p.skip_whitespace_with_dedent_check(base_indent, dash_lines))
     }
 
-    /// Run `f` with the line breaks, indentation and white space it steps
-    /// over held back for the node that comes next; see [`TreeBuilder`].
+    /// Run `f` with the line breaks, indentation, white space and comments
+    /// it steps over held back for the node that comes next; see
+    /// [`TreeBuilder`].
     pub(super) fn holding_trivia<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         let outer = std::mem::replace(&mut self.hold_trivia, true);
         let result = f(self);
@@ -1230,7 +1232,10 @@ impl Parser<'_> {
             if self.hold_trivia
                 && matches!(
                     kind,
-                    SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE
+                    SyntaxKind::NEWLINE
+                        | SyntaxKind::INDENT
+                        | SyntaxKind::WHITESPACE
+                        | SyntaxKind::COMMENT
                 )
             {
                 self.builder.hold(kind, text);

@@ -43,10 +43,14 @@ impl Parser<'_> {
             if (base_indent > 0 || nested) && dedented {
                 return true;
             }
-            self.bump();
-            if self.current() == Some(SyntaxKind::NEWLINE) {
-                self.bump();
-            }
+            // Held back, as the blank lines are, for the node that comes
+            // next: the line after them may not open an entry of ours.
+            self.holding_trivia(|p| {
+                p.bump();
+                if p.current() == Some(SyntaxKind::NEWLINE) {
+                    p.bump();
+                }
+            });
             if self.skip_whitespace_only_with_dedent_check(base_indent, dash_lines) {
                 return true;
             }
@@ -1868,6 +1872,36 @@ DOCUMENT
     NEWLINE: \"\\\\n\"
     NEWLINE: \"\\\\n\"
 "
+        );
+    }
+
+    /// Comment lines that a nested collection steps over looking for its
+    /// next entry are not its own when no entry follows: they go to the
+    /// node that comes next, here the root collection or the flow sequence.
+    #[test]
+    fn test_comment_lines_before_non_entry_leave_nested_collection() {
+        let comment_parents = |src: &str| {
+            let parsed = YamlFile::parse(src).tree();
+            let syntax = rowan::ast::AstNode::syntax(&parsed);
+            assert_eq!(crate::debug::validate_tree(syntax), Ok(()), "{src:?}");
+            assert_eq!(parsed.to_string(), src);
+            syntax
+                .descendants_with_tokens()
+                .filter(|c| c.kind() == crate::lex::SyntaxKind::COMMENT)
+                .map(|c| {
+                    let parent = c.parent().unwrap();
+                    (parent.kind(), parent.text().to_string())
+                })
+                .collect::<Vec<_>>()
+        };
+        use crate::lex::SyntaxKind::{MAPPING, SEQUENCE};
+        assert_eq!(
+            comment_parents("a:\n  b: 1\n  # c\n  0\n"),
+            [(MAPPING, "a:\n  b: 1\n  # c\n  ".to_string())]
+        );
+        assert_eq!(
+            comment_parents("[a:\n?\nb:\n# c\n"),
+            [(SEQUENCE, "[a:\n?\nb:\n# c\n".to_string())]
         );
     }
 

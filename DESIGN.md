@@ -468,7 +468,8 @@ resolving too. Sequences have no reordering methods.
 
 Looking up a key that is an alias (`get`, `set`, `rename_key`, ...)
 matches an alias key of the same name, not the node it refers to, and
-the string `"*a"` matches neither.
+the string `"*a"` matches neither. The same goes for an alias within a
+key: `[*a]` matches `? [*a]`.
 
 An alias resolves to the closest preceding definition of its anchor in the
 same document, as the spec requires. In `<<` merge keys only alias nodes are

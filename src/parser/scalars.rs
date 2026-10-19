@@ -136,6 +136,14 @@ impl Parser<'_> {
                 }
             }
 
+            // A quote left open after a quoted scalar (`a: "b" "\n`) runs on
+            // to the end of the input, as one opening the scalar does.
+            if quoted && kind == SyntaxKind::UNTERMINATED_STRING {
+                self.add_error(
+                    "Unterminated quoted string".to_string(),
+                    ParseErrorKind::UnterminatedString,
+                );
+            }
             self.bump();
         }
     }
@@ -442,7 +450,9 @@ impl Parser<'_> {
                 // annotate: `-\n  ? &d\n-\n  ? e\n` is one sequence, as the
                 // YAML test suite's PW8X expects. The key's own sequence may
                 // sit at the `?`'s column, as `seq-spaces` allows, and an
-                // explicit value's at the `:`'s.
+                // explicit value's at the `:`'s. Likewise a `-` at or left
+                // of the dash of the sequence entry we are in is that
+                // sequence's next entry: `- - &a\n  - x\n` has two.
                 SyntaxKind::DASH
                     if self
                         .ctx
@@ -451,7 +461,12 @@ impl Parser<'_> {
                         || self
                             .ctx
                             .explicit_value_column
-                            .is_some_and(|column| indent < column) =>
+                            .is_some_and(|column| indent < column)
+                        || (!self.in_flow_context
+                            && self
+                                .ctx
+                                .sequence_entry_column
+                                .is_some_and(|column| indent <= column)) =>
                 {
                     return None
                 }
@@ -852,11 +867,22 @@ impl Parser<'_> {
         // A lone tag parses its body with the body line's own column as the
         // base, but the scalar belongs to the enclosing collection, so its
         // continuation only has to clear that collection's column.
+        //
+        // Inside a sequence entry the line has to clear the entry's dash
+        // too, which the scalar's line misses for a compact sequence: in
+        // `- - a\n  b\n` the inner `-` is at column 2, where `b` cannot
+        // continue `a`.
         let floor = self
             .ctx
             .scalar_continuation_floor
             .map_or(scalar_indent, |floor| floor.min(scalar_indent));
-        if self.ctx.equal_indent_continues_scalar {
+        if self
+            .ctx
+            .sequence_entry_column
+            .is_some_and(|column| line_indent <= column)
+        {
+            false
+        } else if self.ctx.equal_indent_continues_scalar {
             line_indent >= floor
         } else {
             line_indent > floor

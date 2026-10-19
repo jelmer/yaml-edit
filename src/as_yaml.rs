@@ -207,6 +207,11 @@ pub(crate) enum NodeIdentity {
         tag: String,
         entries: Vec<(NodeIdentity, NodeIdentity)>,
     },
+    /// An alias that is not followed, as for [`lookup_identity`].
+    Alias {
+        tag: Option<String>,
+        name: String,
+    },
 }
 
 impl NodeIdentity {
@@ -259,6 +264,10 @@ impl NodeIdentity {
                     .collect();
                 tagged(tag, tag::MAP, format!("{{{}}}", entries.join(", ")))
             }
+            NodeIdentity::Alias { tag, name } => match tag {
+                Some(tag) => format!("{tag} *{name}"),
+                None => format!("*{name}"),
+            },
         }
     }
 }
@@ -321,7 +330,33 @@ pub(crate) fn node_identity(
     node: &SyntaxNode,
     registry: Option<&crate::anchor_resolution::AnchorRegistry>,
 ) -> Result<Option<NodeIdentity>, crate::anchor_resolution::AliasError> {
-    identity_with_tag(node, None, registry, &mut Vec::new())
+    let aliases = match registry {
+        Some(registry) => Aliases::Follow(registry),
+        None => Aliases::Undefined,
+    };
+    identity_with_tag(node, None, aliases, &mut Vec::new())
+}
+
+/// The identity of `node` for looking it up as a key among a mapping's
+/// own keys: as [`node_identity`], but with each alias standing for itself
+/// rather than for the node it refers to, so that a key holding an alias
+/// matches a key written with the same alias (`? [*a]`).
+///
+/// Returns `None` if `node` is not a value node.
+pub(crate) fn lookup_identity(node: &SyntaxNode) -> Option<NodeIdentity> {
+    identity_with_tag(node, None, Aliases::ByName, &mut Vec::new())
+        .expect("aliases are not followed")
+}
+
+/// What [`identity_with_tag`] does with an alias.
+#[derive(Clone, Copy)]
+enum Aliases<'a> {
+    /// Report it as undefined, as no anchors are known.
+    Undefined,
+    /// Follow it to the node it refers to.
+    Follow(&'a crate::anchor_resolution::AnchorRegistry),
+    /// Take it as itself, by its name and tag.
+    ByName,
 }
 
 /// The identity of `key` as a mapping key, following aliases through
@@ -341,7 +376,7 @@ pub(crate) fn key_identity(
 fn identity_with_tag(
     node: &SyntaxNode,
     tag: Option<String>,
-    registry: Option<&crate::anchor_resolution::AnchorRegistry>,
+    aliases: Aliases,
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<Option<NodeIdentity>, crate::anchor_resolution::AliasError> {
     use crate::anchor_resolution::AliasError;
@@ -354,7 +389,7 @@ fn identity_with_tag(
     };
     match node.kind() {
         SyntaxKind::KEY | SyntaxKind::VALUE => match node.first_child() {
-            Some(content) => identity_with_tag(&content, tag, registry, expanding),
+            Some(content) => identity_with_tag(&content, tag, aliases, expanding),
             None => Ok(None),
         },
         SyntaxKind::TAGGED_NODE => {
@@ -365,7 +400,7 @@ fn identity_with_tag(
             // the place of the node's own.
             let tag = tag.or_else(|| tagged.tag());
             match node.first_child() {
-                Some(content) => identity_with_tag(&content, tag, registry, expanding),
+                Some(content) => identity_with_tag(&content, tag, aliases, expanding),
                 None => Ok(ScalarValue::from_tagged(&tagged).map(|scalar| {
                     let ResolvedScalar { tag, value } = resolve_scalar(with_tag(scalar, tag));
                     NodeIdentity::Scalar { tag, value }
@@ -376,10 +411,19 @@ fn identity_with_tag(
             let Some(alias) = Alias::cast(node.clone()) else {
                 return Ok(None);
             };
-            let Some(registry) = registry else {
-                return Err(AliasError::Undefined {
-                    alias: alias.name(),
-                });
+            let registry = match aliases {
+                Aliases::Follow(registry) => registry,
+                Aliases::ByName => {
+                    return Ok(Some(NodeIdentity::Alias {
+                        tag,
+                        name: alias.name(),
+                    }))
+                }
+                Aliases::Undefined => {
+                    return Err(AliasError::Undefined {
+                        alias: alias.name(),
+                    })
+                }
             };
             let target = registry.resolve_alias_through(&alias)?;
             if expanding.contains(target) {
@@ -388,7 +432,7 @@ fn identity_with_tag(
                 });
             }
             expanding.push(target.clone());
-            let identity = identity_with_tag(target, tag, Some(registry), expanding);
+            let identity = identity_with_tag(target, tag, aliases, expanding);
             expanding.pop();
             identity
         }
@@ -403,8 +447,8 @@ fn identity_with_tag(
             };
             let mut entries = Vec::new();
             for (key, value) in mapping.pairs() {
-                let key = identity_with_tag(&key, None, registry, expanding)?;
-                let value = identity_with_tag(&value, None, registry, expanding)?;
+                let key = identity_with_tag(&key, None, aliases, expanding)?;
+                let value = identity_with_tag(&value, None, aliases, expanding)?;
                 let (Some(key), Some(value)) = (key, value) else {
                     return Ok(None);
                 };
@@ -422,7 +466,7 @@ fn identity_with_tag(
             };
             let mut items = Vec::new();
             for item in sequence.items() {
-                let Some(item) = identity_with_tag(&item, None, registry, expanding)? else {
+                let Some(item) = identity_with_tag(&item, None, aliases, expanding)? else {
                     return Ok(None);
                 };
                 items.push(item);

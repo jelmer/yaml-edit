@@ -13,12 +13,17 @@ fn is_block_collection(node: &SyntaxNode) -> bool {
 }
 
 /// Remove the comment that ends the last line of `item`, a sequence item
-/// spanning lines, which its entry holds after it. It goes with the item;
-/// one on the dash line belongs to the entry.
+/// spanning lines or starting on a later line than its dash, which its
+/// entry holds after it. It goes with the item; one on the dash line
+/// belongs to the entry.
 pub(crate) fn remove_comment_after_item(item: &SyntaxNode) {
-    if !item
-        .descendants_with_tokens()
-        .any(|c| c.kind() == SyntaxKind::NEWLINE)
+    let after_dash_line = item
+        .siblings_with_tokens(rowan::Direction::Prev)
+        .any(|c| c.kind() == SyntaxKind::NEWLINE);
+    if !after_dash_line
+        && !item
+            .descendants_with_tokens()
+            .any(|c| c.kind() == SyntaxKind::NEWLINE)
     {
         return;
     }

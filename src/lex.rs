@@ -411,22 +411,6 @@ fn scan_single_quoted(
     (end_idx, false)
 }
 
-/// Whether the quote at `quote_idx` closes on its own line.
-fn quote_closes_on_line(input: &str, quote_idx: usize) -> bool {
-    let line = input[quote_idx..]
-        .split(['\n', '\r'])
-        .next()
-        .unwrap_or_default();
-    let mut rest = line.char_indices().peekable();
-    let quote = rest.next().map(|(_, c)| c);
-    let (_, closes_on_line) = if quote == Some('"') {
-        scan_double_quoted(&mut rest, 0)
-    } else {
-        scan_single_quoted(&mut rest, 0)
-    };
-    closes_on_line
-}
-
 /// Whether the flow collection opening at `open_idx` closes on its line.
 fn flow_collection_closes_on_line(input: &str, open_idx: usize) -> bool {
     let line = input[open_idx..]
@@ -727,6 +711,14 @@ impl<'a, 'c> LexState<'a, 'c> {
             && node_property_can_start(&self.tokens)
     }
 
+    /// Whether a tag, anchor or alias may start at `idx`. A line continuing
+    /// a plain scalar is inside that node already, so there they are
+    /// content, read by plain-scalar rules: as a tag `!b:` in
+    /// `{ a\n  !b: 1 }` took the `:` that follows the key.
+    fn property_can_start(&self, idx: usize) -> bool {
+        self.node_can_start() && !self.opens_plain_scalar_continuation_line(idx)
+    }
+
     /// Whether a block scalar header may start at `idx`.
     fn block_scalar_header_can_start(&self, idx: usize) -> bool {
         self.flow_depth == 0
@@ -738,11 +730,17 @@ impl<'a, 'c> LexState<'a, 'c> {
     ///
     /// Such a line either continues that scalar or starts a new implicit
     /// key, and an implicit key fits on one line.
+    /// In block context the line has to be indented past the collection
+    /// the scalar is in: at its column a line starts the next entry, as in
+    /// `a: 1\n'b: 2\n`.
     fn opens_plain_scalar_continuation_line(&self, idx: usize) -> bool {
         use SyntaxKind::*;
         self.input[self.line_start..idx]
             .chars()
             .all(|c| c == ' ' || c == '\t')
+            && (self.flow_depth > 0
+                || parent_column(&self.tokens)
+                    .map_or(true, |column| idx - self.line_start > column))
             && self
                 .tokens
                 .iter()
@@ -880,7 +878,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             }
             // Like tags, only at the start of a node: `a: x &anc` is the
             // scalar `x &anc`, not an anchored value.
-            '&' if self.node_can_start() => {
+            '&' if self.property_can_start(start_idx) => {
                 // Check if this is an anchor definition
                 let name = read_anchor_name_from(&mut self.chars, self.input, start_idx + 1);
                 if !name.is_empty() {
@@ -889,7 +887,7 @@ impl<'a, 'c> LexState<'a, 'c> {
                     self.push(AMPERSAND, start_idx, start_idx + 1);
                 }
             }
-            '*' if self.node_can_start() => {
+            '*' if self.property_can_start(start_idx) => {
                 // Check if this is an alias reference
                 let name = read_anchor_name_from(&mut self.chars, self.input, start_idx + 1);
                 if !name.is_empty() {
@@ -899,14 +897,13 @@ impl<'a, 'c> LexState<'a, 'c> {
                 }
             }
             // A quote is literal text in a block scalar's body, and content on
-            // a line continuing a plain scalar, as the flow indicators above.
-            // A quote that does not close on its own line cannot start an
-            // implicit key: `a: b\n  'c\nd: 1\n` holds `b 'c`, where scanning
-            // it as quoted ran on to the next quote in the file.
+            // a line continuing a plain scalar, as the flow indicators above:
+            // `a: b\n  'c\nd: 1\n` holds `b 'c`, where scanning it as quoted
+            // ran on to the next quote in the file, and `[b\n "x", c]` holds
+            // `b "x"`.
             '"' | '\''
                 if in_block_scalar_body(self.block_scalar, self.line_start)
-                    || (self.opens_plain_scalar_continuation_line(start_idx)
-                        && !quote_closes_on_line(self.input, start_idx)) =>
+                    || self.opens_plain_scalar_continuation_line(start_idx) =>
             {
                 self.push_plain_scalar(start_idx, start_idx + 1, true);
             }
@@ -957,7 +954,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             // Only at the start of a node: mid-scalar a `!` is ordinary
             // content (`a: x !!b` is the scalar `x !!b`), which the
             // catch-all arm below reads with plain-scalar rules.
-            '!' if self.node_can_start() => self.lex_tag(start_idx),
+            '!' if self.property_can_start(start_idx) => self.lex_tag(start_idx),
 
             '%' => self.lex_percent(start_idx),
 
@@ -1529,7 +1526,9 @@ struct BlockScalarBody {
     parent_column: usize,
     /// Leftmost column a body line may start at. A document's root block
     /// scalar sits at indentation -1, so its body may start at column 0;
-    /// any other body has to be indented past its header's line.
+    /// any other body has to be indented past its header's line and the
+    /// collection it is a node of: in `- a: |\n  b: 1\n` the `b` line is
+    /// the mapping's next entry.
     min_indent: usize,
     /// The body's own column, set by an explicit indentation indicator or
     /// else by its first content line.
@@ -1555,39 +1554,42 @@ impl BlockScalarBody {
                         | SyntaxKind::ANCHOR
                 )
             });
+        let parent_column = parent_column(tokens).unwrap_or(0);
         let min_indent = if is_root {
             0
         } else {
-            line_indent(input, line_start) + 1
+            line_indent(input, line_start).max(parent_column) + 1
         };
         Self {
             header_line_start: line_start,
             header_token: tokens.len(),
-            parent_column: block_scalar_parent_column(tokens),
+            parent_column,
             min_indent,
             indent: None,
         }
     }
 }
 
-/// The column a block scalar's indentation indicator counts from, given
-/// the tokens lexed before its header.
+/// The column of the block collection a node starting after `tokens` is a
+/// node of, or `None` at the document root.
 ///
-/// This is the column of the collection the scalar is a node of, as the
-/// parser records it: the `-` or `?` introducing it, or for a mapping value
-/// the start of its key (the `:` itself when the key is empty or explicit,
-/// as an explicit key's mapping sits at its `?` and `:`).
-/// When the header opens its line, the collection is the one the previous
-/// line with content leaves open. With none, as at the document root, it
-/// is column 0, as for the parser and libyaml, although YAML 1.2 puts the
-/// root at -1.
-fn block_scalar_parent_column(tokens: &[(SyntaxKind, &str)]) -> usize {
+/// This is the column as the parser records it: the `-` or `?`
+/// introducing the node, or for a mapping value the start of its key (the
+/// `:` itself when the key is empty or explicit, as an explicit key's
+/// mapping sits at its `?` and `:`). When the node opens its line, or
+/// continues a plain scalar, the collection is the one the last line with
+/// an indicator leaves open. A block scalar's indentation indicator counts
+/// from this column, taking the root's as 0 as the parser and libyaml do,
+/// although YAML 1.2 puts the root at -1.
+fn parent_column(tokens: &[(SyntaxKind, &str)]) -> Option<usize> {
     use SyntaxKind::*;
     for line in tokens.rsplit(|(kind, _)| matches!(kind, NEWLINE | BOM)) {
-        let Some(last) = line
-            .iter()
-            .rposition(|(kind, _)| !matches!(kind, WHITESPACE | INDENT | COMMENT | TAG | ANCHOR))
-        else {
+        let Some(last) = line.iter().rposition(|(kind, _)| {
+            !matches!(
+                kind,
+                WHITESPACE | INDENT | COMMENT | TAG | ANCHOR | STRING | INT | FLOAT | BOOL | NULL
+            )
+        }) else {
             continue;
         };
         let column = |index: usize| -> usize {
@@ -1597,7 +1599,7 @@ fn block_scalar_parent_column(tokens: &[(SyntaxKind, &str)]) -> usize {
                 .sum()
         };
         return match line[last].0 {
-            DASH | QUESTION => column(last),
+            DASH | QUESTION => Some(column(last)),
             COLON => {
                 // The key starts after the block indicators opening the
                 // line. An explicit `:` is one of them, as its value may be
@@ -1608,12 +1610,13 @@ fn block_scalar_parent_column(tokens: &[(SyntaxKind, &str)]) -> usize {
                         !matches!(kind, WHITESPACE | INDENT | DASH | QUESTION | COLON)
                     })
                     .unwrap_or(last);
-                column(key)
+                Some(column(key))
             }
-            _ => 0,
+            DOC_START => None,
+            _ => Some(0),
         };
     }
-    0
+    None
 }
 
 /// Read a block scalar header's indicators from the tokens following its

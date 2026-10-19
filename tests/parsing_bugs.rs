@@ -4141,6 +4141,196 @@ fn test_quote_opening_a_plain_continuation_line_is_content() {
     );
 }
 
+/// A line at the column of the mapping a plain scalar is in starts its
+/// next entry rather than continuing the scalar, so a quote there opens a
+/// quoted scalar, which here does not end. The lexer read the quote as
+/// content, giving the plain keys `'b` and `'uantity` that the validator
+/// accepted.
+#[test]
+fn test_quote_at_the_mapping_column_after_a_plain_scalar() {
+    for (yaml, error) in [
+        (
+            "a: 1\n'b: 2\n",
+            "2:1: Content after the document could not be parsed: \"'b: 2\\n\"",
+        ),
+        (
+            "- item: x\n  'uantity: 1",
+            "2:3: Content after the document could not be parsed: \"'uantity: 1\"",
+        ),
+    ] {
+        let parsed = yaml_edit::YamlFile::parse(yaml);
+        assert_eq!(parsed.errors(), [error.to_string()], "{yaml:?}");
+    }
+
+    // Indented past the mapping's column the line continues the scalar.
+    let doc = yaml_edit::Document::from_str("- item: x\n   'uantity\n").unwrap();
+    let item = doc.as_sequence().unwrap().get(0).unwrap();
+    assert_eq!(
+        item.as_mapping()
+            .unwrap()
+            .get("item")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "x 'uantity"
+    );
+}
+
+/// An item of a compact sequence continues only on lines indented past its
+/// own `-`, not just past the line it starts on. `- - a\n  b\n` read `b`
+/// into `a`, and after an item was inserted before `a`, putting it on a
+/// line of its own, the re-parse no longer did.
+#[test]
+fn test_compact_sequence_item_continuation_clears_its_dash() {
+    for (yaml, error) in [
+        (
+            "- - a\n  b\n",
+            "2:3: Content after the document could not be parsed: \"b\"",
+        ),
+        (
+            "? - a\n  b\n",
+            "2:3: Content after the document could not be parsed: \"b\"",
+        ),
+    ] {
+        let parsed = yaml_edit::YamlFile::parse(yaml);
+        assert_eq!(parsed.errors(), [error.to_string()], "{yaml:?}");
+    }
+
+    let doc = yaml_edit::Document::from_str("- - a\n   b\n").unwrap();
+    let outer = doc.as_sequence().unwrap();
+    let inner = outer.get(0).unwrap();
+    assert_eq!(
+        inner
+            .as_sequence()
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "a b"
+    );
+}
+
+/// A quote left open after a quoted scalar runs on to the end of the input,
+/// as one opening a scalar does, and is reported the same way. It was kept
+/// in the scalar with no error, which the validator accepted, so an entry
+/// added after it was swallowed by the quote on a re-parse.
+#[test]
+fn test_unterminated_quote_after_a_quoted_scalar() {
+    for (yaml, error) in [
+        ("f: \"a\" \"\n", "1:8: Unterminated quoted string"),
+        ("f: '\n\n  ' '\n", "3:5: Unterminated quoted string"),
+        ("- 'a' 'b\n", "1:7: Unterminated quoted string"),
+    ] {
+        let parsed = yaml_edit::YamlFile::parse(yaml);
+        assert_eq!(parsed.errors(), [error.to_string()], "{yaml:?}");
+    }
+}
+
+/// A `!`, `&` or `*` on a line continuing a plain scalar is content of that
+/// scalar. Lexed as a tag, anchor or alias it took a `:` after it into its
+/// name, so `{ a\n  !b: 1 }` had the key `a !b:` and no value.
+#[test]
+fn test_property_on_a_continuation_line_leaves_the_colon() {
+    for (yaml, key) in [
+        ("{ a\n  !b: 1 }\n", "a !b"),
+        ("{ a\n  &b: 1 }\n", "a &b"),
+        ("{ a\n  *b: 1 }\n", "a *b"),
+        ("{ f\"foo\"\n  !bar: 1 }\n", "f\"foo\" !bar"),
+    ] {
+        let doc = yaml_edit::Document::from_str(yaml).unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let entries: Vec<_> = mapping.iter().collect();
+        assert_eq!(entries.len(), 1, "{yaml:?}");
+        assert_eq!(entries[0].0.as_scalar().unwrap().as_string(), key);
+        assert_eq!(entries[0].1.as_scalar().unwrap().as_string(), "1");
+    }
+
+    // Setting the value of such a key writes text that reads back the same.
+    let doc = yaml_edit::Document::from_str("{ f\"foo\"\n  !bar }\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    mapping.set("f\"foo\" !bar", 1);
+    assert_eq!(doc.to_string(), "{ f\"foo\"\n  !bar: 1 }\n");
+    let reparsed = yaml_edit::Document::from_str(&doc.to_string()).unwrap();
+    assert_eq!(
+        yaml_edit::debug::shape_to_string(rowan::ast::AstNode::syntax(&doc)),
+        yaml_edit::debug::shape_to_string(rowan::ast::AstNode::syntax(&reparsed))
+    );
+}
+
+/// A quote opening a line that continues a plain scalar is content, even
+/// when it closes on that line. Whether it did decided whether it was, so
+/// adding an entry after `"c` in a flow mapping, which put a closing quote
+/// on its line, made the text read back differently.
+#[test]
+fn test_quote_on_a_flow_continuation_line_is_content() {
+    let doc = yaml_edit::Document::from_str("[b\n \"x\", c]\n").unwrap();
+    let items: Vec<_> = doc
+        .as_sequence()
+        .unwrap()
+        .values()
+        .map(|v| v.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(items, ["b \"x\"", "c"]);
+
+    let doc = yaml_edit::Document::from_str("{a: b\n \"c\n}\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("a").unwrap().as_scalar().unwrap().as_string(),
+        "b \"c"
+    );
+    mapping.set("k\r", 1);
+    assert_eq!(doc.to_string(), "{a: b\n \"c, \"k\\r\": 1\n}\n");
+    let reparsed = yaml_edit::Document::from_str(&doc.to_string()).unwrap();
+    assert_eq!(
+        yaml_edit::debug::shape_to_string(rowan::ast::AstNode::syntax(&doc)),
+        yaml_edit::debug::shape_to_string(rowan::ast::AstNode::syntax(&reparsed))
+    );
+}
+
+/// A `-` on the line after an anchor or tag that ends a compact sequence
+/// entry is that sequence's next entry when it is at the entry's dash, not
+/// the annotated node. `- - &a\n  - x\n` nested `x` under the anchor, so
+/// pushing onto `[&a null]` wrote text that read back as a different tree.
+#[test]
+fn test_entry_after_an_annotated_compact_entry() {
+    for yaml in ["- - &a\n  - x\n", "- - !t\n  - x\n"] {
+        let doc = yaml_edit::Document::from_str(yaml).unwrap();
+        let inner = doc.as_sequence().unwrap().get(0).unwrap();
+        assert_eq!(inner.as_sequence().unwrap().len(), 2, "{yaml:?}");
+    }
+
+    let doc = yaml_edit::Document::from_str("- - &a\n").unwrap();
+    let inner = doc.as_sequence().unwrap().get(0).unwrap();
+    inner.as_sequence().unwrap().push("x");
+    assert_eq!(doc.to_string(), "- - &a\n  - x\n");
+    let reparsed = yaml_edit::Document::from_str(&doc.to_string()).unwrap();
+    assert_eq!(
+        yaml_edit::debug::shape_to_string(rowan::ast::AstNode::syntax(&doc)),
+        yaml_edit::debug::shape_to_string(rowan::ast::AstNode::syntax(&reparsed))
+    );
+}
+
+/// A block scalar's body has to be indented past the mapping the scalar is
+/// a value of, not just past the header's line. In `- a: |+\n\n  b: !t ''\n`
+/// the lexer took the `b` line for body text and read `!t ''` as literal
+/// content, while the parser made it the mapping's next entry.
+#[test]
+fn test_block_scalar_body_past_a_compact_mapping() {
+    for (yaml, expected) in [
+        ("- a: |+\n\n  b: !t ''\n", "!t ''"),
+        ("- a: |\n  b: [1]\n", "[1]"),
+    ] {
+        let doc = yaml_edit::Document::from_str(yaml).unwrap();
+        let item = doc.as_sequence().unwrap().get(0).unwrap();
+        let b = item.as_mapping().unwrap().get("b").unwrap();
+        assert_eq!(b.to_string(), expected, "{yaml:?}");
+        assert!(b.as_scalar().is_none(), "{yaml:?}");
+    }
+}
+
 /// A document's root block scalar may put its body at column 0, since the
 /// root sits at indentation -1. Such a body is literal text up to the next
 /// document marker.

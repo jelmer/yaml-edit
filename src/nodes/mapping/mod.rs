@@ -332,20 +332,21 @@ pub(crate) fn is_flow_pair(node: &SyntaxNode) -> bool {
 
 /// Check whether the CST key node matches `key` using semantic equality.
 ///
-/// An alias equals no node under `yaml_eq`, so an alias key is matched by
-/// an alias of the same name instead, not by the node it refers to.
+/// An alias equals no node under `yaml_eq`, so an alias in a key is matched
+/// by an alias of the same name instead, not by the node it refers to:
+/// `*a` by `*a`, and `[*a]` by `[*a]`.
 ///
-/// `key_node` may be a raw KEY wrapper; `from_syntax_peeled` unwraps it.
+/// `key_node` may be a raw KEY wrapper.
 pub(super) fn key_content_matches(key_node: &SyntaxNode, key: impl crate::AsYaml) -> bool {
-    use crate::as_yaml::YamlNode;
-    match YamlNode::from_syntax_peeled(key_node.clone()) {
-        Some(YamlNode::Alias(alias)) => key
-            .value_node()
-            .and_then(crate::nodes::Alias::cast)
-            .is_some_and(|other| other.name() == alias.name()),
-        Some(node) => crate::as_yaml::yaml_eq(&node, &key),
-        None => false,
-    }
+    use crate::as_yaml::lookup_identity;
+    let Some(own) = lookup_identity(key_node) else {
+        return false;
+    };
+    let given = match key.value_node() {
+        Some(node) => lookup_identity(&node),
+        None => crate::as_yaml::identity_of(&key, None).ok().flatten(),
+    };
+    given.is_some_and(|given| given == own)
 }
 
 /// The anchor and tag on a KEY node, which sit in KEY itself or in the

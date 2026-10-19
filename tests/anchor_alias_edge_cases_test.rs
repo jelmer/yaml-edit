@@ -353,6 +353,40 @@ fn test_alias_key_still_parses() {
     assert_eq!(aliases, ["*a:"]);
 }
 
+/// A key holding an alias is matched the same way, an alias in it by an
+/// alias of the same name. It matched nothing, not even its own node, so
+/// `set` added a second entry with the same key.
+#[test]
+fn test_key_holding_an_alias_matches_its_own_node() {
+    let file = YamlFile::from_str("a: &x 1\n? [*x]\n: 2\n").unwrap();
+    let m = file.document().unwrap().as_mapping().unwrap();
+    let own = m.keys().nth(1).unwrap();
+    let other = yaml_edit::Document::from_str("[*x]\n").unwrap();
+    let other = yaml_edit::YamlNode::Sequence(other.as_sequence().unwrap());
+    for key in [&own, &other] {
+        assert_eq!(m.get(key).map(|v| v.to_string()), Some("2".to_string()));
+    }
+    // Not by the node the alias refers to.
+    let resolved = yaml_edit::Document::from_str("[1]\n").unwrap();
+    assert_eq!(
+        m.get(yaml_edit::YamlNode::Sequence(
+            resolved.as_sequence().unwrap()
+        )),
+        None
+    );
+
+    m.set(&own, 5);
+    assert_eq!(file.to_string(), "a: &x 1\n? [*x]\n: 5\n");
+    common::assert_file_cst_ok(&file);
+
+    let file = YamlFile::from_str("? e: *x\n").unwrap();
+    let m = file.document().unwrap().as_mapping().unwrap();
+    let own = m.keys().next().unwrap();
+    assert!(m.insert_after(&own, "k", 2));
+    assert_eq!(file.to_string(), "? e: *x\n? k\n: 2\n");
+    common::assert_file_cst_ok(&file);
+}
+
 /// The alias key of the second entry of `source`, read from another
 /// document so that only its name ties it to the entry.
 fn alias_key() -> yaml_edit::YamlNode {

@@ -9,7 +9,7 @@
 //!   [`TaggedNode`](crate::yaml::TaggedNode)) - format-preserving wrappers around the
 //!   concrete syntax tree.  Parse a file to get these; navigate and mutate them in place.
 //!
-//! - **Input types** (`&str`, `i64`, `bool`, [`MappingBuilder`](crate::builder::MappingBuilder), …):
+//! - **Input types** (`&str`, `i64`, `bool`, [`YamlValue`](crate::YamlValue), …):
 //!   supply these to mutation methods such as
 //!   [`Mapping::set`](crate::yaml::Mapping::set).  They implement [`AsYaml`] but are
 //!   never returned from navigation methods.
@@ -58,7 +58,7 @@ pub enum YamlKind {
 /// - A number (`42_i64`, `3.14_f64`, …)
 /// - A boolean (`true`)
 /// - An existing CST node ([`Mapping`], [`Sequence`], [`Scalar`], [`YamlNode`], …)
-/// - A builder ([`MappingBuilder`](crate::builder::MappingBuilder), [`SequenceBuilder`](crate::builder::SequenceBuilder))
+/// - A [`YamlValue`](crate::YamlValue), `Vec<YamlValue>` or `BTreeMap<String, YamlValue>`
 pub trait AsYaml {
     /// Returns a reference to the underlying `SyntaxNode` if one exists.
     ///

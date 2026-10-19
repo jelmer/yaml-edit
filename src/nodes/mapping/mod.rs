@@ -784,10 +784,10 @@ impl Mapping {
         value: impl crate::AsYaml,
     ) -> SyntaxNode {
         let flow_context = self.is_flow_style();
-        let new_entry = MappingEntry::new_at_indent(
+        let new_entry = MappingEntry::new_in(
             key,
             value,
-            flow_context,
+            flow_context.then(|| crate::nodes::flow_quoting(&self.0)),
             self.uses_explicit_keys(),
             self.detect_indentation_level(),
         )

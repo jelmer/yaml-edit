@@ -870,6 +870,13 @@ fn segment_key(segment: &PathSegment) -> String {
     }
 }
 
+/// The document's root content if it is a mapping or a sequence.
+fn collection_root(doc: &crate::yaml::Document) -> Option<crate::as_yaml::YamlNode> {
+    doc.as_mapping()
+        .map(crate::as_yaml::YamlNode::Mapping)
+        .or_else(|| doc.as_sequence().map(crate::as_yaml::YamlNode::Sequence))
+}
+
 // Implementation for Document
 impl YamlPath for crate::yaml::Document {
     fn try_get_path_with(
@@ -879,17 +886,9 @@ impl YamlPath for crate::yaml::Document {
     ) -> Result<crate::as_yaml::YamlNode, PathError> {
         let segments = path_segments_required(path)?;
 
-        // Start from the document's root content
-        let root = if let Some(m) = self.as_mapping() {
-            crate::as_yaml::YamlNode::Mapping(m)
-        } else if let Some(s) = self.as_sequence() {
-            crate::as_yaml::YamlNode::Sequence(s)
-        } else if let Some(sc) = self.as_scalar() {
-            crate::as_yaml::YamlNode::Scalar(sc)
-        } else {
-            return Err(PathError::NoRoot);
-        };
-
+        let root = collection_root(self)
+            .or_else(|| self.as_scalar().map(crate::as_yaml::YamlNode::Scalar))
+            .ok_or(PathError::NoRoot)?;
         navigate_path(root, &segments, policy)
     }
 
@@ -915,14 +914,7 @@ impl YamlPath for crate::yaml::Document {
     ) -> Result<crate::as_yaml::YamlNode, PathError> {
         let segments = path_segments_required(path)?;
 
-        let root = if let Some(m) = self.as_mapping() {
-            crate::as_yaml::YamlNode::Mapping(m)
-        } else if let Some(s) = self.as_sequence() {
-            crate::as_yaml::YamlNode::Sequence(s)
-        } else {
-            return Err(PathError::NoRoot);
-        };
-
+        let root = collection_root(self).ok_or(PathError::NoRoot)?;
         remove_path_impl(root, None, &segments, policy)
     }
 }

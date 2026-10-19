@@ -235,17 +235,24 @@ impl Document {
     /// Returns `true` if the key was set. Returns `false` if the root is a
     /// sequence or another non-mapping node (the document is left unchanged).
     pub fn set(&self, key: impl crate::AsYaml, value: impl crate::AsYaml) -> bool {
+        self.edit_root_mapping(|mapping| mapping.set(key, value))
+    }
+
+    /// Run `edit` on the root mapping, created first if the document has no
+    /// root. Returns `false`, leaving the document unchanged, if the root is
+    /// another node.
+    fn edit_root_mapping(&self, edit: impl FnOnce(&Mapping)) -> bool {
         if let Some(mapping) = self.as_mapping() {
-            mapping.set(key, value);
-            true
-        } else if self.root_node().is_none() {
-            let mapping = Mapping::new();
-            mapping.set(key, value);
-            self.attach_root(mapping.0);
-            true
-        } else {
-            false
+            edit(&mapping);
+            return true;
         }
+        if self.root_node().is_some() {
+            return false;
+        }
+        let mapping = Mapping::new();
+        edit(&mapping);
+        self.attach_root(mapping.0);
+        true
     }
 
     /// Set a key-value pair with field ordering support.
@@ -266,19 +273,7 @@ impl Document {
         I: IntoIterator<Item = K>,
         K: crate::AsYaml,
     {
-        // Collect so we can pass to both branches if needed.
-        let field_order: Vec<K> = field_order.into_iter().collect();
-        if let Some(mapping) = self.as_mapping() {
-            mapping.set_with_field_order(key, value, field_order);
-            true
-        } else if self.root_node().is_none() {
-            let mapping = Mapping::new();
-            mapping.set_with_field_order(key, value, field_order);
-            self.attach_root(mapping.0);
-            true
-        } else {
-            false
-        }
+        self.edit_root_mapping(|mapping| mapping.set_with_field_order(key, value, field_order))
     }
 
     /// Remove a key from the document (assumes document is a mapping).
@@ -447,9 +442,8 @@ impl Document {
 
     /// Insert a key-value pair at a specific index.
     ///
-    /// If the document already contains a mapping, delegates to
-    /// [`Mapping::insert_at_index`]. If the document has no root node, creates
-    /// a mapping and uses [`Mapping::insert_at_index_preserving`].
+    /// Delegates to [`Mapping::insert_at_index`]. If the document has no
+    /// root node, a mapping is created first.
     ///
     /// Returns `true` if the key was inserted. Returns `false` if the root is
     /// a sequence or another non-mapping node (the document is left
@@ -460,20 +454,7 @@ impl Document {
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
     ) -> bool {
-        // Delegate to Mapping::insert_at_index if we have a mapping
-        if let Some(mapping) = self.as_mapping() {
-            mapping.insert_at_index(index, key, value);
-            return true;
-        }
-
-        if self.root_node().is_some() {
-            return false;
-        }
-
-        let mapping = Mapping::new();
-        mapping.insert_at_index_preserving(index, key, value);
-        self.attach_root(mapping.0);
-        true
+        self.edit_root_mapping(|mapping| mapping.insert_at_index(index, key, value))
     }
 
     /// Splice `root` into this document, which has none, where the parser

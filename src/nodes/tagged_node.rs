@@ -54,39 +54,10 @@ impl TaggedNode {
 
     /// Get the string value of this tagged scalar (just the value part),
     /// with quotes stripped and escape sequences processed.
+    ///
+    /// Returns `None` if the tag is on a collection or alias.
     pub fn as_string(&self) -> Option<String> {
-        if let Some(scalar) = self.value() {
-            Some(scalar.as_string())
-        } else {
-            // Handle cases where the value might be nested deeper
-            self.extract_deepest_string_value()
-        }
-    }
-
-    /// Extract the deepest string value, handling nested tag structures
-    fn extract_deepest_string_value(&self) -> Option<String> {
-        Self::find_string_token_recursive(&self.0)
-    }
-
-    /// Recursively search for the first STRING token in the tree
-    fn find_string_token_recursive(node: &rowan::SyntaxNode<crate::yaml::Lang>) -> Option<String> {
-        // Check tokens first
-        for child in node.children_with_tokens() {
-            if let rowan::NodeOrToken::Token(token) = child {
-                if token.kind() == SyntaxKind::STRING {
-                    return Some(token.text().to_string());
-                }
-            }
-        }
-
-        // Then check child nodes recursively
-        for child in node.children() {
-            if let Some(result) = Self::find_string_token_recursive(&child) {
-                return Some(result);
-            }
-        }
-
-        None
+        self.value().map(|scalar| scalar.as_string())
     }
 
     /// Extract a set from this tagged node if it has a !!set tag on a
@@ -222,6 +193,19 @@ mod tests {
         let val = mapping.get_node("key").unwrap();
         let tagged = crate::yaml::TaggedNode::cast(val).unwrap();
         assert_eq!(tagged.as_string(), Some("hello world".to_string()));
+    }
+
+    /// A tagged collection has no string value: its first item or key is
+    /// not one.
+    #[test]
+    fn test_tagged_node_as_string_of_collection() {
+        let yaml = YamlFile::from_str("a: !t [x, y]\nb: !t {\"q\": 1}\nc: !t\n  - x\n").unwrap();
+        let doc = yaml.documents().next().unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        for key in ["a", "b", "c"] {
+            let tagged = crate::yaml::TaggedNode::cast(mapping.get_node(key).unwrap()).unwrap();
+            assert_eq!(tagged.as_string(), None, "{key}");
+        }
     }
 
     #[test]

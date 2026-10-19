@@ -345,7 +345,11 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
             indent.detach();
         }
         if !drained {
-            crate::yaml::move_leading_lines_out(collection);
+            // Only the first entry's removal leaves lines at the start;
+            // any there already are where the parser put them.
+            if prev.is_none() {
+                crate::yaml::move_leading_lines_out(collection);
+            }
             if is_last {
                 move_trailing_lines_out(collection);
             }

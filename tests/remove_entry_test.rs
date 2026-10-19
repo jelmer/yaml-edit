@@ -1143,6 +1143,18 @@ fn drain_compact_sequence_in_explicit_key() {
 }
 
 #[test]
+fn remove_later_item_of_compact_sequence_in_explicit_key() {
+    // The parser puts the blank lines before a compact sequence in an
+    // explicit key in the sequence; they stay there.
+    let pop = |d: &Document| {
+        assert!(key_sequence(d).pop().is_some());
+    };
+    check_edit("?\n\n\n- a\n- b\n", pop, "?\n\n\n- a\n");
+    check_edit("?\r\r\r- a\n-\r", pop, "?\r\r\r- a\n");
+    check_edit("?\n\n- a\n- b\n- c\n: v\n", pop, "?\n\n- a\n- b\n: v\n");
+}
+
+#[test]
 fn drain_compact_sequence_value_under_comment_line() {
     // A flow collection on a line of its own has to be indented past the
     // key, as a block sequence does not.

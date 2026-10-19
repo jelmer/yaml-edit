@@ -182,11 +182,6 @@ impl TreeBuilder {
         self.inner.finish_node();
     }
 
-    /// Whether the collection being built is inside another one.
-    pub(super) fn in_nested_collection(&self) -> bool {
-        self.open.iter().filter(|k| is_collection(k)).count() > 1
-    }
-
     /// Run `f` ahead of the trivia held back, for a zero-width node that
     /// ends what came before it.
     fn ahead_of_held(&mut self, f: impl FnOnce(&mut Self)) {
@@ -245,7 +240,7 @@ pub(super) struct Parser<'a> {
     ///
     /// Every comment of a run gets asked about in turn, and each would
     /// otherwise rescan the rest of the run.
-    comment_run_scan: Cell<Option<(usize, usize, Option<(usize, SyntaxKind)>)>>,
+    comment_run_scan: Cell<Option<(usize, usize, Option<usize>)>>,
     /// The kind of the token emitted last.
     pub(super) previous_kind: Option<SyntaxKind>,
     /// `tokens.len()` at the root node when it starts on the `---` line.
@@ -848,7 +843,7 @@ impl Parser<'_> {
                                     // Content still inside the block: the
                                     // comment belongs to it, not to whatever
                                     // encloses us.
-                                    Some((indent, _)) => indent < base_indent,
+                                    Some(indent) => indent < base_indent,
                                     // Nothing follows, so the comment is a
                                     // trailer of the enclosing scope.
                                     None => true,
@@ -1302,15 +1297,14 @@ impl Parser<'_> {
         self.upcoming_tokens().next() == Some(SyntaxKind::DASH)
     }
 
-    /// Indentation and first token of the next line that carries content,
-    /// looking past any run of comment-only and blank lines, or `None` if
-    /// there is none.
+    /// Indentation of the next line that carries content, looking past any
+    /// run of comment-only and blank lines, or `None` if there is none.
     ///
     /// A comment's own column says nothing about the block it sits in: YAML
     /// lets `a:\n  - x\n# c\n  - y\n` keep both entries, because what ends
     /// the sequence is the next content line, not the comment. The caller is
     /// positioned on the COMMENT token.
-    pub(super) fn indent_after_comment_lines(&self) -> Option<(usize, SyntaxKind)> {
+    pub(super) fn indent_after_comment_lines(&self) -> Option<usize> {
         if self.current() != Some(SyntaxKind::COMMENT) {
             return None;
         }
@@ -1331,7 +1325,7 @@ impl Parser<'_> {
 
     /// The scan behind [`indent_after_comment_lines`](Self::indent_after_comment_lines),
     /// counting the tokens it reads in `consumed`.
-    fn scan_lines_after_comment(&self, consumed: &mut usize) -> Option<(usize, SyntaxKind)> {
+    fn scan_lines_after_comment(&self, consumed: &mut usize) -> Option<usize> {
         // `tokens` is in reverse order, so walk it backwards from the current
         // token to read the lines that follow.
         let mut rest = self
@@ -1351,7 +1345,7 @@ impl Parser<'_> {
         if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
             return None;
         }
-        Self::content_line_ahead(rest)
+        Self::content_line_ahead(rest).map(|(indent, _)| indent)
     }
 
     /// Indentation and first token of the next line in `rest`, which starts

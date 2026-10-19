@@ -2199,3 +2199,20 @@ fn test_dump_cst_debug_and_default() {
     assert_eq!(super::Mapping::default().to_string(), "{}");
     assert_eq!(crate::yaml::Sequence::default().to_string(), "[]");
 }
+
+/// A renamed key that held more than one node, which the validator
+/// rejects, is replaced whole, with nothing of the old key left between
+/// the new one and the `:`.
+#[test]
+fn test_rename_key_holding_two_nodes() {
+    let doc = YamlFile::from_str("[q] x: 1\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let old = mapping.keys().next().unwrap();
+    assert!(mapping.rename_key(old, "z"));
+    assert_cst_ok(&doc);
+    crate::debug::assert_parser_shaped(&doc);
+    assert_eq!(doc.to_string(), "z: 1\n");
+}

@@ -4,7 +4,7 @@
 
 use super::block::reaches_key_colon;
 use super::scalars::is_plain_scalar_kind;
-use super::{Parser, MAX_FLOW_DEPTH};
+use super::Parser;
 use crate::error_recovery::ParseContext;
 use crate::lex::SyntaxKind;
 use crate::ParseErrorKind;
@@ -109,32 +109,6 @@ impl Parser<'_> {
         self.builder.finish_node(); // MAPPING_ENTRY
         self.builder.finish_node(); // MAPPING
     }
-    /// Bail out of a flow collection nested past [`MAX_FLOW_DEPTH`].
-    ///
-    /// Reports the error, consumes up to `closer` to recover, and closes the
-    /// node. Returns true when the caller should return without recursing.
-    fn flow_depth_exceeded(&mut self, closer: SyntaxKind) -> bool {
-        if self.flow_depth < MAX_FLOW_DEPTH {
-            return false;
-        }
-        self.add_error(
-            format!("Flow collection nested too deeply (limit {MAX_FLOW_DEPTH})"),
-            ParseErrorKind::Other,
-        );
-        while let Some(kind) = self.current() {
-            if matches!(kind, SyntaxKind::DOC_START | SyntaxKind::DOC_END) || kind == closer {
-                break;
-            }
-            self.bump();
-        }
-        if self.current() == Some(closer) {
-            self.bump();
-        }
-        self.builder.finish_node();
-        self.error_context.pop_context();
-        true
-    }
-
     /// Guarantee the flow loop makes progress.
     ///
     /// If nothing was consumed since `tokens_before` the loop would spin
@@ -177,9 +151,8 @@ impl Parser<'_> {
         self.builder.start_node(node.into());
         self.error_context.push_context(context);
 
-        if self.flow_depth_exceeded(closer) {
-            return;
-        }
+        // No deeper than the nodes parse_value_with_base_indent counts, so
+        // its nesting limit bounds this too.
         self.flow_depth += 1;
 
         self.bump(); // consume the opening bracket

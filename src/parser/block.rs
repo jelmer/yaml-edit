@@ -1606,6 +1606,23 @@ mod tests {
         crate::YamlValue::from_document(&doc).expect("should convert")
     }
 
+    /// A sequence on the line of an explicit key is the key's, however much
+    /// space follows the indicators before it.
+    #[test]
+    fn test_compact_sequence_key_after_wide_indicators() {
+        for (src, compact) in [
+            ("-  ? -", "- ? -"),
+            ("-  ? -\n", "- ? -\n"),
+            ("-  ? - a\n", "- ? - a\n"),
+            (
+                "-   ?   - a\n        - b\n    : c\n",
+                "- ? - a\n    - b\n  : c\n",
+            ),
+        ] {
+            assert_eq!(checked_value(src), checked_value(compact), "{src:?}");
+        }
+    }
+
     /// An explicit value's plain scalar continues only on lines indented
     /// past the `:`; a line at its column is not part of it.
     #[test]

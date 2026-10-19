@@ -786,6 +786,16 @@ impl Parser<'_> {
         // tokens are consumed. After skip_whitespace_only_with_dedent_check() consumes
         // whitespace and INDENT tokens, current_line_indent contains the correct indentation
         // level for the current line.
+        //
+        // Only a line's first token can be dedented. One after an indicator
+        // on the same line, like the inner `-` of `-  ? -`, sits right of
+        // it, though current_line_indent leaves out the space between them.
+        if !matches!(
+            self.previous_kind,
+            None | Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
+        ) {
+            return false;
+        }
         if base_indent == 0 {
             // At root level (base_indent=0), any indentation means content doesn't belong at root
             self.current_line_indent > 0

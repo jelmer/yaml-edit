@@ -5004,3 +5004,45 @@ fn test_block_sequence_on_document_start_line() {
     let seq = file.document().unwrap().as_sequence().unwrap();
     assert_eq!(seq.len(), 1);
 }
+
+/// Values of every document in `text`.
+fn document_values(text: &str) -> Vec<yaml_edit::YamlValue> {
+    let file = YamlFile::from_str(text).unwrap();
+    assert_eq!(file.to_string(), text);
+    file.documents()
+        .map(|doc| yaml_edit::YamlValue::from_document(&doc).unwrap())
+        .collect()
+}
+
+#[test]
+fn test_flow_indicator_on_plain_scalar_continuation_line() {
+    // The `[` continues the plain scalar `f`, so it opens no flow collection
+    // and the `---` after it still starts a new document.
+    assert_eq!(
+        document_values("f\n[\n---\n"),
+        [
+            yaml_edit::YamlValue::from("f ["),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("f\n{\n---\n"),
+        [
+            yaml_edit::YamlValue::from("f {"),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("a: b\n  [x\nc: 1\n"),
+        [yaml_edit::YamlValue::from_mapping(
+            [
+                ("a".to_string(), yaml_edit::YamlValue::from("b [x")),
+                ("c".to_string(), yaml_edit::YamlValue::from(1i64)),
+            ]
+            .into()
+        )]
+    );
+    // A flow collection opening a line is still an implicit key.
+    let file = YamlFile::from_str("a: b\n[x]: y\n").unwrap();
+    assert_eq!(file.document().unwrap().as_mapping().unwrap().len(), 2);
+}

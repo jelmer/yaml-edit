@@ -93,15 +93,18 @@ fn absorb_blank_lines_after(scalar: &SyntaxNode) {
         let space = next
             .clone()
             .filter(|t| matches!(t.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE));
-        let Some(line_break) = space
-            .as_ref()
-            .map_or(next.clone(), |t| t.next_token())
-            .filter(|t| t.kind() == SyntaxKind::NEWLINE)
-        else {
-            break;
+        // The last line of the input may have no line break.
+        let line_break = match space.as_ref().map_or(next.clone(), |t| t.next_token()) {
+            Some(t) if t.kind() == SyntaxKind::NEWLINE => Some(t),
+            None if space.is_some() => None,
+            _ => break,
         };
-        next = line_break.next_token();
+        next = line_break.as_ref().and_then(|t| t.next_token());
+        let last = line_break.is_none();
         lines.push((space, line_break));
+        if last {
+            break;
+        }
     }
     let keep = crate::nodes::scalar_node::block_scalar_indicators(scalar).0
         == crate::nodes::scalar_node::Chomping::Keep;
@@ -120,11 +123,11 @@ fn absorb_blank_lines_after(scalar: &SyntaxNode) {
             space.iter().for_each(SyntaxToken::detach);
         }
         if into_scalar || keep {
-            line_break.detach();
+            line_break.iter().for_each(SyntaxToken::detach);
         }
         if into_scalar && !keep {
             elements.extend(fitting_space.map(|t| fresh_token(SyntaxKind::INDENT, &t).into()));
-            elements.push(fresh_token(SyntaxKind::NEWLINE, line_break.text()).into());
+            elements.extend(line_break.map(|t| fresh_token(SyntaxKind::NEWLINE, t.text()).into()));
         }
     }
     append_children(scalar, elements);

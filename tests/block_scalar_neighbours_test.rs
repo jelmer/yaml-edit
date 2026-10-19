@@ -224,3 +224,26 @@ fn test_sequence_set_before_deep_comment_line() {
     assert!(seq.set(0, "text\n"));
     check(&f, "- |\n  text\n# c\n- 2\n", "[0]", "text\n");
 }
+
+#[test]
+fn test_set_before_final_whitespace_line() {
+    for (source, value, expected) in [
+        ("a: 1\n ", "text\n", "a: |\n  text\n "),
+        ("a: 1\n  ", "text\n", "a: |\n  text\n  "),
+        ("a: 1\n     ", "text\n", "a: |\n  text\n"),
+        ("a: 1\n\t", "text\n", "a: |\n  text\n"),
+        ("a: 1\n\n ", "x\ny", "a: |-\n  x\n  y\n\n "),
+        ("a: 1\n ", "text\n\n", "a: |+\n  text\n\n"),
+    ] {
+        let f = YamlFile::from_str(source).unwrap();
+        f.set("a", value);
+        check_parser_shaped(&f, expected, "a", value);
+    }
+}
+
+#[test]
+fn test_set_block_mapping_before_final_whitespace_line() {
+    let f = YamlFile::from_str("a: 1\n ").unwrap();
+    f.set("a", value_of("v:\n  x: |\n    t\n"));
+    check_parser_shaped(&f, "a:\n  x: |\n    t\n ", "a.x", "t\n");
+}

@@ -330,9 +330,30 @@ fn test_stray_token_in_flow_sequence() {
       WHITESPACE: " "
     SEQUENCE_ENTRY
       SCALAR
+        NULL: ""
     ERROR
       RIGHT_BRACE: "}"
     RIGHT_BRACKET: "]"
+"#
+    );
+}
+
+#[test]
+fn test_unclosed_flow_mapping_empty_explicit_key() {
+    assert_eq!(
+        parsed_tree("{?"),
+        r#"DOCUMENT
+  MAPPING
+    LEFT_BRACE: "{"
+    MAPPING_ENTRY
+      KEY
+        QUESTION: "?"
+        SCALAR
+          NULL: ""
+      VALUE
+        SCALAR
+          NULL: ""
+    RIGHT_BRACE: ""
 "#
     );
 }

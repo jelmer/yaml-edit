@@ -20,6 +20,7 @@ impl Parser<'_> {
 
     pub(super) fn parse_scalar(&mut self) {
         self.builder.start_node(SyntaxKind::SCALAR.into());
+        let tokens_before = self.tokens.len();
 
         if matches!(
             self.current(),
@@ -50,6 +51,11 @@ impl Parser<'_> {
             }
         } else {
             self.parse_untyped_scalar();
+        }
+        // Nothing here to read (`[}`, `{?`): the node is empty, which is
+        // the implicit null.
+        if self.tokens.len() == tokens_before {
+            self.builder.token(SyntaxKind::NULL.into(), "");
         }
 
         self.builder.finish_node();

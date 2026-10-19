@@ -1489,7 +1489,7 @@ fn parent_column(tokens: &[(SyntaxKind, &str)]) -> Option<usize> {
                     .unwrap_or(last);
                 Some(column(key))
             }
-            DOC_START => None,
+            DOC_START | DOC_END => None,
             _ => Some(0),
         };
     }

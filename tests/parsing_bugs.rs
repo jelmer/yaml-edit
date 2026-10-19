@@ -5330,6 +5330,19 @@ fn test_block_scalar_indicator_on_plain_scalar_continuation_line() {
 }
 
 #[test]
+fn test_quote_on_plain_scalar_continuation_line_after_document_end() {
+    // A document after `...` starts at the root like any other, so the
+    // quote continues the scalar `z` rather than opening a quoted scalar
+    // that took in the comment.
+    assert_eq!(
+        document_values("...\nz\n\"\n# c\n"),
+        [yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain(
+            "z \""
+        ))]
+    );
+}
+
+#[test]
 fn test_plain_scalar_starting_with_colon_spans_words() {
     // `:o` starts a plain scalar, which runs on past the space, so the `[`
     // in it is content and the key is `:o [d`.

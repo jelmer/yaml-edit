@@ -600,6 +600,16 @@ fn remove_keeps_comment_line_out_of_block_scalar_before() {
 }
 
 #[test]
+fn remove_leaves_lines_after_plain_scalar_starting_with_pipe() {
+    // `|x` after a flow node, which the validator rejects, is plain text
+    // rather than a block scalar header, so the lines after it are left
+    // as they were.
+    let doc = Document::from_str("- [a]|x\n\n  # t\n- b\n").unwrap();
+    remove_top(1)(&doc);
+    assert_eq!(doc.to_string(), "- [a]|x\n\n  # t\n");
+}
+
+#[test]
 fn remove_first_root_entry_before_comment_line() {
     // The comment line stays in the mapping rather than at stream level,
     // where the parser has it; debug::shape_to_string allows for that.

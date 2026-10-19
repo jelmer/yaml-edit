@@ -1239,13 +1239,9 @@ impl<'a, 'c> LexState<'a, 'c> {
             self.chars.next();
         }
 
-        // Determine if this is structural indentation
-        // Check for any line break: \n, \r\n (already consumed \n), or \r alone
-        // A line also starts after a BOM, which takes no column.
-        let is_indentation = start_idx == self.line_start
-            || (start_idx > 0
-                && (self.input.as_bytes()[start_idx - 1] == b'\n'
-                    || self.input.as_bytes()[start_idx - 1] == b'\r'));
+        // White space starting a line is its indentation. A line also starts
+        // after a BOM, which takes no column.
+        let is_indentation = start_idx == self.line_start;
 
         if is_indentation {
             // Check for tab characters in indentation (forbidden in YAML)

@@ -411,34 +411,8 @@ fn scan_single_quoted(
     (end_idx, false)
 }
 
-/// Whether the quote at `quote_idx` opening its line is content of the plain
-/// scalar on the lines before it rather than the start of a quoted scalar.
-///
-/// Such a line either continues that scalar or starts a new implicit key,
-/// and an implicit key fits on one line. So a quote that does not close on
-/// its own line is content: `a: b\n  'c\nd: 1\n` holds `b 'c`, where
-/// scanning it as quoted ran on to the next quote in the file.
-fn quote_continues_plain_scalar(
-    tokens: &[(SyntaxKind, &str)],
-    input: &str,
-    line_start: usize,
-    quote_idx: usize,
-) -> bool {
-    use SyntaxKind::*;
-    if !input[line_start..quote_idx]
-        .chars()
-        .all(|c| c == ' ' || c == '\t')
-    {
-        return false;
-    }
-    let after_plain_scalar = tokens
-        .iter()
-        .rev()
-        .find(|(kind, _)| !matches!(kind, WHITESPACE | INDENT | NEWLINE))
-        .is_some_and(|(kind, _)| matches!(kind, STRING | INT | FLOAT | BOOL | NULL));
-    if !after_plain_scalar {
-        return false;
-    }
+/// Whether the quote at `quote_idx` closes on its own line.
+fn quote_closes_on_line(input: &str, quote_idx: usize) -> bool {
     let line = input[quote_idx..]
         .split(['\n', '\r'])
         .next()
@@ -450,7 +424,44 @@ fn quote_continues_plain_scalar(
     } else {
         scan_single_quoted(&mut rest, 0)
     };
-    !closes_on_line
+    closes_on_line
+}
+
+/// Whether the flow collection opening at `open_idx` closes on its line.
+fn flow_collection_closes_on_line(input: &str, open_idx: usize) -> bool {
+    let line = input[open_idx..]
+        .split(['\n', '\r'])
+        .next()
+        .unwrap_or_default();
+    let mut chars = line.char_indices().peekable();
+    let mut depth = 0u32;
+    let mut prev = ' ';
+    while let Some((idx, ch)) = chars.next() {
+        match ch {
+            '[' | '{' => depth += 1,
+            ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return true;
+                }
+            }
+            // A quote mid-scalar (`[a'b]`) is content.
+            '"' | '\'' if matches!(prev, ' ' | '\t' | '[' | '{' | ',' | ':') => {
+                let (_, closed) = if ch == '"' {
+                    scan_double_quoted(&mut chars, idx)
+                } else {
+                    scan_single_quoted(&mut chars, idx)
+                };
+                if !closed {
+                    return false;
+                }
+            }
+            '#' if matches!(prev, ' ' | '\t') => return false,
+            _ => {}
+        }
+        prev = ch;
+    }
+    false
 }
 
 /// Whether a `-` or `+` following `line_prefix`, the text of its line before
@@ -582,6 +593,9 @@ struct LexState<'a, 'c> {
     /// the depth would never come back down and every later `,` in the file
     /// would lex as a delimiter.
     block_scalar: Option<BlockScalarBody>,
+    /// Number of tokens when the last block scalar body ended. The text
+    /// tokens before it may be body lines, which no line continues.
+    block_scalar_end: usize,
 }
 
 impl<'a, 'c> LexState<'a, 'c> {
@@ -596,6 +610,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             detected_line_ending: None,
             flow_depth: 0,
             block_scalar: None,
+            block_scalar_end: 0,
         }
     }
 
@@ -712,6 +727,33 @@ impl<'a, 'c> LexState<'a, 'c> {
             && node_property_can_start(&self.tokens)
     }
 
+    /// Whether a block scalar header may start at `idx`.
+    fn block_scalar_header_can_start(&self, idx: usize) -> bool {
+        self.flow_depth == 0
+            && self.node_can_start()
+            && !self.opens_plain_scalar_continuation_line(idx)
+    }
+
+    /// Whether the character at `idx` opens a line following a plain scalar.
+    ///
+    /// Such a line either continues that scalar or starts a new implicit
+    /// key, and an implicit key fits on one line.
+    fn opens_plain_scalar_continuation_line(&self, idx: usize) -> bool {
+        use SyntaxKind::*;
+        self.input[self.line_start..idx]
+            .chars()
+            .all(|c| c == ' ' || c == '\t')
+            && self
+                .tokens
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, (kind, _))| !matches!(kind, WHITESPACE | INDENT | NEWLINE))
+                .is_some_and(|(i, (kind, _))| {
+                    i >= self.block_scalar_end && matches!(kind, STRING | INT | FLOAT | BOOL | NULL)
+                })
+    }
+
     /// Lex the token starting with `ch`, which has just been consumed.
     fn lex_char(&mut self, start_idx: usize, ch: char) {
         use SyntaxKind::*;
@@ -767,6 +809,16 @@ impl<'a, 'c> LexState<'a, 'c> {
             {
                 self.push_plain_scalar(start_idx, start_idx + 1, true);
             }
+            // So is one opening a line after a plain scalar, unless it closes
+            // on that line, as an implicit key has to: opening a collection
+            // in `f\n[\n---\n` hid the `---` that ends the document.
+            '[' | '{'
+                if self.flow_depth == 0
+                    && self.opens_plain_scalar_continuation_line(start_idx)
+                    && !flow_collection_closes_on_line(self.input, start_idx) =>
+            {
+                self.push_plain_scalar(start_idx, start_idx + 1, true);
+            }
             '[' => {
                 self.flow_depth += 1;
                 self.push(LEFT_BRACKET, start_idx, start_idx + 1);
@@ -799,7 +851,10 @@ impl<'a, 'c> LexState<'a, 'c> {
             // scalars a block-context production only, so inside a flow
             // collection a `|` is plain content and `[|, x]` has two
             // entries, as saphyr reads it.
-            '|' if self.flow_depth == 0 && self.node_can_start() => {
+            //
+            // A line after a plain scalar continues it, as a block scalar
+            // cannot be an implicit key: `1\n|x\n  # t\n` is `1 |x`.
+            '|' if self.block_scalar_header_can_start(start_idx) => {
                 self.block_scalar = Some(BlockScalarBody::new(
                     &self.tokens,
                     self.input,
@@ -807,7 +862,7 @@ impl<'a, 'c> LexState<'a, 'c> {
                 ));
                 self.push(PIPE, start_idx, start_idx + 1)
             }
-            '>' if self.flow_depth == 0 && self.node_can_start() => {
+            '>' if self.block_scalar_header_can_start(start_idx) => {
                 self.block_scalar = Some(BlockScalarBody::new(
                     &self.tokens,
                     self.input,
@@ -845,14 +900,13 @@ impl<'a, 'c> LexState<'a, 'c> {
             }
             // A quote is literal text in a block scalar's body, and content on
             // a line continuing a plain scalar, as the flow indicators above.
+            // A quote that does not close on its own line cannot start an
+            // implicit key: `a: b\n  'c\nd: 1\n` holds `b 'c`, where scanning
+            // it as quoted ran on to the next quote in the file.
             '"' | '\''
                 if in_block_scalar_body(self.block_scalar, self.line_start)
-                    || quote_continues_plain_scalar(
-                        &self.tokens,
-                        self.input,
-                        self.line_start,
-                        start_idx,
-                    ) =>
+                    || (self.opens_plain_scalar_continuation_line(start_idx)
+                        && !quote_closes_on_line(self.input, start_idx)) =>
             {
                 self.push_plain_scalar(start_idx, start_idx + 1, true);
             }
@@ -1112,10 +1166,8 @@ impl<'a, 'c> LexState<'a, 'c> {
             // as a URL, `::vector`, or a timestamp. The shared body
             // reader knows the rules: a `:` not followed by space is
             // content, flow indicators are content in block context,
-            // and a `#` glued to content is not a comment. Do not let
-            // it absorb an internal space run, though -- `: v` after
-            // this colon is a value, not more key.
-            self.push_plain_scalar(start_idx, start_idx + 1, false);
+            // and a `#` glued to content is not a comment.
+            self.push_plain_scalar(start_idx, start_idx + 1, true);
         }
     }
 
@@ -1272,12 +1324,16 @@ impl<'a, 'c> LexState<'a, 'c> {
 
         self.push(SyntaxKind::NEWLINE, start_idx, end_pos);
         self.line_start = end_pos;
+        let in_body = self.block_scalar.is_some();
         track_block_scalar_body(
             &self.tokens,
             self.input,
             self.line_start,
             &mut self.block_scalar,
         );
+        if in_body && self.block_scalar.is_none() {
+            self.block_scalar_end = self.tokens.len();
+        }
     }
 
     fn lex_whitespace(&mut self, start_idx: usize, ch: char) {
@@ -1320,7 +1376,13 @@ impl<'a, 'c> LexState<'a, 'c> {
     }
 
     fn lex_plain_scalar(&mut self, start_idx: usize, ch: char) {
-        let end = self.read_plain_scalar_body(start_idx + ch.len_utf8(), true, true);
+        // Only a header's indentation indicator can precede its chomping
+        // `+`. A `|` reaching here is content: `1\n|+\n` is `1 |+`.
+        let after_header = matches!(
+            self.tokens.last(),
+            Some((SyntaxKind::PIPE | SyntaxKind::GREATER, _))
+        );
+        let end = self.read_plain_scalar_body(start_idx + ch.len_utf8(), true, after_header);
         self.push_scalar(start_idx, end);
     }
 

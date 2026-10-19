@@ -1229,9 +1229,11 @@ impl Parser<'_> {
                     // A lone anchor may annotate an indentless sequence, whose
                     // entries sit at the *key's* column rather than the
                     // anchor's (`seq:\n &a\n- x\n`). Hand it the key's base
-                    // so it can adopt them; anything else measures from its
-                    // own line as before.
+                    // so it can adopt them, but as a value, so that a mapping
+                    // there is still a sibling entry (`a:\n &x\nb: 1\n`).
+                    // Anything else measures from its own line as before.
                     let value_indent = if self.current() == Some(SyntaxKind::ANCHOR) {
+                        ctx.annotation_in_value_position = true;
                         base_indent
                     } else {
                         self.current_line_indent

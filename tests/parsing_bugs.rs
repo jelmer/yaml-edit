@@ -5004,3 +5004,153 @@ fn test_block_sequence_on_document_start_line() {
     let seq = file.document().unwrap().as_sequence().unwrap();
     assert_eq!(seq.len(), 1);
 }
+
+/// Values of every document in `text`.
+fn document_values(text: &str) -> Vec<yaml_edit::YamlValue> {
+    let file = YamlFile::from_str(text).unwrap();
+    assert_eq!(file.to_string(), text);
+    file.documents()
+        .map(|doc| yaml_edit::YamlValue::from_document(&doc).unwrap())
+        .collect()
+}
+
+#[test]
+fn test_flow_indicator_on_plain_scalar_continuation_line() {
+    // The `[` continues the plain scalar `f`, so it opens no flow collection
+    // and the `---` after it still starts a new document.
+    assert_eq!(
+        document_values("f\n[\n---\n"),
+        [
+            yaml_edit::YamlValue::from("f ["),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("f\n{\n---\n"),
+        [
+            yaml_edit::YamlValue::from("f {"),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("a: b\n  [x\nc: 1\n"),
+        [yaml_edit::YamlValue::from_mapping(
+            [
+                ("a".to_string(), yaml_edit::YamlValue::from("b [x")),
+                ("c".to_string(), yaml_edit::YamlValue::from(1i64)),
+            ]
+            .into()
+        )]
+    );
+    // A flow collection opening a line is still an implicit key.
+    let file = YamlFile::from_str("a: b\n[x]: y\n").unwrap();
+    assert_eq!(file.document().unwrap().as_mapping().unwrap().len(), 2);
+}
+
+#[test]
+fn test_block_scalar_indicator_on_plain_scalar_continuation_line() {
+    // A `|` or `>` continuing a plain scalar is content, not a block scalar
+    // header, so the lines after it are not a block scalar body.
+    assert_eq!(
+        document_values("1\n|x\n  # t\n"),
+        [yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain(
+            "1 |x"
+        ))]
+    );
+    assert_eq!(
+        document_values("1\n|+\n"),
+        [yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain(
+            "1 |+"
+        ))]
+    );
+    assert_eq!(
+        document_values("a\n>\n  b\n"),
+        [yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain(
+            "a > b"
+        ))]
+    );
+    assert_eq!(
+        document_values("a: b\n  |\n  # c\nd: 1\n"),
+        [yaml_edit::YamlValue::from_mapping(
+            [
+                (
+                    "a".to_string(),
+                    yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain("b |"))
+                ),
+                ("d".to_string(), yaml_edit::YamlValue::from(1i64)),
+            ]
+            .into()
+        )]
+    );
+}
+
+#[test]
+fn test_plain_scalar_starting_with_colon_spans_words() {
+    // `:o` starts a plain scalar, which runs on past the space, so the `[`
+    // in it is content and the key is `:o [d`.
+    assert_eq!(
+        document_values(":o [d: f\n"),
+        [yaml_edit::YamlValue::from_mapping(
+            [(
+                ":o [d".to_string(),
+                yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain("f"))
+            )]
+            .into()
+        )]
+    );
+    let file = YamlFile::from_str(":o p: f\n").unwrap();
+    assert_eq!(
+        yaml_edit::debug::tree_to_string(<YamlFile as rowan::ast::AstNode>::syntax(&file)),
+        concat!(
+            "DOCUMENT\n",
+            "  MAPPING\n",
+            "    MAPPING_ENTRY\n",
+            "      KEY\n",
+            "        SCALAR\n",
+            "          STRING: \":o p\"\n",
+            "      COLON: \":\"\n",
+            "      WHITESPACE: \" \"\n",
+            "      VALUE\n",
+            "        SCALAR\n",
+            "          STRING: \"f\"\n",
+            "      NEWLINE: \"\\\\n\"\n",
+        )
+    );
+}
+
+#[test]
+fn test_anchor_alone_on_value_line_before_sibling() {
+    // The anchor annotates an empty value: `b` at the key's column is a
+    // sibling entry, not the anchored node.
+    let null = || yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::parse(""));
+    let mapping = |entries: Vec<(&str, yaml_edit::YamlValue)>| {
+        yaml_edit::YamlValue::from_mapping(
+            entries
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        )
+    };
+    let one = || yaml_edit::YamlValue::from(1i64);
+    assert_eq!(
+        document_values("a:\n &x\nb: 1\n"),
+        [mapping(vec![("a", null()), ("b", one())])]
+    );
+    assert_eq!(
+        document_values("k:\n  a:\n   &x\n  b: 1\n"),
+        [mapping(vec![(
+            "k",
+            mapping(vec![("a", null()), ("b", one())])
+        )])]
+    );
+    // A more indented mapping, or a sequence at the key's column, is still
+    // the anchored value.
+    assert_eq!(
+        document_values("a:\n &x\n b: 1\n"),
+        [mapping(vec![("a", mapping(vec![("b", one())]))])]
+    );
+    assert_eq!(
+        document_values("a:\n &x\n- 1\n"),
+        [mapping(vec![("a", yaml_edit::YamlValue::from(vec![1i64]))])]
+    );
+}

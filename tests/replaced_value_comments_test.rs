@@ -148,6 +148,7 @@ fn sequence_set_over_commented_value() {
         ("- |  # h\n  t\n- 2\n", "- 5  # h\n- 2\n"),
         ("- [1,  # c\n  2]\n- 2\n", "- 5  # c\n- 2\n"),
         ("- 1  # c\n", "- 5  # c\n"),
+        ("-\n  x  # c\n- 2\n", "-\n  5\n- 2\n"),
         ("- x: 1\n\n- 2\n", "- 5\n\n- 2\n"),
         (
             "- x: 1\n  # inner\n# outer\n- 2\n",
@@ -220,6 +221,8 @@ fn sequence_set_block_over_commented_value() {
         ("-  # c\n  x: 1\n- 2\n", "-  # c\n  y: 2\n- 2\n"),
         ("- 1  # c\n- 2\n", "-  # c\n  y: 2\n- 2\n"),
         ("- |  # h\n  t\n- 2\n", "-  # h\n  y: 2\n- 2\n"),
+        ("-\n  x  # c\n- 2\n", "-\n  y: 2\n- 2\n"),
+        ("-\n  x  # c\n", "-\n  y: 2\n"),
     ] {
         let file = YamlFile::from_str(src).unwrap();
         sequence_at(&file, "").set(0, block_mapping());

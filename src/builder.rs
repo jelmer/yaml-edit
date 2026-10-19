@@ -1390,4 +1390,88 @@ item:
             .build();
         assert_eq!(first_key(&yaml).1, crate::scalar::ScalarType::String);
     }
+
+    #[test]
+    fn test_block_nodes_as_items_and_values() {
+        let source = Document::from_str("k: |\n  text\nt: !t\n  a: 1\n").unwrap();
+        let mapping = source.as_mapping().unwrap();
+        let literal = mapping.get("k").unwrap();
+        let tagged = mapping.get("t").unwrap();
+        for (file, expected) in [
+            (
+                SequenceBuilder::new()
+                    .item(literal.clone())
+                    .item(tagged.clone())
+                    .item("x")
+                    .build()
+                    .build(),
+                "- |\n  text\n- !t\n  a: 1\n- x\n",
+            ),
+            (
+                MappingBuilder::new()
+                    .pair("a", literal.clone())
+                    .pair("b", tagged.clone())
+                    .build()
+                    .build(),
+                "a: |\n  text\nb: !t\n  a: 1\n",
+            ),
+            (
+                MappingBuilder::new()
+                    .mapping("m", |m| m.pair("x", literal.clone()))
+                    .build()
+                    .build(),
+                "m:\n  x: |\n    text\n",
+            ),
+            (
+                SequenceBuilder::new()
+                    .mapping(|m| m.pair("x", tagged.clone()).pair("y", 2))
+                    .build()
+                    .build(),
+                "-\n  x: !t\n    a: 1\n  y: 2\n",
+            ),
+        ] {
+            assert_eq!(file.to_string(), expected);
+            assert_parser_shaped(&file);
+        }
+    }
+
+    #[test]
+    fn test_raw_sequence_values() {
+        let items: Vec<crate::YamlValue> =
+            vec![crate::YamlValue::from(1i64), crate::YamlValue::from("a b")];
+        for (file, expected) in [
+            (
+                MappingBuilder::new()
+                    .pair("v", items.clone())
+                    .pair("e", Vec::<crate::YamlValue>::new())
+                    .build()
+                    .build(),
+                "v:\n  - 1\n  - a b\ne: []\n",
+            ),
+            (
+                SequenceBuilder::new().item(items).build().build(),
+                "- - 1\n  - a b\n",
+            ),
+        ] {
+            assert_eq!(file.to_string(), expected);
+            assert_parser_shaped(&file);
+        }
+    }
+
+    #[test]
+    fn test_builder_defaults_and_entry_points() {
+        for (file, expected) in [
+            (YamlBuilder::default().build(), "{}\n"),
+            (SequenceBuilder::default().build().build(), "[]\n"),
+            (MappingBuilder::default().build().build(), "{}\n"),
+            (YamlBuilder::sequence().item(1).build().build(), "- 1\n"),
+            (
+                YamlBuilder::mapping().pair("a", 1).build().build(),
+                "a: 1\n",
+            ),
+        ] {
+            assert_eq!(file.to_string(), expected);
+            assert_parser_shaped(&file);
+        }
+    }
 }

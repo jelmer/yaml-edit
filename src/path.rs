@@ -24,13 +24,18 @@
 //! let yaml = Document::from_str("server:\n  host: localhost\n  port: 8080\n").unwrap();
 //!
 //! // Get nested values
-//! let host = yaml.try_get_path("server.host").ok();
+//! let host = yaml.try_get_path("server.host").unwrap();
+//! assert_eq!(host.to_string(), "localhost");
 //!
 //! // Set nested values (creates intermediate mappings)
 //! yaml.try_set_path("database.primary.host", "db.example.com").unwrap();
 //!
 //! // Remove nested values
 //! yaml.try_remove_path("server.port").unwrap();
+//! assert_eq!(
+//!     yaml.to_string(),
+//!     "server:\n  host: localhost\ndatabase:\n  primary:\n    host: db.example.com\n"
+//! );
 //! ```
 //!
 //! # Aliases
@@ -207,7 +212,10 @@ pub trait YamlPath {
     /// let yaml = Document::from_str("server:\n  host: localhost\n").unwrap();
     /// #[allow(deprecated)]
     /// let host = yaml.get_path("server.host");
-    /// assert!(host.is_some());
+    /// assert_eq!(host.unwrap().to_string(), "localhost");
+    /// #[allow(deprecated)]
+    /// let missing = yaml.get_path("server..host");
+    /// assert!(missing.is_none());
     /// ```
     #[deprecated(
         since = "0.4.0",
@@ -234,6 +242,14 @@ pub trait YamlPath {
     /// yaml.set_path("server.host", "localhost");
     /// #[allow(deprecated)]
     /// yaml.set_path("server.port", 8080);
+    /// assert_eq!(
+    ///     yaml.to_string(),
+    ///     "name: test\nserver:\n  host: localhost\n  port: 8080\n"
+    /// );
+    /// // A failed write is not reported.
+    /// #[allow(deprecated)]
+    /// yaml.set_path("name.first", "x");
+    /// assert_eq!(yaml.try_get_path("name").unwrap().to_string(), "test");
     /// ```
     #[deprecated(
         since = "0.4.0",
@@ -688,8 +704,10 @@ fn navigate_path(
     segments: &[PathSegment],
     policy: AliasPolicy,
 ) -> Result<crate::as_yaml::YamlNode, PathError> {
+    let mut holder = None;
     for segment in segments {
-        current = descend_one(current, segment, policy)?;
+        current = descend_one(current, holder, segment, policy)?;
+        holder = Some(segment);
     }
     Ok(current)
 }
@@ -712,8 +730,7 @@ fn registry_for(node: &crate::yaml::SyntaxNode) -> crate::anchor_resolution::Anc
 /// Resolve `current` if it is an alias, according to `policy`.
 ///
 /// `segment` is only used to label errors: it is the segment that
-/// produced `current`, i.e. the one the caller is about to descend
-/// through.
+/// produced `current`.
 fn resolve_for_read(
     current: crate::as_yaml::YamlNode,
     segment: &PathSegment,
@@ -810,17 +827,22 @@ fn lookup_merged(
         .ok_or(PathError::NotFound { at })
 }
 
+/// Apply `segment` to `current`, the value of segment `holder` (`None`
+/// for the root, whose errors name `segment` instead).
 fn descend_one(
     current: crate::as_yaml::YamlNode,
+    holder: Option<&PathSegment>,
     segment: &PathSegment,
     policy: AliasPolicy,
 ) -> Result<crate::as_yaml::YamlNode, PathError> {
-    let current = resolve_for_read(current, segment, policy)?;
+    let holder = holder.unwrap_or(segment);
+    let current = resolve_for_read(current, holder, policy)?;
+    let mismatch = || PathError::TypeMismatch {
+        at: segment_display(holder),
+    };
     match segment {
         PathSegment::Key(key) => {
-            let mapping = node_as_mapping(&current).ok_or_else(|| PathError::TypeMismatch {
-                at: segment_display(segment),
-            })?;
+            let mapping = node_as_mapping(&current).ok_or_else(mismatch)?;
             lookup_merged(&mapping, key, segment)
         }
         PathSegment::Index(index) => {
@@ -832,9 +854,7 @@ fn descend_one(
                 // Fallback: numeric segment used as a mapping key.
                 lookup_merged(&map, &index.to_string(), segment)
             } else {
-                Err(PathError::TypeMismatch {
-                    at: segment_display(segment),
-                })
+                Err(mismatch())
             }
         }
     }
@@ -903,7 +923,7 @@ impl YamlPath for crate::yaml::Document {
             return Err(PathError::NoRoot);
         };
 
-        remove_path_impl(root, &segments, policy)
+        remove_path_impl(root, None, &segments, policy)
     }
 }
 
@@ -916,52 +936,44 @@ impl YamlPath for crate::yaml::Document {
 /// `PathError::TypeMismatch` at that segment.
 fn remove_path_impl(
     root: crate::as_yaml::YamlNode,
+    holder: Option<&PathSegment>,
     segments: &[PathSegment],
     policy: AliasPolicy,
 ) -> Result<crate::as_yaml::YamlNode, PathError> {
     debug_assert!(!segments.is_empty(), "caller must reject empty paths");
+    let seg = &segments[0];
+    if segments.len() > 1 {
+        let nested = descend_one(root, holder, seg, policy)?;
+        return remove_path_impl(nested, Some(seg), &segments[1..], policy);
+    }
 
     // The node we were handed may itself be an alias (e.g. `a: *shared`
     // then removing `a.timeout`). Resolving here means the final
     // container lookup below sees the anchored mapping.
-    let root = resolve_for_read(root, &segments[0], policy)?;
-
-    if segments.len() == 1 {
-        let seg = &segments[0];
-        let key = match seg {
-            PathSegment::Key(key) => key.clone(),
-            PathSegment::Index(index) => {
-                // Numeric segment on a mapping falls back to the
-                // stringified key. On a sequence, index removal is
-                // unsupported.
-                if node_as_mapping(&root).is_none() {
-                    return Err(PathError::TypeMismatch {
-                        at: segment_display(seg),
-                    });
-                }
-                index.to_string()
-            }
-        };
-        let mapping = node_as_mapping(&root).ok_or_else(|| PathError::TypeMismatch {
-            at: segment_display(seg),
-        })?;
-        let not_found = || PathError::NotFound {
-            at: segment_display(seg),
-        };
-        // Grab the value before removal so we can return it.
-        if let Some(value) = mapping.get(key.as_str()) {
-            mapping.remove(key.as_str());
-            return Ok(value);
+    let holder = holder.unwrap_or(seg);
+    let root = resolve_for_read(root, holder, policy)?;
+    let mapping = node_as_mapping(&root).ok_or_else(|| {
+        // A numeric segment on a mapping is a stringified key; on a
+        // sequence, index removal is unsupported.
+        let index_on_sequence =
+            matches!(seg, PathSegment::Index(_)) && node_as_sequence(&root).is_some();
+        PathError::TypeMismatch {
+            at: segment_display(if index_on_sequence { seg } else { holder }),
         }
-        let key = spelled_key(mapping.keys(), &key).ok_or_else(not_found)?;
-        let value = mapping.get(&key).ok_or_else(not_found)?;
-        mapping.remove(&key);
+    })?;
+    let key = segment_key(seg);
+    let not_found = || PathError::NotFound {
+        at: segment_display(seg),
+    };
+    // Grab the value before removal so we can return it.
+    if let Some(value) = mapping.get(key.as_str()) {
+        mapping.remove(key.as_str());
         return Ok(value);
     }
-
-    // Descend one level and recurse.
-    let nested = descend_one(root, &segments[0], policy)?;
-    remove_path_impl(nested, &segments[1..], policy)
+    let key = spelled_key(mapping.keys(), &key).ok_or_else(not_found)?;
+    let value = mapping.get(&key).ok_or_else(not_found)?;
+    mapping.remove(&key);
+    Ok(value)
 }
 
 // Implementation for Mapping
@@ -997,6 +1009,7 @@ impl YamlPath for Mapping {
         let segments = path_segments_required(path)?;
         remove_path_impl(
             crate::as_yaml::YamlNode::Mapping(self.clone()),
+            None,
             &segments,
             policy,
         )
@@ -2673,7 +2686,7 @@ config:
         assert_eq!(
             doc.try_get_path_with("service.timeout", AliasPolicy::Refuse),
             Err(PathError::AliasRefused {
-                at: "timeout".to_string(),
+                at: "service".to_string(),
                 alias: "shared".to_string()
             })
         );
@@ -2692,7 +2705,7 @@ config:
         assert_eq!(
             doc.try_get_path("service.timeout"),
             Err(PathError::UndefinedAlias {
-                at: "timeout".to_string(),
+                at: "service".to_string(),
                 alias: "missing".to_string()
             })
         );
@@ -2727,7 +2740,7 @@ config:
         assert_eq!(
             doc.try_get_path("b.k"),
             Err(PathError::UndefinedAlias {
-                at: "k".to_string(),
+                at: "b".to_string(),
                 alias: "x".to_string()
             })
         );
@@ -2752,7 +2765,7 @@ config:
         assert_eq!(
             second.try_get_path("b.k"),
             Err(PathError::UndefinedAlias {
-                at: "k".to_string(),
+                at: "b".to_string(),
                 alias: "x".to_string()
             })
         );
@@ -2978,7 +2991,7 @@ config:
         assert_eq!(
             doc.try_remove_path("service.timeout"),
             Err(PathError::AliasRefused {
-                at: "timeout".to_string(),
+                at: "service".to_string(),
                 alias: "shared".to_string()
             })
         );
@@ -3059,7 +3072,7 @@ config:
         assert_eq!(
             doc.try_get_path("c.k"),
             Err(PathError::UndefinedAlias {
-                at: "k".to_string(),
+                at: "c".to_string(),
                 alias: "b".to_string()
             })
         );
@@ -3231,5 +3244,317 @@ config:
                 "{path} on {src:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_errors_name_the_segment_holding_the_value() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("x: &x {a: 1}\nfoo: 1\ns: [a]\nb: *x\nu: *nope\n").unwrap();
+        let mismatch = |at: &str| PathError::TypeMismatch { at: at.to_string() };
+        for (path, expected) in [
+            ("foo.bar", mismatch("foo")),
+            ("foo.bar.baz", mismatch("foo")),
+            ("foo[0]", mismatch("foo")),
+            ("s.k", mismatch("s")),
+            ("s[0].k", mismatch("[0]")),
+            ("s[0][0]", mismatch("[0]")),
+            (
+                "b.a",
+                PathError::AliasRefused {
+                    at: "b".to_string(),
+                    alias: "x".to_string(),
+                },
+            ),
+            (
+                "u.a",
+                PathError::AliasRefused {
+                    at: "u".to_string(),
+                    alias: "nope".to_string(),
+                },
+            ),
+        ] {
+            assert_eq!(
+                doc.try_get_path_with(path, AliasPolicy::Refuse),
+                Err(expected.clone()),
+                "get {path}"
+            );
+            assert_eq!(
+                doc.try_remove_path(path).map(|_| ()),
+                Err(expected.clone()),
+                "remove {path}"
+            );
+            assert_eq!(doc.try_set_path(path, 1), Err(expected), "set {path}");
+        }
+        let undefined = PathError::UndefinedAlias {
+            at: "u".to_string(),
+            alias: "nope".to_string(),
+        };
+        assert_eq!(
+            doc.try_get_path_with("u.a", AliasPolicy::Follow),
+            Err(undefined.clone())
+        );
+        assert_eq!(
+            doc.try_remove_path_with("u.a", AliasPolicy::Follow)
+                .map(|_| ()),
+            Err(undefined.clone())
+        );
+        assert_eq!(
+            doc.try_set_path_with("u.a", 1, AliasPolicy::Follow),
+            Err(undefined)
+        );
+        // At the root no segment holds the value, so the one applied to it
+        // is named.
+        let doc = Document::from_str("5\n").unwrap();
+        assert_eq!(doc.try_get_path("a"), Err(mismatch("a")));
+    }
+
+    #[test]
+    fn test_path_error_display() {
+        for (error, text) in [
+            (
+                PathError::Parse(PathParseError::UnclosedIndex),
+                "path parse error: unclosed '[' in path",
+            ),
+            (
+                PathError::Parse(PathParseError::InvalidIndex("x".to_string())),
+                "path parse error: invalid path index [x]",
+            ),
+            (
+                PathError::Parse(PathParseError::TrailingBackslash),
+                "path parse error: path ends with an unescaped '\\'",
+            ),
+            (
+                PathError::Parse(PathParseError::EmptySegment),
+                "path parse error: empty segment in path",
+            ),
+            (
+                PathError::Parse(PathParseError::MissingSeparator),
+                "path parse error: expected '.' or '[' after ']' in path",
+            ),
+            (PathError::EmptyPath, "path is empty (no segments)"),
+            (PathError::NoRoot, "document has no root to descend into"),
+            (
+                PathError::TypeMismatch { at: "a".into() },
+                "path segment \"a\" is not a container",
+            ),
+            (
+                PathError::NotFound { at: "a".into() },
+                "path segment \"a\" not found",
+            ),
+            (
+                PathError::AliasRefused {
+                    at: "a".into(),
+                    alias: "x".into(),
+                },
+                "path segment \"a\" is an alias to \"x\"; refusing to descend through it",
+            ),
+            (
+                PathError::IndexTooFar {
+                    at: "[300]".into(),
+                    len: 2,
+                    index: 300,
+                },
+                "path segment \"[300]\" would grow a sequence of 2 by 299 null entries to reach index 300",
+            ),
+            (
+                PathError::UndefinedAlias {
+                    at: "a".into(),
+                    alias: "x".into(),
+                },
+                "path segment \"a\" is an alias to undefined anchor \"x\"",
+            ),
+            (
+                PathError::InvalidMergeOperand {
+                    at: "a".into(),
+                    operand: "1".into(),
+                },
+                "looking up path segment \"a\": merge key operand \"1\" is not a mapping",
+            ),
+        ] {
+            assert_eq!(error.to_string(), text);
+        }
+    }
+
+    #[test]
+    fn test_document_root_sequence_and_scalar() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("- a\n- b\n").unwrap();
+        assert_eq!(doc.try_get_path("[1]").unwrap().to_string(), "b");
+        assert_eq!(
+            doc.try_remove_path("[1]").map(|_| ()),
+            Err(PathError::TypeMismatch { at: "[1]".into() })
+        );
+        assert_eq!(doc.try_set_path("[1]", "x"), Err(PathError::NoRoot));
+        assert_eq!(doc.to_string(), "- a\n- b\n");
+
+        let doc = Document::from_str("5\n").unwrap();
+        assert_eq!(
+            doc.try_get_path("a"),
+            Err(PathError::TypeMismatch { at: "a".into() })
+        );
+        assert_eq!(doc.try_remove_path("a").map(|_| ()), Err(PathError::NoRoot));
+
+        let doc = Document::new();
+        assert_eq!(doc.try_get_path("a"), Err(PathError::NoRoot));
+        assert_eq!(doc.try_remove_path("a").map(|_| ()), Err(PathError::NoRoot));
+    }
+
+    #[test]
+    fn test_set_path_creates_sequences_and_mappings_in_sequences() {
+        let refuse = AliasPolicy::Refuse;
+        for (src, path, expected) in [
+            ("{a: 1}", "b[0]", "{a: 1, b: [9]}"),
+            ("{a: 1}", "b.c", "{a: 1, b: {c: 9}}"),
+            ("s: [[a]]\n", "s[0][1]", "s: [[a, 9]]\n"),
+            ("s: [{a: 1}]\n", "s[0][1]", "s: [{a: 1, '1': 9}]\n"),
+            ("s:\n- a\n", "s[2].k", "s:\n- a\n- null\n- {k: 9}\n"),
+            ("s:\n- a\n", "s[2][0]", "s:\n- a\n- null\n- [9]\n"),
+            ("s:\n- a\n", "s[1][0][0]", "s:\n- a\n- [[9]]\n"),
+            ("s:\n- a\n- ~\n", "s[1].k", "s:\n- a\n- {k: 9}\n"),
+            (
+                "s:\n- a\n- {b: 1}\n",
+                "s[1][0]",
+                "s:\n- a\n- {b: 1, '0': 9}\n",
+            ),
+            ("a: ~\n", "a[0]", "a:\n  - 9\n"),
+            ("a:\n  b: 1\n", "a[0]", "a:\n  b: 1\n  '0': 9\n"),
+        ] {
+            assert_eq!(
+                set_and_check(src, path, refuse),
+                (Ok(()), expected.to_string()),
+                "{path} on {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_set_path_refusals_leave_document_alone() {
+        let mismatch = |at: &str| Err(PathError::TypeMismatch { at: at.to_string() });
+        for (src, path, err) in [
+            ("s: [a]\n", "s.k", mismatch("s")),
+            ("s: [a]\n", "s[0].k", mismatch("[0]")),
+            ("s: [!t x]\n", "s[0][0]", mismatch("[0]")),
+            ("s: [!t x]\n", "s[0].k", mismatch("[0]")),
+            ("s:\n- a\n- [b]\n", "s[1].k", mismatch("[1]")),
+            ("a: [x]\n", "a[0][0]", mismatch("[0]")),
+            ("a: !t x\n", "a.b", mismatch("a")),
+            ("a: !t x\n", "a[0]", mismatch("a")),
+            (
+                "a: 1\n",
+                "b[900000]",
+                Err(PathError::IndexTooFar {
+                    at: "[900000]".to_string(),
+                    len: 0,
+                    index: 900000,
+                }),
+            ),
+            (
+                "s: [a]\n",
+                "s[257]",
+                Err(PathError::IndexTooFar {
+                    at: "[257]".to_string(),
+                    len: 1,
+                    index: 257,
+                }),
+            ),
+        ] {
+            for policy in [AliasPolicy::Refuse, AliasPolicy::Expand] {
+                assert_eq!(
+                    set_and_check(src, path, policy),
+                    (err.clone(), src.to_string()),
+                    "{path} on {src:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_set_path_through_undefined_alias_in_sequence() {
+        assert_eq!(
+            set_and_check("s:\n- *nope\n", "s[0].a", AliasPolicy::Expand),
+            (
+                Err(PathError::UndefinedAlias {
+                    at: "[0]".to_string(),
+                    alias: "nope".to_string(),
+                }),
+                "s:\n- *nope\n".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn test_set_path_through_alias_in_sequence() {
+        let src = "x: &x {a: 1}\ns: [*x]\n";
+        assert_eq!(
+            set_and_check(src, "s[0].a", AliasPolicy::Refuse),
+            (
+                Err(PathError::AliasRefused {
+                    at: "[0]".to_string(),
+                    alias: "x".to_string()
+                }),
+                src.to_string()
+            )
+        );
+        assert_eq!(
+            set_and_check(src, "s[0].a", AliasPolicy::Follow),
+            (Ok(()), "x: &x {a: 9}\ns: [*x]\n".to_string())
+        );
+        assert_eq!(
+            set_and_check(src, "s[0].a", AliasPolicy::Expand),
+            (Ok(()), "x: &x {a: 1}\ns: [{a: 9}]\n".to_string())
+        );
+        assert_eq!(
+            set_and_check("x: &x [1]\ns:\n- *x\n", "s[0][1]", AliasPolicy::Expand),
+            (Ok(()), "x: &x [1]\ns:\n- [1, 9]\n".to_string())
+        );
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_deprecated_wrappers() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        assert_eq!(
+            parse_path("a[1].b"),
+            vec![
+                PathSegment::Key("a".to_string()),
+                PathSegment::Index(1),
+                PathSegment::Key("b".to_string()),
+            ]
+        );
+        let doc = Document::from_str("a:\n  b: 1\n").unwrap();
+        assert_eq!(doc.get_path("a.b").unwrap().to_string(), "1");
+        assert!(doc.get_path("a.c").is_none());
+        doc.set_path("a.c", 2);
+        doc.set_path("a.b.x", 3);
+        assert_eq!(doc.to_string(), "a:\n  b: 1\n  c: 2\n");
+        assert!(doc.remove_path("a.b"));
+        assert!(!doc.remove_path("a.b"));
+        assert_eq!(doc.to_string(), "a:\n  c: 2\n");
+    }
+
+    #[test]
+    fn test_set_path_growth_bound_is_exact() {
+        use crate::yaml::Document;
+        use std::str::FromStr;
+
+        let doc = Document::from_str("s: [a, b]\n").unwrap();
+        assert_eq!(
+            doc.try_set_path("s[258]", 1),
+            Err(PathError::IndexTooFar {
+                at: "[258]".to_string(),
+                len: 2,
+                index: 258,
+            })
+        );
+        assert_eq!(doc.try_set_path("s[257]", 1), Ok(()));
+        let s = doc.as_mapping().unwrap().get_sequence("s").unwrap();
+        assert_eq!(s.len(), 258);
+        assert_eq!(s.get(257).unwrap().to_string(), "1");
     }
 }

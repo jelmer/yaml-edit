@@ -48,9 +48,17 @@ pub trait YamlVisitor {
     }
 
     /// Visit a document node
+    ///
+    /// The default implementation visits the document's root node.
     fn visit_document(&mut self, document: &Document) {
-        // Default implementation visits the document's content
-        if let Some(mapping) = document.as_mapping() {
+        self.walk_document(document);
+    }
+
+    /// Visit the root node of a document (helper for default traversal).
+    fn walk_document(&mut self, document: &Document) {
+        if let Some(tagged) = document.as_tagged() {
+            self.visit_tagged_node(&tagged);
+        } else if let Some(mapping) = document.as_mapping() {
             self.visit_mapping(&mapping);
         } else if let Some(sequence) = document.as_sequence() {
             self.visit_sequence(&sequence);
@@ -259,14 +267,7 @@ impl Default for NodeCounter {
 impl YamlVisitor for NodeCounter {
     fn visit_document(&mut self, document: &Document) {
         self.document_count += 1;
-        // Continue visiting children
-        if let Some(mapping) = document.as_mapping() {
-            self.visit_mapping(&mapping);
-        } else if let Some(sequence) = document.as_sequence() {
-            self.visit_sequence(&sequence);
-        } else if let Some(scalar) = document.as_scalar() {
-            self.visit_scalar(&scalar);
-        }
+        self.walk_document(document);
     }
 
     fn visit_scalar(&mut self, _scalar: &Scalar) {
@@ -605,5 +606,75 @@ doc3: value3
         // Should count 3 documents
         assert_eq!(counter.document_count, 3);
         assert!(counter.scalar_count >= 6); // At least 3 keys and 3 values
+        assert_eq!(counter.scalar_count, 6);
+        assert_eq!(counter.mapping_count, 3);
+    }
+
+    #[test]
+    fn test_visit_tagged_root() {
+        struct Tags {
+            tags: Vec<String>,
+        }
+        impl YamlVisitor for Tags {
+            fn visit_tagged_node(&mut self, tagged: &TaggedNode) {
+                self.tags.push(tagged.tag().unwrap_or_default());
+            }
+        }
+        use std::str::FromStr;
+        for (src, tag) in [
+            ("--- !custom {a: 1}\n", "!custom"),
+            ("--- !!seq [a]\n", "!!seq"),
+            ("--- !!str a\n", "!!str"),
+        ] {
+            let mut v = Tags { tags: vec![] };
+            Document::from_str(src).unwrap().accept(&mut v);
+            assert_eq!(v.tags, [tag], "{src:?}");
+        }
+        let doc = Document::from_str("--- !custom {a: !!str 1}\n").unwrap();
+        let mut counter = NodeCounter::new();
+        doc.accept(&mut counter);
+        assert_eq!(
+            (
+                counter.document_count,
+                counter.mapping_count,
+                counter.scalar_count
+            ),
+            (1, 1, 2)
+        );
+        assert_eq!(visited_scalars("--- !!seq [a, b]\n"), ["a", "b"]);
+    }
+
+    #[test]
+    fn test_walks_complex_keys_and_nested_sequences() {
+        assert_eq!(
+            visited_scalars("? [a, b]\n: 1\n? {k: v}\n: 2\n!t c: 3\n"),
+            ["a", "b", "1", "k", "v", "2", "c", "3"]
+        );
+        assert_eq!(visited_scalars("- [a, [b]]\n- c\n"), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_accept_on_scalar_and_sequence() {
+        use std::str::FromStr;
+        let doc = Document::from_str("- a\n- [b, c]\n").unwrap();
+        let sequence = doc.as_sequence().unwrap();
+        let mut counter = NodeCounter::default();
+        sequence.accept(&mut counter);
+        assert_eq!(
+            (
+                counter.document_count,
+                counter.sequence_count,
+                counter.scalar_count
+            ),
+            (0, 2, 3)
+        );
+        let mut collector = ScalarCollector::default();
+        sequence
+            .get(0)
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .accept(&mut collector);
+        assert_eq!(collector.scalars, ["a"]);
     }
 }

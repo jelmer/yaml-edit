@@ -1333,11 +1333,14 @@ impl<'a> Merger<'a> {
             Kind::Sequence => self.flow_sequence_items(b, o, t)?,
         };
 
+        // A comment in a separator belongs to the item before it, so only
+        // a separator without one can go between other items.
         let default_sep = o
             .seps
-            .first()
+            .iter()
             .map(|r| self.ours.slice(r.clone()))
-            .or_else(|| t.seps.first().map(|r| self.theirs.slice(r.clone())))
+            .chain(t.seps.iter().map(|r| self.theirs.slice(r.clone())))
+            .find(|sep| !sep.contains('#'))
             .unwrap_or(", ");
         let mut out = open;
         for (i, (index, text)) in items.iter().enumerate() {

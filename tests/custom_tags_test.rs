@@ -160,10 +160,10 @@ fn test_error_handling() {
 
     // Validation errors include helpful context
     match registry.validate("!timestamp", "invalid-date") {
-        Ok(_) => {}
+        Ok(_) => panic!("Should have failed"),
         Err(e) => {
             assert_eq!(e.tag, "!timestamp");
-            assert!(!e.message.is_empty());
+            assert_eq!(e.message, "Expected format: %Y-%m-%d");
         }
     }
 

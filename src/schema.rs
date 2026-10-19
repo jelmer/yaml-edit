@@ -4,7 +4,8 @@
 //! the standard YAML schemas: Failsafe, JSON, and Core.
 
 use crate::scalar::{ScalarType, ScalarValue};
-use crate::yaml::{Document, Mapping, Scalar, Sequence, TaggedNode};
+use crate::yaml::{Document, TaggedNode};
+use rowan::ast::AstNode;
 
 /// Specific type of validation error that occurred
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -437,9 +438,21 @@ impl SchemaValidator {
 
     /// Validate a YAML document against the schema
     pub fn validate(&self, document: &Document) -> ValidationResult<()> {
-        let mut errors = Vec::new();
-        self.validate_document(document, "root", &mut errors);
+        self.check_document(document, false)
+    }
 
+    /// Check if a document can be coerced to match the schema
+    ///
+    /// This does not run the validators of a custom schema.
+    pub fn can_coerce(&self, document: &Document) -> ValidationResult<()> {
+        self.check_document(document, !self.strict)
+    }
+
+    fn check_document(&self, document: &Document, coerce_only: bool) -> ValidationResult<()> {
+        let mut errors = Vec::new();
+        if let Some(root) = document.root_node() {
+            self.check_node(&root, "root", coerce_only, &mut errors);
+        }
         if errors.is_empty() {
             Ok(())
         } else {
@@ -447,273 +460,105 @@ impl SchemaValidator {
         }
     }
 
-    /// Validate a document node
-    fn validate_document(
-        &self,
-        document: &Document,
-        path: &str,
-        errors: &mut Vec<ValidationError>,
-    ) {
-        if let Some(scalar) = document.as_scalar() {
-            self.validate_scalar(&scalar, path, errors);
-        } else if let Some(sequence) = document.as_sequence() {
-            self.validate_sequence(&sequence, path, errors);
-        } else if let Some(mapping) = document.as_mapping() {
-            self.validate_mapping(&mapping, path, errors);
-        }
-        // If none match, it might be empty or null - that's generally allowed
-    }
-
-    /// Validate a scalar value
-    fn validate_scalar(&self, scalar: &Scalar, path: &str, errors: &mut Vec<ValidationError>) {
-        let scalar_value = ScalarValue::from_scalar(scalar);
-
-        // Handle custom schema validation differently
-        if let Schema::Custom(custom_schema) = &self.schema {
-            if let Err(error) = custom_schema.validate_scalar_value(&scalar_value, path) {
-                errors.push(error);
-            }
-            return;
-        }
-
-        // Standard schema validation
-        let scalar_type = scalar_value.scalar_type();
-
-        if !self.schema.allows_scalar_type(scalar_type) {
-            // Try type coercion if not in strict mode
-            if !self.strict {
-                let allowed_types = self.schema.allowed_scalar_types();
-                let mut coercion_successful = false;
-
-                for allowed_type in allowed_types {
-                    if scalar_value.coerce_to_type(allowed_type).is_some() {
-                        coercion_successful = true;
-                        break;
-                    }
-                }
-
-                if !coercion_successful {
-                    errors.push(ValidationError::coercion_failed(
-                        path,
-                        self.schema.name(),
-                        scalar_type,
-                        self.schema.allowed_scalar_types(),
-                    ));
-                }
-            } else {
-                errors.push(ValidationError::type_not_allowed(
-                    path,
-                    self.schema.name(),
-                    scalar_type,
-                    self.schema.allowed_scalar_types(),
-                ));
-            }
-        }
-    }
-
-    /// Validate a sequence
-    fn validate_sequence(&self, seq: &Sequence, path: &str, errors: &mut Vec<ValidationError>) {
-        for (i, item) in seq.items().enumerate() {
-            let item_path = format!("{path}[{i}]");
-            self.validate_node(&item, &item_path, errors);
-        }
-    }
-
-    /// Validate a mapping  
-    fn validate_mapping(&self, map: &Mapping, path: &str, errors: &mut Vec<ValidationError>) {
-        for (key_node, value_node) in map.pairs() {
-            // Get the key name; KEY node wraps the actual content
-            let key_name = key_node.text().to_string().trim().to_string();
-
-            // Keys in YAML are typically strings and don't need schema validation
-            // The schema applies to the values, not the keys
-            let value_path = format!("{path}.{key_name}");
-            self.validate_node(&value_node, &value_path, errors);
-        }
-    }
-
-    /// Validate a syntax node (could be scalar, sequence, or mapping)
-    fn validate_node(
+    fn check_node(
         &self,
         node: &rowan::SyntaxNode<crate::yaml::Lang>,
         path: &str,
+        coerce_only: bool,
         errors: &mut Vec<ValidationError>,
     ) {
         use crate::yaml::{extract_mapping, extract_scalar, extract_sequence, extract_tagged_node};
 
-        // Use smart extraction to handle wrapper nodes automatically
         if let Some(scalar) = extract_scalar(node) {
-            self.validate_scalar(&scalar, path, errors);
+            let value = ScalarValue::from_scalar(&scalar);
+            self.check_scalar(&value, false, path, coerce_only, errors);
         } else if let Some(tagged_node) = extract_tagged_node(node) {
-            self.validate_tagged_node(&tagged_node, path, errors);
+            if let Some(content) = tagged_node
+                .as_sequence()
+                .map(|s| s.syntax().clone())
+                .or_else(|| tagged_node.as_mapping().map(|m| m.syntax().clone()))
+            {
+                self.check_node(&content, path, coerce_only, errors);
+            } else if let Some(value) = tagged_scalar_value(&tagged_node) {
+                self.check_scalar(&value, true, path, coerce_only, errors);
+            }
         } else if let Some(sequence) = extract_sequence(node) {
-            self.validate_sequence(&sequence, path, errors);
+            for (i, item) in sequence.items().enumerate() {
+                self.check_node(&item, &format!("{path}[{i}]"), coerce_only, errors);
+            }
         } else if let Some(mapping) = extract_mapping(node) {
-            self.validate_mapping(&mapping, path, errors);
+            // The schema applies to the values, not the keys
+            for (key_node, value_node) in mapping.pairs() {
+                let key_name = key_node.text().to_string().trim().to_string();
+                self.check_node(
+                    &value_node,
+                    &format!("{path}.{key_name}"),
+                    coerce_only,
+                    errors,
+                );
+            }
         }
-        // If none match, it might be a different node type - skip validation
     }
 
-    /// Validate a tagged scalar value (e.g., !!timestamp, !!regex)
-    fn validate_tagged_node(
+    fn check_scalar(
         &self,
-        tagged_node: &TaggedNode,
+        value: &ScalarValue,
+        tagged: bool,
         path: &str,
+        coerce_only: bool,
         errors: &mut Vec<ValidationError>,
     ) {
-        // Handle custom schema validation
-        if let Schema::Custom(custom_schema) = &self.schema {
-            let content = tagged_node.to_string();
-            if let Err(error) = custom_schema.validate_scalar(&content, path) {
+        if let (Schema::Custom(custom_schema), false) = (&self.schema, coerce_only) {
+            if let Err(error) = custom_schema.validate_scalar_value(value, path) {
                 errors.push(error);
             }
             return;
         }
 
-        // Standard tagged scalar validation
-        let scalar_type = self.get_tagged_node_type(tagged_node);
-
-        if !self.schema.allows_scalar_type(scalar_type) {
-            // For tagged scalars, we can't coerce them to other types since they have explicit type information
+        let scalar_type = value.scalar_type();
+        if self.schema.allows_scalar_type(scalar_type) {
+            return;
+        }
+        let allowed_types = self.schema.allowed_scalar_types();
+        // A tagged scalar has its type written out, so it is not coerced
+        if tagged || self.strict {
             errors.push(ValidationError::type_not_allowed(
                 path,
                 self.schema.name(),
                 scalar_type,
-                self.schema.allowed_scalar_types(),
+                allowed_types,
+            ));
+        } else if !allowed_types
+            .iter()
+            .any(|&t| value.coerce_to_type(t).is_some())
+        {
+            errors.push(ValidationError::coercion_failed(
+                path,
+                self.schema.name(),
+                scalar_type,
+                allowed_types,
             ));
         }
     }
+}
 
-    /// Determine the scalar type from a tagged scalar
-    fn get_tagged_node_type(&self, tagged_node: &TaggedNode) -> ScalarType {
-        match tagged_node.normalized_tag().as_deref() {
-            Some(crate::tag::TIMESTAMP) => ScalarType::Timestamp,
-            Some(crate::tag::REGEX) => ScalarType::Regex,
-            Some(crate::tag::BINARY) => {
-                #[cfg(feature = "base64")]
-                return ScalarType::Binary;
-                #[cfg(not(feature = "base64"))]
-                return ScalarType::String;
-            }
-            _ => ScalarType::String,
-        }
-    }
-
-    /// Check if a document can be coerced to match the schema
-    pub fn can_coerce(&self, document: &Document) -> ValidationResult<()> {
-        if self.strict {
-            return self.validate(document);
-        }
-
-        let mut errors = Vec::new();
-        self.check_coercion(document, "root", &mut errors);
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
-    }
-
-    /// Check if a document can be coerced to match the schema
-    fn check_coercion(&self, document: &Document, path: &str, errors: &mut Vec<ValidationError>) {
-        if let Some(scalar) = document.as_scalar() {
-            let scalar_value = ScalarValue::from_scalar(&scalar);
-            let scalar_type = scalar_value.scalar_type();
-
-            if !self.schema.allows_scalar_type(scalar_type) {
-                // Try to coerce to an allowed type
-                let allowed_types = self.schema.allowed_scalar_types();
-                let coerced = allowed_types
-                    .into_iter()
-                    .any(|t| scalar_value.coerce_to_type(t).is_some());
-
-                if !coerced {
-                    errors.push(ValidationError::coercion_failed(
-                        path,
-                        self.schema.name(),
-                        scalar_type,
-                        self.schema.allowed_scalar_types(),
-                    ));
-                }
-            }
-        } else if let Some(sequence) = document.as_sequence() {
-            // Recursively check sequence items for coercion
-            for (i, item) in sequence.items().enumerate() {
-                let item_path = format!("{path}[{i}]");
-                self.check_coercion_node(&item, &item_path, errors);
-            }
-        } else if let Some(mapping) = document.as_mapping() {
-            // Recursively check mapping key-value pairs for coercion
-            for (key_node, value_node) in mapping.pairs() {
-                let key_name = key_node.text().to_string().trim().to_string();
-                let value_path = format!("{path}.{key_name}");
-                self.check_coercion_node(&value_node, &value_path, errors);
-            }
-        }
-    }
-
-    /// Check coercion for a generic syntax node
-    fn check_coercion_node(
-        &self,
-        node: &rowan::SyntaxNode<crate::yaml::Lang>,
-        path: &str,
-        errors: &mut Vec<ValidationError>,
-    ) {
-        use crate::yaml::{extract_mapping, extract_scalar, extract_sequence, extract_tagged_node};
-
-        // Use smart extraction to handle wrapper nodes automatically
-        if let Some(scalar) = extract_scalar(node) {
-            let scalar_value = ScalarValue::from_scalar(&scalar);
-            let scalar_type = scalar_value.scalar_type();
-
-            if !self.schema.allows_scalar_type(scalar_type) {
-                let allowed_types = self.schema.allowed_scalar_types();
-                let coerced = allowed_types
-                    .into_iter()
-                    .any(|t| scalar_value.coerce_to_type(t).is_some());
-
-                if !coerced {
-                    errors.push(ValidationError::coercion_failed(
-                        path,
-                        self.schema.name(),
-                        scalar_type,
-                        self.schema.allowed_scalar_types(),
-                    ));
-                }
-            }
-        } else if let Some(tagged_node) = extract_tagged_node(node) {
-            let scalar_type = self.get_tagged_node_type(&tagged_node);
-
-            if !self.schema.allows_scalar_type(scalar_type) {
-                // Tagged scalars generally can't be coerced since they have explicit type info
-                errors.push(ValidationError::type_not_allowed(
-                    path,
-                    self.schema.name(),
-                    scalar_type,
-                    self.schema.allowed_scalar_types(),
-                ));
-            }
-        } else if let Some(sequence) = extract_sequence(node) {
-            for (i, item) in sequence.items().enumerate() {
-                let item_path = format!("{path}[{i}]");
-                self.check_coercion_node(&item, &item_path, errors);
-            }
-        } else if let Some(mapping) = extract_mapping(node) {
-            for (key_node, value_node) in mapping.pairs() {
-                let key_name = key_node.text().to_string().trim().to_string();
-                let value_path = format!("{path}.{key_name}");
-                self.check_coercion_node(&value_node, &value_path, errors);
-            }
-        }
-    }
+/// The value of a tagged scalar, typed by its tag.
+fn tagged_scalar_value(tagged_node: &TaggedNode) -> Option<ScalarValue> {
+    let value = ScalarValue::from_tagged(tagged_node)?;
+    let scalar_type = match tagged_node.normalized_tag().as_deref() {
+        Some(crate::tag::TIMESTAMP) => ScalarType::Timestamp,
+        Some(crate::tag::REGEX) => ScalarType::Regex,
+        #[cfg(feature = "base64")]
+        Some(crate::tag::BINARY) => ScalarType::Binary,
+        _ => return Some(value),
+    };
+    Some(value.with_type(scalar_type))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::yaml::Document;
-    use rowan::ast::AstNode;
+    use crate::yaml::{Document, Scalar};
 
     #[test]
     fn test_schema_names() {
@@ -1586,5 +1431,317 @@ value: 42
             ),
             shorthand,
         );
+    }
+
+    fn json_types() -> Vec<ScalarType> {
+        Schema::Json.allowed_scalar_types()
+    }
+
+    #[test]
+    fn test_tagged_root_scalar_validated() {
+        let document = create_test_document("--- !!timestamp 2001-01-01\n");
+        let expected = Err(vec![ValidationError::type_not_allowed(
+            "root",
+            "json",
+            ScalarType::Timestamp,
+            json_types(),
+        )]);
+        assert_eq!(
+            SchemaValidator::json().strict().validate(&document),
+            expected
+        );
+        assert_eq!(SchemaValidator::json().can_coerce(&document), expected);
+    }
+    #[test]
+    fn test_core_tag_sets_scalar_type() {
+        let document = create_test_document("a: !!int 5\n");
+        let expected = Err(vec![ValidationError::type_not_allowed(
+            "root.a",
+            "failsafe",
+            ScalarType::Integer,
+            vec![ScalarType::String],
+        )]);
+        assert_eq!(
+            SchemaValidator::failsafe().strict().validate(&document),
+            expected
+        );
+        assert_eq!(SchemaValidator::failsafe().can_coerce(&document), expected);
+        let document = create_test_document("a: !!str 5\n");
+        assert_eq!(
+            SchemaValidator::failsafe().strict().validate(&document),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn test_custom_schema_tagged_scalar_uses_content() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_in = seen.clone();
+        let custom_schema = CustomSchema::new("ints")
+            .allow_type(ScalarType::Integer)
+            .with_validator(ScalarType::Integer, move |value, path| {
+                seen_in
+                    .lock()
+                    .unwrap()
+                    .push((value.to_string(), path.to_string()));
+                CustomValidationResult::Valid
+            })
+            .strict();
+        let validator = SchemaValidator::custom(custom_schema);
+        let document = create_test_document("a: !!int 42\n");
+        assert_eq!(validator.validate(&document), Ok(()));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![("42".to_string(), "root.a".to_string())]
+        );
+    }
+    #[test]
+    fn test_tagged_collection_contents_validated() {
+        let document = create_test_document("a: !foo [x, !!timestamp 2001-01-01]\n");
+        let expected = Err(vec![ValidationError::type_not_allowed(
+            "root.a[1]",
+            "json",
+            ScalarType::Timestamp,
+            json_types(),
+        )]);
+        assert_eq!(
+            SchemaValidator::json().strict().validate(&document),
+            expected
+        );
+        assert_eq!(SchemaValidator::json().can_coerce(&document), expected);
+        let document = create_test_document("a: !foo {b: !!timestamp 2001-01-01}\n");
+        assert_eq!(
+            SchemaValidator::json().strict().validate(&document),
+            Err(vec![ValidationError::type_not_allowed(
+                "root.a.b",
+                "json",
+                ScalarType::Timestamp,
+                json_types(),
+            )])
+        );
+    }
+
+    #[test]
+    fn test_coercion_failed_error() {
+        let error = ValidationError::coercion_failed(
+            "root.a",
+            "bools",
+            ScalarType::String,
+            vec![ScalarType::Boolean],
+        );
+        assert_eq!(
+            error.kind,
+            ValidationErrorKind::CoercionFailed {
+                from_type: ScalarType::String,
+                to_types: vec![ScalarType::Boolean],
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "Validation error at root.a: cannot coerce String to any of [Boolean] in bools schema"
+        );
+    }
+
+    #[test]
+    fn test_custom_constraint_failed_display() {
+        let error = ValidationError::custom_constraint_failed("root.p", "ports", "range", "80");
+        assert_eq!(
+            error.to_string(),
+            "Validation error at root.p: custom constraint 'range' failed for value '80'"
+        );
+    }
+
+    #[test]
+    fn test_custom_validation_result_predicates() {
+        assert!(CustomValidationResult::Valid.is_valid());
+        assert!(!CustomValidationResult::Valid.is_invalid());
+        let invalid = CustomValidationResult::invalid("c", "r");
+        assert!(!invalid.is_valid());
+        assert!(invalid.is_invalid());
+        assert_eq!(
+            invalid,
+            CustomValidationResult::Invalid {
+                constraint: "c".to_string(),
+                reason: "r".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_custom_schema_debug() {
+        let schema = CustomSchema::new("dbg")
+            .allow_types(&[ScalarType::String, ScalarType::String, ScalarType::Integer])
+            .allow_type(ScalarType::Integer)
+            .with_validator(ScalarType::String, |_, _| CustomValidationResult::Valid)
+            .strict();
+        assert_eq!(
+            format!("{schema:?}"),
+            "CustomSchema { name: \"dbg\", allowed_types: [String, Integer], allow_coercion: false, validators: \"<1 validators>\" }"
+        );
+    }
+
+    #[test]
+    fn test_custom_schema_equality_and_types() {
+        let a = Schema::Custom(CustomSchema::new("same").allow_type(ScalarType::String));
+        let b = Schema::Custom(CustomSchema::new("same").allow_type(ScalarType::Integer));
+        let c = Schema::Custom(CustomSchema::new("other"));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, Schema::Core);
+        assert_eq!(b.allowed_scalar_types(), vec![ScalarType::Integer]);
+        assert!(b.allows_scalar_type(ScalarType::Integer));
+        assert!(!b.allows_scalar_type(ScalarType::String));
+    }
+
+    #[test]
+    fn test_custom_schema_validate_scalar() {
+        let schema = CustomSchema::new("ints")
+            .allow_type(ScalarType::Integer)
+            .strict();
+        assert_eq!(schema.validate_scalar(" 42 ", "p"), Ok(()));
+        assert_eq!(
+            schema.validate_scalar("true", "p"),
+            Err(ValidationError::type_not_allowed(
+                "p",
+                "ints",
+                ScalarType::Boolean,
+                vec![ScalarType::Integer],
+            ))
+        );
+    }
+
+    #[test]
+    fn test_custom_schema_coercion() {
+        let validator =
+            SchemaValidator::custom(CustomSchema::new("bools").allow_type(ScalarType::Boolean));
+        assert_eq!(
+            validator.validate(&create_test_document("a: yes\nb: 0\n")),
+            Ok(())
+        );
+        let document = create_test_document("a: hello\n");
+        let expected = Err(vec![ValidationError::coercion_failed(
+            "root.a",
+            "bools",
+            ScalarType::String,
+            vec![ScalarType::Boolean],
+        )]);
+        assert_eq!(validator.validate(&document), expected);
+        assert_eq!(validator.can_coerce(&document), expected);
+    }
+
+    #[test]
+    fn test_custom_schema_can_coerce_skips_validators() {
+        let validator = SchemaValidator::custom(
+            CustomSchema::new("never")
+                .allow_type(ScalarType::String)
+                .with_validator(ScalarType::String, |_, _| {
+                    CustomValidationResult::invalid("never", "always fails")
+                })
+                .strict(),
+        );
+        let document = create_test_document("a: 42\n");
+        assert_eq!(
+            validator.validate(&document),
+            Err(vec![ValidationError::type_not_allowed(
+                "root.a",
+                "never",
+                ScalarType::Integer,
+                vec![ScalarType::String],
+            )])
+        );
+        assert_eq!(validator.can_coerce(&document), Ok(()));
+        let document = create_test_document("a: x\n");
+        assert_eq!(
+            validator.validate(&document),
+            Err(vec![ValidationError::custom_constraint_failed(
+                "root.a",
+                "never",
+                "never: always fails",
+                "x",
+            )])
+        );
+        assert_eq!(validator.can_coerce(&document), Ok(()));
+    }
+
+    #[test]
+    fn test_custom_schema_can_coerce_tagged() {
+        let validator =
+            SchemaValidator::custom(CustomSchema::new("strings").allow_type(ScalarType::String));
+        let document = create_test_document("a: !!timestamp 2001-01-01\n");
+        assert_eq!(
+            validator.can_coerce(&document),
+            Err(vec![ValidationError::type_not_allowed(
+                "root.a",
+                "strings",
+                ScalarType::Timestamp,
+                vec![ScalarType::String],
+            )])
+        );
+    }
+
+    #[test]
+    fn test_root_scalar_and_sequence_paths() {
+        let failsafe = SchemaValidator::failsafe().strict();
+        let int_error = |path: &str| {
+            ValidationError::type_not_allowed(
+                path,
+                "failsafe",
+                ScalarType::Integer,
+                vec![ScalarType::String],
+            )
+        };
+        assert_eq!(
+            failsafe.validate(&create_test_document("5\n")),
+            Err(vec![int_error("root")])
+        );
+        assert_eq!(
+            failsafe.validate(&create_test_document("- x\n- 1\n- [2]\n")),
+            Err(vec![int_error("root[1]"), int_error("root[2][0]")])
+        );
+        assert_eq!(
+            failsafe.can_coerce(&create_test_document("- x\n- {a: 1}\n")),
+            Err(vec![int_error("root[1].a")])
+        );
+    }
+
+    #[test]
+    fn test_standard_schema_coerces_untagged_scalars() {
+        let document = create_test_document("a: 1\nb: [true, ~]\nc: {d: 2001-01-01}\n");
+        assert_eq!(SchemaValidator::failsafe().validate(&document), Ok(()));
+        assert_eq!(SchemaValidator::failsafe().can_coerce(&document), Ok(()));
+        let document = create_test_document("a: [!!timestamp 2001-01-01]\nb: {c: !!regex x}\n");
+        assert_eq!(
+            SchemaValidator::json().can_coerce(&document),
+            Err(vec![
+                ValidationError::type_not_allowed(
+                    "root.a[0]",
+                    "json",
+                    ScalarType::Timestamp,
+                    json_types(),
+                ),
+                ValidationError::type_not_allowed(
+                    "root.b.c",
+                    "json",
+                    ScalarType::Regex,
+                    json_types(),
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "base64")]
+    fn test_binary_tag() {
+        let document = create_test_document("a: !!binary aGk=\n");
+        assert_eq!(
+            SchemaValidator::json().validate(&document),
+            Err(vec![ValidationError::type_not_allowed(
+                "root.a",
+                "json",
+                ScalarType::Binary,
+                json_types(),
+            )])
+        );
+        assert_eq!(SchemaValidator::core().validate(&document), Ok(()));
     }
 }

@@ -715,7 +715,7 @@ impl YamlNode {
 
     /// If this node is a scalar, try to parse it as an `f64`.
     ///
-    /// Returns `None` if this is not a scalar or cannot be parsed as a float.
+    /// Returns `None` if this is not a float scalar, such as for an integer.
     pub fn to_f64(&self) -> Option<f64> {
         crate::scalar::ScalarValue::from_scalar(self.as_scalar()?).to_f64()
     }
@@ -2313,5 +2313,76 @@ block_map:
         assert!(yaml_eq(&cst, &raw));
         assert!(yaml_eq(&raw, &cst));
         assert!(!yaml_eq(&cst, &YamlValue::from_sequence(vec![])));
+    }
+
+    #[test]
+    fn test_yaml_node_helpers() {
+        use std::str::FromStr;
+        let doc = crate::Document::from_str("a: 'x'\nb: [1, 2]\nd: &q x\ne: *q\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let a = mapping.get("a").unwrap();
+        assert!(a == "x");
+        assert!(a == *"x");
+        let owned = String::from("x");
+        assert!(a == owned);
+        assert!(a.yaml_eq(&"x"));
+        assert!(a != "y");
+        assert!(!a.yaml_eq(&"y"));
+        let other = String::from("y");
+        assert!(a != other);
+        let b = mapping.get("b").unwrap();
+        assert_eq!(b.get_item(1).unwrap().to_string(), "2");
+        assert_eq!(b.get_item(2), None);
+        assert_eq!(a.get_item(0), None);
+        let e = mapping.get("e").unwrap();
+        assert_eq!(
+            e.as_alias().map(|alias| alias.name()),
+            Some("q".to_string())
+        );
+        assert_eq!(a.as_alias(), None);
+        // Aliases are not resolved, so they are not even equal to themselves.
+        assert!(!yaml_eq(&e, &e));
+    }
+
+    #[test]
+    fn test_option_values() {
+        use std::str::FromStr;
+        for (src, expected) in [
+            ("{a: 1}", "{a: 1, k: null, j: \"p, q\"}"),
+            ("{\"a\": 1}", "{\"a\": 1, \"k\": null, \"j\": \"p, q\"}"),
+            ("a: 1\n", "a: 1\nk: null\nj: p, q\n"),
+        ] {
+            let doc = crate::Document::from_str(src).unwrap();
+            let mapping = doc.as_mapping().unwrap();
+            mapping.set("k", None::<i64>);
+            mapping.set("j", Some("p, q"));
+            assert_eq!(doc.to_string(), expected, "{src:?}");
+            crate::debug::assert_cst_ok(&doc);
+        }
+    }
+
+    #[test]
+    fn test_yaml_node_kind_predicates() {
+        let doc = Document::from_str("s: x\nm: {a: 1}\nl: [1]\nt: !t x\nr: &r 1\na: *r\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let kinds = |key: &str| {
+            let node = mapping.get(key).unwrap();
+            [
+                node.is_scalar(),
+                node.is_mapping(),
+                node.is_sequence(),
+                node.is_tagged(),
+                node.is_alias(),
+            ]
+        };
+        assert_eq!(kinds("s"), [true, false, false, false, false]);
+        assert_eq!(kinds("m"), [false, true, false, false, false]);
+        assert_eq!(kinds("l"), [false, false, true, false, false]);
+        assert_eq!(kinds("t"), [false, false, false, true, false]);
+        assert_eq!(kinds("a"), [false, false, false, false, true]);
+        assert_eq!(
+            mapping.get("m").unwrap().byte_range(),
+            crate::TextPosition::new(8, 14)
+        );
     }
 }

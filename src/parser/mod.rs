@@ -1379,6 +1379,17 @@ impl Parser<'_> {
         if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
             return None;
         }
+        Self::content_line_ahead(rest)
+    }
+
+    /// Indentation and first token of the next line in `rest`, which starts
+    /// at a line start, that carries content.
+    ///
+    /// Blank and comment lines are stepped over, as their indentation is not
+    /// significant.
+    fn content_line_ahead<'a>(
+        mut rest: impl Iterator<Item = (SyntaxKind, &'a String)>,
+    ) -> Option<(usize, SyntaxKind)> {
         loop {
             let mut indent = 0;
             let mut token = rest.next()?;
@@ -1387,17 +1398,15 @@ impl Parser<'_> {
                 token = rest.next()?;
             }
             match token.0 {
-                // A blank line's indentation is not significant either; its
-                // NEWLINE is the one we just read.
+                // A blank line, whose NEWLINE is the one just read.
                 SyntaxKind::NEWLINE => continue,
                 // The document ends here, just as at the end of the input.
                 SyntaxKind::DOC_START | SyntaxKind::DOC_END => return None,
-                // Another comment line: step over its line break too.
+                // A comment line: step over its line break too.
                 SyntaxKind::COMMENT => {
                     if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
                         return None;
                     }
-                    continue;
                 }
                 kind => return Some((indent, kind)),
             }
@@ -1446,43 +1455,14 @@ impl Parser<'_> {
     }
 
     /// The indentation of the next line with content in `rest`, which starts
-    /// at a line start, if it clears `dash_column`. Blank and comment lines
-    /// are stepped over, as their indentation is not significant.
+    /// at a line start, if it clears `dash_column`. A comment line says
+    /// nothing, at any column: `-\n# c\n  x: 1\n` is the entry `{x: 1}`.
     fn value_indent_on_later_line<'a>(
-        mut rest: impl Iterator<Item = (SyntaxKind, &'a String)>,
+        rest: impl Iterator<Item = (SyntaxKind, &'a String)>,
         dash_column: usize,
     ) -> Option<usize> {
-        loop {
-            match rest.next() {
-                // A blank line: its own line break is the one we just read.
-                Some((SyntaxKind::NEWLINE, _)) => continue,
-                // Neither does a comment line say anything, at any column:
-                // `-\n# c\n  x: 1\n` is the entry `{x: 1}`.
-                Some((SyntaxKind::COMMENT, _)) => {
-                    if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
-                        return None;
-                    }
-                }
-                Some((SyntaxKind::INDENT, text)) => {
-                    let indent = text.len();
-                    // An indent that only leads a blank or comment line says
-                    // nothing about where the value sits, nor does one
-                    // ending the input.
-                    match rest.next() {
-                        Some((SyntaxKind::NEWLINE, _)) | None => continue,
-                        Some((SyntaxKind::COMMENT, _)) => {
-                            if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
-                                return None;
-                            }
-                            continue;
-                        }
-                        _ => {}
-                    }
-                    return (indent > dash_column).then_some(indent);
-                }
-                _ => return None,
-            }
-        }
+        let (indent, _) = Self::content_line_ahead(rest)?;
+        (indent > dash_column).then_some(indent)
     }
 
     /// Whether a block scalar header not indented past `indicator_column`
@@ -1498,33 +1478,16 @@ impl Parser<'_> {
             .tokens
             .iter()
             .rev()
-            .map(|(kind, text)| (*kind, text.len()))
+            .map(|(kind, text)| (*kind, text))
             .peekable();
         rest.next_if(|(kind, _)| *kind == SyntaxKind::COMMENT);
         if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
             return false;
         }
-        loop {
-            let mut indent = 0;
-            let mut token = rest.next();
-            if let Some((SyntaxKind::INDENT, len)) = token {
-                indent = len;
-                token = rest.next();
-            }
-            match token {
-                // A blank line, whose indentation is not significant.
-                Some((SyntaxKind::NEWLINE, _)) => continue,
-                Some((SyntaxKind::COMMENT, _)) => {
-                    if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
-                        return false;
-                    }
-                }
-                Some((SyntaxKind::PIPE | SyntaxKind::GREATER, _)) => {
-                    return indent <= indicator_column
-                }
-                _ => return false,
-            }
-        }
+        matches!(
+            Self::content_line_ahead(rest),
+            Some((indent, SyntaxKind::PIPE | SyntaxKind::GREATER)) if indent <= indicator_column
+        )
     }
 
     /// Whether the INDENT at the current position is only the leading

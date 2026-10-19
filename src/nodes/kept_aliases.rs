@@ -769,7 +769,7 @@ fn replace_in_holder(
                 Some(flow_value) => entry.replace_value_under(flow_value, true, anchor),
                 None => entry.replace_value_under(value, flow.is_some(), anchor),
             }
-            entry.value().expect("the entry was just given a value")
+            entry.value()
         }
         SyntaxKind::SEQUENCE_ENTRY => {
             let sequence = container

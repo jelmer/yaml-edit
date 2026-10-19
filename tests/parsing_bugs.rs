@@ -4290,6 +4290,29 @@ fn test_quote_on_a_flow_continuation_line_is_content() {
     );
 }
 
+/// A `-` on the line after an anchor or tag that ends a compact sequence
+/// entry is that sequence's next entry when it is at the entry's dash, not
+/// the annotated node. `- - &a\n  - x\n` nested `x` under the anchor, so
+/// pushing onto `[&a null]` wrote text that read back as a different tree.
+#[test]
+fn test_entry_after_an_annotated_compact_entry() {
+    for yaml in ["- - &a\n  - x\n", "- - !t\n  - x\n"] {
+        let doc = yaml_edit::Document::from_str(yaml).unwrap();
+        let inner = doc.as_sequence().unwrap().get(0).unwrap();
+        assert_eq!(inner.as_sequence().unwrap().len(), 2, "{yaml:?}");
+    }
+
+    let doc = yaml_edit::Document::from_str("- - &a\n").unwrap();
+    let inner = doc.as_sequence().unwrap().get(0).unwrap();
+    inner.as_sequence().unwrap().push("x");
+    assert_eq!(doc.to_string(), "- - &a\n  - x\n");
+    let reparsed = yaml_edit::Document::from_str(&doc.to_string()).unwrap();
+    assert_eq!(
+        yaml_edit::debug::shape_to_string(rowan::ast::AstNode::syntax(&doc)),
+        yaml_edit::debug::shape_to_string(rowan::ast::AstNode::syntax(&reparsed))
+    );
+}
+
 /// A document's root block scalar may put its body at column 0, since the
 /// root sits at indentation -1. Such a body is literal text up to the next
 /// document marker.

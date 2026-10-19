@@ -450,7 +450,9 @@ impl Parser<'_> {
                 // annotate: `-\n  ? &d\n-\n  ? e\n` is one sequence, as the
                 // YAML test suite's PW8X expects. The key's own sequence may
                 // sit at the `?`'s column, as `seq-spaces` allows, and an
-                // explicit value's at the `:`'s.
+                // explicit value's at the `:`'s. Likewise a `-` at or left
+                // of the dash of the sequence entry we are in is that
+                // sequence's next entry: `- - &a\n  - x\n` has two.
                 SyntaxKind::DASH
                     if self
                         .ctx
@@ -459,7 +461,12 @@ impl Parser<'_> {
                         || self
                             .ctx
                             .explicit_value_column
-                            .is_some_and(|column| indent < column) =>
+                            .is_some_and(|column| indent < column)
+                        || (!self.in_flow_context
+                            && self
+                                .ctx
+                                .sequence_entry_column
+                                .is_some_and(|column| indent <= column)) =>
                 {
                     return None
                 }

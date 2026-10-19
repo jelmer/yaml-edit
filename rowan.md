@@ -14,6 +14,17 @@ child. Use `nodes::replace_children`, `insert_children` or
 `append_children`, which detach the range one child at a time. They also
 rewrite inserted line breaks to the document's own line break.
 
+## `splice_children` walks every child
+
+Even for a pure insert, `splice_children` walks all of the parent's
+children, creating a cursor for each, to find the ones to detach, and then
+rebuilds the parent's green node. Each edit is therefore linear in the
+number of children, and building a long sequence or mapping one entry at a
+time is quadratic: nearly all of `Sequence::push`'s cost is spent there.
+There is no cheaper insertion in rowan's public API, so the crate accepts
+this. Build large collections with the builders, or parse the text in one
+go, which is linear.
+
 ## Token navigation stops at a node without tokens
 
 `prev_token`, `next_token`, `first_token` and `last_token` return `None`

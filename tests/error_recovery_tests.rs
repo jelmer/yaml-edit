@@ -190,3 +190,53 @@ config:
     let expected = "\nname: John\nage: 30\nitems:\n  - apple\n  - banana\nconfig:\n  host: localhost\n  port: 8080\n";
     assert_eq!(content, expected);
 }
+
+fn parsed_tree(text: &str) -> String {
+    use rowan::ast::AstNode;
+    let parsed = YamlFile::parse(text);
+    let root = parsed.tree().syntax().clone();
+    yaml_edit::debug::validate_tree(&root).unwrap();
+    yaml_edit::debug::tree_to_string(&root)
+}
+
+#[test]
+fn test_unclosed_flow_sequence_pair_at_end_of_input() {
+    assert_eq!(
+        parsed_tree("[c:"),
+        r#"DOCUMENT
+  SEQUENCE
+    LEFT_BRACKET: "["
+    SEQUENCE_ENTRY
+      MAPPING
+        MAPPING_ENTRY
+          KEY
+            SCALAR
+              STRING: "c"
+          COLON: ":"
+          VALUE
+            SCALAR
+              NULL: ""
+    RIGHT_BRACKET: ""
+"#
+    );
+}
+
+#[test]
+fn test_unclosed_flow_mapping_pair_at_end_of_input() {
+    assert_eq!(
+        parsed_tree("{c:"),
+        r#"DOCUMENT
+  MAPPING
+    LEFT_BRACE: "{"
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: "c"
+      COLON: ":"
+      VALUE
+        SCALAR
+          NULL: ""
+    RIGHT_BRACE: ""
+"#
+    );
+}

@@ -323,7 +323,7 @@ impl Parser<'_> {
         self.peek_kind(n) == Some(SyntaxKind::COLON)
             && matches!(
                 self.peek_kind(n + 1),
-                Some(
+                None | Some(
                     SyntaxKind::COMMA
                         | SyntaxKind::RIGHT_BRACE
                         | SyntaxKind::RIGHT_BRACKET

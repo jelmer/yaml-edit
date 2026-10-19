@@ -1206,10 +1206,11 @@ impl Parser<'_> {
     }
 
     /// Whether only whitespace, comments and line breaks stand between here
-    /// and the `,` or `closer` that ends a flow entry.
+    /// and the `,` or `closer` that ends a flow entry, or the end of an
+    /// input that left the collection unclosed.
     pub(super) fn at_flow_entry_end(&self, closer: SyntaxKind) -> bool {
         let next = self.next_significant_kind();
-        next == Some(SyntaxKind::COMMA) || next == Some(closer)
+        next.is_none() || next == Some(SyntaxKind::COMMA) || next == Some(closer)
     }
 
     /// Iterator over upcoming tokens starting from the next token (not current)

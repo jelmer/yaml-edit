@@ -2185,3 +2185,17 @@ fn test_set_block_scalar_before_blank_line_with_cr_line_breaks() {
         .set("a", ScalarValue::literal("x\n"));
     crate::debug::assert_edited(&file, "a: |\r  x\r\rb: 2\r");
 }
+
+#[test]
+fn test_dump_cst_debug_and_default() {
+    let file = YamlFile::from_str("a: 1\n").unwrap();
+    let doc = file.document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(
+        mapping.dump_cst(),
+        "MAPPING_ENTRY\n  KEY\n    SCALAR\n        STRING \"a\"\n    COLON \":\"\n    WHITESPACE \" \"\n  VALUE\n    SCALAR\n        INT \"1\"\n    NEWLINE \"\\n\"\n"
+    );
+    assert_eq!(format!("{mapping:?}"), "Mapping { syntax: MAPPING@0..5 }");
+    assert_eq!(super::Mapping::default().to_string(), "{}");
+    assert_eq!(crate::yaml::Sequence::default().to_string(), "[]");
+}

@@ -249,6 +249,22 @@ mod tests {
     use std::str::FromStr;
 
     #[test]
+    fn test_or_insert_sequence_replaces_other_value() {
+        let doc = Document::from_str("a: 1\nb: [x]\n").unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let seq = mapping.entry("a").or_insert_sequence();
+        assert_cst_ok(&doc);
+        assert_eq!(seq.to_string(), "[]");
+        assert_eq!(doc.to_string(), "a: []\nb: [x]\n");
+        assert_eq!(mapping.entry("b").or_insert_sequence().len(), 1);
+        match mapping.entry("zz") {
+            Entry::Vacant(v) => assert_eq!(v.into_key(), "zz"),
+            Entry::Occupied(_) => panic!("zz is not in the mapping"),
+        }
+        assert_eq!(doc.to_string(), "a: []\nb: [x]\n");
+    }
+
+    #[test]
     fn or_insert_on_vacant_inserts_and_returns_value() {
         let doc = Document::from_str("name: Alice\n").unwrap();
         let mapping = doc.as_mapping().unwrap();

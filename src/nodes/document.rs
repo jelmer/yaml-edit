@@ -316,22 +316,7 @@ impl Document {
         builder.token(SyntaxKind::DOC_START.into(), "---");
         builder.token(SyntaxKind::NEWLINE.into(), "\n");
 
-        // Add the mapping with all its children, except trailing newline
-        builder.start_node(SyntaxKind::MAPPING.into());
-        let children: Vec<_> = mapping.0.children_with_tokens().collect();
-        let end_index = children.len()
-            - usize::from(children.last().map(|c| c.kind()) == Some(SyntaxKind::NEWLINE));
-        for child in &children[..end_index] {
-            match child {
-                rowan::NodeOrToken::Node(n) => crate::yaml::copy_node_to_builder(&mut builder, n),
-                rowan::NodeOrToken::Token(t) => {
-                    builder.token(t.kind().into(), t.text());
-                }
-            }
-        }
-
-        // Don't add a trailing newline - entries already have their own newlines
-        builder.finish_node(); // End MAPPING
+        crate::yaml::copy_node_to_builder(&mut builder, &mapping.0);
         builder.finish_node(); // End DOCUMENT
 
         Document(SyntaxNode::new_root_mut(builder.finish()))
@@ -1839,6 +1824,28 @@ Repository: https://github.com/example/example.git";
                 crate::debug::shape_to_string(doc.syntax()),
                 crate::debug::shape_to_string(parsed.syntax()),
                 "{text:?}"
+            );
+        }
+    }
+
+    /// A mapping keeps the lines after its last entry in a document made
+    /// from it.
+    #[test]
+    fn test_from_mapping_keeps_trailing_lines() {
+        for (src, expected) in [
+            ("a: 1\n# c\n", "---\na: 1\n# c\n"),
+            ("a: 1\n\n", "---\na: 1\n\n"),
+            ("a: 1", "---\na: 1"),
+        ] {
+            let file = YamlFile::from_str(src).unwrap();
+            let mapping = file.document().unwrap().as_mapping().unwrap();
+            let doc = Document::from_mapping(mapping);
+            assert_cst_ok(&doc);
+            assert_eq!(doc.to_string(), expected);
+            let parsed = YamlFile::from_str(expected).unwrap().document().unwrap();
+            assert_eq!(
+                crate::debug::shape_to_string(doc.syntax()),
+                crate::debug::shape_to_string(parsed.syntax())
             );
         }
     }

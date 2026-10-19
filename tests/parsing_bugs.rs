@@ -5415,3 +5415,18 @@ fn test_lines_before_explicit_key_collection_are_the_keys() {
         assert_eq!(slot(&format!("? x\n:{rest}"), "VALUE"), value, "{rest:?}");
     }
 }
+
+#[test]
+fn test_merge_key_token_outside_a_key_is_a_scalar() {
+    // `<<` is a merge key only as a mapping key; anywhere else it is the
+    // plain scalar `<<`.
+    let plain = |s: &str| yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain(s));
+    assert_eq!(document_values("<<\n"), [plain("<<")]);
+    assert_eq!(document_values("<<"), [plain("<<")]);
+    assert_eq!(
+        document_values("- <<\n"),
+        [yaml_edit::YamlValue::Sequence(vec![plain("<<")])]
+    );
+    assert_eq!(document_values("a\n<<\n"), [plain("a <<")]);
+    assert_eq!(document_values("<<\n  a\n"), [plain("<< a")]);
+}

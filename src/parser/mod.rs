@@ -549,12 +549,9 @@ impl<'a> Parser<'a> {
             Some(SyntaxKind::TAG | SyntaxKind::ANCHOR) => {
                 self.is_mapping_key() || self.is_complex_mapping_key_after_annotations()
             }
-            Some(
-                SyntaxKind::REFERENCE
-                | SyntaxKind::QUESTION
-                | SyntaxKind::COLON
-                | SyntaxKind::MERGE_KEY,
-            ) => self.is_mapping_key(),
+            Some(SyntaxKind::REFERENCE | SyntaxKind::QUESTION | SyntaxKind::COLON) => {
+                self.is_mapping_key()
+            }
             Some(kind) => is_plain_scalar_kind(kind) && self.is_mapping_key(),
             None => false,
         }
@@ -678,15 +675,6 @@ impl<'a> Parser<'a> {
                     self.parse_mapping_with_base_indent(base_indent);
                 } else {
                     self.parse_tagged_value(base_indent);
-                }
-            }
-            Some(SyntaxKind::MERGE_KEY) => {
-                if self.in_flow_context {
-                    self.builder.start_node(SyntaxKind::SCALAR.into());
-                    self.bump();
-                    self.builder.finish_node();
-                } else {
-                    self.parse_mapping_with_base_indent(base_indent);
                 }
             }
             Some(SyntaxKind::QUESTION) => {

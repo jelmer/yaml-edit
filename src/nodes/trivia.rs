@@ -284,10 +284,10 @@ pub(crate) fn attach_flow_entry(collection: &SyntaxNode, slot: Slot, entry: &Syn
 /// That is the indentation of its line, and blank lines before it when
 /// there are blank lines after it too, so that the gap doesn't double.
 /// Comment lines around it stay. A flow entry sharing its line with
-/// another leaves the indentation, and one ending a line that it does not
-/// start takes the next line's, which then joins its line. A flow entry
-/// already holds its separator; the new last entry loses the one leading
-/// to the removed one, unless that had its own.
+/// another or with the closing bracket leaves the indentation, and one
+/// ending a line that it does not start takes the next line's, which then
+/// joins its line. A flow entry already holds its separator; the new last
+/// entry loses the one leading to the removed one, unless that had its own.
 pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
     let kind = entry.kind();
     let is_last = !std::iter::successors(entry.next_sibling(), |n| n.next_sibling())
@@ -300,9 +300,10 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
     });
 
     let mut trivia = Vec::new();
-    if !flow || terminated || is_last {
-        // The entry's line goes, unless another entry shares it. In a flow
-        // collection the next line joins the line the entry started on.
+    if !flow || terminated {
+        // The entry's line goes, unless another entry or the closing
+        // bracket shares it. In a flow collection the next line joins the
+        // line the entry started on.
         match line_indentation_before(entry) {
             Some(indentation) => trivia.extend(indentation),
             None if flow && terminated => trivia.extend(

@@ -653,3 +653,16 @@ fn test_multi_line_plain_scalar_in_flow() {
     assert_eq!(values, vec!["a b", "c\nd"]);
     assert_eq!(parsed.to_string(), yaml);
 }
+
+#[test]
+fn test_remove_last_flow_item_on_closing_bracket_line() {
+    let file = YamlFile::from_str("- [\n foo]\n").unwrap();
+    let seq = file.document().unwrap().as_sequence().unwrap();
+    seq.get(0).unwrap().as_sequence().unwrap().clear();
+    assert_eq!(file.to_string(), "- [\n ]\n");
+
+    let file = YamlFile::from_str("- [a,\n  b]\n").unwrap();
+    let seq = file.document().unwrap().as_sequence().unwrap();
+    seq.get(0).unwrap().as_sequence().unwrap().remove(1);
+    assert_eq!(file.to_string(), "- [a]\n");
+}

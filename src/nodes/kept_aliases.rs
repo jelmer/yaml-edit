@@ -93,69 +93,22 @@ pub(crate) fn keeping_aliases(
 /// Run `edit`, which moves nodes around in the document `within` is in,
 /// and then make sure every alias still resolves to what it did.
 ///
-/// `edit` may replace `rebuilt` with a copy, holding the same anchors and
-/// aliases in the same order, that it returns.
-///
 /// Where an alias now comes before the node it referred to, the alias
 /// becomes a copy of that node, anchor included, and the node becomes an
 /// alias if it can: it has to be a value, sequence item or key, the copy
 /// has to have kept the anchors inside it, and no other anchor with one of
 /// their names may come between.
 /// Otherwise the node keeps its anchor too.
-pub(crate) fn keeping_aliases_moved(
-    within: &SyntaxNode,
-    rebuilt: Option<&SyntaxNode>,
-    edit: impl FnOnce() -> Option<SyntaxNode>,
-) {
+pub(crate) fn keeping_aliases_moved(within: &SyntaxNode, edit: impl FnOnce()) {
     let scope = document_scope(within);
     let (anchors, aliases) = scan(&scope);
     if aliases.iter().all(|(_, target)| target.is_none()) {
         edit();
         return;
     }
-    let inside = |n: &SyntaxNode| rebuilt.is_some_and(|r| n.ancestors().any(|a| a == *r));
-    let rebuilt_anchors: Vec<usize> = anchors
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| a.parent().is_some_and(|p| inside(&p)))
-        .map(|(i, _)| i)
-        .collect();
-    let rebuilt_aliases: Vec<Option<usize>> = aliases
-        .iter()
-        .filter(|(alias, _)| inside(alias))
-        .map(|(_, target)| *target)
-        .collect();
-    let mut tracker = Tracker::new(scope, &anchors, &aliases, |_| false, |a| !inside(a));
+    let mut tracker = Tracker::new(scope, &anchors, &aliases, |_| false, |_| true);
     tracker.moved = true;
-
-    let copy = edit();
-
-    if let Some(rebuilt) = rebuilt {
-        let copy = copy.expect("the edit returns the rebuilt node");
-        let new_anchors: Vec<_> = copy
-            .descendants_with_tokens()
-            .filter_map(|c| c.into_token())
-            .filter(is_anchor)
-            .collect();
-        assert_eq!(
-            new_anchors.len(),
-            rebuilt_anchors.len(),
-            "rebuilding {rebuilt} lost or gained anchors: {copy}"
-        );
-        for (anchor, id) in new_anchors.into_iter().zip(rebuilt_anchors) {
-            tracker.live_ids.push((anchor.clone(), id));
-            tracker.origins[id] = Origin::Live(anchor);
-        }
-        let new_aliases = descendant_aliases(&copy);
-        assert_eq!(
-            new_aliases.len(),
-            rebuilt_aliases.len(),
-            "rebuilding {rebuilt} lost or gained aliases: {copy}"
-        );
-        tracker
-            .live_expected
-            .extend(new_aliases.into_iter().zip(rebuilt_aliases));
-    }
+    edit();
     tracker.repair();
 }
 

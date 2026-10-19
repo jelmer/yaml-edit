@@ -524,6 +524,21 @@ impl Validator {
                 if token.kind() == crate::SyntaxKind::DOC_START {
                     check_doc_start_token_content(token, violations);
                 }
+                // The lexer leaves a `&` or `*` with no name after it as
+                // such a token, where a node may start.
+                match token.kind() {
+                    crate::SyntaxKind::AMPERSAND => violations.push(Violation::error_at(
+                        Rule::InvalidAnchor,
+                        token.text_range(),
+                        "Anchor without a name",
+                    )),
+                    crate::SyntaxKind::ASTERISK => violations.push(Violation::error_at(
+                        Rule::InvalidAnchor,
+                        token.text_range(),
+                        "Alias without a name",
+                    )),
+                    _ => {}
+                }
                 // Check TAG tokens for invalid characters
                 if token.kind() == crate::SyntaxKind::TAG {
                     check_tag_characters(token, violations);
@@ -3654,6 +3669,28 @@ mod tests {
         // A byte order mark may directly precede a comment line.
         let parsed = YamlFile::from_str("\u{FEFF}# c\na: 1\n").unwrap();
         assert_eq!(validator.validate_syntax(parsed.syntax()), vec![]);
+    }
+
+    #[test]
+    fn test_anchor_or_alias_without_name() {
+        use crate::YamlFile;
+
+        let validator = Validator::new();
+        for (yaml, message, start) in [
+            ("&\n", "Anchor without a name", 0),
+            ("a: &\n", "Anchor without a name", 3),
+            ("{&}\n", "Anchor without a name", 1),
+            ("- *\n", "Alias without a name", 2),
+            ("{*}\n", "Alias without a name", 1),
+        ] {
+            let parsed = YamlFile::from_str(yaml).unwrap();
+            let found: Vec<_> = validator
+                .validate_syntax(parsed.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.text_range.map(|r| r.start)))
+                .collect();
+            assert_eq!(found, [(message.to_string(), Some(start))], "{yaml:?}");
+        }
     }
 
     #[test]

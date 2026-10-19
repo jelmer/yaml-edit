@@ -136,6 +136,14 @@ impl Parser<'_> {
                 }
             }
 
+            // A quote left open after a quoted scalar (`a: "b" "\n`) runs on
+            // to the end of the input, as one opening the scalar does.
+            if quoted && kind == SyntaxKind::UNTERMINATED_STRING {
+                self.add_error(
+                    "Unterminated quoted string".to_string(),
+                    ParseErrorKind::UnterminatedString,
+                );
+            }
             self.bump();
         }
     }

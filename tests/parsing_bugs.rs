@@ -4213,6 +4213,22 @@ fn test_compact_sequence_item_continuation_clears_its_dash() {
     );
 }
 
+/// A quote left open after a quoted scalar runs on to the end of the input,
+/// as one opening a scalar does, and is reported the same way. It was kept
+/// in the scalar with no error, which the validator accepted, so an entry
+/// added after it was swallowed by the quote on a re-parse.
+#[test]
+fn test_unterminated_quote_after_a_quoted_scalar() {
+    for (yaml, error) in [
+        ("f: \"a\" \"\n", "1:8: Unterminated quoted string"),
+        ("f: '\n\n  ' '\n", "3:5: Unterminated quoted string"),
+        ("- 'a' 'b\n", "1:7: Unterminated quoted string"),
+    ] {
+        let parsed = yaml_edit::YamlFile::parse(yaml);
+        assert_eq!(parsed.errors(), [error.to_string()], "{yaml:?}");
+    }
+}
+
 /// A document's root block scalar may put its body at column 0, since the
 /// root sits at indentation -1. Such a body is literal text up to the next
 /// document marker.

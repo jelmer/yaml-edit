@@ -60,7 +60,7 @@ pub(crate) fn drop_space_before_empty(content: &SyntaxNode) {
 }
 
 /// The last token in `node`'s subtree that has text.
-fn last_non_empty_token(node: &SyntaxNode) -> Option<SyntaxToken> {
+pub(crate) fn last_non_empty_token(node: &SyntaxNode) -> Option<SyntaxToken> {
     // descendants_with_tokens isn't double-ended; prev_token() would walk
     // out of the subtree.
     node.descendants_with_tokens()

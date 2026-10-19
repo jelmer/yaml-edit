@@ -5,7 +5,8 @@ mod movements;
 pub(crate) use helpers::build_block_value_node;
 pub(crate) use helpers::flow_form;
 pub(crate) use helpers::{
-    block_scalar_body_shift, drop_tagged_anchor, held_anchor, held_anchor_token, source_anchor_text,
+    block_scalar_body_shift, drop_tagged_anchor, held_anchor_token, kept_anchor_token,
+    source_anchor_text,
 };
 
 use super::empty_collection::{self, render_empty};
@@ -742,8 +743,8 @@ impl Mapping {
     ) -> SyntaxNode {
         let kept = MappingEntry::cast(old.clone())
             .map(|e| e.value())
-            .filter(|_| keep_anchor && value.kind() != YamlKind::Alias)
-            .and_then(|v| held_anchor_token(&v));
+            .filter(|_| keep_anchor)
+            .and_then(|v| kept_anchor_token(&v, &value));
         let anchor = kept.as_ref().map(|t| t.text().to_string());
         let mut new = None;
         crate::nodes::kept_aliases::keeping_aliases(old, kept, || {

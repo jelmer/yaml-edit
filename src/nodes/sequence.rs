@@ -7,7 +7,7 @@ use crate::as_yaml::{build_in, AsYaml, FlowQuoting, YamlKind};
 use crate::lex::SyntaxKind;
 use crate::nodes::empty_collection::{self, render_empty};
 use crate::nodes::flow_quoting;
-use crate::nodes::mapping::{drop_tagged_anchor, held_anchor};
+use crate::nodes::mapping::{drop_tagged_anchor, kept_anchor_token};
 use crate::nodes::trivia::Slot;
 use crate::yaml::ValueNode;
 use rowan::ast::AstNode;
@@ -59,7 +59,7 @@ fn rebuild_entry_with_value(
     // The old item's anchor goes on the new one, so aliases to it still
     // resolve; failing that `new_anchor`, or the anchor the new item had
     // where it was copied from. An alias cannot carry an anchor.
-    let old_anchor = held_anchor(entry).filter(|_| value.kind() != YamlKind::Alias);
+    let old_anchor = kept_anchor_token(entry, value).map(|t| t.text().to_string());
     let anchor = old_anchor
         .clone()
         .or_else(|| new_anchor.map(str::to_string))
@@ -555,8 +555,7 @@ impl Sequence {
             .expect("entry index names a node");
         // An alias cannot carry an anchor; the first alias to the old one
         // gets a copy of the old item instead.
-        let kept = crate::nodes::mapping::held_anchor_token(&node)
-            .filter(|_| value.kind() != YamlKind::Alias);
+        let kept = crate::nodes::mapping::kept_anchor_token(&node, &value);
         crate::nodes::kept_aliases::keeping_aliases(&node, kept, || {
             Some(self.replace_entry_at(i, &value, None))
         });

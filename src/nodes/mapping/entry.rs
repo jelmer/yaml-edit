@@ -6,7 +6,7 @@
 
 use super::helpers::{
     build_block_value_node, built_block_node, drop_tagged_anchor, find_key_line_comment, flow_form,
-    has_comment, held_anchor_token, source_anchor_text, value_is_block,
+    has_comment, kept_anchor_token, source_anchor_text, value_is_block,
 };
 use super::{key_content_matches, MappingEntry};
 use crate::as_yaml::{build_in, FlowQuoting};
@@ -518,8 +518,7 @@ impl MappingEntry {
         // An alias cannot carry an anchor; the first alias to the old one
         // gets a copy of the old value instead.
         let old = self.value();
-        let kept =
-            held_anchor_token(&old).filter(|_| new_value.kind() != crate::as_yaml::YamlKind::Alias);
+        let kept = kept_anchor_token(&old, &new_value);
         let anchor = kept.as_ref().map(|t| t.text().to_string());
         crate::nodes::kept_aliases::keeping_aliases(&old, kept, || {
             self.replace_value_under(new_value, flow_context, anchor.as_deref());

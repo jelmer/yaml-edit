@@ -2216,3 +2216,28 @@ fn test_rename_key_holding_two_nodes() {
     crate::debug::assert_parser_shaped(&doc);
     assert_eq!(doc.to_string(), "z: 1\n");
 }
+
+#[test]
+fn test_modify_mapping_of_missing_or_scalar_value() {
+    let doc = YamlFile::from_str("a: 1\n").unwrap().document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(!mapping.modify_mapping("a", |_| panic!("a is no mapping")));
+    assert!(!mapping.modify_mapping("b", |_| panic!("b is missing")));
+    assert_eq!(doc.to_string(), "a: 1\n");
+}
+
+/// A block collection set as a value in a flow mapping is written in flow
+/// form.
+#[test]
+fn test_set_block_value_in_flow_mapping() {
+    let source = YamlFile::from_str("k:\n  - x\n  - y\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    let block = source.as_mapping().unwrap().get("k").unwrap();
+    let doc = YamlFile::from_str("{a: 1}\n").unwrap().document().unwrap();
+    doc.as_mapping().unwrap().set("a", block);
+    assert_cst_ok(&doc);
+    crate::debug::assert_parser_shaped(&doc);
+    assert_eq!(doc.to_string(), "{a: [x, y]}\n");
+}

@@ -707,6 +707,15 @@ mod tests {
     use crate::yaml::YamlFile;
     use std::str::FromStr;
 
+    #[test]
+    fn test_set_out_of_bounds() {
+        let doc = YamlFile::from_str("- a\n").unwrap().document().unwrap();
+        let seq = doc.as_sequence().unwrap();
+        assert!(!seq.set(1, "b"));
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), "- a\n");
+    }
+
     /// `Sequence::new_pending_block` serializes as `[]` so an empty sequence
     /// survives a round-trip, and turns into a block sequence once it has an
     /// item. Before this it rendered as `key:` followed by blank space, which

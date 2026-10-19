@@ -632,51 +632,33 @@ impl Mapping {
             return;
         }
 
-        // Key doesn't exist, need to find the correct insertion position based on field order.
-        // Find position of this key in the field order (if it matches any)
-        let key_position_in_order = field_order
+        let Some(key_index) = field_order
             .iter()
-            .position(|field| crate::as_yaml::yaml_eq(&key, field));
-
-        if let Some(key_index) = key_position_in_order {
-            // Key is in the field order, find the right position to insert
-            let mut insert_after_node: Option<SyntaxNode> = None;
-            let mut insert_before_node: Option<SyntaxNode> = None;
-
-            // The nearest preceding field that is actually present decides
-            // where the new entry goes.
-            for field in field_order.iter().take(key_index).rev() {
-                if let Some(entry) = self.find_entry_by_key(field) {
-                    insert_after_node = Some(entry.0);
-                    break;
-                }
-            }
-
-            // If no predecessor found, look for the first existing key in document order
-            // that comes after this one in field_order
-            if insert_after_node.is_none() {
-                // Nothing precedes it, so go before the first present field
-                // that the order puts after it.
-                insert_before_node = self.entries().find_map(|entry| {
-                    let key_node = entry.key()?;
-                    let pos = field_order
-                        .iter()
-                        .position(|field| key_content_matches(&key_node, field))?;
-                    (pos > key_index).then_some(entry.0)
-                });
-            }
-
-            match (insert_after_node, insert_before_node) {
-                (Some(after), _) => self.insert_new(Slot::After(after), &key, &value),
-                (None, Some(before)) => self.insert_new(Slot::Before(before), &key, &value),
-                // No ordered key is present yet, so order says nothing about
-                // where this one goes.
-                (None, None) => self.set(&key, &value),
-            }
-        } else {
-            // Key is not in field order, append at the end using CST
-            self.set(&key, &value);
-        }
+            .position(|field| crate::as_yaml::yaml_eq(&key, field))
+        else {
+            self.insert_new(Slot::End, key, value);
+            return;
+        };
+        // The nearest preceding field that is present decides where the new
+        // entry goes. With none, it goes before the first present field that
+        // the order puts after it, and with no ordered key present at the end.
+        let before_later = || {
+            self.entries().find_map(|entry| {
+                let key_node = entry.key()?;
+                let pos = field_order
+                    .iter()
+                    .position(|field| key_content_matches(&key_node, field))?;
+                (pos > key_index).then_some(Slot::Before(entry.0))
+            })
+        };
+        let slot = field_order[..key_index]
+            .iter()
+            .rev()
+            .find_map(|field| self.find_entry_by_key(field))
+            .map(|entry| Slot::After(entry.0))
+            .or_else(before_later)
+            .unwrap_or(Slot::End);
+        self.insert_new(slot, key, value);
     }
 
     /// Detect the indentation level (in spaces) used by entries in this mapping.

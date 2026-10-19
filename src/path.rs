@@ -663,28 +663,6 @@ fn segment_display(segment: &PathSegment) -> String {
     }
 }
 
-/// Resolve a node to the mapping it addresses, looking through a tag.
-///
-/// A tagged collection is a mapping or sequence wearing a tag, so a path
-/// segment descends into the inner collection and leaves the tag in place.
-fn node_as_mapping(node: &crate::as_yaml::YamlNode) -> Option<Mapping> {
-    match node {
-        crate::as_yaml::YamlNode::Mapping(m) => Some(m.clone()),
-        crate::as_yaml::YamlNode::TaggedNode(t) => t.as_mapping(),
-        _ => None,
-    }
-}
-
-/// Resolve a node to the sequence it addresses, looking through a tag.
-/// See [`node_as_mapping`].
-fn node_as_sequence(node: &crate::as_yaml::YamlNode) -> Option<crate::yaml::Sequence> {
-    match node {
-        crate::as_yaml::YamlNode::Sequence(s) => Some(s.clone()),
-        crate::as_yaml::YamlNode::TaggedNode(t) => t.as_sequence(),
-        _ => None,
-    }
-}
-
 /// Whether an existing value may be replaced by a container the setter
 /// creates. Only a bare scalar may: a tagged scalar, an alias, or a
 /// collection of the wrong shape is user data we refuse to overwrite.
@@ -842,15 +820,15 @@ fn descend_one(
     };
     match segment {
         PathSegment::Key(key) => {
-            let mapping = node_as_mapping(&current).ok_or_else(mismatch)?;
+            let mapping = current.mapping_content().ok_or_else(mismatch)?;
             lookup_merged(&mapping, key, segment)
         }
         PathSegment::Index(index) => {
-            if let Some(seq) = node_as_sequence(&current) {
+            if let Some(seq) = current.sequence_content() {
                 seq.get(*index).ok_or_else(|| PathError::NotFound {
                     at: segment_display(segment),
                 })
-            } else if let Some(map) = node_as_mapping(&current) {
+            } else if let Some(map) = current.mapping_content() {
                 // Fallback: numeric segment used as a mapping key.
                 lookup_merged(&map, &index.to_string(), segment)
             } else {
@@ -944,11 +922,11 @@ fn remove_path_impl(
     // container lookup below sees the anchored mapping.
     let holder = holder.unwrap_or(seg);
     let root = resolve_for_read(root, holder, policy)?;
-    let mapping = node_as_mapping(&root).ok_or_else(|| {
+    let mapping = root.mapping_content().ok_or_else(|| {
         // A numeric segment on a mapping is a stringified key; on a
         // sequence, index removal is unsupported.
         let index_on_sequence =
-            matches!(seg, PathSegment::Index(_)) && node_as_sequence(&root).is_some();
+            matches!(seg, PathSegment::Index(_)) && root.sequence_content().is_some();
         PathError::TypeMismatch {
             at: segment_display(if index_on_sequence { seg } else { holder }),
         }
@@ -1110,9 +1088,9 @@ fn set_path_on_node<V: crate::AsYaml>(
     policy: AliasPolicy,
     via: &PathSegment,
 ) -> Result<(), PathError> {
-    if let Some(m) = node_as_mapping(&node) {
+    if let Some(m) = node.mapping_content() {
         set_path_on_mapping(&m, segments, value, policy)
-    } else if let Some(seq) = node_as_sequence(&node) {
+    } else if let Some(seq) = node.sequence_content() {
         set_path_on_sequence(&seq, segments, value, policy)
     } else {
         Err(PathError::TypeMismatch {

@@ -410,7 +410,8 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
             }
         }
         // A comment directly in a block collection is a line of its own:
-        // one ending an entry's line belongs to that entry.
+        // one ending an entry's line belongs to that entry. The entry may
+        // end in an implicit null after its line break, as in `? - a\n`.
         SyntaxKind::MAPPING | SyntaxKind::SEQUENCE
             if !crate::nodes::starts_a_flow_collection(node) =>
         {
@@ -419,9 +420,11 @@ fn validate_node(node: &SyntaxNode) -> Result<(), String> {
                 .filter_map(|c| c.into_token())
                 .filter(|t| t.kind() == SyntaxKind::COMMENT)
                 .find(|t| {
-                    t.prev_token().is_some_and(|p| {
-                        !matches!(p.kind(), SyntaxKind::NEWLINE | SyntaxKind::INDENT)
-                    })
+                    std::iter::successors(t.prev_token(), |p| p.prev_token())
+                        .find(|p| !p.text().is_empty())
+                        .is_some_and(|p| {
+                            !matches!(p.kind(), SyntaxKind::NEWLINE | SyntaxKind::INDENT)
+                        })
                 });
             if let Some(comment) = stray {
                 return Err(format!(
@@ -690,6 +693,17 @@ mod tests {
             validate_tree(file.syntax()),
             Err("SEQUENCE holds the comment \"# c\" ending an entry's line".to_string())
         );
+    }
+
+    /// An explicit key without a value that ends in a block node ends its
+    /// line before the zero-width null of its value, so a comment after
+    /// that is a line of its own.
+    #[test]
+    fn test_validate_tree_comment_line_after_explicit_block_key() {
+        for yaml in ["? - a\n# c\n", "- ? - a\n# c\n"] {
+            let file = YamlFile::from_str(yaml).unwrap();
+            assert_eq!(validate_tree(file.syntax()), Ok(()), "{yaml:?}");
+        }
     }
 
     /// A nested block collection ends in an entry: the lines after it are

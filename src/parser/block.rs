@@ -1528,7 +1528,6 @@ mod tests {
             ":\n|: x\n",
             "?\n: >: x\n",
             "? |b: x\n",
-            "<< <<\n",
         ] {
             let parse = YamlFile::parse(src);
             let file = parse.tree();
@@ -1544,6 +1543,11 @@ mod tests {
                 .count();
             assert_ne!(parse.errors().len() + violations, 0, "{src:?}");
         }
+        // A `<<` with more on its line is one plain scalar, not a merge key.
+        assert_eq!(
+            checked_value("<< <<\n"),
+            crate::YamlValue::Scalar(crate::ScalarValue::plain("<< <<"))
+        );
         assert_eq!(top_level_keys("a: :\nb: 1\n"), ["a", "b"]);
         assert_eq!(top_level_keys("x:\n  a: :\n  b: 1\nc: 2\n"), ["x", "c"]);
         let parsed = YamlFile::from_str("a: :\nb: 1\n").unwrap();

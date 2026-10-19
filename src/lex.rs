@@ -868,13 +868,14 @@ impl<'a, 'c> LexState<'a, 'c> {
                 ));
                 self.push(GREATER, start_idx, start_idx + 1)
             }
-            // `<<` is a merge key only when the key is exactly `<<`, i.e. the
-            // next character ends the token. Anything else starting with `<`
-            // (`<<foo`, a bare `<`) is a plain scalar and falls through to the
-            // catch-all arm below, which knows the real plain-scalar rules.
-            '<' if is_merge_key_at(self.input, start_idx) => {
-                self.chars.next(); // consume second <
-                self.push(MERGE_KEY, start_idx, start_idx + 2);
+            // `<<` is a merge key only when it is the whole plain scalar, per
+            // the YAML 1.1 merge type: `<<foo`, `<<#` and `<< x` are scalars
+            // of their own.
+            '<' => {
+                self.lex_plain_scalar(start_idx, ch);
+                if let Some(token) = self.tokens.last_mut().filter(|t| t.1 == "<<") {
+                    token.0 = MERGE_KEY;
+                }
             }
             // Like tags, only at the start of a node: `a: x &anc` is the
             // scalar `x &anc`, not an anchored value.
@@ -1417,22 +1418,6 @@ fn classify_scalar(text: &str) -> SyntaxKind {
 
 /// Common set of YAML special characters
 const YAML_SPECIAL_CHARS: &str = ":+-?[]{},'|>&*!%\"#";
-
-/// Check whether the `<` at `idx` starts a merge key (`<<`).
-///
-/// `<<` is a merge key only when the whole key is `<<`, per the YAML 1.1 merge
-/// type. A `<<` followed by more scalar content (`<<foo`) is a plain scalar,
-/// which is what PyYAML and other implementations accept.
-fn is_merge_key_at(input: &str, idx: usize) -> bool {
-    let rest = &input[idx..];
-    if !rest.starts_with("<<") {
-        return false;
-    }
-    match rest[2..].chars().next() {
-        None => true,
-        Some(ch) => is_white_or_break(ch) || matches!(ch, ':' | ',' | ']' | '}' | '#'),
-    }
-}
 
 /// Check if a character has special meaning in YAML
 /// Whether a node property (`!tag`, `&anchor`, `*alias`) may start here.
@@ -2270,6 +2255,62 @@ double: "quoted""#;
                 .unwrap()
                 .as_string(),
             "1"
+        );
+    }
+
+    /// `<<` is a merge key only when the plain scalar there is exactly
+    /// `<<`: a `#` or `:` glued to it, or more words after a space, are
+    /// part of the scalar.
+    #[test]
+    fn test_merge_key_is_a_whole_plain_scalar() {
+        use SyntaxKind::*;
+        assert_eq!(
+            lex("<<#: 1"),
+            [(STRING, "<<#"), (COLON, ":"), (WHITESPACE, " "), (INT, "1")]
+        );
+        assert_eq!(
+            lex("<<:x: 1"),
+            [
+                (STRING, "<<:x"),
+                (COLON, ":"),
+                (WHITESPACE, " "),
+                (INT, "1")
+            ]
+        );
+        assert_eq!(
+            lex("<< x: 1"),
+            [
+                (STRING, "<< x"),
+                (COLON, ":"),
+                (WHITESPACE, " "),
+                (INT, "1")
+            ]
+        );
+        assert_eq!(
+            lex("<<]: 1"),
+            [(STRING, "<<]"), (COLON, ":"), (WHITESPACE, " "), (INT, "1")]
+        );
+        assert_eq!(
+            lex("<< #c\n"),
+            [
+                (MERGE_KEY, "<<"),
+                (WHITESPACE, " "),
+                (COMMENT, "#c"),
+                (NEWLINE, "\n")
+            ]
+        );
+        assert_eq!(
+            lex("{<<,<<: 1}"),
+            [
+                (LEFT_BRACE, "{"),
+                (MERGE_KEY, "<<"),
+                (COMMA, ","),
+                (MERGE_KEY, "<<"),
+                (COLON, ":"),
+                (WHITESPACE, " "),
+                (INT, "1"),
+                (RIGHT_BRACE, "}")
+            ]
         );
     }
 

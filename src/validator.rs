@@ -1365,7 +1365,9 @@ fn check_tab_usage(node: &SyntaxNode, violations: &mut Vec<Violation>) {
         // separation at the stream's own level -- it is content or
         // legal whitespace, which is how the test suite reads 4ZYM,
         // HS5T, NB6Z, UV7Q, 6CA3, K54U and T5N4.
-        SyntaxKind::VALUE
+        SyntaxKind::DOCUMENT
+        | SyntaxKind::KEY
+        | SyntaxKind::VALUE
         | SyntaxKind::MAPPING
         | SyntaxKind::SEQUENCE
         | SyntaxKind::MAPPING_ENTRY
@@ -2710,24 +2712,31 @@ fn quoted_scalar_tab_indent(node: &SyntaxNode) -> Option<crate::nodes::SyntaxTok
 /// The first token of `node`, a block collection, its entry or a value,
 /// that uses a tab as indentation.
 fn block_tab_indent(node: &SyntaxNode) -> Option<crate::nodes::SyntaxToken> {
+    let is_flow = starts_a_flow_collection(node);
+    let tab = node
+        .children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .find(|t| tab_before_block_collection(t) || tab_indent(t, is_flow))?;
     // A flow collection at the stream's own level is not
-    // indentation-sensitive, so a tab inside one is separation
+    // indentation-sensitive, so a tab anywhere inside one is separation
     // whitespace (6CA3's `\t[\n\t]`). Nested in a block collection it
     // still has to clear that block's column, as Y79Y/003's `- [\n\tfoo,`
-    // does not.
-    let is_flow = starts_a_flow_collection(node);
-    let inside_a_block = node.ancestors().skip(1).any(|a| {
-        matches!(
-            a.kind(),
-            crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
-        )
-    });
-    if is_flow && !inside_a_block {
+    // does not. Block collections cannot sit inside flow ones, so the
+    // outermost collection tells the two apart. Only a candidate tab pays
+    // for the walk up, so deep nesting without tabs stays linear.
+    let outermost = node
+        .ancestors()
+        .filter(|a| {
+            matches!(
+                a.kind(),
+                crate::SyntaxKind::MAPPING | crate::SyntaxKind::SEQUENCE
+            )
+        })
+        .last();
+    if outermost.is_some_and(|c| starts_a_flow_collection(&c)) {
         return None;
     }
-    node.children_with_tokens()
-        .filter_map(|c| c.into_token())
-        .find(|t| tab_before_block_collection(t) || tab_indent(t, is_flow))
+    Some(tab)
 }
 
 /// Whether `token` is white space holding a tab that separates an indicator
@@ -2792,8 +2801,9 @@ fn tab_indent(token: &crate::nodes::SyntaxToken, in_flow: bool) -> bool {
     }) {
         return false;
     }
-    // After leading spaces a tab is separation rather than indentation
-    // (DK95/00's `foo:\n \tbar`, 6HB6), unless a block collection entry
+    // After leading spaces, or at the stream's own level where `s-indent`
+    // is empty, a tab is separation rather than indentation (DK95/00's
+    // `foo:\n \tbar`, 6HB6, Q5MG), unless a block collection entry
     // follows, whose column it would move (DK95/06). In a VALUE the next
     // sibling is the whole nested collection rather than its first entry
     // (`a:\n \t- x`).
@@ -2807,7 +2817,10 @@ fn tab_indent(token: &crate::nodes::SyntaxToken, in_flow: bool) -> bool {
                 }
                 _ => false,
             });
-    if token.text().starts_with(' ') && !starts_block_entry {
+    let at_stream_level = token
+        .parent()
+        .is_some_and(|p| p.kind() == crate::SyntaxKind::DOCUMENT);
+    if (token.text().starts_with(' ') || at_stream_level) && !starts_block_entry {
         return false;
     }
     token.text().contains('\t')
@@ -4048,11 +4061,17 @@ mod tests {
             "a: 1\n---\n  b: 1\n  c: 2\n",
             "  - a\n  - b\n",
             "# c\n  - a\n  - b\n",
-            // A tab before the first key is separation, not indentation.
-            "\ta: 1\n b: 2\n",
         ] {
             assert_eq!(located(yaml), vec![], "{yaml:?}");
         }
+        // `s-indent` is spaces only, so a tab cannot indent the first key.
+        assert_eq!(
+            located("\ta: 1\n b: 2\n"),
+            vec![(
+                "Tabs are not allowed for indentation in YAML".to_string(),
+                "1:1".to_string()
+            )]
+        );
         assert_eq!(
             located("  a: 1\n   b: 2\n"),
             vec![(
@@ -4993,6 +5012,72 @@ mod tests {
                 vec!["Tabs are not allowed for indentation in YAML".to_string()],
                 "{yaml:?}"
             );
+        }
+    }
+
+    #[test]
+    fn test_tab_in_root_flow_collection_is_separation() {
+        // Anywhere inside a flow collection at the stream's own level a
+        // leading tab is separation, as in 6CA3.
+        for yaml in [
+            "{a:\n\tb}\n",
+            "[[\n\ta]]\n",
+            "{a: [\n\tb]}\n",
+            "{?\n\ta}\n",
+            "[k:\n\tv]\n",
+        ] {
+            assert_eq!(located(yaml), vec![], "{yaml:?}");
+        }
+        assert_eq!(
+            located("a: {b:\n\tc}\n"),
+            vec![
+                (
+                    "Flow collection continuation line must be indented".to_string(),
+                    "1:4".to_string()
+                ),
+                (
+                    "Tabs are not allowed for indentation in YAML".to_string(),
+                    "2:1".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_tab_before_root_block_collection() {
+        // `s-indent` is spaces only, also for the stream's own block
+        // collection and an explicit key's content.
+        let tab = "Tabs are not allowed for indentation in YAML";
+        for (yaml, location) in [
+            ("\ta: 1\n", "1:1"),
+            ("\t- a\n", "1:1"),
+            ("  \ta: 1\n", "1:1"),
+            ("\t&x a: 1\n", "1:1"),
+            ("\t{a: b}: c\n", "1:1"),
+            ("---\n\ta: 1\n", "2:1"),
+            ("&x\n\ta: 1\n", "2:1"),
+            ("?\n\n\t?\n", "3:1"),
+            ("?\n\t- a\n", "2:1"),
+            ("?\n\tfoo\n", "2:1"),
+        ] {
+            assert_eq!(
+                located(yaml),
+                vec![(tab.to_string(), location.to_string())],
+                "{yaml:?}"
+            );
+        }
+        // Before a flow node, properties or on a line of its own the tab
+        // is separation.
+        for yaml in [
+            "\tfoo\n",
+            "\t[a]\n",
+            "\t{a: b}\n",
+            "\t&x\na: 1\n",
+            "\t\n- a\n",
+            "\t# c\na: 1\n",
+            "?\n \tfoo\n",
+        ] {
+            assert_eq!(located(yaml), vec![], "{yaml:?}");
         }
     }
 

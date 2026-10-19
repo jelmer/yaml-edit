@@ -1593,7 +1593,7 @@ fn build_block_scalar(builder: &mut rowan::GreenNodeBuilder, text: &str) {
 impl ScalarValue {
     /// Emit the scalar, inside a flow collection quoting strings as `flow`
     /// says if it is set.
-    fn build(
+    pub(crate) fn build(
         &self,
         builder: &mut rowan::GreenNodeBuilder,
         indent: usize,

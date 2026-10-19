@@ -996,13 +996,10 @@ pub(crate) fn source_reindent_base(node: &SyntaxNode, is_flow: bool) -> usize {
     }
 }
 
-// AsYaml trait implementations for primitive types
-//
-// Uses macros to reduce boilerplate for the 12 numeric primitive types.
-
-/// Macro to implement AsYaml for integer types
-macro_rules! impl_as_yaml_int {
-    ($($ty:ty),+ $(,)?) => {
+/// Implement AsYaml for primitives that build as the scalar `$to_scalar`
+/// turns them into.
+macro_rules! impl_as_yaml_scalar {
+    ($to_scalar:expr; $($ty:ty),+ $(,)?) => {
         $(impl AsYaml for $ty {
             fn as_node(&self) -> Option<&crate::yaml::SyntaxNode> {
                 None
@@ -1012,12 +1009,9 @@ macro_rules! impl_as_yaml_int {
                 YamlKind::Scalar
             }
 
-            fn build_content(&self, builder: &mut rowan::GreenNodeBuilder, _indent: usize, _flow_context: bool) -> bool {
-                use crate::lex::SyntaxKind;
-                builder.start_node(SyntaxKind::SCALAR.into());
-                builder.token(SyntaxKind::INT.into(), &self.to_string());
-                builder.finish_node();
-                false
+            fn build_content(&self, builder: &mut rowan::GreenNodeBuilder, indent: usize, _flow_context: bool) -> bool {
+                let to_scalar: fn(&$ty) -> crate::scalar::ScalarValue = $to_scalar;
+                to_scalar(self).build(builder, indent, None)
             }
 
             fn is_inline(&self) -> bool {
@@ -1027,69 +1021,11 @@ macro_rules! impl_as_yaml_int {
     };
 }
 
-/// Macro to implement AsYaml for floating-point types
-macro_rules! impl_as_yaml_float {
-    ($($ty:ty),+ $(,)?) => {
-        $(impl AsYaml for $ty {
-            fn as_node(&self) -> Option<&crate::yaml::SyntaxNode> {
-                None
-            }
-
-            fn kind(&self) -> YamlKind {
-                YamlKind::Scalar
-            }
-
-            fn build_content(&self, builder: &mut rowan::GreenNodeBuilder, _indent: usize, _flow_context: bool) -> bool {
-                use crate::lex::SyntaxKind;
-                builder.start_node(SyntaxKind::SCALAR.into());
-                let float_str = crate::scalar::ScalarValue::format_float(self.to_string());
-                builder.token(SyntaxKind::FLOAT.into(), &float_str);
-                builder.finish_node();
-                false
-            }
-
-            fn is_inline(&self) -> bool {
-                true
-            }
-        })+
-    };
-}
-
-// Implement AsYaml for integer types
-impl_as_yaml_int!(i64, i32, i16, i8, isize, u64, u32, u16, u8, usize);
-
-// Implement AsYaml for floating-point types
-impl_as_yaml_float!(f64, f32);
-
-impl AsYaml for bool {
-    fn as_node(&self) -> Option<&crate::yaml::SyntaxNode> {
-        None
-    }
-
-    fn kind(&self) -> YamlKind {
-        YamlKind::Scalar
-    }
-
-    fn build_content(
-        &self,
-        builder: &mut rowan::GreenNodeBuilder,
-        _indent: usize,
-        _flow_context: bool,
-    ) -> bool {
-        use crate::lex::SyntaxKind;
-        builder.start_node(SyntaxKind::SCALAR.into());
-        builder.token(
-            SyntaxKind::BOOL.into(),
-            if *self { "true" } else { "false" },
-        );
-        builder.finish_node();
-        false
-    }
-
-    fn is_inline(&self) -> bool {
-        true
-    }
-}
+impl_as_yaml_scalar!(
+    |v| crate::scalar::ScalarValue::plain(v.to_string()).with_type(crate::scalar::ScalarType::Integer);
+    i64, i32, i16, i8, isize, u64, u32, u16, u8, usize
+);
+impl_as_yaml_scalar!(|v| crate::scalar::ScalarValue::from(*v); f64, f32, bool);
 
 impl AsYaml for String {
     fn as_node(&self) -> Option<&crate::yaml::SyntaxNode> {

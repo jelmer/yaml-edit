@@ -408,10 +408,7 @@ impl Parser<'_> {
             // `?` is an enclosing entry's: in `? ? a\n: b\n` the `: b` is
             // the outer entry's value.
             self.skip_line_end_trivia();
-            let (next, next_indent) = self.next_content();
-            if next == Some(SyntaxKind::COLON)
-                && (self.current() != Some(SyntaxKind::NEWLINE) || next_indent >= question_column)
-            {
+            if self.explicit_value_follows(question_column) {
                 self.skip_ws_and_newlines();
                 let colon_column = self.column();
                 self.bump(); // consume ':'
@@ -608,7 +605,7 @@ impl Parser<'_> {
             p.builder.finish_node();
 
             p.skip_line_end_trivia();
-            if p.next_content().0 == Some(SyntaxKind::COLON) {
+            if p.explicit_value_follows(question_column) {
                 p.skip_ws_and_newlines();
                 let colon_column = p.column();
                 p.bump(); // consume ':'
@@ -1684,6 +1681,22 @@ DOCUMENT
       NEWLINE: \"\\\\n\"
 "
         );
+    }
+
+    /// A `:` line left of an explicit key's `?` is the value of an
+    /// enclosing explicit key, not of the one nested in its key.
+    #[test]
+    fn test_explicit_value_left_of_nested_explicit_key() {
+        for (src, flow) in [
+            ("? - ? a\n: b\n", "? [{? a}]\n: b\n"),
+            ("? - ? - a\n: b\n", "? [{? [a]}]\n: b\n"),
+            (
+                "x:\n  ? - ? -\n  : - c\n",
+                "x:\n  ? [{? [null]}]\n  : [c]\n",
+            ),
+        ] {
+            assert_eq!(checked_value(src), checked_value(flow), "{src:?}");
+        }
     }
 
     /// A sequence on the line of an explicit key is the key's, however much

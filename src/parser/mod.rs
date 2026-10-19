@@ -1014,6 +1014,31 @@ impl Parser<'_> {
         (None, indent)
     }
 
+    /// Whether the next content is the `:` of the explicit key whose `?`
+    /// sits at `question_column`. One opening a later line left of the `?`
+    /// is the value of an enclosing entry: in `? - ? a\n: b\n` the `: b`
+    /// line is the outer key's.
+    pub(super) fn explicit_value_follows(&self, question_column: usize) -> bool {
+        // The column of the line the next content is on, if not this one.
+        let mut line_indent = matches!(
+            self.previous_kind,
+            Some(SyntaxKind::NEWLINE | SyntaxKind::INDENT)
+        )
+        .then_some(self.current_line_indent);
+        for (kind, text) in self.tokens.iter().rev() {
+            match kind {
+                SyntaxKind::NEWLINE => line_indent = Some(0),
+                SyntaxKind::INDENT => line_indent = Some(text.len()),
+                SyntaxKind::BOM | SyntaxKind::WHITESPACE | SyntaxKind::COMMENT => {}
+                SyntaxKind::COLON => {
+                    return line_indent.map_or(true, |indent| indent >= question_column)
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
     /// Where the value of a `:` is, when it is on a later line indented
     /// past `mapping_column` (or at it, for an indentless sequence): the
     /// number of tokens up to the INDENT starting that line, or the line

@@ -223,12 +223,18 @@ fn continuation_indent(node: &SyntaxNode) -> Option<usize> {
 ///
 /// See the implicit-null section of the CST invariants in `nodes/mod.rs`.
 fn entry_is_empty(entry: &SyntaxNode) -> bool {
-    entry.text_range().is_empty()
-        || entry
-            .text()
-            .to_string()
-            .trim_matches(|c: char| c.is_whitespace() || c == ',')
-            .is_empty()
+    // Stop at the first real character rather than rendering the entry,
+    // whose text covers all the nesting below it.
+    entry
+        .text()
+        .try_for_each_chunk(|chunk| {
+            if chunk.chars().all(|c| c.is_whitespace() || c == ',') {
+                Ok(())
+            } else {
+                Err(())
+            }
+        })
+        .is_ok()
 }
 
 /// Set each violation's `line:column` location from its range, using the
@@ -2427,52 +2433,54 @@ fn check_duplicate_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
     use crate::SyntaxKind;
     use std::collections::HashMap;
 
-    // Collect all KEY nodes with their text representation and parent entry range
-    let keys: Vec<(SyntaxNode, String, rowan::TextRange)> = node
+    let keys: Vec<(SyntaxNode, rowan::TextRange)> = node
         .children()
         .filter(|child| child.kind() == SyntaxKind::MAPPING_ENTRY)
         .filter_map(|child| {
-            let entry_range = child.text_range();
-            child
-                .children()
-                .find(|n| n.kind() == SyntaxKind::KEY)
-                .map(|key_node| {
-                    // Only allocate once: trim() returns &str, then to_string() once
-                    let key_text = key_node.text().to_string();
-                    let key_text = key_text.trim().to_string();
-                    (key_node, key_text, entry_range)
-                })
+            let key = child.children().find(|n| n.kind() == SyntaxKind::KEY)?;
+            Some((key, child.text_range()))
         })
         .collect();
+    // A key's identity and text cover its whole subtree, so computing them
+    // for the key of each level of `{{{...}}}` made validation quadratic in
+    // the nesting depth. Only keys of the same kind can be equal, so a key
+    // with no other of its kind is left alone.
+    // TODO: two collection keys on every level still cost the depth times
+    // the size, as each level works out the identities below it again.
+    let kinds: Vec<Option<SyntaxKind>> = keys.iter().map(|(key, _)| identity_kind(key)).collect();
+    let mut kind_counts: HashMap<SyntaxKind, usize> = HashMap::new();
+    for kind in kinds.iter().flatten() {
+        *kind_counts.entry(*kind).or_default() += 1;
+    }
 
-    let format_key = |s: &str| {
-        if s.is_empty() {
-            "\"\"".to_string()
-        } else {
-            format!("{s:?}")
+    let format_key = |key: &SyntaxNode| {
+        let text = key.text().to_string();
+        match text.trim() {
+            "" => "\"\"".to_string(),
+            s => format!("{s:?}"),
         }
-    };
-    let mut report = |first_text: &str, dup_text: &str, at: rowan::TextRange| {
-        violations.push(Violation::error_at(
-            Rule::DuplicateKeys,
-            at,
-            format!(
-                "Duplicate key: {} (semantically equal to {})",
-                format_key(dup_text),
-                format_key(first_text)
-            ),
-        ));
     };
 
     // Key identity -> index of the first key with it
     let mut seen: HashMap<crate::as_yaml::NodeIdentity, usize> = HashMap::new();
-    for (i, (key, text, range)) in keys.iter().enumerate() {
+    for (i, (key, range)) in keys.iter().enumerate() {
+        if !kinds[i].is_some_and(|kind| kind_counts[&kind] > 1) {
+            continue;
+        }
         let Some(identity) = key_identity(key) else {
             continue;
         };
         match seen.entry(identity) {
             std::collections::hash_map::Entry::Occupied(first) => {
-                report(&keys[*first.get()].1, text, *range);
+                violations.push(Violation::error_at(
+                    Rule::DuplicateKeys,
+                    *range,
+                    format!(
+                        "Duplicate key: {} (semantically equal to {})",
+                        format_key(key),
+                        format_key(&keys[*first.get()].0)
+                    ),
+                ));
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
                 slot.insert(i);
@@ -2487,6 +2495,21 @@ fn check_duplicate_keys(node: &SyntaxNode, violations: &mut Vec<Violation>) {
 /// `{&a [a]: 1, *a : 2}` as valid (X38W).
 fn key_identity(key: &SyntaxNode) -> Option<crate::as_yaml::NodeIdentity> {
     crate::as_yaml::node_identity(key, None).ok().flatten()
+}
+
+/// The kind of the node that gives `node`, a key or a node in one, its
+/// identity, or `None` if it has none: keys of different kinds are never
+/// equal.
+fn identity_kind(node: &SyntaxNode) -> Option<crate::SyntaxKind> {
+    use crate::SyntaxKind;
+    match node.kind() {
+        SyntaxKind::KEY => identity_kind(&node.first_child()?),
+        // A tagged node without content is an empty scalar.
+        SyntaxKind::TAGGED_NODE => node
+            .first_child()
+            .map_or(Some(SyntaxKind::SCALAR), |content| identity_kind(&content)),
+        kind => Some(kind),
+    }
 }
 
 impl Default for Validator {
@@ -2706,32 +2729,22 @@ mod tests {
     #[test]
     fn test_duplicate_key_detection_scales_linearly() {
         // This check used to compare every key against every other one, which
-        // made validating a large generated mapping quadratic. Guard the
-        // shape rather than a wall-clock number: 4x the keys should cost far
-        // less than the 16x a pairwise sweep would.
-        let build = |n: usize| {
-            let mut s = String::new();
-            for i in 0..n {
-                s.push_str(&format!("key{i}: value{i}\n"));
-            }
-            Document::from_str(&s).unwrap()
-        };
-        let time = |doc: &Document| {
-            let start = std::time::Instant::now();
-            let _ = Validator::new().validate(doc);
-            start.elapsed()
-        };
+        // made validating a large generated mapping quadratic.
+        assert_validation_scales_linearly(500, |n| {
+            (0..n).map(|i| format!("key{i}: value{i}\n")).collect()
+        });
+    }
 
-        let small = build(500);
-        let large = build(2000);
-        // Warm up so the first parse does not skew the comparison.
-        let _ = time(&small);
-        let small_t = time(&small);
-        let large_t = time(&large);
-
-        assert!(
-            large_t < small_t * 12,
-            "validation looks superlinear: 500 keys took {small_t:?}, 2000 took {large_t:?}"
+    /// Assert that validating the text `build` gives for a size takes time
+    /// linear in that size.
+    fn assert_validation_scales_linearly(n: usize, build: impl Fn(usize) -> String) {
+        crate::scaling::assert_scales_linearly(
+            &format!("validating {:?}", build(2)),
+            n,
+            |n| crate::YamlFile::from_str(&build(n)).unwrap(),
+            |file| {
+                Validator::new().validate_syntax(file.syntax());
+            },
         );
     }
 

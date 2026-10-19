@@ -1245,19 +1245,7 @@ fn set_path_in_slot<K: crate::AsYaml + Copy, V: crate::AsYaml>(
         return Err(mismatch());
     }
 
-    // A sequence created under a key starts empty, so an index past the
-    // growth bound is known to fail. Say so before writing anything:
-    // creating the key first left `k:\n  \n` behind, a half-built entry
-    // that no longer reparses as the sequence it claimed.
-    if let (Slot::Key(..), PathSegment::Index(index)) = (&slot, &rest[0]) {
-        if *index >= MAX_INDEX_GROWTH {
-            return Err(PathError::IndexTooFar {
-                at: segment_display(&rest[0]),
-                len: 0,
-                index: *index,
-            });
-        }
-    }
+    check_new_path(rest)?;
     slot.insert_container(wants_sequence);
     let created = slot.get();
     if wants_sequence {
@@ -1271,6 +1259,23 @@ fn set_path_in_slot<K: crate::AsYaml + Copy, V: crate::AsYaml>(
             .expect("we just inserted a mapping here");
         set_path_on_mapping(&nested, rest, value, policy)
     }
+}
+
+/// Check that a write of `segments` into containers about to be created
+/// can succeed, before anything is written.
+///
+/// Every container on the way starts empty, so the only way such a write
+/// fails is an index past the growth bound. Writing first and failing
+/// later would leave a half-built path behind.
+fn check_new_path(segments: &[PathSegment]) -> Result<(), PathError> {
+    segments.iter().try_for_each(|segment| match segment {
+        PathSegment::Index(index) if *index >= MAX_INDEX_GROWTH => Err(PathError::IndexTooFar {
+            at: segment_display(segment),
+            len: 0,
+            index: *index,
+        }),
+        _ => Ok(()),
+    })
 }
 
 /// Set a value at a path on a sequence, growing it and creating intermediate
@@ -1313,6 +1318,7 @@ fn set_path_on_sequence<V: crate::AsYaml>(
         });
     }
     if let Some(growth) = (index + 1).checked_sub(len) {
+        check_new_path(&segments[1..])?;
         sequence.extend_with(crate::scalar::ScalarValue::null(), growth);
     }
 
@@ -1362,6 +1368,33 @@ mod tests {
             Err(PathError::IndexTooFar { .. })
         ));
         assert_cst_ok(&doc);
+    }
+
+    #[test]
+    fn set_path_refused_far_index_writes_nothing() {
+        use crate::Document;
+        use std::str::FromStr;
+
+        for (source, path) in [
+            ("s: [1]\n", "s[1][300]"),
+            ("s: [1]\n", "s[3].k[300]"),
+            ("s:\n- 1\n", "s[1][300]"),
+            ("m: {}\n", "m.k[300]"),
+            ("m: {}\n", "m.k.j[300]"),
+            ("m: {}\n", "m.k[1][300]"),
+        ] {
+            let doc = Document::from_str(source).unwrap();
+            assert_eq!(
+                doc.try_set_path(path, "x"),
+                Err(PathError::IndexTooFar {
+                    at: "[300]".to_string(),
+                    len: 0,
+                    index: 300,
+                }),
+                "{path:?}"
+            );
+            assert_eq!(doc.to_string(), source, "{path:?}");
+        }
     }
 
     fn merge_doc() -> crate::yaml::YamlFile {

@@ -1648,24 +1648,15 @@ mod new_debug_tests {
     }
 
     #[test]
-    fn test_shape_to_string_hoists_leading_comments() {
+    fn test_shape_to_string_with_leading_comments() {
         let file = YamlFile::from_str("a: 1\n# c\nb: 2\n").unwrap();
         file.document().unwrap().as_mapping().unwrap().remove("a");
         assert_eq!(file.to_string(), "# c\nb: 2\n");
-        let entry = "    MAPPING_ENTRY\n      KEY\n        SCALAR\n          STRING: \"b\"\n      COLON: \":\"\n      WHITESPACE: \" \"\n      VALUE\n        SCALAR\n          INT: \"2\"\n      NEWLINE: \"\\\\n\"\n";
-        assert_eq!(
-            tree_to_string(file.syntax()),
-            format!("DOCUMENT\n  MAPPING\n    COMMENT: \"# c\"\n    NEWLINE: \"\\\\n\"\n{entry}")
-        );
-        assert_eq!(
-            shape_to_string(file.syntax()),
-            format!("COMMENT: \"# c\"\nNEWLINE: \"\\\\n\"\nDOCUMENT\n  MAPPING\n{entry}")
-        );
+        let expected = "DOCUMENT\n  COMMENT: \"# c\"\n  NEWLINE: \"\\\\n\"\n  MAPPING\n    MAPPING_ENTRY\n      KEY\n        SCALAR\n          STRING: \"b\"\n      COLON: \":\"\n      WHITESPACE: \" \"\n      VALUE\n        SCALAR\n          INT: \"2\"\n      NEWLINE: \"\\\\n\"\n";
+        assert_eq!(tree_to_string(file.syntax()), expected);
+        assert_eq!(shape_to_string(file.syntax()), expected);
         let reparsed = YamlFile::from_str(&file.to_string()).unwrap();
-        assert_eq!(
-            shape_to_string(file.syntax()),
-            shape_to_string(reparsed.syntax())
-        );
+        assert_eq!(shape_to_string(reparsed.syntax()), expected);
     }
 
     #[test]

@@ -291,24 +291,7 @@ impl Sequence {
     /// For most use cases prefer [`values`](Self::values) which returns
     /// [`YamlNode`](crate::as_yaml::YamlNode)s.
     pub(crate) fn items(&self) -> impl Iterator<Item = SyntaxNode> + '_ {
-        self.0.children().filter_map(|child| {
-            if child.kind() == SyntaxKind::SEQUENCE_ENTRY {
-                // Look for the actual item within the SEQUENCE_ENTRY
-                // Skip DASH and WHITESPACE tokens, find the actual value node
-                child.children().find(|n| {
-                    matches!(
-                        n.kind(),
-                        SyntaxKind::SCALAR
-                            | SyntaxKind::MAPPING
-                            | SyntaxKind::SEQUENCE
-                            | SyntaxKind::ALIAS
-                            | SyntaxKind::TAGGED_NODE
-                    )
-                })
-            } else {
-                None
-            }
-        })
+        self.entries().filter_map(|e| entry_item(&e))
     }
 
     /// Iterate over items in this sequence as [`YamlNode`](crate::as_yaml::YamlNode)s.
@@ -486,12 +469,7 @@ impl Sequence {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn insert(&self, index: usize, value: impl crate::AsYaml) {
-        let slot = self
-            .0
-            .children()
-            .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-            .nth(index)
-            .map_or(Slot::End, Slot::Before);
+        let slot = self.entries().nth(index).map_or(Slot::End, Slot::Before);
         self.attach(slot, value);
     }
 
@@ -624,16 +602,23 @@ impl Sequence {
     pub fn remove(&self, index: usize) -> Option<crate::as_yaml::YamlNode> {
         // Capture the value before removing so we can return it
         let removed_value = self.get(index);
-        let removed = self
-            .0
+        self.remove_entry(&self.entries().nth(index)?);
+        removed_value
+    }
+
+    /// The SEQUENCE_ENTRY nodes of this sequence.
+    fn entries(&self) -> impl Iterator<Item = SyntaxNode> {
+        self.0
             .children()
             .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-            .nth(index)?;
-        crate::nodes::kept_aliases::keeping_aliases(&removed, None, || {
-            trivia::detach_entry(&self.0, &removed);
+    }
+
+    /// Remove `entry`, keeping aliases to anchors in it resolving.
+    fn remove_entry(&self, entry: &SyntaxNode) {
+        crate::nodes::kept_aliases::keeping_aliases(entry, None, || {
+            trivia::detach_entry(&self.0, entry);
             None
         });
-        removed_value
     }
 
     /// Check if this sequence is in flow style [item1, item2]
@@ -647,50 +632,18 @@ impl Sequence {
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn pop(&self) -> Option<crate::as_yaml::YamlNode> {
-        let len = self.len();
-        if len == 0 {
-            return None;
-        }
-        let removed = self.remove(len - 1);
-
-        debug_assert_eq!(
-            self.len(),
-            len - 1,
-            "pop() invariant: remove() did not reduce length"
-        );
-
-        removed
+        self.remove(self.len().checked_sub(1)?)
     }
 
     /// Remove all items from this sequence.
     ///
     /// Mutates in place despite `&self` (see crate docs on interior mutability).
     pub fn clear(&self) {
-        let line_break = self
-            .0
-            .children()
-            .filter(|n| n.kind() == SyntaxKind::SEQUENCE_ENTRY)
-            .last()
-            .and_then(|e| trivia::line_break(&e));
-        // Remove items from the beginning to avoid recalculating indices
-        // Use a safety counter to prevent infinite loops
-        let initial_len = self.len();
-        for _ in 0..initial_len {
-            let current_len = self.len();
-            if current_len == 0 {
-                break;
-            }
-            // Always remove the first item
-            let removed = self.remove(0);
-            debug_assert!(
-                removed.is_some(),
-                "clear() invariant: remove(0) returned None"
-            );
-            debug_assert_eq!(
-                self.len(),
-                current_len - 1,
-                "clear() invariant: remove(0) did not reduce length"
-            );
+        let line_break = self.entries().last().and_then(|e| trivia::line_break(&e));
+        // Entries are removed one by one, as keeping aliases resolving may
+        // rewrite a later item.
+        while let Some(entry) = self.entries().next() {
+            self.remove_entry(&entry);
         }
         render_empty(&self.0, line_break.as_deref());
     }

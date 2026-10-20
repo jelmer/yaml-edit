@@ -20,7 +20,8 @@ type Element = rowan::NodeOrToken<SyntaxNode, SyntaxToken>;
 /// handles to it stay attached. As a mapping value it moves up onto the
 /// key's line, with its node properties and a comment ending that line:
 /// `key: !t {}  # c`. Elsewhere, as a sequence item, explicit key or
-/// document root, it stays where it is. A root collection keeps the
+/// document root, it stays where it is. A collection with no other
+/// around it, at the root of its document or detached from it, keeps the
 /// comment lines after its last entry; a nested one has none left, as
 /// they move out while its first and last entries go.
 ///
@@ -46,24 +47,31 @@ pub(crate) fn render_empty(collection: &SyntaxNode, line_break: Option<&str>) {
     }
     let parent = outer_node(collection).parent();
     assert!(
-        parent
-            .as_ref()
-            .is_some_and(|p| p.kind() == SyntaxKind::DOCUMENT)
-            || !has_child_token(collection, |k| k == SyntaxKind::COMMENT),
+        !in_collection(collection) || !has_child_token(collection, |k| k == SyntaxKind::COMMENT),
         "comment lines left in a drained nested {:?}",
         collection.kind()
     );
     // A value holding another node besides, which the validator rejects,
-    // has no key's line for the collection to move up onto.
-    let alone = parent.as_ref().is_some_and(|p| p.children().count() == 1);
+    // has no key's line for the collection to move up onto, and neither
+    // has one detached from its entry.
+    let on_key_line = parent
+        .as_ref()
+        .is_some_and(|p| p.children().count() == 1 && p.parent().is_some());
     match parent.map(|p| p.kind()) {
-        Some(SyntaxKind::VALUE) if alone => render_as_value(collection, line_break),
+        Some(SyntaxKind::VALUE) if on_key_line => render_as_value(collection, line_break),
         Some(
             SyntaxKind::VALUE | SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::KEY | SyntaxKind::DOCUMENT,
         )
         | None => render_in_place(collection, line_break),
         Some(kind) => panic!("unexpected {kind:?} holding a block collection"),
     }
+}
+
+/// Whether `node` is inside another mapping or sequence.
+fn in_collection(node: &SyntaxNode) -> bool {
+    node.ancestors()
+        .skip(1)
+        .any(|n| matches!(n.kind(), SyntaxKind::MAPPING | SyntaxKind::SEQUENCE))
 }
 
 /// The flow-empty brackets for a collection of `kind`, if it is one.
@@ -125,8 +133,8 @@ fn copies(tokens: &[SyntaxToken]) -> Vec<Element> {
 /// document root, detached, or not alone in a mapping value.
 fn render_in_place(collection: &SyntaxNode, line_break: Option<&str>) {
     // Entries take their trailing NEWLINE with them when removed. The
-    // comment lines of a root collection stay after the flow-empty line,
-    // indented as they were.
+    // comment lines of a collection with none around it stay after the
+    // flow-empty line, indented as they were.
     let leftovers = replace_with_brackets(collection);
     let tail_start = leftovers
         .iter()
@@ -149,17 +157,19 @@ fn render_in_place(collection: &SyntaxNode, line_break: Option<&str>) {
     let newline = || fresh_token(SyntaxKind::NEWLINE, line_break.unwrap_or("\n"));
     // The line break follows the node, properties included, as a parsed
     // flow-empty line has it. It ends an explicit-key entry without a `:`.
-    let node = line_node(collection);
-    if node.kind() == SyntaxKind::MAPPING_ENTRY {
-        append_children(&node, vec![newline().into()]);
-        return;
-    }
-    // A detached collection has no line of its own.
-    let Some(parent) = node.parent() else {
-        return;
-    };
     let mut lines = vec![newline().into()];
     lines.extend(tail);
+    let node = line_node(collection);
+    if node.kind() == SyntaxKind::MAPPING_ENTRY {
+        append_children(&node, lines);
+        return;
+    }
+    // A collection that is the root of its tree, as only a builder makes
+    // one, has no line of its own, nor comment lines.
+    let Some(parent) = node.parent() else {
+        assert!(lines.len() == 1, "comment lines left in a built collection");
+        return;
+    };
     insert_children(&parent, node.index() + 1, lines);
 }
 
@@ -365,26 +375,23 @@ pub(crate) fn detach_empty_collection_placeholder_newline(
         return;
     }
     let node = line_node(empty_collection);
-    let Some(parent) = node.parent() else {
-        return;
-    };
-    let line_break = if parent.kind() == SyntaxKind::VALUE {
-        let entry = parent
-            .parent()
-            .filter(|e| e.kind() == SyntaxKind::MAPPING_ENTRY)
-            .expect("a VALUE is in a MAPPING_ENTRY");
-        entry.last_child_or_token()
-    } else if node.kind() == SyntaxKind::MAPPING_ENTRY {
-        node.last_child_or_token()
-    } else {
-        node.next_sibling_or_token()
+    let parent = node.parent();
+    // A value detached from its entry holds the line break itself.
+    let entry = parent
+        .as_ref()
+        .filter(|p| p.kind() == SyntaxKind::VALUE)
+        .and_then(|p| p.parent());
+    let line_break = match entry {
+        Some(entry) => entry.last_child_or_token(),
+        None if node.kind() == SyntaxKind::MAPPING_ENTRY => node.last_child_or_token(),
+        None => node.next_sibling_or_token(),
     };
     if let Some(line_break) = line_break.filter(|t| t.kind() == SyntaxKind::NEWLINE) {
         line_break.detach();
     }
     // The lines after a root block collection up to `...` are its own. A
     // second root node, which the validator rejects, is not.
-    if parent.kind() == SyntaxKind::DOCUMENT {
+    if parent.is_some_and(|p| p.kind() == SyntaxKind::DOCUMENT) {
         let lines: Vec<_> =
             std::iter::successors(node.next_sibling_or_token(), |c| c.next_sibling_or_token())
                 .take_while(|c| c.as_token().is_some() && c.kind() != SyntaxKind::DOC_END)
@@ -448,12 +455,12 @@ pub(crate) fn convert_placeholder_to_block(collection: &SyntaxNode) {
     if already_scaffolded {
         return;
     }
-    let entry = value
-        .parent()
-        .filter(|e| e.kind() == SyntaxKind::MAPPING_ENTRY)
-        .expect("a VALUE is in a MAPPING_ENTRY");
+    // A value detached from its entry has no key's line, but moves to a
+    // line of its own all the same.
+    let entry = value.parent();
     let indent_width = entry
-        .parent()
+        .as_ref()
+        .and_then(|e| e.parent())
         .filter(|m| m.kind() == SyntaxKind::MAPPING)
         .and_then(crate::nodes::Mapping::cast)
         .map_or(2, |m| m.detect_indentation_level() + 2);
@@ -493,8 +500,7 @@ pub(crate) fn convert_placeholder_to_block(collection: &SyntaxNode) {
         // separating it from the value goes too.
         let index = value.index();
         let separator = entry
-            .children_with_tokens()
-            .nth(index.wrapping_sub(1))
+            .and_then(|e| e.children_with_tokens().nth(index.wrapping_sub(1)))
             .filter(|el| index > 0 && el.kind() == SyntaxKind::WHITESPACE);
         if let Some(separator) = separator {
             separator.detach();

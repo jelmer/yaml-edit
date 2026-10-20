@@ -421,11 +421,15 @@ fn move_trailing_lines_out(collection: &SyntaxNode) {
     else {
         return;
     };
+    // An entry detached from its collection has nowhere to take them.
+    let Some(host) = holder.parent() else {
+        return;
+    };
     for t in &lines {
         t.detach();
     }
     insert_children(
-        &holder.parent().expect("an entry is in a collection"),
+        &host,
         holder.index() + 1,
         lines
             .iter()

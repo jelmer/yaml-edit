@@ -957,6 +957,14 @@ fn sequence_set_block_value_keeps_anchor() {
         .unwrap()
         .set(0, node_from("k: |\n  text\n", "k"));
     assert_edited(&doc, "- &x |\n  text\n- *x\n");
+
+    // A tagged block collection is indented under the dash, not past the
+    // anchor, as it is without one.
+    let doc = Document::from_str("- &x 2\n- *x\n").unwrap();
+    doc.as_sequence()
+        .unwrap()
+        .set(0, node_from("k: !t\n  e: 1\n", "k"));
+    assert_edited(&doc, "- &x !t\n  e: 1\n- *x\n");
     assert_eq!(
         doc.as_sequence()
             .unwrap()

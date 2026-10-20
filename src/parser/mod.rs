@@ -1605,6 +1605,14 @@ mod tests {
         assert_eq!(parser.current(), Some(SyntaxKind::DOC_START));
     }
 
+    #[test]
+    fn skip_to_end_of_line_stops_at_line_break() {
+        let mut parser = Parser::new("a b\nc\n");
+        parser.error_context.push_context(ParseContext::Sequence);
+        parser.add_error_and_recover("error".to_string(), SyntaxKind::DASH, ParseErrorKind::Other);
+        assert_eq!(parser.current(), Some(SyntaxKind::NEWLINE));
+    }
+
     /// The nesting limit counts depth, not siblings: items holding an
     /// anchored key, plain or complex, do not add up towards it.
     #[test]

@@ -139,8 +139,9 @@ fn rebuild_entry_with_value(
                             builder.token(SyntaxKind::NEWLINE.into(), "\n");
                             builder.token(SyntaxKind::INDENT.into(), &" ".repeat(column));
                         } else {
+                            // The value's later lines stay where they would
+                            // be without the anchor.
                             builder.token(SyntaxKind::WHITESPACE.into(), " ");
-                            column += anchor.chars().count() + 1;
                         }
                     }
                     value_ends_with_newline =

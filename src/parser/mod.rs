@@ -182,11 +182,6 @@ impl TreeBuilder {
         self.inner.finish_node();
     }
 
-    /// Whether the collection being built is inside another one.
-    pub(super) fn in_nested_collection(&self) -> bool {
-        self.open.iter().filter(|k| is_collection(k)).count() > 1
-    }
-
     /// Run `f` ahead of the trivia held back, for a zero-width node that
     /// ends what came before it.
     fn ahead_of_held(&mut self, f: impl FnOnce(&mut Self)) {
@@ -245,7 +240,7 @@ pub(super) struct Parser<'a> {
     ///
     /// Every comment of a run gets asked about in turn, and each would
     /// otherwise rescan the rest of the run.
-    comment_run_scan: Cell<Option<(usize, usize, Option<(usize, SyntaxKind)>)>>,
+    comment_run_scan: Cell<Option<(usize, usize, Option<usize>)>>,
     /// The kind of the token emitted last.
     pub(super) previous_kind: Option<SyntaxKind>,
     /// `tokens.len()` at the root node when it starts on the `---` line.
@@ -843,19 +838,11 @@ impl Parser<'_> {
                             // block: what ends it is the next line with
                             // content. `a:\n  - x\n# c\n  - y\n` keeps both
                             // entries, as both saphyr and PyYAML read it.
-                            if base_indent > 0 {
-                                return match self.indent_after_comment_lines() {
-                                    // Content still inside the block: the
-                                    // comment belongs to it, not to whatever
-                                    // encloses us.
-                                    Some((indent, _)) => indent < base_indent,
-                                    // Nothing follows, so the comment is a
-                                    // trailer of the enclosing scope.
-                                    None => true,
-                                };
-                            }
-                            // base_indent==0, let caller handle the comment
-                            return false;
+                            // With nothing after it, the comment goes to the
+                            // root collection however many blocks end here.
+                            return self
+                                .indent_after_comment_lines()
+                                .is_some_and(|indent| indent < base_indent);
                         }
                         Some(SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE) => {
                             // More whitespace, continue loop
@@ -1302,15 +1289,14 @@ impl Parser<'_> {
         self.upcoming_tokens().next() == Some(SyntaxKind::DASH)
     }
 
-    /// Indentation and first token of the next line that carries content,
-    /// looking past any run of comment-only and blank lines, or `None` if
-    /// there is none.
+    /// Indentation of the next line that carries content, looking past any
+    /// run of comment-only and blank lines, or `None` if there is none.
     ///
     /// A comment's own column says nothing about the block it sits in: YAML
     /// lets `a:\n  - x\n# c\n  - y\n` keep both entries, because what ends
     /// the sequence is the next content line, not the comment. The caller is
     /// positioned on the COMMENT token.
-    pub(super) fn indent_after_comment_lines(&self) -> Option<(usize, SyntaxKind)> {
+    pub(super) fn indent_after_comment_lines(&self) -> Option<usize> {
         if self.current() != Some(SyntaxKind::COMMENT) {
             return None;
         }
@@ -1331,7 +1317,7 @@ impl Parser<'_> {
 
     /// The scan behind [`indent_after_comment_lines`](Self::indent_after_comment_lines),
     /// counting the tokens it reads in `consumed`.
-    fn scan_lines_after_comment(&self, consumed: &mut usize) -> Option<(usize, SyntaxKind)> {
+    fn scan_lines_after_comment(&self, consumed: &mut usize) -> Option<usize> {
         // `tokens` is in reverse order, so walk it backwards from the current
         // token to read the lines that follow.
         let mut rest = self
@@ -1351,7 +1337,7 @@ impl Parser<'_> {
         if !matches!(rest.next(), Some((SyntaxKind::NEWLINE, _))) {
             return None;
         }
-        Self::content_line_ahead(rest)
+        Self::content_line_ahead(rest).map(|(indent, _)| indent)
     }
 
     /// Indentation and first token of the next line in `rest`, which starts
@@ -1619,6 +1605,24 @@ mod tests {
         assert_eq!(parser.current(), Some(SyntaxKind::DOC_START));
     }
 
+    #[test]
+    fn skip_to_end_of_line_stops_at_line_break() {
+        let mut parser = Parser::new("a b\nc\n");
+        parser.error_context.push_context(ParseContext::Sequence);
+        parser.add_error_and_recover("error".to_string(), SyntaxKind::DASH, ParseErrorKind::Other);
+        assert_eq!(parser.current(), Some(SyntaxKind::NEWLINE));
+    }
+
+    /// The nesting limit counts depth, not siblings: items holding an
+    /// anchored key, plain or complex, do not add up towards it.
+    #[test]
+    fn test_anchored_keys_do_not_count_towards_nesting_limit() {
+        for item in ["- &a k: v\n", "- &a [k]: v\n"] {
+            let parse = crate::Parse::<crate::YamlFile>::parse_yaml(&item.repeat(MAX_FLOW_DEPTH));
+            assert_eq!(parse.errors(), Vec::<String>::new(), "{item:?}");
+        }
+    }
+
     /// The tree as one line: each node's kind with its children in
     /// parentheses, each token's kind with its text.
     fn compact(node: &crate::nodes::SyntaxNode) -> String {
@@ -1666,6 +1670,12 @@ mod tests {
             ("[: :", 1, "DOCUMENT(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(NULL\"\"))))) SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" VALUE(SCALAR(NULL\"\"))))) RIGHT_BRACKET\"\"))"),
             ("&x\n#", 0, "DOCUMENT(ANCHOR\"&x\" SCALAR(NULL\"\") NEWLINE\"\\n\" COMMENT\"#\")"),
             ("<<\n&x[", 0, "DOCUMENT(SCALAR(MERGE_KEY\"<<\" NEWLINE\"\\n\" ANCHOR\"&x\" LEFT_BRACKET\"[\"))"),
+            ("a: |x1\n", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(PIPE\"|\") SCALAR(STRING\"x1\")) NEWLINE\"\\n\")))"),
+            ("a: |-x\n", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(PIPE\"|\") SCALAR(STRING\"-x\")) NEWLINE\"\\n\")))"),
+            ("a: b:\n &x c: d\n", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(STRING\"b\" COLON\":\")) NEWLINE\"\\n\") INDENT\" \" MAPPING_ENTRY(KEY(ANCHOR\"&x\" WHITESPACE\" \" SCALAR(STRING\"c\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(STRING\"d\")) NEWLINE\"\\n\")))"),
+            ("a\nb : c\n", 0, "DOCUMENT(SCALAR(STRING\"a\") NEWLINE\"\\n\" MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"b\")) WHITESPACE\" \" COLON\":\" WHITESPACE\" \" VALUE(SCALAR(STRING\"c\")) NEWLINE\"\\n\")))"),
+            (" a: 1\n\n# c\n", 0, "DOCUMENT(INDENT\" \" MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(INT\"1\")) NEWLINE\"\\n\") NEWLINE\"\\n\" COMMENT\"# c\" NEWLINE\"\\n\"))"),
+            ("- - x\n  y\n", 1, "DOCUMENT(SEQUENCE(SEQUENCE_ENTRY(DASH\"-\" WHITESPACE\" \" SEQUENCE(SEQUENCE_ENTRY(DASH\"-\" WHITESPACE\" \" SCALAR(STRING\"x\") NEWLINE\"\\n\")))) INDENT\"  \") ERROR(STRING\"y\" NEWLINE\"\\n\")"),
             ("\t%\n-\r!\t-", 0, "DOCUMENT(INDENT\"\\t\" SCALAR(STRING\"%\" NEWLINE\"\\n\" DASH\"-\" NEWLINE\"\\r\" TAG\"!\" WHITESPACE\"\\t\" STRING\"-\"))"),
 
         ] {

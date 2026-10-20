@@ -64,14 +64,11 @@ fn block_scalar_body_column(scalar: &SyntaxNode) -> Option<usize> {
         .map(crate::column::space_indent)
 }
 
-/// The line break ending the last line of `scalar`, a block scalar: its
-/// own last token if the parser put it there, or else the token after it.
+/// The line break ending the last line of `scalar`, a block scalar, which
+/// holds it. One ending the input may have none.
 fn block_scalar_line_end(scalar: &SyntaxNode) -> Option<SyntaxToken> {
-    let last = scalar.last_token()?;
-    if last.kind() == SyntaxKind::NEWLINE {
-        return Some(last);
-    }
-    last.next_token()
+    scalar
+        .last_token()
         .filter(|t| t.kind() == SyntaxKind::NEWLINE)
 }
 
@@ -84,14 +81,11 @@ fn block_scalar_line_end(scalar: &SyntaxNode) -> Option<SyntaxToken> {
 /// takes in every trailing blank line, and only a comment line could end
 /// it before them, so after one the blank lines are dropped.
 ///
-/// The parser keeps those lines in the scalar, so they move into one
-/// that holds its own last line break, as a parsed one does. A scalar
-/// built from a value is a single token and leaves them where they are.
+/// The parser keeps those lines in the scalar, so they move into it.
 fn absorb_blank_lines_after(scalar: &SyntaxNode) {
     let Some(end) = block_scalar_line_end(scalar) else {
         return;
     };
-    let into_scalar = end.parent().as_ref() == Some(scalar);
     let mut lines = Vec::new();
     let mut next = end.next_token();
     loop {
@@ -116,24 +110,18 @@ fn absorb_blank_lines_after(scalar: &SyntaxNode) {
     let body = block_scalar_body_column(scalar);
     let fits =
         |text: &str| text.bytes().all(|b| b == b' ') && body.map_or(true, |b| text.len() <= b);
-    // A line stays (in the scalar or where it is) unless the scalar is
-    // kept, and keeps its spaces only if they fit.
+    // A line stays unless the scalar is kept, and keeps its spaces only
+    // if they fit.
     let mut elements = Vec::new();
     for (space, line_break) in lines {
-        let fitting_space = space
-            .as_ref()
-            .filter(|t| !keep && fits(t.text()))
-            .map(|t| t.text().to_string());
-        if into_scalar || fitting_space.is_none() {
-            space.iter().for_each(SyntaxToken::detach);
+        space.iter().for_each(SyntaxToken::detach);
+        line_break.iter().for_each(SyntaxToken::detach);
+        if keep {
+            continue;
         }
-        if into_scalar || keep {
-            line_break.iter().for_each(SyntaxToken::detach);
-        }
-        if into_scalar && !keep {
-            elements.extend(fitting_space.map(|t| fresh_token(SyntaxKind::INDENT, &t).into()));
-            elements.extend(line_break.map(|t| fresh_token(SyntaxKind::NEWLINE, t.text()).into()));
-        }
+        let fitting_space = space.filter(|t| fits(t.text()));
+        elements.extend(fitting_space.map(|t| fresh_token(SyntaxKind::INDENT, t.text()).into()));
+        elements.extend(line_break.map(|t| fresh_token(SyntaxKind::NEWLINE, t.text()).into()));
     }
     append_children(scalar, elements);
 }
@@ -146,20 +134,8 @@ fn dedent_comment_line_after(entry: &SyntaxNode, scalar: &SyntaxNode) {
     let body = block_scalar_body_column(scalar).unwrap_or(column + 1);
     let is_space =
         |t: &SyntaxToken| matches!(t.kind(), SyntaxKind::INDENT | SyntaxKind::WHITESPACE);
-    let mut next = block_scalar_line_end(scalar).and_then(|t| t.next_token());
-    // Blank lines, which may hold spaces up to the body's column, do not
-    // end the body.
-    while let Some(t) = next.clone() {
-        let line_break = match t.kind() {
-            SyntaxKind::NEWLINE => t,
-            _ if is_space(&t) => match t.next_token() {
-                Some(nl) if nl.kind() == SyntaxKind::NEWLINE => nl,
-                _ => break,
-            },
-            _ => break,
-        };
-        next = line_break.next_token();
-    }
+    // The blank lines after the scalar are in it by now.
+    let next = block_scalar_line_end(scalar).and_then(|t| t.next_token());
     let Some(indent) = next.filter(|t| {
         is_space(t)
             && t.text().len() >= body

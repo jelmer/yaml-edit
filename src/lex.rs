@@ -459,23 +459,6 @@ fn is_chomping_indicator(line_prefix: &str) -> bool {
         .is_some_and(|b| b == b'|' || b == b'>')
 }
 
-/// Whether a `+` following `line_prefix`, the text of its line before it,
-/// closes a block scalar header (`|+`, `>2+`) and so is a chomping
-/// indicator. The header has to *open* the value for that: in `/|+:` the
-/// pipe is scalar content, so the `+` is content too and the key is `/|+`.
-fn plus_closes_block_scalar_header(line_prefix: &str) -> bool {
-    // Step back over any explicit indentation digits to the `|` or `>` this
-    // `+` would close; only the value's start may precede that.
-    let head = line_prefix.trim_end_matches(|c: char| c.is_ascii_digit());
-    // A `:` or `-` is an indicator only with white space after it: in
-    // `i:|+` the `:` is content too.
-    head.strip_suffix(['|', '>']).is_some_and(|before| {
-        let trimmed = before.trim_end_matches([' ', '\t']);
-        trimmed.is_empty()
-            || (trimmed.len() < before.len() && (trimmed.ends_with(':') || trimmed.ends_with('-')))
-    })
-}
-
 /// Tokenize YAML input with whitespace validation
 pub fn lex(input: &str) -> Vec<(SyntaxKind, &str)> {
     let (tokens, _) = lex_with_validation(input);
@@ -640,8 +623,9 @@ impl<'a, 'c> LexState<'a, 'c> {
     /// requires. A block scalar's chomping indicator (`|-`, `>-`) is a token
     /// in its own right, so that caller passes false.
     ///
-    /// `stop_at_chomping_plus` ends the body at a `+` closing a block scalar
-    /// header, so that `|2+` keeps the `+` as its own token.
+    /// `stop_at_chomping_plus` ends the body at a `+` after nothing but
+    /// digits, for a scalar that is a block scalar header's indentation
+    /// indicator, so that `|2+` keeps the `+` as its own token.
     fn read_plain_scalar_body(
         &mut self,
         start_idx: usize,
@@ -680,7 +664,7 @@ impl<'a, 'c> LexState<'a, 'c> {
             }
             if stop_at_chomping_plus
                 && ch == '+'
-                && plus_closes_block_scalar_header(&input[self.line_start..idx])
+                && input[start_idx..idx].bytes().all(|b| b.is_ascii_digit())
             {
                 break;
             }
@@ -934,20 +918,8 @@ impl<'a, 'c> LexState<'a, 'c> {
             //     COMMENT token so downstream error reporting has
             //     something to point at.
             //
-            // A `#` glued to the tail of *plain-scalar* content is different:
-            // `:#: v` is a mapping keyed `:#`, as saphyr reads it. Continue
-            // the scalar rather than starting a comment, which the catch-all
-            // arm already does for `a#: v`.
-            // A `#` not preceded by whitespace is scalar content wherever it
-            // sits, including a continuation line whose previous token is the
-            // INDENT (`safe: a!"#$%\n     !"#$%` -- test suite FBC9).
-            //
-            // A quoted scalar ends at its closing quote, so a `#` glued to
-            // one really is the 6.6 violation the validator reports
-            // (`key: "value"# c`).
-            '#' if self.hash_continues_scalar(start_idx) => {
-                self.push_plain_scalar(start_idx, start_idx + 1, true);
-            }
+            // A `#` glued to plain-scalar content never gets here: the
+            // scalar reader takes it in (`a#: v`, `:#: v`).
             '#' => self.lex_comment(start_idx),
 
             // Tags
@@ -968,28 +940,6 @@ impl<'a, 'c> LexState<'a, 'c> {
             // Everything else is scalar content
             _ => self.lex_plain_scalar(start_idx, ch),
         }
-    }
-
-    /// Whether the `#` at `start_idx` continues scalar content rather than
-    /// starting a comment.
-    fn hash_continues_scalar(&self, start_idx: usize) -> bool {
-        use SyntaxKind::*;
-        !is_hash_a_comment_start(self.input, start_idx)
-            // A BOM is a document prefix, which a comment may follow.
-            && !matches!(self.tokens.last(), Some((BOM, _)))
-            && {
-                // The character before decides, but it has to belong to
-                // scalar content: glued to a flow delimiter (`c,#x`) the
-                // `#` is still the 6.6 violation CVW2 expects.
-                let prev = self.input[..start_idx].chars().next_back();
-                prev.is_some_and(|c| !is_yaml_special(c) || matches!(c, '!' | '"' | '\''))
-            }
-            && !self.tokens.last().is_some_and(|(k, text)| {
-                matches!(k, STRING | UNTERMINATED_STRING)
-                    && text.starts_with(['"', '\''])
-                    // Only when the quote really ends at this `#`.
-                    && self.input[..start_idx].ends_with(['"', '\''])
-            })
     }
 
     fn lex_dash(&mut self, start_idx: usize) {
@@ -1060,76 +1010,15 @@ impl<'a, 'c> LexState<'a, 'c> {
     }
 
     fn lex_plus(&mut self, start_idx: usize) {
-        use SyntaxKind::*;
-        // `+` is a chomping indicator when it appears inside a
-        // block-scalar header (`|+`, `|2+`, `>+`, `>2+`). Detect
-        // that by looking at the current line: the last non-digit
-        // byte before this `+` must be `|` or `>`. Otherwise, if
-        // the next char begins a plain-scalar body (digit, `.`,
-        // letter, ...) this `+` is a sign prefix and belongs in
-        // the same scalar token -- so `+.INF` lexes as one FLOAT
-        // rather than PLUS + FLOAT. A bare `+` followed by
-        // whitespace stays PLUS.
-        let chomping = is_chomping_indicator(&self.input[self.line_start..start_idx]);
-        // Outside a flow collection the flow indicators are ordinary
-        // scalar content, a `:` not followed by whitespace is never a
-        // mapping indicator, and a quote no longer opens a quoted
-        // scalar once this one has begun. All of them continue the
-        // body: `a+[b]`, `a {b+:c}` and `+'a'` are each one scalar,
-        // as the `-` spellings already were. These are the same
-        // exceptions the body reader itself makes.
-        let next_starts_scalar = self.chars.peek().is_some_and(|(idx, c)| {
-            // A space does not end the scalar when more scalar
-            // content follows on the same line: `+ x: v` is keyed
-            // `+ x`, exactly as `a x: v` is keyed `a x`. The body
-            // reader makes the same test before absorbing a run.
-            if is_white_or_break(*c) {
-                return *c != '\n'
-                    && *c != '\r'
-                    && plain_scalar_continues_past_whitespace(self.input, *idx, self.flow_depth);
-            }
-            !is_white_or_break(*c)
-                && (!is_yaml_special(*c)
-                    // Everything the body reader keeps as content
-                    // starts a body: quotes, signs, and the node
-                    // properties and block headers, which are
-                    // indicators only at the start of a node. So
-                    // `+?`, `+|` and `+&` are each one scalar, as
-                    // `+x` already was.
-                    || matches!(
-                        c,
-                        '\'' | '"' | '+' | '-' | '?' | '|' | '>' | '&' | '*' | '!' | '%'
-                    )
-                    // A `#` glued to the sign is content, not a
-                    // comment: `+#: v` is keyed `+#`.
-                    || (*c == '#' && !is_hash_a_comment_start(self.input, *idx))
-                    || (self.flow_depth == 0 && matches!(c, '[' | ']' | '{' | '}' | ','))
-                    || (*c == ':'
-                        && !is_colon_a_mapping_indicator(self.input, *idx, self.flow_depth)))
-        });
-        if !chomping && next_starts_scalar {
-            self.push_plain_scalar(start_idx, start_idx + 1, true);
-        } else if !chomping && {
-            // A key may be separated from its colon by spaces
-            // (`+ : v`), so look past them as well.
-            let rest = &self.input[start_idx + 1..];
-            let gap = rest.len() - rest.trim_start_matches([' ', '\t']).len();
-            rest[gap..].starts_with(':')
-                && is_colon_a_mapping_indicator(self.input, start_idx + 1 + gap, self.flow_depth)
-        } {
-            // `+: v` is a mapping keyed by the plain scalar `+`, as
-            // `-: v` already was. A bare PLUS left the key invisible
-            // and stranded the rest of the entry.
-            self.push_scalar(start_idx, start_idx + 1);
-        } else if chomping {
-            self.push(PLUS, start_idx, start_idx + 1);
+        // `+` is a chomping indicator when it closes a block-scalar header
+        // (`|+`, `|2+`, `>+`, `>2+`). Anywhere else it is content, so it
+        // starts a plain scalar: `+.INF` is one FLOAT, `+ x: v` is keyed
+        // `+ x`, and `+: v` is keyed `+`. A bare PLUS token no parse rule
+        // claims would leave the `+` invisible.
+        if is_chomping_indicator(&self.input[self.line_start..start_idx]) {
+            self.push(SyntaxKind::PLUS, start_idx, start_idx + 1);
         } else {
-            // Nothing follows on this line to extend the body, but a
-            // `+` outside a block-scalar header is still content, not
-            // an indicator: `+\nx\n` is the scalar `+ x`. A bare PLUS
-            // token no parse rule claims left the `+` invisible and
-            // stranded whatever followed it.
-            self.push_scalar(start_idx, start_idx + 1);
+            self.push_plain_scalar(start_idx, start_idx + 1, true);
         }
     }
 
@@ -1350,13 +1239,9 @@ impl<'a, 'c> LexState<'a, 'c> {
             self.chars.next();
         }
 
-        // Determine if this is structural indentation
-        // Check for any line break: \n, \r\n (already consumed \n), or \r alone
-        // A line also starts after a BOM, which takes no column.
-        let is_indentation = start_idx == self.line_start
-            || (start_idx > 0
-                && (self.input.as_bytes()[start_idx - 1] == b'\n'
-                    || self.input.as_bytes()[start_idx - 1] == b'\r'));
+        // White space starting a line is its indentation. A line also starts
+        // after a BOM, which takes no column.
+        let is_indentation = start_idx == self.line_start;
 
         if is_indentation {
             // Check for tab characters in indentation (forbidden in YAML)
@@ -1376,10 +1261,11 @@ impl<'a, 'c> LexState<'a, 'c> {
     fn lex_plain_scalar(&mut self, start_idx: usize, ch: char) {
         // Only a header's indentation indicator can precede its chomping
         // `+`. A `|` reaching here is content: `1\n|+\n` is `1 |+`.
-        let after_header = matches!(
-            self.tokens.last(),
-            Some((SyntaxKind::PIPE | SyntaxKind::GREATER, _))
-        );
+        let after_header = ch.is_ascii_digit()
+            && matches!(
+                self.tokens.last(),
+                Some((SyntaxKind::PIPE | SyntaxKind::GREATER, _))
+            );
         let end = self.read_plain_scalar_body(start_idx + ch.len_utf8(), true, after_header);
         self.push_scalar(start_idx, end);
     }
@@ -2367,6 +2253,230 @@ double: "quoted""#;
             .collect();
         assert_eq!(plus_tokens.len(), 1);
         assert_eq!(plus_tokens[0].1, "+");
+    }
+
+    /// A `+` is a chomping indicator only where it closes a block scalar
+    /// header, and otherwise starts a plain scalar.
+    #[test]
+    fn test_plus_tokens() {
+        use SyntaxKind::*;
+        let cases: Vec<(&str, Vec<(SyntaxKind, &str)>)> = vec![
+            (
+                "+ x: v\n",
+                vec![
+                    (STRING, "+ x"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "v"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "+\tx: v\n",
+                vec![
+                    (STRING, "+\tx"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "v"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "+ \n",
+                vec![(STRING, "+"), (WHITESPACE, " "), (NEWLINE, "\n")],
+            ),
+            (
+                "+ #c\n",
+                vec![
+                    (STRING, "+"),
+                    (WHITESPACE, " "),
+                    (COMMENT, "#c"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            ("+[b]\n", vec![(STRING, "+[b]"), (NEWLINE, "\n")]),
+            (
+                "[+[b]]\n",
+                vec![
+                    (LEFT_BRACKET, "["),
+                    (STRING, "+"),
+                    (LEFT_BRACKET, "["),
+                    (STRING, "b"),
+                    (RIGHT_BRACKET, "]"),
+                    (RIGHT_BRACKET, "]"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            ("+'a'\n", vec![(STRING, "+'a'"), (NEWLINE, "\n")]),
+            ("+?\n", vec![(STRING, "+?"), (NEWLINE, "\n")]),
+            ("+|\n", vec![(STRING, "+|"), (NEWLINE, "\n")]),
+            (
+                "+#: v\n",
+                vec![
+                    (STRING, "+#"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "v"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "+ #: v\n",
+                vec![
+                    (STRING, "+"),
+                    (WHITESPACE, " "),
+                    (COMMENT, "#: v"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "+: v\n",
+                vec![
+                    (STRING, "+"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "v"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "+ : v\n",
+                vec![
+                    (STRING, "+"),
+                    (WHITESPACE, " "),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "v"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            ("+:x\n", vec![(STRING, "+:x"), (NEWLINE, "\n")]),
+            (
+                "+\nx\n",
+                vec![
+                    (STRING, "+"),
+                    (NEWLINE, "\n"),
+                    (STRING, "x"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "+\r\nx\n",
+                vec![
+                    (STRING, "+"),
+                    (NEWLINE, "\r\n"),
+                    (STRING, "x"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "- |+\n  x\n",
+                vec![
+                    (DASH, "-"),
+                    (WHITESPACE, " "),
+                    (PIPE, "|"),
+                    (PLUS, "+"),
+                    (NEWLINE, "\n"),
+                    (INDENT, "  "),
+                    (STRING, "x"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "/|+: v\n",
+                vec![
+                    (STRING, "/|+"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "v"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            ("i:|+\n", vec![(STRING, "i:|+"), (NEWLINE, "\n")]),
+            ("+.INF\n", vec![(FLOAT, "+.INF"), (NEWLINE, "\n")]),
+            (
+                "{+, a}\n",
+                vec![
+                    (LEFT_BRACE, "{"),
+                    (STRING, "+"),
+                    (COMMA, ","),
+                    (WHITESPACE, " "),
+                    (STRING, "a"),
+                    (RIGHT_BRACE, "}"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            ("+,\n", vec![(STRING, "+,"), (NEWLINE, "\n")]),
+            (
+                "a: 1+2\n",
+                vec![
+                    (STRING, "a"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "1+2"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            ("i:|2+\n", vec![(STRING, "i:|2+"), (NEWLINE, "\n")]),
+            (
+                "x: a |2+\n",
+                vec![
+                    (STRING, "x"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (STRING, "a |2+"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "k: |2+\n",
+                vec![
+                    (STRING, "k"),
+                    (COLON, ":"),
+                    (WHITESPACE, " "),
+                    (PIPE, "|"),
+                    (INT, "2"),
+                    (PLUS, "+"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+            (
+                "- |2+\n",
+                vec![
+                    (DASH, "-"),
+                    (WHITESPACE, " "),
+                    (PIPE, "|"),
+                    (INT, "2"),
+                    (PLUS, "+"),
+                    (NEWLINE, "\n"),
+                ],
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(lex(input), expected, "lexing {input:?}");
+        }
+    }
+
+    /// A header's chomping `+` stands alone after node properties and
+    /// an explicit key's `?` too.
+    #[test]
+    fn test_chomping_plus_after_properties() {
+        use SyntaxKind::*;
+        for (input, before) in [
+            ("? |2+\n", vec![(QUESTION, "?")]),
+            ("!t |2+\n", vec![(TAG, "!t")]),
+            ("&a |2+\n", vec![(ANCHOR, "&a")]),
+        ] {
+            let mut expected = before;
+            expected.extend([
+                (WHITESPACE, " "),
+                (PIPE, "|"),
+                (INT, "2"),
+                (PLUS, "+"),
+                (NEWLINE, "\n"),
+            ]);
+            assert_eq!(lex(input), expected, "lexing {input:?}");
+        }
     }
 
     #[test]

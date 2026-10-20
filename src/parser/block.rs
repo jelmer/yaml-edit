@@ -23,21 +23,18 @@ impl Parser<'_> {
             // A comment on its own line says nothing about the block by its
             // own column: what ends the block is the next line with content,
             // so `a:\n  - x\n# c\n  - y\n` keeps both entries. Stop only
-            // when that line really is dedented, or for a nested sequence
-            // does not start with a dash. A comment with no content after it
-            // ends every nested block, so that it goes to the root
-            // collection. A comment on the last entry's own line stays with
-            // that entry whatever follows, as it does before another entry.
+            // when that line really is dedented. Otherwise the comment is
+            // held back for whatever comes next, so where a nested block
+            // ends after it instead, it goes to the collection holding the
+            // next entry, or to the root one. A comment on the last entry's
+            // own line stays with that entry whatever follows, as it does
+            // before another entry.
             let own_line = self.previous_kind.is_none() || self.line_ended();
-            let nested = self.builder.in_nested_collection();
-            let dedented = own_line
-                && match self.indent_after_comment_lines() {
-                    Some((indent, kind)) => {
-                        indent < base_indent || (nested && dash_lines && kind != SyntaxKind::DASH)
-                    }
-                    None => nested,
-                };
-            if (base_indent > 0 || nested) && dedented {
+            if own_line
+                && self
+                    .indent_after_comment_lines()
+                    .is_some_and(|indent| indent < base_indent)
+            {
                 return true;
             }
             // Held back, as the blank lines are, for the node that comes

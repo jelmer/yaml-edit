@@ -736,9 +736,20 @@ mod tests {
             .get("k")
             .unwrap();
         let doc = YamlFile::from_str("-\n- b\n").unwrap().document().unwrap();
-        assert!(doc.as_sequence().unwrap().set(0, block));
+        assert!(doc.as_sequence().unwrap().set(0, &block));
         assert_cst_ok(&doc);
         assert_eq!(doc.to_string(), "- a: 1\n  b: [x,\n    y]\n- b\n");
+
+        // A tab after the dash may separate a scalar from it, but cannot
+        // indent a block collection.
+        let doc = YamlFile::from_str("-\tx\n").unwrap().document().unwrap();
+        assert!(doc.as_sequence().unwrap().set(0, &block));
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), "- a: 1\n  b: [x,\n    y]\n");
+        let doc = YamlFile::from_str("-\tx\n").unwrap().document().unwrap();
+        assert!(doc.as_sequence().unwrap().set(0, "y"));
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), "-\ty\n");
 
         let doc = YamlFile::from_str("- x  # a\tb\n")
             .unwrap()

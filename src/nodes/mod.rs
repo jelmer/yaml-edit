@@ -574,9 +574,6 @@ fn ends_with_kept_block_scalar(entry: &SyntaxNode) -> bool {
 }
 
 /// The block scalar that is the last node `entry` holds, if any.
-///
-/// A scalar built from a value is a single token, and a parsed one holds
-/// the line break ending its last line, so it is told apart by its text.
 pub(crate) fn ending_block_scalar(entry: &SyntaxNode) -> Option<SyntaxNode> {
     let tokens: Vec<_> = entry
         .descendants_with_tokens()
@@ -599,11 +596,7 @@ pub(crate) fn ending_block_scalar(entry: &SyntaxNode) -> Option<SyntaxNode> {
             }
         })
         .flatten()
-        .filter(|scalar| {
-            scalar
-                .first_token()
-                .is_some_and(|t| t.text().starts_with(['|', '>']))
-        })
+        .filter(is_block_scalar)
 }
 
 /// The `children_with_tokens()` index of `parent`'s `index`-th child node of

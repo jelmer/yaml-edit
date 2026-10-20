@@ -228,6 +228,63 @@ mod tests {
         assert!(tagged("p").as_ordered_mapping().is_none());
     }
 
+    /// A TaggedNode copied as a value: a block collection after an anchor
+    /// on the tag's line moves by the column of its own lines, a flow
+    /// collection from a nested line keeps its continuation lines' offset,
+    /// and a block collection inside a flow one is written in flow style.
+    #[test]
+    fn test_copy_tagged_node() {
+        let src = YamlFile::from_str("t: !t &x\n  a: 1\nm:\n  f: !t [1,\n     2]\n").unwrap();
+        let src = src.document().unwrap().as_mapping().unwrap();
+        let block = src.get("t").unwrap().as_tagged().unwrap().clone();
+        let flow = src
+            .get_mapping("m")
+            .unwrap()
+            .get("f")
+            .unwrap()
+            .as_tagged()
+            .unwrap()
+            .clone();
+        for (value, set, pushed) in [
+            (
+                &block,
+                "top:\n  k: !t &x\n    a: 1\n",
+                "- 0\n- !t &x\n  a: 1\n",
+            ),
+            (
+                &flow,
+                "top:\n  k: !t [1,\n     2]\n",
+                "- 0\n- !t [1,\n   2]\n",
+            ),
+        ] {
+            let doc = YamlFile::from_str("top:\n  k: 0\n")
+                .unwrap()
+                .document()
+                .unwrap();
+            let top = doc.as_mapping().unwrap().get_mapping("top").unwrap();
+            top.set("k", value);
+            crate::debug::assert_cst_ok(&doc);
+            crate::debug::assert_parser_shaped(&doc);
+            assert_eq!(doc.to_string(), set);
+
+            let doc = YamlFile::from_str("- 0\n").unwrap().document().unwrap();
+            doc.as_sequence().unwrap().push(value);
+            crate::debug::assert_cst_ok(&doc);
+            crate::debug::assert_parser_shaped(&doc);
+            assert_eq!(doc.to_string(), pushed);
+        }
+
+        let doc = YamlFile::from_str("f: {a: 1}\n")
+            .unwrap()
+            .document()
+            .unwrap();
+        let f = doc.as_mapping().unwrap().get_mapping("f").unwrap();
+        f.set("b", &block);
+        crate::debug::assert_cst_ok(&doc);
+        crate::debug::assert_parser_shaped(&doc);
+        assert_eq!(doc.to_string(), "f: {a: 1, b: !t &x {a: 1}}\n");
+    }
+
     /// A tagged collection copied to another column moves with it, whether
     /// it starts on the tag's line or the next.
     #[test]

@@ -748,6 +748,25 @@ fn moving_alias_key_before_key_with_anchors_inside() {
     assert_edited(&doc, expected);
 }
 
+#[test]
+fn moving_alias_key_before_key_with_unused_anchor_inside() {
+    // No alias needs `&b` in the copy, so it goes without, and the old key
+    // keeps it and stays a copy too. The two keys were equal before, but
+    // the validator only sees that once neither is an alias.
+    let cases = [
+        ("{ &a [&b b]: x, *a : c}\n", "{ &a [b] : c, &a [&b b]: x}\n"),
+        ("&a [&b b]: x\n*a : c\n", "&a [b] : c\n&a [&b b]: x\n"),
+    ];
+    for (source, expected) in cases {
+        let doc = Document::from_str(source).unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let keys: Vec<_> = mapping.keys().collect();
+        let value = mapping.get(&keys[0]).unwrap();
+        assert!(mapping.move_after(&keys[1], &keys[0], value));
+        assert_edited(&doc, expected);
+    }
+}
+
 /// The value `key` of `source`, a node with whatever anchor and tag it has.
 fn node_from(source: &str, key: &str) -> yaml_edit::YamlNode {
     let doc = Document::from_str(source).unwrap();

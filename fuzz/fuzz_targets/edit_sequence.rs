@@ -15,8 +15,9 @@
 //! - the text parses to the same tree (`debug::shape_to_string`);
 //! - the validator reports the same for the edited tree as for the re-parse;
 //! - the validator accepts it, apart from duplicate keys: an edit inside a
-//!   key may make it equal to another key, and later edits must not add
-//!   more;
+//!   key may make it equal to another key, as may replacing an alias in a
+//!   key with a copy, since the validator compares a key holding an alias
+//!   with nothing; later edits must not add more;
 //! - its `YamlValue` equals a model of the document updated alongside it.
 //!   Where an edit cannot be modelled (merge keys, aliases to what changed),
 //!   the model is taken from the edited document again.
@@ -644,11 +645,19 @@ fn apply_seq(ctx: &Ctx, op: &SeqOp, target: Option<&mut YamlValue>) -> bool {
     }
 }
 
+/// The number of keys under `node` that are or hold an alias.
+fn alias_key_count(node: &SyntaxNode) -> usize {
+    node.descendants()
+        .filter(|n| n.kind() == SyntaxKind::KEY)
+        .filter(|k| k.descendants().any(|n| n.kind() == SyntaxKind::ALIAS))
+        .count()
+}
+
 fn check(
     file: &YamlFile,
     doc_index: usize,
     input_valid: bool,
-    in_key: bool,
+    keys_changed: bool,
     duplicate_keys: &mut usize,
     expected: Option<&YamlValue>,
     context: &str,
@@ -675,7 +684,11 @@ fn check(
     if edited_errors != errors {
         panic!("{context}: validator disagrees between the edited tree and a re-parse\noutput: {output:?}\nedited: {edited_errors:?}\nre-parsed: {errors:?}");
     }
-    let allowed = if in_key { usize::MAX } else { *duplicate_keys };
+    let allowed = if keys_changed {
+        usize::MAX
+    } else {
+        *duplicate_keys
+    };
     *duplicate_keys = duplicate_key_count(&errors);
     let errors = unexpected_errors(&errors, allowed);
     if !errors.is_empty() {
@@ -762,13 +775,15 @@ fuzz_target!(|data: &[u8]| {
             );
             eprintln!("{}", debug::tree_to_string(file.syntax()));
         }
+        let alias_keys = alias_key_count(doc.syntax());
         let expected = apply(&ctx, &op, model.as_ref());
+        let keys_changed = target.in_key || alias_key_count(doc.syntax()) < alias_keys;
         let context = format!("input {input:?}, doc {doc_index}, edits {log:#?}");
         model = check(
             &file,
             doc_index,
             input_valid,
-            target.in_key,
+            keys_changed,
             &mut duplicate_keys,
             expected.as_ref(),
             &context,

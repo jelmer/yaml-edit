@@ -357,8 +357,6 @@ impl MappingEntry {
             self.insert_at(value_idx, tokens);
             trivia::separate_from_question(&colon);
         }
-        // TODO: a block explicit key without a value (`? a` at the end of
-        // the input) needs `\n:` before the value, not `: `.
     }
 
     /// Append `tokens` at the end of `self.0`.

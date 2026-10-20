@@ -892,10 +892,8 @@ fn comment_line_after_explicit_key() {
         ("? - a\n# c\n: v\n", Some("? - a\n: v\n")),
         // In a block scalar the line is content, not a comment.
         ("? |\n  x\n  # c\n: v", None),
-        // TODO: the comment line's INDENT stays in the key's collection, so
-        // it ends up in the key's string form ("- a\n  ").
-        ("? - a\n  # c\n: v\n", None),
-        ("? x: 1\n  # c\n: v\n", None),
+        ("? - a\n  # c\n: v\n", Some("? - a\n: v\n")),
+        ("? x: 1\n  # c\n: v\n", Some("? x: 1\n: v\n")),
     ] {
         let file = YamlFile::from_str(yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
         assert_eq!(file.to_string(), yaml);

@@ -5,10 +5,8 @@ use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use yaml_edit::{ScalarValue, YamlValue};
 
-// TODO: add `|` and `>` once a block scalar line such as `>'` no longer
-// makes the parser read the lines after it into the scalar.
 fn string_strat() -> impl Strategy<Value = String> {
-    "[a-z0-9\t%`?~. :#'\"\\-\n{}\\[\\],&*!@]{0,8}"
+    "[a-z0-9\t%`?~. :#|>'\"\\-\n{}\\[\\],&*!@]{0,8}"
 }
 
 fn scalar_strat() -> impl Strategy<Value = YamlValue> {

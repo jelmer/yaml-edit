@@ -445,12 +445,11 @@ impl Sequence {
     /// # Performance
     ///
     /// Runs in time linear in the sequence's current length, so building a
-    /// sequence one push at a time is quadratic overall. The cost is rowan
-    /// rebuilding the green node for every edit, which an immutable tree has
-    /// to do; this method already avoids the avoidable part by reading only
-    /// the tail of the child list and holding no child handles across the
-    /// edit. As a rough guide, 1000 pushes take about 70ms and 8000 about
-    /// 4.5s (release build).
+    /// sequence one push at a time is quadratic overall. Almost all of the
+    /// cost is in rowan's `splice_children`, which walks every child of the
+    /// sequence and rebuilds its green node on each edit (see `rowan.md`);
+    /// this method reads only the tail of the child list and holds no child
+    /// handles across the edit.
     ///
     /// For a large sequence, build it with
     /// [`SequenceBuilder`](crate::SequenceBuilder) or parse the YAML text in

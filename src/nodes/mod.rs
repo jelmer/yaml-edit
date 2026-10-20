@@ -623,11 +623,7 @@ pub(crate) fn nth_entry_index(
 /// failing that quotes only where needed.
 pub(crate) fn flow_quoting(collection: &SyntaxNode) -> crate::as_yaml::FlowQuoting {
     use crate::as_yaml::FlowQuoting;
-    let is_flow = |n: &SyntaxNode| {
-        n.children_with_tokens()
-            .any(|c| matches!(c.kind(), SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET))
-            || mapping::is_flow_pair(n)
-    };
+    let is_flow = |n: &SyntaxNode| starts_a_flow_collection(n) || mapping::is_flow_pair(n);
     let own_quoting = |n: SyntaxNode| {
         let mut strings = n
             .children()

@@ -13,7 +13,7 @@ use super::empty_collection::{self, render_empty};
 use super::trivia::{self, Slot};
 use super::{
     entry_key, entry_value, fresh_token, has_child_token, held_node, insert_children,
-    replace_children, Lang, Sequence, SyntaxNode,
+    replace_children, starts_a_flow_collection, Lang, Sequence, SyntaxNode,
 };
 use crate::as_yaml::{AsYaml, YamlKind};
 use crate::lex::SyntaxKind;
@@ -303,12 +303,12 @@ impl Mapping {
 /// written without braces?
 pub(crate) fn is_flow_pair(node: &SyntaxNode) -> bool {
     node.kind() == SyntaxKind::MAPPING
-        && !has_child_token(node, |k| k == SyntaxKind::LEFT_BRACE)
+        && !starts_a_flow_collection(node)
         && node
             .parent()
             .filter(|p| p.kind() == SyntaxKind::SEQUENCE_ENTRY)
             .and_then(|p| p.parent())
-            .is_some_and(|seq| has_child_token(&seq, |k| k == SyntaxKind::LEFT_BRACKET))
+            .is_some_and(|seq| starts_a_flow_collection(&seq))
 }
 
 /// Check whether the CST key node matches `key` using semantic equality.
@@ -383,8 +383,7 @@ impl Mapping {
         // Flow-style mappings start with LEFT_BRACE token. A block
         // placeholder is `{}` in the text but is destined to become block, so
         // it does not count as flow.
-        (has_child_token(&self.0, |k| k == SyntaxKind::LEFT_BRACE)
-            && !empty_collection::is_block_placeholder(&self.0))
+        (starts_a_flow_collection(&self.0) && !empty_collection::is_block_placeholder(&self.0))
             || is_flow_pair(&self.0)
     }
 

@@ -1796,7 +1796,7 @@ fn test_set_value_of_explicit_key_without_one() {
             .unwrap()
     };
     for (source, expected) in [
-        ("? a", "? a\n:\n  - 1\n  - 2\n"),
+        ("? a", "? a\n:\n  - 1\n  - 2"),
         ("? a\n", "? a\n:\n  - 1\n  - 2\n"),
         ("? a\nb: 1\n", "? a\n:\n  - 1\n  - 2\nb: 1\n"),
     ] {

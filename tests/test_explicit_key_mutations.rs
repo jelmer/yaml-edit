@@ -917,9 +917,7 @@ fn test_set_value_ending_in_block_key_without_colon() {
     let out = edit_root("complex1:\n  ? - a", |m| {
         m.set("complex1", m.get("complex1").unwrap());
     });
-    // TODO: Replacing an unterminated block value adds a final line
-    // break, as it does for any block value.
-    assert_eq!(out, "complex1:\n  ? - a\n");
+    assert_eq!(out, "complex1:\n  ? - a");
     let out = edit_root("complex1:\n  ? - a", |m| {
         m.set("b", 1);
     });

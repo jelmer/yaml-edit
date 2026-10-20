@@ -462,7 +462,7 @@ fn assert_same_values(doc: &Document, source: &str) {
 
 #[test]
 fn reorder_fields_moves_anchor_to_first_alias() {
-    let cases: [(&str, &[&str], &str); 18] = [
+    let cases: [(&str, &[&str], &str); 19] = [
         (
             "a: &x 1\nb: *x\nc: 2\n",
             &["b", "a"],
@@ -501,14 +501,18 @@ fn reorder_fields_moves_anchor_to_first_alias() {
             &["b", "a"],
             "{b: &x 1, a: *x, c: 2}\n",
         ),
-        // Without anchors of its own inside, the old node could not become
-        // an alias without losing `&y`.
+        // The copy keeps the anchors inside the node, so that it can
+        // become an alias without losing `&y`.
         (
             "a: &x {k: &y 1}\nb: *x\nc: *y\n",
             &["b", "a", "c"],
-            "b: &x {k: 1}\na: &x {k: &y 1}\nc: *y\n",
+            "b: &x {k: &y 1}\na: *x\nc: *y\n",
         ),
-        // With them in the copy, it can.
+        (
+            "a: &x [&y 1]\nb: *x\n",
+            &["b", "a"],
+            "b: &x [&y 1]\na: *x\n",
+        ),
         (
             "a: &x [&y 1]\nb: [*x, *y]\n",
             &["b", "a"],
@@ -750,19 +754,67 @@ fn moving_alias_key_before_key_with_anchors_inside() {
 
 #[test]
 fn moving_alias_key_before_key_with_unused_anchor_inside() {
-    // No alias needs `&b` in the copy, so it goes without, and the old key
-    // keeps it and stays a copy too. The two keys were equal before, but
-    // the validator only sees that once neither is an alias.
+    // The copy keeps `&b`, though no alias needs it, so that the old key
+    // can become an alias. If another `&b` comes between, it cannot, and
+    // both stay copies, the first without `&b`. The two keys were equal
+    // all along, but the validator only sees that once neither is an
+    // alias.
     let cases = [
-        ("{ &a [&b b]: x, *a : c}\n", "{ &a [b] : c, &a [&b b]: x}\n"),
-        ("&a [&b b]: x\n*a : c\n", "&a [b] : c\n&a [&b b]: x\n"),
+        ("{ &a [&b b]: x, *a : c}\n", 1, "{ &a [&b b] : c, *a : x}\n"),
+        ("&a [&b b]: x\n*a : c\n", 1, "&a [&b b] : c\n*a : x\n"),
+        (
+            "{ &a [&b b]: x, *a : c, &b y: z}\n",
+            2,
+            "{ &a [b] : c, &b y: z, &a [&b b]: x}\n",
+        ),
+        (
+            "&a [&b b]: x\n*a : c\n&b y: z\n",
+            2,
+            "&a [b] : c\n&b y: z\n&a [&b b]: x\n",
+        ),
     ];
-    for (source, expected) in cases {
+    for (source, after, expected) in cases {
         let doc = Document::from_str(source).unwrap();
         let mapping = doc.as_mapping().unwrap();
         let keys: Vec<_> = mapping.keys().collect();
         let value = mapping.get(&keys[0]).unwrap();
-        assert!(mapping.move_after(&keys[1], &keys[0], value));
+        assert!(mapping.move_after(&keys[after], &keys[0], value));
+        assert_edited(&doc, expected);
+    }
+}
+
+#[test]
+fn moving_value_before_alias_with_unused_anchor_inside() {
+    let cases = [
+        ("{a: &x [&y 1], b: *x}\n", "b", "{b: &x [&y 1], a: *x}\n"),
+        ("a: &x [&y 1]\nb: *x\n", "b", "b: &x [&y 1]\na: *x\n"),
+        (
+            "a: &x [&y 1]\nb: *x\nc: &y 2\n",
+            "c",
+            "b: &x [1]\nc: &y 2\na: &x [&y 1]\n",
+        ),
+    ];
+    for (source, after, expected) in cases {
+        let doc = Document::from_str(source).unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        assert!(mapping.move_after(after, "a", mapping.get("a").unwrap()));
+        assert_edited(&doc, expected);
+        assert_same_values(&doc, source);
+    }
+}
+
+#[test]
+fn removing_anchor_of_alias_copies_anchors_inside() {
+    // A removed node leaves nothing to become an alias, so the copy is the
+    // only one and keeps all its anchors, even where that makes two keys
+    // the validator sees as equal.
+    let cases = [
+        ("{ k: &a [x], [x]: 1, *a : 2}\n", "{ [x]: 1, &a [x] : 2}\n"),
+        ("k: &a [&b x]\nv: *a\n", "v: &a [&b x]\n"),
+    ];
+    for (source, expected) in cases {
+        let doc = Document::from_str(source).unwrap();
+        assert!(doc.as_mapping().unwrap().remove("k").is_some());
         assert_edited(&doc, expected);
     }
 }

@@ -96,8 +96,9 @@ pub(crate) fn keeping_aliases(
 /// Where an alias now comes before the node it referred to, the alias
 /// becomes a copy of that node, anchor included, and the node becomes an
 /// alias if it can: it has to be a value, sequence item or key, the copy
-/// has to have kept the anchors inside it, and no other anchor with one of
-/// their names may come between.
+/// has to have kept the anchors inside it, which it does unless they would
+/// capture aliases to other nodes, and no other anchor with one of their
+/// names may come between.
 /// Otherwise the node keeps its anchor too.
 pub(crate) fn keeping_aliases_moved(within: &SyntaxNode, edit: impl FnOnce()) {
     let scope = document_scope(within);
@@ -384,9 +385,10 @@ impl Tracker {
 
     /// Replace `alias` with a copy of the node with anchor id `target`.
     ///
-    /// If `takes_anchor` is set, the copy keeps that node's anchor even if
-    /// no alias needs it, and the node becomes an alias to the copy if it
-    /// can.
+    /// If `takes_anchor` is set, the copy keeps that node's anchor, and the
+    /// anchors inside it, even if no alias needs them, and the node becomes
+    /// an alias to the copy if it can. If it cannot, the copy goes without
+    /// the anchors inside it that no alias needs.
     fn copy_for(&mut self, alias: &SyntaxNode, target: usize, takes_anchor: bool) {
         let (origin, in_snapshot) = self.origin(target);
         // The tag and anchor of the alias, if it has any, take the place of
@@ -463,28 +465,41 @@ impl Tracker {
         }
 
         // A copy of a node still in the tree only needs the anchors that
-        // aliases in it refer to.
+        // aliases in it refer to. One that takes over the node's anchor
+        // keeps the others too, for as long as the node may become an alias
+        // that relies on them.
         let mut kept_outer = None;
+        let mut unused = Vec::new();
         for (original, copy) in originals.iter().zip(&copies).rev() {
             let (captures_others, used) = self.captures(copy);
             let taken = takes_anchor && *original == origin;
-            if captures_others || (!in_snapshot && !used && !taken) {
-                self.live_ids.retain(|(t, _)| t != copy);
-                self.copied_anchors.retain(|t| t != copy);
-                super::detach_anchor(copy);
+            if captures_others {
+                self.drop_copied_anchor(copy);
             } else if taken {
                 kept_outer = Some(copy.clone());
+            } else if !in_snapshot && !used {
+                unused.push(copy.clone());
             }
         }
-        if let Some(copy) = kept_outer {
-            self.alias_original(&origin, &copy, target);
+        let aliased = kept_outer.is_some_and(|copy| self.alias_original(&origin, &copy, target));
+        if !aliased {
+            for copy in &unused {
+                self.drop_copied_anchor(copy);
+            }
         }
+    }
+
+    /// Remove `copy`, an anchor in a copy made here.
+    fn drop_copied_anchor(&mut self, copy: &SyntaxToken) {
+        self.live_ids.retain(|(t, _)| t != copy);
+        self.copied_anchors.retain(|t| t != copy);
+        super::detach_anchor(copy);
     }
 
     /// Replace the node `origin` is the anchor of with an alias to `copy`,
     /// an anchor with the same id before it, if that keeps everything
-    /// resolving.
-    fn alias_original(&mut self, origin: &SyntaxToken, copy: &SyntaxToken, id: usize) {
+    /// resolving. Returns whether it did.
+    fn alias_original(&mut self, origin: &SyntaxToken, copy: &SyntaxToken, id: usize) -> bool {
         let node = anchored_node(origin);
         let holder =
             if node.kind() == SyntaxKind::TAGGED_NODE && origin.parent() == Some(node.clone()) {
@@ -498,7 +513,7 @@ impl Tracker {
                 SyntaxKind::VALUE | SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::KEY
             )
         }) else {
-            return;
+            return false;
         };
         let copy_anchors = copied_anchors(None, &copy.parent().expect("an anchor has a parent"));
         // Each anchor in the node needs one in the copy for aliases to it to
@@ -511,7 +526,7 @@ impl Tracker {
                 .find(|c| self.live_id(c) == anchor_id)
                 .cloned()
             else {
-                return;
+                return false;
             };
             let name = anchor_name(&anchor);
             let redefined = self
@@ -525,7 +540,7 @@ impl Tracker {
                         && !t.parent_ancestors().any(|a| a == holder)
                 });
             if redefined {
-                return;
+                return false;
             }
             takers.push((taker, anchor_id));
         }
@@ -542,6 +557,7 @@ impl Tracker {
         }
         self.live_expected.push((alias.clone(), Some(id)));
         self.copied_aliases.push(alias);
+        true
     }
 
     /// The anchor id `alias`, in the tree, resolves to now.

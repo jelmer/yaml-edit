@@ -13,14 +13,17 @@
 //! After every edit of input that the validator accepts:
 //! - the CST passes `debug::validate_tree` and `debug::roundtrip_ok`;
 //! - the text parses to the same tree (`debug::shape_to_string`);
+//! - the validator reports the same for the edited tree as for the re-parse;
 //! - the validator accepts it, apart from duplicate keys: an edit inside a
-//!   key may make it equal to another key, and later edits must not add
-//!   more;
+//!   key may make it equal to another key, as may replacing an alias in a
+//!   key with a copy, since the validator compares a key holding an alias
+//!   with nothing; later edits must not add more;
 //! - its `YamlValue` equals a model of the document updated alongside it.
 //!   Where an edit cannot be modelled (merge keys, aliases to what changed),
 //!   the model is taken from the edited document again.
 //!
-//! Edits of other input only have to not panic. Set `EDIT_SEQUENCE_TRACE`
+//! Edits of other input only have to not panic, in the editor or in the
+//! validator run on the edited tree. Set `EDIT_SEQUENCE_TRACE`
 //! to print each edit, and the tree it is made on, before it is made.
 
 use arbitrary::{Result as ArbResult, Unstructured};
@@ -642,15 +645,26 @@ fn apply_seq(ctx: &Ctx, op: &SeqOp, target: Option<&mut YamlValue>) -> bool {
     }
 }
 
+/// The number of keys under `node` that are or hold an alias.
+fn alias_key_count(node: &SyntaxNode) -> usize {
+    node.descendants()
+        .filter(|n| n.kind() == SyntaxKind::KEY)
+        .filter(|k| k.descendants().any(|n| n.kind() == SyntaxKind::ALIAS))
+        .count()
+}
+
 fn check(
     file: &YamlFile,
     doc_index: usize,
     input_valid: bool,
-    in_key: bool,
+    keys_changed: bool,
     duplicate_keys: &mut usize,
     expected: Option<&YamlValue>,
     context: &str,
 ) -> Option<YamlValue> {
+    // The validator has to cope with whatever an edit leaves behind, so it
+    // runs on the edited tree itself, not only on a re-parse of its text.
+    let edited_errors = validator_errors(file);
     // Edits of input the validator rejects are only held to not panicking.
     if !input_valid {
         return None;
@@ -667,7 +681,14 @@ fn check(
         panic!("{context}: tree differs from a re-parse\noutput: {output:?}\nedited:\n{edited}\nre-parsed:\n{fresh}");
     }
     let errors = validator_errors(&reparsed);
-    let allowed = if in_key { usize::MAX } else { *duplicate_keys };
+    if edited_errors != errors {
+        panic!("{context}: validator disagrees between the edited tree and a re-parse\noutput: {output:?}\nedited: {edited_errors:?}\nre-parsed: {errors:?}");
+    }
+    let allowed = if keys_changed {
+        usize::MAX
+    } else {
+        *duplicate_keys
+    };
     *duplicate_keys = duplicate_key_count(&errors);
     let errors = unexpected_errors(&errors, allowed);
     if !errors.is_empty() {
@@ -754,13 +775,15 @@ fuzz_target!(|data: &[u8]| {
             );
             eprintln!("{}", debug::tree_to_string(file.syntax()));
         }
+        let alias_keys = alias_key_count(doc.syntax());
         let expected = apply(&ctx, &op, model.as_ref());
+        let keys_changed = target.in_key || alias_key_count(doc.syntax()) < alias_keys;
         let context = format!("input {input:?}, doc {doc_index}, edits {log:#?}");
         model = check(
             &file,
             doc_index,
             input_valid,
-            target.in_key,
+            keys_changed,
             &mut duplicate_keys,
             expected.as_ref(),
             &context,

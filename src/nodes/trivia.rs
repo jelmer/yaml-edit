@@ -60,7 +60,7 @@ pub(crate) fn drop_space_before_empty(content: &SyntaxNode) {
 }
 
 /// The last token in `node`'s subtree that has text.
-fn last_non_empty_token(node: &SyntaxNode) -> Option<SyntaxToken> {
+pub(crate) fn last_non_empty_token(node: &SyntaxNode) -> Option<SyntaxToken> {
     // descendants_with_tokens isn't double-ended; prev_token() would walk
     // out of the subtree.
     node.descendants_with_tokens()
@@ -295,6 +295,10 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
     let prev = std::iter::successors(entry.prev_sibling(), |n| n.prev_sibling())
         .find(|n| n.kind() == kind);
     let terminated = ends_with_line_break(entry);
+    let root = collection
+        .ancestors()
+        .last()
+        .filter(|root| root.text_range().end() == entry.text_range().end());
     let flow = has_child_token(collection, |k| {
         matches!(k, SyntaxKind::LEFT_BRACE | SyntaxKind::LEFT_BRACKET)
     });
@@ -340,9 +344,14 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
 
     let drained = !collection.children().any(|n| n.kind() == kind);
     if flow {
-        if is_last && !has_comma(entry) {
-            if let Some(last) = collection.children().filter(|n| n.kind() == kind).last() {
+        // The new last entry ends as the removed one did, as an entry added
+        // at the end takes over the end of the one before it.
+        let last = collection.children().filter(|n| n.kind() == kind).last();
+        if let Some(last) = last.filter(|_| is_last) {
+            if !has_comma(entry) {
                 FlowSeparator::strip(&last);
+            } else if let Some(separator) = FlowSeparator::of(entry) {
+                FlowSeparator::swap(&last, &separator);
             }
         }
     } else {
@@ -378,9 +387,10 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
     if drained {
         render_empty(collection, line_break(entry).as_deref());
     }
-    // The end of the input keeps its lack of a final line break.
+    // The end of the input keeps its lack of a final line break, which
+    // may now come after the lines moved out of the collection.
     if is_last && !terminated && !flow {
-        unterminate_last(collection);
+        unterminate_last(root.as_ref().unwrap_or(collection));
     }
 }
 

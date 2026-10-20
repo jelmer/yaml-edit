@@ -1054,3 +1054,16 @@ fn test_set_block_collection_after_dash_and_tab() {
     assert_eq!(file.to_string(), "- x: 1\n  y: 2\n");
     assert_file_cst_ok(&file);
 }
+
+#[test]
+fn test_set_value_of_flow_key_ending_in_property() {
+    // A key of only a tag or anchor needs a space before the `:` that the
+    // value brings, or the `:` reads as part of the property's name.
+    let set_first = |d: &Document| {
+        let m = d.as_mapping().unwrap();
+        let key = m.keys().next().unwrap();
+        m.set(key, yaml_edit::ScalarValue::null());
+    };
+    common::check_edit("{!}", set_first, "{! : null}");
+    common::check_edit("{&a}", set_first, "{&a : null}");
+}

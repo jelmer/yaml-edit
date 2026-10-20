@@ -1641,7 +1641,7 @@ mod tests {
     #[test]
     fn test_recovery_shapes() {
         for (src, errors, expected) in [
-            ("a\n['x']\n", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" LEFT_BRACKET\"[\" STRING\"'x'\" RIGHT_BRACKET\"]\") NEWLINE\"\\n\")"),
+            ("a\n['x']\n", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" STRING\"['x']\") NEWLINE\"\\n\")"),
             ("a\n[\"x\"]: 1\n", 0, "DOCUMENT(SCALAR(STRING\"a\") NEWLINE\"\\n\" MAPPING(MAPPING_ENTRY(KEY(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(SCALAR(STRING\"\\\"x\\\"\")) RIGHT_BRACKET\"]\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(INT\"1\")) NEWLINE\"\\n\")))"),
             ("a\n[\"", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" STRING\"[\\\"\"))"),
             ("a\n['x]\n", 0, "DOCUMENT(SCALAR(STRING\"a\" NEWLINE\"\\n\" STRING\"['x]\") NEWLINE\"\\n\")"),
@@ -1669,14 +1669,14 @@ mod tests {
             ("[.{]?[]:", 0, "DOCUMENT(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\".\" LEFT_BRACE\"{\")) VALUE(SCALAR(NULL\"\"))))) RIGHT_BRACKET\"]\") SCALAR(STRING\"?\") MAPPING(MAPPING_ENTRY(KEY(SEQUENCE(LEFT_BRACKET\"[\" RIGHT_BRACKET\"]\")) COLON\":\" VALUE(SCALAR(NULL\"\")))))"),
             ("[: :", 1, "DOCUMENT(SEQUENCE(LEFT_BRACKET\"[\" SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(NULL\"\"))))) SEQUENCE_ENTRY(MAPPING(MAPPING_ENTRY(KEY(SCALAR(NULL\"\")) COLON\":\" VALUE(SCALAR(NULL\"\"))))) RIGHT_BRACKET\"\"))"),
             ("&x\n#", 0, "DOCUMENT(ANCHOR\"&x\" SCALAR(NULL\"\") NEWLINE\"\\n\" COMMENT\"#\")"),
-            ("<<\n&x[", 0, "DOCUMENT(SCALAR(MERGE_KEY\"<<\" NEWLINE\"\\n\" ANCHOR\"&x\" LEFT_BRACKET\"[\"))"),
+            ("<<\n&x[", 0, "DOCUMENT(SCALAR(MERGE_KEY\"<<\" NEWLINE\"\\n\" STRING\"&x[\"))"),
             ("a: |x1\n", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(PIPE\"|\") SCALAR(STRING\"x1\")) NEWLINE\"\\n\")))"),
             ("a: |-x\n", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(PIPE\"|\") SCALAR(STRING\"-x\")) NEWLINE\"\\n\")))"),
             ("a: b:\n &x c: d\n", 0, "DOCUMENT(MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(STRING\"b\" COLON\":\")) NEWLINE\"\\n\") INDENT\" \" MAPPING_ENTRY(KEY(ANCHOR\"&x\" WHITESPACE\" \" SCALAR(STRING\"c\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(STRING\"d\")) NEWLINE\"\\n\")))"),
             ("a\nb : c\n", 0, "DOCUMENT(SCALAR(STRING\"a\") NEWLINE\"\\n\" MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"b\")) WHITESPACE\" \" COLON\":\" WHITESPACE\" \" VALUE(SCALAR(STRING\"c\")) NEWLINE\"\\n\")))"),
             (" a: 1\n\n# c\n", 0, "DOCUMENT(INDENT\" \" MAPPING(MAPPING_ENTRY(KEY(SCALAR(STRING\"a\")) COLON\":\" WHITESPACE\" \" VALUE(SCALAR(INT\"1\")) NEWLINE\"\\n\") NEWLINE\"\\n\" COMMENT\"# c\" NEWLINE\"\\n\"))"),
             ("- - x\n  y\n", 1, "DOCUMENT(SEQUENCE(SEQUENCE_ENTRY(DASH\"-\" WHITESPACE\" \" SEQUENCE(SEQUENCE_ENTRY(DASH\"-\" WHITESPACE\" \" SCALAR(STRING\"x\") NEWLINE\"\\n\")))) INDENT\"  \") ERROR(STRING\"y\" NEWLINE\"\\n\")"),
-            ("\t%\n-\r!\t-", 0, "DOCUMENT(INDENT\"\\t\" SCALAR(STRING\"%\" NEWLINE\"\\n\" DASH\"-\" NEWLINE\"\\r\" TAG\"!\" WHITESPACE\"\\t\" STRING\"-\"))"),
+            ("\t%\n-\r!\t-", 0, "DOCUMENT(INDENT\"\\t\" SCALAR(STRING\"%\" NEWLINE\"\\n\" STRING\"-\" NEWLINE\"\\r\" STRING\"!\\t-\"))"),
 
         ] {
             let parsed = crate::yaml::YamlFile::parse(src);

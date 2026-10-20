@@ -805,7 +805,17 @@ fn test_remove_last_flow_mapping_entry_keeps_trailing_comma_style() {
     let root = file.document().unwrap().as_mapping().unwrap();
     root.remove("b").unwrap();
     assert_file_cst_ok(&file);
-    assert_eq!(file.to_string(), "{a: 1, }");
+    assert_eq!(file.to_string(), "{a: 1,}");
+}
+
+#[test]
+fn remove_last_flow_entry_ending_its_line_with_comma() {
+    // The entry before takes over the line break, where the parser puts it.
+    let remove_z = |d: &Document| {
+        d.as_mapping().unwrap().remove("z").unwrap();
+    };
+    check_edit("{r, z,\n\n}", remove_z, "{r,\n\n}");
+    check_edit("{r, z: 1,\n}", remove_z, "{r,\n}");
 }
 
 #[test]
@@ -1265,6 +1275,21 @@ fn remove_later_item_of_compact_sequence_in_explicit_key() {
     check_edit("?\n\n\n- a\n- b\n", pop, "?\n\n\n- a\n");
     check_edit("?\r\r\r- a\n-\r", pop, "?\r\r\r- a\n");
     check_edit("?\n\n- a\n- b\n- c\n: v\n", pop, "?\n\n- a\n- b\n: v\n");
+}
+
+#[test]
+fn pop_unterminated_item_after_lines_in_mapping_value() {
+    // The lines before the removed item leave the sequence, so it is the
+    // last of them that loses its line break. Taking the item's own left
+    // the blank line after the sequence, where the parser would not, and
+    // joined a comment line to the item.
+    let pop = |d: &Document| {
+        let v = d.as_mapping().unwrap().values().next().unwrap();
+        assert!(v.as_sequence().unwrap().pop().is_some());
+    };
+    check_edit(":\n -\n\n -", pop, ":\n -\n");
+    check_edit(":\r -\r\r -", pop, ":\r -\r");
+    check_edit("a:\n - x\n # c\n - y", pop, "a:\n - x\n # c");
 }
 
 #[test]

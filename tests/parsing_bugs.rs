@@ -5238,6 +5238,88 @@ fn test_flow_indicator_on_plain_scalar_continuation_line() {
 }
 
 #[test]
+fn test_closing_flow_indicator_on_plain_scalar_continuation_line() {
+    // A `]` or `}` opening such a line is content as well, and so is a `{`
+    // or `[` after it: lexing them as indicators opened a flow collection
+    // that took the `---` into the scalar.
+    assert_eq!(
+        document_values("m\n]{\n---\n"),
+        [
+            yaml_edit::YamlValue::from("m ]{"),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("m\n} [\n---\n"),
+        [
+            yaml_edit::YamlValue::from("m } ["),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("- m\n  }[\n---\n"),
+        [
+            yaml_edit::YamlValue::from_sequence(vec![yaml_edit::YamlValue::from("m }[")]),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+}
+
+#[test]
+fn test_closed_flow_collection_on_plain_scalar_continuation_line() {
+    // A collection closing on the line only reads as one when it is an
+    // implicit key. `[]` followed by more content, or `{` closed by `]`,
+    // is content, and so is the `[` or quote after it.
+    assert_eq!(
+        document_values("2\n[][\n---\n"),
+        [
+            yaml_edit::YamlValue::from("2 []["),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("$\n{]{\n---\n"),
+        [
+            yaml_edit::YamlValue::from("$ {]{"),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("e\n[]' # c\n"),
+        [yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain(
+            "e []'"
+        ))]
+    );
+}
+
+#[test]
+fn test_indicator_line_on_plain_scalar_continuation_line() {
+    // Neither is a `-` or `?` opening such a line an indicator, so a `[`
+    // after it opens no flow collection either.
+    assert_eq!(
+        document_values("e\n- [\n---\n"),
+        [
+            yaml_edit::YamlValue::from("e - ["),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("n\n-\n{\n---\n"),
+        [
+            yaml_edit::YamlValue::from("n - {"),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+    assert_eq!(
+        document_values("j\n? [\n---\n"),
+        [
+            yaml_edit::YamlValue::from("j ? ["),
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::null()),
+        ]
+    );
+}
+
+#[test]
 fn test_block_scalar_indicator_on_plain_scalar_continuation_line() {
     // A `|` or `>` continuing a plain scalar is content, not a block scalar
     // header, so the lines after it are not a block scalar body.
@@ -5271,6 +5353,19 @@ fn test_block_scalar_indicator_on_plain_scalar_continuation_line() {
             ]
             .into()
         )]
+    );
+}
+
+#[test]
+fn test_quote_on_plain_scalar_continuation_line_after_document_end() {
+    // A document after `...` starts at the root like any other, so the
+    // quote continues the scalar `z` rather than opening a quoted scalar
+    // that took in the comment.
+    assert_eq!(
+        document_values("...\nz\n\"\n# c\n"),
+        [yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain(
+            "z \""
+        ))]
     );
 }
 
@@ -5429,4 +5524,34 @@ fn test_merge_key_token_outside_a_key_is_a_scalar() {
     );
     assert_eq!(document_values("a\n<<\n"), [plain("a <<")]);
     assert_eq!(document_values("<<\n  a\n"), [plain("<< a")]);
+}
+
+#[test]
+fn test_colon_after_quote_inside_flow_plain_scalar() {
+    // The quote is plain scalar content, not the end of a JSON-like key, so
+    // the `:` after it needs a space to be an indicator.
+    assert_eq!(
+        document_values("[p\":a]\n"),
+        [yaml_edit::YamlValue::from_sequence(vec![
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain("p\":a"))
+        ])]
+    );
+    assert_eq!(
+        document_values("[p':a]\n"),
+        [yaml_edit::YamlValue::from_sequence(vec![
+            yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain("p':a"))
+        ])]
+    );
+}
+
+#[test]
+fn test_plain_scalar_continuing_merge_key_text() {
+    // `<<` that is no key is a plain scalar like any other, so the line
+    // after it continues it, and the comment line after that ends it.
+    assert_eq!(
+        document_values("<<\n|\n# c\n"),
+        [yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain(
+            "<< |"
+        ))]
+    );
 }

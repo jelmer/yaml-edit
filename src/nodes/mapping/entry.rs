@@ -343,11 +343,18 @@ impl MappingEntry {
         if follows_colon {
             self.insert_at(value_idx, vec![fresh_token(SyntaxKind::WHITESPACE, " ")]);
         } else if !has_colon && flow_context {
+            // A `:` straight after a key that is only a tag or anchor
+            // (`{!}`) would read as part of the property's name.
+            let after_property = self
+                .key()
+                .and_then(|key| trivia::last_non_empty_token(&key))
+                .is_some_and(|t| matches!(t.kind(), SyntaxKind::TAG | SyntaxKind::ANCHOR));
             let colon = fresh_token(SyntaxKind::COLON, ":");
-            self.insert_at(
-                value_idx,
-                vec![colon.clone(), fresh_token(SyntaxKind::WHITESPACE, " ")],
-            );
+            let mut tokens = vec![colon.clone(), fresh_token(SyntaxKind::WHITESPACE, " ")];
+            if after_property {
+                tokens.insert(0, fresh_token(SyntaxKind::WHITESPACE, " "));
+            }
+            self.insert_at(value_idx, tokens);
             trivia::separate_from_question(&colon);
         }
         // TODO: a block explicit key without a value (`? a` at the end of

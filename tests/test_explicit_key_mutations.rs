@@ -925,3 +925,14 @@ fn test_set_value_ending_in_block_key_without_colon() {
     });
     assert_eq!(out, "complex1:\n  ? - a\nb: 1");
 }
+
+#[test]
+fn rename_empty_explicit_key_before_tab_line() {
+    // The `\n` ending the key's line stayed, and was not turned into the
+    // `\r` before the tab.
+    let out = edit_root("?\r\t\n", |m| {
+        let key = m.keys().next().unwrap();
+        assert!(m.rename_key(key, ""));
+    });
+    assert_eq!(out, "? ''\r\t\n");
+}

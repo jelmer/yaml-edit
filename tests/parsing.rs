@@ -6,7 +6,7 @@ use std::str::FromStr;
 use yaml_edit::{Document, Parse, YamlFile, YamlNode};
 
 mod common;
-use common::assert_cst_ok;
+use common::{assert_cst_ok, render_documents};
 
 /// Parse `yaml`, requiring no errors and a byte-identical round trip.
 #[track_caller]
@@ -576,24 +576,68 @@ fn round_trips() {
     }
 }
 
-/// A plain scalar may contain spaces, also as a key (issue #30).
+/// A plain scalar may contain spaces and tabs, also as a key (issue #30),
+/// in block and flow context alike.
 #[test]
-fn multi_word_keys() {
-    let file = parse("xyz: 1\nabc cba: 2\nfoo: 3\n");
-    assert_eq!(keys(&file), ["xyz", "abc cba", "foo"]);
-
-    let file = parse("key1 value: 1\nkey2: value\n");
-    assert_strings(&file, &[("key1 value", "1"), ("key2", "value")]);
-
-    let file = parse("outer:\n  abc cba: 2\n  foo: 3\n");
-    assert_strings(&file, &[("outer.abc cba", "2")]);
-
-    // Without a colon it is not a mapping.
-    let file = parse("abc cba\n");
-    assert_eq!(
-        file.document().unwrap().as_scalar().unwrap().as_string(),
-        "abc cba"
-    );
+fn multi_word_plain_scalars() {
+    for (yaml, expected) in [
+        ("abc cba: value\n", "map{abc cba: value}"),
+        ("a b c d: value\n", "map{a b c d: value}"),
+        ("abc   cba: value\n", "map{abc   cba: value}"),
+        ("abc\tcba: value\n", "map{abc\tcba: value}"),
+        // The key does not include the white space before the colon.
+        ("abc cba : value\n", "map{abc cba: value}"),
+        // Without a colon it is not a mapping.
+        ("abc cba\n", "abc cba"),
+        ("key: abc cba\n", "map{key: abc cba}"),
+        (
+            "key: abc cba\nkey2: value\n",
+            "map{key: abc cba, key2: value}",
+        ),
+        ("key: value # comment\n", "map{key: value}"),
+        ("abc cba: value # comment\n", "map{abc cba: value}"),
+        ("key: abc cba # comment\n", "map{key: abc cba}"),
+        // A `#` with no space before it is content.
+        ("key: abc#def\n", "map{key: abc#def}"),
+        (
+            "http://example.com: value\n",
+            "map{http://example.com: value}",
+        ),
+        ("- abc cba\n- foo\n", "seq[abc cba, foo]"),
+        (
+            "- abc cba: value\n- foo: bar\n",
+            "seq[map{abc cba: value}, map{foo: bar}]",
+        ),
+        (
+            "outer:\n  abc cba: 2\n  foo: 3\n",
+            "map{outer: map{abc cba: 2, foo: 3}}",
+        ),
+        ("{abc cba: value}", "{abc cba: value}"),
+        ("[abc cba, def ghi]", "[abc cba, def ghi]"),
+        ("{a: b c d}", "{a: b c d}"),
+        // `abc-` is a single word, and `cba` after the space joins it.
+        ("abc- cba: value\n", "map{abc- cba: value}"),
+        ("abc 123: value\n", "map{abc 123: value}"),
+        ("true false: value\n", "map{true false: value}"),
+        // A continuation line folds to a space.
+        ("key: abc cba\n  more text\n", "map{key: abc cba more text}"),
+        (
+            "xyz: 1\nabc cba: 2\nfoo: 3\n",
+            "map{xyz: 1, abc cba: 2, foo: 3}",
+        ),
+        (
+            "key1 value: 1\nkey2: value\n",
+            "map{key1 value: 1, key2: value}",
+        ),
+        (
+            "# top comment\nouter:\n  # inner comment\n  abc cba: 1\n  foo: 2\n",
+            "map{outer: map{abc cba: 1, foo: 2}}",
+        ),
+        ("abc cba: original\n", "map{abc cba: original}"),
+    ] {
+        parse(yaml);
+        assert_eq!(render_documents(yaml), [expected], "{yaml:?}");
+    }
 }
 
 /// In flow context a plain scalar can contain spaces too, so

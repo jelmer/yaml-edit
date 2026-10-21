@@ -179,12 +179,7 @@ fn scalar_set_value_replaces_multiline_scalar() {
         m.get("a").unwrap().as_scalar().unwrap().set_value("x");
     };
     check_edit("a: foo\n  bar\nb: 2\n", set_a, "a: x\nb: 2\n");
-    // TODO: the block scalar's line break stays inside the new SCALAR,
-    // where the parser puts it after it, so the tree is not parser-shaped.
-    let doc = Document::from_str("a: |\n  hello\nb: 2\n").unwrap();
-    set_a(&doc);
-    assert_cst_ok(&doc);
-    assert_eq!(doc.to_string(), "a: x\nb: 2\n");
+    check_edit("a: |\n  hello\nb: 2\n", set_a, "a: x\nb: 2\n");
 }
 
 /// Changing an anchored value leaves the aliases to it pointing at it.

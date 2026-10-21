@@ -3,8 +3,7 @@
 //! flow mapping and the line break ending the last entry, or its absence.
 
 mod common;
-use common::assert_edited;
-
+use common::{assert_edited, assert_file_edited};
 use std::str::FromStr;
 use yaml_edit::{Document, Mapping, YamlFile};
 
@@ -397,4 +396,14 @@ fn move_next_to_itself_with_own_value() {
         assert!(m.move_before("foo", "foo", m.get("foo").unwrap()));
         assert_edited(&doc, source);
     }
+}
+
+#[test]
+fn move_before_in_file() {
+    let file = YamlFile::from_str("a: 1\nb: 2\nc: 3\n").unwrap();
+    assert!(file.move_before("a", "c", 4));
+    assert_file_edited(&file, "c: 4\na: 1\nb: 2\n");
+    assert!(!file.move_before("z", "c", 5));
+    assert_eq!(file.to_string(), "c: 4\na: 1\nb: 2\n");
+    assert!(!YamlFile::new().move_before("a", "c", 4));
 }

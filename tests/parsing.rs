@@ -1,14 +1,13 @@
 //! Parsing and round-tripping of valid input: large and deeply nested
 //! documents, scalar styles, multi-key documents, byte order marks and JSON.
 
-use std::str::FromStr;
-use yaml_edit::{CoreScalarType, Document, Parse, ScalarValue, SyntaxKind};
-
 mod common;
 use common::{
     assert_cst_ok, assert_shapes, assert_strings, check_renders, keys, node_at, parse,
     render_documents,
 };
+use std::str::FromStr;
+use yaml_edit::{CoreScalarType, Document, Parse, ScalarType, ScalarValue, SyntaxKind, YamlFile};
 
 #[test]
 fn deeply_nested_structures() {
@@ -466,19 +465,34 @@ service2:
 
 #[test]
 fn quoted_strings() {
-    let yaml = r#"
+    for (yaml, expected) in [
+        (
+            r#"
 simple: "hello world"
 quoted: 'single quotes'
 url: "https://example.com"
-"#;
-    assert_strings(
-        &parse(yaml),
-        &[
-            ("simple", "hello world"),
-            ("quoted", "single quotes"),
-            ("url", "https://example.com"),
-        ],
-    );
+"#,
+            &[
+                ("simple", "hello world"),
+                ("quoted", "single quotes"),
+                ("url", "https://example.com"),
+            ][..],
+        ),
+        (
+            r#"
+single: 'single quoted'
+double: "double quoted"
+plain: unquoted
+"#,
+            &[
+                ("single", "single quoted"),
+                ("double", "double quoted"),
+                ("plain", "unquoted"),
+            ],
+        ),
+    ] {
+        assert_strings(&parse(yaml), expected);
+    }
 }
 
 #[test]
@@ -1141,4 +1155,497 @@ fn non_breaking_space_is_not_yaml_whitespace() {
             (NEWLINE, "\n"),
         ]
     );
+}
+
+#[test]
+fn basic_documents() {
+    check_renders(&[
+        ("key: value", "map{key: value}"),
+        ("- item1\n- item2", "seq[item1, item2]"),
+        (
+            r#"
+name: my-app
+version: 1.0.0
+dependencies:
+  - serde
+  - tokio
+config:
+  port: 8080
+  enabled: true
+"#,
+            "map{name: my-app, version: 1.0.0, dependencies: seq[serde, tokio], \
+             config: map{port: 8080, enabled: true}}",
+        ),
+        (
+            r#"
+array: [1, 2, 3]
+object: {key: value, another: 42}
+"#,
+            "map{array: [1, 2, 3], object: {key: value, another: 42}}",
+        ),
+        (
+            r#"
+string: hello
+integer: 42
+float: 3.14
+bool_true: true
+bool_false: false
+null_value: null
+tilde: ~
+"#,
+            "map{string: hello, integer: 42, float: 3.14, bool_true: true, \
+             bool_false: false, null_value: ~, tilde: ~}",
+        ),
+        (
+            r#"
+root:
+  nested:
+    deeply:
+      value: 42
+  list:
+    - item1
+    - item2
+"#,
+            "map{root: map{nested: map{deeply: map{value: 42}}, list: seq[item1, item2]}}",
+        ),
+        (
+            r#"
+empty_string: ""
+empty_after_colon:
+another_key: value
+"#,
+            "map{empty_string: , empty_after_colon: ~, another_key: value}",
+        ),
+        (
+            r#"
+special: "line1\nline2"
+unicode: "emoji 😀"
+escaped: 'it''s escaped'
+"#,
+            "map{special: line1\nline2, unicode: emoji 😀, escaped: it's escaped}",
+        ),
+    ]);
+}
+
+/// Integers with a radix prefix, and text that only looks like one, are
+/// kept as written.
+#[test]
+fn number_formats_round_trip() {
+    for (yaml, value) in [
+        ("value: 0b1010", "0b1010"),
+        ("value: 0B1111", "0B1111"),
+        ("value: 0o755", "0o755"),
+        ("value: 0O644", "0O644"),
+        ("value: -0b1010", "-0b1010"),
+        ("value: +0o755", "+0o755"),
+        ("value: 0755", "0755"),
+        ("value: 0xFF", "0xFF"),
+        ("value: 0b2", "0b2"),
+        ("value: 0o9", "0o9"),
+        ("value: 0xGH", "0xGH"),
+    ] {
+        assert_strings(&parse(yaml), &[("value", value)]);
+    }
+}
+
+#[test]
+fn number_formats_in_complex_structures() {
+    let input = r#"
+config:
+  permissions: 0o755
+  flags: 0b11010
+  color: 0xFF00FF
+  count: 42"#;
+
+    let yaml = YamlFile::from_str(input).unwrap();
+
+    let doc = yaml.document().expect("Should have document");
+    let mapping = doc.as_mapping().expect("Should be a mapping");
+    let config_value = mapping.get("config").unwrap();
+    let config = config_value.as_mapping().unwrap();
+
+    assert_eq!(
+        config
+            .get("permissions")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "0o755"
+    );
+    assert_eq!(
+        config
+            .get("flags")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "0b11010"
+    );
+    assert_eq!(
+        config
+            .get("color")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "0xFF00FF"
+    );
+    assert_eq!(
+        config
+            .get("count")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "42"
+    );
+
+    let output = yaml.to_string();
+    assert_eq!(output, input);
+}
+
+#[test]
+fn timestamp_parsing_and_validation() {
+    // Test various timestamp formats are recognized as timestamps
+    let test_cases = vec![
+        ("2001-12-14 21:59:43.10 -5", true), // Space-separated with timezone
+        ("2001-12-15T02:59:43.1Z", true),    // ISO 8601 with Z
+        ("2002-12-14", true),                // Date only
+        ("2001-12-14t21:59:43.10-05:00", true), // Lowercase t
+        ("2001-12-14 21:59:43.10", true),    // No timezone
+        ("2001-12-14T21:59:43", true),       // No fractional seconds
+        ("not-a-timestamp", false),          // Invalid
+        ("2001-13-14", false),               // Invalid month
+        ("2001-12-32", false),               // Invalid day
+    ];
+
+    for (timestamp_str, should_be_valid) in test_cases {
+        let scalar = ScalarValue::parse(timestamp_str);
+
+        if should_be_valid {
+            assert_eq!(
+                scalar.scalar_type(),
+                ScalarType::Timestamp,
+                "Failed to recognize '{}' as timestamp",
+                timestamp_str
+            );
+            assert!(scalar.is_timestamp());
+
+            // Verify it preserves the original format
+            assert_eq!(scalar.value(), timestamp_str);
+
+            // Test YAML parsing preserves it
+            let yaml = format!("timestamp: {}", timestamp_str);
+            let parsed = YamlFile::from_str(&yaml).unwrap();
+
+            let doc = parsed.document().expect("Should have document");
+            let mapping = doc.as_mapping().expect("Should be a mapping");
+            assert_eq!(
+                mapping
+                    .get("timestamp")
+                    .unwrap()
+                    .as_scalar()
+                    .unwrap()
+                    .as_string(),
+                timestamp_str,
+                "Timestamp '{}' not preserved",
+                timestamp_str
+            );
+
+            let output = parsed.to_string();
+            assert_eq!(output, yaml);
+        } else {
+            assert_ne!(
+                scalar.scalar_type(),
+                ScalarType::Timestamp,
+                "'{}' should not be recognized as timestamp",
+                timestamp_str
+            );
+        }
+    }
+
+    // Test timestamp in different contexts
+    let yaml_with_timestamps = r#"
+created_at: 2001-12-14 21:59:43.10 -5
+updated_at: 2001-12-15T02:59:43.1Z
+date_only: 2002-12-14
+timestamps_in_array:
+  - 2001-12-14 21:59:43.10 -5
+  - 2001-12-15T02:59:43.1Z
+  - 2002-12-14"#;
+
+    let parsed = YamlFile::from_str(yaml_with_timestamps).unwrap();
+
+    let doc = parsed.document().expect("Should have document");
+    let mapping = doc.as_mapping().expect("Should be a mapping");
+    assert_eq!(
+        mapping
+            .get("created_at")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "2001-12-14 21:59:43.10 -5"
+    );
+    assert_eq!(
+        mapping
+            .get("updated_at")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "2001-12-15T02:59:43.1Z"
+    );
+    assert_eq!(
+        mapping
+            .get("date_only")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "2002-12-14"
+    );
+
+    let array_value = mapping.get("timestamps_in_array").unwrap();
+    let array = array_value.as_sequence().unwrap();
+    assert_eq!(
+        array.get(0).unwrap().as_scalar().unwrap().as_string(),
+        "2001-12-14 21:59:43.10 -5"
+    );
+    assert_eq!(
+        array.get(1).unwrap().as_scalar().unwrap().as_string(),
+        "2001-12-15T02:59:43.1Z"
+    );
+    assert_eq!(
+        array.get(2).unwrap().as_scalar().unwrap().as_string(),
+        "2002-12-14"
+    );
+
+    let output = parsed.to_string();
+    assert_eq!(output, yaml_with_timestamps);
+}
+
+#[test]
+fn regex_support_in_yaml() {
+    // Test 1: Parse YAML with regex tags (using simpler patterns)
+    let yaml_with_regex = r#"
+patterns:
+  digits: !!regex '\d+'
+  word: !!regex '\w+'
+  simple: !!regex 'test'"#;
+
+    let parsed = YamlFile::from_str(yaml_with_regex).unwrap();
+
+    // Verify exact round-trip preserves all regex tags
+    let output = parsed.to_string();
+    assert_eq!(output, yaml_with_regex);
+
+    // Test 2: Verify regex scalars are correctly identified
+    let regex_scalar = ScalarValue::regex(r"^\d{4}-\d{2}-\d{2}$");
+    assert_eq!(regex_scalar.scalar_type(), ScalarType::Regex);
+    assert!(regex_scalar.is_regex());
+    assert_eq!(regex_scalar.value(), r"^\d{4}-\d{2}-\d{2}$");
+    assert_eq!(
+        regex_scalar.to_yaml_string(),
+        r"!!regex ^\d{4}-\d{2}-\d{2}$"
+    );
+
+    // Test 3: Round-trip parsing with API verification
+    let yaml_simple = "pattern: !!regex '\\d+'";
+    let parsed_simple = YamlFile::from_str(yaml_simple).unwrap();
+
+    let doc_simple = parsed_simple.document().expect("Should have document");
+    let mapping_simple = doc_simple.as_mapping().expect("Should be a mapping");
+    let pattern_value = mapping_simple
+        .get("pattern")
+        .expect("Should have pattern key");
+
+    // Verify it's a tagged node with the correct tag
+    assert!(pattern_value.is_tagged(), "pattern should be a tagged node");
+    let tagged = pattern_value.as_tagged().expect("Should be tagged");
+    assert_eq!(tagged.tag(), Some("!!regex".to_string()));
+    assert_eq!(tagged.as_string(), Some("\\d+".to_string()));
+
+    let output_simple = parsed_simple.to_string();
+    assert_eq!(output_simple, yaml_simple);
+
+    // Test 4: Complex regex patterns
+    let complex_regex = r#"validation: !!regex '^https?://(?:[-\w.])+(?:\:[0-9]+)?'"#;
+    let parsed_complex = YamlFile::from_str(complex_regex).unwrap();
+
+    let doc_complex = parsed_complex.document().expect("Should have document");
+    let mapping_complex = doc_complex.as_mapping().expect("Should be a mapping");
+    let validation_value = mapping_complex
+        .get("validation")
+        .expect("Should have validation key");
+
+    assert!(
+        validation_value.is_tagged(),
+        "validation should be a tagged node"
+    );
+    let tagged_complex = validation_value.as_tagged().expect("Should be tagged");
+    assert_eq!(tagged_complex.tag(), Some("!!regex".to_string()));
+    assert_eq!(
+        tagged_complex.as_string(),
+        Some("^https?://(?:[-\\w.])+(?:\\:[0-9]+)?".to_string())
+    );
+
+    let output_complex = parsed_complex.to_string();
+    assert_eq!(output_complex, complex_regex);
+}
+
+#[test]
+fn regex_in_different_contexts() {
+    // Test 1: Regex in sequences
+    let yaml_sequence = r#"
+patterns:
+  - !!regex '\d+'
+  - !!regex '[a-z]+'
+  - normal_string
+  - !!regex '.*@.*\..*'
+"#;
+
+    let parsed_seq = YamlFile::from_str(yaml_sequence).unwrap();
+
+    let doc_seq = parsed_seq.document().expect("Should have document");
+    let mapping_seq = doc_seq.as_mapping().expect("Should be a mapping");
+    let patterns_value = mapping_seq
+        .get("patterns")
+        .expect("Should have patterns key");
+    let patterns = patterns_value.as_sequence().expect("Should be a sequence");
+
+    // Verify first item is tagged with !!regex
+    assert!(patterns.get(0).unwrap().is_tagged());
+    assert_eq!(
+        patterns.get(0).unwrap().as_tagged().unwrap().tag(),
+        Some("!!regex".to_string())
+    );
+
+    // Verify second item is tagged with !!regex
+    assert!(patterns.get(1).unwrap().is_tagged());
+    assert_eq!(
+        patterns.get(1).unwrap().as_tagged().unwrap().tag(),
+        Some("!!regex".to_string())
+    );
+
+    // Verify third item is NOT tagged (regular string)
+    assert!(!patterns.get(2).unwrap().is_tagged());
+    assert_eq!(
+        patterns.get(2).unwrap().as_scalar().unwrap().as_string(),
+        "normal_string"
+    );
+
+    // Verify fourth item is tagged with !!regex
+    assert!(patterns.get(3).unwrap().is_tagged());
+    assert_eq!(
+        patterns.get(3).unwrap().as_tagged().unwrap().tag(),
+        Some("!!regex".to_string())
+    );
+
+    let output_seq = parsed_seq.to_string();
+    assert_eq!(output_seq, yaml_sequence);
+
+    // Test 2: Nested mappings with regex (using simple patterns)
+    let yaml_nested = r#"
+validation:
+  email: !!regex '[^@]+@[^@]+\.[a-z]+'
+  phone: !!regex '\d{3}-\d{3}-\d{4}'
+  config:
+    debug_pattern: !!regex 'DEBUG:.*'
+    nested:
+      deep_pattern: !!regex 'ERROR'
+"#;
+
+    let parsed_nested = YamlFile::from_str(yaml_nested).unwrap();
+    // Verify exact round-trip preserves all nested structure and tags
+    let output_nested = parsed_nested.to_string();
+    assert_eq!(output_nested, yaml_nested);
+
+    // Test 3: Mixed collections
+    let yaml_mixed = r#"
+mixed_collection:
+  - name: "test"
+    patterns: [!!regex '\d+', !!regex '\w+']
+  - patterns:
+      simple: !!regex 'test'
+      complex: !!regex '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$'
+"#;
+
+    let parsed_mixed = YamlFile::from_str(yaml_mixed).unwrap();
+    // Verify exact round-trip preserves all mixed collections and tags
+    let output_mixed = parsed_mixed.to_string();
+    assert_eq!(output_mixed, yaml_mixed);
+
+    // Test 4: Flow style with regex
+    let yaml_flow =
+        r#"inline_patterns: {email: !!regex '[^@]+@[^@]+', phone: !!regex '\d{3}-\d{4}'}"#;
+
+    let parsed_flow = YamlFile::from_str(yaml_flow).unwrap();
+    // Verify exact round-trip preserves flow style and tags
+    let output_flow = parsed_flow.to_string();
+    assert_eq!(output_flow, yaml_flow);
+}
+
+#[test]
+fn regex_parsing_edge_cases() {
+    // Test 1: Regex with various quote styles (step by step)
+    // Test various quote styles
+    let yaml_quotes = r#"
+patterns:
+  single_quoted: !!regex 'pattern with spaces'
+  double_quoted: !!regex "pattern_without_escapes"
+  unquoted: !!regex simple_pattern
+"#;
+
+    let parsed_quotes = YamlFile::from_str(yaml_quotes).unwrap();
+
+    let output_quotes = parsed_quotes.to_string();
+    assert_eq!(output_quotes, yaml_quotes);
+
+    // Test 2: Empty and whitespace patterns
+    let yaml_empty = r#"
+empty: !!regex ''
+whitespace: !!regex '   '
+tabs: !!regex '	'
+"#;
+
+    let parsed_empty =
+        YamlFile::from_str(yaml_empty).expect("Should parse empty/whitespace regex patterns");
+
+    let output_empty = parsed_empty.to_string();
+    assert_eq!(output_empty, yaml_empty);
+
+    // Test 3: Regex with special characters (avoiding YAML conflicts)
+    let yaml_special = r#"special: !!regex 'pattern_with_underscores_and_123'"#;
+
+    let parsed_special =
+        YamlFile::from_str(yaml_special).expect("Should parse regex with safe special characters");
+
+    let output_special = parsed_special.to_string();
+    assert_eq!(output_special, yaml_special);
+
+    // Test 4: Verify regex scalars maintain their properties after parsing
+    let yaml_verify = r#"test_pattern: !!regex '\d{4}-\d{2}-\d{2}'"#;
+    let parsed_verify = YamlFile::from_str(yaml_verify).unwrap();
+
+    let output_verify = parsed_verify.to_string();
+    assert_eq!(output_verify, yaml_verify);
+
+    // Test 5: Multiple regex patterns in one document
+    let yaml_multiple = r#"
+patterns:
+  email: !!regex '^[^\s@]+@[^\s@]+\.[^\s@]+$'
+  phone: !!regex '^\+?[\d\s\-\(\)]{10,}$'
+  url: !!regex '^https?://[^\s]+$'
+  ipv4: !!regex '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$'
+  uuid: !!regex '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+"#;
+
+    let parsed_multiple =
+        YamlFile::from_str(yaml_multiple).expect("Should parse multiple regex patterns");
+
+    // Verify exact round-trip preserves all patterns and tags
+    let output_multiple = parsed_multiple.to_string();
+    assert_eq!(output_multiple, yaml_multiple);
 }

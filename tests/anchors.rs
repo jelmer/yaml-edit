@@ -94,6 +94,29 @@ anchor: &undefined value"#,
             "map{node: map{next: *node}}",
         ),
         ("&x [*x]", "[*x]"),
+        ("key: &anchor value\nref: *anchor", "map{key: value, ref: *anchor}"),
+        // Anchor names with digits, underscores and capitals.
+        (
+            "key1: &anchor_123 val1\nref1: *anchor_123",
+            "map{key1: val1, ref1: *anchor_123}",
+        ),
+        (
+            "key2: &AnchorName val2\nref2: *AnchorName",
+            "map{key2: val2, ref2: *AnchorName}",
+        ),
+        (
+            "key3: &anchor123abc val3\nref3: *anchor123abc",
+            "map{key3: val3, ref3: *anchor123abc}",
+        ),
+        (
+            "items:\n  - &first_item value1\n  - second_item\n  - *first_item",
+            "map{items: seq[value1, second_item, *first_item]}",
+        ),
+        // Whitespace around anchors and aliases is kept.
+        (
+            "key:  &anchor   value  \nref:  *anchor  ",
+            "map{key: value, ref: *anchor}",
+        ),
         (
             r#"level1: &l1
   level2: &l2
@@ -1456,4 +1479,27 @@ fn annotated_alias_key_parses_like_a_scalar_key() {
             );
         }
     }
+}
+
+#[test]
+fn anchor_with_different_value_types() {
+    let yaml = r#"string_anchor: &str_val "hello"
+int_anchor: &int_val 42
+bool_anchor: &bool_val true
+null_anchor: &null_val null
+str_ref: *str_val
+int_ref: *int_val
+bool_ref: *bool_val
+null_ref: *null_val"#;
+    assert_eq!(
+        render_documents(yaml),
+        [
+            "map{string_anchor: hello, int_anchor: 42, bool_anchor: true, null_anchor: ~, \
+          str_ref: *str_val, int_ref: *int_val, bool_ref: *bool_val, null_ref: *null_val}"
+        ]
+    );
+    let file = YamlFile::from_str(yaml).unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.get("int_anchor").unwrap().to_i64(), Some(42));
+    assert_eq!(mapping.get("bool_anchor").unwrap().to_bool(), Some(true));
 }

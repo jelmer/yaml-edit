@@ -1589,3 +1589,44 @@ fn null_key_and_empty_string_key_are_distinct() {
         assert!(mapping.get(ScalarValue::null()).is_some(), "{src:?}");
     }
 }
+
+/// A tag or anchor before an implicit key annotates the key (`!!str &a1
+/// "foo": bar` is test suite case HMQ5), rather than the whole document.
+#[test]
+fn properties_on_implicit_key() {
+    for (yaml, expected) in [
+        ("!!str a: b\n", "map{!!str a: b}"),
+        ("!!str &a1 \"foo\": bar\n", "map{!!str foo: bar}"),
+        ("&anchor a: b\n", "map{a: b}"),
+    ] {
+        assert_eq!(render_root(yaml), expected, "{yaml:?}");
+    }
+}
+
+#[test]
+fn explicit_key_produces_zero_width_null_value() {
+    // `? a\n` at document level should produce a MAPPING_ENTRY with
+    // a KEY containing `a`, an implicit-null VALUE holding a zero-width
+    // NULL token, and the entry's own line break after that. Lock that
+    // shape in.
+    let yaml = YamlFile::from_str("? a\n").unwrap();
+    let doc = yaml.document().unwrap();
+    let mapping = doc.as_mapping().expect("should parse as a mapping");
+    assert_eq!(mapping.len(), 1);
+
+    // Find the MAPPING_ENTRY and look at its last tokens.
+    let entry = mapping.entries().next().expect("one entry");
+    let syntax = entry.syntax();
+    let terminal = syntax
+        .last_token()
+        .expect("MAPPING_ENTRY has at least one token");
+    assert_eq!(terminal.kind(), SyntaxKind::NEWLINE);
+    assert_eq!(terminal.parent().as_ref(), Some(syntax));
+    let null = terminal.prev_token().expect("a token before the NEWLINE");
+    assert!(
+        null.kind() == SyntaxKind::NULL && null.text().is_empty(),
+        "expected zero-width NULL before the line break, got {:?} = {:?}",
+        null.kind(),
+        null.text()
+    );
+}

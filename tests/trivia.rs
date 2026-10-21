@@ -3,18 +3,17 @@
 //! it, the key-line or dash-line comment stays with the entry, and
 //! everything outside the value is left as it was.
 
+mod common;
+use common::{
+    assert_file_edited, check_renders, count_nodes, count_tokens, edited, parse_clean,
+    render_documents,
+};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::path::YamlPath;
 use yaml_edit::{
     debug, Mapping, MappingBuilder, MappingEntry, Sequence, SyntaxKind, YamlFile, YamlNode,
     YamlValue,
-};
-
-mod common;
-use common::{
-    assert_file_edited, check_renders, count_nodes, count_tokens, edited, parse_clean,
-    render_documents,
 };
 
 /// Parse `yaml` and check it round trips exactly.
@@ -1049,5 +1048,147 @@ fn comment_line_after_blank_lines_leaves_new_block_scalar_body() {
             .unwrap()
             .set("a", "x\n");
         assert_file_edited(&file, expected);
+    }
+}
+
+#[test]
+fn preserve_formatting() {
+    let yaml = "# Comment at start\nkey:   value    # inline comment\n\n# Another comment\nlist:\n  - item1   \n  - item2\n";
+    let parsed = YamlFile::from_str(yaml).unwrap();
+
+    let doc = parsed.document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(
+        mapping.get("key").unwrap().as_scalar().unwrap().as_string(),
+        "value"
+    );
+    let list = mapping.get_sequence("list").unwrap();
+    assert_eq!(list.len(), 2);
+    // Note: to_string() preserves trailing spaces, so we check content with trim
+    let items: Vec<String> = list
+        .values()
+        .map(|v| v.to_string().trim().to_string())
+        .collect();
+    assert_eq!(items, vec!["item1", "item2"]);
+
+    // Verify exact lossless round-trip
+    let output = parsed.to_string();
+    assert_eq!(output, yaml);
+}
+
+#[test]
+fn enhanced_comment_support() {
+    // Test improvements: mid-line comments, comments in flow collections,
+    // and better comment positioning preservation
+
+    // Test 1: Comments in flow sequences
+    let yaml1 = r#"flow_seq: [
+    item1, # comment after item1
+    item2, # comment after item2
+    item3  # comment after item3
+]"#;
+    let parsed1 = YamlFile::from_str(yaml1).unwrap();
+    let output1 = parsed1.to_string();
+
+    assert_eq!(output1, yaml1);
+
+    // Test 2: Comments in flow mappings
+    let yaml2 = r#"flow_map: {
+    key1: val1, # comment after first pair
+    key2: val2, # comment after second pair
+    key3: val3  # comment after third pair
+}"#;
+    let parsed2 = YamlFile::from_str(yaml2).unwrap();
+    let output2 = parsed2.to_string();
+
+    assert_eq!(output2, yaml2);
+
+    // Test 3: Mixed nested structures with comments
+    let yaml3 = r#"config:
+  servers: [
+    {name: web1, port: 80},   # Web server 1
+    {name: web2, port: 80},   # Web server 2
+    {name: db1, port: 5432}   # Database server
+  ] # End servers array"#;
+    let parsed3 = YamlFile::from_str(yaml3).unwrap();
+    let output3 = parsed3.to_string();
+
+    assert_eq!(output3, yaml3);
+
+    // Test 4: Comments between sequence items (block style)
+    let yaml4 = r#"items:
+  - first   # First item comment
+  - second  # Second item comment
+  # Comment between items
+  - third   # Third item comment"#;
+    let parsed4 = YamlFile::from_str(yaml4).unwrap();
+    let output4 = parsed4.to_string();
+
+    assert_eq!(output4, yaml4);
+
+    // Test 5: Round-trip preservation (verify all can be reparsed)
+    for yaml in [yaml1, yaml2, yaml3, yaml4] {
+        let parsed = YamlFile::from_str(yaml).unwrap();
+        let output = parsed.to_string();
+        let reparsed = YamlFile::from_str(&output);
+        assert!(reparsed.is_ok(), "Round-trip parsing should succeed");
+    }
+}
+
+/// An entry moved in after another goes right after it, before the
+/// comments and blank lines that follow it.
+#[test]
+fn move_after_keeps_comments_and_blank_lines() {
+    for (src, after, key, value, expected) in [
+        (
+            r#"---
+# Header comment
+key1: value1  # Inline comment 1
+# Middle comment
+key2: value2  # Inline comment 2
+# Footer comment
+"#,
+            "key1",
+            "new_key",
+            "new_value",
+            r#"---
+# Header comment
+key1: value1  # Inline comment 1
+new_key: new_value
+# Middle comment
+key2: value2  # Inline comment 2
+# Footer comment
+"#,
+        ),
+        (
+            r#"---
+key1:    value1
+
+
+key2:        value2
+"#,
+            "key1",
+            "new_key",
+            "new_value",
+            r#"---
+key1:    value1
+new_key: new_value
+
+
+key2:        value2
+"#,
+        ),
+        (
+            "---\n# Configuration file\ndatabase:  # Database settings\n  host: localhost  # Default host\n  port: 5432      # Default port\n  # Connection pool settings  \n  pool:\n    min: 1    # Minimum connections\n    max: 10   # Maximum connections\n\n# Server configuration\nserver:\n  port: 8080  # HTTP port\n",
+            "database",
+            "logging",
+            "debug",
+            "---\n# Configuration file\ndatabase:  # Database settings\n  host: localhost  # Default host\n  port: 5432      # Default port\n  # Connection pool settings  \n  pool:\n    min: 1    # Minimum connections\n    max: 10   # Maximum connections\nlogging: debug\n\n# Server configuration\nserver:\n  port: 8080  # HTTP port\n",
+        ),
+    ] {
+        let text = edited(src, |doc| {
+            doc.as_mapping().unwrap().move_after(after, key, value);
+        });
+        assert_eq!(text, expected, "{src:?}");
     }
 }

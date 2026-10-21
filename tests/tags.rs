@@ -9,7 +9,9 @@
 //! invalid input.
 
 mod common;
-use common::{assert_file_cst_ok, document_values, edit_metadata, parse_clean, render};
+use common::{
+    assert_file_cst_ok, document_values, edit_metadata, parse_clean, render, render_documents,
+};
 use proptest::prelude::*;
 use rowan::ast::AstNode;
 use std::str::FromStr;
@@ -1466,4 +1468,30 @@ fn anchor_alone_on_value_line_before_sibling() {
         document_values("a:\n &x\n- 1\n"),
         [mapping(vec![("a", YamlValue::from(vec![1i64]))])]
     );
+}
+
+/// A tag on a value, rather than a key, still wraps the value after it.
+#[test]
+fn tag_annotated_value_still_wraps() {
+    assert_eq!(render_documents("c: !!int 42\n"), ["map{c: !!int 42}"]);
+}
+
+#[test]
+fn set_is_empty() {
+    let file = YamlFile::from_str("a: !!set {}\nb: !!set {x}\n").unwrap();
+    let doc = file.document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let set = |key: &str| {
+        mapping
+            .get(key)
+            .unwrap()
+            .as_tagged()
+            .unwrap()
+            .as_set()
+            .unwrap()
+    };
+    assert!(set("a").is_empty());
+    assert_eq!(set("a").len(), 0);
+    assert!(!set("b").is_empty());
+    assert_eq!(set("b").len(), 1);
 }

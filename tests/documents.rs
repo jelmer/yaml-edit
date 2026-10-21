@@ -1,10 +1,13 @@
 //! Document markers, directives and streams of several documents.
 
 mod common;
-use common::{assert_file_cst_ok, parse_clean, render_documents};
+use common::{
+    assert_cst_ok, assert_file_cst_ok, assert_file_edited, assert_file_edited_valid,
+    assert_file_parser_shaped, parse_clean, render, render_documents,
+};
 use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, SyntaxKind, YamlFile, YamlValue};
+use yaml_edit::{debug, Document, MappingBuilder, SyntaxKind, YamlFile, YamlNode, YamlValue};
 
 #[test]
 fn document_streams() {
@@ -24,6 +27,18 @@ fn document_streams() {
             &["~", "~", "map{key: value}"],
         ),
         ("%YAML 1.2\n---\nkey: value\n", &["map{key: value}"]),
+        (
+            "---\ndoc: first\n---\ndoc: second\n...\n",
+            &["map{doc: first}", "map{doc: second}"],
+        ),
+        (
+            "---\n---\nkey: value\n---\n...\n",
+            &["~", "map{key: value}", "~"],
+        ),
+        (
+            "---\nfirst: doc\n...\n---\nsecond: doc\n---\nthird: doc\n...\n",
+            &["map{first: doc}", "map{second: doc}", "map{third: doc}"],
+        ),
         (
             "\n%YAML 1.2\n---\ndoc1: value1\n...\n---\ndoc2: value2\n---\ndoc3: value3\n...\n",
             &[
@@ -276,4 +291,431 @@ fn document_directives() {
         let file = parse_clean(yaml);
         assert_eq!(common::count_nodes(&file, SyntaxKind::DIRECTIVE), 1);
     }
+}
+
+fn doc_values(yaml: &str) -> Vec<Option<i64>> {
+    YamlFile::from_str(yaml)
+        .unwrap()
+        .documents()
+        .map(|d| {
+            let m = d.as_mapping().unwrap();
+            let key = m.keys().next().unwrap();
+            m.get(key).and_then(|v| v.to_i64())
+        })
+        .collect()
+}
+
+/// Pushing a document separates it from the one before with `---`, and
+/// ends the line before it if that has no line break.
+#[test]
+fn push_document() {
+    let new_mapping = || {
+        let doc = Document::new_mapping();
+        doc.set("b", 2);
+        assert_cst_ok(&doc);
+        doc
+    };
+    let built = || MappingBuilder::new().pair("b", 2).build_document();
+    let parsed = |text: &str| Document::from_str(text).unwrap();
+    for (src, pushed, expected, values) in [
+        (
+            "a: 1\n",
+            new_mapping(),
+            "a: 1\n---\nb: 2\n",
+            vec![Some(1), Some(2)],
+        ),
+        (
+            "a: 1\n",
+            built(),
+            "a: 1\n---\nb: 2\n",
+            vec![Some(1), Some(2)],
+        ),
+        (
+            "a: 1",
+            parsed("b: 2"),
+            "a: 1\n---\nb: 2",
+            vec![Some(1), Some(2)],
+        ),
+        (
+            "a: 1\n",
+            parsed("---\nb: 2\n"),
+            "a: 1\n---\nb: 2\n",
+            vec![Some(1), Some(2)],
+        ),
+        (
+            "a: 1\n# end",
+            parsed("b: 2\n"),
+            "a: 1\n# end\n---\nb: 2\n",
+            vec![Some(1), Some(2)],
+        ),
+        (
+            "a:\n",
+            parsed("b: 2\n"),
+            "a:\n---\nb: 2\n",
+            vec![None, Some(2)],
+        ),
+    ] {
+        let yaml = YamlFile::from_str(src).unwrap();
+        yaml.push_document(pushed);
+        assert_file_edited(&yaml, expected);
+        assert_eq!(doc_values(expected), values, "{src:?}");
+    }
+}
+
+/// Comments before a document without `---` are part of it; those
+/// before a `---`, a directive or no document are the stream's.
+#[test]
+fn leading_comment_placement() {
+    let tree =
+        |src: &str| yaml_edit::debug::tree_to_string(YamlFile::from_str(src).unwrap().syntax());
+    assert_eq!(
+        tree("# c\n\nfoo\n"),
+        "\
+DOCUMENT
+  COMMENT: \"# c\"
+  NEWLINE: \"\\\\n\"
+  NEWLINE: \"\\\\n\"
+  SCALAR
+    STRING: \"foo\"
+  NEWLINE: \"\\\\n\"
+"
+    );
+    assert_eq!(
+        tree("# c\n--- foo\n"),
+        "\
+COMMENT: \"# c\"
+NEWLINE: \"\\\\n\"
+DOCUMENT
+  DOC_START: \"---\"
+  WHITESPACE: \" \"
+  SCALAR
+    STRING: \"foo\"
+  NEWLINE: \"\\\\n\"
+"
+    );
+    assert_eq!(
+        tree("# c\n%YAML 1.2\n--- foo\n"),
+        "\
+COMMENT: \"# c\"
+NEWLINE: \"\\\\n\"
+DIRECTIVE
+  DIRECTIVE: \"%YAML 1.2\"
+NEWLINE: \"\\\\n\"
+DOCUMENT
+  DOC_START: \"---\"
+  WHITESPACE: \" \"
+  SCALAR
+    STRING: \"foo\"
+  NEWLINE: \"\\\\n\"
+"
+    );
+    assert_eq!(
+        tree("# c\n"),
+        "\
+COMMENT: \"# c\"
+NEWLINE: \"\\\\n\"
+"
+    );
+    assert_eq!(
+        tree("a\n...\n# c\nb\n"),
+        "\
+DOCUMENT
+  SCALAR
+    STRING: \"a\"
+  NEWLINE: \"\\\\n\"
+  DOC_END: \"...\"
+  NEWLINE: \"\\\\n\"
+COMMENT: \"# c\"
+NEWLINE: \"\\\\n\"
+DOCUMENT
+  SCALAR
+    STRING: \"b\"
+  NEWLINE: \"\\\\n\"
+"
+    );
+}
+
+#[test]
+fn add_directive_keeps_bom_first() {
+    for (src, expected) in [
+        ("\u{feff}a: 1\n", "\u{feff}%YAML 1.2\n---\na: 1\n"),
+        ("\u{feff}--- a\n", "\u{feff}%YAML 1.2\n--- a\n"),
+        ("\u{feff}# c\na: 1\n", "\u{feff}%YAML 1.2\n---\n# c\na: 1\n"),
+        ("\u{feff}", "\u{feff}%YAML 1.2\n"),
+    ] {
+        let yaml = YamlFile::from_str(src).unwrap();
+        yaml.add_directive("%YAML 1.2");
+        assert_eq!(yaml.to_string(), expected);
+        assert_file_parser_shaped(&yaml);
+    }
+}
+
+#[test]
+fn push_document_keeps_bom_before_start_marker() {
+    for (src, pushed, expected) in [
+        ("a: 1\n", "\u{feff}b: 2\n", "a: 1\n\u{feff}---\nb: 2\n"),
+        ("a: 1\n", "\u{feff}--- b\n", "a: 1\n\u{feff}--- b\n"),
+        (
+            "a: 1\n...\n",
+            "\u{feff}b: 2\n",
+            "a: 1\n...\n\u{feff}---\nb: 2\n",
+        ),
+        (
+            "foo\n...\n",
+            "\u{feff}b: 2\n",
+            "foo\n...\n\u{feff}---\nb: 2\n",
+        ),
+        ("", "\u{feff}b: 2\n", "\u{feff}b: 2\n"),
+        (
+            "%YAML 1.2\n",
+            "\u{feff}b: 2\n",
+            "\u{feff}%YAML 1.2\n---\nb: 2\n",
+        ),
+        (
+            "\u{feff}%YAML 1.2\n",
+            "\u{feff}b: 2\n",
+            "\u{feff}%YAML 1.2\n---\nb: 2\n",
+        ),
+        ("# c\n", "\u{feff}b: 2\n", "\u{feff}# c\nb: 2\n"),
+    ] {
+        let yaml = YamlFile::from_str(src).unwrap();
+        yaml.push_document(Document::from_str(pushed).unwrap());
+        assert_eq!(yaml.to_string(), expected, "{src:?} + {pushed:?}");
+        assert_file_parser_shaped(&yaml);
+    }
+}
+
+#[test]
+fn push_document_terminates_last_line_like_parser() {
+    for src in [
+        "a: 1",
+        "- 1",
+        "a: 1\n# end",
+        "- 1\n# end",
+        "foo",
+        "foo # c",
+        "{a: 1}",
+        "|\n x",
+        "!!str",
+        "&a",
+        "!!str # c",
+        "--- !!str",
+        "---",
+        "--- # c",
+        "a: [1]",
+        "a: 1 # c",
+        "a: |\n  x",
+        "a:",
+        "a: &x",
+        "a: # c",
+        "a:\n  b: 1",
+        "a:\n  - 1",
+        "a:\n  b:",
+        "a: !t\n  b: 1",
+        "? a",
+        "? a\n: b",
+        "? a\n:",
+        "? a\n: # c",
+        "? a\n: - 1",
+        "? a\n: {b: 1}",
+        "-",
+        "- a: 1",
+        "- - 1",
+        "- |\n  x",
+        "- # c",
+        "- &a # c",
+        "- \n  # c",
+        "- a # c",
+        "- ? a\n  : b",
+        "- ? a\n  :",
+        "a: !!str",
+        "- &a",
+        "a:\n  b: 1\n  # c",
+        "a:\n  - 1\n  # c",
+    ] {
+        let yaml = YamlFile::from_str(src).unwrap();
+        yaml.push_document(Document::from_str("b: 2\n").unwrap());
+        assert_eq!(yaml.to_string(), format!("{src}\n---\nb: 2\n"));
+        assert_file_parser_shaped(&yaml);
+    }
+}
+
+/// The lines before the first document are its own, except for comments
+/// before its `---`.
+#[test]
+fn push_first_document_after_lines() {
+    for (src, pushed, expected) in [
+        ("# c\n", "b: 2\n", "# c\nb: 2\n"),
+        ("\n# c\n\n", "- 1\n", "\n# c\n\n- 1\n"),
+        ("# c\n", "--- b\n", "# c\n--- b\n"),
+        ("\n\n", "--- b\n", "\n\n--- b\n"),
+        ("# c", "b: 2\n", "# c\nb: 2\n"),
+    ] {
+        let yaml = YamlFile::from_str(src).unwrap();
+        yaml.push_document(Document::from_str(pushed).unwrap());
+        assert_eq!(yaml.to_string(), expected, "{src:?} + {pushed:?}");
+        assert_file_parser_shaped(&yaml);
+    }
+}
+
+#[test]
+fn push_document_into_empty_file() {
+    let yaml = YamlFile::new();
+    yaml.push_document(Document::from_str("b: 2\n").unwrap());
+    assert_file_edited(&yaml, "b: 2\n");
+}
+
+/// A snapshot is unaffected by later edits, which tree_eq notices.
+#[test]
+fn snapshot_and_tree_eq() {
+    let file = YamlFile::from_str("a: 1\n").unwrap();
+    let snapshot = file.snapshot();
+    assert!(file.tree_eq(&snapshot));
+    assert!(file.tree_eq(&YamlFile::from_str("a: 1\n").unwrap()));
+    file.set("a", 2);
+    assert!(!file.tree_eq(&snapshot));
+    assert_eq!(snapshot.to_string(), "a: 1\n");
+    assert_eq!(YamlFile::default().to_string(), "");
+}
+
+#[test]
+fn read_relaxed_and_from_path() {
+    let (file, errors) = YamlFile::read_relaxed("a: [\n".as_bytes()).unwrap();
+    assert_eq!(file.to_string(), "a: [\n");
+    assert_eq!(
+            errors,
+            ["2:1: Unclosed flow sequence. Expected: ']' to close sequence. Found: end of input. Context: in flow sequence. Suggestion: Add ']' to close the array, or check for missing commas between elements"]
+        );
+
+    let path = std::env::temp_dir().join(format!("yaml-edit-file-{}.yaml", std::process::id()));
+    std::fs::write(&path, "a: [\n").unwrap();
+    let (file, errors) = YamlFile::from_path_relaxed(&path).unwrap();
+    assert_eq!(file.to_string(), "a: [\n");
+    assert_eq!(errors.len(), 1);
+    assert!(matches!(
+        YamlFile::from_path(&path),
+        Err(yaml_edit::YamlError::Parse {
+            line: Some(2),
+            column: Some(1),
+            ..
+        })
+    ));
+    std::fs::write(&path, "a: 1\n").unwrap();
+    assert_eq!(YamlFile::from_path(&path).unwrap().to_string(), "a: 1\n");
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(
+        YamlFile::from_path_relaxed(&path).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert!(matches!(
+        YamlFile::from_path(&path),
+        Err(yaml_edit::YamlError::Io(_))
+    ));
+}
+
+#[test]
+fn set_and_insert_add_a_missing_document() {
+    for (src, expected) in [
+        ("", "k: v\n"),
+        ("# c\n", "# c\nk: v\n"),
+        ("%YAML 1.2\n", "%YAML 1.2\n---\nk: v\n"),
+    ] {
+        let set = |file: &YamlFile| file.set("k", "v");
+        let insert = |file: &YamlFile| file.insert_at_index(0, "k", "v");
+        for add in [&set as &dyn Fn(&YamlFile) -> bool, &insert] {
+            let file = YamlFile::from_str(src).unwrap();
+            assert!(add(&file), "{src:?}");
+            assert_file_edited(&file, expected);
+        }
+    }
+}
+
+/// `from_str_relaxed` keeps the tree of input with errors usable.
+#[test]
+fn from_str_relaxed() {
+    let unclosed_sequence = "Unclosed flow sequence. Expected: ']' to close sequence. \
+        Found: end of input. Context: in flow sequence. Suggestion: Add ']' to close the \
+        array, or check for missing commas between elements";
+    let unclosed_mapping = "Unclosed flow mapping. Expected: '}' to close mapping. \
+        Found: end of input. Context: in flow mapping. Suggestion: Add '}' to close the \
+        object, or check for missing commas between key-value pairs";
+    for (input, errors, expected) in [
+        ("key: value\n", vec![], &["map{key: value}"][..]),
+        (
+            "key: [a, b",
+            vec![format!("1:11: {unclosed_sequence}")],
+            &["map{key: [a, b]}"],
+        ),
+        (
+            "key: {a: 1",
+            vec![format!("1:11: {unclosed_mapping}")],
+            &["map{key: {a: 1}}"],
+        ),
+        (
+            "good: value\nbad: [unclosed\nalso_good: 42\n",
+            vec![format!("4:1: {unclosed_sequence}")],
+            &["map{good: value, bad: [{unclosed also_good: 42}]}"],
+        ),
+        ("", vec![], &[]),
+    ] {
+        let (file, found) = YamlFile::from_str_relaxed(input);
+        assert_eq!(found, errors, "{input:?}");
+        assert_eq!(file.to_string(), input);
+        let rendered: Vec<_> = file
+            .documents()
+            .map(|doc| {
+                render(
+                    &doc.syntax()
+                        .children()
+                        .find_map(YamlNode::from_syntax)
+                        .unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(rendered, expected, "{input:?}");
+    }
+}
+
+#[test]
+fn complex_document_stream() {
+    let yaml = r#"%YAML 1.2
+%TAG ! tag:example.com,2000:app/
+---
+template: &anchor
+  key: !custom value
+instance:
+  <<: *anchor
+  extra: data
+...
+%YAML 1.2
+---
+- item1
+- item2: nested
+...
+---
+literal: |
+  Block content
+  Multiple lines
+folded: >
+  Folded content
+  on multiple lines
+...
+"#;
+    let parsed = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(parsed.documents().count(), 3);
+    assert_eq!(parsed.to_string(), yaml);
+}
+
+#[test]
+fn edits_write_cr_line_breaks() {
+    let file = YamlFile::from_str("a:\r- 1\r").unwrap();
+    let doc = file.document().unwrap();
+    doc.as_mapping()
+        .unwrap()
+        .get_sequence("a")
+        .unwrap()
+        .push("b");
+    file.add_directive("%YAML 1.2");
+    file.push_document(Document::from_str("d: 4\n").unwrap());
+    assert_file_edited_valid(&file, "%YAML 1.2\r---\ra:\r- 1\r- b\r---\rd: 4\r");
 }

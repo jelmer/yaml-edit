@@ -4,7 +4,7 @@
 //! valid parts accessible and give a tree that edits still work on.
 
 mod common;
-use common::{keys, parse_with_errors, parse_with_violations};
+use common::{assert_strings, keys, parse, parse_with_errors, parse_with_violations};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::validator::{Rule, Severity, Validator};
@@ -1090,5 +1090,149 @@ fn legacy_yaml_1_1_warnings() {
         "a: \"0b1010\"\n",
     ] {
         assert_eq!(warn(clean), vec![], "{clean:?}");
+    }
+}
+
+/// Input that used to make the parser loop forever or run out of memory
+/// because a loop did not make progress on an unexpected token.
+#[test]
+fn terminates_on_stray_tokens() {
+    let unclosed_sequence = "Unclosed flow sequence. Expected: ']' to close sequence. \
+        Found: end of input. Context: in flow sequence. Suggestion: Add ']' to close the \
+        array, or check for missing commas between elements";
+    let unclosed_mapping = "Unclosed flow mapping. Expected: '}' to close mapping. \
+        Found: end of input. Context: in flow mapping. Suggestion: Add '}' to close the \
+        object, or check for missing commas between key-value pairs";
+    for (yaml, expected) in [
+        // parse_flow_sequence did not make progress on `}`.
+        (
+            "[}9[Z",
+            vec![
+                "1:2: Unexpected token in flow sequence: \"}\"".to_string(),
+                format!("1:6: {unclosed_sequence}"),
+            ],
+        ),
+        // Nor parse_flow_mapping on `]`.
+        (
+            "{]",
+            vec![
+                "1:2: Unexpected token in flow mapping: \"]\"".to_string(),
+                format!("1:3: {unclosed_mapping}"),
+            ],
+        ),
+        // The multi-line explicit-key scalar loop, when the indented
+        // continuation begins with a token parse_scalar() cannot consume
+        // (e.g. COMMENT).
+        ("?\u{18}\0\0\0\0\0\0\n\t#\t\t?\t", vec![]),
+        // parse_explicit_key_mapping's continuation loop has to re-enter
+        // explicit-key handling when current is `?` instead of calling
+        // parse_mapping_key_value_pair (which cannot consume a `?`).
+        (
+            "<<?: ?:  \n<<\n ?:    : 0\n:@",
+            vec!["2:1: Content after the document could not be parsed: \"<<\"".to_string()],
+        ),
+        // The mapping loop after a complex key, when is_mapping_key() is
+        // fooled by `]:`.
+        (
+            "[%:%:]: \n]: \n\n",
+            vec!["2:1: Unexpected token in mapping: \"]\"".to_string()],
+        ),
+        // parse_mapping_with_base_indent, when is_mapping_key() is fooled
+        // by `}:` (or `]:`) appearing as a stray delimiter: the
+        // missing-colon recovery inserts a synthetic token without
+        // advancing the input.
+        (
+            "\0:\n\n}:\n\n{",
+            vec![
+                "3:1: Unexpected token in mapping: \"}\"".to_string(),
+                "5:1: Content after the document could not be parsed: \"{\"".to_string(),
+            ],
+        ),
+    ] {
+        let expected: Vec<&str> = expected.iter().map(String::as_str).collect();
+        parse_with_errors(yaml, &expected);
+    }
+}
+
+/// The parser leaves undefined aliases, and a line indented under a plain
+/// value, which continues it, to the validator.
+#[test]
+fn accepted_by_the_parser() {
+    for yaml in [
+        "key: *undefined",
+        "key: value\n  invalid indentation for key",
+    ] {
+        parse_with_errors(yaml, &[]);
+    }
+    assert_strings(
+        &parse("key: value\n  invalid indentation for key"),
+        &[("key", "value invalid indentation for key")],
+    );
+}
+
+#[test]
+fn block_scalar_error_recovery() {
+    // `bad_block: |` has no indented body, so it is an empty scalar and
+    // `incomplete_key` is not its content. That bare line makes the rest
+    // invalid YAML -- both saphyr and PyYAML reject this input -- and the
+    // lines after it cannot be attached to the document at all.
+    let yaml = r#"good_key: value
+bad_block: |
+incomplete_key
+another_good: works
+"#;
+    parse_with_errors(
+        yaml,
+        &["3:1: Content after the document could not be parsed: \"incomplete_key\""],
+    );
+    assert_eq!(
+        YamlFile::from_str(yaml).unwrap_err().to_string(),
+        "Parse error at line 3, column 1: Content after the document could not be parsed: \
+         \"incomplete_key\""
+    );
+}
+
+/// Deep nesting is cut off with an error after the nesting limit, rather
+/// than blowing the stack or memory.
+#[test]
+fn deep_nesting_is_cut_off() {
+    let mut block = String::new();
+    for i in 0..2000 {
+        block.push_str(&"  ".repeat(i));
+        block.push_str("k:\n");
+    }
+    block.push_str(&"  ".repeat(2000));
+    block.push_str("v\n");
+    for input in [
+        "{".repeat(2000),
+        "[".repeat(2000),
+        block,
+        format!("{}v", "&x ".repeat(2000)),
+    ] {
+        let parse = Parse::parse_yaml(&input);
+        let _ = parse.tree();
+        assert!(parse.has_errors());
+    }
+}
+
+/// Past the nesting limit every key, value and sequence entry still
+/// holds a node.
+#[test]
+fn deeply_nested_slots_hold_a_node() {
+    for input in ["{".repeat(300), "{a: ".repeat(300), "[".repeat(300)] {
+        let parse = yaml_edit::Parse::parse_yaml(&input);
+        let empty: Vec<_> = parse
+            .tree()
+            .syntax()
+            .descendants()
+            .filter(|n| {
+                matches!(
+                    n.kind(),
+                    SyntaxKind::KEY | SyntaxKind::VALUE | SyntaxKind::SEQUENCE_ENTRY
+                ) && n.first_child().is_none()
+            })
+            .map(|n| n.kind())
+            .collect();
+        assert_eq!(empty, Vec::<SyntaxKind>::new(), "{input:?}");
     }
 }

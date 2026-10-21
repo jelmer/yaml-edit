@@ -1323,3 +1323,29 @@ fn set_with_field_order_lintian_brush() {
         "---\nName: blah\nBug-Database: https://github.com/example/blah/issues\nBug-Submit: https://github.com/example/blah/issues/new\nRepository: https://github.com/example/blah.git\nRepository-Browse: https://github.com/example/blah\nSecurity-Contact: https://github.com/example/blah/tree/HEAD/SECURITY.md\n",
     );
 }
+
+#[test]
+fn set_reports_whether_the_key_was_set() {
+    let file = YamlFile::from_str("a: 1\n").unwrap();
+    assert!(file.set("b", 2));
+    assert_file_edited(&file, "a: 1\nb: 2\n");
+
+    for yaml in ["scalar\n", "- a\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert!(!file.set("b", 2), "{yaml:?}");
+        assert_cst_ok(&file);
+        assert_eq!(file.to_string(), yaml);
+    }
+}
+
+#[test]
+fn editing_operations() {
+    let yaml = YamlFile::from_str("name: old-name\nversion: 1.0.0").unwrap();
+    let doc = yaml.document().unwrap();
+    doc.set("name", "new-name");
+    assert_cst_ok(&yaml);
+    doc.set("version", "2.0.0");
+    assert_file_edited(&yaml, "name: new-name\nversion: 2.0.0");
+    assert_eq!(doc.get_string("name"), Some("new-name".to_string()));
+    assert_eq!(doc.get_string("version"), Some("2.0.0".to_string()));
+}

@@ -26,11 +26,15 @@
 mod common;
 use common::{
     assert_cst_ok, assert_edited, assert_file_cst_ok, assert_file_edited,
-    assert_file_parser_shaped, assert_parser_shaped, check_edit, edit_file, root_mapping,
+    assert_file_parser_shaped, assert_parser_shaped, check_edit, edit_file, render_documents,
+    root_mapping,
 };
 use std::str::FromStr;
 use yaml_edit::path::YamlPath;
-use yaml_edit::{Document, Mapping, Sequence, YamlFile, YamlNode};
+use yaml_edit::{
+    Document, Mapping, MappingBuilder, ScalarValue, Sequence, SequenceBuilder, YamlFile, YamlNode,
+    YamlValue,
+};
 
 fn item(d: &Document) -> YamlNode {
     d.as_sequence().unwrap().get(0).unwrap()
@@ -1959,4 +1963,276 @@ fn remove_path_takes_one_duplicate_occurrence() {
     assert_edited(&doc, "a: 2\nb: 3\n");
     let b = doc.try_get_path("b").unwrap();
     assert_eq!(b.as_scalar().unwrap().as_string(), "3");
+}
+
+#[test]
+fn insert_at_index_reports_a_non_mapping_root() {
+    let file = YamlFile::from_str("- a\n").unwrap();
+    assert!(!file.insert_at_index(0, "k", "v"));
+    assert_cst_ok(&file);
+    assert_eq!(file.to_string(), "- a\n");
+}
+
+#[test]
+fn insert_with_yamlvalue_positioning() {
+    let yaml = "name: project\nversion: 1.0\nactive: true";
+    let parsed = YamlFile::from_str(yaml).unwrap();
+    let doc = parsed.document().expect("Should have a document");
+
+    // Test positioning with different value types
+
+    // Position after a string value
+    let success = doc.insert_after("name", "description", "A sample project");
+    assert_cst_ok(&doc);
+    assert!(success, "Should find string key");
+
+    // Position after a numeric value
+    let success = doc.insert_after(1.0, "build", "gradle");
+    assert_cst_ok(&doc);
+    assert!(
+        !success,
+        "Should not find numeric key (1.0) when actual key is string 'version'"
+    );
+
+    // Position after a boolean value
+    let success = doc.insert_after(true, "test", "enabled");
+    assert_cst_ok(&doc);
+    assert!(
+        !success,
+        "Should not find boolean key (true) when actual key is string 'active'"
+    );
+
+    // But string representation should work
+    let bool_string_key = "true";
+    let success = doc.insert_after(bool_string_key, "test_mode", "development");
+    assert_cst_ok(&doc);
+    assert!(!success, "Should not find 'true' key when value is true");
+
+    let output = doc.to_string();
+
+    // Verify exact output - should preserve original structure and only insert description after name
+    let expected = "name: project\ndescription: A sample project\nversion: 1.0\nactive: true";
+    assert_eq!(output, expected);
+}
+
+/// Check that `doc` renders as `expected`, has the tree the parser builds
+/// for that, and reads back as `rendered`.
+#[track_caller]
+fn assert_inserted(doc: &Document, expected: &str, rendered: &str) {
+    assert_edited(doc, expected);
+    assert_eq!(render_documents(expected), [rendered]);
+}
+
+#[test]
+fn insert_built_collections() {
+    let doc = Document::from_str("name: project\nversion: 1.0.0").unwrap();
+    let features = SequenceBuilder::new()
+        .item("feature1")
+        .item("feature2")
+        .item("feature3")
+        .build_document()
+        .as_sequence()
+        .unwrap();
+    assert!(doc.insert_after("name", "features", features));
+    assert_inserted(
+        &doc,
+        "name: project\nfeatures:\n- feature1\n- feature2\n- feature3\nversion: 1.0.0",
+        "map{name: project, features: seq[feature1, feature2, feature3], version: 1.0.0}",
+    );
+
+    let doc = Document::from_str("name: project\nversion: 1.0.0").unwrap();
+    let database = MappingBuilder::new()
+        .pair("host", "localhost")
+        .pair("port", 5432)
+        .pair("database", "mydb")
+        .build_document()
+        .as_mapping()
+        .unwrap();
+    assert!(doc.insert_before("version", "database", database));
+    assert_inserted(
+        &doc,
+        "name: project\ndatabase:\n  host: localhost\n  port: 5432\n  database: mydb\nversion: 1.0.0",
+        "map{name: project, database: map{host: localhost, port: 5432, database: mydb}, \
+         version: 1.0.0}",
+    );
+
+    let doc = Document::from_str("name: project").unwrap();
+    let config = MappingBuilder::new()
+        .mapping("server", |m| m.pair("host", "0.0.0.0").pair("port", 8080))
+        .pair("debug", true)
+        .sequence("features", |s| s.item("api").item("web").item("cli"))
+        .build_document()
+        .as_mapping()
+        .unwrap();
+    doc.insert_after("name", "config", config);
+    assert_inserted(
+        &doc,
+        "name: project\nconfig:\n  server:\n    host: 0.0.0.0\n    port: 8080\n  debug: true\n  features:\n    - api\n    - web\n    - cli",
+        "map{name: project, config: map{server: map{host: 0.0.0.0, port: 8080}, debug: true, \
+         features: seq[api, web, cli]}}",
+    );
+
+    let doc = Document::from_str("name: project").unwrap();
+    let nested_data = SequenceBuilder::new()
+        .item("item1")
+        .mapping(|m| {
+            m.sequence("config", |s| s.item("debug").item(true).item(8080))
+                .pair("name", "service")
+        })
+        .item(42)
+        .build_document()
+        .as_sequence()
+        .unwrap();
+    doc.insert_after("name", "nested_data", nested_data);
+    assert_inserted(
+        &doc,
+        "name: project\nnested_data:\n- item1\n-\n  config:\n    - debug\n    - true\n    - 8080\n  name: service\n- 42",
+        "map{name: project, nested_data: seq[item1, map{config: seq[debug, true, 8080], \
+         name: service}, 42]}",
+    );
+}
+
+#[test]
+fn insert_scalars_in_order() {
+    let doc = Document::from_str("name: project").unwrap();
+    doc.insert_at_index(1, "version", "1.0.0");
+    assert_cst_ok(&doc);
+    doc.insert_at_index(2, "active", true);
+    assert_cst_ok(&doc);
+    doc.insert_at_index(3, "count", 42);
+    assert_cst_ok(&doc);
+    let features = SequenceBuilder::new()
+        .item("auth")
+        .item("logging")
+        .build_document()
+        .as_sequence()
+        .unwrap();
+    doc.insert_at_index(4, "features", features);
+    assert_inserted(
+        &doc,
+        "name: project\nversion: 1.0.0\nactive: true\ncount: 42\nfeatures:\n- auth\n- logging",
+        "map{name: project, version: 1.0.0, active: true, count: 42, features: seq[auth, logging]}",
+    );
+
+    let doc = Document::from_str("name: project").unwrap();
+    doc.insert_after("name", "null_value", ScalarValue::null());
+    assert_cst_ok(&doc);
+    doc.insert_after("null_value", "empty_string", "");
+    assert_cst_ok(&doc);
+    doc.insert_after("empty_string", "number", 1.234);
+    assert_cst_ok(&doc);
+    doc.insert_after("number", "boolean", false);
+    assert_inserted(
+        &doc,
+        "name: project\nnull_value: null\nempty_string: ''\nnumber: 1.234\nboolean: false",
+        "map{name: project, null_value: ~, empty_string: , number: 1.234, boolean: false}",
+    );
+
+    let doc = Document::from_str("first: 1\nthird: 3\nfifth: 5").unwrap();
+    doc.insert_after("first", "second", 2);
+    assert_cst_ok(&doc);
+    doc.insert_before("fifth", "fourth", 4);
+    assert_inserted(
+        &doc,
+        "first: 1\nsecond: 2\nthird: 3\nfourth: 4\nfifth: 5",
+        "map{first: 1, second: 2, third: 3, fourth: 4, fifth: 5}",
+    );
+}
+
+/// Sets, ordered mappings and pairs are written with their tags.
+#[test]
+fn insert_special_collections() {
+    let doc = Document::from_str("name: project").unwrap();
+    doc.insert_after(
+        "name",
+        "tags",
+        std::collections::BTreeSet::from(["production", "database", "web"]),
+    );
+    assert_inserted(
+        &doc,
+        "name: project\ntags: !!set\n  database: null\n  production: null\n  web: null",
+        "map{name: project, tags: !!set map{database: ~, production: ~, web: ~}}",
+    );
+
+    let doc = Document::from_str("name: project").unwrap();
+    let ordered_steps = vec![
+        ("compile".to_string(), YamlValue::from("gcc main.c")),
+        ("test".to_string(), YamlValue::from("./a.out test")),
+        (
+            "package".to_string(),
+            YamlValue::from("tar -czf app.tar.gz ."),
+        ),
+    ];
+    doc.insert_after(
+        "name",
+        "build_steps",
+        YamlValue::from_ordered_mapping(ordered_steps),
+    );
+    assert_inserted(
+        &doc,
+        "name: project\nbuild_steps: !!omap\n  - compile: gcc main.c\n  - test: ./a.out test\n  - package: tar -czf app.tar.gz .",
+        "map{name: project, build_steps: !!omap seq[map{compile: gcc main.c}, \
+         map{test: ./a.out test}, map{package: tar -czf app.tar.gz .}]}",
+    );
+
+    // Pairs allow duplicate keys.
+    let doc = Document::from_str("name: project").unwrap();
+    let connection_attempts = vec![
+        ("server".to_string(), YamlValue::from("primary.db")),
+        ("server".to_string(), YamlValue::from("secondary.db")),
+        ("server".to_string(), YamlValue::from("tertiary.db")),
+        ("timeout".to_string(), YamlValue::from(30)),
+    ];
+    doc.insert_after(
+        "name",
+        "connections",
+        YamlValue::from_pairs(connection_attempts),
+    );
+    assert_inserted(
+        &doc,
+        "name: project\nconnections: !!pairs\n  - server: primary.db\n  - server: secondary.db\n  - server: tertiary.db\n  - timeout: 30",
+        "map{name: project, connections: !!pairs seq[map{server: primary.db}, \
+         map{server: secondary.db}, map{server: tertiary.db}, map{timeout: 30}]}",
+    );
+}
+
+#[test]
+fn insert_empty_collections() {
+    let doc = Document::from_str("name: project").unwrap();
+    let empty_list = YamlFile::from_str("[]").unwrap();
+    doc.insert_after(
+        "name",
+        "empty_list",
+        empty_list.document().unwrap().as_sequence().unwrap(),
+    );
+    assert_inserted(
+        &doc,
+        "name: project\nempty_list: []",
+        "map{name: project, empty_list: []}",
+    );
+
+    let doc = Document::from_str("name: project").unwrap();
+    let empty_map = YamlFile::from_str("{}").unwrap();
+    doc.insert_after(
+        "name",
+        "empty_map",
+        empty_map.document().unwrap().as_mapping().unwrap(),
+    );
+    assert_inserted(
+        &doc,
+        "name: project\nempty_map: {}",
+        "map{name: project, empty_map: {}}",
+    );
+
+    let doc = Document::from_str("name: project").unwrap();
+    doc.insert_after(
+        "name",
+        "empty_set",
+        std::collections::BTreeSet::<&str>::new(),
+    );
+    assert_inserted(
+        &doc,
+        "name: project\nempty_set: !!set {}",
+        "map{name: project, empty_set: !!set {}}",
+    );
 }

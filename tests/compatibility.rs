@@ -59,7 +59,7 @@ fn repeated_empty_keys() {
         assert_eq!(render_documents(yaml), ["seq[map{~: ~, ~: ~}]"], "{yaml:?}");
         assert_eq!(
             violations(&parse_clean(yaml)),
-            strings(&[("Duplicate key: \"\" (semantically equal to \"\")", "2:3")]),
+            strings(&[("Duplicate key: null (semantically equal to null)", "2:3")]),
             "{yaml:?}"
         );
     }

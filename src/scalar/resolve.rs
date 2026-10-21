@@ -220,8 +220,9 @@ impl ScalarValue {
     /// style.
     ///
     /// The core schema tags `!!int`, `!!float`, `!!bool` and `!!null` set
-    /// the type when the content is a valid spelling of it; any other tag, or
-    /// content the tag cannot resolve, gives a string.
+    /// the type when the content is a valid spelling of it, and
+    /// `!!timestamp`, `!!regex` and `!!binary` set theirs; any other tag, or
+    /// content a core schema tag cannot resolve, gives a string.
     pub(crate) fn from_tagged(tagged: &crate::yaml::TaggedNode) -> Option<Self> {
         let scalar = Self::from_scalar(&tagged.value()?);
         Some(match tagged.tag() {
@@ -239,7 +240,14 @@ impl ScalarValue {
     pub(crate) fn with_resolved_tag(self, tag: String) -> Self {
         let scalar_type = match core_tag_type(&tag) {
             Some(t) if core_tag_accepts(t, &self.value) => t.into(),
-            _ => ScalarType::String,
+            Some(_) => ScalarType::String,
+            None => match crate::tag::normalize(&tag).as_ref() {
+                crate::tag::TIMESTAMP => ScalarType::Timestamp,
+                crate::tag::REGEX => ScalarType::Regex,
+                #[cfg(feature = "base64")]
+                crate::tag::BINARY => ScalarType::Binary,
+                _ => ScalarType::String,
+            },
         };
         Self {
             scalar_type,

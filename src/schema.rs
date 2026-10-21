@@ -481,7 +481,7 @@ impl SchemaValidator {
                 .or_else(|| tagged_node.as_mapping().map(|m| m.syntax().clone()))
             {
                 self.check_node(&content, path, coerce_only, errors);
-            } else if let Some(value) = tagged_scalar_value(&tagged_node) {
+            } else if let Some(value) = ScalarValue::from_tagged(&tagged_node) {
                 self.check_scalar(&value, true, path, coerce_only, errors);
             }
         } else if let Some(sequence) = extract::<Sequence>(node) {
@@ -525,19 +525,6 @@ impl SchemaValidator {
         };
         errors.extend(result.err());
     }
-}
-
-/// The value of a tagged scalar, typed by its tag.
-fn tagged_scalar_value(tagged_node: &TaggedNode) -> Option<ScalarValue> {
-    let value = ScalarValue::from_tagged(tagged_node)?;
-    let scalar_type = match tagged_node.normalized_tag().as_deref() {
-        Some(crate::tag::TIMESTAMP) => ScalarType::Timestamp,
-        Some(crate::tag::REGEX) => ScalarType::Regex,
-        #[cfg(feature = "base64")]
-        Some(crate::tag::BINARY) => ScalarType::Binary,
-        _ => return Some(value),
-    };
-    Some(value.with_type(scalar_type))
 }
 
 #[cfg(test)]

@@ -1,16 +1,356 @@
-//! Comments around a value that is replaced: those inside it go with it,
-//! the key-line or dash-line comment stays with the entry, and everything
-//! outside the value is left as it was.
+//! Comments and blank lines: where the parser puts them, and how edits keep
+//! them. Comments around a value that is replaced: those inside it go with
+//! it, the key-line or dash-line comment stays with the entry, and
+//! everything outside the value is left as it was.
 
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::path::YamlPath;
-use yaml_edit::{debug, Mapping, MappingBuilder, MappingEntry, Sequence, YamlFile, YamlNode};
+use yaml_edit::{
+    debug, Document, Mapping, MappingBuilder, MappingEntry, Sequence, YamlFile, YamlNode, YamlValue,
+};
 
 mod common;
 
+/// Parse `yaml` and check it round trips exactly.
 #[track_caller]
-fn assert_parser_shaped(file: &YamlFile, expected: &str, src: &str) {
+fn parse(yaml: &str) -> YamlFile {
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    file
+}
+
+fn text(node: &YamlNode) -> String {
+    node.as_scalar().unwrap().as_string()
+}
+
+/// Comments in flow collections round trip and leave the content as it is
+/// without them.
+#[test]
+fn comments_in_flow_collections() {
+    for (yaml, without_comments) in [
+        ("[a, # comment\n b]", "[a, b]"),
+        (
+            "{key1: value1, # comment\n key2: value2}",
+            "{key1: value1, key2: value2}",
+        ),
+        ("[a, # c1\n b, # c2\n c]", "[a, b, c]"),
+        ("[a, b # comment\n]", "[a, b]"),
+        ("{key: # comment\n value}", "{key: value}"),
+        ("[# comment\na, b]", "[a, b]"),
+        ("{# comment\nkey: value}", "{key: value}"),
+        ("[a,# comment\nb]", "[a, b]"),
+        ("[[a,# c1\nb],# c2\nc]", "[[a, b], c]"),
+        // YAML spec example 6.1 (test 6HB6).
+        (
+            r#"Flow style: [    # Leading spaces
+   By two,        # in flow style
+  Also by two,    # are neither
+  	Still by two   # content nor
+    ]             # indentation."#,
+            "Flow style: [By two, Also by two, Still by two]",
+        ),
+    ] {
+        parse(yaml);
+        assert_eq!(
+            YamlValue::parse_raw(yaml).unwrap(),
+            YamlValue::parse_raw(without_comments).unwrap(),
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn comments_after_multi_line_flow_entries() {
+    let file = parse(
+        r#"flow_sequence: [
+    item1,  # Comment 1
+    item2,  # Comment 2
+    item3   # Comment 3
+]
+flow_mapping: {
+    key1: value1,  # Comment A
+    key2: value2,  # Comment B
+    key3: value3   # Comment C
+}"#,
+    );
+    let root = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(root.len(), 2);
+
+    let seq = root.get_sequence("flow_sequence").unwrap();
+    let items: Vec<String> = seq.values().map(|item| text(&item)).collect();
+    assert_eq!(items, ["item1", "item2", "item3"]);
+
+    let map = root.get_mapping("flow_mapping").unwrap();
+    let entries: Vec<(String, String)> = map.iter().map(|(k, v)| (text(&k), text(&v))).collect();
+    assert_eq!(
+        entries,
+        [("key1", "value1"), ("key2", "value2"), ("key3", "value3")]
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+    );
+}
+
+#[test]
+fn comment_forms() {
+    for (yaml, key, value) in [
+        // The spec allows a comment with nothing after the `#`.
+        ("key: value  #  \n", "key", "value"),
+        ("key: value\n# Final comment", "key", "value"),
+        // A `#` inside a quoted string is not a comment.
+        (
+            "text: \"This is # not a comment\"\n",
+            "text",
+            "This is # not a comment",
+        ),
+        ("key: value  # 🎉 important! 日本語\n", "key", "value"),
+        ("key: value  ## comment ### more\n", "key", "value"),
+        (
+            "%YAML 1.2 # this is a comment\n---\nkey: value\n",
+            "key",
+            "value",
+        ),
+    ] {
+        let file = parse(yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(text(&mapping.get(key).unwrap()), value, "{yaml:?}");
+    }
+}
+
+/// Edit the root of `source` with `edit`, check the result has the shape a
+/// re-parse of its text has, and return the text.
+#[track_caller]
+fn edited(source: &str, edit: impl FnOnce(&Document)) -> String {
+    let doc = Document::from_str(source).unwrap();
+    edit(&doc);
+    common::assert_parser_shaped(&doc);
+    doc.to_string()
+}
+
+/// A comment line between two flow entries describes the one below it, as
+/// in a block collection: it moves with that entry, and stays when the
+/// entry above is removed.
+#[test]
+fn comment_line_belongs_to_flow_entry_below() {
+    let source = "{\n  a: 1,\n  # about b\n  b: 2\n}\n";
+    let moved = "{\n  # about b\n  b: 2,\n  a: 1\n}\n";
+    assert_eq!(
+        edited(source, |d| d
+            .as_mapping()
+            .unwrap()
+            .reorder_fields(["b", "a"])),
+        moved
+    );
+    assert_eq!(
+        edited(source, |d| {
+            assert!(d.as_mapping().unwrap().move_after("b", "a", 1));
+        }),
+        moved
+    );
+    assert_eq!(
+        edited(source, |d| {
+            d.as_mapping().unwrap().remove("a").unwrap();
+        }),
+        "{\n  # about b\n  b: 2\n}\n"
+    );
+    assert_eq!(
+        edited("[\n  a,\n  # c\n  b\n]\n", |d| {
+            d.as_sequence().unwrap().remove(0).unwrap();
+        }),
+        "[\n  # c\n  b\n]\n"
+    );
+}
+
+/// Blank lines between entries leave the entries after them siblings of
+/// the ones before, rather than nesting them.
+#[test]
+fn root_mapping_with_blank_lines() {
+    let file = parse(
+        r#"
+first: value1
+
+second: value2
+
+third: value3
+"#,
+    );
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let entries: Vec<(String, String)> =
+        mapping.iter().map(|(k, v)| (text(&k), text(&v))).collect();
+    assert_eq!(
+        entries,
+        [
+            ("first", "value1"),
+            ("second", "value2"),
+            ("third", "value3")
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+    );
+}
+
+#[test]
+fn nested_mapping_with_blank_lines() {
+    let file = parse(
+        r#"
+config:
+  database:
+    host: localhost
+    port: 5432
+
+  cache:
+    host: redis
+    port: 6379
+
+  logging:
+    level: info
+"#,
+    );
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.len(), 1);
+    let config = mapping.get_mapping("config").unwrap();
+    assert_eq!(config.len(), 3);
+    for (path, value) in [
+        ("config.database.host", "localhost"),
+        ("config.database.port", "5432"),
+        ("config.cache.host", "redis"),
+        ("config.cache.port", "6379"),
+        ("config.logging.level", "info"),
+    ] {
+        let doc = file.document().unwrap();
+        assert_eq!(text(&doc.try_get_path(path).unwrap()), value, "{path}");
+    }
+}
+
+/// The case that first showed blank lines nesting the entries after them.
+#[test]
+fn mapping_with_anchors_and_blank_lines() {
+    let file = parse(
+        r#"
+defaults: &defaults
+  timeout: 30
+  retries: 3
+
+production:
+  <<: *defaults
+  host: prod.example.com
+
+development:
+  <<: *defaults
+  host: dev.example.com
+"#,
+    );
+    let doc = file.document().unwrap();
+    assert_eq!(doc.as_mapping().unwrap().len(), 3);
+    for (path, value) in [
+        ("defaults.timeout", "30"),
+        ("production.host", "prod.example.com"),
+        ("development.host", "dev.example.com"),
+    ] {
+        assert_eq!(text(&doc.try_get_path(path).unwrap()), value, "{path}");
+    }
+}
+
+#[test]
+fn anchor_with_no_value_followed_by_alias() {
+    let file = parse(
+        r#"
+anchor: &test
+ref: *test
+another: value
+"#,
+    );
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.len(), 3);
+    assert!(mapping
+        .get("anchor")
+        .unwrap()
+        .as_scalar()
+        .unwrap()
+        .is_null());
+    let ref_val = mapping.get("ref").unwrap();
+    assert!(ref_val.is_alias());
+    assert_eq!(ref_val.as_alias().unwrap().name(), "test");
+    assert_eq!(text(&mapping.get("another").unwrap()), "value");
+}
+
+/// <https://github.com/jelmer/yaml-edit/issues/26>
+#[test]
+fn issue_26_blank_line_between_key_and_nested_value() {
+    let file = parse("foo: bar\n\nbaz:\n\n  qux: ~\n");
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.len(), 2);
+    assert_eq!(text(&mapping.get("foo").unwrap()), "bar");
+    let baz = mapping.get_mapping("baz").unwrap();
+    assert_eq!(baz.len(), 1);
+    assert_eq!(text(&baz.get("qux").unwrap()), "~");
+}
+
+/// From a comment on issue #26: a key with no value, followed by one at the
+/// same indent.
+#[test]
+fn issue_26_null_value_without_blank_line() {
+    let file = parse("foo:\n  bar1: 42\n  bar2:\n  bar3: \"hello\"\n");
+    let foo = file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("foo")
+        .unwrap();
+    assert_eq!(foo.len(), 3);
+    assert_eq!(text(&foo.get("bar1").unwrap()), "42");
+    assert!(foo.get("bar2").unwrap().as_scalar().unwrap().is_null());
+    assert_eq!(text(&foo.get("bar3").unwrap()), "hello");
+}
+
+/// A blank line carrying trailing whitespace shallower than the block it sits
+/// in must not end that block. The dedent check compared the line's INDENT
+/// against the base indent without noticing the line was blank, so `- y` and
+/// everything after it was swept into an ERROR node while `from_str` still
+/// reported success.
+#[test]
+fn underindented_blank_line_inside_block() {
+    let file = parse("a:\n  - x\n \n  - y\n");
+    let seq = file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_sequence("a")
+        .unwrap();
+    let items: Vec<String> = seq.values().map(|v| text(&v)).collect();
+    assert_eq!(items, ["x", "y"]);
+
+    let file = parse("a:\n  b: x\n \n  c: y\n");
+    let inner = file
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("a")
+        .unwrap();
+    let entries: Vec<(String, String)> = inner.iter().map(|(k, v)| (text(&k), text(&v))).collect();
+    assert_eq!(
+        entries,
+        [("b", "x"), ("c", "y")].map(|(k, v)| (k.to_string(), v.to_string()))
+    );
+}
+
+/// Every blank-line indent shallower than the block must behave the same, so
+/// sweep the range rather than pinning the one width the fuzzer happened to
+/// find.
+#[test]
+fn blank_line_indent_never_ends_a_block() {
+    for width in 0..6 {
+        let yaml = format!("a:\n    - x\n{}\n    - y\n", " ".repeat(width));
+        let file = parse(&yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let a = mapping.get_sequence("a").unwrap();
+        assert_eq!(a.len(), 2, "blank line indented by {width}");
+    }
+}
+
+#[track_caller]
+fn assert_edited(file: &YamlFile, expected: &str, src: &str) {
     assert_eq!(file.to_string(), expected, "{src:?}");
     common::assert_file_parser_shaped(file);
 }
@@ -97,7 +437,7 @@ fn mapping_set_scalar_over_commented_value() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, path).set("a", 5);
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
 }
 
@@ -118,7 +458,7 @@ fn mapping_set_block_over_commented_value() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, "").set("a", block_mapping());
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
 }
 
@@ -150,7 +490,7 @@ fn sequence_set_over_commented_value() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         sequence_at(&file, "").set(0, 5);
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
 }
 
@@ -165,12 +505,12 @@ fn set_over_block_scalar_ending_in_spaces() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         sequence_at(&file, "").set(0, 5);
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
     for (src, expected) in [("a: |+\n   ", "a: 5\n"), ("a: |\n  a\n   ", "a: 5\n")] {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, "").set("a", 5);
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
 }
 
@@ -179,11 +519,11 @@ fn set_to_empty_node_leaves_no_trailing_space() {
     let null = value_of("v:\n");
     let file = YamlFile::from_str("- 1\n- 2\n").unwrap();
     sequence_at(&file, "").set(0, &null);
-    assert_parser_shaped(&file, "-\n- 2\n", "- 1\n- 2\n");
+    assert_edited(&file, "-\n- 2\n", "- 1\n- 2\n");
 
     let file = YamlFile::from_str("a: 1\nb: 2\n").unwrap();
     mapping_at(&file, "").set("a", &null);
-    assert_parser_shaped(&file, "a:\nb: 2\n", "a: 1\nb: 2\n");
+    assert_edited(&file, "a:\nb: 2\n", "a: 1\nb: 2\n");
 }
 
 #[test]
@@ -199,7 +539,7 @@ fn nested_sequence_set_over_commented_value() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         sequence_at(&file, "a").set(0, 5);
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
 }
 
@@ -219,7 +559,7 @@ fn sequence_set_block_over_commented_value() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         sequence_at(&file, "").set(0, block_mapping());
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
 }
 
@@ -233,7 +573,7 @@ fn sequence_set_block_scalar_keeps_dash_line_comment() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         sequence_at(&file, "").set(0, value_of("v: |\n  text\n"));
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
 }
 
@@ -272,7 +612,7 @@ fn block_scalar_header_comment_displaces_key_line_comment() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, path).set("k", value_of("v: |  # src\n  text\n"));
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
     for (value, expected) in [
         (
@@ -288,30 +628,25 @@ fn block_scalar_header_comment_displaces_key_line_comment() {
         let src = "k: 1  # note\n";
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, "").set("k", value_of(value));
-        assert_parser_shaped(&file, expected, value);
+        assert_edited(&file, expected, value);
     }
 }
 
 #[test]
 fn sequence_block_scalar_header_comment_displaces_dash_line_comment() {
-    for (src, path, expected) in [
-        ("- 1  # c\n- 2\n", "", "# c\n- |  # src\n  text\n- 2\n"),
-        ("- 0\n- 1  # c\n", "", "- 0\n# c\n- |  # src\n  text\n"),
+    for (src, path, index, expected) in [
+        ("- 1  # c\n- 2\n", "", 0, "# c\n- |  # src\n  text\n- 2\n"),
+        ("- 0\n- 1  # c\n", "", 1, "- 0\n# c\n- |  # src\n  text\n"),
         (
             "a:\n  - 1  # c\n",
             "a",
+            0,
             "a:\n  # c\n  - |  # src\n    text\n",
         ),
     ] {
         let file = YamlFile::from_str(src).unwrap();
-        let index = sequence_at(&file, path).len() - 1;
-        let index = if path.is_empty() && src.starts_with("- 1") {
-            0
-        } else {
-            index
-        };
         sequence_at(&file, path).set(index, value_of("v: |  # src\n  text\n"));
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
 }
 
@@ -367,7 +702,7 @@ fn lines_after_entry_follow_the_new_value() {
         } else {
             mapping.set("a", block_mapping());
         }
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
 }
 
@@ -388,7 +723,7 @@ fn set_path_over_commented_value() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         file.document().unwrap().try_set_path(path, 5).unwrap();
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
 }
 
@@ -416,10 +751,6 @@ fn detached_entry_set_value() {
         assert_eq!(entry.to_string(), expected, "{src:?}");
         debug::validate_tree(entry.syntax()).unwrap();
     }
-}
-
-fn scalar_string(node: &YamlNode) -> String {
-    node.as_scalar().unwrap().as_string()
 }
 
 /// The parser reads the blank lines after a block scalar as part of its
@@ -511,11 +842,11 @@ fn blank_lines_after_new_block_scalar() {
         let file = YamlFile::from_str(src).unwrap();
         let source = value_of(value);
         mapping_at(&file, path).set("a", &source);
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
         let set = mapping_at(&YamlFile::from_str(expected).unwrap(), path)
             .get("a")
             .unwrap();
-        assert_eq!(scalar_string(&set), scalar_string(&source), "{src:?}");
+        assert_eq!(text(&set), text(&source), "{src:?}");
     }
 
     for (src, value, expected) in [
@@ -526,11 +857,11 @@ fn blank_lines_after_new_block_scalar() {
         let file = YamlFile::from_str(src).unwrap();
         let source = value_of(value);
         sequence_at(&file, "").set(0, &source);
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
         let set = sequence_at(&YamlFile::from_str(expected).unwrap(), "")
             .get(0)
             .unwrap();
-        assert_eq!(scalar_string(&set), scalar_string(&source), "{src:?}");
+        assert_eq!(text(&set), text(&source), "{src:?}");
     }
 }
 
@@ -544,12 +875,12 @@ fn set_over_block_mapping_with_flow_key() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, "").set("a", 5);
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
     let src = "- {x: 1}: 1\n\n- 2\n";
     let file = YamlFile::from_str(src).unwrap();
     file.document().unwrap().as_sequence().unwrap().set(0, 5);
-    assert_parser_shaped(&file, "- 5\n\n- 2\n", src);
+    assert_edited(&file, "- 5\n\n- 2\n", src);
 }
 
 /// The parser keeps the blank lines after an empty value in it, where it
@@ -573,10 +904,10 @@ fn blank_lines_after_empty_value() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, path).set("a", 5);
-        assert_parser_shaped(&file, expected_scalar, src);
+        assert_edited(&file, expected_scalar, src);
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, path).set("a", block_mapping());
-        assert_parser_shaped(&file, expected_block, src);
+        assert_edited(&file, expected_block, src);
     }
 }
 
@@ -590,7 +921,7 @@ fn comment_after_multi_line_value_goes_with_it() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, "").set("a", 5);
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
     for (src, expected) in [
         ("- [x,\n  y]  # c\n- 1\n", "- 5\n- 1\n"),
@@ -598,7 +929,7 @@ fn comment_after_multi_line_value_goes_with_it() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         sequence_at(&file, "").set(0, 5);
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
 }
 
@@ -606,7 +937,7 @@ fn comment_after_multi_line_value_goes_with_it() {
 /// moves back to the entry's column, also after blank lines, which may
 /// hold spaces.
 #[test]
-fn test_comment_line_after_blank_lines_leaves_new_block_scalar_body() {
+fn comment_line_after_blank_lines_leaves_new_block_scalar_body() {
     for (src, expected) in [
         ("a: 1\n\n  # c\nb: 2\n", "a: |\n  x\n\n# c\nb: 2\n"),
         ("a: 1\n  \n  # c\nb: 2\n", "a: |\n  x\n  \n# c\nb: 2\n"),
@@ -619,6 +950,6 @@ fn test_comment_line_after_blank_lines_leaves_new_block_scalar_body() {
             .as_mapping()
             .unwrap()
             .set("a", "x\n");
-        assert_parser_shaped(&file, expected, src);
+        assert_edited(&file, expected, src);
     }
 }

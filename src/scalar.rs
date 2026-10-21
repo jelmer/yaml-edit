@@ -885,9 +885,9 @@ impl ScalarValue {
             ScalarStyle::DoubleQuoted
         } else if raw_text.starts_with('\'') && raw_text.ends_with('\'') {
             ScalarStyle::SingleQuoted
-        } else if raw_text.starts_with('|') {
+        } else if scalar.is_block() && raw_text.starts_with('|') {
             ScalarStyle::Literal
-        } else if raw_text.starts_with('>') {
+        } else if scalar.is_block() {
             ScalarStyle::Folded
         } else {
             ScalarStyle::Plain

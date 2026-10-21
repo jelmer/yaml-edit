@@ -13,7 +13,7 @@
 
 mod common;
 use common::{
-    assert_edited, assert_file_cst_ok, count_nodes, edit_metadata, parse_clean,
+    assert_edited, assert_file_cst_ok, check_edit, count_nodes, edit_metadata, parse_clean,
     parse_with_violations, render_documents,
 };
 use rowan::ast::AstNode;
@@ -2999,4 +2999,122 @@ m:
     // Use the trait method so the `&dyn AsYaml` signature is exercised.
     let view: &dyn MappingView = &m;
     assert_eq!(view.get(&"k").unwrap().to_i64(), Some(42));
+}
+
+/// Aliases parsed as values of mappings and sequences and of a merge key.
+#[test]
+fn aliases_parse_in_documents() {
+    for (yaml, expected) in [
+        (
+            "\nanchor: &my_anchor value\nreference: *my_anchor\n",
+            "map{anchor: value, reference: *my_anchor}",
+        ),
+        (
+            "\ncolors:\n  - &red '#FF0000'\n  - &green '#00FF00'\n  - &blue '#0000FF'\n\ntheme:\n  - *red\n  - *blue\n",
+            "map{colors: seq[#FF0000, #00FF00, #0000FF], theme: seq[*red, *blue]}",
+        ),
+        (
+            "\ndefaults: &defaults\n  adapter: postgres\n  host: localhost\n\ndevelopment:\n  database: dev_db\n  <<: *defaults\n",
+            "map{defaults: map{adapter: postgres, host: localhost}, development: map{database: dev_db, <<: *defaults}}",
+        ),
+        (
+            "\nvalue: &shared 42\nfirst: *shared\nsecond: *shared\nthird: *shared\n",
+            "map{value: 42, first: *shared, second: *shared, third: *shared}",
+        ),
+        ("anchor: &test value\nreference: *test", "map{anchor: value, reference: *test}"),
+        (
+            "\ndata: &complex_anchor_name_123 some_value\nref: *complex_anchor_name_123\n",
+            "map{data: some_value, ref: *complex_anchor_name_123}",
+        ),
+        (
+            "\nbase: &base\n  x: 1\n  y: 2\n\nitems:\n  - name: first\n    config: *base\n  - name: second\n    config: *base\n",
+            "map{base: map{x: 1, y: 2}, items: seq[map{name: first, config: *base}, map{name: second, config: *base}]}",
+        ),
+        // Whitespace around an alias is kept.
+        ("reference:  *test  ", "map{reference: *test}"),
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        assert_eq!(doc.to_string(), yaml);
+        let root = doc
+            .syntax()
+            .children()
+            .find_map(YamlNode::from_syntax)
+            .unwrap();
+        assert_eq!(render(&root), expected, "{yaml:?}");
+    }
+}
+
+/// An alias's text is its name after a `*`.
+#[test]
+fn alias_value_is_its_text() {
+    let value = |yaml: &str, path: &str| {
+        let doc = Document::from_str(yaml).unwrap();
+        let node = doc.try_get_path(path).unwrap();
+        let alias = node.as_alias().unwrap();
+        (alias.name(), alias.value())
+    };
+    assert_eq!(
+        value(
+            "anchor: &my_anchor value\nreference: *my_anchor\n",
+            "reference"
+        ),
+        ("my_anchor".to_string(), "*my_anchor".to_string())
+    );
+    for (name, value) in [("shared", "*shared"), ("naïve_anchor_ĳ", "*naïve_anchor_ĳ")] {
+        let alias = Alias::new(name);
+        assert_eq!(alias.name(), name);
+        assert_eq!(alias.value(), value);
+        assert_eq!(alias.to_string(), value);
+    }
+}
+
+/// `Alias::new` writes an alias in place of a value, leaving the anchor
+/// it refers to as it is. Only the flow indicators and whitespace are
+/// excluded from its name.
+#[test]
+fn set_new_alias() {
+    check_edit(
+        "shared: &shared value\nservice_a: old\n",
+        |d| {
+            let mapping = d.as_mapping().unwrap();
+            mapping.set("service_a", Alias::new("shared"));
+            let alias = mapping.get("service_a").unwrap();
+            assert_eq!(alias.as_alias().unwrap().name(), "shared");
+            assert_eq!(alias.as_alias().unwrap().value(), "*shared");
+        },
+        "shared: &shared value\nservice_a: *shared\n",
+    );
+    check_edit(
+        "colors:\n  - &red '#FF0000'\n  - old\n",
+        |d| {
+            let colors = d.as_mapping().unwrap().get_sequence("colors").unwrap();
+            colors.set(1, Alias::new("red"));
+        },
+        "colors:\n  - &red '#FF0000'\n  - *red\n",
+    );
+    check_edit(
+        "a: &*x: 1\nb: 2\n",
+        |d| {
+            d.as_mapping().unwrap().set("b", Alias::new("*x:"));
+        },
+        "a: &*x: 1\nb: **x:\n",
+    );
+}
+
+#[test]
+#[should_panic(expected = "alias name must be a valid anchor name")]
+fn new_alias_rejects_empty_name() {
+    let _ = Alias::new("");
+}
+
+#[test]
+#[should_panic(expected = "alias name must be a valid anchor name")]
+fn new_alias_rejects_whitespace() {
+    let _ = Alias::new("bad name");
+}
+
+#[test]
+#[should_panic(expected = "alias name must be a valid anchor name")]
+fn new_alias_rejects_flow_indicator() {
+    let _ = Alias::new("bad,name");
 }

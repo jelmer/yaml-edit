@@ -45,9 +45,11 @@ impl Comment {
 
     /// Replace the full comment text, including the leading `#`.
     ///
-    /// The replacement must be a single valid comment token starting with `#`
-    /// and containing no newline; otherwise this panics, since writing it back
-    /// would corrupt the tree.
+    /// # Errors
+    ///
+    /// Returns a [`CommentTextError`], leaving the tree unchanged, if `text`
+    /// does not start with `#` or contains a line break: either would turn
+    /// the token into something other than a single comment.
     ///
     /// # Example
     /// ```
@@ -56,18 +58,16 @@ impl Comment {
     ///
     /// let doc = Document::from_str("key: value # teh value\n").unwrap();
     /// let comment = doc.comments().next().unwrap();
-    /// comment.set_text("# the value");
+    /// comment.set_text("# the value").unwrap();
     /// assert_eq!(doc.to_string(), "key: value # the value\n");
     /// ```
-    pub fn set_text(&self, text: &str) {
-        assert!(
-            text.starts_with('#'),
-            "comment text must start with '#', got {text:?}"
-        );
-        assert!(
-            !text.contains('\n') && !text.contains('\r'),
-            "comment text must not contain a newline, got {text:?}"
-        );
+    pub fn set_text(&self, text: &str) -> Result<(), CommentTextError> {
+        if !text.starts_with('#') {
+            return Err(CommentTextError::MissingHash);
+        }
+        if text.contains(['\n', '\r']) {
+            return Err(CommentTextError::LineBreak);
+        }
         let parent = self
             .0
             .parent()
@@ -75,6 +75,7 @@ impl Comment {
         let index = self.0.index();
         let new_token = fresh_token(SyntaxKind::COMMENT, text);
         super::replace_children(&parent, index..index + 1, vec![new_token.into()]);
+        Ok(())
     }
 
     /// Replace the comment content, preserving the leading `# ` marker.
@@ -83,6 +84,11 @@ impl Comment {
     /// after the `#` and a single space. Use [`set_text`](Self::set_text) when
     /// you need full control over the marker and spacing.
     ///
+    /// # Errors
+    ///
+    /// Returns [`CommentTextError::LineBreak`] if `content` contains a line
+    /// break.
+    ///
     /// # Example
     /// ```
     /// use yaml_edit::Document;
@@ -90,11 +96,11 @@ impl Comment {
     ///
     /// let doc = Document::from_str("key: value # teh value\n").unwrap();
     /// let comment = doc.comments().next().unwrap();
-    /// comment.set_content("the value");
+    /// comment.set_content("the value").unwrap();
     /// assert_eq!(doc.to_string(), "key: value # the value\n");
     /// ```
-    pub fn set_content(&self, content: &str) {
-        self.set_text(&format!("# {content}"));
+    pub fn set_content(&self, content: &str) -> Result<(), CommentTextError> {
+        self.set_text(&format!("# {content}"))
     }
 
     /// Access the underlying syntax token.
@@ -102,6 +108,26 @@ impl Comment {
         &self.0
     }
 }
+
+/// Why [`Comment::set_text`] or [`Comment::set_content`] refused new text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentTextError {
+    /// The text does not start with `#`.
+    MissingHash,
+    /// The text contains a line break.
+    LineBreak,
+}
+
+impl std::fmt::Display for CommentTextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommentTextError::MissingHash => write!(f, "comment text must start with '#'"),
+            CommentTextError::LineBreak => write!(f, "comment text must not contain a line break"),
+        }
+    }
+}
+
+impl std::error::Error for CommentTextError {}
 
 impl std::fmt::Debug for Comment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

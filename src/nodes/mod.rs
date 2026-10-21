@@ -829,7 +829,7 @@ pub(crate) use predicates::{
 
 // Re-exports
 pub use alias_node::Alias;
-pub use comment::Comment;
+pub use comment::{Comment, CommentTextError};
 pub use directive::Directive;
 pub use document::Document;
 pub use entry::{Entry, OccupiedEntry, VacantEntry};

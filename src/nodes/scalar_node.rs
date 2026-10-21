@@ -335,18 +335,34 @@ impl Scalar {
     /// higher-level API instead.
     pub fn set_value(&self, value: &str) {
         let children: Vec<_> = self.0.children_with_tokens().collect();
-        // A block scalar owns the line break that ends its body; keep it so
-        // the next entry stays on its own line.
-        let trailing_newlines = children
-            .iter()
-            .rev()
-            .take_while(|c| c.kind() == SyntaxKind::NEWLINE)
-            .count();
+        // A block scalar holds the line break ending its last line and the
+        // blank lines after that, which stay but must move out of it.
+        let mut tail = Vec::new();
+        if crate::nodes::is_block_scalar(&self.0) {
+            let is_layout = |k| {
+                matches!(
+                    k,
+                    SyntaxKind::NEWLINE | SyntaxKind::INDENT | SyntaxKind::WHITESPACE
+                )
+            };
+            let content_end = children
+                .iter()
+                .rposition(|c| !is_layout(c.kind()))
+                .map_or(0, |i| i + 1);
+            tail = children[content_end..]
+                .iter()
+                .skip_while(|c| c.kind() != SyntaxKind::NEWLINE)
+                .filter_map(|c| c.as_token().cloned())
+                .collect();
+        }
         crate::nodes::replace_children(
             &self.0,
-            0..children.len() - trailing_newlines,
+            0..children.len(),
             vec![fresh_token(SyntaxKind::STRING, value).into()],
         );
+        if let Some((line_break, blank_lines)) = tail.split_first() {
+            crate::nodes::trivia::end_former_block_scalar(&self.0, line_break, blank_lines);
+        }
     }
 
     crate::nodes::ast_node_spans!("scalar");
@@ -860,5 +876,38 @@ items: ["first", "second"]
         assert_eq!(value("a: |\r  x\r  y\rb: 2\r", "b"), "2");
         assert_eq!(value("a: b\r  c\rd: e\r", "a"), "b c");
         assert_eq!(value("a: b\r\r  c\rd: e\r", "a"), "b\nc");
+    }
+
+    /// Replacing a block scalar leaves the line break ending its last
+    /// line and the blank lines after it where the parser puts them
+    /// after any other scalar.
+    #[test]
+    fn test_set_value_of_block_scalar() {
+        use rowan::ast::AstNode;
+        for (input, expected) in [
+            ("a: |\n  hello\nb: 2\n", "a: y\nb: 2\n"),
+            ("a: |\n  hello\n  \n\nb: 2\n", "a: y\n  \n\nb: 2\n"),
+            ("a: |\nb: 1\n", "a: y\nb: 1\n"),
+            ("a: | # c\n  x\nb: 1\n", "a: y\nb: 1\n"),
+            ("a: |\n  x", "a: y"),
+            ("a:\n  b: |\n    x\n\nc: 1\n", "a:\n  b: y\n\nc: 1\n"),
+            ("a:\n  b: >\n    x\n\n  c: 1\n", "a:\n  b: y\n\n  c: 1\n"),
+            ("- |\n  x\n\n- 1\n", "- y\n\n- 1\n"),
+            ("a:\n  - |\n    x\n\n  - 2\n", "a:\n  - y\n\n  - 2\n"),
+            ("? |\n  x\n: v\n", "? y\n: v\n"),
+            ("a: !t |\n  x\n\nb: 1\n", "a: !t y\n\nb: 1\n"),
+            ("!t |\n  x\n\n", "!t y\n\n"),
+            ("|\n  x\n\n...\n", "y\n\n...\n"),
+        ] {
+            let yaml = crate::YamlFile::from_str(input).unwrap();
+            let scalar = yaml
+                .syntax()
+                .descendants()
+                .find(crate::nodes::is_block_scalar)
+                .and_then(super::Scalar::cast)
+                .unwrap();
+            scalar.set_value("y");
+            crate::debug::assert_edited(&yaml, expected);
+        }
     }
 }

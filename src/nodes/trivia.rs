@@ -393,9 +393,7 @@ pub(crate) fn detach_entry(collection: &SyntaxNode, entry: &SyntaxNode) {
 }
 
 /// Move the lines ending `collection`, a nested block collection, out to
-/// where the parser puts them: after the entry holding it in the
-/// collection that has an entry after that, or the root collection at the
-/// end of the input.
+/// where the parser puts them.
 fn move_trailing_lines_out(collection: &SyntaxNode) {
     let mut lines: Vec<_> = std::iter::successors(collection.last_child_or_token(), |c| {
         c.prev_sibling_or_token()
@@ -403,7 +401,21 @@ fn move_trailing_lines_out(collection: &SyntaxNode) {
     .map_while(|c| c.into_token())
     .collect();
     lines.reverse();
-    let holders: Vec<_> = collection
+    let Some((host, at)) = lines_after_entry_slot(collection) else {
+        return;
+    };
+    for t in &lines {
+        t.detach();
+    }
+    insert_children(&host, at, fresh_copies(&lines));
+}
+
+/// Where the parser puts the lines after the last line of `node`, which
+/// ends a block entry: after the entry holding it in the collection that
+/// has an entry after that, or the root collection at the end of the
+/// input. `None` if there is no such entry, or it is detached.
+fn lines_after_entry_slot(node: &SyntaxNode) -> Option<(SyntaxNode, usize)> {
+    let holders: Vec<_> = node
         .ancestors()
         .filter(|n| {
             matches!(
@@ -412,28 +424,55 @@ fn move_trailing_lines_out(collection: &SyntaxNode) {
             )
         })
         .collect();
-    let Some(holder) = holders
+    let holder = holders
         .iter()
         .find(|e| e.next_sibling().is_some_and(|n| n.kind() == e.kind()))
-        .or(holders.last())
-    else {
+        .or(holders.last())?;
+    Some((holder.parent()?, holder.index() + 1))
+}
+
+fn fresh_copies(tokens: &[SyntaxToken]) -> Vec<rowan::SyntaxElement<super::Lang>> {
+    tokens
+        .iter()
+        .map(|t| fresh_token(t.kind(), t.text()).into())
+        .collect()
+}
+
+/// Give `scalar`, which was a block scalar, back the line break ending its
+/// last line and the blank lines after it, which it held as one. They go
+/// where the parser puts them after any other scalar: the line break in
+/// the entry or document holding it, and the blank lines after that.
+/// Without such a holder they stay in `scalar`.
+pub(crate) fn end_former_block_scalar(
+    scalar: &SyntaxNode,
+    line_break: &SyntaxToken,
+    blank_lines: &[SyntaxToken],
+) {
+    let child = scalar.ancestors().find(|n| {
+        n.parent().is_some_and(|p| {
+            matches!(
+                p.kind(),
+                SyntaxKind::MAPPING_ENTRY | SyntaxKind::SEQUENCE_ENTRY | SyntaxKind::DOCUMENT
+            )
+        })
+    });
+    let Some(child) = child else {
+        let mut lines = vec![line_break.clone()];
+        lines.extend_from_slice(blank_lines);
+        append_children(scalar, fresh_copies(&lines));
         return;
     };
-    // An entry detached from its collection has nowhere to take them.
-    let Some(host) = holder.parent() else {
-        return;
-    };
-    for t in &lines {
-        t.detach();
-    }
+    let host = child.parent().expect("found by its parent");
     insert_children(
         &host,
-        holder.index() + 1,
-        lines
-            .iter()
-            .map(|t| fresh_token(t.kind(), t.text()).into())
-            .collect(),
+        child.index() + 1,
+        fresh_copies(std::slice::from_ref(line_break)),
     );
+    let (host, at) = match lines_after_entry_slot(&child) {
+        Some(slot) if host.kind() != SyntaxKind::DOCUMENT => slot,
+        _ => (host, child.index() + 2),
+    };
+    insert_children(&host, at, fresh_copies(blank_lines));
 }
 
 /// The indentation of the line `entry` starts, if it starts one: the

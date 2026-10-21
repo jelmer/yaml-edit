@@ -2680,3 +2680,31 @@ fn block_scalar_text() {
     m.set("k", ScalarValue::literal("  x\n").with_tag("!t"));
     assert_edited(&doc, "a:\n  k: !t |2\n      x\n  j: |\n    x\n      y\n");
 }
+
+#[test]
+fn block_scalar_items_clear_the_dash() {
+    let literal = ScalarValue::literal("x\ny\n");
+    for (src, set, expected) in [
+        ("- a\n", false, "- a\n- |\n  x\n  y\n"),
+        ("s:\n  - a\n", false, "s:\n  - a\n  - |\n    x\n    y\n"),
+        ("s:\n  - a\n", true, "s:\n  - |\n    x\n    y\n"),
+        (
+            "s:\n  - a  # c\n  - b\n",
+            true,
+            "s:\n  - |  # c\n    x\n    y\n  - b\n",
+        ),
+        ("- a # c\n", true, "- | # c\n  x\n  y\n"),
+    ] {
+        let doc = Document::from_str(src).unwrap();
+        let seq = doc
+            .as_sequence()
+            .or_else(|| doc.as_mapping()?.get_sequence("s"))
+            .unwrap();
+        if set {
+            assert!(seq.set(0, literal.clone()));
+        } else {
+            seq.push(literal.clone());
+        }
+        assert_edited(&doc, expected);
+    }
+}

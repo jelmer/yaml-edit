@@ -4,13 +4,15 @@
 
 mod common;
 use common::{
-    assert_file_cst_ok, assert_file_edited, check_renders, count_nodes, parse_clean,
+    assert_edited, assert_file_cst_ok, assert_file_edited, check_renders, count_nodes, parse_clean,
     render_documents,
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
+use yaml_edit::path::YamlPath;
 use yaml_edit::{
-    debug, Mapping, Scalar, ScalarValue, Sequence, SyntaxKind, YamlFile, YamlNode, YamlValue,
+    debug, Document, Mapping, Scalar, ScalarValue, Sequence, SyntaxKind, YamlFile, YamlNode,
+    YamlValue,
 };
 
 fn parse(yaml: &str) -> YamlFile {
@@ -840,4 +842,57 @@ DOCUMENT
             NEWLINE: \"\\\\n\"
 "
     );
+}
+
+#[test]
+fn push_commented_value_into_nested_flow_sequence() {
+    // Keeping the comment breaks the flow mapping across lines; the
+    // continuation has to stay inside `a`.
+    let doc = Document::from_str("a:\n  seq: [1]\n").unwrap();
+    let seq = doc
+        .try_get_path("a.seq")
+        .unwrap()
+        .as_sequence()
+        .unwrap()
+        .clone();
+    let item = Document::from_str("x: 1 # c\ny: 2\n").unwrap();
+    seq.push(item.as_mapping().unwrap());
+    assert_edited(&doc, "a:\n  seq: [1, {x: 1, # c\n    y: 2}]\n");
+}
+
+/// `[a, , c]` is three entries per YAML spec, the middle one an implicit
+/// null; `[,]` is one null entry and `[,,]` two. A trailing comma is a
+/// terminator, not a separator introducing a null entry.
+#[test]
+fn flow_sequence_null_entries() {
+    check_renders(&[
+        ("[a, , c]", "[a, ~, c]"),
+        ("[,]", "[~]"),
+        ("[,,]", "[~, ~]"),
+        ("[a, b,]", "[a, b]"),
+    ]);
+}
+
+/// Accessors agree with mutators on the indexes of a flow sequence with
+/// an implicit null entry, as in a block sequence.
+#[test]
+fn flow_sequence_implicit_null_shares_indexes() {
+    let doc = Document::from_str("[a, , c]").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    assert_eq!(seq.len(), 3);
+    assert_eq!(seq.get(0).unwrap().as_scalar().unwrap().as_string(), "a");
+    assert_eq!(seq.get(1).unwrap().as_scalar().unwrap().as_string(), "");
+    assert_eq!(seq.get(2).unwrap().as_scalar().unwrap().as_string(), "c");
+    assert!(seq.set(1, "x"));
+    assert_edited(&doc, "[a, x, c]");
+
+    let doc = Document::from_str("[a, , c]").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    let removed = seq.remove(1);
+    assert_eq!(
+        removed.and_then(|n| n.as_scalar().map(|s| s.as_string())),
+        Some(String::new())
+    );
+    assert_eq!(seq.len(), 2);
+    assert_edited(&doc, "[a, c]");
 }

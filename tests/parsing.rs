@@ -1649,3 +1649,73 @@ patterns:
     let output_multiple = parsed_multiple.to_string();
     assert_eq!(output_multiple, yaml_multiple);
 }
+
+/// Reading the items of block and flow sequences: the counts, indexing,
+/// the ends and iteration.
+#[test]
+fn sequence_accessors() {
+    for (yaml, items) in [
+        ("items:\n  - a\n  - b\n  - c", &["a", "b", "c"][..]),
+        ("items: [a, b, c]", &["a", "b", "c"]),
+        ("items: [ a , b , c ]", &["a", "b", "c"]),
+        (
+            "items:\n  - first\n  - second\n  - third",
+            &["first", "second", "third"],
+        ),
+        (
+            "items: [first, second, third]",
+            &["first", "second", "third"],
+        ),
+        (
+            "items:\n  - first\n  - middle\n  - last",
+            &["first", "middle", "last"],
+        ),
+        ("items: [first, middle, last]", &["first", "middle", "last"]),
+        (
+            "items:\n  - alpha\n  - beta\n  - gamma",
+            &["alpha", "beta", "gamma"],
+        ),
+        (
+            "items:\n  - apple\n  - banana\n  - cherry",
+            &["apple", "banana", "cherry"],
+        ),
+        ("items: []", &[]),
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        let seq = doc.as_mapping().unwrap().get_sequence("items").unwrap();
+        assert_eq!(seq.len(), items.len(), "{yaml:?}");
+        assert_eq!(seq.is_empty(), items.is_empty(), "{yaml:?}");
+        let values: Vec<String> = seq.values().map(|v| v.to_string()).collect();
+        assert_eq!(values, items, "{yaml:?}");
+        let looped: Vec<String> = (&seq)
+            .into_iter()
+            .map(|v| v.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(looped, items, "{yaml:?}");
+        for (i, item) in items.iter().enumerate() {
+            assert_eq!(seq.get(i).unwrap().as_scalar().unwrap().as_string(), *item);
+        }
+        assert!(seq.get(items.len()).is_none(), "{yaml:?}");
+        assert_eq!(
+            seq.first().map(|v| v.to_string()).as_deref(),
+            items.first().copied()
+        );
+        assert_eq!(
+            seq.last().map(|v| v.to_string()).as_deref(),
+            items.last().copied()
+        );
+    }
+    let doc = Document::from_str("[1, 2, 3, 4, 5]").unwrap();
+    assert_eq!((&doc.as_sequence().unwrap()).into_iter().count(), 5);
+    let doc = Document::from_str("numbers: [1, 2, 3]").unwrap();
+    let numbers = doc.as_mapping().unwrap().get_sequence("numbers").unwrap();
+    let strings: Vec<_> = (&numbers)
+        .into_iter()
+        .filter_map(|v| v.as_scalar().map(|s| s.to_string()))
+        .collect();
+    assert_eq!(strings, vec!["1", "2", "3"]);
+    check_renders(&[(
+        "items:\n  - simple\n  - {key: value}\n  - [nested, list]",
+        "map{items: seq[simple, {key: value}, [nested, list]]}",
+    )]);
+}

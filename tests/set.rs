@@ -17,7 +17,7 @@ use yaml_edit::path::{PathError, YamlPath};
 use yaml_edit::validator::Validator;
 use yaml_edit::{
     debug, AsYaml, Document, Mapping, MappingBuilder, ScalarValue, Sequence, SequenceBuilder,
-    YamlFile, YamlValue,
+    YamlFile, YamlNode, YamlValue,
 };
 
 /// Parse `yaml` and return the file plus its root mapping.
@@ -1410,4 +1410,239 @@ fn document_set_sequence() {
     );
     assert!(doc.is_sequence("Repository"));
     assert_eq!(doc.get_sequence("Repository").unwrap().len(), 2);
+}
+
+/// Replacing an item spanning lines takes the comment ending its last
+/// line along, but leaves white space without one.
+#[test]
+fn set_multi_line_item_keeps_trailing_space() {
+    for (src, expected) in [
+        ("- [a,\n  b]   \n- c\n", "- x   \n- c\n"),
+        ("- [a,\n  b]  # x\n- c\n", "- x\n- c\n"),
+        ("-\n  [a, b]   \n", "-\n  x   \n"),
+    ] {
+        let doc = YamlFile::from_str(src).unwrap().document().unwrap();
+        assert!(doc.as_sequence().unwrap().set(0, "x"));
+        assert_edited(&doc, expected);
+    }
+}
+
+/// A block mapping set as a bare `-` item starts on the dash's line,
+/// and a tab in the comment after a replaced item stays.
+#[test]
+fn set_item_after_bare_dash_and_before_comment() {
+    let src = YamlFile::from_str("k:\n  a: 1\n  b: [x,\n    y]\n").unwrap();
+    let block = src
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("k")
+        .unwrap();
+    let doc = YamlFile::from_str("-\n- b\n").unwrap().document().unwrap();
+    assert!(doc.as_sequence().unwrap().set(0, &block));
+    assert_edited(&doc, "- a: 1\n  b: [x,\n    y]\n- b\n");
+
+    // A tab after the dash may separate a scalar from it, but cannot
+    // indent a block collection.
+    let doc = YamlFile::from_str("-\tx\n").unwrap().document().unwrap();
+    assert!(doc.as_sequence().unwrap().set(0, &block));
+    assert_edited(&doc, "- a: 1\n  b: [x,\n    y]\n");
+    let doc = YamlFile::from_str("-\tx\n").unwrap().document().unwrap();
+    assert!(doc.as_sequence().unwrap().set(0, "y"));
+    assert_edited(&doc, "-\ty\n");
+
+    let doc = YamlFile::from_str("- x  # a\tb\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    assert!(doc.as_sequence().unwrap().set(0, "y"));
+    assert_edited(&doc, "- y  # a\tb\n");
+}
+
+#[test]
+fn set_out_of_bounds() {
+    let doc = YamlFile::from_str("- a\n").unwrap().document().unwrap();
+    let seq = doc.as_sequence().unwrap();
+    assert!(!seq.set(1, "b"));
+    assert_edited(&doc, "- a\n");
+}
+
+/// `set_path` builds sequence intermediates as pending-block sequences,
+/// so an indexed path produces readable block YAML.
+#[test]
+fn set_path_builds_block_sequence_intermediates() {
+    let doc = Document::from_str("name: test\n").unwrap();
+    doc.try_set_path("a.b[0]", "v").unwrap();
+    assert_edited(&doc, "name: test\na:\n  b:\n    - v\n");
+}
+
+#[test]
+fn sequence_set_tagged_node() {
+    // Sequence::set() was missing TAGGED_NODE from its kind filter, so
+    // replacing a tagged-scalar item would leave the original tag+value in place
+    // and insert the new value alongside it.
+    let yaml = "- !custom foo\n- bar\n";
+    let parsed = YamlFile::from_str(yaml).unwrap();
+    let doc = parsed.document().unwrap();
+    let seq = doc.as_sequence().unwrap();
+
+    assert!(seq.set(0, "replaced"));
+    assert_file_edited(&parsed, "- replaced\n- bar\n");
+
+    let values: Vec<_> = seq.values().collect();
+    assert_eq!(values.len(), 2);
+    assert_eq!(
+        values[0].as_scalar().map(|s| s.as_string()),
+        Some("replaced".to_string())
+    );
+    assert_eq!(
+        values[1].as_scalar().map(|s| s.as_string()),
+        Some("bar".to_string())
+    );
+}
+
+#[test]
+fn sequence_set_scalar_over_commented_block() {
+    for (src, expected) in [
+        ("-  # c\n  x: 1\n- 2\n", "- 5  # c\n- 2\n"),
+        ("- # c\n  - 1\n", "- 5 # c\n"),
+    ] {
+        let doc = Document::from_str(src).unwrap();
+        assert!(doc.as_sequence().unwrap().set(0, 5));
+        assert_edited(&doc, expected);
+    }
+}
+
+#[test]
+fn sequence_set_block_mapping_adds_no_blank_line() {
+    let value = Document::from_str("k: 1\n").unwrap();
+    let value = value.as_mapping().unwrap();
+    for (src, index, expected) in [
+        ("- a\n- b\n", 1, "- a\n- k: 1\n"),
+        ("- a\n- b\n- c\n", 1, "- a\n- k: 1\n- c\n"),
+        ("- a\n- b  \n- c\n", 1, "- a\n- k: 1\n- c\n"),
+        ("- a\n- b", 1, "- a\n- k: 1\n"),
+        ("- j: 2\n- b\n", 0, "- k: 1\n- b\n"),
+        ("s:\n  - a\n  - b\nt: 1\n", 0, "s:\n  - k: 1\n  - b\nt: 1\n"),
+    ] {
+        let doc = Document::from_str(src).unwrap();
+        let seq = doc
+            .as_sequence()
+            .or_else(|| doc.as_mapping()?.get_sequence("s"))
+            .unwrap();
+        assert!(seq.set(index, value.clone()));
+        assert_edited(&doc, expected);
+    }
+}
+
+#[test]
+fn block_collection_values_take_the_entry_indent() {
+    let map_doc = Document::from_str("k: 1\nj: 2\n").unwrap();
+    let map = YamlNode::Mapping(map_doc.as_mapping().unwrap());
+    let nested_doc = Document::from_str("m:\n    k: 1\n    j: 2\n").unwrap();
+    let nested = YamlNode::Mapping(nested_doc.as_mapping().unwrap().get_mapping("m").unwrap());
+    let seq_doc = Document::from_str("- x\n- y\n").unwrap();
+    let seq = YamlNode::Sequence(seq_doc.as_sequence().unwrap());
+
+    let push = |s: &Sequence, v: &dyn AsYaml| s.push(v);
+    let insert0 = |s: &Sequence, v: &dyn AsYaml| s.insert(0, v);
+    let set0 = |s: &Sequence, v: &dyn AsYaml| assert!(s.set(0, v));
+    type Op<'a> = &'a dyn Fn(&Sequence, &dyn AsYaml);
+    let cases: Vec<(&str, Op, &dyn AsYaml, &str)> = vec![
+        (
+            "s:\n  - a\n",
+            &push,
+            &map,
+            "s:\n  - a\n  - k: 1\n    j: 2\n",
+        ),
+        ("- a\n", &push, &map, "- a\n- k: 1\n  j: 2\n"),
+        ("- a\n", &push, &nested, "- a\n- k: 1\n  j: 2\n"),
+        (
+            "a:\n  s:\n    - a\n",
+            &push,
+            &map,
+            "a:\n  s:\n    - a\n    - k: 1\n      j: 2\n",
+        ),
+        ("s: [a]\n", &push, &map, "s: [a, {k: 1, j: 2}]\n"),
+        ("s:\n  - a\n", &push, &seq, "s:\n  - a\n  - - x\n    - y\n"),
+        ("- a\n", &push, &seq, "- a\n- - x\n  - y\n"),
+        ("s: [a]\n", &push, &seq, "s: [a, [x, y]]\n"),
+        (
+            "s:\n  - a\n",
+            &insert0,
+            &map,
+            "s:\n  - k: 1\n    j: 2\n  - a\n",
+        ),
+        ("- a\n", &insert0, &map, "- k: 1\n  j: 2\n- a\n"),
+        ("s: [a]\n", &insert0, &map, "s: [{k: 1, j: 2}, a]\n"),
+        (
+            "s:\n  - a\n  - b\n",
+            &set0,
+            &map,
+            "s:\n  - k: 1\n    j: 2\n  - b\n",
+        ),
+        ("- a\n", &set0, &map, "- k: 1\n  j: 2\n"),
+        (
+            "a:\n  s:\n    - a\n",
+            &set0,
+            &map,
+            "a:\n  s:\n    - k: 1\n      j: 2\n",
+        ),
+        (
+            "s:\n  - &x\n    k: 0\n",
+            &set0,
+            &map,
+            "s:\n  - &x\n    k: 1\n    j: 2\n",
+        ),
+        ("s: [a, b]\n", &set0, &map, "s: [{k: 1, j: 2}, b]\n"),
+    ];
+    for (src, op, value, expected) in cases {
+        let doc = Document::from_str(src).unwrap();
+        let target = doc
+            .as_sequence()
+            .or_else(|| doc.as_mapping()?.get_sequence("s"))
+            .or_else(|| doc.as_mapping()?.get_mapping("a")?.get_sequence("s"))
+            .unwrap();
+        op(&target, value);
+        assert_edited(&doc, expected);
+    }
+}
+
+#[test]
+fn sequence_set_alias() {
+    let yaml = "colors:\n  - *red\n  - keep\n";
+    let parsed = YamlFile::from_str(yaml).unwrap();
+    let doc = parsed.document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let colors_node = mapping.get("colors").unwrap();
+    let seq = colors_node.as_sequence().unwrap();
+
+    assert!(seq.set(0, "blue"));
+    assert_file_edited(&parsed, "colors:\n  - blue\n  - keep\n");
+
+    let first = seq.get(0).unwrap();
+    assert_eq!(
+        first.as_scalar().map(|s| s.as_string()),
+        Some("blue".to_string())
+    );
+}
+
+#[test]
+fn sequence_set_with_nested_mapping() {
+    let yaml_str = "items:\n  - name: first\n    value: 1\n  - name: second\n    value: 2\n";
+    let doc = Document::from_str(yaml_str).unwrap();
+
+    let items_node = doc.try_get_path("items").unwrap();
+    let items = items_node.as_sequence().unwrap();
+
+    assert_eq!(items.len(), 2);
+    let first = items.get(0).unwrap();
+    assert!(first.is_mapping());
+
+    items.set(0, "replaced");
+    assert_edited(
+        &doc,
+        "items:\n  - replaced\n  - name: second\n    value: 2\n",
+    );
 }

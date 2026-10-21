@@ -670,37 +670,56 @@ pub(crate) fn merge_sources(
     Ok(sources)
 }
 
+/// The operands of a `<<` entry with value `value`: the items of the
+/// sequence it is, or else the value itself.
+pub(crate) fn merge_operands(
+    value: crate::as_yaml::YamlNode,
+    registry: &AnchorRegistry,
+) -> Result<Vec<crate::as_yaml::YamlNode>, AliasError> {
+    use crate::as_yaml::YamlNode;
+
+    // An alias stands for its node, so it can name a sequence of mappings
+    // too.
+    let sequence = match resolve_alias_node(value.clone(), registry)? {
+        YamlNode::Sequence(seq) => Some(seq),
+        YamlNode::TaggedNode(tagged) => tagged.as_sequence(),
+        _ => None,
+    };
+    Ok(match sequence {
+        Some(seq) => seq.values().collect(),
+        None => vec![value],
+    })
+}
+
+/// The mapping `operand`, an operand of a `<<` entry, merges in, or `None`
+/// if it is not a mapping.
+pub(crate) fn merge_source(
+    operand: &crate::as_yaml::YamlNode,
+    registry: &AnchorRegistry,
+) -> Result<Option<crate::yaml::Mapping>, AliasError> {
+    use crate::as_yaml::YamlNode;
+
+    Ok(match resolve_alias_node(operand.clone(), registry)? {
+        YamlNode::Mapping(m) => Some(m),
+        YamlNode::TaggedNode(tagged) => tagged.as_mapping(),
+        _ => None,
+    })
+}
+
 fn collect_merge_sources(
     base: &crate::yaml::Mapping,
     registry: &AnchorRegistry,
     sources: &mut Vec<crate::yaml::Mapping>,
 ) -> Result<(), MergeError> {
-    use crate::as_yaml::YamlNode;
-
     for (key, value) in base.iter() {
         if !is_merge_key(&key) {
             continue;
         }
-        // An alias stands for its node, so it can name a sequence of
-        // mappings too.
-        let sequence = match resolve_alias_node(value.clone(), registry)? {
-            YamlNode::Sequence(seq) => Some(seq),
-            YamlNode::TaggedNode(tagged) => tagged.as_sequence(),
-            _ => None,
-        };
-        let operands = match sequence {
-            Some(seq) => seq.values().collect(),
-            None => vec![value],
-        };
-        for operand in operands {
-            let source = match resolve_alias_node(operand.clone(), registry)? {
-                YamlNode::Mapping(m) => Some(m),
-                YamlNode::TaggedNode(tagged) => tagged.as_mapping(),
-                _ => None,
-            }
-            .ok_or_else(|| MergeError::InvalidOperand {
-                operand: operand.to_string(),
-            })?;
+        for operand in merge_operands(value, registry)? {
+            let source =
+                merge_source(&operand, registry)?.ok_or_else(|| MergeError::InvalidOperand {
+                    operand: operand.to_string(),
+                })?;
             if sources.iter().any(|s| s.syntax() == source.syntax()) {
                 continue;
             }

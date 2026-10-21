@@ -2037,3 +2037,54 @@ fn located_violations() {
     // A byte order mark may directly precede a comment line.
     assert_eq!(located("\u{FEFF}# c\na: 1\n"), vec![]);
 }
+
+/// What the validator reports about `yaml`: message, location, severity
+/// and rule of each violation.
+fn findings(yaml: &str) -> Vec<(String, String, Severity, Rule)> {
+    let file = YamlFile::from_str(yaml).unwrap();
+    Validator::new()
+        .validate_syntax(file.syntax())
+        .into_iter()
+        .map(|v| (v.message, v.location.unwrap(), v.severity, v.rule))
+        .collect()
+}
+
+/// A merge key operand has to be a mapping or a sequence of mappings, or
+/// an alias to one. The validator warns about the operands that
+/// `YamlValue` cannot merge, and about no others.
+#[test]
+fn merge_key_operands() {
+    let warning = |operand: &str, location: &str| {
+        vec![(
+            format!("Merge key operand {operand:?} is not a mapping"),
+            location.to_string(),
+            Severity::Warning,
+            Rule::Other,
+        )]
+    };
+    for (yaml, expected) in [
+        ("<<: 1\nb: 2\n", warning("1", "1:5")),
+        ("m: {<<: 1}\n", warning("1", "1:9")),
+        ("<<: [1]\n", warning("1", "1:6")),
+        ("<<: [{a: 1}, x]\n", warning("x", "1:14")),
+        ("<<: !!seq [{a: 1}, x]\n", warning("x", "1:20")),
+        ("x: &x 1\nm:\n  <<: *x\n", warning("*x", "3:7")),
+        // An operand of a sequence anchored elsewhere is reported where
+        // that sequence is merged in.
+        ("s: &s [{a: 1}, 1]\nm:\n  <<: *s\n", warning("1", "3:7")),
+        ("a: &a {x: 1}\nb:\n  <<: *a\n", vec![]),
+        ("<<: [{a: 1}, {b: 2}]\n", vec![]),
+        ("<<: !!map {a: 1}\n", vec![]),
+        ("s: &s [{a: 1}]\nm:\n  <<: *s\n", vec![]),
+        ("'<<': 1\n", vec![]),
+        ("\"<<\": [1]\n", vec![]),
+    ] {
+        assert_eq!(findings(yaml), expected, "{yaml:?}");
+        let converted = yaml_edit::YamlValue::parse_raw(yaml);
+        assert_eq!(
+            converted.is_ok(),
+            expected.is_empty(),
+            "{yaml:?}: {converted:?}"
+        );
+    }
+}

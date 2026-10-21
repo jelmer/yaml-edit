@@ -1719,3 +1719,20 @@ fn sequence_accessors() {
         "map{items: seq[simple, {key: value}, [nested, list]]}",
     )]);
 }
+
+/// `as_f64` reads only the YAML spellings of infinity and NaN.
+#[test]
+fn as_f64_bare_inf_nan_is_none() {
+    let doc = Document::from_str("[inf, nan, infinity, -Inf, .inf, -.Inf, .NaN, 1.5]").unwrap();
+    let got: Vec<Option<f64>> = doc
+        .as_sequence()
+        .unwrap()
+        .values()
+        .map(|n| n.as_scalar().unwrap().as_f64())
+        .collect();
+    assert_eq!(&got[..4], &[None, None, None, None]);
+    assert_eq!(got[4], Some(f64::INFINITY));
+    assert_eq!(got[5], Some(f64::NEG_INFINITY));
+    assert!(got[6].unwrap().is_nan());
+    assert_eq!(got[7], Some(1.5));
+}

@@ -1508,3 +1508,15 @@ fn positioned_parse_error() {
     assert_eq!(err.end_position(text), LineColumn::new(2, 14));
     assert_eq!(err.to_string(), err.message);
 }
+
+/// An unterminated quote on its own is kept as the scalar's text.
+#[test]
+fn unterminated_quote_as_string() {
+    for text in ["\"", "'"] {
+        let (doc, errors) = Document::from_str_relaxed(text);
+        assert_eq!(errors, ["1:1: Unterminated quoted string"]);
+        let scalar = doc.as_scalar().expect("relaxed parse keeps a scalar");
+        assert_eq!(scalar.as_string(), text);
+        assert_eq!(scalar.unquoted_value(), text);
+    }
+}

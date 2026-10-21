@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 use yaml_edit::validator::Validator;
 use yaml_edit::{
-    debug, CoreScalarType, Document, Mapping, Scalar, ScalarStyle, ScalarType, ScalarValue,
-    Sequence, SyntaxKind, YamlFile, YamlNode, YamlValue,
+    debug, CoreScalarType, Document, Mapping, Scalar, ScalarConversionError, ScalarStyle,
+    ScalarType, ScalarValue, Sequence, SyntaxKind, YamlFile, YamlNode, YamlValue,
 };
 
 fn set_and_reparse(value: &str) -> (String, String, ScalarType) {
@@ -1530,4 +1530,63 @@ fn plain_scalar_folding_with_crlf() {
     let string = |key: &str| mapping.get(key).unwrap().as_scalar().unwrap().as_string();
     assert_eq!(string("k"), "a b\nc");
     assert_eq!(string("q"), "x y");
+}
+
+/// `unquoted_value` strips the quotes but leaves escapes as written.
+#[test]
+fn unquoted_value_keeps_escapes() {
+    let doc = Document::from_str("- \"a\\\"b\"\n- 'c''d'\n- e\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    let unquoted: Vec<_> = (0..3)
+        .map(|i| seq.get(i).unwrap().as_scalar().unwrap().unquoted_value())
+        .collect();
+    assert_eq!(unquoted, ["a\\\"b", "c''d", "e"]);
+}
+
+#[test]
+fn typed_conversion_of_quoted_scalar_fails() {
+    let doc = Document::from_str("- '1'\n- x\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    let quoted = seq.get(0).unwrap().as_scalar().cloned().unwrap();
+    let err = i64::try_from(&quoted).unwrap_err();
+    assert_eq!(err, ScalarConversionError::QuotedValue);
+    assert_eq!(
+        err.to_string(),
+        "Cannot convert quoted scalar to numeric/boolean type"
+    );
+    let plain = seq.get(1).unwrap().as_scalar().cloned().unwrap();
+    let err = i64::try_from(&plain).unwrap_err();
+    let ScalarConversionError::ParseError(msg) = &err else {
+        panic!("unexpected {err:?}");
+    };
+    assert_eq!(err.to_string(), format!("Failed to parse scalar: {msg}"));
+}
+
+/// Line breaks in quoted scalars fold to a space, and blank lines to line
+/// breaks; an escaped line break folds to nothing.
+#[test]
+fn quoted_line_folding() {
+    for (yaml, expected) in [
+        ("k: \"a\n  b\"\n", "a b"),
+        ("k: \"a\n\n  b\"\n", "a\nb"),
+        ("k: \"a\n \t\n\n  b\"\n", "a\n\nb"),
+        ("k: \"a   \n  b\"\n", "a b"),
+        ("k: \"a\\t\n  b\"\n", "a\t b"),
+        ("k: \" a\n  b \"\n", " a b "),
+        ("k: \"a\r\n  b\"\r\n", "a b"),
+        ("k: \"a \\\n  b\"\n", "a b"),
+        ("k: \"a\\\n\n  b\"\n", "a\nb"),
+        ("k: 'a\n  b'\n", "a b"),
+        ("k: 'a\n\n  b'\n", "a\nb"),
+        ("k: 'a\n\n\n  b'\n", "a\n\nb"),
+        ("k: 'a \t\n \t\n\t b'\n", "a\nb"),
+        ("k: ' a\n  b '\n", " a b "),
+        ("k: 'a\n  '\n", "a "),
+        ("k: 'a\r\n\r\n  b'\r\n", "a\nb"),
+        ("k: 'a''\n  ''b'\n", "a' 'b"),
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        let node = doc.as_mapping().unwrap().get("k").unwrap();
+        assert_eq!(node.as_scalar().unwrap().as_string(), expected, "{yaml:?}");
+    }
 }

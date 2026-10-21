@@ -19,14 +19,17 @@
 
 mod common;
 use common::{
-    assert_edited, assert_file_cst_ok, assert_file_edited, assert_parser_shaped, parse_clean,
-    render_documents,
+    assert_edited, assert_file_cst_ok, assert_file_edited, assert_file_edited_valid,
+    assert_parser_shaped, parse_clean, render_documents,
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::path::YamlPath;
 use yaml_edit::validator::Validator;
-use yaml_edit::{debug, yaml_eq, Document, ScalarValue, Sequence, SyntaxKind, YamlFile, YamlNode};
+use yaml_edit::{
+    debug, yaml_eq, Document, Scalar, ScalarStyle, ScalarType, ScalarValue, Sequence, SyntaxKind,
+    YamlFile, YamlNode,
+};
 
 /// Every scalar under `node`, with its path of mapping keys and sequence
 /// indexes joined by `.`.
@@ -2706,5 +2709,113 @@ fn block_scalar_items_clear_the_dash() {
             seq.push(literal.clone());
         }
         assert_edited(&doc, expected);
+    }
+}
+
+/// A block scalar is always a string, even when empty or when its content
+/// spells a null keyword.
+#[test]
+fn block_scalar_is_not_null() {
+    for yaml in [
+        "a: |\n",
+        "a: >-\n",
+        "a: |+\n",
+        "a: |-\n  null\n",
+        "a: >-\n  ~\n",
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        let node = doc.as_mapping().unwrap().get("a").unwrap();
+        let scalar = node.as_scalar().unwrap();
+        assert!(!scalar.is_null(), "{yaml:?}");
+        assert_eq!(
+            ScalarValue::from_scalar(scalar).scalar_type(),
+            ScalarType::String,
+            "{yaml:?}"
+        );
+        assert!(!yaml_eq(scalar, &ScalarValue::null()), "{yaml:?}");
+    }
+}
+
+/// Folding, blank lines and chomping in block scalar bodies, and lone
+/// carriage returns as line breaks.
+#[test]
+fn block_scalar_body_values() {
+    for (yaml, key, expected) in [
+        ("k: >\n  a\n\n\n  b\n", "k", "a\n\nb\n"),
+        ("k: >\n\n  a\n", "k", "\na\n"),
+        ("k: >-\n  x\n  \ty\n", "k", "x\n\ty"),
+        ("k: >\n  a\n   b\n  c\n", "k", "a\n b\nc\n"),
+        ("k: >\n  a\n\n   b\n\n  c\n", "k", "a\n\n b\n\nc\n"),
+        ("k: |\n  a\n    \n \n  b\n", "k", "a\n  \n\nb\n"),
+        ("k: >\n\nj: 1\n", "k", ""),
+        ("k: |+\n\nj: 1\n", "k", "\n"),
+        ("k: |-\n\nj: 1\n", "k", ""),
+        ("k: |+\n   \n", "k", "\n"),
+        ("a: |\r  x\r  y\rb: 2\r", "a", "x\ny\n"),
+        ("a: |\r  x\r  y\rb: 2\r", "b", "2"),
+        ("a: b\r  c\rd: e\r", "a", "b c"),
+        ("a: b\r\r  c\rd: e\r", "a", "b\nc"),
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        let node = doc.as_mapping().unwrap().get(key).unwrap();
+        assert_eq!(node.as_scalar().unwrap().as_string(), expected, "{yaml:?}");
+    }
+}
+
+/// Replacing a block scalar leaves the line break ending its last line
+/// and the blank lines after it where the parser puts them after any
+/// other scalar.
+#[test]
+fn set_value_of_block_scalar() {
+    for (input, expected) in [
+        ("a: |\n  hello\nb: 2\n", "a: y\nb: 2\n"),
+        ("a: |\n  hello\n  \n\nb: 2\n", "a: y\n  \n\nb: 2\n"),
+        ("a: |\nb: 1\n", "a: y\nb: 1\n"),
+        ("a: | # c\n  x\nb: 1\n", "a: y\nb: 1\n"),
+        ("a: |\n  x", "a: y"),
+        ("a:\n  b: |\n    x\n\nc: 1\n", "a:\n  b: y\n\nc: 1\n"),
+        ("a:\n  b: >\n    x\n\n  c: 1\n", "a:\n  b: y\n\n  c: 1\n"),
+        ("- |\n  x\n\n- 1\n", "- y\n\n- 1\n"),
+        ("a:\n  - |\n    x\n\n  - 2\n", "a:\n  - y\n\n  - 2\n"),
+        ("? |\n  x\n: v\n", "? y\n: v\n"),
+        ("a: !t |\n  x\n\nb: 1\n", "a: !t y\n\nb: 1\n"),
+        ("!t |\n  x\n\n", "!t y\n\n"),
+        ("|\n  x\n\n...\n", "y\n\n...\n"),
+    ] {
+        let yaml = YamlFile::from_str(input).unwrap();
+        let scalar = yaml
+            .syntax()
+            .descendants()
+            .filter_map(Scalar::cast)
+            .find(Scalar::is_block)
+            .unwrap();
+        scalar.set_value("y");
+        assert_file_edited_valid(&yaml, expected);
+    }
+}
+
+/// A `|` or `>` that starts a plain scalar, which the parser accepts in a
+/// flow collection though the validator does not, is its text rather than
+/// an empty block scalar.
+#[test]
+fn plain_scalar_starting_with_block_indicator() {
+    for (input, text) in [
+        ("[|, x]\n", "|"),
+        ("[>, x]\n", ">"),
+        ("{a: |, b: 1}\n", "|"),
+        ("[|x]\n", "|x"),
+    ] {
+        let doc = Document::from_str(input).unwrap();
+        let scalar = doc
+            .syntax()
+            .descendants()
+            .filter_map(Scalar::cast)
+            .find(|s| s.value() == text)
+            .unwrap();
+        assert!(!scalar.is_block(), "{input:?}");
+        assert_eq!(scalar.as_string(), text, "{input:?}");
+        let value = ScalarValue::from_scalar(&scalar);
+        assert_eq!(value.value(), text, "{input:?}");
+        assert_eq!(value.style(), ScalarStyle::Plain, "{input:?}");
     }
 }

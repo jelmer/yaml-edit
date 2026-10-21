@@ -892,3 +892,26 @@ fn set_copied_flow_sequence_with_cr_line_breaks() {
     a.get_mapping("b").unwrap().set("c", &value);
     assert_file_edited_valid(&file, "a:\r  b:\r    c: [a,\r     b]\r");
 }
+
+/// A multi-line plain scalar set at another indentation moves its
+/// continuation lines with it; a block scalar's body is laid out anew.
+#[test]
+fn copy_multi_line_scalars() {
+    let src = Document::from_str("p: b\n  c\n   d\nq: |\n  x\n   y\n").unwrap();
+    let src = src.as_mapping().unwrap();
+    for (key, expected) in [
+        ("p", "top:\n  k: b\n    c\n     d\n"),
+        ("q", "top:\n  k: |\n    x\n     y\n"),
+    ] {
+        let doc = Document::from_str("top:\n  k: 1\n").unwrap();
+        let top = doc.as_mapping().unwrap().get_mapping("top").unwrap();
+        top.set("k", src.get(key).unwrap());
+        assert_edited(&doc, expected);
+        let reparsed = Document::from_str(expected).unwrap();
+        let reparsed = reparsed.as_mapping().unwrap().get_mapping("top").unwrap();
+        assert_eq!(
+            reparsed.get("k").unwrap().as_scalar().unwrap().as_string(),
+            src.get(key).unwrap().as_scalar().unwrap().as_string()
+        );
+    }
+}

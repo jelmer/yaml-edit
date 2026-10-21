@@ -1146,3 +1146,32 @@ fn set_into_flow_mapping_inserts_inside_braces() {
         );
     }
 }
+
+/// Quoted strings in flow sequences do not take the line break and
+/// indentation after them into their SCALAR node.
+#[test]
+fn quoted_strings_in_flow_sequence() {
+    for yaml in [
+        "{\n  \"items\": [\n    \"first\",\n    \"second\"\n  ]\n}",
+        r#"{"items": ["first", "second"]}"#,
+        "\nitems: [\"first\", \"second\"]\n",
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        let items = doc.as_mapping().unwrap().get_sequence("items").unwrap();
+        let values: Vec<_> = items
+            .values()
+            .map(|node| {
+                let scalar = node.as_scalar().unwrap().clone();
+                (scalar.value(), scalar.as_string())
+            })
+            .collect();
+        assert_eq!(
+            values,
+            [
+                ("\"first\"".to_string(), "first".to_string()),
+                ("\"second\"".to_string(), "second".to_string())
+            ],
+            "{yaml:?}"
+        );
+    }
+}

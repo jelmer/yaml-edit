@@ -3,13 +3,15 @@
 //! their meaning with `yaml_eq` and `yaml_hash`.
 
 mod common;
-use common::{assert_cst_ok, assert_parser_shaped, check_edit};
+use common::{assert_cst_ok, assert_parser_shaped, check_edit, value_of};
 use rowan::ast::AstNode;
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::Hasher;
 use std::str::FromStr;
 use yaml_edit::{
-    AsYaml, Document, DocumentResolvedExt, Lang, ResolveError, Scalar, ScalarStyle, ScalarType,
-    ScalarValue, SyntaxKind, YamlError, YamlFile, YamlValue,
+    yaml_eq, yaml_hash, AsYaml, Document, DocumentResolvedExt, Lang, ResolveError, Scalar,
+    ScalarStyle, ScalarType, ScalarValue, SyntaxKind, TextPosition, YamlError, YamlFile, YamlNode,
+    YamlValue,
 };
 
 fn render_as_yaml<T: AsYaml>(v: &T) -> String {
@@ -937,4 +939,724 @@ fn set_nested_values() {
             expected,
         );
     }
+}
+
+#[test]
+fn btreeset_block() {
+    let doc = Document::from_str("name: project\n").unwrap();
+    doc.set("tags", BTreeSet::from(["web", "db"]));
+    assert_parser_shaped(&doc);
+    assert_eq!(
+        doc.to_string(),
+        "name: project\ntags: !!set\n  db: null\n  web: null\n"
+    );
+}
+
+#[test]
+fn btreeset_nested_block() {
+    let doc = Document::from_str("a:\n  b: 1\n").unwrap();
+    let inner = doc.as_mapping().unwrap().get_mapping("a").unwrap();
+    inner.set("s", BTreeSet::from([1_i64, 2]));
+    assert_parser_shaped(&doc);
+    assert_eq!(
+        doc.to_string(),
+        "a:\n  b: 1\n  s: !!set\n    1: null\n    2: null\n"
+    );
+}
+
+#[test]
+fn btreeset_empty() {
+    let doc = Document::from_str("name: project\n").unwrap();
+    doc.set("tags", BTreeSet::<String>::new());
+    assert_parser_shaped(&doc);
+    assert_eq!(doc.to_string(), "name: project\ntags: !!set {}\n");
+}
+
+#[test]
+fn btreeset_flow() {
+    let doc = Document::from_str("m: {a: 1}\n").unwrap();
+    let inner = doc.as_mapping().unwrap().get_mapping("m").unwrap();
+    inner.set("s", BTreeSet::from(["y", "x"]));
+    assert_parser_shaped(&doc);
+    assert_eq!(doc.to_string(), "m: {a: 1, s: !!set {x: null, y: null}}\n");
+}
+
+#[test]
+fn btreeset_quotes_members() {
+    let doc = Document::from_str("name: project\n").unwrap();
+    doc.set("tags", BTreeSet::from(["true", "a: b", "x\ny"]));
+    assert_parser_shaped(&doc);
+    assert_eq!(
+        doc.to_string(),
+        "name: project\ntags: !!set\n  'a: b': null\n  'true': null\n  \"x\\ny\": null\n"
+    );
+}
+
+#[test]
+fn btreeset_reads_back_as_set() {
+    let doc = Document::from_str("name: project\n").unwrap();
+    doc.set("tags", BTreeSet::from(["web", "db"]));
+    let tags = doc.as_mapping().unwrap().get("tags").unwrap();
+    let set = tags.as_tagged().unwrap().as_set().unwrap();
+    assert_eq!(set.len(), 2);
+    assert!(set.contains("db"));
+    assert!(set.contains("web"));
+    assert!(!set.contains("null"));
+}
+
+#[test]
+fn mapping_set_preserves_alias_kind() {
+    let doc = Document::from_str("shared: &shared value\na: *shared\nb: old\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    mapping.set("b", mapping.get("a").unwrap());
+    assert_cst_ok(&doc);
+    assert_eq!(
+        doc.to_string(),
+        "shared: &shared value\na: *shared\nb: *shared\n"
+    );
+
+    match mapping.get("b").unwrap() {
+        YamlNode::Alias(alias) => {
+            assert_eq!(alias.name(), "shared");
+            assert_eq!(alias.value(), "*shared");
+        }
+        other => panic!("Expected alias, got {:?}", other),
+    }
+}
+
+fn root_of(text: &str) -> YamlNode {
+    let doc = Document::from_str(text).unwrap();
+    YamlNode::from_syntax(doc.syntax().first_child().unwrap()).unwrap()
+}
+
+fn hash_of(text: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    yaml_hash(&root_of(text), &mut hasher);
+    hasher.finish()
+}
+
+#[test]
+fn yaml_hash_consistent_with_yaml_eq() {
+    for (a, b) in [
+        ("name", "\"name\""),
+        ("name", "!!str name"),
+        ("1", "0x1"),
+        ("{a: 1, b: 2}", "{b: 2, a: 1}"),
+        ("[1, 'x']", "- 1\n- \"x\"\n"),
+        ("a:\n  b: [1]\n", "{a: {b: [0x1]}}"),
+    ] {
+        assert!(yaml_eq(&root_of(a), &root_of(b)), "{a:?} vs {b:?}");
+        assert_eq!(hash_of(a), hash_of(b), "{a:?} vs {b:?}");
+    }
+    assert_ne!(hash_of("1"), hash_of("'1'"));
+    assert_ne!(hash_of("{a: 1, b: 2}"), hash_of("{b: 1, a: 2}"));
+    assert_ne!(hash_of("[1, 2]"), hash_of("[2, 1]"));
+}
+
+#[test]
+fn multiline_str_is_parser_shaped() {
+    let doc = Document::from_str("a: 1  # c\nb: 2\n").unwrap();
+    doc.set("a", "x\ny\n");
+    doc.set("c", String::from("x\n\n"));
+    assert_cst_ok(&doc);
+    assert_parser_shaped(&doc);
+    assert_eq!(doc.to_string(), "a: |  # c\n  x\n  y\nb: 2\nc: |+\n  x\n\n");
+}
+
+#[test]
+fn option_none_emits_null() {
+    let doc = Document::from_str("key: value\n").unwrap();
+    doc.as_mapping().unwrap().set("key", None::<&str>);
+    assert_cst_ok(&doc);
+    assert_eq!(doc.to_string(), "key: null\n");
+}
+
+#[test]
+fn option_some_delegates() {
+    let doc = Document::from_str("key: value\n").unwrap();
+    doc.as_mapping().unwrap().set("key", Some("hello"));
+    assert_cst_ok(&doc);
+    assert_eq!(doc.to_string(), "key: hello\n");
+
+    let doc = Document::from_str("key: value\n").unwrap();
+    doc.as_mapping().unwrap().set("key", Some(42i64));
+    assert_cst_ok(&doc);
+    assert_eq!(doc.to_string(), "key: 42\n");
+}
+
+#[test]
+fn set_float_special_values() {
+    let cases: [(f64, &str); 6] = [
+        (f64::NAN, "k: .nan\n"),
+        (f64::INFINITY, "k: .inf\n"),
+        (f64::NEG_INFINITY, "k: -.inf\n"),
+        (1.0, "k: 1.0\n"),
+        (-0.0, "k: -0.0\n"),
+        (1.5, "k: 1.5\n"),
+    ];
+    for (value, expected) in cases {
+        let doc = Document::from_str("k: 0\n").unwrap();
+        doc.as_mapping().unwrap().set("k", value);
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), expected);
+        let reparsed = Document::from_str(&doc.to_string()).unwrap();
+        let got = reparsed
+            .as_mapping()
+            .unwrap()
+            .get("k")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert_eq!(got.to_bits(), value.to_bits());
+    }
+
+    let doc = Document::from_str("k: 0\n").unwrap();
+    doc.as_mapping().unwrap().set("k", f32::INFINITY);
+    assert_cst_ok(&doc);
+    assert_eq!(doc.to_string(), "k: .inf\n");
+}
+
+#[test]
+fn yaml_eq_special_float_spellings() {
+    let doc =
+        Document::from_str("a: .inf\nb: .Inf\nc: .nan\nd: .NaN\ne: -.inf\nf: -.INF\n").unwrap();
+    let m = doc.as_mapping().unwrap();
+    assert!(yaml_eq(&m.get("a").unwrap(), &m.get("b").unwrap()));
+    assert!(yaml_eq(&m.get("c").unwrap(), &m.get("d").unwrap()));
+    assert!(yaml_eq(&m.get("e").unwrap(), &m.get("f").unwrap()));
+    assert!(!yaml_eq(&m.get("a").unwrap(), &m.get("e").unwrap()));
+    assert!(yaml_eq(&m.get("b").unwrap(), &f64::INFINITY));
+}
+
+#[test]
+fn yaml_eq_integers_outside_i64() {
+    let yaml = "dec: 18446744073709551616\n\
+                    hex: 0x10000000000000000\n\
+                    oct: 0o2000000000000000000000\n\
+                    padded: 00018446744073709551616\n\
+                    tagged: !!int 0x10000000000000000\n\
+                    other: 18446744073709551617\n\
+                    min: 9223372036854775808\n\
+                    plusmin: +9223372036854775808\n\
+                    negmin: -9223372036854775809\n\
+                    neghex: -0x8000000000000001\n";
+    assert!(eq_values(yaml, "dec", "hex"));
+    assert!(eq_values(yaml, "dec", "oct"));
+    assert!(eq_values(yaml, "dec", "padded"));
+    assert!(eq_values(yaml, "dec", "tagged"));
+    assert!(!eq_values(yaml, "dec", "other"));
+    assert!(eq_values(yaml, "min", "plusmin"));
+    assert!(!eq_values(yaml, "min", "negmin"));
+    // `-0x...` is not a core schema integer, so it is a string.
+    assert!(!eq_values(yaml, "negmin", "neghex"));
+    let doc = Document::from_str("a: 0xFFFFFFFFFFFFFFFF\n").unwrap();
+    let a = doc.as_mapping().unwrap().get("a").unwrap();
+    assert!(yaml_eq(&a, &u64::MAX));
+}
+
+#[test]
+fn yaml_eq_negative_zero() {
+    assert!(eq_values("a: -0\nb: 0\nc: +000\n", "a", "b"));
+    assert!(eq_values("a: -0\nb: 0\nc: +000\n", "a", "c"));
+}
+
+fn eq_values(yaml: &str, a: &str, b: &str) -> bool {
+    let doc = Document::from_str(yaml).unwrap();
+    let m = doc.as_mapping().unwrap();
+    let (a, b) = (m.get(a).unwrap(), m.get(b).unwrap());
+    let forward = yaml_eq(&a, &b);
+    assert_eq!(forward, yaml_eq(&b, &a));
+    forward
+}
+
+fn eq_docs(a: &str, b: &str) -> bool {
+    let (d1, d2) = (
+        Document::from_str(a).unwrap(),
+        Document::from_str(b).unwrap(),
+    );
+    let (m1, m2) = (d1.as_mapping().unwrap(), d2.as_mapping().unwrap());
+    let forward = yaml_eq(&m1, &m2);
+    assert_eq!(forward, yaml_eq(&m2, &m1));
+    forward
+}
+
+#[test]
+fn yaml_eq_tagged_key() {
+    assert!(eq_docs("{a: 1}", "{!!str a: 1}"));
+    assert!(eq_docs("a: 1\n", "!!str a: 1\n"));
+    assert!(eq_docs("a: 1\n", "? !!str a\n: 1\n"));
+    assert!(!eq_docs("1: a\n", "!!str 1: a\n"));
+    assert!(eq_docs("'1': a\n", "!!str 1: a\n"));
+    assert!(eq_docs("1: a\n", "!!int 0x1: a\n"));
+}
+
+#[test]
+fn yaml_eq_tagged_value() {
+    assert!(eq_docs("{a: 1}", "{a: !!int 1}"));
+    assert!(eq_docs("a: 1\n", "a: !!int\n  1\n"));
+    assert!(!eq_docs("a: 1\n", "a: !!str 1\n"));
+}
+
+#[test]
+fn yaml_eq_tagged_scalars() {
+    let yaml = "hex: !!int 0x1\n\
+                    int: !!int 1\n\
+                    plain: 1\n\
+                    quoted: '1'\n\
+                    str: !!str 1\n\
+                    verbatim: !<tag:yaml.org,2002:int> 01\n\
+                    float: !!float 1\n\
+                    plainfloat: 1.0\n\
+                    nonspecific: ! 1\n\
+                    custom: !foo 1\n\
+                    custom2: !bar 1\n\
+                    bool: !!bool TRUE\n\
+                    plainbool: true\n\
+                    nulltag: !!null ~\n\
+                    plainnull:\n";
+    assert!(eq_values(yaml, "hex", "int"));
+    assert!(eq_values(yaml, "hex", "plain"));
+    assert!(eq_values(yaml, "verbatim", "plain"));
+    assert!(!eq_values(yaml, "plain", "quoted"));
+    assert!(eq_values(yaml, "str", "quoted"));
+    assert!(!eq_values(yaml, "str", "plain"));
+    assert!(eq_values(yaml, "float", "plainfloat"));
+    assert!(!eq_values(yaml, "float", "plain"));
+    assert!(eq_values(yaml, "nonspecific", "quoted"));
+    assert!(!eq_values(yaml, "custom", "quoted"));
+    assert!(!eq_values(yaml, "custom", "custom2"));
+    assert!(eq_values(yaml, "custom", "custom"));
+    assert!(eq_values(yaml, "bool", "plainbool"));
+    assert!(eq_values(yaml, "nulltag", "plainnull"));
+}
+
+#[test]
+fn yaml_eq_tagged_scalar_raw() {
+    let doc = Document::from_str("a: !!int 0x1\nb: !!str 1\n").unwrap();
+    let m = doc.as_mapping().unwrap();
+    assert!(yaml_eq(&m.get("a").unwrap(), &1_i64));
+    assert!(!yaml_eq(&m.get("a").unwrap(), &"1"));
+    assert!(yaml_eq(&m.get("b").unwrap(), &"1"));
+    assert!(!yaml_eq(&m.get("b").unwrap(), &1_i64));
+}
+
+#[test]
+fn yaml_eq_tagged_collections() {
+    let yaml = "map: !!map {a: 1}\n\
+                    plainmap: {a: 1}\n\
+                    custommap: !foo {a: 1}\n\
+                    set1: !!set {a, b}\n\
+                    set2: !!set {b, a}\n\
+                    set3: !!set {a, c}\n\
+                    seq: !!seq [1, 2]\n\
+                    plainseq: [1, 2]\n";
+    assert!(eq_values(yaml, "map", "plainmap"));
+    assert!(!eq_values(yaml, "custommap", "plainmap"));
+    assert!(eq_values(yaml, "set1", "set2"));
+    assert!(!eq_values(yaml, "set1", "set3"));
+    assert!(eq_values(yaml, "seq", "plainseq"));
+    assert!(!eq_values(yaml, "seq", "plainmap"));
+}
+
+#[test]
+fn yaml_eq_cst_vs_raw_collections() {
+    let doc = Document::from_str("{x: 1, y: 2}").unwrap();
+    let cst = doc.as_mapping().unwrap();
+    let raw = YamlValue::Mapping(BTreeMap::from([
+        ("x".to_string(), YamlValue::scalar(1_i64)),
+        ("y".to_string(), YamlValue::scalar(2_i64)),
+    ]));
+    assert!(yaml_eq(&cst, &raw));
+    assert!(yaml_eq(&raw, &cst));
+
+    let other = YamlValue::Mapping(BTreeMap::from([
+        ("x".to_string(), YamlValue::scalar(1_i64)),
+        ("y".to_string(), YamlValue::scalar("2")),
+    ]));
+    assert!(!yaml_eq(&cst, &other));
+    assert!(!yaml_eq(&raw, &other));
+    assert!(yaml_eq(&raw, &raw.clone()));
+
+    let doc = Document::from_str("[1, two]").unwrap();
+    let cst = doc.as_sequence().unwrap();
+    let raw = YamlValue::from_sequence(vec![
+        YamlValue::scalar(ScalarValue::parse("1")),
+        YamlValue::scalar("two"),
+    ]);
+    assert!(yaml_eq(&cst, &raw));
+    assert!(yaml_eq(&raw, &cst));
+    assert!(!yaml_eq(&cst, &YamlValue::from_sequence(vec![])));
+}
+
+#[test]
+fn yaml_node_helpers() {
+    let doc = Document::from_str("a: 'x'\nb: [1, 2]\nd: &q x\ne: *q\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let a = mapping.get("a").unwrap();
+    assert!(a == "x");
+    assert!(a == *"x");
+    let owned = String::from("x");
+    assert!(a == owned);
+    assert!(a.yaml_eq(&"x"));
+    assert!(a != "y");
+    assert!(!a.yaml_eq(&"y"));
+    let other = String::from("y");
+    assert!(a != other);
+    let b = mapping.get("b").unwrap();
+    assert_eq!(b.get_item(1).unwrap().to_string(), "2");
+    assert_eq!(b.get_item(2), None);
+    assert_eq!(a.get_item(0), None);
+    let e = mapping.get("e").unwrap();
+    assert_eq!(
+        e.as_alias().map(|alias| alias.name()),
+        Some("q".to_string())
+    );
+    assert_eq!(a.as_alias(), None);
+    // Aliases are not resolved, so they are not even equal to themselves.
+    assert!(!yaml_eq(&e, &e));
+}
+
+#[test]
+fn option_values() {
+    for (src, expected) in [
+        ("{a: 1}", "{a: 1, k: null, j: \"p, q\"}"),
+        ("{\"a\": 1}", "{\"a\": 1, \"k\": null, \"j\": \"p, q\"}"),
+        ("a: 1\n", "a: 1\nk: null\nj: p, q\n"),
+    ] {
+        let doc = Document::from_str(src).unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        mapping.set("k", None::<i64>);
+        mapping.set("j", Some("p, q"));
+        assert_eq!(doc.to_string(), expected, "{src:?}");
+        assert_cst_ok(&doc);
+    }
+}
+
+#[test]
+fn yaml_node_kind_predicates() {
+    let doc = Document::from_str("s: x\nm: {a: 1}\nl: [1]\nt: !t x\nr: &r 1\na: *r\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let kinds = |key: &str| {
+        let node = mapping.get(key).unwrap();
+        [
+            node.is_scalar(),
+            node.is_mapping(),
+            node.is_sequence(),
+            node.is_tagged(),
+            node.is_alias(),
+        ]
+    };
+    assert_eq!(kinds("s"), [true, false, false, false, false]);
+    assert_eq!(kinds("m"), [false, true, false, false, false]);
+    assert_eq!(kinds("l"), [false, false, true, false, false]);
+    assert_eq!(kinds("t"), [false, false, false, true, false]);
+    assert_eq!(kinds("a"), [false, false, false, false, true]);
+    assert_eq!(
+        mapping.get("m").unwrap().byte_range(),
+        TextPosition::new(8, 14)
+    );
+}
+const QUOTING: &str = r#"
+plain: value
+single: 'value'
+double: "value"
+"#;
+
+const ESCAPES: &str = r#"
+newline1: "line1\nline2"
+newline2: "line1
+
+line2"
+tab1: "a\tb"
+tab2: "a	b"
+backslash1: "path\\file"
+backslash2: 'path\file'
+quote1: "say \"hi\""
+quote2: 'say "hi"'
+"#;
+
+const SINGLE_QUOTES: &str = r#"
+single1: 'can''t'
+single2: "can't"
+"#;
+
+const HEX_ESCAPES: &str = r#"
+unicode1: "hello\x20world"
+unicode2: "hello world"
+unicode3: "smiley\u0020face"
+unicode4: "smiley face"
+"#;
+
+const CONTROL_ESCAPES: &str = r#"
+bell: "\a"
+escape: "\e"
+"null": "\0"
+backspace: "\b"
+formfeed: "\f"
+carriagereturn: "\r"
+verticaltab: "\v"
+"#;
+
+const EMPTY: &str = r#"
+empty1: ""
+empty2: ''
+"#;
+
+const WHITESPACE: &str = r#"
+spaces1: "  leading"
+spaces2: "trailing  "
+spaces3: "  both  "
+plain: value
+"#;
+
+const TYPES: &str = r#"
+string: "123"
+number: 123
+sequence:
+  - item
+mapping:
+  key: value
+"#;
+
+const FOLDING: &str = r#"
+folded1: "line1 \
+  line2"
+folded2: "line1 line2"
+"#;
+
+const EMOJI: &str = r#"
+emoji1: "😀"
+emoji2: "\U0001F600"
+"#;
+
+const NULLS: &str = r#"
+null1: null
+null2: null
+null3:
+empty: ""
+"#;
+
+const BOOLS: &str = r#"
+true1: true
+true2: True
+true3: TRUE
+false1: false
+false2: False
+"#;
+
+const NUMBERS: &str = r#"
+decimal: 123
+octal: 0o173
+hex: 0x7B
+"#;
+
+const ANCHORS: &str = r#"
+original: &anchor value
+duplicate: value
+"#;
+
+const STYLES: &str = r#"
+flow_seq: [1, 2, 3]
+block_seq:
+  - 1
+  - 2
+  - 3
+flow_map: {a: 1, b: 2}
+block_map:
+  a: 1
+  b: 2
+"#;
+
+/// Whether the values of `a` and `b` in the root mapping of each document
+/// are equal by `yaml_eq`, which has to be symmetric.
+fn eq_across(yaml_a: &str, a: &str, yaml_b: &str, b: &str) -> bool {
+    let (va, vb) = (value_of(yaml_a, a), value_of(yaml_b, b));
+    let forward = yaml_eq(&va, &vb);
+    assert_eq!(forward, yaml_eq(&vb, &va));
+    forward
+}
+
+/// Whether the root nodes of two documents are equal by `yaml_eq`, which
+/// has to be symmetric.
+fn eq_roots(a: &str, b: &str) -> bool {
+    let (ra, rb) = (root_of(a), root_of(b));
+    let forward = yaml_eq(&ra, &rb);
+    assert_eq!(forward, yaml_eq(&rb, &ra));
+    forward
+}
+
+/// Two scalars are equal when they mean the same: the style they are
+/// written in, escapes, anchors and the case of a boolean do not matter,
+/// their type does.
+#[test]
+fn yaml_eq_scalars() {
+    for (yaml, a, b, expected) in [
+        (QUOTING, "plain", "single", true),
+        (QUOTING, "single", "double", true),
+        (QUOTING, "plain", "double", true),
+        // An escaped line break equals an empty line, which folds to one.
+        (ESCAPES, "newline1", "newline2", true),
+        (ESCAPES, "tab1", "tab2", true),
+        // A single-quoted string does not interpret backslashes, so
+        // 'path\file' is the same as "path\\file".
+        (ESCAPES, "backslash1", "backslash2", true),
+        (ESCAPES, "quote1", "quote2", true),
+        (SINGLE_QUOTES, "single1", "single2", true),
+        (HEX_ESCAPES, "unicode1", "unicode2", true),
+        (HEX_ESCAPES, "unicode3", "unicode4", true),
+        (EMPTY, "empty1", "empty2", true),
+        (TYPES, "string", "number", false),
+        (TYPES, "string", "sequence", false),
+        (TYPES, "string", "mapping", false),
+        (TYPES, "number", "sequence", false),
+        (TYPES, "sequence", "mapping", false),
+        // An escaped line break is dropped along with the next line's
+        // indentation, but white space before it is kept.
+        (FOLDING, "folded1", "folded2", true),
+        (EMOJI, "emoji1", "emoji2", true),
+        (NULLS, "null1", "null2", true),
+        // `key:` is the same as `key: null`.
+        (NULLS, "null3", "null1", true),
+        (NULLS, "null3", "null2", true),
+        (NULLS, "null1", "empty", false),
+        (BOOLS, "true1", "true2", true),
+        (BOOLS, "true1", "true3", true),
+        (BOOLS, "false1", "false2", true),
+        (NUMBERS, "decimal", "octal", true),
+        (NUMBERS, "decimal", "hex", true),
+        (NUMBERS, "octal", "hex", true),
+        (ANCHORS, "original", "duplicate", true),
+        (STYLES, "flow_seq", "block_seq", true),
+        (STYLES, "flow_map", "block_map", true),
+    ] {
+        assert_eq!(eq_values(yaml, a, b), expected, "{a} vs {b} in {yaml:?}");
+    }
+}
+
+/// A node equals a Rust string when it is a string with that content.
+#[test]
+fn yaml_eq_scalar_and_str() {
+    for (yaml, key, raw, expected) in [
+        (QUOTING, "plain", "value", true),
+        (QUOTING, "single", "value", true),
+        (QUOTING, "double", "value", true),
+        (ESCAPES, "backslash1", "path\\file", true),
+        (ESCAPES, "backslash2", "path\\file", true),
+        (ESCAPES, "quote1", r#"say "hi""#, true),
+        (SINGLE_QUOTES, "single1", "can't", true),
+        (HEX_ESCAPES, "unicode1", "hello world", true),
+        (HEX_ESCAPES, "unicode3", "smiley face", true),
+        (CONTROL_ESCAPES, "bell", "\x07", true),
+        (CONTROL_ESCAPES, "escape", "\x1B", true),
+        (CONTROL_ESCAPES, "null", "\0", true),
+        (CONTROL_ESCAPES, "backspace", "\x08", true),
+        (CONTROL_ESCAPES, "formfeed", "\x0C", true),
+        (CONTROL_ESCAPES, "carriagereturn", "\r", true),
+        (CONTROL_ESCAPES, "verticaltab", "\x0B", true),
+        (EMPTY, "empty1", "", true),
+        // White space is kept exactly.
+        (WHITESPACE, "spaces1", "  leading", true),
+        (WHITESPACE, "spaces2", "trailing  ", true),
+        (WHITESPACE, "spaces3", "  both  ", true),
+        (WHITESPACE, "plain", "value", true),
+        (WHITESPACE, "spaces1", "leading", false),
+        (WHITESPACE, "spaces2", "trailing", false),
+        (FOLDING, "folded1", "line1 line2", true),
+        (EMOJI, "emoji1", "\u{1F600}", true),
+        // Null, boolean and integer scalars are not strings.
+        (NULLS, "null1", "null", false),
+        (BOOLS, "true1", "true", false),
+        (BOOLS, "false1", "false", false),
+        (NUMBERS, "decimal", "123", false),
+        (ANCHORS, "original", "value", true),
+    ] {
+        let node = value_of(yaml, key);
+        assert_eq!(yaml_eq(&node, &raw), expected, "{key} in {yaml:?}");
+    }
+    for key in ["decimal", "octal", "hex"] {
+        assert!(yaml_eq(&value_of(NUMBERS, key), &123), "{key}");
+    }
+}
+
+/// Collections are equal when they hold equal entries: mappings in any
+/// order, sequences in the same one. Comments and quoting do not matter.
+#[test]
+fn yaml_eq_collections() {
+    let mappings = (
+        r#"
+a: 1
+b: 2
+c: 3
+"#,
+        r#"
+a: 1
+b: 2
+c: 3
+"#,
+        r#"
+a: 1
+c: 3
+b: 2
+"#,
+    );
+    let sequences = (
+        r#"
+- one
+- two
+- three
+"#,
+        r#"
+- one
+- two
+- three
+"#,
+        r#"
+- one
+- three
+- two
+"#,
+    );
+    let nested = (
+        r#"
+outer:
+  inner:
+    key: "value"
+"#,
+        r#"
+outer:
+  inner:
+    key: 'value'
+"#,
+    );
+    let comments = (
+        r#"
+# This is a comment
+key: value # inline comment
+"#,
+        r#"
+key: value
+"#,
+    );
+    for (a, b, expected) in [
+        ("{a: 1, b: 2}", "{b: 2, a: 1}", true),
+        ("{a: 1, b: 2}", "{b: 1, a: 2}", false),
+        ("{a: 1, a: 1}", "{a: 1, b: 1}", false),
+        (mappings.0, mappings.1, true),
+        (mappings.0, mappings.2, true),
+        (sequences.0, sequences.1, true),
+        (sequences.0, sequences.2, false),
+        (nested.0, nested.1, true),
+        (comments.0, comments.1, true),
+    ] {
+        assert_eq!(eq_roots(a, b), expected, "{a:?} vs {b:?}");
+    }
+    assert!(eq_across(comments.0, "key", comments.1, "key"));
+    assert!(eq_across(
+        "literal1: |\n  line1\n  line2\n",
+        "literal1",
+        "literal2: |\n  line1\n  line2\n",
+        "literal2"
+    ));
 }

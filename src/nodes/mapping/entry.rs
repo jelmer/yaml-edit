@@ -534,7 +534,13 @@ impl MappingEntry {
         flow_context: bool,
         anchor: Option<&str>,
     ) {
+        // A block entry without a final line break ends the input, which
+        // stays unterminated.
+        let open = !flow_context && !trivia::ends_line(&self.0);
         self.replace_value(new_value, flow_context, anchor);
+        if open {
+            trivia::unterminate_last(&self.0);
+        }
         crate::nodes::replaced_value::settle_lines_after_block_scalar(&self.0);
         if let Some(content) = self.value().last_child() {
             trivia::drop_space_before_empty(&content);

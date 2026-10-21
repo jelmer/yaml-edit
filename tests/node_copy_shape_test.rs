@@ -678,7 +678,7 @@ fn test_set_sequence_item_to_root_flow_sequence_continued_at_column_zero() {
 #[test]
 fn test_set_value_to_unterminated_block_collection() {
     for (source, expected) in [
-        ("a: 1", "a:\n  - x\n"),
+        ("a: 1", "a:\n  - x"),
         ("a: 1\n", "a:\n  - x\n"),
         ("a: 1\nb: 2\n", "a:\n  - x\nb: 2\n"),
     ] {

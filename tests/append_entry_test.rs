@@ -131,6 +131,41 @@ fn sequence_methods_keep_unterminated_end() {
     );
 }
 
+#[test]
+fn set_value_keeps_unterminated_end() {
+    let value = |text: &str| Document::from_str(text).unwrap();
+    for (source, new, expected) in [
+        ("a:\n  - x", "z", "a: z"),
+        ("a:\n  b: 1", "[1]", "a: [1]"),
+        ("a: 1", "- p\n- q", "a:\n  - p\n  - q"),
+        ("a:", "p: 1", "a:\n  p: 1"),
+        ("a: 1", "!t\n  p: 1", "a: !t\n  p: 1"),
+        ("a: # c", "- p", "a: # c\n  - p"),
+        ("x: 1\na:\n  - x", "- p", "x: 1\na:\n  - p"),
+        ("? a\n:\n  - x", "z", "? a\n: z"),
+        ("? a\n: 1", "- p", "? a\n:\n  - p"),
+        // The line break of a block scalar is part of its value.
+        ("a: 1", "|\n  x\n", "a: |\n  x\n"),
+    ] {
+        check_edit(source, |d| root(d).set("a", value(new)), expected);
+    }
+    check_edit(
+        "o:\n  a:\n    - x",
+        |d| root(d).get_mapping("o").unwrap().set("a", value("z")),
+        "o:\n  a: z",
+    );
+    check_edit(
+        "o:\n  a: 1",
+        |d| root(d).get_mapping("o").unwrap().set("a", value("- p")),
+        "o:\n  a:\n    - p",
+    );
+    check_edit(
+        "- a\n- b",
+        |d| assert!(seq(d).set(1, value("- c"))),
+        "- a\n- - c",
+    );
+}
+
 const SRC: &str = "x:\n  a: 1\n  # end\ny: 1\n";
 
 fn edit_x(src: &str, f: impl FnOnce(&Mapping)) -> String {

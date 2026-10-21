@@ -112,5 +112,6 @@ fn test_preserves_comments() {
 - [DESIGN.md](DESIGN.md) - Architecture and patterns
 - [rowan docs](https://docs.rs/rowan/) - The CST library
 - [rowan.md](rowan.md) - Known rowan quirks and how the crate avoids them
+- [docs/compatibility.md](docs/compatibility.md) - Inputs read differently from PyYAML and saphyr
 - [YAML 1.2 Spec](https://yaml.org/spec/1.2.2/) - Language specification
 - Examples in `examples/` directory

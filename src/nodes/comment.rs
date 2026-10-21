@@ -51,17 +51,19 @@ impl Comment {
     /// does not start with `#` or contains a line break: either would turn
     /// the token into something other than a single comment.
     ///
+    /// Afterwards this handle refers to the new comment token.
+    ///
     /// # Example
     /// ```
     /// use yaml_edit::Document;
     /// use std::str::FromStr;
     ///
     /// let doc = Document::from_str("key: value # teh value\n").unwrap();
-    /// let comment = doc.comments().next().unwrap();
+    /// let mut comment = doc.comments().next().unwrap();
     /// comment.set_text("# the value").unwrap();
     /// assert_eq!(doc.to_string(), "key: value # the value\n");
     /// ```
-    pub fn set_text(&self, text: &str) -> Result<(), CommentTextError> {
+    pub fn set_text(&mut self, text: &str) -> Result<(), CommentTextError> {
         if !text.starts_with('#') {
             return Err(CommentTextError::MissingHash);
         }
@@ -75,6 +77,11 @@ impl Comment {
         let index = self.0.index();
         let new_token = fresh_token(SyntaxKind::COMMENT, text);
         super::replace_children(&parent, index..index + 1, vec![new_token.into()]);
+        self.0 = parent
+            .children_with_tokens()
+            .nth(index)
+            .and_then(|element| element.into_token())
+            .expect("the replacement comment sits at the old comment's index");
         Ok(())
     }
 
@@ -95,11 +102,11 @@ impl Comment {
     /// use std::str::FromStr;
     ///
     /// let doc = Document::from_str("key: value # teh value\n").unwrap();
-    /// let comment = doc.comments().next().unwrap();
+    /// let mut comment = doc.comments().next().unwrap();
     /// comment.set_content("the value").unwrap();
     /// assert_eq!(doc.to_string(), "key: value # the value\n");
     /// ```
-    pub fn set_content(&self, content: &str) -> Result<(), CommentTextError> {
+    pub fn set_content(&mut self, content: &str) -> Result<(), CommentTextError> {
         self.set_text(&format!("# {content}"))
     }
 

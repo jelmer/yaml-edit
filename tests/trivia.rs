@@ -1470,13 +1470,25 @@ fn set_comment_text() {
     assert_eq!(texts, vec!["# header", "# the value", "# footer"]);
 }
 
+/// A comment handle reflects its own edits, and stays usable for more.
+#[test]
+fn set_comment_text_updates_handle() {
+    let file = YamlFile::from_str("key: value # teh value\n").unwrap();
+    let mut comment = file.comments().next().unwrap();
+    comment.set_text("# the value").unwrap();
+    assert_eq!(comment.text(), "# the value");
+    comment.set_content("a value").unwrap();
+    assert_eq!(comment.content(), "a value");
+    assert_file_edited(&file, "key: value # a value\n");
+}
+
 /// Text that is not a single comment token is refused, leaving the
 /// document untouched.
 #[test]
 fn set_comment_text_rejects_invalid_text() {
     let text = "key: value # comment\n";
     let file = YamlFile::from_str(text).unwrap();
-    let comment = file.comments().next().unwrap();
+    let mut comment = file.comments().next().unwrap();
     assert_eq!(
         comment.set_text("no hash"),
         Err(CommentTextError::MissingHash)

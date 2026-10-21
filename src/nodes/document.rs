@@ -750,8 +750,9 @@ impl Document {
 }
 
 /// As a value, a document is its root node, or null if it has none.
-// TODO: Carry over comments outside the root, as after `---`; they are
-// left out.
+///
+/// Only the root is copied: comments outside it, such as a comment line
+/// before it or after `---`, are not.
 impl AsYaml for Document {
     fn as_node(&self) -> Option<&SyntaxNode> {
         Some(&self.0)
@@ -2051,6 +2052,16 @@ Repository: https://github.com/example/example.git";
             let file = YamlFile::from_str(input).unwrap();
             edit(&file);
             crate::debug::assert_edited(&file, expected);
+        }
+    }
+
+    #[test]
+    fn document_as_value_leaves_out_comments_outside_root() {
+        for source in ["--- # c\nv # after\n# trail\n", "# lead\nv\n"] {
+            let file = YamlFile::from_str("x: 1\n").unwrap();
+            let doc = file.document().unwrap();
+            doc.set("k", Document::from_str(source).unwrap());
+            crate::debug::assert_edited(&file, "x: 1\nk: v\n");
         }
     }
 }

@@ -59,6 +59,9 @@ pub enum YamlKind {
 /// - A boolean (`true`)
 /// - An existing CST node ([`Mapping`], [`Sequence`], [`Scalar`], [`YamlNode`], …)
 /// - A [`YamlValue`](crate::YamlValue), `Vec<YamlValue>` or `BTreeMap<String, YamlValue>`
+///
+/// A CST node is copied with the comments inside it, but not those around
+/// it, such as a comment line before it or a comment after a scalar.
 pub trait AsYaml {
     /// Returns a reference to the underlying `SyntaxNode` if one exists.
     ///

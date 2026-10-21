@@ -44,6 +44,9 @@ jobs:
     - name: Run tests with all features
       run: cargo test --workspace --all-features --verbose
 
+    - name: Run tests without default features
+      run: cargo test --workspace --no-default-features --verbose
+
     - name: Run doc tests
       run: cargo test --workspace --doc --all-features
 

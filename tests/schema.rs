@@ -1198,6 +1198,18 @@ fn not_allowed(path: &str, schema: &str, found_type: ScalarType) -> ValidationEr
     ValidationError::type_not_allowed(path, schema, found_type, allowed)
 }
 
+/// What `schema` reports for a `!!binary` scalar at `path`. Without the
+/// base64 feature there is no binary type, and the scalar is a string.
+#[cfg(feature = "base64")]
+fn binary_not_allowed(path: &str, schema: &str) -> Vec<ValidationError> {
+    vec![not_allowed(path, schema, ScalarType::Binary)]
+}
+
+#[cfg(not(feature = "base64"))]
+fn binary_not_allowed(_path: &str, _schema: &str) -> Vec<ValidationError> {
+    vec![]
+}
+
 /// What each schema reports through `Document::validate_schema`, with the
 /// path of every value it does not allow.
 #[test]
@@ -1268,23 +1280,27 @@ active: true
         (
             yaml_specific,
             [
-                vec![
-                    not_allowed("root.pattern", "json", Regex),
-                    not_allowed("root.data", "json", Binary),
-                ],
+                [
+                    vec![not_allowed("root.pattern", "json", Regex)],
+                    binary_not_allowed("root.data", "json"),
+                ]
+                .concat(),
                 vec![],
-                vec![
-                    not_allowed("root.pattern", "failsafe", Regex),
-                    not_allowed("root.data", "failsafe", Binary),
-                ],
-                vec![
-                    not_allowed("root.pattern", "failsafe", Regex),
-                    not_allowed("root.data", "failsafe", Binary),
-                ],
-                vec![
-                    not_allowed("root.pattern", "json", Regex),
-                    not_allowed("root.data", "json", Binary),
-                ],
+                [
+                    vec![not_allowed("root.pattern", "failsafe", Regex)],
+                    binary_not_allowed("root.data", "failsafe"),
+                ]
+                .concat(),
+                [
+                    vec![not_allowed("root.pattern", "failsafe", Regex)],
+                    binary_not_allowed("root.data", "failsafe"),
+                ]
+                .concat(),
+                [
+                    vec![not_allowed("root.pattern", "json", Regex)],
+                    binary_not_allowed("root.data", "json"),
+                ]
+                .concat(),
             ],
         ),
         (string_only, [vec![], vec![], vec![], vec![], vec![]]),

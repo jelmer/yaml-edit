@@ -285,6 +285,13 @@ fn move_with_new_value() {
 }
 
 #[test]
+fn move_before_from_end_of_flow_mapping() {
+    let doc = Document::from_str("{a: 1, b: 2, c: 3}").unwrap();
+    assert!(root(&doc).move_before("a", "c", 9));
+    assert_edited(&doc, "{c: 9, a: 1, b: 2}");
+}
+
+#[test]
 fn move_with_new_value_keeps_position_layout() {
     // The entry moves as it would with its own value, comment lines and
     // blank lines included.
@@ -385,13 +392,7 @@ fn reorder_comment_line_to_front_of_file() {
         let file = YamlFile::from_str(source).unwrap();
         let doc = file.documents().next().unwrap();
         doc.as_mapping().unwrap().reorder_fields(["b", "a"]);
-        assert_eq!(file.to_string(), expected);
-        common::assert_file_cst_ok(&file);
-        let reparsed = YamlFile::from_str(expected).unwrap();
-        assert_eq!(
-            debug::shape_to_string(file.syntax()),
-            debug::shape_to_string(reparsed.syntax())
-        );
+        common::assert_file_edited(&file, expected);
     }
 }
 

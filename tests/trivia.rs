@@ -12,8 +12,8 @@ use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::path::YamlPath;
 use yaml_edit::{
-    debug, Mapping, MappingBuilder, MappingEntry, Sequence, SyntaxKind, YamlFile, YamlNode,
-    YamlValue,
+    debug, CommentTextError, Mapping, MappingBuilder, MappingEntry, Sequence, SyntaxKind, YamlFile,
+    YamlNode, YamlValue,
 };
 
 /// Parse `yaml` and check it round trips exactly.
@@ -1444,30 +1444,54 @@ fn comment_position() {
 #[test]
 fn set_comment_text() {
     let file = YamlFile::from_str("key: value # teh value\n").unwrap();
-    file.comments().next().unwrap().set_text("# the value");
+    file.comments()
+        .next()
+        .unwrap()
+        .set_text("# the value")
+        .unwrap();
     assert_file_edited(&file, "key: value # the value\n");
 
     let file = YamlFile::from_str("key: value #teh value\n").unwrap();
-    file.comments().next().unwrap().set_content("the value");
+    file.comments()
+        .next()
+        .unwrap()
+        .set_content("the value")
+        .unwrap();
     assert_file_edited(&file, "key: value # the value\n");
 
     let file = YamlFile::from_str("# header\nkey: value # teh value\n# footer\n").unwrap();
-    file.comments().nth(1).unwrap().set_text("# the value");
+    file.comments()
+        .nth(1)
+        .unwrap()
+        .set_text("# the value")
+        .unwrap();
     assert_file_edited(&file, "# header\nkey: value # the value\n# footer\n");
     let texts: Vec<_> = file.comments().map(|c| c.text().to_string()).collect();
     assert_eq!(texts, vec!["# header", "# the value", "# footer"]);
 }
 
+/// Text that is not a single comment token is refused, leaving the
+/// document untouched.
 #[test]
-#[should_panic(expected = "must start with '#'")]
-fn set_comment_text_rejects_missing_hash() {
-    let file = YamlFile::from_str("key: value # comment\n").unwrap();
-    file.comments().next().unwrap().set_text("no hash");
-}
-
-#[test]
-#[should_panic(expected = "must not contain a newline")]
-fn set_comment_text_rejects_newline() {
-    let file = YamlFile::from_str("key: value # comment\n").unwrap();
-    file.comments().next().unwrap().set_text("# a\n# b");
+fn set_comment_text_rejects_invalid_text() {
+    let text = "key: value # comment\n";
+    let file = YamlFile::from_str(text).unwrap();
+    let comment = file.comments().next().unwrap();
+    assert_eq!(
+        comment.set_text("no hash"),
+        Err(CommentTextError::MissingHash)
+    );
+    assert_eq!(
+        comment.set_text("# a\n# b"),
+        Err(CommentTextError::LineBreak)
+    );
+    assert_eq!(
+        comment.set_text("# a\r# b"),
+        Err(CommentTextError::LineBreak)
+    );
+    assert_eq!(
+        comment.set_content("a\nb"),
+        Err(CommentTextError::LineBreak)
+    );
+    assert_eq!(file.to_string(), text);
 }

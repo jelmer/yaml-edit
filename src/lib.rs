@@ -222,8 +222,8 @@ pub use schema::{
 };
 pub use value::YamlValue;
 pub use yaml::{
-    Alias, Comment, Directive, Document, Entry, Lang, Mapping, MappingEntry, OccupiedEntry, Scalar,
-    ScalarConversionError, Sequence, Set, TaggedNode, VacantEntry, YamlFile,
+    Alias, Comment, CommentTextError, Directive, Document, Entry, Lang, Mapping, MappingEntry,
+    OccupiedEntry, Scalar, ScalarConversionError, Sequence, Set, TaggedNode, VacantEntry, YamlFile,
 };
 
 /// Advanced API for power users who need direct access to the underlying syntax tree.

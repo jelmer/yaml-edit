@@ -2,11 +2,14 @@
 //! edits write them.
 
 mod common;
-use common::{assert_cst_ok, assert_file_cst_ok, assert_file_parser_shaped, render};
+use common::{
+    assert_cst_ok, assert_file_cst_ok, assert_file_parser_shaped, check_renders, count_nodes,
+    parse_clean, render, render_documents,
+};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::validator::{Rule, Validator};
-use yaml_edit::{debug, Document, Mapping, YamlFile, YamlNode};
+use yaml_edit::{debug, Document, Mapping, ScalarValue, SyntaxKind, YamlFile, YamlNode};
 
 /// Parse `yaml`, check it round-trips and holds one document, and render
 /// that document's root node.
@@ -1280,4 +1283,323 @@ fn rename_empty_explicit_key_before_tab_line() {
         assert!(m.rename_key(key, ""));
     });
     assert_eq!(out, "? ''\r\t\n");
+}
+
+/// Explicit-key entries in their block layouts.
+#[test]
+fn explicit_key_entries() {
+    check_renders(&[
+        (
+            "\n? explicit_key\n: explicit_value\n? another_key\n",
+            "map{explicit_key: explicit_value, another_key: ~}",
+        ),
+        ("? k\n: v\n", "map{k: v}"),
+        (
+            "keys: !!set\n  ? a\n  ? b\n",
+            "map{keys: !!set map{a: ~, b: ~}}",
+        ),
+        ("map:\n  ? complex\n  : v\n", "map{map: map{complex: v}}"),
+        // A second explicit key stays its own entry, and the value line of
+        // one is not part of its key.
+        ("? a\n: 1\n? b\n: 2\n", "map{a: 1, b: 2}"),
+        ("m:\n  ? a\n  : 1\nuf: v\n", "map{m: map{a: 1}, uf: v}"),
+        // A `?` at a sequence entry's own column opens an explicit key.
+        ("- ? k\n  : v\n", "seq[map{k: v}]"),
+        ("- x\n- ? k\n  : v\n", "seq[x, map{k: v}]"),
+        // A `?` at the mapping's own column opens its next entry rather
+        // than continuing the value or key scalar before it.
+        ("- a: 1\n  ? c\n", "seq[map{a: 1, c: ~}]"),
+        ("- ? k\n  ? c\n", "seq[map{k: ~, c: ~}]"),
+        // `- ?\n  j: 1\n` puts `j` at the `?`'s own column, so it opens the
+        // next entry rather than continuing the key: two entries, not one
+        // keyed by {j: 1}.
+        ("- ?\n  j: 1\n", "seq[map{~: ~, j: 1}]"),
+        // `- ?\n- a\n`: the dashes start their line, so they sit left of
+        // the `?` and dedent out of the entry. Claiming them as the key's
+        // indentless sequence left a zero-width empty SEQUENCE behind.
+        ("- ?\n- a\n", "seq[map{~: ~}, a]"),
+        // Plain entries after a run of explicit keys still belong to the
+        // mapping. `"?\nk:\n?\na:\n"` has four entries, as saphyr and PyYAML
+        // both read it. Meeting a `?` in the plain-entry loop handed the run
+        // to the explicit-key parser and then left the loop outright, so
+        // anything after that run was swept into an ERROR node while
+        // from_str still reported success.
+        ("?\nk:\n?\na:\n", "map{~: ~, k: ~, ~: ~, a: ~}"),
+        ("?\n::\n?\na:\n", "map{~: ~, :: ~, ~: ~, a: ~}"),
+        (
+            "? a\n: 1\nb: 2\n? c\n: 3\nd: 4\n",
+            "map{a: 1, b: 2, c: 3, d: 4}",
+        ),
+    ]);
+}
+
+/// An explicit key or value may be a block collection, on the `?` line or
+/// on the lines after it.
+#[test]
+fn explicit_key_holding_a_collection() {
+    check_renders(&[
+        (
+            "\n[1, 2]: sequence_key\n{a: b}: mapping_key\n",
+            "map{[1, 2]: sequence_key, {a: b}: mapping_key}",
+        ),
+        // An explicit key's sequence entries sit past the `? `, but they are
+        // still its own entries rather than one folded scalar. The
+        // leading-whitespace count reads 0 for the `-` in `? - a`, which
+        // made every later entry look indented past it.
+        (
+            "? - Detroit Tigers\n  - Chicago Cubs\n:\n  - 2001-07-23\n",
+            "map{seq[Detroit Tigers, Chicago Cubs]: seq[2001-07-23]}",
+        ),
+        // An indentless sequence sits at the `?` or `:` column. The YAML
+        // test suite's 6PBE lists a SEQ key and a SEQ value; a bare `?`
+        // took an implicit-null key and the sequences below were stranded
+        // in an ERROR node with no parse error.
+        (
+            "---\n?\n- a\n- b\n:\n- c\n- d\n",
+            "map{seq[a, b]: seq[c, d]}",
+        ),
+        ("?\n- a\n:\n- c\n", "map{seq[a]: seq[c]}"),
+        ("? k\n:\n- c\n", "map{k: seq[c]}"),
+        ("?\n- a\n", "map{seq[a]: ~}"),
+        // A blank line before the indentless sequence carries no
+        // indentation of its own. The lookahead peeked a single token past
+        // the newline, so it hid the dash and the key and its value were
+        // both swept into an ERROR node while from_str reported success.
+        ("?\n\n- a\n: v\n", "map{seq[a]: v}"),
+        ("?\n\n-\n", "map{seq[~]: ~}"),
+        ("k:\n\n- a\n", "map{k: seq[a]}"),
+        ("?\n\n\n- a\n: v\n", "map{seq[a]: v}"),
+        // `c-l-block-map-explicit-key` admits any block-indented node, so
+        // the key may start on the line after the `?`. A mapping there
+        // keeps all its entries: they were read as scalar parts of the key,
+        // which stopped at the first colon. And an implicit null emitted
+        // beside such a key made it unreachable.
+        ("?\n  - a\n: v\n", "map{seq[a]: v}"),
+        ("?\n s: 1\n e: 2\n: v\n", "map{map{s: 1, e: 2}: v}"),
+        ("?\n s:\n e:\n", "map{map{s: ~, e: ~}: ~}"),
+        (
+            "?\n a: 1\n b: 2\n c: 3\n: v\n",
+            "map{map{a: 1, b: 2, c: 3}: v}",
+        ),
+        ("?\n  j: 1\n", "map{map{j: 1}: ~}"),
+        // `- ?\n  - a\n`: the dashes line up with the `?` itself, so they
+        // are the key's indentless sequence. They used to escape to the
+        // document's own sequence, giving [{null: null}, "a"].
+        ("- ?\n  - a\n", "seq[map{seq[a]: ~}]"),
+        // The key's sequence opens on the `?` line, so the column-0 `- z`
+        // dedents out of it and belongs to the document's own sequence.
+        ("-\n  ? - c\n- z\n", "seq[map{seq[c]: ~}, z]"),
+        // The key's mapping starts past the `?`, so the column-0 `k2`
+        // dedents out of it and is a sibling entry, as saphyr and PyYAML
+        // both read it.
+        ("? k: 1\nk2: 2\n", "map{map{k: 1}: ~, k2: 2}"),
+        // An explicit key may be a compact mapping whose own key is empty
+        // (the YAML test suite's M2N8).
+        ("- ? : x\n", "seq[map{map{~: x}: ~}]"),
+        ("? : x\n", "map{map{~: x}: ~}"),
+        ("- ? []: x\n", "seq[map{map{[]: x}: ~}]"),
+    ]);
+}
+
+/// Where an explicit key's annotation, the value line after it, or a
+/// comment line ends the key, counted by the collections the tree holds.
+#[test]
+fn explicit_key_boundaries() {
+    for (yaml, kind, count, expected) in [
+        // An annotation in an explicit key does not adopt the line that
+        // opens that entry's value (the YAML test suite's PW8X): the anchor
+        // alone on its line swallowed the `: &a` line into the key as a
+        // nested mapping.
+        (
+            "-\n  ? &e\n  : &a\n",
+            SyntaxKind::MAPPING,
+            1,
+            "seq[map{~: ~}]",
+        ),
+        ("-\n  ? &d\n", SyntaxKind::MAPPING, 1, "seq[map{~: ~}]"),
+        ("? a\n: 1\n", SyntaxKind::MAPPING, 1, "map{a: 1}"),
+        ("-\n  &c : &a\n", SyntaxKind::MAPPING, 1, "seq[map{~: ~}]"),
+        // An anchor whose body really is on the next line still adopts it.
+        (
+            "k: &a\n  x: 1\n",
+            SyntaxKind::MAPPING,
+            2,
+            "map{k: map{x: 1}}",
+        ),
+        // Nor does it adopt an entry of the sequence the key sits in.
+        (
+            "-\n  ? &d\n-\n  ? e\n",
+            SyntaxKind::SEQUENCE,
+            1,
+            "seq[map{~: ~}, map{e: ~}]",
+        ),
+        (
+            "-\n  ? &d\n-\n  x\n",
+            SyntaxKind::SEQUENCE,
+            1,
+            "seq[map{~: ~}, x]",
+        ),
+        (
+            "-\n  ? a\n-\n  ? b\n",
+            SyntaxKind::SEQUENCE,
+            1,
+            "seq[map{a: ~}, map{b: ~}]",
+        ),
+        // An anchor whose body really is an indented sequence adopts it.
+        ("k: &a\n- x\n", SyntaxKind::SEQUENCE, 1, "map{k: seq[x]}"),
+        // A `:` line at or left of the `?` opens that entry's value, so a
+        // mapping parsed as the key stops there. The YAML test suite's V9D5
+        // keys an entry with `{earth: blue}` and values it `{moon: white}`;
+        // both landed in the key as sibling entries.
+        (
+            "? a: 1\n: b: 2\n",
+            SyntaxKind::MAPPING,
+            3,
+            "map{map{a: 1}: map{b: 2}}",
+        ),
+        (
+            "- ? earth: blue\n  : moon: white\n",
+            SyntaxKind::MAPPING,
+            3,
+            "seq[map{map{earth: blue}: map{moon: white}}]",
+        ),
+        ("a: 1\nb: 2\n", SyntaxKind::MAPPING, 1, "map{a: 1, b: 2}"),
+        // A comment line between a complex key and its value says nothing
+        // about where that value sits. The YAML test suite's Q9WF puts a
+        // column-0 comment there; the value lookup stopped at it and the
+        // mapping became a sibling entry instead.
+        (
+            "{a: 1}:\n# c\n  b: 2\n",
+            SyntaxKind::MAPPING,
+            3,
+            "map{{a: 1}: map{b: 2}}",
+        ),
+        (
+            "{a: 1}:\n  b: 2\n",
+            SyntaxKind::MAPPING,
+            3,
+            "map{{a: 1}: map{b: 2}}",
+        ),
+        ("{a: 1}: v\n", SyntaxKind::MAPPING, 2, "map{{a: 1}: v}"),
+    ] {
+        assert_eq!(render_documents(yaml), [expected], "{yaml:?}");
+        assert_eq!(count_nodes(&parse_clean(yaml), kind), count, "{yaml:?}");
+    }
+}
+
+/// An explicit key that is a compact mapping with an empty key is reached
+/// through the entry API as such. The `:` on the `?` line was taken as the
+/// outer entry's value, leaving an empty mapping as the key and `x` as the
+/// value.
+#[test]
+fn explicit_key_is_a_mapping_with_an_empty_key() {
+    for yaml in ["- ? : x\n", "? : x\n", "- ? []: x\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let doc = file.document().unwrap();
+        let outer = match doc.as_sequence() {
+            Some(seq) => seq.get(0).unwrap().as_mapping().unwrap().clone(),
+            None => doc.as_mapping().unwrap(),
+        };
+        assert_eq!(outer.len(), 1, "{yaml:?}");
+        let entry = outer.entries().next().unwrap();
+        let key = entry.key_node().unwrap();
+        let key = key.as_mapping().unwrap();
+        assert_eq!(key.len(), 1, "{yaml:?}");
+        let inner = key.entries().next().unwrap();
+        assert_eq!(inner.value_node().unwrap().to_string(), "x", "{yaml:?}");
+        let value = entry.value_node().unwrap();
+        assert!(value.as_scalar().unwrap().is_null(), "{yaml:?}");
+    }
+}
+
+/// The lines between an explicit key's `?` and the block collection on a
+/// later line are the KEY's, as those after an implicit key's `:` are the
+/// VALUE's: they were put in a compact sequence (`?\n\n- a\n`), or the
+/// INDENT of its first line was (`?\n\n  - a\n`).
+#[test]
+fn lines_before_explicit_key_collection_are_the_keys() {
+    // The KEY's subtree, and the VALUE's after an implicit key.
+    let slot = |text: &str, kind: &str| {
+        let file = YamlFile::from_str(text).unwrap();
+        assert_file_cst_ok(&file);
+        let tree = debug::tree_to_string(file.syntax());
+        let start = tree.find(&format!("      {kind}\n")).unwrap();
+        tree[start..]
+            .lines()
+            .skip(1)
+            .take_while(|l| l.starts_with("        "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for rest in [
+        "\n\n- a\n- b\n",
+        "\n\n\n- a\n",
+        "\n# c\n- a\n",
+        "\n  # c\n- a\n",
+        "\n# c\n\n- a\n",
+        " # c\n\n- a\n",
+        "\n\n  - a\n",
+        "\n  \n  - a\n",
+        "\n# c\n  - a\n",
+        "\n\n  a: 1\n",
+        "\n# c\n  a: 1\n",
+        " !t\n\n- a\n",
+        " &x\n\n- a\n",
+        " &x\n\n  a: 1\n",
+    ] {
+        let value = slot(&format!("k:{rest}"), "VALUE");
+        assert_eq!(slot(&format!("?{rest}"), "KEY"), value, "{rest:?}");
+        assert_eq!(slot(&format!("? x\n:{rest}"), "VALUE"), value, "{rest:?}");
+    }
+}
+
+/// A line that starts at the colon is a mapping entry with an empty key.
+///
+/// `: v` maps null to `v`, which is what the YAML test suite expects:
+/// 2JQS (`: a\n: b\n`) lists `=VAL :` for each key. parse_value had no arm
+/// for a leading COLON, so the colon and everything after it was swept
+/// into an ERROR node while from_str still reported success.
+#[test]
+fn null_keys() {
+    check_renders(&[
+        (": v\n", "map{~: v}"),
+        (": a\n: b\n", "map{~: a, ~: b}"),
+        // In a sequence entry, the mapping hangs off the dash.
+        ("- : v\n", "seq[map{~: v}]"),
+        ("-  : v\n", "seq[map{~: v}]"),
+        ("- : v\n- : w\n", "seq[map{~: v}, map{~: w}]"),
+        // An empty key and a named one can share an entry's mapping.
+        ("- : v\n  k: w\n", "seq[map{~: v, k: w}]"),
+    ]);
+
+    // The empty key is spelled as the zero-width null scalar used for an
+    // implicit null value, so every key slot still holds one scalar.
+    let file = YamlFile::from_str(": v\n").unwrap();
+    let mapping = root_mapping(&file);
+    let (key, value) = mapping.iter().next().unwrap();
+    assert_eq!(scalar(&key), "");
+    assert_eq!(scalar(&value), "v");
+}
+
+/// A null key and an empty-string key are different keys, and each is found
+/// by its own spelling. `: v` is keyed by null, `"": v` by the empty string.
+#[test]
+fn null_key_and_empty_string_key_are_distinct() {
+    let doc = Document::from_str(": a\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(scalar(&mapping.get(ScalarValue::null()).unwrap()), "a");
+    assert!(mapping.get("").is_none());
+
+    let doc = Document::from_str("\"\": b\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(scalar(&mapping.get("").unwrap()), "b");
+    assert!(mapping.get(ScalarValue::null()).is_none());
+
+    // The other null spellings resolve the same way.
+    for src in ["null: a\n", "~: a\n"] {
+        let doc = Document::from_str(src).unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        assert!(mapping.get(ScalarValue::null()).is_some(), "{src:?}");
+    }
 }

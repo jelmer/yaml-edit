@@ -7,7 +7,10 @@ mod common;
 use common::{parse_with_errors, parse_with_violations};
 use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, LineColumn, Parse, Sequence, SyntaxKind, YamlFile};
+use yaml_edit::validator::{Rule, Severity, Validator};
+use yaml_edit::{
+    debug, Document, LineColumn, Parse, ScalarType, ScalarValue, Sequence, SyntaxKind, YamlFile,
+};
 
 /// The keys of the first document's root mapping.
 fn keys(file: &YamlFile) -> Vec<String> {
@@ -660,4 +663,439 @@ fn clear_sequence_with_anchor_text_in_scalar() {
     let file = YamlFile::from_str("- f\n  - &SS Sammy\nrb: *SS\n").unwrap();
     nth_sequence(&file, 0).clear();
     assert_eq!(file.to_string(), "[]\nrb: *SS\n");
+}
+
+/// What the validator reports about input that parses: valid YAML it used
+/// to flag, mostly found through the YAML test suite, and the genuine
+/// faults next to it.
+#[test]
+fn validator_findings() {
+    for (yaml, expected) in [
+        // YAML 1.2 `l-explicit-document` lets a node share the marker's
+        // line, as PyYAML reads it; flagging every node there hit 11 files
+        // the test suite marks valid. A block mapping there is reported.
+        ("--- a\n", &[][..]),
+        ("--- >\n ab\n", &[]),
+        ("--- {a: 1}\n", &[]),
+        ("--- [1]\n", &[]),
+        (
+            "--- key1: value1\n    key2: value2\n",
+            &[("Content on same line as document start marker", "1:1")],
+        ),
+        // A block scalar's indentation indicator is a single digit 1-9,
+        // either side of a chomping indicator (D83L).
+        (
+            "--- |0\n",
+            &[(
+                "Block scalar indentation indicator must be a digit 1-9",
+                "1:6",
+            )],
+        ),
+        (
+            "--- |10\n",
+            &[(
+                "Block scalar indentation indicator must be a digit 1-9",
+                "1:6",
+            )],
+        ),
+        ("k: |-\n  x\n", &[]),
+        ("k: |2-\n    x\n", &[]),
+        ("k: |2\n    x\n", &[]),
+        ("k: |-2\n  x\n", &[]),
+        ("k: |2-\n  x\n", &[]),
+        // A flow collection's continuation only has to clear a block
+        // context it sits inside. The test suite's 9C9N makes
+        // `flow: [a,\nb,\nc]` an error because the continuation would read
+        // as a new entry of the block mapping around it; 4ABK's
+        // `{\nunquoted : "separate",\n...}` has no such neighbour and is
+        // valid; requiring indentation regardless hit 16 valid files.
+        (
+            "---\nflow: [a,\nb,\nc]\n",
+            &[("Flow collection continuation line must be indented", "2:7")],
+        ),
+        ("{\na: 1,\nb: 2,\n}\n", &[]),
+        ("k: [a,\n  b]\n", &[]),
+        ("[a, b]\n", &[]),
+        // A `---` or `...` at the start of a line ends the document, so it
+        // cannot appear inside a flow collection (the test suite's N782).
+        // The lexer gives them as plain scalars there, so no
+        // document-marker rule sees them.
+        (
+            "[\n--- ,\n...\n]\n",
+            &[("Document marker inside a flow collection", "2:1")],
+        ),
+        // A mapping's expected entry column comes from wherever its
+        // indentation really is, which for a sequence entry's value is not
+        // a VALUE node: `-\n  a: 1\n` keeps its INDENT in the
+        // SEQUENCE_ENTRY, and a compact `- a: 1\n  b: 2\n` has none at all.
+        // Both fell back to the empty string, so every entry looked wrongly
+        // indented.
+        ("-\n  a: 1\n  b: 2\n", &[]),
+        ("- a: 1\n  b: 2\n", &[]),
+        (" - key: value\n   key2: value2\n", &[]),
+        ("k:\n  a: 1\n  b: 2\n", &[]),
+        (
+            "a: 1\n  b: 2\n",
+            &[(
+                "Sibling block mapping entries have inconsistent indentation \
+                 (expected \"\", found \"  \")",
+                "2:1",
+            )],
+        ),
+        // An anchor at document level annotates the document's own node.
+        // Flagging every such anchor hit 7 files the test suite marks
+        // valid. Here it annotates a plain scalar, which cannot start with
+        // "- ".
+        ("&sequence\n- a\n", &[]),
+        ("&a a: b\n", &[]),
+        ("&flowseq [ a ]\n", &[]),
+        (
+            "&anchor - sequence entry\n",
+            &[("Plain scalar cannot start with '-'", "1:9")],
+        ),
+        // An explicit key's entry ends with the zero-width implicit-null
+        // scalar of its VALUE, so the newline that separates it from the
+        // next entry sits inside it. Looking only at the entry's very last
+        // token found the null scalar and reported the entries as sharing a
+        // line; 6 files the test suite marks valid were flagged.
+        ("? a\n? b\n", &[]),
+        ("a: 1\nb: 2\n", &[]),
+        ("? a\n: 1\n? b\n: 2\n", &[]),
+        // A tab is illegal only where YAML requires indentation
+        // (`s-indent`): 4EJS's nested mapping, Y79Y's `-\t-` where a block
+        // collection follows, DK95/01's quoted continuation in a mapping
+        // value. Checking every token flagged 19 files the test suite marks
+        // valid: a tab inside a scalar's continuation, after a document
+        // marker, or in a root-level flow collection is content or legal
+        // separation.
+        (
+            "a:\n\tb: 1\n",
+            &[("Tabs are not allowed for indentation in YAML", "2:1")],
+        ),
+        (
+            "-\t-\n",
+            &[("Tabs are not allowed for indentation in YAML", "1:2")],
+        ),
+        (
+            "foo: \"bar\n\tbaz\"\n",
+            &[("Tabs are not allowed for indentation in YAML", "1:6")],
+        ),
+        ("1st\n\t2nd\n", &[]),
+        ("x:\n - x\n  \tx\n", &[]),
+        ("a: |\n  x\n   \ty\n", &[]),
+        ("\t[\n\t]\n", &[]),
+        ("a: b\t\nseq:\t\n - a\t\n", &[]),
+        ("-\t-1\n", &[]),
+        // The multi-line restriction is on an implicit key in block
+        // context. A flow collection may spread its entries over lines and
+        // its keys may span them (8KB6), and a flow mapping may put the `:`
+        // on a later line (5MUD). What stays an error is a block mapping
+        // whose key spans lines (C2SP's `[23\n]: 42`, where the flow
+        // sequence is the key) and ZXT5's flow sequence with the same shape.
+        ("{\nunquoted : \"separate\",\n}\n", &[]),
+        ("- { multi\n  line: value}\n", &[]),
+        ("---\n{ \"foo\"\n  :bar }\n", &[]),
+        ("{\n? explicit: entry,\n?\n}\n", &[]),
+        (
+            "[23\n]: 42\n",
+            &[
+                ("Implicit key cannot span multiple lines", "1:1"),
+                ("Flow collection continuation line must be indented", "1:1"),
+            ],
+        ),
+        (
+            "[ \"key\"\n  :value ]\n",
+            &[("Implicit key cannot span multiple lines", "1:3")],
+        ),
+        (
+            "\"a\nb\": 1\n",
+            &[
+                ("Implicit key cannot span multiple lines", "1:1"),
+                ("Wrong indented multiline quoted scalar", "1:1"),
+            ],
+        ),
+        // A comment's separating whitespace may sit a level up in the
+        // tree: `hr: # c` puts the COMMENT first inside the VALUE, so it
+        // has no previous sibling. Checking siblings alone reported 5 files
+        // the test suite marks valid.
+        ("hr: # c\n", &[]),
+        ("key:    # c\n", &[]),
+        ("- # Empty\n", &[]),
+        ("a: 1\n# c\nb: 2\n", &[]),
+        (
+            "k: \"v\"# c\n",
+            &[("Comment without whitespace separation", "1:7")],
+        ),
+        // A verbatim tag's URI may hold commas and brackets (7FWL, UGM3).
+        ("!<tag:e.com,2002:x> a\n", &[]),
+        // `\\` takes the character after it, so `\\$` is two valid escapes
+        // (6SLA), and `\` before a line break folds the line (565N).
+        ("k: \"a\\\\$b\"\n", &[]),
+        ("k: \"a\\\n  b\"\n", &[]),
+        ("k: \"a\\qb\"\n", &[("Invalid escape sequence: \\q", "1:4")]),
+        (
+            "!!str, x\n",
+            &[("Plain scalar cannot start with ','", "1:6")],
+        ),
+        // An anchor and an alias on different nodes are fine: `&node3`
+        // anchors the value's mapping, `*alias1` is that mapping's key
+        // (26DV). A block scalar's body is literal text, colons included
+        // (4WA9). Both on one node, and a tab opening a body, are errors.
+        ("top1: &alias1 k\ntop3: &node3\n  *alias1 : v\n", &[]),
+        ("- aaa: |2\n    xxx\n  bbb: |\n    xxx\n", &[]),
+        (
+            "a: &b *c\n",
+            &[
+                ("Undefined alias *c", "1:7"),
+                ("Node cannot have both an anchor and be an alias", "1:4"),
+            ],
+        ),
+        (
+            "foo: |\n\t\nbar: 1\n",
+            &[("Tabs are not allowed for indentation in YAML", "2:1")],
+        ),
+        (
+            "k: a: b\n",
+            &[(
+                "Plain scalar value cannot contain mapping syntax (colon)",
+                "1:5",
+            )],
+        ),
+        // A directive after a document is fine once a `...` has ended it,
+        // whatever the document's root.
+        ("a\n...\n%YAML 1.2\n---\nb\n", &[]),
+        ("a: 1\n...\n%YAML 1.2\n---\nb\n", &[]),
+    ] {
+        parse_with_violations(yaml, expected);
+    }
+}
+
+/// Documents [`yaml_edit::validator::Validator::validate`] has to accept.
+#[test]
+fn validator_accepts_document() {
+    for yaml in [
+        // R4YG: the " \t" line is indented one space; the tab is content,
+        // so the following one-space "detected" is not under-indented.
+        "- >\n \t\n detected\n",
+        // H2RW: once content sets the body indent, a deeper blank line
+        // contributes content rather than raising the indentation bar.
+        "text: |\n  a\n    \n  b\n",
+        // H2RW: whitespace padding a blank line between entries says
+        // nothing about how the next entry is indented.
+        "foo: 1\nbar: 2\n    \ntext: 3\n",
+        // V9D5: the indent before the outer `:` belongs to the
+        // explicit-key entry, not to the nested mapping that forms the key.
+        "- sun: yellow\n- ? earth: blue\n  : moon: white\n",
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        let violations = Validator::new().validate(&doc);
+        assert_eq!(violations, vec![], "{yaml:?}");
+    }
+}
+
+/// A bare `\r` ends a line in YAML, so it resets the reported column.
+///
+/// The error context counted only `\n`, so line and column climbed across a
+/// whole CR-delimited file and an error on its third line was reported at
+/// `1:15` rather than `3:5`.
+#[test]
+fn carriage_return_ends_a_line_for_error_positions() {
+    let cr = YamlFile::parse("a: 1\rb: 2\r... x\r");
+    let lf = YamlFile::parse("a: 1\nb: 2\n... x\n");
+    let position = |p: &Parse<YamlFile>| -> Option<String> {
+        let text: String = p.errors().first()?.to_string();
+        Some(text.split(':').take(2).collect::<Vec<_>>().join(":"))
+    };
+    assert_eq!(position(&cr), position(&lf));
+    assert_eq!(position(&cr).as_deref(), Some("3:5"));
+}
+
+/// A plain scalar that a YAML 1.1 reader reads differently gets a warning
+/// that says how, and what to write to keep the 1.1 meaning.
+#[test]
+fn legacy_yaml_1_1_warnings() {
+    let warn = |src: &str| -> Vec<(Rule, Severity, String)> {
+        let doc = Document::from_str(src).unwrap();
+        Validator::new()
+            .validate(&doc)
+            .into_iter()
+            .map(|v| (v.rule, v.severity, v.message))
+            .collect()
+    };
+    for (src, message) in [
+        // A bare octal changes value between versions with no syntax
+        // error, so it is the case worth flagging. The readings are not
+        // limited to a fixed-width integer, and 1.2 has no signed `0o`
+        // form, so a negative one is kept as decimal.
+        (
+            "mode: 0755\n",
+            "`0755` is YAML 1.1 octal, read as 493; YAML 1.2 reads it as 755. \
+             Write `493` to keep the octal meaning",
+        ),
+        (
+            "mode: 0777777777777777777777777\n",
+            "`0777777777777777777777777` is YAML 1.1 octal, read as \
+             4722366482869645213695; YAML 1.2 reads it as 777777777777777777777777. \
+             Write `4722366482869645213695` to keep the octal meaning",
+        ),
+        (
+            "mode: -00777\n",
+            "`-00777` is YAML 1.1 octal, read as -511; YAML 1.2 reads it as -777. \
+             Write `-511` to keep the octal meaning",
+        ),
+        (
+            "mode: 000\n",
+            "`000` is YAML 1.1 octal, read as 0; YAML 1.2 reads it as 0. \
+             Write `0` to keep the octal meaning",
+        ),
+        // A leading zero with an 8 or 9 is not 1.1 octal, and 1.1 decimal
+        // has no leading zero, so 1.1 reads it as a string.
+        (
+            "n: 089\n",
+            "`089` is a string in YAML 1.1; YAML 1.2 reads it as the integer 89. \
+             Write `'089'` to keep the string meaning",
+        ),
+        (
+            "n: -0789\n",
+            "`-0789` is a string in YAML 1.1; YAML 1.2 reads it as the integer -789. \
+             Write `'-0789'` to keep the string meaning",
+        ),
+        (
+            "n: +09\n",
+            "`+09` is a string in YAML 1.1; YAML 1.2 reads it as the integer 9. \
+             Write `'+09'` to keep the string meaning",
+        ),
+        // The 1.1 booleans are already strings here, but a 1.1 reader
+        // differs.
+        (
+            "a: yes\n",
+            "`yes` is the string \"yes\" in YAML 1.2, but a boolean to a YAML 1.1 reader; \
+             quote it or write true/false to be unambiguous",
+        ),
+        (
+            "a: OFF\n",
+            "`OFF` is the string \"OFF\" in YAML 1.2, but a boolean to a YAML 1.1 reader; \
+             quote it or write true/false to be unambiguous",
+        ),
+        // Numbers to a 1.1 reader, strings in 1.2.
+        (
+            "a: 0b1010\n",
+            "`0b1010` is the integer 10 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `10` to keep the integer meaning",
+        ),
+        (
+            "a: -0x1F\n",
+            "`-0x1F` is the integer -31 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `-31` to keep the integer meaning",
+        ),
+        (
+            "a: 0x_1F\n",
+            "`0x_1F` is the integer 31 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `0x1F` to keep the integer meaning",
+        ),
+        (
+            "a: 0_755\n",
+            "`0_755` is the integer 493 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `493` to keep the integer meaning",
+        ),
+        (
+            "a: 1_000\n",
+            "`1_000` is the integer 1000 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `1000` to keep the integer meaning",
+        ),
+        (
+            "a: 1_000.5\n",
+            "`1_000.5` is the float 1000.5 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `1000.5` to keep the float meaning",
+        ),
+        (
+            "t: 1:30\n",
+            "`1:30` is the integer 90 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `90` to keep the integer meaning",
+        ),
+        (
+            "t: 1:30.5\n",
+            "`1:30.5` is the float 90.5 in YAML 1.1; YAML 1.2 reads it as a string. \
+             Write `90.5` to keep the float meaning",
+        ),
+        // Strings to a 1.1 reader, numbers in 1.2.
+        (
+            "mode: 0o17\n",
+            "`0o17` is a string in YAML 1.1; YAML 1.2 reads it as the integer 15. \
+             Write `'0o17'` to keep the string meaning",
+        ),
+        (
+            "a: 1e3\n",
+            "`1e3` is a string in YAML 1.1; YAML 1.2 reads it as a float. \
+             Write `'1e3'` to keep the string meaning",
+        ),
+        (
+            "a: -1.0E3\n",
+            "`-1.0E3` is a string in YAML 1.1; YAML 1.2 reads it as a float. \
+             Write `'-1.0E3'` to keep the string meaning",
+        ),
+    ] {
+        assert_eq!(
+            warn(src),
+            [(Rule::LegacyYaml11, Severity::Warning, message.to_string())],
+            "{src:?}"
+        );
+    }
+    assert_eq!(
+        ScalarValue::parse("-0o777").scalar_type(),
+        ScalarType::String
+    );
+
+    // A suggestion reads the same in both versions, so it is not flagged
+    // itself.
+    for src in [
+        "a: 0755\n",
+        "a: -00777\n",
+        "a: 000\n",
+        "a: 0b1010\n",
+        "a: -0x1F\n",
+        "a: 0x_1F\n",
+        "a: 0_755\n",
+        "a: 1_000\n",
+        "a: 1_000.5_0\n",
+        "a: 1_0.5e+5\n",
+        "a: 0_5.5\n",
+        "t: 1:30\n",
+        "t: 0:30.\n",
+        "t: 1:30.5\n",
+        "a: 089\n",
+        "a: 0o17\n",
+        "a: 1e3\n",
+    ] {
+        let message = &warn(src)[0].2;
+        let suggestion = message
+            .split("Write `")
+            .nth(1)
+            .and_then(|rest| rest.split('`').next())
+            .unwrap();
+        assert_eq!(warn(&format!("a: {suggestion}\n")), vec![], "{src:?}");
+    }
+
+    // Quoting settles it, and the 1.2 spellings are clean.
+    for clean in [
+        "a: 'yes'\n",
+        "a: \"no\"\n",
+        "mode: 755\n",
+        "a: true\n",
+        "z: 0\n",
+        "f: 0.5\n",
+        "n: 89\n",
+        "n: 0x89\n",
+        "n: '089'\n",
+        "a: 1.0e+3\n",
+        "a: 0x1F\n",
+        "a: 1000\n",
+        "a: 1.5\n",
+        "a: 0b102\n",
+        "a: 1:60\n",
+        "a: '1e3'\n",
+        "a: \"0b1010\"\n",
+    ] {
+        assert_eq!(warn(clean), vec![], "{clean:?}");
+    }
 }

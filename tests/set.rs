@@ -7,7 +7,9 @@
 //! comment on the key line along.
 
 mod common;
-use common::{assert_cst_ok, assert_file_cst_ok, assert_file_edited, check_edit};
+use common::{
+    assert_cst_ok, assert_file_cst_ok, assert_file_edited, assert_parser_shaped, check_edit,
+};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::path::{PathError, YamlPath};
@@ -859,6 +861,53 @@ fn try_path_reports_specific_errors() {
         Err(PathError::TypeMismatch { .. })
     ));
     assert_cst_ok(&doc);
+
+    // An index past the growth bound is rejected. The intermediate
+    // sequence used to be created first, leaving `nn:\n  \n` behind: a
+    // half-built entry that no longer reparses as a sequence.
+    let doc = Document::from_str("a: 1\n").unwrap();
+    assert_eq!(
+        doc.try_set_path("nn.9487", "xx"),
+        Err(PathError::IndexTooFar {
+            at: "[9487]".to_string(),
+            len: 0,
+            index: 9487
+        })
+    );
+    assert_cst_ok(&doc);
+    assert_eq!(doc.to_string(), "a: 1\n");
+}
+
+/// Draining a nested mapping collapses it to `key: {}`. The space
+/// separating the colon from the value belongs to the entry, as it does
+/// when parsed; left inside the VALUE, a later edit replacing that value
+/// carried the space off and wrote `t:a`, which is a plain scalar.
+#[test]
+fn collapsed_empty_mapping_keeps_its_separator_in_the_entry() {
+    let doc = Document::from_str("a: 1\n").unwrap();
+    doc.try_set_path("t.t", "9").unwrap();
+    assert_cst_ok(&doc);
+    doc.try_remove_path("t.t").unwrap();
+    assert_cst_ok(&doc);
+    assert_eq!(doc.to_string(), "a: 1\nt: {}\n");
+    doc.try_set_path("t", "b").unwrap();
+    assert_eq!(doc.to_string(), "a: 1\nt: b\n");
+    assert_parser_shaped(&doc);
+}
+
+/// Setting a multi-line value on a nested entry wrote the block body at a
+/// fixed two spaces, which put it at the key's own column and made the
+/// document unparseable.
+#[test]
+fn multiline_value_indents_its_block_body_past_the_entry() {
+    check_edit(
+        "a:\n  b: 1\n",
+        |d| {
+            let inner = d.as_mapping().unwrap().get(ScalarValue::from("a")).unwrap();
+            inner.as_mapping().unwrap().set("b", "x\ny");
+        },
+        "a:\n  b: |-\n    x\n    y\n",
+    );
 }
 
 const PACKAGE_ORDER: &[&str] = &["name", "version", "description"];

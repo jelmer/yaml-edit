@@ -3,10 +3,10 @@
 
 use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{Document, Parse, YamlFile, YamlNode};
+use yaml_edit::{CoreScalarType, Document, Parse, ScalarValue, SyntaxKind, YamlFile, YamlNode};
 
 mod common;
-use common::{assert_cst_ok, render_documents};
+use common::{assert_cst_ok, check_renders, render_documents};
 
 /// Parse `yaml`, requiring no errors and a byte-identical round trip.
 #[track_caller]
@@ -533,22 +533,6 @@ service2:
 }
 
 #[test]
-fn document_markers() {
-    let yaml = r#"
-%YAML 1.2
----
-doc1: value1
-...
----
-doc2: value2
----
-doc3: value3
-...
-"#;
-    assert_strings(&parse(yaml), &[("doc1", "value1")]);
-}
-
-#[test]
 fn quoted_strings() {
     let yaml = r#"
 simple: "hello world"
@@ -608,6 +592,11 @@ fn multi_word_plain_scalars() {
             "- abc cba: value\n- foo: bar\n",
             "seq[map{abc cba: value}, map{foo: bar}]",
         ),
+        // In a sequence item, matching PyYAML.
+        (
+            "\n- item1: value1\n- item2 has text: but not a key\n- item3\n",
+            "seq[map{item1: value1}, map{item2 has text: but not a key}, item3]",
+        ),
         (
             "outer:\n  abc cba: 2\n  foo: 3\n",
             "map{outer: map{abc cba: 2, foo: 3}}",
@@ -640,6 +629,158 @@ fn multi_word_plain_scalars() {
     }
 }
 
+/// A colon in a plain scalar starts no mapping entry unless a space
+/// follows it, so URLs, times and ports stay whole values.
+#[test]
+fn colons_in_plain_scalars() {
+    check_renders(&[
+        (
+            "timestamp: 2001-12-14 21:59:43.10 -5",
+            "map{timestamp: 2001-12-14 21:59:43.10 -5}",
+        ),
+        (
+            r#"
+timestamps:
+  simple: 2001-12-14
+  with_time: 2001-12-14 21:59:43
+  with_fractional: 2001-12-14 21:59:43.10
+  with_timezone: 2001-12-14 21:59:43.10 -5
+  with_utc: 2001-12-14 21:59:43.10 Z
+"#,
+            "map{timestamps: map{simple: 2001-12-14, with_time: 2001-12-14 21:59:43, \
+             with_fractional: 2001-12-14 21:59:43.10, with_timezone: 2001-12-14 21:59:43.10 -5, \
+             with_utc: 2001-12-14 21:59:43.10 Z}}",
+        ),
+        // `: ` in a plain value is a spec violation the validator reports;
+        // the parser keeps the rest of the line as the value.
+        (
+            r#"
+url: http://example.com:8080
+time: "12:30:45"
+description: This is a value: with a colon
+"#,
+            "map{url: http://example.com:8080, time: 12:30:45, \
+             description: This is a value: with a colon}",
+        ),
+        (
+            r#"
+http_url: http://example.com:8080/path?query=value
+https_url: https://secure.example.com:443/secure/path
+ftp_url: ftp://files.example.com:21/directory/file.txt
+file_url: file:///path/to/local/file.txt
+ssh_url: ssh://user@example.com:22/path
+"#,
+            "map{http_url: http://example.com:8080/path?query=value, \
+             https_url: https://secure.example.com:443/secure/path, \
+             ftp_url: ftp://files.example.com:21/directory/file.txt, \
+             file_url: file:///path/to/local/file.txt, ssh_url: ssh://user@example.com:22/path}",
+        ),
+        (
+            r#"
+database:
+  host: db.example.com
+  port: 5432
+  url: postgresql://user:password@db.example.com:5432/database
+web:
+  api_url: https://api.example.com:443/v1
+  timeout: 30
+"#,
+            "map{database: map{host: db.example.com, port: 5432, \
+             url: postgresql://user:password@db.example.com:5432/database}, \
+             web: map{api_url: https://api.example.com:443/v1, timeout: 30}}",
+        ),
+        (
+            r#"
+server: example.com:8080
+time_24h: 14:30:45
+time_12h: 2:30:45 PM
+timestamp: 2023-12-25 14:30:45.123 -05:00
+ipv4: 192.168.1.1:8080
+ipv6_bracket: "[::1]:8080"
+ratio: 3:2:1
+"#,
+            "map{server: example.com:8080, time_24h: 14:30:45, time_12h: 2:30:45 PM, \
+             timestamp: 2023-12-25 14:30:45.123 -05:00, ipv4: 192.168.1.1:8080, \
+             ipv6_bracket: [::1]:8080, ratio: 3:2:1}",
+        ),
+        (
+            r#"
+services:
+  - name: web
+    url: http://web.example.com:80
+    endpoints:
+      health: http://web.example.com:80/health
+      api: http://web.example.com:80/api/v1
+  - name: database
+    url: postgresql://db:5432/app
+    config:
+      timeout: "30s"
+      retries: 3
+urls:
+  - https://api.github.com/repos/owner/repo
+  - ftp://files.example.com/downloads
+  - ssh://git@github.com:owner/repo.git
+"#,
+            "map{services: seq[map{name: web, url: http://web.example.com:80, \
+             endpoints: map{health: http://web.example.com:80/health, \
+             api: http://web.example.com:80/api/v1}}, map{name: database, \
+             url: postgresql://db:5432/app, config: map{timeout: 30s, retries: 3}}], \
+             urls: seq[https://api.github.com/repos/owner/repo, ftp://files.example.com/downloads, \
+             ssh://git@github.com:owner/repo.git]}",
+        ),
+        (
+            r#"
+# URLs at different positions
+start_url: http://start.com
+middle: some text with http://embedded.com:8080 url
+end_with_url: ends with http://end.com:9000
+
+# URLs with special characters (limited by YAML constraints)
+basic_auth: https://user:pass@example.com:443
+with_fragment: http://example.com:8080/path#section
+with_query: http://example.com:8080/path?param=value
+
+# Non-URLs that contain colons
+not_url_1: namespace:function_name
+# Note: "key: value" without quotes is invalid YAML (colon+space in plain scalar)
+# Must use quotes for this to be valid
+not_url_2: "key: value on same line"
+not_url_3: "quoted:string:with:colons"
+
+# Edge case: colon at end
+colon_end: "ends with:"
+"#,
+            "map{start_url: http://start.com, middle: some text with http://embedded.com:8080 url, \
+             end_with_url: ends with http://end.com:9000, \
+             basic_auth: https://user:pass@example.com:443, \
+             with_fragment: http://example.com:8080/path#section, \
+             with_query: http://example.com:8080/path?param=value, \
+             not_url_1: namespace:function_name, not_url_2: key: value on same line, \
+             not_url_3: quoted:string:with:colons, colon_end: ends with:}",
+        ),
+    ]);
+
+    // A URL is a single token.
+    let (tokens, _) = yaml_edit::lex_with_validation("url: https://example.com:443/path");
+    assert_eq!(
+        tokens,
+        [
+            (SyntaxKind::STRING, "url"),
+            (SyntaxKind::COLON, ":"),
+            (SyntaxKind::WHITESPACE, " "),
+            (SyntaxKind::STRING, "https://example.com:443/path"),
+        ]
+    );
+}
+
+#[test]
+fn mixed_block_and_flow_styles() {
+    check_renders(&[(
+        "flow: [a, b, c]\nblock:\n  - item1\n  - item2\nnested: {key: value}\n",
+        "map{flow: [a, b, c], block: seq[item1, item2], nested: {key: value}}",
+    )]);
+}
+
 /// In flow context a plain scalar can contain spaces too, so
 /// `{host localhost}` is a key with an implicit null value (as PyYAML has it).
 #[test]
@@ -648,17 +789,6 @@ fn flow_mapping_with_implicit_null_values() {
     let config = file.document().unwrap().get_mapping("config").unwrap();
     let keys: Vec<String> = config.keys().map(|k| k.to_string()).collect();
     assert_eq!(keys, ["host localhost", "port 8080"]);
-}
-
-#[test]
-fn explicit_document_start() {
-    let valid_yaml = r#"---
-key1: value1
-key2: value2"#;
-    let file = YamlFile::from_str(valid_yaml).unwrap();
-    assert_eq!(file.to_string(), valid_yaml);
-    let reparsed = parse(&file.to_string());
-    assert_eq!(keys(&reparsed), vec!["key1", "key2"]);
 }
 
 /// Write `yaml` to a file and load it with [`Document::from_file`].
@@ -964,4 +1094,119 @@ fn json_round_trips() {
     ] {
         parse(json);
     }
+}
+
+#[test]
+fn malformed_legacy_octal_is_an_integer_not_a_float() {
+    // `08` is not valid octal, so parse_integer gives up by contract and
+    // the value fell through to the float parser. It is a run of digits:
+    // saphyr reads 8 and PyYAML the string, but no YAML reads a float.
+    assert_eq!(ScalarValue::classify_plain("08"), CoreScalarType::Integer);
+    assert_eq!(ScalarValue::classify_plain("099"), CoreScalarType::Integer);
+    assert_eq!(ScalarValue::classify_plain("0755"), CoreScalarType::Integer);
+}
+
+#[test]
+fn bare_octal_reads_as_decimal() {
+    // YAML 1.2 dropped the bare-octal form, so a leading zero is decimal.
+    let scalar = ScalarValue::parse("0755");
+    assert_eq!(scalar.to_i64(), Some(755));
+    #[allow(deprecated)]
+    let compat = scalar.to_i64_yaml_1_2();
+    assert_eq!(compat, Some(755));
+    assert_eq!(ScalarValue::parse("-0755").to_i64(), Some(-755));
+
+    let doc = Document::from_str("mode: 0755\n").unwrap();
+    let mode = doc.as_mapping().unwrap().get("mode").unwrap();
+    assert_eq!(mode.as_scalar().unwrap().as_i64(), Some(755));
+    assert_eq!(mode.to_i64(), Some(755));
+}
+
+#[test]
+fn typed_accessors_follow_core_schema() {
+    // Forms outside the YAML 1.2 core schema are strings, and every typed
+    // accessor agrees on that.
+    for text in ["+0x1F", "-0o7", "0b101", "0X1F", "0O7", "-0x1F", "+0o7"] {
+        assert_eq!(
+            ScalarValue::classify_plain(text),
+            CoreScalarType::String,
+            "{text}"
+        );
+        let doc = Document::from_str(&format!("k: {text}\n")).unwrap();
+        let node = doc.as_mapping().unwrap().get("k").unwrap();
+        assert_eq!(node.as_scalar().unwrap().as_i64(), None, "{text}");
+        assert_eq!(node.as_scalar().unwrap().as_f64(), None, "{text}");
+        assert_eq!(node.to_i64(), None, "{text}");
+        assert_eq!(ScalarValue::parse(text).to_i64(), None, "{text}");
+    }
+
+    for text in ["yes", "No", "on", "OFF", "tRUE"] {
+        assert_eq!(
+            ScalarValue::classify_plain(text),
+            CoreScalarType::String,
+            "{text}"
+        );
+        let doc = Document::from_str(&format!("k: {text}\n")).unwrap();
+        let node = doc.as_mapping().unwrap().get("k").unwrap();
+        assert_eq!(node.as_scalar().unwrap().as_bool(), None, "{text}");
+        assert_eq!(node.to_bool(), None, "{text}");
+        assert_eq!(ScalarValue::parse(text).to_bool(), None, "{text}");
+    }
+
+    for (text, expected) in [
+        (".inf", f64::INFINITY),
+        ("-.Inf", f64::NEG_INFINITY),
+        ("+.INF", f64::INFINITY),
+        ("1.", 1.0),
+        (".5", 0.5),
+        ("1e3", 1000.0),
+        ("-2.5E-1", -0.25),
+    ] {
+        assert_eq!(
+            ScalarValue::classify_plain(text),
+            CoreScalarType::Float,
+            "{text}"
+        );
+        assert_eq!(ScalarValue::parse(text).to_f64(), Some(expected), "{text}");
+        let doc = Document::from_str(&format!("k: {text}\n")).unwrap();
+        let node = doc.as_mapping().unwrap().get("k").unwrap();
+        assert_eq!(node.to_f64(), Some(expected), "{text}");
+        assert_eq!(node.as_scalar().unwrap().as_f64(), Some(expected), "{text}");
+    }
+    assert!(ScalarValue::parse(".NaN").to_f64().unwrap().is_nan());
+
+    for text in [
+        "inf", "nan", "Infinity", "1_000", "1e", "e5", ".", "+.", "1.5.2",
+    ] {
+        assert_eq!(
+            ScalarValue::classify_plain(text),
+            CoreScalarType::String,
+            "{text}"
+        );
+        assert_eq!(ScalarValue::parse(text).to_f64(), None, "{text}");
+    }
+}
+
+#[test]
+fn non_breaking_space_is_not_yaml_whitespace() {
+    // YAML whitespace is space and tab only; U+00A0 is ordinary content.
+    use SyntaxKind::*;
+    let doc = Document::from_str("a:\u{a0}b\n").unwrap();
+    assert_eq!(doc.as_scalar().unwrap().as_string(), "a:\u{a0}b");
+
+    let doc = Document::from_str("a\u{a0}#b\n").unwrap();
+    assert_eq!(doc.as_scalar().unwrap().as_string(), "a\u{a0}#b");
+
+    let doc = Document::from_str("-\u{a0}x\n").unwrap();
+    assert_eq!(doc.as_scalar().unwrap().as_string(), "-\u{a0}x");
+
+    assert_eq!(
+        yaml_edit::lex("&a\u{a0}b c\n"),
+        vec![
+            (ANCHOR, "&a\u{a0}b"),
+            (WHITESPACE, " "),
+            (STRING, "c"),
+            (NEWLINE, "\n"),
+        ]
+    );
 }

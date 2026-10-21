@@ -2,11 +2,17 @@
 //! collection written into a flow mapping, or used as a key, is rendered in
 //! flow style, since block syntax is not allowed there.
 
+use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{Mapping, ScalarValue, Sequence, YamlFile, YamlNode, YamlValue};
+use yaml_edit::{
+    debug, Mapping, Scalar, ScalarValue, Sequence, SyntaxKind, YamlFile, YamlNode, YamlValue,
+};
 
 mod common;
-use common::{assert_file_cst_ok, assert_file_edited};
+use common::{
+    assert_file_cst_ok, assert_file_edited, check_renders, count_nodes, parse_clean,
+    render_documents,
+};
 
 fn parse(yaml: &str) -> YamlFile {
     YamlFile::from_str(yaml).unwrap()
@@ -217,13 +223,25 @@ fn flow_sequence_items() {
 
 #[test]
 fn deeply_nested_flow_sequences() {
-    let mut node = parse_root("[[[[[a]]]]]");
-    for _ in 0..5 {
-        let seq = node.as_sequence().unwrap();
-        assert_eq!(seq.len(), 1);
-        node = seq.get(0).unwrap();
+    let root = parse_root("nested: [[[[[a]]]]]");
+    for mut node in [parse_root("[[[[[a]]]]]"), root.get("nested").unwrap()] {
+        for _ in 0..5 {
+            let seq = node.as_sequence().unwrap();
+            assert_eq!(seq.len(), 1);
+            node = seq.get(0).unwrap();
+        }
+        assert_eq!(node.as_scalar().unwrap().as_string(), "a");
     }
-    assert_eq!(node.as_scalar().unwrap().as_string(), "a");
+}
+
+/// A trailing comma adds no entry to a flow collection that is a value
+/// either.
+#[test]
+fn trailing_comma_in_nested_flow_collection() {
+    check_renders(&[
+        ("array: [a, b, ]", "map{array: [a, b]}"),
+        ("config: {a: 1, b: 2, }", "map{config: {a: 1, b: 2}}"),
+    ]);
 }
 
 /// 4FJ6: nested implicit complex keys.
@@ -547,4 +565,119 @@ fn commented_explicit_key_in_item_appended_to_flow_sequence() {
     let root = file.document().unwrap().as_sequence().unwrap();
     root.push(parse_map("? - 1  # c\n  - 2\n: x\n"));
     assert_file_edited(&file, "[1, {? [1,  # c\n    2]: x}]\n");
+}
+
+/// An explicit key or a JSON-like key in a flow sequence makes a single
+/// pair mapping, counted here by the MAPPING nodes the tree holds.
+#[test]
+fn single_pair_mappings_in_flow_sequences() {
+    for (yaml, mappings, expected) in [
+        // An explicit key is already a complete mapping, so it is not also
+        // wrapped as an implicit single-pair one. The YAML test suite's
+        // CT4Q has `[\n? foo\n bar : baz\n]` as one mapping inside one
+        // sequence; the wrapper made it two.
+        ("[? a : b]\n", 1, "[{a: b}]"),
+        ("[a: b]\n", 1, "[{a: b}]"),
+        ("{? a : b}\n", 1, "{a: b}"),
+        ("[? a\n b : c]\n", 1, "[{a b: c}]"),
+        // A `:` directly after a JSON-like node separates that key from its
+        // value, with no space required (YAML 1.2 section 7.4). The YAML
+        // test suite's 9MMW has `[ {JSON: like}:adjacent ]` as a mapping
+        // keyed by the flow mapping; the colon was glued into a plain
+        // scalar, so the key and value became two sequence entries.
+        (
+            "[ {JSON: like}:adjacent ]\n",
+            2,
+            "[{{JSON: like}: adjacent}]",
+        ),
+        ("[ \"JSON like\":adjacent ]\n", 1, "[{JSON like: adjacent}]"),
+        ("[ YAML : separate ]\n", 1, "[{YAML: separate}]"),
+        ("{a: b}\n", 1, "{a: b}"),
+    ] {
+        assert_eq!(render_documents(yaml), [expected], "{yaml:?}");
+        let file = parse_clean(yaml);
+        assert_eq!(
+            count_nodes(&file, SyntaxKind::MAPPING),
+            mappings,
+            "{yaml:?}"
+        );
+    }
+}
+
+/// YAML test suite FRK4: a plain flow key followed by a space and the
+/// separating colon used to keep the space as part of the key.
+#[test]
+fn flow_plain_key_before_spaced_colon() {
+    let yaml = "{\n  ? foo :,\n  : bar,\n}\n";
+    check_renders(&[
+        (yaml, "{foo: ~, ~: bar}"),
+        ("{ foo : bar, a b : c }", "{foo: bar, a b: c}"),
+    ]);
+    let mapping = parse_map(yaml);
+    assert!(mapping.get("foo").unwrap().as_scalar().unwrap().is_null());
+    let null_key = mapping.get(ScalarValue::null()).unwrap();
+    assert_eq!(null_key.as_scalar().unwrap().as_string(), "bar");
+}
+
+/// The `?` of an explicit key goes inside KEY in a flow sequence's single
+/// pair, as it does in a flow mapping, so the two entries share one shape.
+#[test]
+fn explicit_key_entry_in_a_flow_pair_matches_a_flow_mapping() {
+    let entry_tree = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let entry = file
+            .syntax()
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)
+            .unwrap();
+        debug::tree_to_string(&entry)
+    };
+    for entry in [
+        "? a : 1",
+        "? : x",
+        "? a",
+        "? ",
+        "?\n a : b",
+        "? a # c\n : b",
+        "? a\n b : c",
+        "? [a] : b",
+    ] {
+        assert_eq!(
+            entry_tree(&format!("[{entry}]\n")),
+            entry_tree(&format!("{{{entry}}}\n")),
+            "{entry:?}"
+        );
+    }
+}
+
+/// A block-scalar header opens a block scalar only in block context, so
+/// inside a flow collection `|` and `>` are plain content.
+///
+/// YAML 1.2 section 8.1 gives block scalars a block-context production
+/// only, and saphyr reads `[|, x]` as the two entries `|` and `x`. The
+/// lexer emitted a header there, so the rest of the collection was consumed
+/// as its body and the parse failed with a spurious unclosed-collection
+/// error.
+#[test]
+fn block_header_in_flow_context_is_content() {
+    for (yaml, scalars) in [
+        ("[|, x]\n", &["|", "x"][..]),
+        ("[|]\n", &["|"]),
+        ("{a: |, b: 1}\n", &["a", "|", "b", "1"]),
+        ("[>, x]\n", &[">", "x"]),
+        ("k: [|, x]\n", &["k", "|", "x"]),
+    ] {
+        let file = parse_clean(yaml);
+        // TODO: Scalar::as_string and YamlValue read a plain `|` or `>` as
+        // an empty block scalar, as Scalar::is_block only looks at the first
+        // character. Compare the scalars' text until that is fixed.
+        let texts: Vec<String> = file
+            .syntax()
+            .descendants()
+            .filter_map(Scalar::cast)
+            .map(|s| s.value())
+            .collect();
+        assert_eq!(texts, scalars, "{yaml:?}");
+    }
 }

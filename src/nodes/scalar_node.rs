@@ -392,6 +392,12 @@ impl Scalar {
         let val = self.as_string();
         matches!(val.as_str(), "null" | "Null" | "NULL" | "~" | "")
     }
+
+    /// Whether this is a plain scalar holding a flow indicator, at which
+    /// it would end inside a flow collection.
+    pub(crate) fn needs_flow_quotes(&self) -> bool {
+        !self.is_quoted() && !self.is_block() && self.value().contains([',', '[', ']', '{', '}'])
+    }
 }
 
 impl AsYaml for Scalar {
@@ -415,9 +421,7 @@ impl AsYaml for Scalar {
         indent: usize,
         flow_context: bool,
     ) -> bool {
-        let plain = !self.is_quoted() && !self.is_block();
-        if flow_context && plain && self.value().contains([',', '[', ']', '{', '}']) {
-            // Inside a flow collection a plain scalar ends at the indicator.
+        if flow_context && self.needs_flow_quotes() {
             return ScalarValue::double_quoted(self.as_string())
                 .build_content(builder, indent, true);
         }

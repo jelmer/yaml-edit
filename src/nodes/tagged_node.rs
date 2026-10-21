@@ -120,6 +120,27 @@ fn continuation_indent(node: &SyntaxNode) -> Option<usize> {
     )
 }
 
+impl TaggedNode {
+    /// A copy of this node with its plain content double quoted, if a flow
+    /// collection would end that content at a flow indicator in it.
+    fn flow_quoted(&self) -> Option<SyntaxNode> {
+        let scalar = self.0.children().find_map(Scalar::cast)?;
+        if !scalar.needs_flow_quotes() {
+            return None;
+        }
+        let mut builder = rowan::GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::ROOT.into());
+        scalar.build_content(&mut builder, 0, true);
+        builder.finish_node();
+        let quoted = builder.finish().children().next()?.into_node()?.to_owned();
+        let green = self
+            .0
+            .green()
+            .replace_child(scalar.syntax().index(), quoted.into());
+        Some(SyntaxNode::new_root(green))
+    }
+}
+
 impl AsYaml for TaggedNode {
     fn as_node(&self) -> Option<&SyntaxNode> {
         Some(&self.0)
@@ -140,10 +161,10 @@ impl AsYaml for TaggedNode {
         &self,
         builder: &mut rowan::GreenNodeBuilder,
         indent: usize,
-        _flow_context: bool,
+        flow_context: bool,
     ) -> bool {
-        // TODO: in flow context, quote plain content holding a flow
-        // indicator (`!t a, b`), as Scalar does.
+        let quoted = flow_context.then(|| self.flow_quoted()).flatten();
+        let node = quoted.as_ref().unwrap_or(&self.0);
         let content_on_tag_line = self
             .0
             .children_with_tokens()
@@ -156,7 +177,7 @@ impl AsYaml for TaggedNode {
             continuation_indent(&self.0).map_or(0, |base| indent as isize - base as isize)
         };
         builder.start_node(SyntaxKind::TAGGED_NODE.into());
-        let ends_with_newline = crate::as_yaml::copy_node_content_reindent(builder, &self.0, delta);
+        let ends_with_newline = crate::as_yaml::copy_node_content_reindent(builder, node, delta);
         builder.finish_node();
         ends_with_newline
     }
@@ -489,5 +510,83 @@ mod tests {
         assert_eq!(omap.as_ordered_mapping().map(|e| e.len()), Some(2));
         let pairs = tagged("a: !<tag:yaml.org,2002:pairs> [b: 1, b: 2]\n");
         assert_eq!(pairs.as_pairs().map(|e| e.len()), Some(2));
+    }
+
+    /// Copied into a flow collection, tagged plain content holding a flow
+    /// indicator is double quoted, as an untagged plain scalar is, so that
+    /// it stays one value.
+    #[test]
+    fn test_copy_tagged_plain_scalar_into_flow() {
+        for (src, flow) in [
+            ("v: !t a, b\n", "!t \"a, b\""),
+            ("v: !t a]b\n", "!t \"a]b\""),
+            ("v: !t a{b}\n", "!t \"a{b}\""),
+            ("v: !t &x a, b\n", "!t &x \"a, b\""),
+            ("v: !t\n  a, b\n", "!t \"a, b\""),
+            ("v: !t a:b\n", "!t a:b"),
+            ("v: !t 'a, b'\n", "!t 'a, b'"),
+        ] {
+            let src_doc = YamlFile::from_str(src).unwrap().document().unwrap();
+            let value = src_doc.as_mapping().unwrap().get("v").unwrap();
+            for (target, edit, expected) in [
+                ("[x]\n", "set", format!("[{flow}]\n")),
+                ("[x]\n", "push", format!("[x, {flow}]\n")),
+                ("{k: x}\n", "set", format!("{{k: {flow}}}\n")),
+                ("a: {k: [x]}\n", "nested", format!("a: {{k: [{flow}]}}\n")),
+            ] {
+                let doc = YamlFile::from_str(target).unwrap().document().unwrap();
+                match edit {
+                    "set" if target.starts_with('[') => {
+                        doc.as_sequence().unwrap().set(0, &value);
+                    }
+                    "set" => doc.as_mapping().unwrap().set("k", &value),
+                    "push" => doc.as_sequence().unwrap().push(&value),
+                    _ => {
+                        let inner = doc.as_mapping().unwrap().get_mapping("a").unwrap();
+                        inner.get_sequence("k").unwrap().set(0, &value);
+                    }
+                }
+                assert_eq!(doc.to_string(), expected, "{src:?} {edit} {target:?}");
+                crate::debug::assert_cst_ok(&doc);
+                crate::debug::assert_parser_shaped(&doc);
+                let read = YamlFile::from_str(&doc.to_string())
+                    .unwrap()
+                    .document()
+                    .unwrap();
+                let item = match edit {
+                    "set" if target.starts_with('[') => read.as_sequence().unwrap().get(0),
+                    "set" => read.as_mapping().unwrap().get("k"),
+                    "push" => read.as_sequence().unwrap().get(1),
+                    _ => read
+                        .as_mapping()
+                        .unwrap()
+                        .get_mapping("a")
+                        .unwrap()
+                        .get_sequence("k")
+                        .unwrap()
+                        .get(0),
+                };
+                assert!(
+                    crate::yaml_eq(&item.unwrap(), &value),
+                    "{src:?} {edit} {target:?}"
+                );
+            }
+        }
+    }
+
+    /// Outside a flow collection the content is copied as is.
+    #[test]
+    fn test_copy_tagged_plain_scalar_into_block() {
+        let src_doc = YamlFile::from_str("v: !t a, b\n")
+            .unwrap()
+            .document()
+            .unwrap();
+        let value = src_doc.as_mapping().unwrap().get("v").unwrap();
+        let doc = YamlFile::from_str("k: x\n").unwrap().document().unwrap();
+        doc.as_mapping().unwrap().set("k", &value);
+        assert_eq!(doc.to_string(), "k: !t a, b\n");
+        let doc = YamlFile::from_str("- x\n").unwrap().document().unwrap();
+        doc.as_sequence().unwrap().set(0, &value);
+        assert_eq!(doc.to_string(), "- !t a, b\n");
     }
 }

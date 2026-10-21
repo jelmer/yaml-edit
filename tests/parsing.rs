@@ -912,11 +912,9 @@ fn json_compatible_subset() {
 fn json_round_trips() {
     for json in [
         r#"{"name": "test", "items": [1, 2, 3]}"#,
-        // JSON allows arbitrary whitespace between tokens.
-        r#"  {
-        "key1"   :   "value1"  ,
-        "key2"  :  [  1  ,  2  ,  3  ]
-    }  "#,
+        // JSON allows arbitrary whitespace between tokens, also at the
+        // end of a line.
+        "  {  \n        \"key1\"   :   \"value1\"  ,\n        \"key2\"  :  [  1  ,  2  ,  3  ]  \n    }  ",
         r#"{"a": 1, "b": 2}"#,
         r#"[1, 2, 3]"#,
     ] {

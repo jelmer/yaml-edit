@@ -3,13 +3,14 @@
 
 mod common;
 use common::{
-    assert_cst_ok, assert_file_cst_ok, assert_file_parser_shaped, check_renders, count_nodes,
-    edit_root, keys, parse_clean, render, render_documents, root_mapping,
+    assert_cst_ok, assert_file_cst_ok, assert_file_edited_valid, assert_file_parser_shaped,
+    assert_parser_shaped, check_renders, count_nodes, edit_root, keys, parse_clean, render,
+    render_documents, root_mapping,
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::validator::{Rule, Validator};
-use yaml_edit::{debug, Document, Mapping, ScalarValue, SyntaxKind, YamlFile, YamlNode};
+use yaml_edit::{debug, Alias, Document, Mapping, ScalarValue, SyntaxKind, YamlFile, YamlNode};
 
 /// Parse `yaml`, check it round-trips and holds one document, and render
 /// that document's root node.
@@ -1837,5 +1838,278 @@ fn entry_after_compact_mapping_explicit_value() {
         ),
     ] {
         assert_eq!(checked_value(src), checked_value(expected), "{src:?}");
+    }
+}
+
+fn rename_in(src: &str, old: &str, new: &str) -> (bool, String) {
+    let yaml = YamlFile::from_str(src).unwrap();
+    let renamed = yaml
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .rename_key(old, new);
+    (renamed, yaml.to_string())
+}
+
+#[test]
+fn rename_key_onto_existing_key_replaces_it() {
+    assert_eq!(
+        rename_in("a: 1\nb: 2\nc: 3\n", "a", "b"),
+        (true, "b: 1\nc: 3\n".to_string())
+    );
+    assert_eq!(
+        rename_in("b: 2\na: 1\nc: 3\n", "a", "b"),
+        (true, "b: 1\nc: 3\n".to_string())
+    );
+    assert_eq!(
+        rename_in("x: 0\na: 1\nc: 3\nb: 2", "a", "b"),
+        (true, "x: 0\nb: 1\nc: 3".to_string())
+    );
+    assert_eq!(
+        rename_in("a: 1\nb: 2\nb: 3\n", "a", "b"),
+        (true, "b: 1\n".to_string())
+    );
+    assert_eq!(
+        rename_in("{a: 1, b: 2, c: 3}", "a", "b"),
+        (true, "{b: 1, c: 3}".to_string())
+    );
+}
+
+#[test]
+fn rename_key_onto_existing_key_keeps_comments_and_anchor() {
+    let yaml = YamlFile::from_str("top:\n  b: 2\n  # about a\n  a: &x 1\n").unwrap();
+    let top = yaml
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("top")
+        .unwrap();
+    assert!(top.rename_key("a", "b"));
+    assert_eq!(yaml.to_string(), "top:\n  # about a\n  b: &x 1\n");
+}
+
+#[test]
+fn rename_key_to_itself_keeps_duplicates() {
+    assert_eq!(
+        rename_in("a: 1\na: 2\n", "a", "a"),
+        (true, "a: 1\na: 2\n".to_string())
+    );
+}
+
+#[test]
+fn document_rename_key_onto_existing_key() {
+    let doc = yaml_edit::Document::from_str("a: 1\nb: 2\n").unwrap();
+    assert!(doc.rename_key("a", "b"));
+    assert_eq!(doc.to_string(), "b: 1\n");
+}
+
+/// Giving a value to a block explicit key that has none adds the `:` line
+/// the value goes on.
+#[test]
+fn set_value_of_explicit_key_without_one() {
+    for (source, expected) in [
+        ("? a", "? a\n: 5"),
+        ("? a\n", "? a\n: 5\n"),
+        ("? a\nb: 1\n", "? a\n: 5\nb: 1\n"),
+        ("? a # c", "? a # c\n: 5"),
+        ("? a # c\nb: 1\n", "? a # c\n: 5\nb: 1\n"),
+    ] {
+        let yaml = YamlFile::from_str(source).unwrap();
+        yaml.document().unwrap().as_mapping().unwrap().set("a", 5);
+        assert_file_edited_valid(&yaml, expected);
+    }
+    for (source, expected) in [
+        ("x:\n  ? a", "x:\n  ? a\n  : 5"),
+        ("x:\n  ? a\ny: 1\n", "x:\n  ? a\n  : 5\ny: 1\n"),
+    ] {
+        let yaml = YamlFile::from_str(source).unwrap();
+        let doc = yaml.document().unwrap();
+        doc.as_mapping()
+            .unwrap()
+            .get_mapping("x")
+            .unwrap()
+            .set("a", 5);
+        assert_file_edited_valid(&yaml, expected);
+    }
+    let seq = || {
+        yaml_edit::Document::from_str("- 1\n- 2\n")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+    };
+    for (source, expected) in [
+        ("? a", "? a\n:\n  - 1\n  - 2"),
+        ("? a\n", "? a\n:\n  - 1\n  - 2\n"),
+        ("? a\nb: 1\n", "? a\n:\n  - 1\n  - 2\nb: 1\n"),
+    ] {
+        let yaml = YamlFile::from_str(source).unwrap();
+        yaml.document()
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .set("a", seq());
+        assert_file_edited_valid(&yaml, expected);
+    }
+}
+
+/// A `:` right after an alias would be read as part of its name (`*a:`),
+/// so an alias key is followed by a space.
+#[test]
+fn alias_key_is_separated_from_colon() {
+    let edits: [(&str, MappingEdit, &str); 6] = [
+        (
+            "x: &a k\n",
+            |m| m.set(Alias::new("a"), 1),
+            "x: &a k\n*a : 1\n",
+        ),
+        (
+            "{x: &a k}\n",
+            |m| m.set(Alias::new("a"), 1),
+            "{x: &a k, *a : 1}\n",
+        ),
+        (
+            "x: &a k\ny: 1\n",
+            |m| assert!(m.rename_key("y", Alias::new("a"))),
+            "x: &a k\n*a : 1\n",
+        ),
+        (
+            "{x: &a k, y: 1}\n",
+            |m| assert!(m.rename_key("y", Alias::new("a"))),
+            "{x: &a k, *a : 1}\n",
+        ),
+        (
+            "x: &a k\ny: 1\n",
+            |m| assert!(m.insert_after("x", Alias::new("a"), 2)),
+            "x: &a k\n*a : 2\ny: 1\n",
+        ),
+        (
+            "x: &a k\nb: [1]\nc:\n  *a : 1\n",
+            |m| {
+                let c = m.get("c").unwrap();
+                m.get_sequence("b").unwrap().push(c);
+            },
+            "x: &a k\nb: [1, {*a : 1}]\nc:\n  *a : 1\n",
+        ),
+    ];
+    for (source, edit, expected) in edits {
+        let file = YamlFile::from_str(source).unwrap();
+        edit(&file.document().unwrap().as_mapping().unwrap());
+        assert_file_edited_valid(&file, expected);
+    }
+}
+
+#[test]
+fn set_explicit_key_value_with_cr_line_breaks() {
+    let file = YamlFile::from_str("? a\r? b\r").unwrap();
+    file.document().unwrap().as_mapping().unwrap().set("a", "x");
+    assert_file_edited_valid(&file, "? a\r: x\r? b\r");
+}
+
+/// A renamed key that held more than one node, which the validator
+/// rejects, is replaced whole, with nothing of the old key left between
+/// the new one and the `:`.
+#[test]
+fn rename_key_holding_two_nodes() {
+    let doc = YamlFile::from_str("[q] x: 1\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let old = mapping.keys().next().unwrap();
+    assert!(mapping.rename_key(old, "z"));
+    assert_cst_ok(&doc);
+    assert_parser_shaped(&doc);
+    assert_eq!(doc.to_string(), "z: 1\n");
+}
+
+/// A block collection given as a new key is written in flow form.
+#[test]
+fn set_with_block_collection_key() {
+    let source = YamlFile::from_str("k:\n  - x\n  - y\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    let block = source.as_mapping().unwrap().get("k").unwrap();
+    let doc = YamlFile::from_str("a: 1\n").unwrap().document().unwrap();
+    doc.as_mapping().unwrap().set(block, 2);
+    assert_cst_ok(&doc);
+    assert_parser_shaped(&doc);
+    assert_eq!(doc.to_string(), "a: 1\n[x, y]: 2\n");
+}
+
+/// Setting the value of a block explicit key that has none writes its `:`
+/// line after the key, whose line the key ends itself.
+#[test]
+fn set_value_of_block_explicit_key_without_one() {
+    for (src, expected) in [
+        ("? - a\n", "? - a\n: 5\n"),
+        ("? - a\n  - b\nc: 1\n", "? - a\n  - b\n: 5\nc: 1\n"),
+        ("? a\n", "? a\n: 5\n"),
+        ("? |\n  t\n", "? |\n  t\n: 5\n"),
+        ("? [a,\n  b]\n", "? [a,\n  b]\n: 5\n"),
+        ("? - a\n? b\n", "? - a\n: 5\n? b\n"),
+    ] {
+        let doc = YamlFile::from_str(src).unwrap().document().unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let key = mapping.keys().next().unwrap();
+        mapping.set(key, 5);
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), expected, "{src:?}");
+    }
+}
+
+#[test]
+fn rename_key() {
+    for (src, old, new, renamed, expected) in [
+        (
+            "old_name: value",
+            "old_name",
+            "new_name",
+            true,
+            "new_name: value",
+        ),
+        (
+            "name: my-app\nversion: 1.0\nauthor: Alice",
+            "version",
+            "app_version",
+            true,
+            "name: my-app\napp_version: 1.0\nauthor: Alice",
+        ),
+        (
+            "count: 42\nenabled: true",
+            "count",
+            "total",
+            true,
+            "total: 42\nenabled: true",
+        ),
+        ("name: Alice", "age", "years", false, "name: Alice"),
+        (
+            "name: Alice\nage: 30\ncity: NYC",
+            "name",
+            "username",
+            true,
+            "username: Alice\nage: 30\ncity: NYC",
+        ),
+        (
+            "name: Alice\nage: 30\ncity: NYC",
+            "age",
+            "years",
+            true,
+            "name: Alice\nyears: 30\ncity: NYC",
+        ),
+        (
+            "name: Alice\nage: 30\ncity: NYC",
+            "city",
+            "location",
+            true,
+            "name: Alice\nage: 30\nlocation: NYC",
+        ),
+    ] {
+        let text = edit_root(src, |m| {
+            assert_eq!(m.rename_key(old, new), renamed, "{src:?}")
+        });
+        assert_eq!(text, expected, "{src:?}");
     }
 }

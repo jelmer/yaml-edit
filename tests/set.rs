@@ -8,8 +8,8 @@
 
 mod common;
 use common::{
-    assert_cst_ok, assert_edited, assert_file_cst_ok, assert_file_edited, assert_parser_shaped,
-    check_edit, value_of,
+    assert_cst_ok, assert_edited, assert_file_cst_ok, assert_file_edited, assert_file_edited_valid,
+    assert_parser_shaped, check_edit, edit_root, render_documents, value_of,
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
@@ -1644,5 +1644,226 @@ fn sequence_set_with_nested_mapping() {
     assert_edited(
         &doc,
         "items:\n  - replaced\n  - name: second\n    value: 2\n",
+    );
+}
+
+/// `set_path` builds nested intermediates as pending-block mappings, so a
+/// deep path produces readable block YAML rather than nested flow.
+#[test]
+fn set_path_builds_block_intermediates() {
+    let doc = Document::from_str("name: test\n").unwrap();
+    doc.try_set_path("server.database.host", "localhost")
+        .unwrap();
+    assert_edited(
+        &doc,
+        "name: test\nserver:\n  database:\n    host: localhost\n",
+    );
+}
+
+/// The line break ending an unterminated last entry goes where the parser
+/// puts it: in the innermost entry or block scalar on that line.
+#[test]
+fn set_after_unterminated_nested_value() {
+    for (source, expected) in [
+        ("a:\n  - 1", "a:\n  - 1\nb: 2"),
+        ("a:\n  x: 1", "a:\n  x: 1\nb: 2"),
+        ("a: |\n  x", "a: |\n  x\nb: 2"),
+    ] {
+        let yaml = YamlFile::from_str(source).unwrap();
+        yaml.document().unwrap().as_mapping().unwrap().set("b", 2);
+        assert_file_edited_valid(&yaml, expected);
+    }
+}
+
+#[test]
+fn set_after_bom_lines_up_with_first_key() {
+    // A BOM is not content, so the first key is at column 0.
+    let doc = yaml_edit::Document::from_str("\u{FEFF}a: 1\n").unwrap();
+    doc.as_mapping().unwrap().set("c", 3);
+    assert_edited(&doc, "\u{FEFF}a: 1\nc: 3\n");
+}
+
+#[test]
+fn set_nested_with_cr_line_breaks() {
+    let doc = yaml_edit::Document::from_str("x: 1\ra:\r  b: 1\r").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    mapping.get_mapping("a").unwrap().set("d", 4);
+    assert_eq!(doc.to_string(), "x: 1\ra:\r  b: 1\r  d: 4\r");
+}
+
+#[test]
+fn set_writes_crlf_line_breaks() {
+    let file = YamlFile::from_str("a: 1\r\n").unwrap();
+    let doc = file.document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    mapping.set("b", MappingBuilder::new().pair("c", 1).build_document());
+    mapping.set("d", ScalarValue::literal("x\ny\n"));
+    mapping.set("e", ScalarValue::single_quoted("x\ny"));
+    assert_file_edited_valid(
+        &file,
+        "a: 1\r\nb:\r\n  c: 1\r\nd: |\r\n  x\r\n  y\r\ne: 'x\r\n\r\n  y'\r\n",
+    );
+}
+
+#[test]
+fn set_without_line_breaks_writes_lf() {
+    let file = YamlFile::from_str("a: 1").unwrap();
+    file.document().unwrap().as_mapping().unwrap().set("b", 2);
+    // The input's last line stays unterminated.
+    assert_file_edited_valid(&file, "a: 1\nb: 2");
+}
+
+#[test]
+fn set_block_scalar_before_blank_line_with_cr_line_breaks() {
+    let file = YamlFile::from_str("a: 1\r    \rb: 2\r").unwrap();
+    let doc = file.document().unwrap();
+    doc.as_mapping()
+        .unwrap()
+        .set("a", ScalarValue::literal("x\n"));
+    assert_file_edited_valid(&file, "a: |\r  x\r\rb: 2\r");
+}
+
+#[test]
+fn modify_mapping_of_missing_or_scalar_value() {
+    let doc = YamlFile::from_str("a: 1\n").unwrap().document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(!mapping.modify_mapping("a", |_| panic!("a is no mapping")));
+    assert!(!mapping.modify_mapping("b", |_| panic!("b is missing")));
+    assert_eq!(doc.to_string(), "a: 1\n");
+}
+
+/// A new entry goes before the spaces of a last line that holds nothing
+/// else.
+#[test]
+fn set_new_key_before_trailing_space_line() {
+    for (src, expected) in [
+        ("a: 1\n  ", "a: 1\nb: 2\n  "),
+        ("a: 1\n# c\n  ", "a: 1\n# c\nb: 2\n  "),
+    ] {
+        let doc = YamlFile::from_str(src).unwrap().document().unwrap();
+        doc.as_mapping().unwrap().set("b", 2);
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), expected, "{src:?}");
+    }
+}
+
+/// An empty collection set as a value is written in flow form, so it reads
+/// back as a collection rather than as null (issue #37).
+#[test]
+fn set_empty_built_collection() {
+    let seq = SequenceBuilder::new()
+        .build_document()
+        .as_sequence()
+        .unwrap();
+    let text = edit_root("name: Alice", |m| m.set("foo", seq));
+    assert_eq!(text, "name: Alice\nfoo: []");
+    assert_eq!(render_documents(&text), ["map{name: Alice, foo: []}"]);
+
+    let map = MappingBuilder::new().build_document().as_mapping().unwrap();
+    let text = edit_root("name: Alice", |m| m.set("foo", map));
+    assert_eq!(text, "name: Alice\nfoo: {}");
+    assert_eq!(render_documents(&text), ["map{name: Alice, foo: {}}"]);
+}
+
+/// Setting a key in a mapping updates it where it is, or adds it at the
+/// end.
+#[test]
+fn set_on_root_mapping() {
+    assert_eq!(
+        edit_root("existing: value", |m| m.set("new_key", "new_value")),
+        "existing: value\nnew_key: new_value"
+    );
+    assert_eq!(
+        edit_root("key1: value1", |m| m.set("key2", "value2")),
+        "key1: value1\nkey2: value2"
+    );
+    assert_eq!(
+        edit_root("name: Alice", |m| m.set("age", 30)),
+        "name: Alice\nage: 30"
+    );
+    assert_eq!(
+        edit_root("name: Alice\nage: 30", |m| m.set("age", 31)),
+        "name: Alice\nage: 31"
+    );
+    assert_eq!(
+        edit_root("key1: value1\nkey2: value2\n", |m| m
+            .set("key1", "new_value")),
+        "key1: new_value\nkey2: value2\n"
+    );
+    assert_eq!(
+        edit_root(
+            "Name: original_name\nContact: original_contact\nRepository: https://github.com/example/repo.git\n",
+            |m| m.set("Contact", "updated_contact")
+        ),
+        "Name: original_name\nContact: updated_contact\nRepository: https://github.com/example/repo.git\n"
+    );
+    assert_eq!(
+        edit_root(
+            "Name: tsne\nContact: Justin Donaldson <jdonaldson@gmail.com>\nArchive: CRAN\nRepository: https://github.com/jdonaldson/rtsne.git\n",
+            |m| {
+                m.set("Contact", "New Contact <new@example.com>");
+                assert_cst_ok(m);
+                m.set("Archive", "PyPI");
+            }
+        ),
+        "Name: tsne\nContact: New Contact <new@example.com>\nArchive: PyPI\nRepository: https://github.com/jdonaldson/rtsne.git\n"
+    );
+    assert_eq!(
+        edit_root("key: value", |m| {
+            m.set("number", 123);
+            assert_cst_ok(m);
+            m.set("bool", false);
+            assert_cst_ok(m);
+            m.set("text", "hello");
+        }),
+        "key: value\nnumber: 123\nbool: false\ntext: hello"
+    );
+    assert_eq!(
+        edit_root("name: Alice", |m| {
+            assert_eq!(m.len(), 1);
+            m.set("age", 30);
+            assert_eq!(m.len(), 2);
+            m.set("city", "NYC");
+            assert_eq!(m.len(), 3);
+        }),
+        "name: Alice\nage: 30\ncity: NYC"
+    );
+}
+
+#[test]
+fn set_remove_and_rename_together() {
+    let original = r#"name: my-app
+version: 1.0
+author: Alice
+year: 2023
+
+features:
+  - logging
+  - auth"#;
+    let text = edit_root(original, |m| {
+        m.set("license", "MIT");
+        assert_cst_ok(m);
+        m.set("published", true);
+        assert_cst_ok(m);
+        m.set("downloads", 1000);
+        assert_cst_ok(m);
+        assert!(m.remove("author").is_some());
+        assert_cst_ok(m);
+        assert!(m.rename_key("version", "app_version"));
+        assert_cst_ok(m);
+        m.set("year", 2024);
+    });
+    assert_eq!(
+        text,
+        r#"name: my-app
+app_version: 1.0
+year: 2024
+
+features:
+  - logging
+  - auth
+license: MIT
+published: true
+downloads: 1000"#
     );
 }

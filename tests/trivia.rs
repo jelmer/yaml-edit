@@ -5,8 +5,8 @@
 
 mod common;
 use common::{
-    assert_file_edited, check_renders, count_nodes, count_tokens, edited, parse_clean,
-    render_documents,
+    assert_file_edited, assert_file_edited_valid, check_renders, count_nodes, count_tokens, edited,
+    parse_clean, render_documents,
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
@@ -1351,4 +1351,49 @@ fn comment_lines_before_non_entry_leave_nested_collection() {
         comment_parents("[a:\n?\nb:\n# c\n"),
         [(SyntaxKind::SEQUENCE, "[a:\n?\nb:\n# c\n".to_string())]
     );
+}
+
+/// Setting a value next to a comment keeps the comment out of a block
+/// scalar's text, and the entries after it on their own lines.
+///
+/// Regression test for issues #220, #221 and #222.
+#[test]
+fn set_block_scalar_beside_comment() {
+    for (source, key, value, expected) in [
+        (
+            "first: | # c\n  x\nsecond: 1\n",
+            "first",
+            "Z",
+            "first: Z # c\nsecond: 1\n",
+        ),
+        (
+            "first: a # c\nsecond: x\n",
+            "first",
+            "line1\nline2\n",
+            "first: | # c\n  line1\n  line2\nsecond: x\n",
+        ),
+        (
+            "first: |\n    x\n  # note\nsecond: 1\n",
+            "first",
+            "a\nb\n",
+            "first: |\n  a\n  b\n# note\nsecond: 1\n",
+        ),
+        (
+            "first: 1\n\nsecond: 1\nlast: end # t\n",
+            "last",
+            "kept\n\n\n",
+            "first: 1\n\nsecond: 1\nlast: |+ # t\n  kept\n\n\n",
+        ),
+    ] {
+        let yaml = YamlFile::from_str(source).unwrap();
+        let mapping = yaml.document().unwrap().as_mapping().unwrap();
+        mapping.set(key, value);
+        assert_file_edited_valid(&yaml, expected);
+        let mapping = yaml.document().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            mapping.get(key).unwrap().as_scalar().unwrap().as_string(),
+            value,
+            "{source:?}"
+        );
+    }
 }

@@ -435,3 +435,60 @@ fn document_reorder_fields() {
         ["Name", "Bug-Database", "Repository", "Repository-Browse"]
     );
 }
+
+#[test]
+fn move_after_missing_ref_leaves_mapping_unchanged() {
+    let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(!mapping.move_after("missing", "a", "3"));
+    assert_edited(&doc, "a: 1\nb: 2\n");
+    assert!(!mapping.move_before("missing", "a", "3"));
+    assert_edited(&doc, "a: 1\nb: 2\n");
+    assert!(mapping.move_after("a", "a", "3"));
+    assert_edited(&doc, "a: '3'\nb: 2\n");
+
+    let doc = Document::from_str("{a: 1, b: 2}").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(!mapping.move_after("missing", "a", "3"));
+    assert_edited(&doc, "{a: 1, b: 2}");
+}
+
+/// An edit placing an entry relative to another, which reports whether it
+/// found that one.
+type RelativeEdit = dyn Fn(&Mapping) -> bool;
+
+/// Entries placed relative to another in a nested block mapping line up
+/// with their siblings.
+#[test]
+fn move_and_insert_relative_in_nested_mapping_keep_indent() {
+    let source = "outer:\n  a: 1\n  c: 3\nz: 0\n";
+    let cases: [(&RelativeEdit, &str); 5] = [
+        (
+            &|m| m.insert_after("a", "b", 2),
+            "outer:\n  a: 1\n  b: 2\n  c: 3\nz: 0\n",
+        ),
+        (
+            &|m| m.insert_before("a", "b", 2),
+            "outer:\n  b: 2\n  a: 1\n  c: 3\nz: 0\n",
+        ),
+        (
+            &|m| m.insert_after("c", "b", 2),
+            "outer:\n  a: 1\n  c: 3\n  b: 2\nz: 0\n",
+        ),
+        (
+            &|m| m.move_after("c", "a", 9),
+            "outer:\n  c: 3\n  a: 9\nz: 0\n",
+        ),
+        (
+            &|m| m.move_before("a", "c", 9),
+            "outer:\n  c: 9\n  a: 1\nz: 0\n",
+        ),
+    ];
+    for (edit, expected) in cases {
+        let doc = Document::from_str(source).unwrap();
+        assert!(edit(
+            &doc.as_mapping().unwrap().get_mapping("outer").unwrap()
+        ));
+        assert_edited(&doc, expected);
+    }
+}

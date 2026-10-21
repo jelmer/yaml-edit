@@ -26,8 +26,8 @@
 mod common;
 use common::{
     assert_cst_ok, assert_edited, assert_file_cst_ok, assert_file_edited, assert_file_edited_valid,
-    assert_file_parser_shaped, assert_parser_shaped, check_edit, edit_file, render_documents,
-    root_mapping,
+    assert_file_parser_shaped, assert_parser_shaped, check_edit, edit_file, edit_root,
+    render_documents, root_mapping,
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
@@ -3135,4 +3135,316 @@ fn pop_until_empty() {
         assert!(seq.pop().is_none());
         assert_edited(&doc, "items: []");
     }
+}
+
+/// Inserting by index into an empty mapping follows the same style rules
+/// as `set`: a pending-block placeholder becomes block, a `{}` from the
+/// source or from `new_flow` stays flow.
+#[test]
+fn insert_at_index_into_empty_mapping() {
+    for preserving in [false, true] {
+        let insert = |m: &Mapping| {
+            if preserving {
+                m.insert_at_index_preserving(0, "k", "v");
+            } else {
+                m.insert_at_index(0, "k", "v");
+            }
+        };
+
+        let m = Mapping::new();
+        insert(&m);
+        assert_cst_ok(&m);
+        assert_eq!(m.to_string(), "k: v\n", "preserving={preserving}");
+
+        let m = Mapping::new_flow();
+        insert(&m);
+        assert_cst_ok(&m);
+        assert_eq!(m.to_string(), "{k: v}", "preserving={preserving}");
+
+        let doc = Document::from_str("m: {}\n").unwrap();
+        insert(&doc.as_mapping().unwrap().get_mapping("m").unwrap());
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), "m: {k: v}\n", "preserving={preserving}");
+    }
+}
+
+/// A new key goes in with the mapping's own style and indentation.
+#[test]
+fn insert_at_index_preserving_new_key_matches_mapping_style() {
+    for (yaml, index, expected) in [
+        ("m: {a: 1}\n", 0, "m: {k: v, a: 1}\n"),
+        ("m: {a: 1}\n", 5, "m: {a: 1, k: v}\n"),
+        ("m:\n  a: 1\n", 0, "m:\n  k: v\n  a: 1\n"),
+        ("m:\n  a: 1\n", 5, "m:\n  a: 1\n  k: v\n"),
+        ("a: 1\nb: 2\n", 1, "a: 1\nk: v\nb: 2\n"),
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        let root = doc.as_mapping().unwrap();
+        let m = root.get_mapping("m").unwrap_or(root);
+        m.insert_at_index_preserving(index, "k", "v");
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), expected, "{yaml:?} at {index}");
+    }
+}
+
+/// A new entry after one whose value ends in a comment on its last line
+/// goes after that comment's line, where a re-parse keeps the comment.
+#[test]
+fn insert_after_nested_value_with_line_comment() {
+    let cases = [
+        ("x:\n  - 1 # c\n", "x:\n  - 1 # c\ny: 2\n"),
+        ("x:\n  - 1 # c", "x:\n  - 1 # c\ny: 2"),
+        ("x:\n  - 1 # c\nz: 3\n", "x:\n  - 1 # c\ny: 2\nz: 3\n"),
+        ("x:\n- 1 # c\nz: 3\n", "x:\n- 1 # c\ny: 2\nz: 3\n"),
+        ("x:\n  - - 1 # c\n", "x:\n  - - 1 # c\ny: 2\n"),
+        ("x:\n  - [1] # c\n", "x:\n  - [1] # c\ny: 2\n"),
+        ("x:\n  - | # c\n    t\n", "x:\n  - | # c\n    t\ny: 2\n"),
+        ("x:\n  a: 1 # c\n", "x:\n  a: 1 # c\ny: 2\n"),
+        ("x:\n  - a: 1 # c\n", "x:\n  - a: 1 # c\ny: 2\n"),
+        ("x:\n  a:\n    - 1 # c\n", "x:\n  a:\n    - 1 # c\ny: 2\n"),
+        ("x: | # c\n  t\n", "x: | # c\n  t\ny: 2\n"),
+        (
+            "- x:\n    a: 1 # c\n- 2\n",
+            "- x:\n    a: 1 # c\n  y: 2\n- 2\n",
+        ),
+        (
+            "a:\n  x:\n    - 1 # c\nb: 1\n",
+            "a:\n  x:\n    - 1 # c\n  y: 2\nb: 1\n",
+        ),
+    ];
+    // `set` appends and `insert_before` needs a following key, so each
+    // stands in for the other where it would not put `y` after `x`.
+    let set_or_insert_before = |m: &yaml_edit::Mapping| {
+        if m.contains_key("z") {
+            assert!(m.insert_before("z", "y", 2));
+        } else {
+            m.set("y", 2);
+        }
+    };
+    let ops: [&dyn Fn(&yaml_edit::Mapping); 4] = [
+        &set_or_insert_before,
+        &|m| m.insert_at_index(1, "y", 2),
+        &|m| assert!(m.insert_after("x", "y", 2)),
+        &|m| m.set_with_field_order("y", 2, ["x", "y", "z"]),
+    ];
+    for (source, expected) in cases {
+        for op in ops {
+            let yaml = YamlFile::from_str(source).unwrap();
+            let mapping = yaml
+                .syntax()
+                .descendants()
+                .filter_map(yaml_edit::Mapping::cast)
+                .find(|m| m.contains_key("x"))
+                .unwrap();
+            op(&mapping);
+            assert_file_edited_valid(&yaml, expected);
+        }
+    }
+}
+
+/// The same after a sequence at the column of the mapping's own keys,
+/// with or without a comment ending it.
+#[test]
+fn insert_after_nested_indentless_sequence() {
+    let cases = [
+        ("- x:\n  - 1\n- 2\n", "- x:\n  - 1\n  y: 2\n- 2\n"),
+        ("- x:\n  - 1 # c\n- 2\n", "- x:\n  - 1 # c\n  y: 2\n- 2\n"),
+        ("- x:\n  - 1 # c\n", "- x:\n  - 1 # c\n  y: 2\n"),
+        ("- x:\n  - 1\n  z: 3\n", "- x:\n  - 1\n  y: 2\n  z: 3\n"),
+        (
+            "- x:\n  - 1 # c\n  z: 3\n- 2\n",
+            "- x:\n  - 1 # c\n  y: 2\n  z: 3\n- 2\n",
+        ),
+        (
+            "- x:\n  - | # c\n    t\n- 2\n",
+            "- x:\n  - | # c\n    t\n  y: 2\n- 2\n",
+        ),
+        (
+            "a:\n  x:\n  - 1 # c\n  z: 3\n",
+            "a:\n  x:\n  - 1 # c\n  y: 2\n  z: 3\n",
+        ),
+    ];
+    let set_or_insert_before = |m: &yaml_edit::Mapping| {
+        if m.contains_key("z") {
+            assert!(m.insert_before("z", "y", 2));
+        } else {
+            m.set("y", 2);
+        }
+    };
+    let ops: [&dyn Fn(&yaml_edit::Mapping); 4] = [
+        &set_or_insert_before,
+        &|m| m.insert_at_index(1, "y", 2),
+        &|m| assert!(m.insert_after("x", "y", 2)),
+        &|m| m.set_with_field_order("y", 2, ["x", "y", "z"]),
+    ];
+    let check = |source: &str, op: &dyn Fn(&yaml_edit::Mapping), expected: &str| {
+        let yaml = YamlFile::from_str(source).unwrap();
+        let mapping = yaml
+            .syntax()
+            .descendants()
+            .filter_map(yaml_edit::Mapping::cast)
+            .find(|m| m.contains_key("x"))
+            .unwrap();
+        op(&mapping);
+        assert_file_edited_valid(&yaml, expected);
+    };
+    for (source, expected) in cases {
+        for op in ops {
+            check(source, op, expected);
+        }
+    }
+    // The blank line before `z` stays there when the new entry goes before
+    // `z`, and after the new entry when it goes after `x`, as between
+    // scalar values.
+    for (i, op) in ops.into_iter().enumerate() {
+        let expected = if i < 2 {
+            "- x:\n  - 1\n\n  y: 2\n  z: 3\n- 2\n"
+        } else {
+            "- x:\n  - 1\n  y: 2\n\n  z: 3\n- 2\n"
+        };
+        check("- x:\n  - 1\n\n  z: 3\n- 2\n", op, expected);
+    }
+}
+
+/// `insert_after` and `insert_before` with a reference key that is not
+/// there do nothing to the order, but still set an existing key.
+#[test]
+fn insert_relative_to_missing_key() {
+    let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(!mapping.insert_after("missing", "a", "99"));
+    assert_edited(&doc, "a: '99'\nb: 2\n");
+    assert!(!mapping.insert_before("missing", "b", "88"));
+    assert_edited(&doc, "a: '99'\nb: '88'\n");
+}
+
+#[test]
+fn insert_relative_and_at_index() {
+    let doc = Document::from_str("first: 1\nsecond: 2\nfourth: 4").unwrap();
+    assert!(doc.insert_after("second", "third", 3));
+    assert_edited(&doc, "first: 1\nsecond: 2\nthird: 3\nfourth: 4");
+    assert!(!doc.insert_after("nonexistent", "new_key", "new_value"));
+    assert_edited(&doc, "first: 1\nsecond: 2\nthird: 3\nfourth: 4");
+    // An existing key is updated where it is.
+    assert!(doc.insert_after("first", "second", "2_updated"));
+    assert_edited(&doc, "first: 1\nsecond: 2_updated\nthird: 3\nfourth: 4");
+
+    let doc = Document::from_str("first: 1\nthird: 3\nfourth: 4").unwrap();
+    assert!(doc.insert_before("third", "second", 2));
+    assert_edited(&doc, "first: 1\nsecond: 2\nthird: 3\nfourth: 4");
+    assert!(!doc.insert_before("nonexistent", "new_key", "new_value"));
+    assert_edited(&doc, "first: 1\nsecond: 2\nthird: 3\nfourth: 4");
+    assert!(doc.insert_before("fourth", "third", "3_updated"));
+    assert_edited(&doc, "first: 1\nsecond: 2\nthird: 3_updated\nfourth: 4");
+
+    let doc = Document::from_str("first: 1\nthird: 3").unwrap();
+    doc.insert_at_index(1, "second", 2);
+    assert_edited(&doc, "first: 1\nsecond: 2\nthird: 3");
+    doc.insert_at_index(0, "zero", 0);
+    assert_edited(&doc, "zero: 0\nfirst: 1\nsecond: 2\nthird: 3");
+    // An index past the end appends.
+    doc.insert_at_index(100, "last", "999");
+    assert_edited(&doc, "zero: 0\nfirst: 1\nsecond: 2\nthird: 3\nlast: '999'");
+    doc.insert_at_index(2, "first", "1_updated");
+    assert_edited(
+        &doc,
+        "zero: 0\nfirst: 1_updated\nsecond: 2\nthird: 3\nlast: '999'",
+    );
+}
+
+#[test]
+fn insert_keys_needing_quotes_and_empty_values() {
+    let doc = Document::from_str("key1: value1").unwrap();
+    doc.insert_after("key1", "special:key", "value:with:colons");
+    assert_cst_ok(&doc);
+    doc.insert_before("key1", "key with spaces", "value with spaces");
+    assert_cst_ok(&doc);
+    doc.insert_at_index(1, "key@symbol", "value#hash");
+    assert_edited(
+        &doc,
+        "key with spaces: value with spaces\nkey@symbol: value#hash\nkey1: value1\nspecial:key: value:with:colons",
+    );
+
+    let doc = Document::from_str("key1: value1").unwrap();
+    doc.insert_after("key1", "empty", "");
+    assert_cst_ok(&doc);
+    doc.insert_before("key1", "null_key", ScalarValue::null());
+    assert_edited(&doc, "null_key: null\nkey1: value1\nempty: ''");
+}
+
+#[test]
+fn remove_entries() {
+    for (src, key, removed, expected) in [
+        ("key1: value1\nkey2: value2", "key1", true, "key2: value2"),
+        (
+            "name: Alice\nage: 30\ncity: NYC",
+            "age",
+            true,
+            "name: Alice\ncity: NYC",
+        ),
+        ("name: Alice", "age", false, "name: Alice"),
+        ("a: 1\nb: 2\nc: 3", "a", true, "b: 2\nc: 3"),
+        ("a: 1\nb: 2\nc: 3", "b", true, "a: 1\nc: 3"),
+        ("a: 1\nb: 2\nc: 3", "c", true, "a: 1\nb: 2"),
+        (
+            "name: my-app\nversion: 1.0\nauthor: Alice",
+            "author",
+            true,
+            "name: my-app\nversion: 1.0",
+        ),
+    ] {
+        let text = edit_root(src, |m| {
+            assert_eq!(m.remove(key).is_some(), removed, "{src:?}")
+        });
+        assert_eq!(text, expected, "{src:?}");
+    }
+    let text = edit_root("a: 1\nb: 2", |m| {
+        assert!(m.remove("a").is_some());
+        assert_cst_ok(m);
+        assert!(m.remove("b").is_some());
+        assert!(m.is_empty());
+    });
+    assert_eq!(text, "{}");
+    let text = edit_root("name: Alice\nage: 30\ncity: NYC", |m| {
+        assert_eq!(m.len(), 3);
+        m.remove("age");
+        assert_cst_ok(m);
+        assert_eq!(m.len(), 2);
+        m.remove("city");
+        assert_cst_ok(m);
+        assert_eq!(m.len(), 1);
+        m.remove("name");
+        assert_eq!(m.len(), 0);
+        assert!(m.is_empty());
+    });
+    assert_eq!(text, "{}");
+}
+
+#[test]
+fn clear_mapping() {
+    let large: String = (0..100)
+        .map(|i| format!("key{}: value{}", i, i))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (src, expected) in [
+        ("{}", "{}"),
+        ("name: Alice", "{}"),
+        ("name: Alice\nage: 30\ncity: NYC", "{}"),
+        (large.as_str(), "{}"),
+    ] {
+        let text = edit_root(src, |m| {
+            m.clear();
+            assert_eq!(m.len(), 0);
+            assert!(m.is_empty());
+            assert_eq!(m.keys().count(), 0);
+        });
+        assert_eq!(text, expected, "{src:?}");
+    }
+    let text = edit_root("name: Alice\nage: 30", |m| {
+        m.clear();
+        assert_cst_ok(m);
+        m.set("new_key", "new_value");
+        assert_eq!(m.len(), 1);
+    });
+    assert_eq!(text, "new_key: new_value\n");
 }

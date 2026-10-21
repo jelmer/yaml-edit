@@ -9,7 +9,8 @@ use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::validator::{Rule, Severity, Validator};
 use yaml_edit::{
-    debug, Document, LineColumn, Parse, ScalarType, ScalarValue, Sequence, SyntaxKind, YamlFile,
+    debug, Document, LineColumn, Parse, ParseErrorKind, ScalarType, ScalarValue, Sequence,
+    SyntaxKind, YamlFile,
 };
 
 #[test]
@@ -1471,4 +1472,39 @@ fn missing_colon_keeps_following_document() {
     let parsed = YamlFile::parse("?\n<<\n---\na: 1\n");
     let docs: Vec<String> = parsed.tree().documents().map(|d| d.to_string()).collect();
     assert_eq!(docs, ["?\n", "---\na: 1\n"]);
+}
+
+#[test]
+fn parse_error_position_with_cr_line_endings() {
+    let err = YamlFile::from_str("a: 1\rb: [a, }\r").unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Parse error at line 2, column 8: Unexpected token in flow sequence: \"}\""
+    );
+}
+
+#[test]
+fn parse_error_position_after_bom() {
+    let err = YamlFile::from_str("\u{FEFF}b: [a, }\n").unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Parse error at line 1, column 8: Unexpected token in flow sequence: \"}\""
+    );
+}
+
+#[test]
+fn positioned_parse_error() {
+    let text = "invalid:\n  - [unclosed";
+    let parse = Parse::parse_yaml(text);
+
+    let errors = parse.positioned_errors();
+    assert_eq!(errors.len(), 1);
+
+    let err = &errors[0];
+    let start = err.start_position(text);
+    assert_eq!(start.line, 2);
+    assert_eq!(err.kind, ParseErrorKind::UnclosedFlowSequence);
+    assert_eq!(start, LineColumn::new(2, 14));
+    assert_eq!(err.end_position(text), LineColumn::new(2, 14));
+    assert_eq!(err.to_string(), err.message);
 }

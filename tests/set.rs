@@ -16,8 +16,8 @@ use std::str::FromStr;
 use yaml_edit::path::{PathError, YamlPath};
 use yaml_edit::validator::Validator;
 use yaml_edit::{
-    debug, AsYaml, Document, Mapping, MappingBuilder, ScalarValue, Sequence, SequenceBuilder,
-    YamlFile, YamlNode, YamlValue,
+    debug, AsYaml, Document, Entry, Mapping, MappingBuilder, ScalarValue, Sequence,
+    SequenceBuilder, YamlFile, YamlNode, YamlValue,
 };
 
 /// Parse `yaml` and return the file plus its root mapping.
@@ -1865,5 +1865,222 @@ features:
 license: MIT
 published: true
 downloads: 1000"#
+    );
+}
+
+/// `Mapping::entry`: the `or_insert*` methods leave an existing value
+/// alone and add a missing one at the end, returning the value.
+#[test]
+fn entry_or_insert() {
+    let root = |d: &Document| d.as_mapping().unwrap();
+    check_edit(
+        "name: Alice\n",
+        |d| assert_eq!(root(d).entry("age").or_insert(30).to_string(), "30"),
+        "name: Alice\nage: 30\n",
+    );
+    check_edit(
+        "name: Alice\n",
+        |d| assert_eq!(root(d).entry("name").or_insert("Bob").to_string(), "Alice"),
+        "name: Alice\n",
+    );
+    check_edit(
+        "count: 5\n",
+        |d| {
+            let mut called = false;
+            let _ = root(d).entry("count").or_insert_with(|| {
+                called = true;
+                99_i64
+            });
+            assert!(!called);
+            let _ = root(d).entry("other").or_insert_with(|| {
+                called = true;
+                123_i64
+            });
+            assert!(called);
+        },
+        "count: 5\nother: 123\n",
+    );
+    check_edit(
+        "a: 1\n",
+        |d| {
+            let _ = root(d).entry("s").or_insert_with(|| "hello");
+            let _ = root(d).entry("n").or_insert_with(|| 42_i64);
+            let _ = root(d).entry("b").or_insert_with(|| true);
+        },
+        "a: 1\ns: hello\nn: 42\nb: true\n",
+    );
+    // Comments on the keys left alone stay.
+    check_edit(
+        "keep: this  # inline\nother: value\n",
+        |d| {
+            root(d).entry("added").or_insert(1_i64);
+        },
+        "keep: this  # inline\nother: value\nadded: 1\n",
+    );
+}
+
+/// `or_insert_mapping` and `or_insert_sequence` return the existing
+/// collection, or replace a value of another kind with an empty one.
+#[test]
+fn entry_or_insert_collection() {
+    let root = |d: &Document| d.as_mapping().unwrap();
+    check_edit(
+        "existing: value\n",
+        |d| {
+            let nested = root(d).entry("nested").or_insert_mapping();
+            assert_cst_ok(d);
+            nested.set("inner", "value");
+        },
+        "existing: value\nnested:\n  inner: value\n",
+    );
+    check_edit(
+        "root:\n  a: 1\n",
+        |d| {
+            let nested = root(d).entry("root").or_insert_mapping();
+            assert_cst_ok(d);
+            nested.set("b", 2);
+        },
+        "root:\n  a: 1\n  b: 2\n",
+    );
+    check_edit(
+        "k: scalar\n",
+        |d| {
+            let nested = root(d).entry("k").or_insert_mapping();
+            assert_cst_ok(d);
+            nested.set("inner", "v");
+        },
+        "k:\n  inner: v\n",
+    );
+    check_edit(
+        "existing: value\n",
+        |d| {
+            let list = root(d).entry("items").or_insert_sequence();
+            assert_cst_ok(d);
+            list.push("apple");
+            assert_cst_ok(d);
+            list.push("banana");
+        },
+        "existing: value\nitems:\n  - apple\n  - banana\n",
+    );
+    check_edit(
+        "items:\n  - apple\n",
+        |d| {
+            let list = root(d).entry("items").or_insert_sequence();
+            assert_cst_ok(d);
+            list.push("banana");
+        },
+        "items:\n  - apple\n  - banana\n",
+    );
+    check_edit(
+        "a: 1\nb: [x]\n",
+        |d| {
+            let mapping = root(d);
+            assert_eq!(mapping.entry("a").or_insert_sequence().to_string(), "[]");
+            assert_cst_ok(d);
+            assert_eq!(d.to_string(), "a: []\nb: [x]\n");
+            assert_eq!(mapping.entry("b").or_insert_sequence().len(), 1);
+            match mapping.entry("zz") {
+                Entry::Vacant(v) => assert_eq!(v.into_key(), "zz"),
+                Entry::Occupied(_) => panic!("zz is not in the mapping"),
+            }
+        },
+        "a: []\nb: [x]\n",
+    );
+}
+
+#[test]
+fn entry_and_modify() {
+    let root = |d: &Document| d.as_mapping().unwrap();
+    check_edit(
+        "count: 1\n",
+        |d| {
+            root(d).entry("count").and_modify(|e| e.set_value(42));
+        },
+        "count: 42\n",
+    );
+    check_edit(
+        "count: 1\n",
+        |d| {
+            let mut called = false;
+            root(d).entry("missing").and_modify(|_| called = true);
+            assert!(!called);
+        },
+        "count: 1\n",
+    );
+    check_edit(
+        "count: 1\n",
+        |d| {
+            let mapping = root(d);
+            mapping
+                .entry("count")
+                .and_modify(|e| e.set_value(2))
+                .or_insert(0);
+            assert_cst_ok(d);
+            assert_eq!(mapping.get("count").unwrap().to_string(), "2");
+            mapping
+                .entry("new")
+                .and_modify(|e| e.set_value("never"))
+                .or_insert("first");
+            assert_eq!(mapping.get("new").unwrap().to_string(), "first");
+        },
+        "count: 2\nnew: first\n",
+    );
+}
+
+#[test]
+fn entry_variants() {
+    let doc = Document::from_str("k: v\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    match mapping.entry("k") {
+        Entry::Occupied(o) => {
+            assert_eq!(o.key().unwrap().to_string(), "k");
+            assert_eq!(o.get().unwrap().to_string(), "v");
+        }
+        Entry::Vacant(_) => panic!("expected occupied"),
+    }
+    match mapping.entry("missing") {
+        Entry::Vacant(v) => assert_eq!(*v.key(), "missing"),
+        Entry::Occupied(_) => panic!("expected vacant"),
+    }
+    assert_eq!(mapping.entry("k").key().unwrap().to_string(), "k");
+    assert_eq!(
+        mapping.entry("missing").key().unwrap().to_string(),
+        "missing"
+    );
+
+    // Keys match by value, not by spelling.
+    let doc = Document::from_str("\"name\": Alice\n").unwrap();
+    assert!(matches!(
+        doc.as_mapping().unwrap().entry("name"),
+        Entry::Occupied(_)
+    ));
+}
+
+#[test]
+fn entry_insert_and_remove() {
+    let root = |d: &Document| d.as_mapping().unwrap();
+    check_edit(
+        "a: 1\n",
+        |d| {
+            let mapping = root(d);
+            let Entry::Vacant(v) = mapping.entry("b") else {
+                panic!("expected vacant");
+            };
+            assert_eq!(v.insert(2_i64).to_string(), "2");
+        },
+        "a: 1\nb: 2\n",
+    );
+    check_edit(
+        "a: 1\nb: 2\n",
+        |d| {
+            let mapping = root(d);
+            let Entry::Occupied(o) = mapping.entry("a") else {
+                panic!("expected occupied");
+            };
+            let removed = o.remove_entry();
+            assert_eq!(removed.key_node().unwrap().to_string(), "a");
+            assert!(!mapping.contains_key("a"));
+        },
+        "b: 2\n",
     );
 }

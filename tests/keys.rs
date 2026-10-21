@@ -4,7 +4,7 @@
 mod common;
 use common::{
     assert_cst_ok, assert_file_cst_ok, assert_file_parser_shaped, check_renders, count_nodes,
-    edit_root, parse_clean, render, render_documents, root_mapping,
+    edit_root, keys, parse_clean, render, render_documents, root_mapping,
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
@@ -1629,4 +1629,213 @@ fn explicit_key_produces_zero_width_null_value() {
         null.kind(),
         null.text()
     );
+}
+
+/// Top-level keys of `src`, in document order.
+fn top_level_keys(src: &str) -> Vec<String> {
+    keys(&YamlFile::from_str(src).unwrap())
+}
+
+/// A nested explicit-key block (`? k` / `: v`) ends at a dedent, leaving
+/// the key after it to the outer mapping.
+///
+/// It used to swallow whatever followed it: parse_explicit_key_mapping was
+/// the only block-mapping path taking no base_indent, so after its entries
+/// it kept consuming whatever is_mapping_key() accepted, and a key at the
+/// outer level was absorbed into the nested mapping. The text still
+/// round-tripped byte for byte, so only the structure was wrong. A
+/// `!!set`-tagged explicit-key block is the same shape, and top-level
+/// explicit keys were never affected.
+#[test]
+fn key_after_nested_explicit_key_block() {
+    for (src, keys) in [
+        ("m:\n  ? a\n  : 1\nuf: v\n", &["m", "uf"][..]),
+        ("m:\n  ? a\n  : 1\n  ? b\n  : 2\nuf: v\n", &["m", "uf"][..]),
+        ("m:\n  ? a\n  : 1\nn:\n  ? b\n  : 2\n", &["m", "n"][..]),
+        ("m:\n  ? a\n  : \n    n: 1\nz: 9\n", &["m", "z"][..]),
+        ("m:\n      ? a\n      : 1\nz: 9\n", &["m", "z"][..]),
+        (
+            "m:\n  ? a\n  : 1\n  plain: 2\nouter: 3\n",
+            &["m", "outer"][..],
+        ),
+        (
+            "a:\n  b:\n    ? c\n    : 1\n  d: 2\ne: 3\n",
+            &["a", "e"][..],
+        ),
+        ("keys: !!set\n  ? a\n  ? b\nz: 9\n", &["keys", "z"][..]),
+        ("? a\n: 1\nplain: v\n", &["a", "plain"][..]),
+    ] {
+        assert_eq!(top_level_keys(src), keys, "{src:?}");
+    }
+    // The nested mapping holds only its own content: a key count alone
+    // would miss a value that absorbed the dedented sibling.
+    let parsed = YamlFile::from_str("m:\n  ? a\n  : 1\nuf: v\n").unwrap();
+    let mapping = root_mapping(&parsed);
+    assert_eq!(mapping.get("m").unwrap().to_string(), "? a\n  : 1\n");
+    assert_eq!(mapping.get("uf").unwrap().to_string(), "v");
+}
+
+/// A comment line before a dedented line ends a nested explicit-key
+/// mapping as it ends an implicit-key one: it is left to the mapping
+/// holding the next entry.
+#[test]
+fn comment_line_after_nested_explicit_key_block() {
+    for (src, comments) in [
+        ("x:\n  a: b\n  # c\ny: 1\n", &["# c"][..]),
+        ("x:\n  ? a\n  : b\n  # c\ny: 1\n", &["# c"]),
+        (
+            "x:\n  ? a\n  : b\n\n  # c\n  # d\n\ny: 1\n",
+            &["# c", "# d"],
+        ),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        let root: Vec<String> = root_mapping(&file)
+            .syntax()
+            .children_with_tokens()
+            .filter(|c| c.kind() == SyntaxKind::COMMENT)
+            .map(|c| c.to_string())
+            .collect();
+        assert_eq!(root, comments, "{src:?}");
+        assert_eq!(top_level_keys(src), ["x", "y"], "{src:?}");
+    }
+}
+
+/// A compact explicit-key mapping as a value: its later entries sit at
+/// the first `?`'s column, which used to read as a dedent.
+#[test]
+fn compact_explicit_key_mapping_as_value() {
+    let src = "? h\n: ? b\n  : x\n  a: 1\nc: 2\n";
+    assert_eq!(top_level_keys(src), ["h", "c"]);
+    let parsed = YamlFile::from_str(src).unwrap();
+    let h = parsed.document().unwrap().as_mapping().unwrap().get("h");
+    let keys: Vec<String> = h
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert_eq!(keys, ["b", "a"]);
+}
+
+/// The value of the single document in `src`, with a check that the
+/// tree is well-formed and that the validator accepts it.
+fn checked_value(src: &str) -> yaml_edit::YamlValue {
+    let file = YamlFile::from_str(src).expect("should parse");
+    debug::validate_tree(file.syntax()).expect("tree should be valid");
+    let doc = file.document().expect("should have a document");
+    assert_eq!(
+        yaml_edit::validator::Validator::new().validate(&doc),
+        vec![]
+    );
+    yaml_edit::YamlValue::from_document(&doc).expect("should convert")
+}
+
+/// A `:` line left of an explicit key's `?` is the value of an
+/// enclosing explicit key, not of the one nested in its key.
+#[test]
+fn explicit_value_left_of_nested_explicit_key() {
+    for (src, flow) in [
+        ("? - ? a\n: b\n", "? [{? a}]\n: b\n"),
+        ("? - ? - a\n: b\n", "? [{? [a]}]\n: b\n"),
+        (
+            "x:\n  ? - ? -\n  : - c\n",
+            "x:\n  ? [{? [null]}]\n  : [c]\n",
+        ),
+    ] {
+        assert_eq!(checked_value(src), checked_value(flow), "{src:?}");
+    }
+}
+
+/// A sequence on the line of an explicit key is the key's, however much
+/// space follows the indicators before it.
+#[test]
+fn compact_sequence_key_after_wide_indicators() {
+    for (src, compact) in [
+        ("-  ? -", "- ? -"),
+        ("-  ? -\n", "- ? -\n"),
+        ("-  ? - a\n", "- ? - a\n"),
+        (
+            "-   ?   - a\n        - b\n    : c\n",
+            "- ? - a\n    - b\n  : c\n",
+        ),
+    ] {
+        assert_eq!(checked_value(src), checked_value(compact), "{src:?}");
+    }
+}
+
+/// An explicit value's plain scalar continues only on lines indented
+/// past the `:`; a line at its column is not part of it.
+#[test]
+fn explicit_value_scalar_continuation() {
+    for (src, content, offset) in [
+        ("? a\n: 1\nb\n", "b", 8),
+        ("? a\n: 1\n[a, b]\n", "[", 8),
+        ("- ? a\n  : 1\n  b\n", "b", 14),
+        ("? a\n: 1\n\nb\n", "b", 9),
+    ] {
+        let errors: Vec<(String, u32)> = yaml_edit::Parse::parse_yaml(src)
+            .positioned_errors()
+            .iter()
+            .map(|e| (e.message.clone(), e.range.start))
+            .collect();
+        assert_eq!(
+            errors,
+            [(
+                format!("Content after the document could not be parsed: {content:?}"),
+                offset
+            )],
+            "{src:?}"
+        );
+    }
+    for (src, expected) in [
+        ("? a\n: 1\n b\n", "{a: 1 b}"),
+        ("- ? a\n  : 1\n   b\n", "[{a: 1 b}]"),
+        ("? a\n: 1\n? b\n", "{a: 1, b: }"),
+    ] {
+        assert_eq!(checked_value(src), checked_value(expected), "{src:?}");
+    }
+}
+
+/// A flow collection key after an explicit-key entry is the same
+/// mapping's next entry.
+#[test]
+fn flow_collection_key_after_explicit_key_entry() {
+    for (src, expected) in [
+        ("? a\n: 1\n[a, b]: 2\n", "{a: 1, [a, b]: 2}"),
+        ("? a\n[a, b]: 2\n", "{a: , [a, b]: 2}"),
+        ("? a\n: 1\n{a: 1}: 2\n", "{a: 1, {a: 1}: 2}"),
+        ("? a\n: 1\n&x [a, b]: 2\n", "{a: 1, &x [a, b]: 2}"),
+        ("? a\n: 1\n!!seq [a, b]: 2\n", "{a: 1, !!seq [a, b]: 2}"),
+        ("- ? a\n  : 1\n  [a, b]: 2\n", "[{a: 1, [a, b]: 2}]"),
+        ("k:\n  ? a\n  : 1\n  [a, b]: 2\n", "{k: {a: 1, [a, b]: 2}}"),
+        (
+            "? a\n: 1\n[a, b]: 2\n? c\n: 3\n[d]: 4\n",
+            "{a: 1, [a, b]: 2, c: 3, [d]: 4}",
+        ),
+    ] {
+        assert_eq!(checked_value(src), checked_value(expected), "{src:?}");
+    }
+}
+
+/// A compact mapping as an explicit value ends where the next entry of
+/// the enclosing mapping starts, left of its first key.
+#[test]
+fn entry_after_compact_mapping_explicit_value() {
+    for (src, expected) in [
+        ("? a\n: b: c\n? d\n: e\n", "{a: {b: c}, d: e}"),
+        ("? a\n: b: c\nd: e\n", "{a: {b: c}, d: e}"),
+        ("x: 1\n? a\n: b: c\n? d\n: e\n", "{x: 1, a: {b: c}, d: e}"),
+        ("? a\n: b: c\n  f: g\n? d\n: e\n", "{a: {b: c, f: g}, d: e}"),
+        ("? a\n: !!map b: c\n? d\n: e\n", "{a: {b: c}, d: e}"),
+        ("? a\n: &x b: c\n? d\n: e\n", "{a: {b: c}, d: e}"),
+        ("? a\n: {x: 1}: c\n? d\n: e\n", "{a: {{x: 1}: c}, d: e}"),
+        ("- ? a\n  : b: c\n  ? d\n  : e\n", "[{a: {b: c}, d: e}]"),
+        (
+            "k:\n  ? a\n  : b: c\n  ? d\n  : e\n",
+            "{k: {a: {b: c}, d: e}}",
+        ),
+    ] {
+        assert_eq!(checked_value(src), checked_value(expected), "{src:?}");
+    }
 }

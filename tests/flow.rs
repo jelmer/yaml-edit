@@ -2,16 +2,15 @@
 //! collection written into a flow mapping, or used as a key, is rendered in
 //! flow style, since block syntax is not allowed there.
 
-use rowan::ast::AstNode;
-use std::str::FromStr;
-use yaml_edit::{
-    debug, Mapping, Scalar, ScalarValue, Sequence, SyntaxKind, YamlFile, YamlNode, YamlValue,
-};
-
 mod common;
 use common::{
     assert_file_cst_ok, assert_file_edited, check_renders, count_nodes, parse_clean,
     render_documents,
+};
+use rowan::ast::AstNode;
+use std::str::FromStr;
+use yaml_edit::{
+    debug, Mapping, Scalar, ScalarValue, Sequence, SyntaxKind, YamlFile, YamlNode, YamlValue,
 };
 
 fn parse(yaml: &str) -> YamlFile {
@@ -677,4 +676,168 @@ fn block_header_in_flow_context_is_content() {
             .collect();
         assert_eq!(texts, scalars, "{yaml:?}");
     }
+}
+
+/// The text of every block mapping entry in `src`, in document order.
+fn entry_texts(src: &str) -> Vec<String> {
+    let file = YamlFile::from_str(src).expect("should parse");
+    file.syntax()
+        .descendants()
+        .filter(|n| n.kind() == yaml_edit::SyntaxKind::MAPPING_ENTRY)
+        .map(|n| n.to_string())
+        .collect()
+}
+
+/// A flow entry owns its comma, with anything before it, and the rest
+/// of that line; the lines after it are the collection's.
+#[test]
+fn flow_entry_owns_its_line() {
+    assert_eq!(
+        entry_texts("{a: 1, # c\n # d\n b: 2 # e\n}\n"),
+        ["a: 1, # c\n", "b: 2 # e\n"]
+    );
+    assert_eq!(entry_texts("{\n?\n}\n"), ["?\n"]);
+    assert_eq!(
+        entry_texts("{a: 1 # c\n , b: 2}\n"),
+        ["a: 1 # c\n , ", "b: 2"]
+    );
+    assert_eq!(
+        entry_texts("{\n  a: 1,\n\n  b: 2\n  }\n"),
+        ["a: 1,\n", "b: 2\n"]
+    );
+}
+
+/// Content after a flow collection value stays in the VALUE rather
+/// than being left after the document.
+#[test]
+fn content_after_flow_value_stays_in_value() {
+    let parsed = YamlFile::from_str("k:\n  [q] x\n").unwrap();
+    assert_eq!(
+        debug::tree_to_string(parsed.syntax()),
+        "\
+DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"k\"
+      COLON: \":\"
+      VALUE
+        NEWLINE: \"\\\\n\"
+        INDENT: \"  \"
+        SEQUENCE
+          LEFT_BRACKET: \"[\"
+          SEQUENCE_ENTRY
+            SCALAR
+              STRING: \"q\"
+          RIGHT_BRACKET: \"]\"
+        WHITESPACE: \" \"
+        SCALAR
+          STRING: \"x\"
+      NEWLINE: \"\\\\n\"
+"
+    );
+}
+
+/// Content after a flow collection value may continue on, or start on,
+/// a more indented line, as a plain scalar would.
+#[test]
+fn content_after_flow_value_on_later_lines() {
+    let parsed = YamlFile::from_str("k:\n  [q] x\n  y\n").unwrap();
+    assert_eq!(
+        debug::tree_to_string(parsed.syntax()),
+        "\
+DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"k\"
+      COLON: \":\"
+      VALUE
+        NEWLINE: \"\\\\n\"
+        INDENT: \"  \"
+        SEQUENCE
+          LEFT_BRACKET: \"[\"
+          SEQUENCE_ENTRY
+            SCALAR
+              STRING: \"q\"
+          RIGHT_BRACKET: \"]\"
+        WHITESPACE: \" \"
+        SCALAR
+          STRING: \"x\"
+          NEWLINE: \"\\\\n\"
+          INDENT: \"  \"
+          STRING: \"y\"
+      NEWLINE: \"\\\\n\"
+"
+    );
+
+    let parsed = YamlFile::from_str("k:\n  [q]\n  y\n").unwrap();
+    assert_eq!(
+        debug::tree_to_string(parsed.syntax()),
+        "\
+DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"k\"
+      COLON: \":\"
+      VALUE
+        NEWLINE: \"\\\\n\"
+        INDENT: \"  \"
+        SEQUENCE
+          LEFT_BRACKET: \"[\"
+          SEQUENCE_ENTRY
+            SCALAR
+              STRING: \"q\"
+          RIGHT_BRACKET: \"]\"
+        NEWLINE: \"\\\\n\"
+        INDENT: \"  \"
+        SCALAR
+          STRING: \"y\"
+      NEWLINE: \"\\\\n\"
+"
+    );
+}
+
+/// Content between a flow collection key and its colon stays in the
+/// KEY, so `x: v` does not become a second entry on the same line.
+#[test]
+fn content_after_flow_key_stays_in_key() {
+    let parsed = YamlFile::from_str("k:\n  [q] x: v\n").unwrap();
+    assert_eq!(
+        debug::tree_to_string(parsed.syntax()),
+        "\
+DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"k\"
+      COLON: \":\"
+      VALUE
+        NEWLINE: \"\\\\n\"
+        INDENT: \"  \"
+        MAPPING
+          MAPPING_ENTRY
+            KEY
+              SEQUENCE
+                LEFT_BRACKET: \"[\"
+                SEQUENCE_ENTRY
+                  SCALAR
+                    STRING: \"q\"
+                RIGHT_BRACKET: \"]\"
+              WHITESPACE: \" \"
+              SCALAR
+                STRING: \"x\"
+            COLON: \":\"
+            WHITESPACE: \" \"
+            VALUE
+              SCALAR
+                STRING: \"v\"
+            NEWLINE: \"\\\\n\"
+"
+    );
 }

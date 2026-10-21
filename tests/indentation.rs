@@ -342,3 +342,36 @@ fn empty_sequence_item_before_final_whitespace_line() {
         )
     );
 }
+
+/// The value of the single document in `src`, with a check that the
+/// tree is well-formed and that the validator accepts it.
+fn checked_value(src: &str) -> yaml_edit::YamlValue {
+    let file = YamlFile::from_str(src).expect("should parse");
+    debug::validate_tree(file.syntax()).expect("tree should be valid");
+    let doc = file.document().expect("should have a document");
+    assert_eq!(
+        yaml_edit::validator::Validator::new().validate(&doc),
+        vec![]
+    );
+    yaml_edit::YamlValue::from_document(&doc).expect("should convert")
+}
+
+/// A tag ending a compact mapping's first line annotates a null when the
+/// next line is at the key's column, as it does at the line start.
+#[test]
+fn sibling_after_tagged_null_in_compact_mapping() {
+    for (src, expected) in [
+        ("- a: !!null\n  b: c\n", "[{a: !!null , b: c}]"),
+        ("- a: !!null &x\n  b: c\n", "[{a: !!null &x , b: c}]"),
+        ("- a: &x !!null\n  b: c\n", "[{a: &x !!null , b: c}]"),
+        ("- a: !!null # c\n  b: c\n", "[{a: !!null , b: c}]"),
+        ("- !!str a: !!null\n  b: c\n", "[{!!str a: !!null , b: c}]"),
+        ("- [a]: !!str\n  b: c\n", "[{[a]: !!str , b: c}]"),
+        ("k:\n  - a: !!null\n    b: c\n", "{k: [{a: !!null , b: c}]}"),
+        ("? x\n: a: !!null\n  b: c\n", "{x: {a: !!null , b: c}}"),
+        ("- a: !!str\n   x\n  b: c\n", "[{a: !!str x, b: c}]"),
+        ("- a: !!null\n    b: c\n", "[{a: !!null {b: c}}]"),
+    ] {
+        assert_eq!(checked_value(src), checked_value(expected), "{src:?}");
+    }
+}

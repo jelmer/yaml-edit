@@ -1192,3 +1192,163 @@ key2:        value2
         assert_eq!(text, expected, "{src:?}");
     }
 }
+
+/// The text of every block mapping entry in `src`, in document order.
+fn entry_texts(src: &str) -> Vec<String> {
+    let file = YamlFile::from_str(src).expect("should parse");
+    file.syntax()
+        .descendants()
+        .filter(|n| n.kind() == yaml_edit::SyntaxKind::MAPPING_ENTRY)
+        .map(|n| n.to_string())
+        .collect()
+}
+
+/// An empty value leaves the lines after it, which the parser looked
+/// at for a value, to the collection.
+#[test]
+fn empty_value_leaves_following_lines() {
+    assert_eq!(entry_texts("a:\n\nb: 1\n"), ["a:\n", "b: 1\n"]);
+    assert_eq!(entry_texts("a: &x\n\n  # c\nb: 1\n"), ["a: &x\n", "b: 1\n"]);
+    assert_eq!(
+        entry_texts("x:\n  a:  # c\n  b: 1\n"),
+        ["x:\n  a:  # c\n  b: 1\n", "a:  # c\n", "b: 1\n"]
+    );
+    assert_eq!(entry_texts("? a\n:\n\n# c\nb: 1\n"), ["? a\n:\n", "b: 1\n"]);
+    assert_eq!(entry_texts("? a  # c\n\nb: 1\n"), ["? a  # c\n", "b: 1\n"]);
+    assert_eq!(entry_texts("- ? a\n  b: 1\n"), ["? a\n", "b: 1\n"]);
+}
+
+/// The lines after a nested collection's last entry belong to the
+/// collection holding the next entry, or the root one at the end.
+#[test]
+fn nested_collection_leaves_following_lines() {
+    assert_eq!(
+        entry_texts("a:\n  - x\n\n  # c\nb: 1\n"),
+        ["a:\n  - x\n", "b: 1\n"]
+    );
+    assert_eq!(entry_texts("? - a\n\n: b\n"), ["? - a\n\n: b\n"]);
+    assert_eq!(entry_texts("a:\n  x: 1\n\n"), ["a:\n  x: 1\n", "x: 1\n"]);
+    assert_eq!(
+        entry_texts("a:\n  b:\n    - x\n\n  c: 1\n"),
+        ["a:\n  b:\n    - x\n\n  c: 1\n", "b:\n    - x\n", "c: 1\n"]
+    );
+}
+
+/// A mapping entry owns the comment ending its last line, and the line
+/// break after it, whether its key is explicit or its value on a later
+/// line.
+#[test]
+fn mapping_entry_owns_line_end() {
+    assert_eq!(
+        entry_texts("? a\n: b  # c\nd: 1\n"),
+        ["? a\n: b  # c\n", "d: 1\n"]
+    );
+    assert_eq!(
+        entry_texts("a:\n  b  # c\nd: 1\n"),
+        ["a:\n  b  # c\n", "d: 1\n"]
+    );
+    assert_eq!(entry_texts("? - a\n# c\nd: 1\n"), ["? - a\n", "d: 1\n"]);
+}
+
+/// A sequence entry owns the comment ending its line, and the line
+/// break after it, as a mapping entry does. A comment line after a
+/// block item is the sequence's.
+#[test]
+fn sequence_entry_owns_line_comment() {
+    let file = YamlFile::from_str("- a  # c\n- |\n  x\n# d\n- b # e").unwrap();
+    let entries: Vec<String> = file
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == yaml_edit::SyntaxKind::SEQUENCE_ENTRY)
+        .map(|n| n.to_string())
+        .collect();
+    assert_eq!(entries, ["- a  # c\n", "- |\n  x\n", "- b # e"]);
+}
+
+/// Comment lines after a nested block collection's last entry with no
+/// content after them belong to the root collection, as do those
+/// before a line that does not continue a nested sequence.
+#[test]
+fn lines_ending_nested_collection_go_to_root() {
+    for src in [
+        "a:\n  b: 1\n  # c\n\n",
+        "a:\n  b: 1\n  # c",
+        "a:\n  b:\n    c: 1\n    # c\n  # d\n",
+        "a:\n- x\n# c\n",
+        "a:\n- x\n# c\nb: 1\n",
+        "- - a\n  # c\n",
+        "a:\n  b: 1\n  # c\n---\nx\n",
+    ] {
+        let parsed = YamlFile::from_str(src).unwrap();
+        let syntax = parsed.syntax();
+        assert_eq!(debug::validate_tree(syntax), Ok(()), "{src:?}");
+        let root = syntax.first_child().unwrap().first_child().unwrap();
+        for comment in syntax
+            .descendants_with_tokens()
+            .filter(|c| c.kind() == yaml_edit::SyntaxKind::COMMENT)
+        {
+            assert_eq!(comment.parent().as_ref(), Some(&root), "{src:?}");
+        }
+    }
+
+    let parsed = YamlFile::from_str("a:\n  b: 1\n  # c\n\n").unwrap();
+    assert_eq!(
+        debug::tree_to_string(parsed.syntax()),
+        "\
+DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"a\"
+      COLON: \":\"
+      VALUE
+        NEWLINE: \"\\\\n\"
+        INDENT: \"  \"
+        MAPPING
+          MAPPING_ENTRY
+            KEY
+              SCALAR
+                STRING: \"b\"
+            COLON: \":\"
+            WHITESPACE: \" \"
+            VALUE
+              SCALAR
+                INT: \"1\"
+            NEWLINE: \"\\\\n\"
+    INDENT: \"  \"
+    COMMENT: \"# c\"
+    NEWLINE: \"\\\\n\"
+    NEWLINE: \"\\\\n\"
+"
+    );
+}
+
+/// Comment lines that a nested collection steps over looking for its
+/// next entry are not its own when no entry follows: they go to the
+/// node that comes next, here the root collection or the flow sequence.
+#[test]
+fn comment_lines_before_non_entry_leave_nested_collection() {
+    let comment_parents = |src: &str| {
+        let parsed = YamlFile::parse(src).tree();
+        let syntax = parsed.syntax();
+        assert_eq!(debug::validate_tree(syntax), Ok(()), "{src:?}");
+        assert_eq!(parsed.to_string(), src);
+        syntax
+            .descendants_with_tokens()
+            .filter(|c| c.kind() == yaml_edit::SyntaxKind::COMMENT)
+            .map(|c| {
+                let parent = c.parent().unwrap();
+                (parent.kind(), parent.text().to_string())
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        comment_parents("a:\n  b: 1\n  # c\n  0\n"),
+        [(SyntaxKind::MAPPING, "a:\n  b: 1\n  # c\n  ".to_string())]
+    );
+    assert_eq!(
+        comment_parents("[a:\n?\nb:\n# c\n"),
+        [(SyntaxKind::SEQUENCE, "[a:\n?\nb:\n# c\n".to_string())]
+    );
+}

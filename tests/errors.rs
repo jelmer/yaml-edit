@@ -1236,3 +1236,239 @@ fn deeply_nested_slots_hold_a_node() {
         assert_eq!(empty, Vec::<SyntaxKind>::new(), "{input:?}");
     }
 }
+
+/// Top-level keys of `src`, in document order.
+fn top_level_keys(src: &str) -> Vec<String> {
+    YamlFile::from_str(src)
+        .expect("should parse")
+        .document()
+        .expect("should have a document")
+        .as_mapping()
+        .expect("root should be a mapping")
+        .keys()
+        .map(|k| k.to_string())
+        .collect()
+}
+
+/// The value of the single document in `src`, with a check that the
+/// tree is well-formed and that the validator accepts it.
+fn checked_value(src: &str) -> yaml_edit::YamlValue {
+    let file = YamlFile::from_str(src).expect("should parse");
+    debug::validate_tree(file.syntax()).expect("tree should be valid");
+    let doc = file.document().expect("should have a document");
+    assert_eq!(
+        yaml_edit::validator::Validator::new().validate(&doc),
+        vec![]
+    );
+    yaml_edit::YamlValue::from_document(&doc).expect("should convert")
+}
+
+/// What is left of a block entry's line after its node is more content
+/// of the same slot, for the validator to report, rather than another
+/// entry opening on that line, which left this one unterminated.
+#[test]
+fn rest_of_entry_line_stays_in_slot() {
+    let unclosed = |kind: &str, position: &str, found: &str| {
+        let (close, what, fix) = match kind {
+            "mapping" => (
+                '}',
+                "mapping",
+                "object, or check for missing commas between key-value pairs",
+            ),
+            _ => (
+                ']',
+                "sequence",
+                "array, or check for missing commas between elements",
+            ),
+        };
+        format!(
+            "{position}: Unclosed flow {what}. Expected: '{close}' to close {what}. Found: {found}. \
+             Context: in flow {what}. Suggestion: Add '{close}' to close the {fix}"
+        )
+    };
+    let block_mapping = "Block mapping cannot start on same line as mapping key";
+    let value_nodes = "Value holds more than one node";
+    for (src, errors, violations) in [
+        (": :", vec![], vec![block_mapping, value_nodes]),
+        ("a: :\nb: 1\n", vec![], vec![block_mapping, value_nodes]),
+        (
+            "a: ]: x\n",
+            vec![],
+            vec![
+                block_mapping,
+                value_nodes,
+                "Plain scalar cannot start with ']'",
+            ],
+        ),
+        (
+            "a: * c: x\n",
+            vec![],
+            vec![block_mapping, value_nodes, "Alias without a name"],
+        ),
+        (
+            "a: {}{: x\n",
+            vec![unclosed("mapping", "2:1", "end of input")],
+            vec![
+                value_nodes,
+                "Flow collection continuation line must be indented",
+            ],
+        ),
+        (
+            "- {: -\n- b\n",
+            vec![unclosed("mapping", "1:6", "-")],
+            vec!["Sequence entry holds more than one node"],
+        ),
+        (
+            "- [: -\n",
+            vec![unclosed("sequence", "1:6", "-")],
+            vec!["Sequence entry holds more than one node"],
+        ),
+        (
+            ":\n * c: x\n",
+            vec![],
+            vec![value_nodes, "Alias without a name"],
+        ),
+        (
+            ":\n|: x\n",
+            vec![],
+            vec![
+                value_nodes,
+                "Block scalar header must be indented past its parent node",
+            ],
+        ),
+        ("?\n: >: x\n", vec![], vec![value_nodes]),
+        ("? |b: x\n", vec![], vec!["Key holds more than one node"]),
+    ] {
+        let parse = YamlFile::parse(src);
+        let file = parse.tree();
+        assert_eq!(debug::validate_tree(file.syntax()), Ok(()), "{src:?}");
+        assert_eq!(file.to_string(), src);
+        assert_eq!(parse.errors(), errors, "{src:?}");
+        let found: Vec<String> = file
+            .documents()
+            .flat_map(|d| Validator::new().validate(&d))
+            .map(|v| v.message)
+            .collect();
+        assert_eq!(found, violations, "{src:?}");
+    }
+    // A `<<` with more on its line is one plain scalar, not a merge key.
+    assert_eq!(
+        checked_value("<< <<\n"),
+        yaml_edit::YamlValue::Scalar(yaml_edit::ScalarValue::plain("<< <<"))
+    );
+    assert_eq!(top_level_keys("a: :\nb: 1\n"), ["a", "b"]);
+    assert_eq!(top_level_keys("x:\n  a: :\n  b: 1\nc: 2\n"), ["x", "c"]);
+    let parsed = YamlFile::from_str("a: :\nb: 1\n").unwrap();
+    assert_eq!(
+        debug::tree_to_string(parsed.syntax()),
+        "\
+DOCUMENT
+  MAPPING
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"a\"
+      COLON: \":\"
+      WHITESPACE: \" \"
+      VALUE
+        SCALAR
+          NULL: \"\"
+        MAPPING
+          MAPPING_ENTRY
+            KEY
+              SCALAR
+                NULL: \"\"
+            COLON: \":\"
+            VALUE
+              SCALAR
+                NULL: \"\"
+            NEWLINE: \"\\\\n\"
+    MAPPING_ENTRY
+      KEY
+        SCALAR
+          STRING: \"b\"
+      COLON: \":\"
+      WHITESPACE: \" \"
+      VALUE
+        SCALAR
+          INT: \"1\"
+      NEWLINE: \"\\\\n\"
+"
+    );
+}
+
+/// A key without its `:` is read as a key whose value was omitted, with
+/// a zero-width COLON where the `:` should be, whatever the key sits in.
+#[test]
+fn missing_colon_reads_as_omitted_value() {
+    let tree = |src: &str, errors: usize| {
+        let parsed = YamlFile::parse(src);
+        assert_eq!(
+            parsed.errors().len(),
+            errors,
+            "{src:?}: {:?}",
+            parsed.errors()
+        );
+        debug::tree_to_string(parsed.tree().syntax())
+    };
+    let explicit_entry = "    MAPPING_ENTRY
+      QUESTION: \"?\"
+      KEY
+        SCALAR
+          NULL: \"\"
+      VALUE
+        SCALAR
+          NULL: \"\"
+      NEWLINE: \"\\\\n\"
+";
+    // `<<` with no `:` is the plain scalar `<<`, not a merge key.
+    assert_eq!(
+        tree("<<\n", 0),
+        "DOCUMENT\n  SCALAR\n    MERGE_KEY: \"<<\"\n  NEWLINE: \"\\\\n\"\n"
+    );
+    assert_eq!(
+            tree("?\n<<\n", 1),
+            format!(
+                "DOCUMENT\n  MAPPING\n{explicit_entry}ERROR\n  MERGE_KEY: \"<<\"\n  NEWLINE: \"\\\\n\"\n"
+            )
+        );
+    // An unclosed flow collection ends the input before the key's `:`.
+    assert_eq!(
+        tree("?\n[:\n", 2),
+        format!(
+            "\
+DOCUMENT
+  MAPPING
+{explicit_entry}    MAPPING_ENTRY
+      KEY
+        SEQUENCE
+          LEFT_BRACKET: \"[\"
+          SEQUENCE_ENTRY
+            MAPPING
+              MAPPING_ENTRY
+                KEY
+                  SCALAR
+                    NULL: \"\"
+                COLON: \":\"
+                VALUE
+                  SCALAR
+                    NULL: \"\"
+            NEWLINE: \"\\\\n\"
+          RIGHT_BRACKET: \"\"
+      COLON: \"\"
+      VALUE
+        SCALAR
+          NULL: \"\"
+"
+        )
+    );
+}
+
+/// A line that is no entry of the mapping, like `<<` without its `:`,
+/// does not swallow the lines after it: here, a document.
+#[test]
+fn missing_colon_keeps_following_document() {
+    let parsed = YamlFile::parse("?\n<<\n---\na: 1\n");
+    let docs: Vec<String> = parsed.tree().documents().map(|d| d.to_string()).collect();
+    assert_eq!(docs, ["?\n", "---\na: 1\n"]);
+}

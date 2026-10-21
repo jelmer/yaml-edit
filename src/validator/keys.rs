@@ -1,11 +1,78 @@
-//! Checks on mapping keys: duplicates, and the !!set, !!pairs and !!omap types.
+//! Checks on mapping keys: duplicates, merge keys, and the !!set, !!pairs and
+//! !!omap types.
 
 use super::{Rule, Violation};
-use crate::anchor_resolution::{document_scope, is_merge_key, AnchorRegistry, MergedMapping};
+use crate::anchor_resolution::{
+    document_scope, is_merge_key, merge_operands, merge_source, AnchorRegistry, MergedMapping,
+};
 use crate::as_yaml::SharedIdentities;
 use crate::tag;
 use crate::yaml::SyntaxNode;
 use rowan::ast::AstNode;
+
+/// The anchor registry of the document the validator is in, built the
+/// first time a merge key needs it.
+#[derive(Default)]
+pub(super) struct DocumentRegistry(Option<(SyntaxNode, AnchorRegistry)>);
+
+impl DocumentRegistry {
+    /// The registry of the document `node` is in.
+    fn get(&mut self, node: &SyntaxNode) -> &AnchorRegistry {
+        let scope = document_scope(node);
+        if self.0.as_ref().map_or(true, |(cached, _)| *cached != scope) {
+            let registry = AnchorRegistry::from_tree(&scope);
+            self.0 = Some((scope, registry));
+        }
+        &self.0.as_ref().expect("just filled").1
+    }
+}
+
+/// Check that each operand of a merge key in `node`, a mapping, is a
+/// mapping, as `YamlValue` needs to merge it in.
+///
+/// Like content that does not suit a YAML 1.1 type, this is a warning: to
+/// YAML 1.2 `<<` is an ordinary key. An undefined alias is reported on its
+/// own.
+pub(super) fn check_merge_operands(
+    node: &SyntaxNode,
+    registry: &mut DocumentRegistry,
+    violations: &mut Vec<Violation>,
+) {
+    let Some(mapping) = crate::yaml::Mapping::cast(node.clone()) else {
+        return;
+    };
+    for (key, value) in mapping.iter() {
+        if !is_merge_key(&key) {
+            continue;
+        }
+        let registry = registry.get(node);
+        let Ok(operands) = merge_operands(value.clone(), registry) else {
+            continue;
+        };
+        let value_range = value.syntax().text_range();
+        for operand in operands {
+            if !matches!(merge_source(&operand, registry), Ok(None)) {
+                continue;
+            }
+            // An item of a sequence anchored elsewhere is reported where
+            // the sequence is merged in.
+            let range = operand.syntax().text_range();
+            let range = if value_range.contains_range(range) {
+                range
+            } else {
+                value_range
+            };
+            violations.push(Violation::warning_at(
+                Rule::Other,
+                range,
+                format!(
+                    "Merge key operand {:?} is not a mapping",
+                    operand.to_string()
+                ),
+            ));
+        }
+    }
+}
 
 /// Check that the members of a `!!set` have null values.
 ///

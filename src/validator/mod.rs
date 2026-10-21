@@ -49,7 +49,10 @@ use flow::{
     check_block_scalar_in_flow, check_flow_collection_commas, check_flow_continuation_indent,
     check_flow_pair_placement, check_tag_followed_by_comma,
 };
-use keys::{check_duplicate_keys, check_omap_keys, check_pairs_items, check_set_values};
+use keys::{
+    check_duplicate_keys, check_merge_operands, check_omap_keys, check_pairs_items,
+    check_set_values, DocumentRegistry,
+};
 use properties::{
     check_anchor_and_alias, check_collection_tag_content, check_multiple_anchors,
     check_multiple_tags, check_tag_characters, check_tag_on_alias, check_undefined_aliases,
@@ -375,6 +378,7 @@ impl Validator {
     fn validate_node(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
         let columns = ColumnIndex::new(node);
         let mut identities = SharedIdentities::default();
+        let mut registry = DocumentRegistry::default();
         // The scope of each node being walked; asking each node for its
         // ancestors made the walk quadratic in the nesting depth.
         let mut scopes = vec![Scope {
@@ -385,7 +389,14 @@ impl Validator {
             match event {
                 rowan::WalkEvent::Enter(n) => {
                     let scope = *scopes.last().expect("the walk's own scope stays");
-                    self.check_node(&n, &columns, &mut identities, scope, violations);
+                    self.check_node(
+                        &n,
+                        &columns,
+                        &mut identities,
+                        &mut registry,
+                        scope,
+                        violations,
+                    );
                     scopes.push(scope.enter(&n, &columns));
                 }
                 rowan::WalkEvent::Leave(_) => {
@@ -401,6 +412,7 @@ impl Validator {
         node: &SyntaxNode,
         columns: &ColumnIndex,
         identities: &mut SharedIdentities,
+        registry: &mut DocumentRegistry,
         scope: Scope,
         violations: &mut Vec<Violation>,
     ) {
@@ -473,6 +485,7 @@ impl Validator {
                 if self.config.check_duplicate_keys {
                     check_duplicate_keys(node, identities, violations);
                 }
+                check_merge_operands(node, registry, violations);
             }
             SyntaxKind::SEQUENCE => {
                 check_flow_collection_commas(node, violations);

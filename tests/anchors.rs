@@ -22,8 +22,8 @@ use yaml_edit::anchor_resolution::DocumentResolvedExt;
 use yaml_edit::path::YamlPath;
 use yaml_edit::validator::Validator;
 use yaml_edit::{
-    debug, Alias, AnchorRegistry, Document, DocumentMergedExt, MappingMergedExt, ResolveError,
-    SyntaxKind, YamlFile, YamlNode, YamlValue,
+    debug, Alias, AnchorRegistry, Document, DocumentMergedExt, MappingMergedExt, MappingView,
+    MergedMapping, ResolveError, SyntaxKind, YamlFile, YamlNode, YamlValue,
 };
 
 /// A node as compact text: flow collections as `[..]` and `{..}`, block
@@ -2899,4 +2899,104 @@ fn merged_view_accessors() {
     assert!(view.registry().contains("s"));
     assert_eq!(format!("{view:?}"), "MergedView");
     assert!(doc("- a\n").merged().unwrap().is_none());
+}
+
+/// A function generic over `impl MappingView` - proves the trait is
+/// usable as an abstraction over both `Mapping` and `MergedMapping`.
+fn collect_keys<M: MappingView + ?Sized>(view: &M) -> Vec<String> {
+    view.keys()
+        .map(|k| k.as_scalar().map(|s| s.as_string()).unwrap_or_default())
+        .collect()
+}
+
+#[test]
+fn generic_works_on_plain_mapping() {
+    let d = doc("a: 1\nb: 2\nc: 3\n");
+    let root = d.as_mapping().unwrap();
+    assert_eq!(collect_keys(&root), vec!["a", "b", "c"]);
+    assert_eq!(<yaml_edit::Mapping as MappingView>::len(&root), 3);
+}
+
+#[test]
+fn generic_works_on_merged_mapping() {
+    let yaml = "\
+d: &d
+  a: 1
+  b: 2
+m:
+  <<: *d
+  c: 3
+";
+    let d = doc(yaml);
+    let reg = d.build_anchor_registry();
+    let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+    let merged = m.merged(&reg).unwrap();
+
+    // Direct + merged keys, in insertion-then-merge-source order.
+    assert_eq!(collect_keys(&merged), vec!["c", "a", "b"]);
+    assert_eq!(<MergedMapping as MappingView>::len(&merged), 3);
+}
+
+#[test]
+fn trait_get_and_contains() {
+    let yaml = "\
+d: &d
+  x: 1
+m:
+  <<: *d
+  y: 2
+";
+    let d = doc(yaml);
+    let reg = d.build_anchor_registry();
+    let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+    let merged = m.merged(&reg).unwrap();
+
+    let view: &dyn MappingView = &merged;
+    assert!(view.contains_key(&"x"));
+    assert!(view.contains_key(&"y"));
+    assert!(!view.contains_key(&"z"));
+    assert_eq!(view.get(&"x").unwrap().to_i64(), Some(1));
+}
+
+#[test]
+fn trait_object_safety() {
+    // Compile-time check: building `&dyn MappingView` works.
+    let d = doc("a: 1\n");
+    let root = d.as_mapping().unwrap();
+    let view: &dyn MappingView = &root;
+    assert_eq!(view.len(), 1);
+}
+
+#[test]
+fn is_empty_via_trait() {
+    let d = doc("{}\n");
+    let root = d.as_mapping().unwrap();
+    let view: &dyn MappingView = &root;
+    assert!(view.is_empty());
+}
+
+#[test]
+fn values_iter_via_trait() {
+    let d = doc("a: 1\nb: 2\n");
+    let root = d.as_mapping().unwrap();
+    let view: &dyn MappingView = &root;
+    let nums: Vec<i64> = view.values().filter_map(|v| v.to_i64()).collect();
+    assert_eq!(nums, vec![1, 2]);
+}
+
+#[test]
+fn merged_view_via_document_extension() {
+    // Round-trip the new trait through the owned MergedView container.
+    let yaml = "\
+d: &d
+  k: 42
+m:
+  <<: *d
+";
+    let d = doc(yaml);
+    let owned = d.merged().unwrap().unwrap();
+    let m = owned.as_mapping().get_merged("m").unwrap().unwrap();
+    // Use the trait method so the `&dyn AsYaml` signature is exercised.
+    let view: &dyn MappingView = &m;
+    assert_eq!(view.get(&"k").unwrap().to_i64(), Some(42));
 }

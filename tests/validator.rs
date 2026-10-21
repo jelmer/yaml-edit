@@ -1292,6 +1292,11 @@ fn repeated_omap_key() {
             "Duplicate !!omap key: \"a\" (semantically equal to \"a\")",
             "1:26",
         ),
+        (
+            "o: !!omap\n- : 1\n- : 2\n",
+            "Duplicate !!omap key: null (semantically equal to null)",
+            "3:3",
+        ),
     ] {
         let file = YamlFile::from_str(yaml).unwrap();
         let violations: Vec<_> = Validator::new()
@@ -1908,6 +1913,20 @@ fn duplicate_keys() {
             "null: 1\n~: 2",
             Some("Duplicate key: \"~\" (semantically equal to \"null\")"),
         ),
+        // An empty key is null, which is not the empty string.
+        (
+            ": 1\n: 2\n",
+            Some("Duplicate key: null (semantically equal to null)"),
+        ),
+        (
+            ": 1\n~: 2\n",
+            Some("Duplicate key: \"~\" (semantically equal to null)"),
+        ),
+        (
+            "\"\": 1\n'': 2\n",
+            Some("Duplicate key: \"''\" (semantically equal to \"\\\"\\\"\")"),
+        ),
+        (": 1\n\"\": 2\n", None),
         (
             "[1,2]: a\n[1, 2]: b\n",
             Some("Duplicate key: \"[1, 2]\" (semantically equal to \"[1,2]\")"),

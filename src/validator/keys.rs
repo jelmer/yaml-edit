@@ -131,9 +131,9 @@ pub(super) fn check_omap_keys(
                 Rule::DuplicateKeys,
                 range,
                 format!(
-                    "Duplicate !!omap key: {:?} (semantically equal to {:?})",
-                    key.text().to_string().trim(),
-                    first.text().to_string().trim()
+                    "Duplicate !!omap key: {} (semantically equal to {})",
+                    format_key(&key),
+                    format_key(first)
                 ),
             ));
         }
@@ -209,14 +209,6 @@ pub(super) fn check_duplicate_keys(
         *kind_counts.entry(*kind).or_default() += 1;
     }
 
-    let format_key = |key: &SyntaxNode| {
-        let text = key.text().to_string();
-        match text.trim() {
-            "" => "\"\"".to_string(),
-            s => format!("{s:?}"),
-        }
-    };
-
     // Key identity -> index of the first key with it
     let mut seen: HashMap<usize, usize> = HashMap::new();
     for (i, (key, range)) in keys.iter().enumerate() {
@@ -242,6 +234,15 @@ pub(super) fn check_duplicate_keys(
                 slot.insert(i);
             }
         }
+    }
+}
+
+/// `key` as a duplicate key message shows it: its text, quoted, or `null`
+/// for an empty key, which is null rather than the empty string.
+fn format_key(key: &SyntaxNode) -> String {
+    match key.text().to_string().trim() {
+        "" => "null".to_string(),
+        text => format!("{text:?}"),
     }
 }
 

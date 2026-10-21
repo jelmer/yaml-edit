@@ -10,7 +10,7 @@
 //! its first line and on continuation lines alike.
 
 mod common;
-use common::{assert_file_cst_ok, assert_parser_shaped, parse_clean};
+use common::{assert_file_cst_ok, assert_parser_shaped, parse_clean, root_mapping};
 use rowan::ast::AstNode;
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -450,10 +450,6 @@ fn rename_json_like_key_before_adjacent_colon() {
     assert!(doc.as_mapping().unwrap().rename_key("a", &plain_node));
     assert_eq!(doc.to_string(), "{p: b}\n");
     assert_eq!(reparsed_scalars(&doc), ["p", "b"]);
-}
-
-fn root_mapping(file: &YamlFile) -> Mapping {
-    file.document().unwrap().as_mapping().unwrap()
 }
 
 fn string(node: &YamlNode) -> String {

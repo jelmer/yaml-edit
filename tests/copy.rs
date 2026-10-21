@@ -19,17 +19,7 @@ use yaml_edit::{
 };
 
 mod common;
-use common::{assert_file_edited, assert_parser_shaped};
-
-fn value_of(src: &str, key: &str) -> YamlNode {
-    let file = YamlFile::from_str(src).unwrap();
-    file.document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .get(key)
-        .unwrap()
-}
+use common::{assert_file_edited, assert_parser_shaped, value_of};
 
 fn root(src: &str) -> Document {
     Document::from_str(src).unwrap()

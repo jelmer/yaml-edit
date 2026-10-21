@@ -26,7 +26,7 @@
 mod common;
 use common::{
     assert_cst_ok, assert_edited, assert_file_cst_ok, assert_file_edited,
-    assert_file_parser_shaped, assert_parser_shaped, check_edit,
+    assert_file_parser_shaped, assert_parser_shaped, check_edit, edit_file, root_mapping,
 };
 use std::str::FromStr;
 use yaml_edit::path::YamlPath;
@@ -1638,18 +1638,6 @@ fn push_to_empty_flow_sequence() {
         .map(|v| v.as_scalar().unwrap().as_string())
         .collect();
     assert_eq!(values, ["first", "second", "third"]);
-}
-
-/// Parse `source`, apply `f` to it and check the result is parser-shaped.
-fn edit_file(source: &str, f: impl FnOnce(&YamlFile)) -> String {
-    let file = YamlFile::from_str(source).unwrap();
-    f(&file);
-    assert_file_parser_shaped(&file);
-    file.to_string()
-}
-
-fn root_mapping(file: &YamlFile) -> Mapping {
-    file.document().unwrap().as_mapping().unwrap()
 }
 
 fn root_sequence(file: &YamlFile) -> Sequence {

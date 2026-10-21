@@ -9,6 +9,7 @@
 mod common;
 use common::{
     assert_cst_ok, assert_file_cst_ok, assert_file_edited, assert_parser_shaped, check_edit,
+    value_of,
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
@@ -16,7 +17,7 @@ use yaml_edit::path::{PathError, YamlPath};
 use yaml_edit::validator::Validator;
 use yaml_edit::{
     debug, AsYaml, Document, Mapping, MappingBuilder, ScalarValue, Sequence, SequenceBuilder,
-    YamlFile, YamlNode, YamlValue,
+    YamlFile, YamlValue,
 };
 
 /// Parse `yaml` and return the file plus its root mapping.
@@ -51,11 +52,6 @@ fn map(pairs: &[(&str, &str)]) -> Mapping {
         b = b.pair(*k, *v);
     }
     b.build_document().as_mapping().unwrap()
-}
-
-/// The value of `key` in the root mapping of `src`.
-fn value_of(src: &str, key: &str) -> YamlNode {
-    parse(src).1.get(key).unwrap()
 }
 
 /// Set `key` in the mapping at `path` of `src` to `value` and check the

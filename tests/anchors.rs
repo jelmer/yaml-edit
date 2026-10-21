@@ -13,8 +13,8 @@
 
 mod common;
 use common::{
-    assert_edited, assert_file_cst_ok, count_nodes, parse_clean, parse_with_violations,
-    render_documents,
+    assert_edited, assert_file_cst_ok, count_nodes, edit_metadata, parse_clean,
+    parse_with_violations, render_documents,
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
@@ -56,31 +56,6 @@ fn assert_means(doc: &Document, meaning: &str) {
         YamlValue::from_document(doc).unwrap(),
         YamlValue::from_document(&meaning).unwrap()
     );
-}
-
-/// Set `metadata.version`, and `metadata.status` if `yaml` has one, in
-/// `file` parsed from `yaml`, checking that nothing else changes.
-#[track_caller]
-fn edit_metadata(file: &YamlFile, yaml: &str) {
-    let metadata = file
-        .document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .get_mapping("metadata")
-        .unwrap();
-    metadata.set("version", "0.1.1");
-    assert_file_cst_ok(file);
-    let expected = yaml.replace("version: 0.1.0", "version: 0.1.1");
-    assert_eq!(file.to_string(), expected);
-    if yaml.contains("status: draft") {
-        metadata.set("status", "stable");
-        assert_file_cst_ok(file);
-        assert_eq!(
-            file.to_string(),
-            expected.replace("status: draft", "status: stable")
-        );
-    }
 }
 
 #[test]

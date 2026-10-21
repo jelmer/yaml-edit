@@ -4,71 +4,10 @@
 //! Each input must parse without errors, round-trip byte for byte and give
 //! the expected values through the API.
 
+mod common;
+use common::{assert_shapes, assert_strings, keys, node_at, parse};
 use rowan::ast::AstNode;
 use yaml_edit::{Mapping, TaggedNode, YamlFile, YamlNode};
-
-/// Parse `yaml`, requiring no errors and a byte-identical round trip.
-#[track_caller]
-fn parse(yaml: &str) -> YamlFile {
-    let parsed = YamlFile::parse(yaml);
-    assert_eq!(parsed.errors(), Vec::<String>::new(), "{yaml:?}");
-    let file = parsed.tree();
-    assert_eq!(file.to_string(), yaml);
-    file
-}
-
-/// The node at `path` in the first document: mapping keys and sequence
-/// indices separated by `.`, or the root node for an empty path.
-#[track_caller]
-fn node_at(file: &YamlFile, path: &str) -> YamlNode {
-    let doc = file.document().expect("no document");
-    let root = doc
-        .syntax()
-        .children()
-        .find_map(YamlNode::from_syntax)
-        .expect("empty document");
-    path.split('.')
-        .filter(|segment| !segment.is_empty())
-        .fold(root, |node, segment| {
-            let child = if node.is_mapping() {
-                node.get(segment)
-            } else {
-                node.get_item(segment.parse().expect("sequence index"))
-            };
-            child.unwrap_or_else(|| panic!("nothing at {segment:?} of {path:?}"))
-        })
-}
-
-/// Check the string value of the scalar at each path.
-#[track_caller]
-fn assert_strings(file: &YamlFile, expected: &[(&str, &str)]) {
-    for (path, value) in expected {
-        let node = node_at(file, path);
-        let scalar = node
-            .as_scalar()
-            .unwrap_or_else(|| panic!("{path:?} is not a scalar"));
-        assert_eq!(scalar.as_string(), *value, "at {path:?}");
-    }
-}
-
-/// Describe a collection as e.g. "flow sequence of 3".
-fn shape(node: &YamlNode) -> String {
-    let style = |flow: bool| if flow { "flow" } else { "block" };
-    if let Some(seq) = node.as_sequence() {
-        format!("{} sequence of {}", style(seq.is_flow_style()), seq.len())
-    } else if let Some(map) = node.as_mapping() {
-        format!("{} mapping of {}", style(map.is_flow_style()), map.len())
-    } else {
-        panic!("not a collection: {node:?}")
-    }
-}
-
-#[track_caller]
-fn assert_shapes(file: &YamlFile, expected: &[(&str, &str)]) {
-    for (path, value) in expected {
-        assert_eq!(shape(&node_at(file, path)), *value, "at {path:?}");
-    }
-}
 
 /// Check that the node at each path is an alias of the given anchor.
 #[track_caller]
@@ -80,13 +19,6 @@ fn assert_aliases(file: &YamlFile, expected: &[(&str, &str)]) {
             .unwrap_or_else(|| panic!("{path:?} is not an alias"));
         assert_eq!(alias.name(), *name, "at {path:?}");
     }
-}
-
-/// The keys of the first document's root mapping.
-fn keys(file: &YamlFile) -> Vec<String> {
-    let doc = file.document().unwrap();
-    let mapping = doc.as_mapping().unwrap();
-    mapping.keys().map(|k| k.to_string()).collect()
 }
 
 /// The value of the `<<` entry of `mapping`, found by iterating since `<<`

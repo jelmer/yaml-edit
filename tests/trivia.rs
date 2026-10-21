@@ -7,12 +7,15 @@ use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::path::YamlPath;
 use yaml_edit::{
-    debug, Document, Mapping, MappingBuilder, MappingEntry, Sequence, SyntaxKind, YamlFile,
-    YamlNode, YamlValue,
+    debug, Mapping, MappingBuilder, MappingEntry, Sequence, SyntaxKind, YamlFile, YamlNode,
+    YamlValue,
 };
 
 mod common;
-use common::{check_renders, count_nodes, count_tokens, parse_clean, render_documents};
+use common::{
+    assert_file_edited, check_renders, count_nodes, count_tokens, edited, parse_clean,
+    render_documents,
+};
 
 /// Parse `yaml` and check it round trips exactly.
 #[track_caller]
@@ -225,16 +228,6 @@ fn hash_glued_to_content_on_a_continuation_line() {
             "{yaml:?}"
         );
     }
-}
-
-/// Edit the root of `source` with `edit`, check the result has the shape a
-/// re-parse of its text has, and return the text.
-#[track_caller]
-fn edited(source: &str, edit: impl FnOnce(&Document)) -> String {
-    let doc = Document::from_str(source).unwrap();
-    edit(&doc);
-    common::assert_parser_shaped(&doc);
-    doc.to_string()
 }
 
 /// A comment line between two flow entries describes the one below it, as
@@ -460,12 +453,6 @@ fn blank_line_indent_never_ends_a_block() {
     }
 }
 
-#[track_caller]
-fn assert_edited(file: &YamlFile, expected: &str, src: &str) {
-    assert_eq!(file.to_string(), expected, "{src:?}");
-    common::assert_file_parser_shaped(file);
-}
-
 /// The mapping at `path` in `file`, following mapping keys and sequence
 /// indexes.
 fn mapping_at(file: &YamlFile, path: &str) -> Mapping {
@@ -548,7 +535,7 @@ fn mapping_set_scalar_over_commented_value() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, path).set("a", 5);
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -569,7 +556,7 @@ fn mapping_set_block_over_commented_value() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, "").set("a", block_mapping());
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -601,7 +588,7 @@ fn sequence_set_over_commented_value() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         sequence_at(&file, "").set(0, 5);
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -616,12 +603,12 @@ fn set_over_block_scalar_ending_in_spaces() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         sequence_at(&file, "").set(0, 5);
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
     for (src, expected) in [("a: |+\n   ", "a: 5\n"), ("a: |\n  a\n   ", "a: 5\n")] {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, "").set("a", 5);
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -630,11 +617,11 @@ fn set_to_empty_node_leaves_no_trailing_space() {
     let null = value_of("v:\n");
     let file = YamlFile::from_str("- 1\n- 2\n").unwrap();
     sequence_at(&file, "").set(0, &null);
-    assert_edited(&file, "-\n- 2\n", "- 1\n- 2\n");
+    assert_file_edited(&file, "-\n- 2\n");
 
     let file = YamlFile::from_str("a: 1\nb: 2\n").unwrap();
     mapping_at(&file, "").set("a", &null);
-    assert_edited(&file, "a:\nb: 2\n", "a: 1\nb: 2\n");
+    assert_file_edited(&file, "a:\nb: 2\n");
 }
 
 #[test]
@@ -650,7 +637,7 @@ fn nested_sequence_set_over_commented_value() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         sequence_at(&file, "a").set(0, 5);
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -670,7 +657,7 @@ fn sequence_set_block_over_commented_value() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         sequence_at(&file, "").set(0, block_mapping());
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -684,7 +671,7 @@ fn sequence_set_block_scalar_keeps_dash_line_comment() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         sequence_at(&file, "").set(0, value_of("v: |\n  text\n"));
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -723,7 +710,7 @@ fn block_scalar_header_comment_displaces_key_line_comment() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, path).set("k", value_of("v: |  # src\n  text\n"));
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
     for (value, expected) in [
         (
@@ -739,7 +726,7 @@ fn block_scalar_header_comment_displaces_key_line_comment() {
         let src = "k: 1  # note\n";
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, "").set("k", value_of(value));
-        assert_edited(&file, expected, value);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -757,7 +744,7 @@ fn sequence_block_scalar_header_comment_displaces_dash_line_comment() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         sequence_at(&file, path).set(index, value_of("v: |  # src\n  text\n"));
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -813,7 +800,7 @@ fn lines_after_entry_follow_the_new_value() {
         } else {
             mapping.set("a", block_mapping());
         }
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -834,7 +821,7 @@ fn set_path_over_commented_value() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         file.document().unwrap().try_set_path(path, 5).unwrap();
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -953,7 +940,7 @@ fn blank_lines_after_new_block_scalar() {
         let file = YamlFile::from_str(src).unwrap();
         let source = value_of(value);
         mapping_at(&file, path).set("a", &source);
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
         let set = mapping_at(&YamlFile::from_str(expected).unwrap(), path)
             .get("a")
             .unwrap();
@@ -968,7 +955,7 @@ fn blank_lines_after_new_block_scalar() {
         let file = YamlFile::from_str(src).unwrap();
         let source = value_of(value);
         sequence_at(&file, "").set(0, &source);
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
         let set = sequence_at(&YamlFile::from_str(expected).unwrap(), "")
             .get(0)
             .unwrap();
@@ -986,12 +973,12 @@ fn set_over_block_mapping_with_flow_key() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, "").set("a", 5);
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
     let src = "- {x: 1}: 1\n\n- 2\n";
     let file = YamlFile::from_str(src).unwrap();
     file.document().unwrap().as_sequence().unwrap().set(0, 5);
-    assert_edited(&file, "- 5\n\n- 2\n", src);
+    assert_file_edited(&file, "- 5\n\n- 2\n");
 }
 
 /// The parser keeps the blank lines after an empty value in it, where it
@@ -1015,10 +1002,10 @@ fn blank_lines_after_empty_value() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, path).set("a", 5);
-        assert_edited(&file, expected_scalar, src);
+        assert_file_edited(&file, expected_scalar);
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, path).set("a", block_mapping());
-        assert_edited(&file, expected_block, src);
+        assert_file_edited(&file, expected_block);
     }
 }
 
@@ -1032,7 +1019,7 @@ fn comment_after_multi_line_value_goes_with_it() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         mapping_at(&file, "").set("a", 5);
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
     for (src, expected) in [
         ("- [x,\n  y]  # c\n- 1\n", "- 5\n- 1\n"),
@@ -1040,7 +1027,7 @@ fn comment_after_multi_line_value_goes_with_it() {
     ] {
         let file = YamlFile::from_str(src).unwrap();
         sequence_at(&file, "").set(0, 5);
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
 }
 
@@ -1061,6 +1048,6 @@ fn comment_line_after_blank_lines_leaves_new_block_scalar_body() {
             .as_mapping()
             .unwrap()
             .set("a", "x\n");
-        assert_edited(&file, expected, src);
+        assert_file_edited(&file, expected);
     }
 }

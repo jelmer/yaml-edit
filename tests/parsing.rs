@@ -1,82 +1,14 @@
 //! Parsing and round-tripping of valid input: large and deeply nested
 //! documents, scalar styles, multi-key documents, byte order marks and JSON.
 
-use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{CoreScalarType, Document, Parse, ScalarValue, SyntaxKind, YamlFile, YamlNode};
+use yaml_edit::{CoreScalarType, Document, Parse, ScalarValue, SyntaxKind};
 
 mod common;
-use common::{assert_cst_ok, check_renders, render_documents};
-
-/// Parse `yaml`, requiring no errors and a byte-identical round trip.
-#[track_caller]
-fn parse(yaml: &str) -> YamlFile {
-    let parsed = YamlFile::parse(yaml);
-    assert_eq!(parsed.errors(), Vec::<String>::new(), "{yaml:?}");
-    let file = parsed.tree();
-    assert_eq!(file.to_string(), yaml);
-    file
-}
-
-/// The node at `path` in the first document: mapping keys and sequence
-/// indices separated by `.`, or the root node for an empty path.
-#[track_caller]
-fn node_at(file: &YamlFile, path: &str) -> YamlNode {
-    let doc = file.document().expect("no document");
-    let root = doc
-        .syntax()
-        .children()
-        .find_map(YamlNode::from_syntax)
-        .expect("empty document");
-    path.split('.')
-        .filter(|segment| !segment.is_empty())
-        .fold(root, |node, segment| {
-            let child = if node.is_mapping() {
-                node.get(segment)
-            } else {
-                node.get_item(segment.parse().expect("sequence index"))
-            };
-            child.unwrap_or_else(|| panic!("nothing at {segment:?} of {path:?}"))
-        })
-}
-
-/// Check the string value of the scalar at each path.
-#[track_caller]
-fn assert_strings(file: &YamlFile, expected: &[(&str, &str)]) {
-    for (path, value) in expected {
-        let node = node_at(file, path);
-        let scalar = node
-            .as_scalar()
-            .unwrap_or_else(|| panic!("{path:?} is not a scalar"));
-        assert_eq!(scalar.as_string(), *value, "at {path:?}");
-    }
-}
-
-/// Describe a collection as e.g. "flow sequence of 3".
-fn shape(node: &YamlNode) -> String {
-    let style = |flow: bool| if flow { "flow" } else { "block" };
-    if let Some(seq) = node.as_sequence() {
-        format!("{} sequence of {}", style(seq.is_flow_style()), seq.len())
-    } else if let Some(map) = node.as_mapping() {
-        format!("{} mapping of {}", style(map.is_flow_style()), map.len())
-    } else {
-        panic!("not a collection: {node:?}")
-    }
-}
-
-#[track_caller]
-fn assert_shapes(file: &YamlFile, expected: &[(&str, &str)]) {
-    for (path, value) in expected {
-        assert_eq!(shape(&node_at(file, path)), *value, "at {path:?}");
-    }
-}
-
-/// The keys of the first document's root mapping.
-fn keys(file: &YamlFile) -> Vec<String> {
-    let doc = file.document().unwrap();
-    let mapping = doc.as_mapping().unwrap();
-    mapping.keys().map(|k| k.to_string()).collect()
-}
+use common::{
+    assert_cst_ok, assert_shapes, assert_strings, check_renders, keys, node_at, parse,
+    render_documents,
+};
 
 #[test]
 fn deeply_nested_structures() {

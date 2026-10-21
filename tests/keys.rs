@@ -4,7 +4,7 @@
 mod common;
 use common::{
     assert_cst_ok, assert_file_cst_ok, assert_file_parser_shaped, check_renders, count_nodes,
-    parse_clean, render, render_documents,
+    edit_root, parse_clean, render, render_documents, root_mapping,
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
@@ -25,10 +25,6 @@ fn render_root(yaml: &str) -> String {
         .find_map(YamlNode::from_syntax)
         .unwrap();
     render(&root)
-}
-
-fn root_mapping(file: &YamlFile) -> Mapping {
-    file.document().unwrap().as_mapping().unwrap()
 }
 
 fn scalar(node: &YamlNode) -> String {
@@ -599,16 +595,6 @@ fn remove_nth_occurrence() {
 }
 
 type MappingEdit = fn(&Mapping);
-
-/// Apply `edit` to the root mapping of `source`, check the result is shaped
-/// as the parser would shape it, and return its text.
-#[track_caller]
-fn edit_root(source: &str, edit: impl FnOnce(&Mapping)) -> String {
-    let file = YamlFile::from_str(source).unwrap();
-    edit(&root_mapping(&file));
-    assert_file_parser_shaped(&file);
-    file.to_string()
-}
 
 /// Like [`edit_root`], but edit the mapping under the root's `key`.
 #[track_caller]

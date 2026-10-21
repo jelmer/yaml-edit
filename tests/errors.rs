@@ -4,20 +4,13 @@
 //! valid parts accessible and give a tree that edits still work on.
 
 mod common;
-use common::{parse_with_errors, parse_with_violations};
+use common::{keys, parse_with_errors, parse_with_violations};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::validator::{Rule, Severity, Validator};
 use yaml_edit::{
     debug, Document, LineColumn, Parse, ScalarType, ScalarValue, Sequence, SyntaxKind, YamlFile,
 };
-
-/// The keys of the first document's root mapping.
-fn keys(file: &YamlFile) -> Vec<String> {
-    let doc = file.document().unwrap();
-    let mapping = doc.as_mapping().unwrap();
-    mapping.keys().map(|k| k.to_string()).collect()
-}
 
 #[test]
 fn error_messages() {

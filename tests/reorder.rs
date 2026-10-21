@@ -3,29 +3,10 @@
 //! flow mapping and the line break ending the last entry, or its absence.
 
 mod common;
+use common::assert_edited;
 
-use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, Document, Mapping, YamlFile};
-
-#[track_caller]
-fn assert_edited(doc: &Document, expected: &str) {
-    assert_eq!(doc.to_string(), expected);
-    common::assert_cst_ok(doc);
-    // A document without `---` that starts with a comment line is only
-    // accepted as part of a file.
-    let reparsed = Document::from_str(expected).unwrap_or_else(|_| {
-        YamlFile::from_str(expected)
-            .unwrap()
-            .documents()
-            .next()
-            .unwrap()
-    });
-    assert_eq!(
-        debug::shape_to_string(doc.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-}
+use yaml_edit::{Document, Mapping, YamlFile};
 
 #[track_caller]
 fn check_reorder(

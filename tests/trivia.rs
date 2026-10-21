@@ -1397,3 +1397,77 @@ fn set_block_scalar_beside_comment() {
         );
     }
 }
+
+/// `YamlFile::comments` lists the comments in order, as their text and as
+/// their content without the `#` and one space.
+#[test]
+fn comments_in_a_file() {
+    for (yaml, texts, contents) in [
+        (
+            "# header\nkey: value # trailing\n# footer\n",
+            &["# header", "# trailing", "# footer"][..],
+            &["header", "trailing", "footer"][..],
+        ),
+        (
+            "#nospace\n# one space\n#  two spaces\n",
+            &["#nospace", "# one space", "#  two spaces"],
+            &["nospace", "one space", " two spaces"],
+        ),
+        ("key: value\n", &[], &[]),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let found: Vec<_> = file.comments().map(|c| c.text().to_string()).collect();
+        assert_eq!(found, texts, "{yaml:?}");
+        let found: Vec<_> = file.comments().map(|c| c.content().to_string()).collect();
+        assert_eq!(found, contents, "{yaml:?}");
+    }
+
+    let file = YamlFile::from_str("# c\na: 1\n").unwrap();
+    let comment = file.document().unwrap().comments().next().unwrap();
+    assert_eq!(format!("{comment:?}"), "Comment { text: \"# c\" }");
+    assert_eq!(comment.to_string(), "# c");
+    assert_eq!(comment.syntax().kind(), SyntaxKind::COMMENT);
+}
+
+#[test]
+fn comment_position() {
+    let text = "key: value # trailing\n";
+    let file = YamlFile::from_str(text).unwrap();
+    let comment = file.comments().next().unwrap();
+    let start = comment.start_position(text);
+    assert_eq!((start.line, start.column), (1, 12));
+    assert_eq!(&text[comment.text_range()], "# trailing");
+}
+
+/// `set_text` and `set_content` replace a comment in place, leaving the
+/// other comments alone.
+#[test]
+fn set_comment_text() {
+    let file = YamlFile::from_str("key: value # teh value\n").unwrap();
+    file.comments().next().unwrap().set_text("# the value");
+    assert_file_edited(&file, "key: value # the value\n");
+
+    let file = YamlFile::from_str("key: value #teh value\n").unwrap();
+    file.comments().next().unwrap().set_content("the value");
+    assert_file_edited(&file, "key: value # the value\n");
+
+    let file = YamlFile::from_str("# header\nkey: value # teh value\n# footer\n").unwrap();
+    file.comments().nth(1).unwrap().set_text("# the value");
+    assert_file_edited(&file, "# header\nkey: value # the value\n# footer\n");
+    let texts: Vec<_> = file.comments().map(|c| c.text().to_string()).collect();
+    assert_eq!(texts, vec!["# header", "# the value", "# footer"]);
+}
+
+#[test]
+#[should_panic(expected = "must start with '#'")]
+fn set_comment_text_rejects_missing_hash() {
+    let file = YamlFile::from_str("key: value # comment\n").unwrap();
+    file.comments().next().unwrap().set_text("no hash");
+}
+
+#[test]
+#[should_panic(expected = "must not contain a newline")]
+fn set_comment_text_rejects_newline() {
+    let file = YamlFile::from_str("key: value # comment\n").unwrap();
+    file.comments().next().unwrap().set_text("# a\n# b");
+}

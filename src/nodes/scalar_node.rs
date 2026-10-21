@@ -392,9 +392,11 @@ impl Scalar {
     }
 
     /// Check if this scalar is a literal (`|`) or folded (`>`) block scalar
+    ///
+    /// A plain scalar starting with `|` or `>`, which the parser accepts
+    /// in a flow collection, is not one.
     pub fn is_block(&self) -> bool {
-        let text = self.value();
-        text.starts_with('|') || text.starts_with('>')
+        crate::nodes::is_block_scalar(&self.0)
     }
 
     /// Check if this scalar represents a null value.
@@ -908,6 +910,34 @@ items: ["first", "second"]
                 .unwrap();
             scalar.set_value("y");
             crate::debug::assert_edited(&yaml, expected);
+        }
+    }
+
+    /// A `|` or `>` that starts a plain scalar, which the parser accepts
+    /// in a flow collection though the validator does not, is its text
+    /// rather than an empty block scalar.
+    #[test]
+    fn test_plain_scalar_starting_with_block_indicator() {
+        use crate::scalar::{ScalarStyle, ScalarValue};
+        use rowan::ast::AstNode;
+        for (input, text) in [
+            ("[|, x]\n", "|"),
+            ("[>, x]\n", ">"),
+            ("{a: |, b: 1}\n", "|"),
+            ("[|x]\n", "|x"),
+        ] {
+            let doc = Document::from_str(input).unwrap();
+            let scalar = doc
+                .syntax()
+                .descendants()
+                .filter_map(super::Scalar::cast)
+                .find(|s| s.value() == text)
+                .unwrap();
+            assert!(!scalar.is_block(), "{input:?}");
+            assert_eq!(scalar.as_string(), text, "{input:?}");
+            let value = ScalarValue::from_scalar(&scalar);
+            assert_eq!(value.value(), text, "{input:?}");
+            assert_eq!(value.style(), ScalarStyle::Plain, "{input:?}");
         }
     }
 }

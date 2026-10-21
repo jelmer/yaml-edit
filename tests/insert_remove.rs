@@ -25,10 +25,11 @@
 
 mod common;
 use common::{
-    assert_cst_ok, assert_file_cst_ok, assert_file_edited, assert_file_parser_shaped,
-    assert_parser_shaped, check_edit,
+    assert_cst_ok, assert_edited, assert_file_cst_ok, assert_file_edited,
+    assert_file_parser_shaped, assert_parser_shaped, check_edit,
 };
 use std::str::FromStr;
+use yaml_edit::path::YamlPath;
 use yaml_edit::{Document, Mapping, Sequence, YamlFile, YamlNode};
 
 fn item(d: &Document) -> YamlNode {
@@ -1958,4 +1959,16 @@ fn insert_at_index_into_pending_block_mapping() {
     nested.insert_at_index(0, "a", 1);
     assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "x: 1\nk:\n  a: 1\n");
+}
+
+/// Duplicate keys are legal YAML, and a removal takes a single entry, so
+/// the path still resolves afterwards. A fuzz check asserted otherwise.
+#[test]
+fn remove_path_takes_one_duplicate_occurrence() {
+    let doc = Document::from_str("b: 1\na: 2\nb: 3\n").unwrap();
+    let removed = doc.try_remove_path("b").unwrap();
+    assert_eq!(removed.as_scalar().unwrap().as_string(), "1");
+    assert_edited(&doc, "a: 2\nb: 3\n");
+    let b = doc.try_get_path("b").unwrap();
+    assert_eq!(b.as_scalar().unwrap().as_string(), "3");
 }

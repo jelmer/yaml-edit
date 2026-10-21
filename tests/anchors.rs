@@ -12,7 +12,10 @@
 //! resolve.
 
 mod common;
-use common::{assert_edited, assert_file_cst_ok};
+use common::{
+    assert_edited, assert_file_cst_ok, count_nodes, parse_clean, parse_with_violations,
+    render_documents,
+};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::anchor_resolution::DocumentResolvedExt;
@@ -242,6 +245,18 @@ fn texts_of(yaml: &str, kind: SyntaxKind) -> Vec<String> {
 fn alias_key_still_parses() {
     assert_eq!(texts_of("a: &a 1\n*a : v\n", SyntaxKind::KEY), ["a", "*a"]);
     assert_eq!(texts_of("foo:\n  *a:\n", SyntaxKind::ALIAS), ["*a:"]);
+
+    // The YAML test suite's 26DV has `*alias1 : scalar3` as an entry. The
+    // alias was parsed as a value, so the `: v` after it opened a separate
+    // null-key entry instead. An alias as a value is unaffected.
+    for (yaml, mappings, expected) in [
+        ("k:\n  *a : v\n", 2, "map{k: map{*a: v}}"),
+        ("a: &x 1\nb: *x\n", 1, "map{a: 1, b: *x}"),
+    ] {
+        let file = parse_clean(yaml);
+        assert_eq!(count_nodes(&file, SyntaxKind::MAPPING), mappings);
+        assert_eq!(render_documents(yaml), [expected]);
+    }
 }
 
 /// The alias `*a`, read from another document so that only its name ties
@@ -1402,5 +1417,68 @@ fn insert_at_index_preserving_keeps_anchor_like_set() {
             .unwrap()
             .insert_at_index_preserving(0, "b", &value);
         assert_edited(&doc, expected);
+    }
+}
+
+/// An anchor before a complex key annotates that key, so it belongs inside
+/// the KEY node rather than beside the mapping.
+///
+/// `&key [ a ]: value` anchors the flow sequence. Left outside, it looked
+/// like a second anchor on the mapping itself, so the test suite's 6BFJ
+/// (`&mapping\n&key [ ... ]: value`) was reported as having two anchors on
+/// one node, which 4JVG genuinely does.
+#[test]
+fn anchor_before_a_complex_key_is_inside_the_key() {
+    let file = parse_clean("&key [ a ]: value\n");
+    let tree = debug::tree_to_string(file.syntax());
+    // The anchor is a child of KEY, not a sibling of MAPPING.
+    let key_line = tree.lines().position(|l| l.trim() == "KEY").unwrap();
+    assert!(
+        tree.lines()
+            .nth(key_line + 1)
+            .is_some_and(|l| l.contains("ANCHOR")),
+        "{tree}"
+    );
+
+    parse_with_violations("---\n&mapping\n&key [ a ]: value\n", &[]);
+    // `&n1` anchors the nested mapping and `&k1` its key: different nodes,
+    // as the test suite's 7BMT has it. Two anchors on one scalar still are.
+    parse_with_violations("top1: &n1\n  &k1 k: v\n", &[]);
+    parse_with_violations(
+        "top2: &n2\n  &v2 val2\n",
+        &[("Multiple anchors on the same node", "1:7")],
+    );
+}
+
+/// An alias with properties of its own is invalid YAML, but the parser
+/// accepts it, with the alias where a scalar key would be, and leaves the
+/// error to the validator. `a: &a 1\n&b *a : v\n` used to fail to parse.
+#[test]
+fn annotated_alias_key_parses_like_a_scalar_key() {
+    let tree = |yaml: &str| {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        assert_file_cst_ok(&file);
+        debug::tree_to_string(file.syntax())
+    };
+    for key in ["&b", "!t", "&b !t", "!t &b"] {
+        for (alias_form, scalar_form) in [
+            ("a: &a 1\nKEY *a : v\n", "a: &a 1\nKEY xx : v\n"),
+            ("KEY *a : v\n", "KEY xx : v\n"),
+            ("k:\n  KEY *a : v\n", "k:\n  KEY xx : v\n"),
+            ("- KEY *a : v\n", "- KEY xx : v\n"),
+            ("a: &a 1\nb: {KEY *a : v}\n", "a: &a 1\nb: {KEY xx : v}\n"),
+            ("a: &a 1\nb: [KEY *a : v]\n", "a: &a 1\nb: [KEY xx : v]\n"),
+        ] {
+            let alias_form = alias_form.replace("KEY", key);
+            let scalar_form = scalar_form.replace("KEY", key);
+            assert_eq!(
+                tree(&alias_form)
+                    .replace("ALIAS", "SCALAR")
+                    .replace("REFERENCE: \"*a\"", "STRING: \"xx\""),
+                tree(&scalar_form),
+                "{alias_form:?}"
+            );
+        }
     }
 }

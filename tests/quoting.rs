@@ -10,7 +10,7 @@
 //! its first line and on continuation lines alike.
 
 mod common;
-use common::{assert_file_cst_ok, assert_parser_shaped};
+use common::{assert_file_cst_ok, assert_parser_shaped, parse_clean};
 use rowan::ast::AstNode;
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -452,18 +452,6 @@ fn rename_json_like_key_before_adjacent_colon() {
     assert_eq!(reparsed_scalars(&doc), ["p", "b"]);
 }
 
-/// Parse `yaml`, check it round-trips with a valid tree and no ERROR node,
-/// and return it.
-#[track_caller]
-fn parse_clean(yaml: &str) -> YamlFile {
-    let file = YamlFile::from_str(yaml).unwrap();
-    assert_eq!(file.to_string(), yaml);
-    assert_file_cst_ok(&file);
-    let tree = debug::tree_to_string(file.syntax());
-    assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
-    file
-}
-
 fn root_mapping(file: &YamlFile) -> Mapping {
     file.document().unwrap().as_mapping().unwrap()
 }
@@ -629,6 +617,11 @@ fn plain_scalars_in_block_mapping() {
             "a: a:] !!b%as:]\nnext: k\n",
             &[("a", "a:] !!b%as:]"), ("next", "k")],
         ),
+        // Trailing spaces and tabs used to end up in the scalar, making the
+        // value `b ` or `b\t`. They stay in the tree, outside the scalar.
+        ("a: b \n", &[("a", "b")]),
+        ("a: b\t\n", &[("a", "b")]),
+        ("a: b \n  c \n", &[("a", "b c")]),
         // `,` separates entries only inside a flow collection, so in block
         // context it is text, also at the start of a continuation line. A
         // leading `,` is a spec violation the validator reports, but the
@@ -657,6 +650,10 @@ fn plain_scalars_in_block_mapping() {
         ("+: v\n", &[("+", "v")]),
         ("-: v\n", &[("-", "v")]),
         ("a: b\n+c: d\n", &[("a", "b"), ("+c", "d")]),
+        // A lone `+` used to be a bare PLUS token that no parse rule claims,
+        // stranding what followed it in an ERROR node.
+        ("k: +\nk2: w\n", &[("k", "+"), ("k2", "w")]),
+        ("a: 1\n+: 2\nb: 3\n", &[("a", "1"), ("+", "2"), ("b", "3")]),
         // `|` and `>` open a block scalar only at the start of a node, so
         // `a|b: v` is keyed `a|b`, as both saphyr and PyYAML read it.
         ("a|b: v\nc: d\n", &[("a|b", "v"), ("c", "d")]),
@@ -675,6 +672,10 @@ fn plain_scalars_in_block_mapping() {
         ("+\"a\": 1\n", &[("+\"a\"", "1")]),
         ("+'a' : 1\n", &[("+'a'", "1")]),
         ("'quoted': v\na: 'q'\n", &[("quoted", "v"), ("a", "q")]),
+        // A quote opening a continuation line is content too, while a
+        // quoted key on the next line still opens a quoted scalar.
+        ("a: b\n  'c\nd: 1\n", &[("a", "b 'c"), ("d", "1")]),
+        ("a: b\n'x: y': 1\n", &[("a", "b"), ("x: y", "1")]),
         // A key beginning with `+` folds across spaces like any other plain
         // scalar, and a `+` after a space is content, as saphyr reads it.
         ("+ x: v\n", &[("+ x", "v")]),
@@ -708,6 +709,8 @@ fn plain_scalars_in_block_mapping() {
         // A `?` followed by a space still opens an explicit key.
         ("? key\n: value\n", &[("key", "value")]),
         ("? a\n: 1\n? b\n: 2\n", &[("a", "1"), ("b", "2")]),
+        // A `?` at the key column opens the next entry after a plain value.
+        ("k: v\n? a\n: 1\n", &[("k", "v"), ("a", "1")]),
         // A `#` glued to plain-scalar content is not a comment: `:#: v` is
         // keyed `:#`, as saphyr reads it.
         (":#: v\n", &[(":#", "v")]),
@@ -746,6 +749,13 @@ fn plain_root_scalars() {
         ("ab\ncd\nef\n", "ab cd ef"),
         ("ab\n  cd\n", "ab cd"),
         ("ab\n\ncd\n", "ab\ncd"),
+        // Nor past the first line's own column: `" a\nb\n"` is `a b`, as
+        // saphyr and PyYAML both read it. The second line used to be swept
+        // into an ERROR node while from_str still reported success.
+        (" a\nb\n", "a b"),
+        ("  a\n b\n", "a b"),
+        ("a\nb\n", "a b"),
+        (" a\n b\n", "a b"),
         // A node property, a lone `+` or a flow indicator on a
         // continuation line is content, as the line is inside a node
         // already. A blank line before it folds to a line break.
@@ -758,8 +768,18 @@ fn plain_root_scalars() {
         ("a\n*-\n", "a *-"),
         ("a\n+\n", "a +"),
         ("a\n +\n", "a +"),
+        ("+\nx\n", "+ x"),
+        (" a\n|\n", "a |"),
+        (" a\n>\n", "a >"),
+        (" a\n-\n", "a -"),
+        (" a\n?\n", "a ?"),
+        ("\n yym|e\n|\n\n", "yym|e |"),
         ("a\n}\n", "a }"),
         ("a\n[:]\n", "a [:]"),
+        // The colon of a flow collection does not make the line a key of a
+        // block mapping; it used to, sweeping the line into an ERROR node.
+        ("a\n{:}\n", "a {:}"),
+        ("a\n[[:]]\n", "a [[:]]"),
         ("a\n}", "a }"),
         ("a\n{", "a {"),
         ("a\n]", "a ]"),
@@ -778,6 +798,14 @@ fn plain_root_scalars() {
         ("r % x\n", "r % x"),
         ("a % }\n", "a % }"),
         ("r %{\n", "r %{"),
+        // A `%` opens a directive only at the start of a document. The
+        // scalar used to end at it, leaving the `[` to open a flow sequence
+        // that never closed.
+        ("v\n%\n[\n", "v % ["),
+        (" v\n%\n'\n", "v % '"),
+        (" v\n%\n{\n", "v % {"),
+        (" v\n%\n\"\n", "v % \""),
+        ("v\n%\n", "v %"),
         ("...w\n", "...w"),
         ("...x.y\n", "...x.y"),
         // The body of a lone tag is still a node of the collection the tag
@@ -789,6 +817,17 @@ fn plain_root_scalars() {
         let value_found = file.document().unwrap().as_scalar().unwrap().as_string();
         assert_eq!(value_found, value, "{yaml:?}");
     }
+    // `: ` is a mapping indicator, so `[a: 1]` on a continuation line opens
+    // a mapping. The parser keeps it as a second node of the document,
+    // which the validator reports.
+    let file = parse_clean("a\n[a: 1]\n");
+    assert_eq!(
+        common::violations(&file),
+        [(
+            "Document holds more than one node".to_string(),
+            "2:1".to_string()
+        )]
+    );
 }
 
 /// Block sequences whose items are plain scalars spanning lines.
@@ -808,6 +847,23 @@ fn plain_scalars_in_block_sequence() {
         ("- :m}x\n", &[":m}x"]),
         ("- :m,n\n", &[":m,n"]),
         ("- :m[1]\n", &[":m[1]"]),
+        // At the root, with no key above it.
+        ("- a\n - b\n", &["a - b"]),
+        ("- x\n- y\n", &["x", "y"]),
+        // A block scalar after an entry is still a block scalar.
+        ("- a\n- |\n  b\n", &["a", "b\n"]),
+        ("- +\n- x\n", &["+", "x"]),
+        ("- +\n  x\n- y\n", &["+ x", "y"]),
+        // A `?` past the dash continues the entry. It used to be swept
+        // into an ERROR node along with every entry after it.
+        ("- x\n  ?\n- y\n", &["x ?", "y"]),
+        ("- x\n  ? c\n", &["x ? c"]),
+        // A hyphen that is not a sequence marker is content.
+        ("- a-b\n", &["a-b"]),
+        ("- -1\n", &["-1"]),
+        ("- x -y\n", &["x -y"]),
+        // Trailing white space is outside the scalar.
+        ("- b \n- c\t\n", &["b", "c"]),
     ] {
         let file = parse_clean(yaml);
         let root = file.document().unwrap().as_sequence().unwrap();
@@ -835,6 +891,12 @@ fn plain_scalars_in_block_sequence() {
     for (yaml, expected) in [
         ("a:\n- x\n  - y\n", &["x - y"][..]),
         ("a:\n- x\n- y\n", &["x", "y"]),
+        ("a:\n  - x\n  - y\n", &["x", "y"]),
+        // `a:\n- x\n  - y\n  z\n` is the single item `x - y z`, as both
+        // saphyr and PyYAML read it. The folded lines used to be separate
+        // entries, and the `z` line was swept into an ERROR node.
+        ("a:\n- x\n  - y\n  z\n", &["x - y z"]),
+        ("a:\n- x\n  y\n", &["x y"]),
     ] {
         let file = parse_clean(yaml);
         assert_eq!(items(&root_mapping(&file).get("a").unwrap()), expected);
@@ -847,6 +909,22 @@ fn plain_scalars_in_block_sequence() {
 /// mapping the scalar is a value of.
 #[test]
 fn question_mark_past_a_block_value_continues_it() {
+    // `"k: v\n  ?\nk2: w\n"` is the value `v ?` and a second entry `k2`, as
+    // saphyr and PyYAML both read it. The `?` used to invent an explicit-key
+    // entry, and with a blank line in front the rest of the mapping was
+    // stranded in an ERROR node.
+    for (yaml, text, value, entries) in [
+        ("k: v\n  ?\nk2: w\n", "v\n  ?", "v ?", 2),
+        ("k: v\n\n  ?\nk2: w\n", "v\n\n  ?", "v\n?", 2),
+        ("k: v\n  ?\n", "v\n  ?", "v ?", 1),
+    ] {
+        let mapping = root_mapping(&parse_clean(yaml));
+        let k = mapping.get(ScalarValue::from("k")).unwrap();
+        assert_eq!(k.to_string(), text, "{yaml:?}");
+        assert_eq!(string(&k), value, "{yaml:?}");
+        assert_eq!(mapping.len(), entries, "{yaml:?}");
+    }
+
     let file = parse_clean("o:\n  k:\n    v\n     ?\n");
     let o = root_mapping(&file).get_mapping("o").unwrap();
     assert_eq!(string(&o.get("k").unwrap()), "v ?");
@@ -1071,4 +1149,283 @@ fn question_mark_before_a_flow_indicator_opens_an_explicit_key() {
             "{yaml:?}"
         );
     }
+}
+
+/// A plain scalar opening with an indicator is a spec violation that the
+/// validator reports; the parser keeps the text as the scalar.
+#[test]
+fn plain_scalar_starting_with_an_indicator() {
+    for (yaml, scalars) in [
+        ("]}]}", vec!["]}]}"]),
+        ("a: ,b\n", vec!["a", ",b"]),
+        ("- ]\n", vec!["]"]),
+        ("[a, - b]", vec!["a", "- b"]),
+        ("[a, -]", vec!["a", "-"]),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        assert_file_cst_ok(&file);
+        let found: Vec<String> = file
+            .syntax()
+            .descendants()
+            .filter_map(Scalar::cast)
+            .map(|s| s.as_string())
+            .collect();
+        assert_eq!(found, scalars, "{yaml:?}");
+    }
+}
+
+/// Text after a quoted scalar on its own line stays in the scalar's node,
+/// for the validator to report, rather than dropping out of the document.
+#[test]
+fn quoted_scalar_keeps_trailing_text_on_its_line() {
+    let yaml = "a: \"b\" c\nd: e\n";
+    let parsed = YamlFile::parse(yaml);
+    assert_eq!(parsed.errors(), Vec::<String>::new());
+    let file = parsed.tree();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = root_mapping(&file);
+    assert_eq!(mapping.len(), 2);
+    assert_eq!(string(&mapping.get("d").unwrap()), "e");
+}
+
+/// A line at the column of the mapping a plain scalar is in starts its
+/// next entry rather than continuing the scalar, so a quote there opens a
+/// quoted scalar, which here does not end. The lexer read the quote as
+/// content, giving the plain keys `'b` and `'uantity` that the validator
+/// accepted.
+#[test]
+fn quote_at_the_mapping_column_after_a_plain_scalar() {
+    for (yaml, error) in [
+        (
+            "a: 1\n'b: 2\n",
+            "2:1: Content after the document could not be parsed: \"'b: 2\\n\"",
+        ),
+        (
+            "- item: x\n  'uantity: 1",
+            "2:3: Content after the document could not be parsed: \"'uantity: 1\"",
+        ),
+    ] {
+        let parsed = YamlFile::parse(yaml);
+        assert_eq!(parsed.errors(), [error.to_string()], "{yaml:?}");
+    }
+
+    // Indented past the mapping's column the line continues the scalar.
+    let doc = Document::from_str("- item: x\n   'uantity\n").unwrap();
+    let item = doc.as_sequence().unwrap().get(0).unwrap();
+    assert_eq!(
+        string(&item.as_mapping().unwrap().get("item").unwrap()),
+        "x 'uantity"
+    );
+}
+
+/// A quote left open after a quoted scalar runs on to the end of the input,
+/// as one opening a scalar does, and is reported the same way. It was kept
+/// in the scalar with no error, which the validator accepted, so an entry
+/// added after it was swallowed by the quote on a re-parse.
+#[test]
+fn unterminated_quote_after_a_quoted_scalar() {
+    for (yaml, error) in [
+        ("f: \"a\" \"\n", "1:8: Unterminated quoted string"),
+        ("f: '\n\n  ' '\n", "3:5: Unterminated quoted string"),
+        ("- 'a' 'b\n", "1:7: Unterminated quoted string"),
+    ] {
+        let parsed = YamlFile::parse(yaml);
+        assert_eq!(parsed.errors(), [error.to_string()], "{yaml:?}");
+    }
+}
+
+/// A `!`, `&` or `*` on a line continuing a plain scalar is content of that
+/// scalar. Lexed as a tag, anchor or alias it took a `:` after it into its
+/// name, so `{ a\n  !b: 1 }` had the key `a !b:` and no value.
+#[test]
+fn property_on_a_continuation_line_leaves_the_colon() {
+    for (yaml, key) in [
+        ("{ a\n  !b: 1 }\n", "a !b"),
+        ("{ a\n  &b: 1 }\n", "a &b"),
+        ("{ a\n  *b: 1 }\n", "a *b"),
+        ("{ f\"foo\"\n  !bar: 1 }\n", "f\"foo\" !bar"),
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let entries: Vec<_> = mapping.iter().collect();
+        assert_eq!(entries.len(), 1, "{yaml:?}");
+        assert_eq!(string(&entries[0].0), key);
+        assert_eq!(string(&entries[0].1), "1");
+    }
+
+    // Setting the value of such a key writes text that reads back the same.
+    let doc = Document::from_str("{ f\"foo\"\n  !bar }\n").unwrap();
+    doc.as_mapping().unwrap().set("f\"foo\" !bar", 1);
+    assert_eq!(doc.to_string(), "{ f\"foo\"\n  !bar: 1 }\n");
+    assert_parser_shaped(&doc);
+}
+
+/// A quote opening a line that continues a plain scalar is content, even
+/// when it closes on that line. Whether it did decided whether it was, so
+/// adding an entry after `"c` in a flow mapping, which put a closing quote
+/// on its line, made the text read back differently.
+#[test]
+fn quote_on_a_flow_continuation_line_is_content() {
+    let doc = Document::from_str("[b\n \"x\", c]\n").unwrap();
+    let items: Vec<_> = doc
+        .as_sequence()
+        .unwrap()
+        .values()
+        .map(|v| string(&v))
+        .collect();
+    assert_eq!(items, ["b \"x\"", "c"]);
+
+    let doc = Document::from_str("{a: b\n \"c\n}\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert_eq!(string(&mapping.get("a").unwrap()), "b \"c");
+    mapping.set("k\r", 1);
+    assert_eq!(doc.to_string(), "{a: b\n \"c, \"k\\r\": 1\n}\n");
+    assert_parser_shaped(&doc);
+}
+
+/// An adjacent `:value` only follows a JSON-like key. After a plain scalar
+/// on the line before, the `:b` continues it, as it does on one line.
+#[test]
+fn flow_colon_after_plain_scalar_on_next_line_is_content() {
+    let doc = Document::from_str("[a\n :b]\n").unwrap();
+    let items: Vec<_> = doc
+        .as_sequence()
+        .unwrap()
+        .values()
+        .map(|v| string(&v))
+        .collect();
+    assert_eq!(items, ["a :b"]);
+
+    // After a quoted key it still separates the value.
+    let doc = Document::from_str("{ \"foo\"\n  :bar }\n").unwrap();
+    assert_eq!(
+        string(&doc.as_mapping().unwrap().get("foo").unwrap()),
+        "bar"
+    );
+}
+
+/// Indicators on a line that continues a plain scalar are content of that
+/// scalar: lexed as indicators they opened a flow collection that took the
+/// `---` after it into the scalar, or a block scalar or quoted scalar that
+/// took in the lines after it.
+#[test]
+fn indicators_on_continuation_lines() {
+    let plain = |s: &str| YamlValue::Scalar(ScalarValue::plain(s));
+    let null = || YamlValue::Scalar(ScalarValue::null());
+    let mapping = |entries: Vec<(&str, YamlValue)>| {
+        YamlValue::from_mapping(
+            entries
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        )
+    };
+    for (yaml, expected) in [
+        // An opening flow indicator.
+        ("f\n[\n---\n", vec![YamlValue::from("f ["), null()]),
+        ("f\n{\n---\n", vec![YamlValue::from("f {"), null()]),
+        (
+            "a: b\n  [x\nc: 1\n",
+            vec![mapping(vec![
+                ("a", YamlValue::from("b [x")),
+                ("c", YamlValue::from(1i64)),
+            ])],
+        ),
+        // A closing one, and an opening one after it.
+        ("m\n]{\n---\n", vec![YamlValue::from("m ]{"), null()]),
+        ("m\n} [\n---\n", vec![YamlValue::from("m } ["), null()]),
+        (
+            "- m\n  }[\n---\n",
+            vec![
+                YamlValue::from_sequence(vec![YamlValue::from("m }[")]),
+                null(),
+            ],
+        ),
+        // A collection closing on the line only reads as one when it is an
+        // implicit key: `[]` followed by more content, or `{` closed by
+        // `]`, is content, and so is the `[` or quote after it.
+        ("2\n[][\n---\n", vec![YamlValue::from("2 []["), null()]),
+        ("$\n{]{\n---\n", vec![YamlValue::from("$ {]{"), null()]),
+        ("e\n[]' # c\n", vec![plain("e []'")]),
+        // A `-` or `?` opening the line, and a `[` after it.
+        ("e\n- [\n---\n", vec![YamlValue::from("e - ["), null()]),
+        ("n\n-\n{\n---\n", vec![YamlValue::from("n - {"), null()]),
+        ("j\n? [\n---\n", vec![YamlValue::from("j ? ["), null()]),
+        // A `|` or `>` is no block scalar header there, so the lines after
+        // it are not a block scalar body.
+        ("1\n|x\n  # t\n", vec![plain("1 |x")]),
+        ("1\n|+\n", vec![plain("1 |+")]),
+        ("a\n>\n  b\n", vec![plain("a > b")]),
+        (
+            "a: b\n  |\n  # c\nd: 1\n",
+            vec![mapping(vec![
+                ("a", plain("b |")),
+                ("d", YamlValue::from(1i64)),
+            ])],
+        ),
+        // A document after `...` starts at the root like any other, so the
+        // quote continues the scalar `z` rather than opening a quoted
+        // scalar that took in the comment.
+        ("...\nz\n\"\n# c\n", vec![plain("z \"")]),
+        // `<<` is a merge key only as a mapping key; anywhere else it is a
+        // plain scalar like any other, which the next line continues and a
+        // comment line ends.
+        ("<<\n", vec![plain("<<")]),
+        ("<<", vec![plain("<<")]),
+        ("- <<\n", vec![YamlValue::Sequence(vec![plain("<<")])]),
+        ("a\n<<\n", vec![plain("a <<")]),
+        ("<<\n  a\n", vec![plain("<< a")]),
+        ("<<\n|\n# c\n", vec![plain("<< |")]),
+        // In a flow plain scalar a quote is content, not the end of a
+        // JSON-like key, so the `:` after it needs a space to be an
+        // indicator.
+        (
+            "[p\":a]\n",
+            vec![YamlValue::from_sequence(vec![plain("p\":a")])],
+        ),
+        (
+            "[p':a]\n",
+            vec![YamlValue::from_sequence(vec![plain("p':a")])],
+        ),
+    ] {
+        assert_eq!(common::document_values(yaml), expected, "{yaml:?}");
+    }
+    // A flow collection opening a line is still an implicit key.
+    let file = YamlFile::from_str("a: b\n[x]: y\n").unwrap();
+    assert_eq!(root_mapping(&file).len(), 2);
+}
+
+/// `:o` starts a plain scalar, which runs on past the space, so the `[` in
+/// it is content and the key is `:o [d`.
+#[test]
+fn plain_scalar_starting_with_colon_spans_words() {
+    assert_eq!(
+        common::document_values(":o [d: f\n"),
+        [YamlValue::from_mapping(
+            [(
+                ":o [d".to_string(),
+                YamlValue::Scalar(ScalarValue::plain("f"))
+            )]
+            .into()
+        )]
+    );
+    let file = YamlFile::from_str(":o p: f\n").unwrap();
+    assert_eq!(
+        debug::tree_to_string(file.syntax()),
+        concat!(
+            "DOCUMENT\n",
+            "  MAPPING\n",
+            "    MAPPING_ENTRY\n",
+            "      KEY\n",
+            "        SCALAR\n",
+            "          STRING: \":o p\"\n",
+            "      COLON: \":\"\n",
+            "      WHITESPACE: \" \"\n",
+            "      VALUE\n",
+            "        SCALAR\n",
+            "          STRING: \"f\"\n",
+            "      NEWLINE: \"\\\\n\"\n",
+        )
+    );
 }

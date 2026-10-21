@@ -7,10 +7,12 @@ use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::path::YamlPath;
 use yaml_edit::{
-    debug, Document, Mapping, MappingBuilder, MappingEntry, Sequence, YamlFile, YamlNode, YamlValue,
+    debug, Document, Mapping, MappingBuilder, MappingEntry, Sequence, SyntaxKind, YamlFile,
+    YamlNode, YamlValue,
 };
 
 mod common;
+use common::{check_renders, count_nodes, count_tokens, parse_clean, render_documents};
 
 /// Parse `yaml` and check it round trips exactly.
 #[track_caller]
@@ -95,10 +97,16 @@ fn comment_forms() {
     for (yaml, key, value) in [
         // The spec allows a comment with nothing after the `#`.
         ("key: value  #  \n", "key", "value"),
+        ("key: value  #   \n", "key", "value"),
         ("key: value\n# Final comment", "key", "value"),
         // A `#` inside a quoted string is not a comment.
         (
             "text: \"This is # not a comment\"\n",
+            "text",
+            "This is # not a comment",
+        ),
+        (
+            "text: \"This is # not a comment\"",
             "text",
             "This is # not a comment",
         ),
@@ -112,7 +120,110 @@ fn comment_forms() {
     ] {
         let file = parse(yaml);
         let mapping = file.document().unwrap().as_mapping().unwrap();
+        assert_eq!(mapping.len(), 1, "{yaml:?}");
         assert_eq!(text(&mapping.get(key).unwrap()), value, "{yaml:?}");
+    }
+}
+
+/// A comment on its own line does not end the block it sits in, whatever
+/// its own column. What ends the block is the next line with content.
+///
+/// `a:\n  - x\n# c\n  - y\n` keeps both entries, as both saphyr and PyYAML
+/// read it. The comment loops compared the comment's own indentation, so a
+/// column-0 comment ended the collection: the sequence case stranded the
+/// later entries in an ERROR node, and the mapping case dropped them with
+/// no ERROR node at all. The dedent check only excused a comment at column
+/// 0, so an indented one ended the mapping just the same.
+#[test]
+fn comment_line_column_does_not_end_a_block() {
+    check_renders(&[
+        ("a:\n  - x\n # c\n  - y\n", "map{a: seq[x, y]}"),
+        ("a:\n  - x\n# c\n  - y\n", "map{a: seq[x, y]}"),
+        ("a:\n  - x\n  # c\n  - y\n", "map{a: seq[x, y]}"),
+        ("a:\n  - x\n# c\n# d\n  - y\n", "map{a: seq[x, y]}"),
+        ("a:\n  - x\n# c\n\n  - y\n", "map{a: seq[x, y]}"),
+        ("a:\n  k: 1\n# c\n  j: 2\n", "map{a: map{k: 1, j: 2}}"),
+        ("a:\n  b: 1\n # c\n  d: 2\n", "map{a: map{b: 1, d: 2}}"),
+        ("k: x\n\n  #\nk2: w\n", "map{k: x, k2: w}"),
+        ("k: x\n  # c\nk2: w\n", "map{k: x, k2: w}"),
+        ("- v\n\n  #\n- x\n", "seq[v, x]"),
+        ("a:\n  b: 1\n\n    # c\nc: 2\n", "map{a: map{b: 1}, c: 2}"),
+        // The block does end when the next content line is dedented, or
+        // when nothing follows the comment at all.
+        ("a:\n  - x\n# c\nb: 1\n", "map{a: seq[x], b: 1}"),
+        (
+            "items:  # a list\n  - one\n  - two  # inline\n",
+            "map{items: seq[one, two]}",
+        ),
+        // Nor does a comment line between a bare `-` and its value say
+        // where the value sits. The value used to be hoisted out to the
+        // top-level mapping.
+        ("-\n# c\n  x: 1\n", "seq[map{x: 1}]"),
+        ("-\n      # c\n  x: 1\n", "seq[map{x: 1}]"),
+        ("- # c\n# d\n  x: 1\n", "seq[map{x: 1}]"),
+        ("-\n   # c\n  - x\n", "seq[seq[x]]"),
+        (
+            "q:\n    - -\n      # c\n          x: 1\n",
+            "map{q: seq[seq[map{x: 1}]]}",
+        ),
+    ]);
+}
+
+/// Each comment of a run used to rescan the rest of it, so this took
+/// quadratic time and ran for minutes.
+#[test]
+fn long_comment_run_between_entries() {
+    for comment in ["  # c\n", "# c\n"] {
+        let yaml = format!("a:\n  b: 1\n{}  d: 2\n", comment.repeat(50_000));
+        let file = YamlFile::from_str(&yaml).unwrap();
+        let a = mapping_at(&file, "a");
+        let keys: Vec<String> = a.keys().map(|k| text(&k)).collect();
+        assert_eq!(keys, ["b", "d"]);
+    }
+}
+
+/// A comment is not a value, so a sequence entry carrying only one is an
+/// implicit null, unless the entry's value follows on a later line.
+///
+/// The YAML test suite's W42U has `- # Empty` as a null entry; parsing the
+/// comment as a value left an empty SEQUENCE behind. Its RZP5 has
+/// `- #lala\n  seq2`, where the value really is on the next line.
+#[test]
+fn comment_only_sequence_entry_is_null() {
+    for (yaml, expected) in [
+        ("- # c\n- a\n", "seq[~, a]"),
+        ("- # c\n- |\n b\n", "seq[~, b\n]"),
+        ("- # c\n  v\n", "seq[v]"),
+        ("- a # c\n- b\n", "seq[a, b]"),
+    ] {
+        assert_eq!(render_documents(yaml), [expected], "{yaml:?}");
+        let file = parse_clean(yaml);
+        assert_eq!(count_nodes(&file, SyntaxKind::SEQUENCE), 1, "{yaml:?}");
+    }
+}
+
+/// A `#` is a comment only when whitespace precedes it, wherever it sits.
+///
+/// On a plain scalar's continuation line the previous token is the INDENT,
+/// so requiring the previous *token* to be scalar content made `#` a
+/// comment there: the test suite's FBC9 keeps `!"#$%` as content on both
+/// its lines. Glued to a flow delimiter (`c,#x`) it is still the 6.6
+/// violation CVW2 expects, and a quote ends the scalar.
+#[test]
+fn hash_glued_to_content_on_a_continuation_line() {
+    for (yaml, comments) in [
+        ("safe: a!\"#$%\n     !\"#$%\n", 0),
+        ("k: v# c\n", 0),
+        ("k: \"v\"# c\n", 1),
+        ("[ a, b,#x\n]\n", 1),
+        ("k: v # c\n", 1),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(
+            count_tokens(&file, SyntaxKind::COMMENT),
+            comments,
+            "{yaml:?}"
+        );
     }
 }
 

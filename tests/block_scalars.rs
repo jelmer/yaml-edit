@@ -18,12 +18,12 @@
 //! entry goes after them.
 
 mod common;
-use common::{assert_file_cst_ok, assert_file_edited};
+use common::{assert_file_cst_ok, assert_file_edited, parse_clean};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::path::YamlPath;
 use yaml_edit::validator::Validator;
-use yaml_edit::{debug, ScalarValue, Sequence, YamlFile, YamlNode};
+use yaml_edit::{debug, Document, ScalarValue, Sequence, SyntaxKind, YamlFile, YamlNode};
 
 /// Every scalar under `node`, with its path of mapping keys and sequence
 /// indexes joined by `.`.
@@ -1506,4 +1506,417 @@ fn set_value_needing_indentation_indicator_or_quotes() {
     let output = file.to_string();
     assert_eq!(output, "o:\n  k: |2-\n      x\n      y\n");
     assert_leaves(&output, &[("o.k", "  x\n  y")]);
+}
+
+/// Check [`assert_leaves`], and that `yaml` parses with a valid CST and no
+/// ERROR node.
+#[track_caller]
+fn assert_clean_leaves(yaml: &str, expected: &[(&str, &str)]) {
+    parse_clean(yaml);
+    assert_leaves(yaml, expected);
+}
+
+/// Where a block scalar's body starts and ends. Each of these used to
+/// strand part of the input in an ERROR node, or swallow a following entry,
+/// while from_str still reported success.
+#[test]
+fn block_scalar_body_bounds() {
+    let cases: &[(&str, Leaves)] = &[
+        // A block scalar that is the whole document may hold body lines at
+        // column 0, and takes its base indent from the first of them, as
+        // saphyr reads it. The base was only recorded from an INDENT token,
+        // so a body starting at column 0 left it unset; where a later line
+        // was indented it set the base instead.
+        ("|-\nx\ny\n", &[("", "x\ny")]),
+        ("|-\n x\n y\n", &[("", "x\ny")]),
+        ("|-\n  x\n  y\n", &[("", "x\ny")]),
+        (
+            "|-\n?  >\n ems+\nco+ors:\n  - &.\n",
+            &[("", "?  >\n ems+\nco+ors:\n  - &.")],
+        ),
+        // Nested under a key or in a sequence entry, the body still has to
+        // be indented and a dedented sibling survives.
+        ("a: |\n  x\nb: 1\n", &[("a", "x\n"), ("b", "1")]),
+        ("a: |-\n  x\n  y\nb: 1\n", &[("a", "x\ny"), ("b", "1")]),
+        ("- |-\n  x\n- y\n", &[("0", "x"), ("1", "y")]),
+        ("k: |\n  a\nj: 1\n", &[("k", "a\n"), ("j", "1")]),
+        // With no indented body the scalar is empty, and the next line at
+        // the key's column is a sibling, as both saphyr and PyYAML read it.
+        // The header consumes its own line break, so the content loop
+        // started at a line start while believing it was mid-line and the
+        // entry after the scalar was swallowed.
+        ("empty: |\nnext: 1\n", &[("empty", ""), ("next", "1")]),
+        ("empty: >\nnext: 1\n", &[("empty", ""), ("next", "1")]),
+        ("a: |\nb: |\nc: 1\n", &[("a", ""), ("b", ""), ("c", "1")]),
+        ("- |\n- x\n", &[("0", ""), ("1", "x")]),
+        ("literal: |\n", &[("literal", "")]),
+        ("folded: >\n", &[("folded", "")]),
+        ("strip: |-\n", &[("strip", "")]),
+        ("keep: |+\n", &[("keep", "")]),
+        // A header on its own line is not the document's own node, so its
+        // body is not read from column 0, which swallowed `z: 1`.
+        ("k:\n  |\nz: 1\n", &[("k", ""), ("z", "1")]),
+        // An indented `- x` is still body text.
+        ("k: |\n  - x\n  - y\n", &[("k", "- x\n- y\n")]),
+        // A whitespace-only line belongs to the body, however short it is.
+        // The dedent check compared its INDENT against the body's base, so
+        // the scalar ended there; this accounted for five of the YAML test
+        // suite's valid documents (93WF, K527, MJS9, H2RW, R4YG).
+        ("k: |\n  a\n \n  b\n", &[("k", "a\n\nb\n")]),
+        ("k: |\n  a\n\n  b\n", &[("k", "a\n\nb\n")]),
+        (
+            "k: >-\n  trimmed\n  \n \n\n  as\n  space\n",
+            &[("k", "trimmed\n\n\nas space")],
+        ),
+        // Nor does it set the base indent: it may be indented further than
+        // the body that follows it (suite case R4YG).
+        ("- >\n \t\n detected\n", &[("0", "\t\ndetected\n")]),
+        // An explicit indentation indicator states the body's column
+        // outright, so the first body line does not get to set it (suite
+        // case F6MC).
+        ("a: >2\n   more\n  regular\n", &[("a", " more\nregular\n")]),
+        (
+            "b: >2\n\n\n   more\n  regular\n",
+            &[("b", "\n\n more\nregular\n")],
+        ),
+        (
+            "a: >2\n   more\n  regular\nb: 1\n",
+            &[("a", " more\nregular\n"), ("b", "1")],
+        ),
+        // A flow collection after the scalar has ended is still one.
+        (
+            "a: |\n  x\nb: [1, 2]\nc: {d: 1}\n",
+            &[("a", "x\n"), ("b.0", "1"), ("b.1", "2"), ("c.d", "1")],
+        ),
+        (
+            "flow: [a, b, c]\nblock: |\n  Content here\n",
+            &[
+                ("flow.0", "a"),
+                ("flow.1", "b"),
+                ("flow.2", "c"),
+                ("block", "Content here\n"),
+            ],
+        ),
+        ("k: |\n  x\nk2: >\n  y\n", &[("k", "x\n"), ("k2", "y\n")]),
+        // A comment line less indented than the body ends it, even at
+        // column 0 (the spec's l-trail-comments, as in the YAML test
+        // suite's 7T8X).
+        ("k: |\n  a\n# c\nz: 1\n", &[("k", "a\n"), ("z", "1")]),
+        (
+            "a: >\n line\n# Comment\nb: 1\n",
+            &[("a", "line\n"), ("b", "1")],
+        ),
+        (
+            "a: |\n  line\n\n# Comment\nb: 1\n",
+            &[("a", "line\n"), ("b", "1")],
+        ),
+    ];
+    for (yaml, expected) in cases {
+        assert_clean_leaves(yaml, expected);
+    }
+
+    // A leading blank line with more spaces than the first content line is
+    // an error the validator reports; the parser keeps the extra spaces.
+    let yaml = "- >\n   \n a\n";
+    assert_clean_leaves(yaml, &[("0", "  \na\n")]);
+    common::parse_with_violations(
+        yaml,
+        &[(
+            "Block scalar content under-indented (1 spaces) relative to preceding blank line \
+             (3 spaces)",
+            "3:1",
+        )],
+    );
+}
+
+/// A header's indentation and chomping indicators survive however they
+/// lex, and a kept block keeps its trailing newlines.
+#[test]
+fn block_scalar_header_forms() {
+    let cases: &[(&str, Leaves)] = &[
+        ("k: |2+\n  x\n", &[("k", "x\n")]),
+        ("k: |+2\n  x\n", &[("k", "x\n")]),
+        ("k: |-2\n  x\n", &[("k", "x")]),
+        ("k: |10\n          Deep\n", &[("k", "         Deep\n")]),
+        ("k: |-\n  x\n", &[("k", "x")]),
+        ("k: |2-\n  x\n", &[("k", "x")]),
+        ("k: >+\n  x\n\n", &[("k", "x\n\n")]),
+        ("k: |+\n  a\n\n", &[("k", "a\n\n")]),
+        ("k: >+\n  a\n\n", &[("k", "a\n\n")]),
+        ("k: |2+\n  a\n\n", &[("k", "a\n\n")]),
+        // A keep-chomped block whose body is nothing but blank lines has no
+        // content line to terminate, so it keeps only the blanks, as saphyr
+        // and PyYAML both read it. The decoder always added one newline for
+        // a content line, so it came back one newline too long.
+        ("k: |+\n\n\n", &[("k", "\n\n")]),
+        ("k: |+\n\n\n\n", &[("k", "\n\n\n")]),
+        ("k: |+\n  x\n\n\n", &[("k", "x\n\n\n")]),
+        ("k: |+\n  x\n", &[("k", "x\n")]),
+        ("k: |\n  x\n", &[("k", "x\n")]),
+    ];
+    for (yaml, expected) in cases {
+        assert_clean_leaves(yaml, expected);
+    }
+}
+
+/// A block-scalar header's indicators are ASCII, so it must be matched by
+/// character rather than by byte.
+///
+/// `">\u{a0}"` panicked: the no-break space is two bytes, so the two-byte
+/// arm split it at byte 1, inside the character. from_str is safe to call on
+/// untrusted input, so it has to report rather than abort.
+#[test]
+fn block_scalar_header_does_not_panic_on_a_multibyte_char() {
+    for yaml in [
+        ">\u{a0}",
+        "|\u{a0}",
+        "k: >\u{a0}\n",
+        "|\u{2028}",
+        ">\u{3000}",
+    ] {
+        // Parsing must not panic; either outcome is acceptable.
+        let _ = YamlFile::from_str(yaml);
+    }
+}
+
+/// Indicators, quotes and line breaks in a block scalar's body are literal
+/// text.
+#[test]
+fn block_scalar_body_is_literal() {
+    let cases: &[(&str, Leaves)] = &[
+        // An unmatched `{` raised the lexer's flow depth for the rest of
+        // the file, so every later `,` lexed as a delimiter and both
+        // following entries were lost to an ERROR node. saphyr keeps all
+        // three.
+        (
+            "a: |\n {\nb,c: 1\nd: 2\n",
+            &[("a", "{\n"), ("b,c", "1"), ("d", "2")],
+        ),
+        ("a: |\n [\nb,c: 1\n", &[("a", "[\n"), ("b,c", "1")]),
+        ("a: >\n {\nb,c: 1\n", &[("a", "{\n"), ("b,c", "1")]),
+        ("a: |\n {\n\nb,c: 1\n", &[("a", "{\n"), ("b,c", "1")]),
+        // A quote opening a body line does not start a quoted scalar: an
+        // unbalanced one ran across line breaks to the next matching quote,
+        // swallowing every following key.
+        (
+            "a: |\n  'tis the season\nb: c's\n",
+            &[("a", "'tis the season\n"), ("b", "c's")],
+        ),
+        ("a: |\n  \"x\nb: 1\n", &[("a", "\"x\n"), ("b", "1")]),
+        (
+            "a: |\n  \"x\n  y\nb: [1, 2]\n",
+            &[("a", "\"x\ny\n"), ("b.0", "1"), ("b.1", "2")],
+        ),
+        ("- >\n  'x\n- y\n", &[("0", "'x\n"), ("1", "y")]),
+    ];
+    for (yaml, expected) in cases {
+        assert_clean_leaves(yaml, expected);
+    }
+
+    // Later documents included.
+    let yaml = "--- |\n\"open\n---\nx\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let docs: Vec<String> = file
+        .documents()
+        .map(|d| d.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(docs, vec!["\"open\n", "x"]);
+
+    // Every line of the body at the body's column is body, not just the
+    // first: a `{` on the second line must not open a flow collection
+    // whose depth then leaks into the rest of the file.
+    let tokens = yaml_edit::lex("a: |\n  x\n  {y\nb: c,d\n");
+    assert!(
+        !tokens
+            .iter()
+            .any(|(kind, _)| matches!(kind, SyntaxKind::LEFT_BRACE | SyntaxKind::COMMA)),
+        "{tokens:?}"
+    );
+    let tokens = yaml_edit::lex("a: |\n  x\n  # y\n");
+    assert!(
+        !tokens.iter().any(|(kind, _)| *kind == SyntaxKind::COMMENT),
+        "{tokens:?}"
+    );
+}
+
+/// A `#` inside a block scalar's body is literal text; one on a line that
+/// has left the body is a comment again.
+///
+/// The body's own column, set by its first content line, is what decides:
+/// 4QFQ's `- >\n \n  \n  # detected\n` holds the content `# detected` at the
+/// body's indent, while T26H's `# Comment` sits left of it and really is a
+/// comment. Measuring against the header's indent alone could not tell them
+/// apart.
+#[test]
+fn hash_inside_a_block_scalar_body_is_content() {
+    for (yaml, comments) in [
+        ("- >\n \n  \n  # detected\n", 0),
+        ("a: |\n  # in body\n", 0),
+        ("--- |\n  text\n\n # Comment\n", 1),
+        ("k: v # real\n", 1),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(
+            common::count_tokens(&file, SyntaxKind::COMMENT),
+            comments,
+            "{yaml:?}"
+        );
+    }
+}
+
+/// A comment line after a block scalar is a line of the mapping, wherever
+/// it starts: at column 0 it is not a trailing comment of the value.
+#[test]
+fn block_scalar_followed_by_comment_line_at_column_zero() {
+    for (yaml, entry) in [
+        ("k: |\n  a\n# c\nz: 1\n", "k: |\n  a\n"),
+        ("k: |\n  a\n\n# c\nz: 1\n", "k: |\n  a\n\n"),
+        ("k: >  # h\n  a\n# c\n", "k: >  # h\n  a\n"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let first = mapping.entries().next().unwrap();
+        assert_eq!(first.syntax().to_string(), entry, "{yaml:?}");
+        let comments: Vec<_> = mapping
+            .syntax()
+            .children_with_tokens()
+            .filter(|c| c.kind() == SyntaxKind::COMMENT)
+            .map(|c| c.to_string())
+            .collect();
+        assert_eq!(comments, vec!["# c".to_string()], "{yaml:?}");
+    }
+}
+
+/// A block scalar's body has to be indented past the mapping the scalar is
+/// a value of, not just past the header's line. In `- a: |+\n\n  b: !t ''\n`
+/// the lexer took the `b` line for body text and read `!t ''` as literal
+/// content, while the parser made it the mapping's next entry.
+#[test]
+fn block_scalar_body_past_a_compact_mapping() {
+    for (yaml, expected) in [
+        ("- a: |+\n\n  b: !t ''\n", "!t ''"),
+        ("- a: |\n  b: [1]\n", "[1]"),
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        let item = doc.as_sequence().unwrap().get(0).unwrap();
+        let b = item.as_mapping().unwrap().get("b").unwrap();
+        assert_eq!(b.to_string(), expected, "{yaml:?}");
+        assert!(b.as_scalar().is_none(), "{yaml:?}");
+    }
+}
+
+/// A document's root block scalar may put its body at column 0, since the
+/// root sits at indentation -1. Such a body is literal text up to the next
+/// document marker (test suite FP8R).
+///
+/// The lexer took the column-0 lines as having left the body, so
+/// `%!PS-Adobe-2.0` became a DIRECTIVE (making the validator reject the
+/// valid suite case W4TN) and `{` opened a flow collection that swallowed the
+/// following document.
+#[test]
+fn root_block_scalar_body_at_column_zero() {
+    for (yaml, values) in [
+        ("--- |\n%!PS-Adobe-2.0\n", vec!["%!PS-Adobe-2.0\n"]),
+        ("|\n%a\n%b\n", vec!["%a\n%b\n"]),
+        ("--- |\n# x\n", vec!["# x\n"]),
+        ("--- !!str |\n%a\n", vec!["%a\n"]),
+        ("--- |\n{x\n--- [y]\n", vec!["{x\n"]),
+        (
+            "--- |\n%!PS-Adobe-2.0\n...\n%YAML 1.2\n---\n# Empty\n...\n",
+            vec!["%!PS-Adobe-2.0\n"],
+        ),
+        ("--- >\nline1\nline2\n", vec!["line1 line2\n"]),
+    ] {
+        assert!(
+            !yaml_edit::lex(yaml)
+                .iter()
+                .skip(1)
+                .any(|(kind, text)| *kind == SyntaxKind::DIRECTIVE && *text != "%YAML 1.2"),
+            "{yaml:?}: {:?}",
+            yaml_edit::lex(yaml)
+        );
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let scalars: Vec<String> = file
+            .documents()
+            .filter_map(|d| d.as_scalar().map(|s| s.as_string()))
+            .collect();
+        assert_eq!(scalars, values, "{yaml:?}");
+        assert_eq!(common::violations(&file), vec![], "{yaml:?}");
+    }
+
+    let yaml = "--- |\n{x\n---\na: b,c\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let docs: Vec<_> = file.documents().collect();
+    assert_eq!(docs.len(), 2);
+    assert_eq!(docs[0].as_scalar().unwrap().as_string(), "{x\n");
+    assert_eq!(
+        docs[1]
+            .as_mapping()
+            .unwrap()
+            .get("a")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .as_string(),
+        "b,c"
+    );
+
+    // The document's mapping is not reached through it.
+    let doc = Document::from_str("--- >\nline1\nline2\n").unwrap();
+    assert!(doc.as_mapping().is_none());
+}
+
+/// A block scalar's body ends at the first line that dedents out of it,
+/// whatever the line ending. With CRLF the lexer kept treating later lines
+/// as body text, so a flow collection after a block scalar was read as
+/// literal content and never closed.
+///
+/// The second input is the YAML test suite's 6HB6. The suite runner only
+/// sees it if `test-data/` has been cloned, and reads it however git
+/// checked it out, so on Linux it never exercises the CRLF path that broke
+/// here.
+#[test]
+fn block_scalar_ends_at_a_dedent_with_any_line_ending() {
+    let suite_6hb6 = concat!(
+        "  # Leading comment line spaces are\n",
+        "   # neither content nor indentation.\n",
+        "    \n",
+        "Not indented:\n",
+        " By one space: |\n",
+        "    By four\n",
+        "      spaces\n",
+        " Flow style: [    # Leading spaces\n",
+        "   By two,        # in flow style\n",
+        "  Also by two,    # are neither\n",
+        "  \tStill by two   # content nor\n",
+        "    ]             # indentation.\n",
+    );
+    let cases: &[(&str, Leaves)] = &[
+        (
+            "Not indented:\r\n By one space: |\r\n    By four\r\n Flow style: [\r\n   a,\r\n  ]\r\n",
+            &[
+                ("Not indented.By one space", "By four\n"),
+                ("Not indented.Flow style.0", "a"),
+            ],
+        ),
+        (
+            suite_6hb6,
+            &[
+                ("Not indented.By one space", "By four\n  spaces\n"),
+                ("Not indented.Flow style.0", "By two"),
+                ("Not indented.Flow style.1", "Also by two"),
+                ("Not indented.Flow style.2", "Still by two"),
+            ],
+        ),
+    ];
+    for (yaml, expected) in cases {
+        let lf = yaml.replace("\r\n", "\n");
+        for source in [lf.clone(), lf.replace('\n', "\r\n")] {
+            assert_clean_leaves(&source, expected);
+        }
+    }
 }

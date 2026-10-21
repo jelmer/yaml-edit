@@ -9,7 +9,7 @@
 //! invalid input.
 
 mod common;
-use common::assert_file_cst_ok;
+use common::{assert_file_cst_ok, document_values, parse_clean, render};
 use proptest::prelude::*;
 use rowan::ast::AstNode;
 use std::str::FromStr;
@@ -18,53 +18,10 @@ use yaml_edit::custom_tags::{
     JsonHandler, TimestampHandler,
 };
 use yaml_edit::validator::Validator;
-use yaml_edit::{debug, ScalarValue, SyntaxKind, YamlFile, YamlNode, YamlValue};
-
-/// A node as compact text: flow collections as `[..]` and `{..}`, block
-/// ones as `seq[..]` and `map{..}`, a null as `~` and a tagged node with
-/// its tag in front.
-fn render(node: &YamlNode) -> String {
-    match node {
-        YamlNode::Scalar(s) if s.is_null() => "~".to_string(),
-        YamlNode::Scalar(s) => s.as_string(),
-        YamlNode::Sequence(s) => {
-            let items: Vec<_> = s.values().map(|v| render(&v)).collect();
-            assert_eq!(items.len(), s.len());
-            let open = if s.is_flow_style() { "[" } else { "seq[" };
-            format!("{open}{}]", items.join(", "))
-        }
-        YamlNode::Mapping(m) => {
-            let entries: Vec<_> = m
-                .iter()
-                .map(|(k, v)| format!("{}: {}", render(&k), render(&v)))
-                .collect();
-            assert_eq!(entries.len(), m.len());
-            let open = if m.is_flow_style() { "{" } else { "map{" };
-            format!("{open}{}}}", entries.join(", "))
-        }
-        YamlNode::TaggedNode(t) => {
-            let inner = if let Some(m) = t.as_mapping() {
-                render(&YamlNode::Mapping(m))
-            } else if let Some(s) = t.as_sequence() {
-                render(&YamlNode::Sequence(s))
-            } else {
-                render(&YamlNode::Scalar(t.value().unwrap()))
-            };
-            format!("{} {inner}", t.tag().unwrap())
-        }
-        YamlNode::Alias(a) => format!("*{}", a.name()),
-    }
-}
-
-/// Parse `yaml`, check it round-trips with no ERROR node, and return it.
-#[track_caller]
-fn parse_clean(yaml: &str) -> YamlFile {
-    let file = YamlFile::from_str(yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
-    assert_eq!(file.to_string(), yaml);
-    let tree = debug::tree_to_string(file.syntax());
-    assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
-    file
-}
+use yaml_edit::{
+    debug, Document, Entry, Mapping, OccupiedEntry, ScalarValue, SyntaxKind, YamlFile, YamlNode,
+    YamlValue,
+};
 
 /// Parse `yaml` as [`parse_clean`] does and render its root node.
 #[track_caller]
@@ -991,4 +948,547 @@ fn block_key_tag_is_a_tagged_node() {
         .map(|k| format!("{:?}", k.kind()))
         .collect();
     assert_eq!(keys, ["Tagged(\"!t\")"]);
+}
+
+/// A tag or anchor with no node after it annotates an implicit null, and
+/// does not adopt a dedented entry after it: the anchor after `!e` used to
+/// adopt `f: 1` as its value.
+#[test]
+fn annotation_without_a_node() {
+    assert_renders(&[
+        (
+            "\n- a: 1\n  b:\n    c:\n      d:\n      - !e\n  f:\n  - !g\n    h: 1\n  i:\n  - !j { }\n    ",
+            "seq[map{a: 1, b: map{c: map{d: seq[!e ~]}}, f: seq[!g map{h: 1}], i: seq[!j {}]}]",
+        ),
+        ("- a:\n  - !e &x\n  f: 1\n", "seq[map{a: seq[!e ~], f: 1}]"),
+        ("- a:\n  - &x\n  f: 1\n", "seq[map{a: seq[~], f: 1}]"),
+    ]);
+}
+
+/// An annotated key after a nested value is the next entry. It used to be
+/// read as a continuation of the value, giving the single value `b &x c: d`.
+#[test]
+fn annotated_key_after_nested_value() {
+    assert_renders(&[
+        ("k:\n  a: b\n  &x c: d\n", "map{k: map{a: b, c: d}}"),
+        ("- a: b\n  &x c: d\n", "seq[map{a: b, c: d}]"),
+        ("k:\n  a: \"b\"\n  !t c: d\n", "map{k: map{a: b, !t c: d}}"),
+    ]);
+}
+
+/// An annotation in front of the document root does not change that the
+/// root is a plain scalar, so its continuation lines need clear no column.
+///
+/// `" !x t\no\n"` is the tagged scalar `t o`, as saphyr reads it, exactly as
+/// the untagged `" t\no\n"` is `t o`. The root-scalar check only looked at
+/// the first token, which for an annotated root is the TAG or ANCHOR, so the
+/// floor stayed at the annotation's own column and the continuation was
+/// swept into an ERROR node while from_str still reported success. An
+/// annotation on its own line opens a block node instead, so the relaxed
+/// floor must not reach it.
+#[test]
+fn annotated_root_scalar_folds_a_less_indented_continuation() {
+    assert_renders(&[
+        (" !x t\no\n", "!x t o"),
+        (" ! t\no\n", "! t o"),
+        (" &a t\no\n", "t o"),
+        ("  !x t\n b\n", "!x t b"),
+        (" !x &a t\no\n", "!x t o"),
+        (" &a !x t\no\n", "!x t o"),
+        ("!x\n  a: 1\n", "!x map{a: 1}"),
+    ]);
+}
+
+/// A tag says what the node beneath it means, so it does not stop the
+/// document's root being reachable as that kind.
+///
+/// `"!!map\n a: 1\n"` is a mapping, as saphyr reads it, but as_mapping,
+/// as_sequence and as_scalar all answered None for an annotated root, which
+/// left the whole document unreachable through Document. The tag itself is
+/// still reachable, and an untagged root is unaffected.
+#[test]
+fn annotated_document_root_is_reachable() {
+    let file = YamlFile::from_str("!!map\n a: 1\n").unwrap();
+    let doc = file.document().unwrap();
+    assert_eq!(doc.as_mapping().unwrap().len(), 1);
+    assert_eq!(doc.as_tagged().unwrap().tag().as_deref(), Some("!!map"));
+
+    let file = YamlFile::from_str("!!seq\n- x\n- y\n").unwrap();
+    let doc = file.document().unwrap();
+    assert_eq!(doc.as_sequence().unwrap().len(), 2);
+
+    let file = YamlFile::from_str("!!str v\n").unwrap();
+    let doc = file.document().unwrap();
+    assert_eq!(doc.as_scalar().unwrap().as_string(), "v");
+
+    let file = YamlFile::from_str("a: 1\n").unwrap();
+    let doc = file.document().unwrap();
+    assert!(doc.as_tagged().is_none());
+    assert_eq!(doc.as_mapping().unwrap().len(), 1);
+}
+
+fn occupied<'a>(mapping: &'a Mapping, key: &str) -> OccupiedEntry<'a> {
+    match mapping.entry(key) {
+        Entry::Occupied(o) => o,
+        Entry::Vacant(_) => panic!("{key} missing"),
+    }
+}
+
+/// A tag does not change what kind of node it annotates, so the typed
+/// getters see through it the way Document::as_mapping and get_string do.
+#[test]
+fn typed_getters_see_through_tags() {
+    let yaml = "a: !!map\n  x: 1\nb: &b !!map\n  y: 2\nc: !custom\n  z: 3\ns: !!seq\n  - 1\nt: !custom [1, 2]\n";
+    let doc = YamlFile::from_str(yaml).unwrap().document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    for (key, inner) in [("a", "x"), ("b", "y"), ("c", "z")] {
+        let nested = mapping.get_mapping(key).unwrap();
+        assert!(nested.contains_key(inner), "{key}");
+        assert!(doc.get_mapping(key).unwrap().contains_key(inner), "{key}");
+        assert_eq!(occupied(&mapping, key).get_mapping().unwrap().len(), 1);
+        assert!(mapping.modify_mapping(key, |m| assert!(m.contains_key(inner))));
+    }
+    assert_eq!(mapping.get_sequence("s").unwrap().len(), 1);
+    assert_eq!(doc.get_sequence("t").unwrap().len(), 2);
+    assert_eq!(occupied(&mapping, "t").get_sequence().unwrap().len(), 2);
+
+    // The tag stays put when editing through the getter.
+    mapping.get_mapping("c").unwrap().set("w", 4);
+    common::assert_cst_ok(&doc);
+    assert_eq!(
+        doc.to_string(),
+        "a: !!map\n  x: 1\nb: &b !!map\n  y: 2\nc: !custom\n  z: 3\n  w: 4\ns: !!seq\n  - 1\nt: !custom [1, 2]\n"
+    );
+
+    // A tagged node of another kind is still not a mapping.
+    assert!(mapping.get_mapping("s").is_none());
+    assert!(mapping.get_sequence("a").is_none());
+}
+
+/// A named tag handle and its suffix are one tag, and `#` is a URI
+/// character, so it belongs to the tag.
+#[test]
+fn tag_spellings() {
+    for (yaml, tag, value) in [
+        ("%TAG !e! tag:x,2000:\n---\n!e!foo bar\n", "!e!foo", "bar"),
+        ("!foo#bar x\n", "!foo#bar", "x"),
+    ] {
+        let file = parse_clean(yaml);
+        let doc = file.documents().next().unwrap();
+        let tagged = doc.as_tagged().unwrap();
+        assert_eq!(tagged.tag().unwrap(), tag, "{yaml:?}");
+        assert_eq!(tagged.value().unwrap().as_string(), value, "{yaml:?}");
+    }
+}
+
+/// A tagged value may be a block scalar, whose raw text keeps its header
+/// and indentation.
+#[test]
+fn tagged_block_scalars() {
+    for (yaml, key, tag, raw) in [
+        (
+            "\nmessage: !custom |\n  This is a multi-line\n  custom tagged message\n  with preserved formatting\n",
+            "message",
+            "!custom",
+            "|\n  This is a multi-line\n  custom tagged message\n  with preserved formatting\n",
+        ),
+        (
+            "\ndescription: !note >\n  This is a long\n  description that\n  should be folded\n  into a single line.\n",
+            "description",
+            "!note",
+            ">\n  This is a long\n  description that\n  should be folded\n  into a single line.\n",
+        ),
+    ] {
+        let file = parse_clean(yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let tagged = mapping.get(key).unwrap();
+        let tagged = tagged.as_tagged().unwrap();
+        assert_eq!(tagged.tag().as_deref(), Some(tag));
+        assert_eq!(tagged.value().unwrap().value(), raw);
+    }
+}
+
+#[test]
+fn binary_data_in_a_block_scalar() {
+    for (yaml, key, expected) in [
+        (
+            r#"
+data: !!binary |
+  R0lGODlhDAAMAIQAAP//9/X17unp5WZmZgAAAOfn515eXvPz7Y6OjuDg4J+fn5
+  OTk6enp56enmlpaWNjY6Ojo4SEhP/++f/++f/++f/++f/++f/++f/++f/++f/+
+  +f/++f/++f/++f/++f/++SH+Dk1hZGUgd2l0aCBHSU1QACwAAAAADAAMAAAFLC
+  AgjoEwnuNAFOhpEMTRiggcz4BNJHrv/zCFcLiwMWYNG84BwwEeECcgggoBADs=
+"#,
+            "data",
+            "|R0lGODlhDAAMAIQAAP//9/X17unp5WZmZgAAAOfn515eXvPz7Y6OjuDg4J+fn5OTk6enp56enmlpaWNjY6Ojo4SEhP/++f/++f/++f/++f/++f/++f/++f/++f/++f/++f/++f/++f/++f/++SH+Dk1hZGUgd2l0aCBHSU1QACwAAAAADAAMAAAFLCAgjoEwnuNAFOhpEMTRiggcz4BNJHrv/zCFcLiwMWYNG84BwwEeECcgggoBADs=",
+        ),
+        (
+            r#"image: !!binary |
+  iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhf
+  DwAChwGA60e6kgAAAABJRU5ErkJggg==
+"#,
+            "image",
+            "|iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+        ),
+    ] {
+        let file = parse_clean(yaml);
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let data = mapping.get(key).unwrap();
+        let tagged = data.as_tagged().unwrap();
+        assert_eq!(tagged.tag(), Some("!!binary".to_string()));
+        let content = tagged.value().unwrap().value();
+        let normalized: String = content.chars().filter(|c| !c.is_whitespace()).collect();
+        assert_eq!(normalized, expected);
+    }
+}
+
+/// A plain scalar tagged `!!omap`, `!!pairs` or `!!set` parses as a tagged
+/// scalar, as with any other tag; the validator reports that it is not the
+/// collection the tag names. A block mapping cannot start on its tag's line.
+///
+/// The collection parser found nothing to take, leaving an empty node, and
+/// the scalar was dropped into an ERROR node with no error reported at all.
+/// A scalar on the tag's own line was then made a parse error, while one on
+/// the next line (`!!omap\n  3\n`) parsed without one.
+#[test]
+fn collection_tag_on_a_scalar() {
+    for (tag, yaml, message, location) in [
+        (
+            "!!omap",
+            "!!omap 3",
+            "!!omap content is not a sequence",
+            "1:1",
+        ),
+        (
+            "!!pairs",
+            "!!pairs a",
+            "!!pairs content is not a sequence",
+            "1:1",
+        ),
+        ("!!set", "!!set x", "!!set content is not a mapping", "1:1"),
+        (
+            "!!omap",
+            "!!omap\n  3\n",
+            "!!omap content is not a sequence",
+            "1:1",
+        ),
+        (
+            "!!set",
+            "!!set ? a\n",
+            "A block mapping cannot start on the line of its tag or anchor",
+            "1:7",
+        ),
+    ] {
+        let file = common::parse_with_violations(yaml, &[(message, location)]);
+        let plain = YamlFile::from_str(&yaml.replace(tag, "!x")).unwrap();
+        assert_eq!(
+            debug::tree_to_string(file.syntax()).replace(tag, "!x"),
+            debug::tree_to_string(plain.syntax()),
+            "{yaml:?}"
+        );
+    }
+}
+
+/// The collection forms of those tags are unaffected, nested too. A `?`
+/// line in a `!!set` nested inside another mapping was read as a
+/// continuation of the previous key's plain scalar, giving the single key
+/// `a ? b`: the set's mapping is parsed by parse_mapping_with_base_indent,
+/// whose `?` branch kept the enclosing value's continuation context.
+#[test]
+fn collection_tags() {
+    assert_renders(&[
+        ("!!omap\n- a: 1\n", "!!omap seq[map{a: 1}]"),
+        ("!!pairs\n- a: 1\n", "!!pairs seq[map{a: 1}]"),
+        ("!!set\n? a\n", "!!set map{a: ~}"),
+        ("!!omap []\n", "!!omap []"),
+        (
+            "outer:\n  k: !!set\n    ? a\n    ? b\n",
+            "map{outer: map{k: !!set map{a: ~, b: ~}}}",
+        ),
+        (
+            "outer:\n  k: !!set\n    ? a\n    : 1\n    ? b\n    : 2\n",
+            "map{outer: map{k: !!set map{a: 1, b: 2}}}",
+        ),
+        (
+            "outer:\n  k: !!set\n    ? a\n    ? b\n  z: 1\n",
+            "map{outer: map{k: !!set map{a: ~, b: ~}, z: 1}}",
+        ),
+        (
+            "outer:\n  k: !!set\n    ? !t\n    : v\n    ? b\n",
+            "map{outer: map{k: !!set map{!t ~: v, b: ~}}}",
+        ),
+    ]);
+}
+
+/// `!!set`, `!!omap` and `!!pairs` on a collection of the other shape
+/// parse like any other tag; whether the content suits the tag is for the
+/// validator to say.
+///
+/// The parser chose the collection shape from the tag, so `!!set [a, b]`
+/// went to the block mapping parser, which took nothing and left the flow
+/// sequence unparsed.
+#[test]
+fn collection_tag_on_other_collection_shape() {
+    for (tag, yaml) in [
+        ("!!set", "!!set [a, b]\n"),
+        ("!!set", "!!set &x [a]\n"),
+        ("!!set", "x: !!set [a, b]\ny: 1\n"),
+        ("!!set", "!!set\n- a\n- b\n"),
+        ("!!set", "!!set\n  - a\n"),
+        ("!!set", "k: !!set\n- a\nj: 1\n"),
+        ("!!omap", "!!omap {a: 1}\n"),
+        ("!!pairs", "!!pairs {a: 1}\n"),
+        ("!!omap", "!!omap\n  a: 1\n"),
+        ("!!pairs", "!!pairs\na: 1\nb: 2\n"),
+        ("!!set", "!!set\n# c\n- a\n"),
+        ("!!set", "!!set # c\n\n- a\n"),
+        ("!!set", "- k: !!set\n  - a\n- j\n"),
+        ("!!omap", "!!omap\n\n  a: 1\n"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let plain = YamlFile::from_str(&yaml.replace(tag, "!x")).unwrap();
+        assert_eq!(
+            debug::tree_to_string(file.syntax()).replace(tag, "!x"),
+            debug::tree_to_string(plain.syntax()),
+            "{yaml:?}"
+        );
+    }
+    // With no content after the line break, the tag annotates an empty
+    // node, as any other tag does.
+    for (yaml, expected) in [
+        ("!!omap\n", "SCALAR"),
+        ("!!pairs\n# c\n", "SCALAR"),
+        ("!!omap\n...\n", "SCALAR"),
+        ("!!set\n", "SCALAR"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let tagged = file
+            .syntax()
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::TAGGED_NODE)
+            .unwrap();
+        let content: Vec<String> = tagged
+            .children()
+            .map(|n| format!("{:?}", n.kind()))
+            .collect();
+        assert_eq!(content, [expected], "{yaml:?}");
+    }
+    // Nor does a sibling entry become the body.
+    for yaml in [
+        "- !!set\n- b\n",
+        "- !!omap\n- a: 1\n",
+        "- !!pairs\n- a: 1\n",
+        "- !!omap &o\n- a: 1\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let sequence = file.document().unwrap().as_sequence().unwrap();
+        assert_eq!(sequence.len(), 2, "{yaml:?}");
+        let first = sequence.get(0).unwrap();
+        let tagged = first.as_tagged().unwrap();
+        assert_eq!(
+            tagged
+                .syntax()
+                .children()
+                .map(|n| n.kind())
+                .collect::<Vec<_>>(),
+            [SyntaxKind::SCALAR],
+            "{yaml:?}"
+        );
+    }
+    // A block mapping in the value position still has to nest under its
+    // key; at the key's column its entries are siblings.
+    for yaml in [
+        "k: !!set\na: 1\n",
+        "k: !!omap\na: 1\n",
+        "k: !!pairs\na: 1\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let keys: Vec<String> = mapping.keys().map(|k| k.to_string()).collect();
+        assert_eq!(keys, ["k", "a"], "{yaml:?}");
+    }
+}
+
+/// A tagged flow collection is an implicit key like an untagged one,
+/// whatever the tag.
+#[test]
+fn tagged_flow_collection_as_implicit_key() {
+    for yaml in [
+        "!!set {a}: 1\n",
+        "!!omap [a: 1]: 1\n",
+        "!!seq [a]: 1\n",
+        "k:\n  !!set {a}: 1\n",
+        "- !!pairs [a: 1]: 1\n",
+    ] {
+        let file = parse_clean(yaml);
+        let key = file
+            .syntax()
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::KEY && n.text().to_string().starts_with("!!"))
+            .unwrap();
+        assert_eq!(
+            key.children().map(|n| n.kind()).collect::<Vec<_>>(),
+            [SyntaxKind::TAGGED_NODE],
+            "{yaml:?}"
+        );
+    }
+}
+
+/// A `-` on the line after an anchor or tag that ends a compact sequence
+/// entry is that sequence's next entry when it is at the entry's dash, not
+/// the annotated node. `- - &a\n  - x\n` nested `x` under the anchor, so
+/// pushing onto `[&a null]` wrote text that read back as a different tree.
+#[test]
+fn entry_after_an_annotated_compact_entry() {
+    for yaml in ["- - &a\n  - x\n", "- - !t\n  - x\n"] {
+        let doc = Document::from_str(yaml).unwrap();
+        let inner = doc.as_sequence().unwrap().get(0).unwrap();
+        assert_eq!(inner.as_sequence().unwrap().len(), 2, "{yaml:?}");
+    }
+
+    let doc = Document::from_str("- - &a\n").unwrap();
+    let inner = doc.as_sequence().unwrap().get(0).unwrap();
+    inner.as_sequence().unwrap().push("x");
+    assert_eq!(doc.to_string(), "- - &a\n  - x\n");
+    common::assert_parser_shaped(&doc);
+}
+
+/// An annotation at the very end of the input annotates the same zero-width
+/// null it does when a line break follows it.
+#[test]
+fn annotation_at_end_of_input_holds_implicit_null() {
+    for (yaml, expected) in [
+        (
+            "!!str",
+            "TAGGED_NODE\n  TAG: \"!!str\"\n  SCALAR\n    NULL: \"\"\n",
+        ),
+        (
+            "- &a",
+            "SEQUENCE\n  SEQUENCE_ENTRY\n    DASH: \"-\"\n    WHITESPACE: \" \"\n    ANCHOR: \"&a\"\n    SCALAR\n      NULL: \"\"\n",
+        ),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let document = file.document().unwrap();
+        assert_eq!(
+            debug::tree_to_string(document.syntax()),
+            expected
+        );
+    }
+    let file = YamlFile::from_str("a: !!str").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    let value = mapping.get("a").unwrap();
+    let value = value.as_tagged().unwrap();
+    assert_eq!(value.tag().unwrap(), "!!str");
+    assert!(value.value().unwrap().is_null());
+}
+
+/// YAML test suite WZ62: a tag with no content after it in a flow
+/// collection annotates an empty scalar. The key used to keep the text
+/// `!!str ` (tag and the space before the colon) as its value.
+#[test]
+fn tagged_empty_flow_node() {
+    let yaml = "{\n  foo : !!str,\n  !!str : bar,\n}\n";
+    let file = YamlFile::from_str(yaml).unwrap();
+    assert_eq!(file.to_string(), yaml);
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+
+    let value = mapping.get("foo").expect("Should have a key 'foo'");
+    let value = value.as_tagged().expect("Should be a tagged node");
+    assert_eq!(value.tag().unwrap(), "!!str");
+    assert!(value.value().unwrap().is_null());
+    assert_eq!(value.to_string(), "!!str");
+
+    let keys: Vec<_> = mapping.keys().collect();
+    assert_eq!(keys.len(), 2);
+    let key = keys[1].as_tagged().expect("Should be a tagged node");
+    assert_eq!(key.tag().unwrap(), "!!str");
+    assert!(key.value().unwrap().is_null());
+    assert_eq!(key.as_string().unwrap(), "");
+    assert_eq!(key.to_string(), "!!str");
+
+    let value = YamlValue::from_document(&file.document().unwrap()).unwrap();
+    let value = value.as_mapping().unwrap();
+    assert_eq!(value.keys().collect::<Vec<_>>(), vec!["", "foo"]);
+    assert_eq!(value[""].as_str(), Some("bar"));
+    assert_eq!(value["foo"].as_str(), Some(""));
+}
+
+/// The same holds for an anchor and in flow sequences: the annotation is
+/// followed directly by a zero-width null, and the space after it stays
+/// outside the annotated node.
+#[test]
+fn annotated_empty_flow_node() {
+    use SyntaxKind;
+
+    for (yaml, annotation) in [
+        ("{ !!null : bar }", "!!null"),
+        ("[ !!str , a ]", "!!str"),
+        ("[ !!str ]", "!!str"),
+        ("[ !!str\n]", "!!str"),
+        ("[ !!str # c\n]", "!!str"),
+        ("{ !!str\n  : bar }", "!!str"),
+        ("{ a: !!str }", "!!str"),
+        ("{ &x : bar }", "&x"),
+        ("[ &x , a ]", "&x"),
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        let token = file
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find(|t| t.text() == annotation)
+            .unwrap();
+        let next = token.next_sibling_or_token().unwrap();
+        assert_eq!(next.kind(), SyntaxKind::SCALAR, "{yaml}");
+        let null: Vec<_> = next
+            .as_node()
+            .unwrap()
+            .children_with_tokens()
+            .map(|e| (e.kind(), e.into_token().unwrap().text().to_string()))
+            .collect();
+        assert_eq!(null, vec![(SyntaxKind::NULL, String::new())], "{yaml}");
+        if token.kind() == SyntaxKind::TAG {
+            assert_eq!(token.parent().unwrap().text().to_string(), annotation);
+        }
+    }
+}
+
+#[test]
+fn anchor_alone_on_value_line_before_sibling() {
+    // The anchor annotates an empty value: `b` at the key's column is a
+    // sibling entry, not the anchored node.
+    let null = || YamlValue::Scalar(ScalarValue::parse(""));
+    let mapping = |entries: Vec<(&str, YamlValue)>| {
+        YamlValue::from_mapping(
+            entries
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        )
+    };
+    let one = || YamlValue::from(1i64);
+    assert_eq!(
+        document_values("a:\n &x\nb: 1\n"),
+        [mapping(vec![("a", null()), ("b", one())])]
+    );
+    assert_eq!(
+        document_values("k:\n  a:\n   &x\n  b: 1\n"),
+        [mapping(vec![(
+            "k",
+            mapping(vec![("a", null()), ("b", one())])
+        )])]
+    );
+    // A more indented mapping, or a sequence at the key's column, is still
+    // the anchored value.
+    assert_eq!(
+        document_values("a:\n &x\n b: 1\n"),
+        [mapping(vec![("a", mapping(vec![("b", one())]))])]
+    );
+    assert_eq!(
+        document_values("a:\n &x\n- 1\n"),
+        [mapping(vec![("a", YamlValue::from(vec![1i64]))])]
+    );
 }

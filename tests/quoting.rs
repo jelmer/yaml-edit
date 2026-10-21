@@ -10,7 +10,7 @@
 //! its first line and on continuation lines alike.
 
 mod common;
-use common::{assert_file_cst_ok, assert_parser_shaped};
+use common::{assert_file_cst_ok, assert_parser_shaped, parse_clean};
 use rowan::ast::AstNode;
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -450,18 +450,6 @@ fn rename_json_like_key_before_adjacent_colon() {
     assert!(doc.as_mapping().unwrap().rename_key("a", &plain_node));
     assert_eq!(doc.to_string(), "{p: b}\n");
     assert_eq!(reparsed_scalars(&doc), ["p", "b"]);
-}
-
-/// Parse `yaml`, check it round-trips with a valid tree and no ERROR node,
-/// and return it.
-#[track_caller]
-fn parse_clean(yaml: &str) -> YamlFile {
-    let file = YamlFile::from_str(yaml).unwrap();
-    assert_eq!(file.to_string(), yaml);
-    assert_file_cst_ok(&file);
-    let tree = debug::tree_to_string(file.syntax());
-    assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
-    file
 }
 
 fn root_mapping(file: &YamlFile) -> Mapping {

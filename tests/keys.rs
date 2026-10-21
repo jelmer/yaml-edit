@@ -2,47 +2,11 @@
 //! edits write them.
 
 mod common;
-use common::{assert_cst_ok, assert_file_cst_ok, assert_file_parser_shaped};
+use common::{assert_cst_ok, assert_file_cst_ok, assert_file_parser_shaped, render};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::validator::{Rule, Validator};
 use yaml_edit::{debug, Document, Mapping, YamlFile, YamlNode};
-
-/// A node as compact text: flow collections as `[..]` and `{..}`, block
-/// ones as `seq[..]` and `map{..}`, a null as `~`, a tagged node with its
-/// tag in front and an alias as `*name`.
-fn render(node: &YamlNode) -> String {
-    match node {
-        YamlNode::Scalar(s) if s.is_null() => "~".to_string(),
-        YamlNode::Scalar(s) => s.as_string(),
-        YamlNode::Sequence(s) => {
-            let items: Vec<_> = s.values().map(|v| render(&v)).collect();
-            assert_eq!(items.len(), s.len());
-            let open = if s.is_flow_style() { "[" } else { "seq[" };
-            format!("{open}{}]", items.join(", "))
-        }
-        YamlNode::Mapping(m) => {
-            let entries: Vec<_> = m
-                .iter()
-                .map(|(k, v)| format!("{}: {}", render(&k), render(&v)))
-                .collect();
-            assert_eq!(entries.len(), m.len());
-            let open = if m.is_flow_style() { "{" } else { "map{" };
-            format!("{open}{}}}", entries.join(", "))
-        }
-        YamlNode::TaggedNode(t) => {
-            let inner = if let Some(m) = t.as_mapping() {
-                render(&YamlNode::Mapping(m))
-            } else if let Some(s) = t.as_sequence() {
-                render(&YamlNode::Sequence(s))
-            } else {
-                render(&YamlNode::Scalar(t.value().unwrap()))
-            };
-            format!("{} {inner}", t.tag().unwrap())
-        }
-        YamlNode::Alias(a) => format!("*{}", a.name()),
-    }
-}
 
 /// Parse `yaml`, check it round-trips and holds one document, and render
 /// that document's root node.

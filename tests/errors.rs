@@ -4,44 +4,10 @@
 //! valid parts accessible and give a tree that edits still work on.
 
 mod common;
+use common::{parse_with_errors, parse_with_violations};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::{debug, LineColumn, Parse, Sequence, SyntaxKind, YamlFile};
-
-/// The validator's findings for `file` as (message, location) pairs.
-fn violations(file: &YamlFile) -> Vec<(String, String)> {
-    yaml_edit::validator::Validator::new()
-        .validate_syntax(file.syntax())
-        .into_iter()
-        .map(|v| (v.message, v.location.unwrap()))
-        .collect()
-}
-
-/// Parse `yaml`, check the errors reported for it, and that the tree still
-/// holds a document and all of the text.
-#[track_caller]
-fn parse_with_errors(yaml: &str, expected: &[&str]) -> YamlFile {
-    let parsed = YamlFile::parse(yaml);
-    assert_eq!(parsed.errors(), expected, "{yaml:?}");
-    let file = parsed.tree();
-    debug::validate_tree(file.syntax()).unwrap();
-    assert!(file.document().is_some(), "{yaml:?}");
-    assert_eq!(file.to_string(), yaml);
-    file
-}
-
-/// Parse `yaml`, which has no parse errors, and check what the validator
-/// reports about it.
-#[track_caller]
-fn parse_with_violations(yaml: &str, expected: &[(&str, &str)]) -> YamlFile {
-    let file = parse_with_errors(yaml, &[]);
-    let expected: Vec<(String, String)> = expected
-        .iter()
-        .map(|(m, l)| (m.to_string(), l.to_string()))
-        .collect();
-    assert_eq!(violations(&file), expected, "{yaml:?}");
-    file
-}
 
 /// The keys of the first document's root mapping.
 fn keys(file: &YamlFile) -> Vec<String> {

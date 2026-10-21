@@ -9,7 +9,7 @@
 //! invalid input.
 
 mod common;
-use common::assert_file_cst_ok;
+use common::{assert_file_cst_ok, parse_clean, render};
 use proptest::prelude::*;
 use rowan::ast::AstNode;
 use std::str::FromStr;
@@ -19,52 +19,6 @@ use yaml_edit::custom_tags::{
 };
 use yaml_edit::validator::Validator;
 use yaml_edit::{debug, ScalarValue, SyntaxKind, YamlFile, YamlNode, YamlValue};
-
-/// A node as compact text: flow collections as `[..]` and `{..}`, block
-/// ones as `seq[..]` and `map{..}`, a null as `~` and a tagged node with
-/// its tag in front.
-fn render(node: &YamlNode) -> String {
-    match node {
-        YamlNode::Scalar(s) if s.is_null() => "~".to_string(),
-        YamlNode::Scalar(s) => s.as_string(),
-        YamlNode::Sequence(s) => {
-            let items: Vec<_> = s.values().map(|v| render(&v)).collect();
-            assert_eq!(items.len(), s.len());
-            let open = if s.is_flow_style() { "[" } else { "seq[" };
-            format!("{open}{}]", items.join(", "))
-        }
-        YamlNode::Mapping(m) => {
-            let entries: Vec<_> = m
-                .iter()
-                .map(|(k, v)| format!("{}: {}", render(&k), render(&v)))
-                .collect();
-            assert_eq!(entries.len(), m.len());
-            let open = if m.is_flow_style() { "{" } else { "map{" };
-            format!("{open}{}}}", entries.join(", "))
-        }
-        YamlNode::TaggedNode(t) => {
-            let inner = if let Some(m) = t.as_mapping() {
-                render(&YamlNode::Mapping(m))
-            } else if let Some(s) = t.as_sequence() {
-                render(&YamlNode::Sequence(s))
-            } else {
-                render(&YamlNode::Scalar(t.value().unwrap()))
-            };
-            format!("{} {inner}", t.tag().unwrap())
-        }
-        YamlNode::Alias(a) => format!("*{}", a.name()),
-    }
-}
-
-/// Parse `yaml`, check it round-trips with no ERROR node, and return it.
-#[track_caller]
-fn parse_clean(yaml: &str) -> YamlFile {
-    let file = YamlFile::from_str(yaml).unwrap_or_else(|e| panic!("{yaml:?}: {e}"));
-    assert_eq!(file.to_string(), yaml);
-    let tree = debug::tree_to_string(file.syntax());
-    assert!(!tree.contains("ERROR"), "{yaml:?}\n{tree}");
-    file
-}
 
 /// Parse `yaml` as [`parse_clean`] does and render its root node.
 #[track_caller]

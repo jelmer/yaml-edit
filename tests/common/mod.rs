@@ -11,9 +11,9 @@ pub mod mutation_checks;
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::validator::Validator;
-use yaml_edit::{debug, Document, SyntaxKind, YamlFile, YamlNode, YamlValue};
+use yaml_edit::{debug, Document, Lang, Mapping, Parse, SyntaxKind, YamlFile, YamlNode, YamlValue};
 
-/// Assert that a `Document`'s CST is structurally valid and roundtrips
+/// Assert that the tree holding `node` is structurally valid and roundtrips
 /// through the parser without change.
 ///
 /// Call after every mutation in mutation-oriented tests. Catches
@@ -21,13 +21,13 @@ use yaml_edit::{debug, Document, SyntaxKind, YamlFile, YamlNode, YamlValue};
 /// unterminated block entries) even when the pre- and post-mutation
 /// text look identical to the eye.
 #[track_caller]
-pub fn assert_cst_ok(doc: &Document) {
-    let syntax = doc.syntax();
+pub fn assert_cst_ok(node: &impl AstNode<Language = Lang>) {
+    let syntax = node.syntax();
     if let Err(e) = debug::validate_tree(syntax) {
-        panic!("CST invariant violated: {e}\n---\n{doc}\n---");
+        panic!("CST invariant violated: {e}\n---\n{syntax}\n---");
     }
     if let Err(e) = debug::roundtrip_ok(syntax) {
-        panic!("roundtrip failed: {e}\n---\n{doc}\n---");
+        panic!("roundtrip failed: {e}\n---\n{syntax}\n---");
     }
 }
 
@@ -43,15 +43,27 @@ pub fn assert_file_cst_ok(file: &YamlFile) {
     }
 }
 
-/// Like [`assert_cst_ok`], and also require the tree to be the one a
-/// re-parse of its text gives.
+/// Like [`assert_cst_ok`], and also require the tree holding `node` to be
+/// the one a re-parse of its text gives.
 #[track_caller]
-pub fn assert_parser_shaped(doc: &Document) {
-    assert_cst_ok(doc);
-    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+pub fn assert_parser_shaped(node: &impl AstNode<Language = Lang>) {
+    assert_cst_ok(node);
+    let root = node
+        .syntax()
+        .ancestors()
+        .last()
+        .expect("a node is its own ancestor");
+    let text = root.to_string();
+    let parsed = Parse::parse_yaml(&text).tree();
+    let reparsed = parsed
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == root.kind())
+        .unwrap_or_else(|| panic!("re-parse of {text:?} has no {:?}", root.kind()));
     assert_eq!(
-        debug::shape_to_string(doc.syntax()),
-        debug::shape_to_string(reparsed.syntax())
+        debug::shape_to_string(&root),
+        debug::shape_to_string(&reparsed),
+        "{text:?}"
     );
 }
 
@@ -78,6 +90,19 @@ pub fn assert_edited(doc: &Document, expected: &str) {
 pub fn assert_file_edited(file: &YamlFile, expected: &str) {
     assert_eq!(file.to_string(), expected);
     assert_file_parser_shaped(file);
+}
+
+/// Like [`assert_file_edited`], and the validator finds nothing wrong with
+/// any of the documents.
+#[track_caller]
+pub fn assert_file_edited_valid(file: &YamlFile, expected: &str) {
+    assert_file_edited(file, expected);
+    let violations: Vec<String> = file
+        .documents()
+        .flat_map(|doc| Validator::new().validate(&doc))
+        .map(|v| v.to_string())
+        .collect();
+    assert_eq!(violations, Vec::<String>::new());
 }
 
 /// Parse `source`, apply `edit` to it and check the result as
@@ -221,4 +246,128 @@ pub fn parse_with_violations(yaml: &str, expected: &[(&str, &str)]) -> YamlFile 
         .collect();
     assert_eq!(violations(&file), expected, "{yaml:?}");
     file
+}
+
+/// The root mapping of the first document of `file`.
+pub fn root_mapping(file: &YamlFile) -> Mapping {
+    file.document().unwrap().as_mapping().unwrap()
+}
+
+/// The keys of the first document's root mapping.
+pub fn keys(file: &YamlFile) -> Vec<String> {
+    root_mapping(file).keys().map(|k| k.to_string()).collect()
+}
+
+/// The value of `key` in the root mapping of `src`.
+pub fn value_of(src: &str, key: &str) -> YamlNode {
+    root_mapping(&YamlFile::from_str(src).unwrap())
+        .get(key)
+        .unwrap()
+}
+
+/// Parse `source`, apply `edit` to it, check the result is shaped as the
+/// parser would shape it, and return its text.
+#[track_caller]
+pub fn edit_file(source: &str, edit: impl FnOnce(&YamlFile)) -> String {
+    let file = YamlFile::from_str(source).unwrap();
+    edit(&file);
+    assert_file_parser_shaped(&file);
+    file.to_string()
+}
+
+/// Like [`edit_file`], but apply `edit` to the root mapping.
+#[track_caller]
+pub fn edit_root(source: &str, edit: impl FnOnce(&Mapping)) -> String {
+    edit_file(source, |file| edit(&root_mapping(file)))
+}
+
+/// Like [`edit_file`], but parse `source` as a `Document`.
+#[track_caller]
+pub fn edited(source: &str, edit: impl FnOnce(&Document)) -> String {
+    let doc = Document::from_str(source).unwrap();
+    edit(&doc);
+    assert_parser_shaped(&doc);
+    doc.to_string()
+}
+
+/// Set `metadata.version`, and `metadata.status` if `yaml` has one, in
+/// `file` parsed from `yaml`, checking that nothing else changes.
+#[track_caller]
+pub fn edit_metadata(file: &YamlFile, yaml: &str) {
+    let metadata = root_mapping(file).get_mapping("metadata").unwrap();
+    metadata.set("version", "0.1.1");
+    assert_file_cst_ok(file);
+    let expected = yaml.replace("version: 0.1.0", "version: 0.1.1");
+    assert_eq!(file.to_string(), expected);
+    if yaml.contains("status: draft") {
+        metadata.set("status", "stable");
+        assert_file_cst_ok(file);
+        assert_eq!(
+            file.to_string(),
+            expected.replace("status: draft", "status: stable")
+        );
+    }
+}
+
+/// Parse `yaml`, requiring no errors and a byte-identical round trip.
+#[track_caller]
+pub fn parse(yaml: &str) -> YamlFile {
+    let parsed = YamlFile::parse(yaml);
+    assert_eq!(parsed.errors(), Vec::<String>::new(), "{yaml:?}");
+    let file = parsed.tree();
+    assert_eq!(file.to_string(), yaml);
+    file
+}
+
+/// The node at `path` in the first document: mapping keys and sequence
+/// indices separated by `.`, or the root node for an empty path.
+#[track_caller]
+pub fn node_at(file: &YamlFile, path: &str) -> YamlNode {
+    let doc = file.document().expect("no document");
+    let root = doc
+        .syntax()
+        .children()
+        .find_map(YamlNode::from_syntax)
+        .expect("empty document");
+    path.split('.')
+        .filter(|segment| !segment.is_empty())
+        .fold(root, |node, segment| {
+            let child = if node.is_mapping() {
+                node.get(segment)
+            } else {
+                node.get_item(segment.parse().expect("sequence index"))
+            };
+            child.unwrap_or_else(|| panic!("nothing at {segment:?} of {path:?}"))
+        })
+}
+
+/// Check the string value of the scalar at each path.
+#[track_caller]
+pub fn assert_strings(file: &YamlFile, expected: &[(&str, &str)]) {
+    for (path, value) in expected {
+        let node = node_at(file, path);
+        let scalar = node
+            .as_scalar()
+            .unwrap_or_else(|| panic!("{path:?} is not a scalar"));
+        assert_eq!(scalar.as_string(), *value, "at {path:?}");
+    }
+}
+
+/// Describe a collection as e.g. "flow sequence of 3".
+pub fn shape(node: &YamlNode) -> String {
+    let style = |flow: bool| if flow { "flow" } else { "block" };
+    if let Some(seq) = node.as_sequence() {
+        format!("{} sequence of {}", style(seq.is_flow_style()), seq.len())
+    } else if let Some(map) = node.as_mapping() {
+        format!("{} mapping of {}", style(map.is_flow_style()), map.len())
+    } else {
+        panic!("not a collection: {node:?}")
+    }
+}
+
+#[track_caller]
+pub fn assert_shapes(file: &YamlFile, expected: &[(&str, &str)]) {
+    for (path, value) in expected {
+        assert_eq!(shape(&node_at(file, path)), *value, "at {path:?}");
+    }
 }

@@ -1359,6 +1359,3 @@ impl AsYaml for Mapping {
         ValueNode::is_inline(self)
     }
 }
-
-#[cfg(test)]
-mod tests;

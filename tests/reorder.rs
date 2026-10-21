@@ -3,29 +3,9 @@
 //! flow mapping and the line break ending the last entry, or its absence.
 
 mod common;
-
-use rowan::ast::AstNode;
+use common::{assert_cst_ok, assert_edited, assert_file_edited};
 use std::str::FromStr;
-use yaml_edit::{debug, Document, Mapping, YamlFile};
-
-#[track_caller]
-fn assert_edited(doc: &Document, expected: &str) {
-    assert_eq!(doc.to_string(), expected);
-    common::assert_cst_ok(doc);
-    // A document without `---` that starts with a comment line is only
-    // accepted as part of a file.
-    let reparsed = Document::from_str(expected).unwrap_or_else(|_| {
-        YamlFile::from_str(expected)
-            .unwrap()
-            .documents()
-            .next()
-            .unwrap()
-    });
-    assert_eq!(
-        debug::shape_to_string(doc.syntax()),
-        debug::shape_to_string(reparsed.syntax())
-    );
-}
+use yaml_edit::{Document, Mapping, YamlFile};
 
 #[track_caller]
 fn check_reorder(
@@ -415,5 +395,100 @@ fn move_next_to_itself_with_own_value() {
         assert_edited(&doc, source);
         assert!(m.move_before("foo", "foo", m.get("foo").unwrap()));
         assert_edited(&doc, source);
+    }
+}
+
+#[test]
+fn move_before_in_file() {
+    let file = YamlFile::from_str("a: 1\nb: 2\nc: 3\n").unwrap();
+    assert!(file.move_before("a", "c", 4));
+    assert_file_edited(&file, "c: 4\na: 1\nb: 2\n");
+    assert!(!file.move_before("z", "c", 5));
+    assert_eq!(file.to_string(), "c: 4\na: 1\nb: 2\n");
+    assert!(!YamlFile::new().move_before("a", "c", 4));
+}
+
+#[test]
+fn document_reorder_fields() {
+    let doc = Document::new();
+    for (key, value) in [
+        ("Repository-Browse", "https://github.com/user/repo"),
+        ("Name", "MyProject"),
+        ("Bug-Database", "https://github.com/user/repo/issues"),
+        ("Repository", "https://github.com/user/repo.git"),
+    ] {
+        doc.set(key, value);
+        assert_cst_ok(&doc);
+    }
+    doc.reorder_fields(["Name", "Bug-Database", "Repository", "Repository-Browse"]);
+    assert_edited(
+        &doc,
+        "---\nName: MyProject\nBug-Database: https://github.com/user/repo/issues\n\
+         Repository: https://github.com/user/repo.git\nRepository-Browse: https://github.com/user/repo\n",
+    );
+    let keys: Vec<_> = doc
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(
+        keys,
+        ["Name", "Bug-Database", "Repository", "Repository-Browse"]
+    );
+}
+
+#[test]
+fn move_after_missing_ref_leaves_mapping_unchanged() {
+    let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(!mapping.move_after("missing", "a", "3"));
+    assert_edited(&doc, "a: 1\nb: 2\n");
+    assert!(!mapping.move_before("missing", "a", "3"));
+    assert_edited(&doc, "a: 1\nb: 2\n");
+    assert!(mapping.move_after("a", "a", "3"));
+    assert_edited(&doc, "a: '3'\nb: 2\n");
+
+    let doc = Document::from_str("{a: 1, b: 2}").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(!mapping.move_after("missing", "a", "3"));
+    assert_edited(&doc, "{a: 1, b: 2}");
+}
+
+/// An edit placing an entry relative to another, which reports whether it
+/// found that one.
+type RelativeEdit = dyn Fn(&Mapping) -> bool;
+
+/// Entries placed relative to another in a nested block mapping line up
+/// with their siblings.
+#[test]
+fn move_and_insert_relative_in_nested_mapping_keep_indent() {
+    let source = "outer:\n  a: 1\n  c: 3\nz: 0\n";
+    let cases: [(&RelativeEdit, &str); 5] = [
+        (
+            &|m| m.insert_after("a", "b", 2),
+            "outer:\n  a: 1\n  b: 2\n  c: 3\nz: 0\n",
+        ),
+        (
+            &|m| m.insert_before("a", "b", 2),
+            "outer:\n  b: 2\n  a: 1\n  c: 3\nz: 0\n",
+        ),
+        (
+            &|m| m.insert_after("c", "b", 2),
+            "outer:\n  a: 1\n  c: 3\n  b: 2\nz: 0\n",
+        ),
+        (
+            &|m| m.move_after("c", "a", 9),
+            "outer:\n  c: 3\n  a: 9\nz: 0\n",
+        ),
+        (
+            &|m| m.move_before("a", "c", 9),
+            "outer:\n  c: 9\n  a: 1\nz: 0\n",
+        ),
+    ];
+    for (edit, expected) in cases {
+        let doc = Document::from_str(source).unwrap();
+        assert!(edit(
+            &doc.as_mapping().unwrap().get_mapping("outer").unwrap()
+        ));
+        assert_edited(&doc, expected);
     }
 }

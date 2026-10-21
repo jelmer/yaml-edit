@@ -10,14 +10,14 @@
 //! its first line and on continuation lines alike.
 
 mod common;
-use common::{assert_file_cst_ok, assert_parser_shaped, parse_clean};
+use common::{assert_file_cst_ok, assert_parser_shaped, parse_clean, root_mapping};
 use rowan::ast::AstNode;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 use yaml_edit::validator::Validator;
 use yaml_edit::{
-    debug, Document, Mapping, Scalar, ScalarType, ScalarValue, Sequence, SyntaxKind, YamlFile,
-    YamlNode, YamlValue,
+    debug, CoreScalarType, Document, Mapping, Scalar, ScalarConversionError, ScalarStyle,
+    ScalarType, ScalarValue, Sequence, SyntaxKind, YamlFile, YamlNode, YamlValue,
 };
 
 fn set_and_reparse(value: &str) -> (String, String, ScalarType) {
@@ -450,10 +450,6 @@ fn rename_json_like_key_before_adjacent_colon() {
     assert!(doc.as_mapping().unwrap().rename_key("a", &plain_node));
     assert_eq!(doc.to_string(), "{p: b}\n");
     assert_eq!(reparsed_scalars(&doc), ["p", "b"]);
-}
-
-fn root_mapping(file: &YamlFile) -> Mapping {
-    file.document().unwrap().as_mapping().unwrap()
 }
 
 fn string(node: &YamlNode) -> String {
@@ -1428,4 +1424,169 @@ fn plain_scalar_starting_with_colon_spans_words() {
             "      NEWLINE: \"\\\\n\"\n",
         )
     );
+}
+
+#[test]
+fn round_trips_keys_needing_quotes() {
+    // Each of these was written unquoted and could not be read back:
+    // " #" starts a comment (the old rule checked the character *after*
+    // the `#`, but YAML keys on what precedes it), and a line break
+    // turned the key into a block scalar.
+    for (key, expected) in [
+        ("a. #a", "z: 1\n'a. #a': v\n"),
+        ("a #c", "z: 1\n'a #c': v\n"),
+        ("a#b", "z: 1\na#b: v\n"),
+        ("a\nb", "z: 1\n\"a\\nb\": v\n"),
+        ("a\rb", "z: 1\n\"a\\rb\": v\n"),
+        ("x: y", "z: 1\n'x: y': v\n"),
+        ("a:b", "z: 1\na:b: v\n"),
+        ("plain", "z: 1\nplain: v\n"),
+        ("a b", "z: 1\na b: v\n"),
+        ("#lead", "z: 1\n'#lead': v\n"),
+        ("a:", "z: 1\n'a:': v\n"),
+        ("", "z: 1\n'': v\n"),
+        ("true", "z: 1\n'true': v\n"),
+        ("123", "z: 1\n'123': v\n"),
+        ("- x", "z: 1\n'- x': v\n"),
+        ("? x", "z: 1\n'? x': v\n"),
+    ] {
+        let doc = Document::from_str("z: 1\n").unwrap();
+        doc.as_mapping().unwrap().set(key, "v");
+        common::assert_edited(&doc, expected);
+        let reparsed = Document::from_str(expected).unwrap();
+        let value = reparsed.as_mapping().unwrap().get(key);
+        assert_eq!(
+            value.map(|v| v.to_string()),
+            Some("v".to_string()),
+            "{key:?}"
+        );
+    }
+}
+
+#[test]
+fn from_scalar_impl_matches_from_scalar() {
+    let doc = Document::from_str("a: \"123\"\nb: 'true'\nc: |\n  1\nd: 0x1F\ne: x\n").unwrap();
+    let m = doc.as_mapping().unwrap();
+    for (key, value, style, scalar_type) in [
+        ("a", "123", ScalarStyle::DoubleQuoted, ScalarType::String),
+        ("b", "true", ScalarStyle::SingleQuoted, ScalarType::String),
+        ("c", "1\n", ScalarStyle::Literal, ScalarType::String),
+        ("d", "0x1F", ScalarStyle::Plain, ScalarType::Integer),
+        ("e", "x", ScalarStyle::Plain, ScalarType::String),
+    ] {
+        let scalar = m.get(key).unwrap().as_scalar().unwrap().clone();
+        let sv = ScalarValue::from(scalar.clone());
+        assert_eq!(sv, ScalarValue::from_scalar(&scalar));
+        assert_eq!(
+            (sv.value(), sv.style(), sv.scalar_type()),
+            (value, style, scalar_type),
+            "{key}"
+        );
+    }
+}
+
+#[test]
+fn as_yaml_quotes_string_that_looks_special() {
+    // A string whose value reads as a null/bool/number must be quoted so it
+    // round-trips as a string, not the special value, and one containing
+    // ": " or it produces invalid YAML. An actual null scalar stays bare.
+    for (value, expected) in [
+        (ScalarValue::string("null"), "key: 'null'\n"),
+        (ScalarValue::string("has: colon"), "key: 'has: colon'\n"),
+        (ScalarValue::null(), "key: null\n"),
+    ] {
+        common::check_edit(
+            "key: x\n",
+            |doc| {
+                doc.as_mapping().unwrap().set("key", value);
+            },
+            expected,
+        );
+    }
+}
+
+#[test]
+fn empty_plain_scalar_is_null() {
+    assert_eq!(ScalarValue::classify_plain(""), CoreScalarType::Null);
+
+    let doc: Document = "a:\nb: 1\n".parse().unwrap();
+    let node = doc.as_mapping().unwrap().get("a").unwrap();
+    let value = ScalarValue::from_scalar(node.as_scalar().unwrap());
+    assert_eq!(value.scalar_type(), ScalarType::Null);
+
+    let doc: Document = "x: 1\n".parse().unwrap();
+    doc.as_mapping().unwrap().set("k", ScalarValue::parse(""));
+    common::assert_edited(&doc, "x: 1\nk: \n");
+    let reparsed: Document = doc.to_string().parse().unwrap();
+    let node = reparsed.as_mapping().unwrap().get("k").unwrap();
+    let value = ScalarValue::from_scalar(node.as_scalar().unwrap());
+    assert_eq!(value.scalar_type(), ScalarType::Null);
+}
+
+#[test]
+fn plain_scalar_folding_with_crlf() {
+    let doc = Document::from_str("k: a\r\n  b\r\n\r\n  c\r\nq: \"x\r\n  y\"\r\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let string = |key: &str| mapping.get(key).unwrap().as_scalar().unwrap().as_string();
+    assert_eq!(string("k"), "a b\nc");
+    assert_eq!(string("q"), "x y");
+}
+
+/// `unquoted_value` strips the quotes but leaves escapes as written.
+#[test]
+fn unquoted_value_keeps_escapes() {
+    let doc = Document::from_str("- \"a\\\"b\"\n- 'c''d'\n- e\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    let unquoted: Vec<_> = (0..3)
+        .map(|i| seq.get(i).unwrap().as_scalar().unwrap().unquoted_value())
+        .collect();
+    assert_eq!(unquoted, ["a\\\"b", "c''d", "e"]);
+}
+
+#[test]
+fn typed_conversion_of_quoted_scalar_fails() {
+    let doc = Document::from_str("- '1'\n- x\n").unwrap();
+    let seq = doc.as_sequence().unwrap();
+    let quoted = seq.get(0).unwrap().as_scalar().cloned().unwrap();
+    let err = i64::try_from(&quoted).unwrap_err();
+    assert_eq!(err, ScalarConversionError::QuotedValue);
+    assert_eq!(
+        err.to_string(),
+        "Cannot convert quoted scalar to numeric/boolean type"
+    );
+    let plain = seq.get(1).unwrap().as_scalar().cloned().unwrap();
+    let err = i64::try_from(&plain).unwrap_err();
+    let ScalarConversionError::ParseError(msg) = &err else {
+        panic!("unexpected {err:?}");
+    };
+    assert_eq!(err.to_string(), format!("Failed to parse scalar: {msg}"));
+}
+
+/// Line breaks in quoted scalars fold to a space, and blank lines to line
+/// breaks; an escaped line break folds to nothing.
+#[test]
+fn quoted_line_folding() {
+    for (yaml, expected) in [
+        ("k: \"a\n  b\"\n", "a b"),
+        ("k: \"a\n\n  b\"\n", "a\nb"),
+        ("k: \"a\n \t\n\n  b\"\n", "a\n\nb"),
+        ("k: \"a   \n  b\"\n", "a b"),
+        ("k: \"a\\t\n  b\"\n", "a\t b"),
+        ("k: \" a\n  b \"\n", " a b "),
+        ("k: \"a\r\n  b\"\r\n", "a b"),
+        ("k: \"a \\\n  b\"\n", "a b"),
+        ("k: \"a\\\n\n  b\"\n", "a\nb"),
+        ("k: 'a\n  b'\n", "a b"),
+        ("k: 'a\n\n  b'\n", "a\nb"),
+        ("k: 'a\n\n\n  b'\n", "a\n\nb"),
+        ("k: 'a \t\n \t\n\t b'\n", "a\nb"),
+        ("k: ' a\n  b '\n", " a b "),
+        ("k: 'a\n  '\n", "a "),
+        ("k: 'a\r\n\r\n  b'\r\n", "a\nb"),
+        ("k: 'a''\n  ''b'\n", "a' 'b"),
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        let node = doc.as_mapping().unwrap().get("k").unwrap();
+        assert_eq!(node.as_scalar().unwrap().as_string(), expected, "{yaml:?}");
+    }
 }

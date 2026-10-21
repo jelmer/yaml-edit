@@ -3,13 +3,14 @@
 
 mod common;
 use common::{
-    assert_cst_ok, assert_file_cst_ok, assert_file_parser_shaped, check_renders, count_nodes,
-    parse_clean, render, render_documents,
+    assert_cst_ok, assert_file_cst_ok, assert_file_edited_valid, assert_file_parser_shaped,
+    assert_parser_shaped, check_renders, count_nodes, edit_root, keys, parse_clean, render,
+    render_documents, root_mapping,
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::validator::{Rule, Validator};
-use yaml_edit::{debug, Document, Mapping, ScalarValue, SyntaxKind, YamlFile, YamlNode};
+use yaml_edit::{debug, Alias, Document, Mapping, ScalarValue, SyntaxKind, YamlFile, YamlNode};
 
 /// Parse `yaml`, check it round-trips and holds one document, and render
 /// that document's root node.
@@ -25,10 +26,6 @@ fn render_root(yaml: &str) -> String {
         .find_map(YamlNode::from_syntax)
         .unwrap();
     render(&root)
-}
-
-fn root_mapping(file: &YamlFile) -> Mapping {
-    file.document().unwrap().as_mapping().unwrap()
 }
 
 fn scalar(node: &YamlNode) -> String {
@@ -599,16 +596,6 @@ fn remove_nth_occurrence() {
 }
 
 type MappingEdit = fn(&Mapping);
-
-/// Apply `edit` to the root mapping of `source`, check the result is shaped
-/// as the parser would shape it, and return its text.
-#[track_caller]
-fn edit_root(source: &str, edit: impl FnOnce(&Mapping)) -> String {
-    let file = YamlFile::from_str(source).unwrap();
-    edit(&root_mapping(&file));
-    assert_file_parser_shaped(&file);
-    file.to_string()
-}
 
 /// Like [`edit_root`], but edit the mapping under the root's `key`.
 #[track_caller]
@@ -1601,5 +1588,528 @@ fn null_key_and_empty_string_key_are_distinct() {
         let doc = Document::from_str(src).unwrap();
         let mapping = doc.as_mapping().unwrap();
         assert!(mapping.get(ScalarValue::null()).is_some(), "{src:?}");
+    }
+}
+
+/// A tag or anchor before an implicit key annotates the key (`!!str &a1
+/// "foo": bar` is test suite case HMQ5), rather than the whole document.
+#[test]
+fn properties_on_implicit_key() {
+    for (yaml, expected) in [
+        ("!!str a: b\n", "map{!!str a: b}"),
+        ("!!str &a1 \"foo\": bar\n", "map{!!str foo: bar}"),
+        ("&anchor a: b\n", "map{a: b}"),
+    ] {
+        assert_eq!(render_root(yaml), expected, "{yaml:?}");
+    }
+}
+
+#[test]
+fn explicit_key_produces_zero_width_null_value() {
+    // `? a\n` at document level should produce a MAPPING_ENTRY with
+    // a KEY containing `a`, an implicit-null VALUE holding a zero-width
+    // NULL token, and the entry's own line break after that. Lock that
+    // shape in.
+    let yaml = YamlFile::from_str("? a\n").unwrap();
+    let doc = yaml.document().unwrap();
+    let mapping = doc.as_mapping().expect("should parse as a mapping");
+    assert_eq!(mapping.len(), 1);
+
+    // Find the MAPPING_ENTRY and look at its last tokens.
+    let entry = mapping.entries().next().expect("one entry");
+    let syntax = entry.syntax();
+    let terminal = syntax
+        .last_token()
+        .expect("MAPPING_ENTRY has at least one token");
+    assert_eq!(terminal.kind(), SyntaxKind::NEWLINE);
+    assert_eq!(terminal.parent().as_ref(), Some(syntax));
+    let null = terminal.prev_token().expect("a token before the NEWLINE");
+    assert!(
+        null.kind() == SyntaxKind::NULL && null.text().is_empty(),
+        "expected zero-width NULL before the line break, got {:?} = {:?}",
+        null.kind(),
+        null.text()
+    );
+}
+
+/// Top-level keys of `src`, in document order.
+fn top_level_keys(src: &str) -> Vec<String> {
+    keys(&YamlFile::from_str(src).unwrap())
+}
+
+/// A nested explicit-key block (`? k` / `: v`) ends at a dedent, leaving
+/// the key after it to the outer mapping.
+///
+/// It used to swallow whatever followed it: parse_explicit_key_mapping was
+/// the only block-mapping path taking no base_indent, so after its entries
+/// it kept consuming whatever is_mapping_key() accepted, and a key at the
+/// outer level was absorbed into the nested mapping. The text still
+/// round-tripped byte for byte, so only the structure was wrong. A
+/// `!!set`-tagged explicit-key block is the same shape, and top-level
+/// explicit keys were never affected.
+#[test]
+fn key_after_nested_explicit_key_block() {
+    for (src, keys) in [
+        ("m:\n  ? a\n  : 1\nuf: v\n", &["m", "uf"][..]),
+        ("m:\n  ? a\n  : 1\n  ? b\n  : 2\nuf: v\n", &["m", "uf"][..]),
+        ("m:\n  ? a\n  : 1\nn:\n  ? b\n  : 2\n", &["m", "n"][..]),
+        ("m:\n  ? a\n  : \n    n: 1\nz: 9\n", &["m", "z"][..]),
+        ("m:\n      ? a\n      : 1\nz: 9\n", &["m", "z"][..]),
+        (
+            "m:\n  ? a\n  : 1\n  plain: 2\nouter: 3\n",
+            &["m", "outer"][..],
+        ),
+        (
+            "a:\n  b:\n    ? c\n    : 1\n  d: 2\ne: 3\n",
+            &["a", "e"][..],
+        ),
+        ("keys: !!set\n  ? a\n  ? b\nz: 9\n", &["keys", "z"][..]),
+        ("? a\n: 1\nplain: v\n", &["a", "plain"][..]),
+    ] {
+        assert_eq!(top_level_keys(src), keys, "{src:?}");
+    }
+    // The nested mapping holds only its own content: a key count alone
+    // would miss a value that absorbed the dedented sibling.
+    let parsed = YamlFile::from_str("m:\n  ? a\n  : 1\nuf: v\n").unwrap();
+    let mapping = root_mapping(&parsed);
+    assert_eq!(mapping.get("m").unwrap().to_string(), "? a\n  : 1\n");
+    assert_eq!(mapping.get("uf").unwrap().to_string(), "v");
+}
+
+/// A comment line before a dedented line ends a nested explicit-key
+/// mapping as it ends an implicit-key one: it is left to the mapping
+/// holding the next entry.
+#[test]
+fn comment_line_after_nested_explicit_key_block() {
+    for (src, comments) in [
+        ("x:\n  a: b\n  # c\ny: 1\n", &["# c"][..]),
+        ("x:\n  ? a\n  : b\n  # c\ny: 1\n", &["# c"]),
+        (
+            "x:\n  ? a\n  : b\n\n  # c\n  # d\n\ny: 1\n",
+            &["# c", "# d"],
+        ),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        let root: Vec<String> = root_mapping(&file)
+            .syntax()
+            .children_with_tokens()
+            .filter(|c| c.kind() == SyntaxKind::COMMENT)
+            .map(|c| c.to_string())
+            .collect();
+        assert_eq!(root, comments, "{src:?}");
+        assert_eq!(top_level_keys(src), ["x", "y"], "{src:?}");
+    }
+}
+
+/// A compact explicit-key mapping as a value: its later entries sit at
+/// the first `?`'s column, which used to read as a dedent.
+#[test]
+fn compact_explicit_key_mapping_as_value() {
+    let src = "? h\n: ? b\n  : x\n  a: 1\nc: 2\n";
+    assert_eq!(top_level_keys(src), ["h", "c"]);
+    let parsed = YamlFile::from_str(src).unwrap();
+    let h = parsed.document().unwrap().as_mapping().unwrap().get("h");
+    let keys: Vec<String> = h
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert_eq!(keys, ["b", "a"]);
+}
+
+/// The value of the single document in `src`, with a check that the
+/// tree is well-formed and that the validator accepts it.
+fn checked_value(src: &str) -> yaml_edit::YamlValue {
+    let file = YamlFile::from_str(src).expect("should parse");
+    debug::validate_tree(file.syntax()).expect("tree should be valid");
+    let doc = file.document().expect("should have a document");
+    assert_eq!(
+        yaml_edit::validator::Validator::new().validate(&doc),
+        vec![]
+    );
+    yaml_edit::YamlValue::from_document(&doc).expect("should convert")
+}
+
+/// A `:` line left of an explicit key's `?` is the value of an
+/// enclosing explicit key, not of the one nested in its key.
+#[test]
+fn explicit_value_left_of_nested_explicit_key() {
+    for (src, flow) in [
+        ("? - ? a\n: b\n", "? [{? a}]\n: b\n"),
+        ("? - ? - a\n: b\n", "? [{? [a]}]\n: b\n"),
+        (
+            "x:\n  ? - ? -\n  : - c\n",
+            "x:\n  ? [{? [null]}]\n  : [c]\n",
+        ),
+    ] {
+        assert_eq!(checked_value(src), checked_value(flow), "{src:?}");
+    }
+}
+
+/// A sequence on the line of an explicit key is the key's, however much
+/// space follows the indicators before it.
+#[test]
+fn compact_sequence_key_after_wide_indicators() {
+    for (src, compact) in [
+        ("-  ? -", "- ? -"),
+        ("-  ? -\n", "- ? -\n"),
+        ("-  ? - a\n", "- ? - a\n"),
+        (
+            "-   ?   - a\n        - b\n    : c\n",
+            "- ? - a\n    - b\n  : c\n",
+        ),
+    ] {
+        assert_eq!(checked_value(src), checked_value(compact), "{src:?}");
+    }
+}
+
+/// An explicit value's plain scalar continues only on lines indented
+/// past the `:`; a line at its column is not part of it.
+#[test]
+fn explicit_value_scalar_continuation() {
+    for (src, content, offset) in [
+        ("? a\n: 1\nb\n", "b", 8),
+        ("? a\n: 1\n[a, b]\n", "[", 8),
+        ("- ? a\n  : 1\n  b\n", "b", 14),
+        ("? a\n: 1\n\nb\n", "b", 9),
+    ] {
+        let errors: Vec<(String, u32)> = yaml_edit::Parse::parse_yaml(src)
+            .positioned_errors()
+            .iter()
+            .map(|e| (e.message.clone(), e.range.start))
+            .collect();
+        assert_eq!(
+            errors,
+            [(
+                format!("Content after the document could not be parsed: {content:?}"),
+                offset
+            )],
+            "{src:?}"
+        );
+    }
+    for (src, expected) in [
+        ("? a\n: 1\n b\n", "{a: 1 b}"),
+        ("- ? a\n  : 1\n   b\n", "[{a: 1 b}]"),
+        ("? a\n: 1\n? b\n", "{a: 1, b: }"),
+    ] {
+        assert_eq!(checked_value(src), checked_value(expected), "{src:?}");
+    }
+}
+
+/// A flow collection key after an explicit-key entry is the same
+/// mapping's next entry.
+#[test]
+fn flow_collection_key_after_explicit_key_entry() {
+    for (src, expected) in [
+        ("? a\n: 1\n[a, b]: 2\n", "{a: 1, [a, b]: 2}"),
+        ("? a\n[a, b]: 2\n", "{a: , [a, b]: 2}"),
+        ("? a\n: 1\n{a: 1}: 2\n", "{a: 1, {a: 1}: 2}"),
+        ("? a\n: 1\n&x [a, b]: 2\n", "{a: 1, &x [a, b]: 2}"),
+        ("? a\n: 1\n!!seq [a, b]: 2\n", "{a: 1, !!seq [a, b]: 2}"),
+        ("- ? a\n  : 1\n  [a, b]: 2\n", "[{a: 1, [a, b]: 2}]"),
+        ("k:\n  ? a\n  : 1\n  [a, b]: 2\n", "{k: {a: 1, [a, b]: 2}}"),
+        (
+            "? a\n: 1\n[a, b]: 2\n? c\n: 3\n[d]: 4\n",
+            "{a: 1, [a, b]: 2, c: 3, [d]: 4}",
+        ),
+    ] {
+        assert_eq!(checked_value(src), checked_value(expected), "{src:?}");
+    }
+}
+
+/// A compact mapping as an explicit value ends where the next entry of
+/// the enclosing mapping starts, left of its first key.
+#[test]
+fn entry_after_compact_mapping_explicit_value() {
+    for (src, expected) in [
+        ("? a\n: b: c\n? d\n: e\n", "{a: {b: c}, d: e}"),
+        ("? a\n: b: c\nd: e\n", "{a: {b: c}, d: e}"),
+        ("x: 1\n? a\n: b: c\n? d\n: e\n", "{x: 1, a: {b: c}, d: e}"),
+        ("? a\n: b: c\n  f: g\n? d\n: e\n", "{a: {b: c, f: g}, d: e}"),
+        ("? a\n: !!map b: c\n? d\n: e\n", "{a: {b: c}, d: e}"),
+        ("? a\n: &x b: c\n? d\n: e\n", "{a: {b: c}, d: e}"),
+        ("? a\n: {x: 1}: c\n? d\n: e\n", "{a: {{x: 1}: c}, d: e}"),
+        ("- ? a\n  : b: c\n  ? d\n  : e\n", "[{a: {b: c}, d: e}]"),
+        (
+            "k:\n  ? a\n  : b: c\n  ? d\n  : e\n",
+            "{k: {a: {b: c}, d: e}}",
+        ),
+    ] {
+        assert_eq!(checked_value(src), checked_value(expected), "{src:?}");
+    }
+}
+
+fn rename_in(src: &str, old: &str, new: &str) -> (bool, String) {
+    let yaml = YamlFile::from_str(src).unwrap();
+    let renamed = yaml
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .rename_key(old, new);
+    (renamed, yaml.to_string())
+}
+
+#[test]
+fn rename_key_onto_existing_key_replaces_it() {
+    assert_eq!(
+        rename_in("a: 1\nb: 2\nc: 3\n", "a", "b"),
+        (true, "b: 1\nc: 3\n".to_string())
+    );
+    assert_eq!(
+        rename_in("b: 2\na: 1\nc: 3\n", "a", "b"),
+        (true, "b: 1\nc: 3\n".to_string())
+    );
+    assert_eq!(
+        rename_in("x: 0\na: 1\nc: 3\nb: 2", "a", "b"),
+        (true, "x: 0\nb: 1\nc: 3".to_string())
+    );
+    assert_eq!(
+        rename_in("a: 1\nb: 2\nb: 3\n", "a", "b"),
+        (true, "b: 1\n".to_string())
+    );
+    assert_eq!(
+        rename_in("{a: 1, b: 2, c: 3}", "a", "b"),
+        (true, "{b: 1, c: 3}".to_string())
+    );
+}
+
+#[test]
+fn rename_key_onto_existing_key_keeps_comments_and_anchor() {
+    let yaml = YamlFile::from_str("top:\n  b: 2\n  # about a\n  a: &x 1\n").unwrap();
+    let top = yaml
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get_mapping("top")
+        .unwrap();
+    assert!(top.rename_key("a", "b"));
+    assert_eq!(yaml.to_string(), "top:\n  # about a\n  b: &x 1\n");
+}
+
+#[test]
+fn rename_key_to_itself_keeps_duplicates() {
+    assert_eq!(
+        rename_in("a: 1\na: 2\n", "a", "a"),
+        (true, "a: 1\na: 2\n".to_string())
+    );
+}
+
+#[test]
+fn document_rename_key_onto_existing_key() {
+    let doc = yaml_edit::Document::from_str("a: 1\nb: 2\n").unwrap();
+    assert!(doc.rename_key("a", "b"));
+    assert_eq!(doc.to_string(), "b: 1\n");
+}
+
+/// Giving a value to a block explicit key that has none adds the `:` line
+/// the value goes on.
+#[test]
+fn set_value_of_explicit_key_without_one() {
+    for (source, expected) in [
+        ("? a", "? a\n: 5"),
+        ("? a\n", "? a\n: 5\n"),
+        ("? a\nb: 1\n", "? a\n: 5\nb: 1\n"),
+        ("? a # c", "? a # c\n: 5"),
+        ("? a # c\nb: 1\n", "? a # c\n: 5\nb: 1\n"),
+    ] {
+        let yaml = YamlFile::from_str(source).unwrap();
+        yaml.document().unwrap().as_mapping().unwrap().set("a", 5);
+        assert_file_edited_valid(&yaml, expected);
+    }
+    for (source, expected) in [
+        ("x:\n  ? a", "x:\n  ? a\n  : 5"),
+        ("x:\n  ? a\ny: 1\n", "x:\n  ? a\n  : 5\ny: 1\n"),
+    ] {
+        let yaml = YamlFile::from_str(source).unwrap();
+        let doc = yaml.document().unwrap();
+        doc.as_mapping()
+            .unwrap()
+            .get_mapping("x")
+            .unwrap()
+            .set("a", 5);
+        assert_file_edited_valid(&yaml, expected);
+    }
+    let seq = || {
+        yaml_edit::Document::from_str("- 1\n- 2\n")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+    };
+    for (source, expected) in [
+        ("? a", "? a\n:\n  - 1\n  - 2"),
+        ("? a\n", "? a\n:\n  - 1\n  - 2\n"),
+        ("? a\nb: 1\n", "? a\n:\n  - 1\n  - 2\nb: 1\n"),
+    ] {
+        let yaml = YamlFile::from_str(source).unwrap();
+        yaml.document()
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .set("a", seq());
+        assert_file_edited_valid(&yaml, expected);
+    }
+}
+
+/// A `:` right after an alias would be read as part of its name (`*a:`),
+/// so an alias key is followed by a space.
+#[test]
+fn alias_key_is_separated_from_colon() {
+    let edits: [(&str, MappingEdit, &str); 6] = [
+        (
+            "x: &a k\n",
+            |m| m.set(Alias::new("a"), 1),
+            "x: &a k\n*a : 1\n",
+        ),
+        (
+            "{x: &a k}\n",
+            |m| m.set(Alias::new("a"), 1),
+            "{x: &a k, *a : 1}\n",
+        ),
+        (
+            "x: &a k\ny: 1\n",
+            |m| assert!(m.rename_key("y", Alias::new("a"))),
+            "x: &a k\n*a : 1\n",
+        ),
+        (
+            "{x: &a k, y: 1}\n",
+            |m| assert!(m.rename_key("y", Alias::new("a"))),
+            "{x: &a k, *a : 1}\n",
+        ),
+        (
+            "x: &a k\ny: 1\n",
+            |m| assert!(m.insert_after("x", Alias::new("a"), 2)),
+            "x: &a k\n*a : 2\ny: 1\n",
+        ),
+        (
+            "x: &a k\nb: [1]\nc:\n  *a : 1\n",
+            |m| {
+                let c = m.get("c").unwrap();
+                m.get_sequence("b").unwrap().push(c);
+            },
+            "x: &a k\nb: [1, {*a : 1}]\nc:\n  *a : 1\n",
+        ),
+    ];
+    for (source, edit, expected) in edits {
+        let file = YamlFile::from_str(source).unwrap();
+        edit(&file.document().unwrap().as_mapping().unwrap());
+        assert_file_edited_valid(&file, expected);
+    }
+}
+
+#[test]
+fn set_explicit_key_value_with_cr_line_breaks() {
+    let file = YamlFile::from_str("? a\r? b\r").unwrap();
+    file.document().unwrap().as_mapping().unwrap().set("a", "x");
+    assert_file_edited_valid(&file, "? a\r: x\r? b\r");
+}
+
+/// A renamed key that held more than one node, which the validator
+/// rejects, is replaced whole, with nothing of the old key left between
+/// the new one and the `:`.
+#[test]
+fn rename_key_holding_two_nodes() {
+    let doc = YamlFile::from_str("[q] x: 1\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let old = mapping.keys().next().unwrap();
+    assert!(mapping.rename_key(old, "z"));
+    assert_cst_ok(&doc);
+    assert_parser_shaped(&doc);
+    assert_eq!(doc.to_string(), "z: 1\n");
+}
+
+/// A block collection given as a new key is written in flow form.
+#[test]
+fn set_with_block_collection_key() {
+    let source = YamlFile::from_str("k:\n  - x\n  - y\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    let block = source.as_mapping().unwrap().get("k").unwrap();
+    let doc = YamlFile::from_str("a: 1\n").unwrap().document().unwrap();
+    doc.as_mapping().unwrap().set(block, 2);
+    assert_cst_ok(&doc);
+    assert_parser_shaped(&doc);
+    assert_eq!(doc.to_string(), "a: 1\n[x, y]: 2\n");
+}
+
+/// Setting the value of a block explicit key that has none writes its `:`
+/// line after the key, whose line the key ends itself.
+#[test]
+fn set_value_of_block_explicit_key_without_one() {
+    for (src, expected) in [
+        ("? - a\n", "? - a\n: 5\n"),
+        ("? - a\n  - b\nc: 1\n", "? - a\n  - b\n: 5\nc: 1\n"),
+        ("? a\n", "? a\n: 5\n"),
+        ("? |\n  t\n", "? |\n  t\n: 5\n"),
+        ("? [a,\n  b]\n", "? [a,\n  b]\n: 5\n"),
+        ("? - a\n? b\n", "? - a\n: 5\n? b\n"),
+    ] {
+        let doc = YamlFile::from_str(src).unwrap().document().unwrap();
+        let mapping = doc.as_mapping().unwrap();
+        let key = mapping.keys().next().unwrap();
+        mapping.set(key, 5);
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), expected, "{src:?}");
+    }
+}
+
+#[test]
+fn rename_key() {
+    for (src, old, new, renamed, expected) in [
+        (
+            "old_name: value",
+            "old_name",
+            "new_name",
+            true,
+            "new_name: value",
+        ),
+        (
+            "name: my-app\nversion: 1.0\nauthor: Alice",
+            "version",
+            "app_version",
+            true,
+            "name: my-app\napp_version: 1.0\nauthor: Alice",
+        ),
+        (
+            "count: 42\nenabled: true",
+            "count",
+            "total",
+            true,
+            "total: 42\nenabled: true",
+        ),
+        ("name: Alice", "age", "years", false, "name: Alice"),
+        (
+            "name: Alice\nage: 30\ncity: NYC",
+            "name",
+            "username",
+            true,
+            "username: Alice\nage: 30\ncity: NYC",
+        ),
+        (
+            "name: Alice\nage: 30\ncity: NYC",
+            "age",
+            "years",
+            true,
+            "name: Alice\nyears: 30\ncity: NYC",
+        ),
+        (
+            "name: Alice\nage: 30\ncity: NYC",
+            "city",
+            "location",
+            true,
+            "name: Alice\nage: 30\nlocation: NYC",
+        ),
+    ] {
+        let text = edit_root(src, |m| {
+            assert_eq!(m.rename_key(old, new), renamed, "{src:?}")
+        });
+        assert_eq!(text, expected, "{src:?}");
     }
 }

@@ -859,14 +859,4 @@ mod tests {
         );
         assert_eq!(root.to_string(), "aXe");
     }
-
-    #[test]
-    fn test_terminate_plain_scalar_with_indicator_line() {
-        // The `>` token opening the plain scalar's second line is not a
-        // block scalar header, so the break goes after the scalar.
-        use std::str::FromStr;
-        let yaml = crate::yaml::YamlFile::from_str("a: b\n  > c").unwrap();
-        yaml.document().unwrap().as_mapping().unwrap().set("d", 1);
-        crate::debug::assert_edited(&yaml, "a: b\n  > c\nd: 1");
-    }
 }

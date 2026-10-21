@@ -13,15 +13,18 @@
 
 mod common;
 use common::{
-    assert_edited, assert_file_cst_ok, count_nodes, parse_clean, parse_with_violations,
-    render_documents,
+    assert_edited, assert_file_cst_ok, check_edit, count_nodes, edit_metadata, parse_clean,
+    parse_with_violations, render_documents,
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::anchor_resolution::DocumentResolvedExt;
 use yaml_edit::path::YamlPath;
 use yaml_edit::validator::Validator;
-use yaml_edit::{debug, Alias, Document, SyntaxKind, YamlFile, YamlNode, YamlValue};
+use yaml_edit::{
+    debug, Alias, AnchorRegistry, Document, DocumentMergedExt, MappingMergedExt, MappingView,
+    MergedMapping, ResolveError, SyntaxKind, YamlFile, YamlNode, YamlValue,
+};
 
 /// A node as compact text: flow collections as `[..]` and `{..}`, block
 /// ones as `seq[..]` and `map{..}`, and an alias as `*name`.
@@ -56,31 +59,6 @@ fn assert_means(doc: &Document, meaning: &str) {
         YamlValue::from_document(doc).unwrap(),
         YamlValue::from_document(&meaning).unwrap()
     );
-}
-
-/// Set `metadata.version`, and `metadata.status` if `yaml` has one, in
-/// `file` parsed from `yaml`, checking that nothing else changes.
-#[track_caller]
-fn edit_metadata(file: &YamlFile, yaml: &str) {
-    let metadata = file
-        .document()
-        .unwrap()
-        .as_mapping()
-        .unwrap()
-        .get_mapping("metadata")
-        .unwrap();
-    metadata.set("version", "0.1.1");
-    assert_file_cst_ok(file);
-    let expected = yaml.replace("version: 0.1.0", "version: 0.1.1");
-    assert_eq!(file.to_string(), expected);
-    if yaml.contains("status: draft") {
-        metadata.set("status", "stable");
-        assert_file_cst_ok(file);
-        assert_eq!(
-            file.to_string(),
-            expected.replace("status: draft", "status: stable")
-        );
-    }
 }
 
 #[test]
@@ -119,6 +97,29 @@ anchor: &undefined value"#,
             "map{node: map{next: *node}}",
         ),
         ("&x [*x]", "[*x]"),
+        ("key: &anchor value\nref: *anchor", "map{key: value, ref: *anchor}"),
+        // Anchor names with digits, underscores and capitals.
+        (
+            "key1: &anchor_123 val1\nref1: *anchor_123",
+            "map{key1: val1, ref1: *anchor_123}",
+        ),
+        (
+            "key2: &AnchorName val2\nref2: *AnchorName",
+            "map{key2: val2, ref2: *AnchorName}",
+        ),
+        (
+            "key3: &anchor123abc val3\nref3: *anchor123abc",
+            "map{key3: val3, ref3: *anchor123abc}",
+        ),
+        (
+            "items:\n  - &first_item value1\n  - second_item\n  - *first_item",
+            "map{items: seq[value1, second_item, *first_item]}",
+        ),
+        // Whitespace around anchors and aliases is kept.
+        (
+            "key:  &anchor   value  \nref:  *anchor  ",
+            "map{key: value, ref: *anchor}",
+        ),
         (
             r#"level1: &l1
   level2: &l2
@@ -1481,4 +1482,1639 @@ fn annotated_alias_key_parses_like_a_scalar_key() {
             );
         }
     }
+}
+
+#[test]
+fn anchor_with_different_value_types() {
+    let yaml = r#"string_anchor: &str_val "hello"
+int_anchor: &int_val 42
+bool_anchor: &bool_val true
+null_anchor: &null_val null
+str_ref: *str_val
+int_ref: *int_val
+bool_ref: *bool_val
+null_ref: *null_val"#;
+    assert_eq!(
+        render_documents(yaml),
+        [
+            "map{string_anchor: hello, int_anchor: 42, bool_anchor: true, null_anchor: ~, \
+          str_ref: *str_val, int_ref: *int_val, bool_ref: *bool_val, null_ref: *null_val}"
+        ]
+    );
+    let file = YamlFile::from_str(yaml).unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    assert_eq!(mapping.get("int_anchor").unwrap().to_i64(), Some(42));
+    assert_eq!(mapping.get("bool_anchor").unwrap().to_bool(), Some(true));
+}
+
+fn doc(text: &str) -> Document {
+    Document::from_str(text).expect("parse")
+}
+
+/// `get_resolved(key)` on `yaml` as `(key, value)` pairs, with each
+/// value rendered through `Display`.
+fn resolved_pairs(yaml: &str, key: &str) -> Vec<(String, String)> {
+    let resolved = doc(yaml).get_resolved(key).unwrap().expect("key resolves");
+    let mapping = resolved.as_mapping().expect("value is a mapping");
+    mapping
+        .iter()
+        .map(|(k, v)| (k.clone(), v.to_string()))
+        .collect()
+}
+
+fn pairs(expected: &[(&str, &str)]) -> Vec<(String, String)> {
+    expected
+        .iter()
+        .map(|&(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+#[test]
+fn get_resolved_merge_sequence_earlier_wins() {
+    let yaml = "a: &a {k: from_a}\nb: &b {k: from_b, j: 2}\nm:\n  <<: [*a, *b]\n";
+    assert_eq!(
+        resolved_pairs(yaml, "m"),
+        pairs(&[("j", "2"), ("k", "from_a")])
+    );
+}
+
+fn merged_pairs(yaml: &str, key: &str) -> Vec<(String, String)> {
+    let d = doc(yaml);
+    let reg = d.build_anchor_registry();
+    let m = d.as_mapping().unwrap().get_mapping(key).unwrap();
+    let merged = m.merged(&reg).unwrap();
+    merged
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+#[test]
+fn get_resolved_merge_shadows_by_key_value() {
+    // 16 and 0x10 are the same int, ~ and null the same null.
+    let yaml = "a: &a {0x10: merged, ~: merged}\nm: {<<: *a, 16: direct, null: direct}\n";
+    assert_eq!(
+        resolved_pairs(yaml, "m"),
+        pairs(&[("16", "direct"), ("null", "direct")])
+    );
+    assert_eq!(
+        merged_pairs(yaml, "m"),
+        pairs(&[("16", "direct"), ("null", "direct")])
+    );
+}
+
+#[test]
+fn nested_merge_keys_are_followed() {
+    let yaml = "b: &b {x: 1, y: 0}\nmid: &m\n  <<: *b\n  y: 2\ntop:\n  <<: *m\n";
+    assert_eq!(
+        resolved_pairs(yaml, "top"),
+        pairs(&[("x", "1"), ("y", "2")])
+    );
+    assert_eq!(merged_pairs(yaml, "top"), pairs(&[("y", "2"), ("x", "1")]));
+    let d = doc(yaml);
+    assert_eq!(d.try_get_path("top.x").unwrap().to_string(), "1");
+    assert_eq!(d.try_get_path("top.y").unwrap().to_string(), "2");
+}
+
+#[test]
+fn self_referencing_merge_terminates() {
+    let yaml = "a: &a\n  k: 1\n  <<: *a\n";
+    assert_eq!(resolved_pairs(yaml, "a"), pairs(&[("k", "1")]));
+    assert_eq!(merged_pairs(yaml, "a"), pairs(&[("k", "1")]));
+}
+
+#[test]
+fn inline_mapping_merge_value() {
+    for (yaml, expected) in [
+        ("m:\n  <<: {z: 1}\n  y: 2\n", vec![("y", "2"), ("z", "1")]),
+        (
+            "a: &a {w: 0}\nm:\n  <<: [{z: 1}, *a]\n  y: 2\n",
+            vec![("w", "0"), ("y", "2"), ("z", "1")],
+        ),
+    ] {
+        assert_eq!(resolved_pairs(yaml, "m"), pairs(&expected), "{yaml:?}");
+        assert_eq!(doc(yaml).try_get_path("m.z").unwrap().to_string(), "1");
+    }
+    assert_eq!(
+        merged_pairs("m:\n  <<: {z: 1}\n  y: 2\n", "m"),
+        pairs(&[("y", "2"), ("z", "1")])
+    );
+}
+
+#[test]
+fn get_resolved_follows_aliases() {
+    for (yaml, key, expected) in [
+        ("a: &x 1\nb: *x\n", "b", "b: 1\n"),
+        ("x: &x 1\nm: {a: *x, c: 2}\n", "m", "m: {a: 1, c: 2}\n"),
+        ("x: &x 1\ns: [*x, 2]\n", "s", "s: [1, 2]\n"),
+        ("x: &x {k: 1}\nm:\n  a: [*x]\n", "m", "m:\n  a: [{k: 1}]\n"),
+        (
+            "b: &b {k: 1}\nx: &x {<<: *b}\nm: {a: *x}\n",
+            "m",
+            "m: {a: {k: 1}}\n",
+        ),
+    ] {
+        assert_eq!(
+            doc(yaml).get_resolved(key).unwrap(),
+            doc(expected).get_resolved(key).unwrap(),
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn get_resolved_keeps_complex_keys() {
+    assert_eq!(
+        resolved_pairs("m:\n  ? [p, q]\n  : complex\n  j: 1\n", "m"),
+        pairs(&[("[p, q]", "complex"), ("j", "1")])
+    );
+}
+
+#[test]
+fn get_resolved_key_string_is_canonical() {
+    // Equal keys have the same string form, however they are written.
+    for (yaml, expected) in [
+        ("m:\n  ? [a,b]\n  : 1\n", "[a, b]"),
+        ("m:\n  ? - a\n    - b\n  : 1\n", "[a, b]"),
+        ("m: {[a, b]: 1}\n", "[a, b]"),
+        ("m:\n  ? - a\n    # c\n  : 1\n", "[a]"),
+        ("m:\n  ? {y: 2, x: 1}\n  : 1\n", "{x: 1, y: 2}"),
+        ("m:\n  ? y: 2\n    x: 1\n  : 1\n", "{x: 1, y: 2}"),
+        ("m: {['a', \"b\"]: 1}\n", "[a, b]"),
+        (
+            "m: {[0x1, !!str a, ~, True, 1.50]: 1}\n",
+            "[1, a, null, true, 1.5]",
+        ),
+        ("m: {['1', 'a,b', '']: 1}\n", "['1', \"a,b\", '']"),
+        ("m: {[!!int '1', !t a, !!int x]: 1}\n", "[1, !t a, !!int x]"),
+        ("m: {!t [a]: 1}\n", "!t [a]"),
+        ("m: {!!seq [a]: 1}\n", "[a]"),
+        ("m: {[{b: 1, a: 2}, []]: 1}\n", "[{a: 2, b: 1}, []]"),
+        ("x: &x a\nm: {[*x]: 1}\n", "[a]"),
+        ("m: {'a': 1}\n", "a"),
+        ("m: {\"a\": 1}\n", "a"),
+        ("m: {0x1: 1}\n", "1"),
+        ("m: {!!int 1: 1}\n", "1"),
+        ("m: {!!str 1: 1}\n", "1"),
+        ("m: {~: 1}\n", "null"),
+        ("m: {True: 1}\n", "true"),
+        ("m: {.INF: 1}\n", ".inf"),
+        ("m: {!t a: 1}\n", "a"),
+    ] {
+        assert_eq!(
+            resolved_pairs(yaml, "m"),
+            pairs(&[(expected, "1")]),
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn get_resolved_equal_collection_keys() {
+    for (yaml, first, second) in [
+        (
+            "m:\n  ? [a, b]\n  : 1\n  ? [a,b]\n  : 2\n",
+            "[a, b]",
+            "[a,b]",
+        ),
+        ("m: {[0x1]: 1, [1]: 2}\n", "[0x1]", "[1]"),
+        ("x: &x a\nm: {[*x]: 1, [a]: 2}\n", "[*x]", "[a]"),
+        ("x: &x a\nm: {[*x]: 1, [*x]: 2}\n", "[*x]", "[*x]"),
+    ] {
+        assert_eq!(
+            doc(yaml).get_resolved("m"),
+            Err(ResolveError::DuplicateKey {
+                first: first.to_string(),
+                second: second.to_string(),
+            }),
+            "{yaml:?}"
+        );
+    }
+    // A direct key shadows an equal merged one, however it is written.
+    for yaml in [
+        "s: &s {[a, b]: 1}\nm: {<<: *s, [a,b]: 2}\n",
+        "s: &s {[a, b]: 1}\nm:\n  <<: *s\n  ? - a\n    - b\n  : 2\n",
+    ] {
+        assert_eq!(
+            resolved_pairs(yaml, "m"),
+            pairs(&[("[a, b]", "2")]),
+            "{yaml:?}"
+        );
+    }
+    // A string spelled like a collection is a different key.
+    assert_eq!(
+        doc("m: {[a, b]: 1, '[a, b]': 2}\n").get_resolved("m"),
+        Err(ResolveError::KeyCollision {
+            first: "[a, b]".to_string(),
+            second: "'[a, b]'".to_string(),
+        })
+    );
+    assert_eq!(
+        doc("m: &a {[*a]: 1}\n").get_resolved("m"),
+        Err(ResolveError::RecursiveAlias {
+            alias: "a".to_string()
+        })
+    );
+}
+
+#[test]
+fn merged_alias_key_is_the_node_it_refers_to() {
+    let d = doc("x: &a k\ns: &s {k: 1, j: 3}\nm: {<<: *s, *a : 2}\n");
+    let reg = d.build_anchor_registry();
+    let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+    let merged = m.merged(&reg).unwrap();
+    assert_eq!(merged.len(), 2);
+    assert_eq!(merged.get("k").unwrap().to_i64(), Some(2));
+    assert_eq!(merged.get("j").unwrap().to_i64(), Some(3));
+    let keys: Vec<_> = merged.keys().map(|k| k.to_string()).collect();
+    assert_eq!(keys, vec!["*a", "j"]);
+}
+
+#[test]
+fn get_resolved_missing_key() {
+    assert_eq!(doc("a: 1\n").get_resolved("b"), Ok(None));
+}
+
+#[test]
+fn get_resolved_undefined_alias() {
+    let undefined = Err(ResolveError::UndefinedAlias {
+        alias: "nope".to_string(),
+    });
+    assert_eq!(doc("b: *nope\n").get_resolved("b"), undefined);
+    assert_eq!(doc("m: {a: *nope}\n").get_resolved("m"), undefined);
+    assert_eq!(doc("m: [1, *nope]\n").get_resolved("m"), undefined);
+}
+
+#[test]
+fn get_resolved_recursive_alias() {
+    assert_eq!(
+        doc("a: &a [*a]\n").get_resolved("a"),
+        Err(ResolveError::RecursiveAlias {
+            alias: "a".to_string()
+        })
+    );
+}
+
+#[test]
+fn get_resolved_redefined_anchor_is_not_recursive() {
+    assert_eq!(
+        doc("a: &x [&x 1, *x]\nb: *x\n").get_resolved("a"),
+        Ok(Some(YamlValue::Sequence(vec![
+            YamlValue::from(1),
+            YamlValue::from(1)
+        ])))
+    );
+}
+
+#[test]
+fn get_resolved_invalid_merge() {
+    assert_eq!(
+        doc("m: {<<: *nope}\n").get_resolved("m"),
+        Err(ResolveError::UndefinedAlias {
+            alias: "nope".to_string()
+        })
+    );
+    assert_eq!(
+        doc("a: &a 5\nm: {<<: *a}\n").get_resolved("m"),
+        Err(ResolveError::InvalidMergeOperand {
+            operand: "*a".to_string()
+        })
+    );
+    assert_eq!(
+        doc("m: {<<: [3]}\n").get_resolved("m"),
+        Err(ResolveError::InvalidMergeOperand {
+            operand: "3".to_string()
+        })
+    );
+}
+
+#[test]
+fn quoted_merge_key_is_an_ordinary_key() {
+    for yaml in [
+        "a: &a {k: 1}\nm:\n  '<<': *a\n  j: 2\n",
+        "a: &a {k: 1}\nm:\n  \"<<\": *a\n  j: 2\n",
+    ] {
+        let d = doc(yaml);
+        let resolved = d.get_resolved("m").unwrap().unwrap();
+        let keys: Vec<&str> = resolved
+            .as_mapping()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, vec!["<<", "j"], "{yaml:?}");
+
+        let reg = d.build_anchor_registry();
+        let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+        let merged = m.merged(&reg).unwrap();
+        let keys: Vec<String> = merged
+            .keys()
+            .map(|k| k.as_scalar().unwrap().as_string())
+            .collect();
+        assert_eq!(keys, vec!["<<", "j"], "{yaml:?}");
+        assert_eq!(merged.get("k"), None, "{yaml:?}");
+        assert_eq!(
+            merged.get("<<").map(|v| v.to_string()).as_deref(),
+            Some("{k: 1}"),
+            "{yaml:?}"
+        );
+        assert_eq!(
+            d.try_get_path("m.k"),
+            Err(yaml_edit::path::PathError::NotFound { at: "k".into() }),
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn merged_iter_keeps_non_string_keys() {
+    assert_eq!(
+        merged_pairs("a: &a {x: 1}\nm:\n  <<: *a\n  ? [p, q]\n  : complex\n", "m"),
+        pairs(&[("[p, q]", "complex"), ("x", "1")])
+    );
+    // The int 1 and the string '1' are different keys.
+    let yaml = "s: &s {1: from_src, x: 1}\nm:\n  <<: *s\n  '1': base\n  x: 2\n";
+    assert_eq!(
+        merged_pairs(yaml, "m"),
+        pairs(&[("'1'", "base"), ("x", "2"), ("1", "from_src")])
+    );
+    let d = doc(yaml);
+    let reg = d.build_anchor_registry();
+    let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+    assert_eq!(m.merged(&reg).unwrap().len(), 3);
+    assert_eq!(
+        m.merged(&reg).unwrap().get(1).unwrap().to_string(),
+        "from_src"
+    );
+    assert_eq!(
+        m.merged(&reg).unwrap().get("1").unwrap().to_string(),
+        "base"
+    );
+}
+
+#[test]
+fn get_resolved_keys_are_decoded() {
+    // Mapping::pairs() yields the KEY wrapper, so casting it straight to
+    // Scalar failed and the key fell back to raw text. A quoted key kept
+    // its quotes and became unreachable by its own name -- but only
+    // without a merge key, since apply_merge_keys decodes separately.
+    for (yaml, expected) in [
+        ("a:\n  '0': z\n  x: 1\n", vec!["0", "x"]),
+        ("a:\n  \"k\": z\n", vec!["k"]),
+        ("a:\n  plain: z\n", vec!["plain"]),
+        // With a merge key, which takes the other code path.
+        ("s: &s\n  q: r\na:\n  <<: *s\n  '0': z\n", vec!["0", "q"]),
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        let resolved = doc.get_resolved("a").unwrap().expect("a resolves");
+        let mapping = resolved.as_mapping().expect("a is a mapping");
+        let keys: Vec<&str> = mapping.keys().map(String::as_str).collect();
+        assert_eq!(keys, expected, "{yaml:?}");
+        for key in expected {
+            assert!(
+                mapping.contains_key(key),
+                "{yaml:?}: {key:?} not reachable by name"
+            );
+        }
+    }
+}
+
+#[test]
+fn get_resolved_expands_merge_keys() {
+    // `*a` reaches apply_merge_keys as an ALIAS node, not a scalar, so
+    // the merge used to fall through and drop every inherited key. Check
+    // get_resolved against the MergedMapping view, which is the same
+    // question asked of the newer code path.
+    for (yaml, resolved, merged) in [
+        (
+            "a: &a\n  x: 1\nb: &b\n  y: 2\nm:\n  <<: [*a, *b]\n  z: 3\n",
+            vec![("x", "1"), ("y", "2"), ("z", "3")],
+            vec![("z", "3"), ("x", "1"), ("y", "2")],
+        ),
+        (
+            "a: &a\n  x: 1\nm:\n  <<: *a\n  z: 3\n",
+            vec![("x", "1"), ("z", "3")],
+            vec![("z", "3"), ("x", "1")],
+        ),
+    ] {
+        assert_eq!(resolved_pairs(yaml, "m"), pairs(&resolved), "{yaml:?}");
+        assert_eq!(merged_pairs(yaml, "m"), pairs(&merged), "{yaml:?}");
+    }
+}
+
+#[test]
+fn merged_basic_merge_key() {
+    let yaml = "\
+defaults: &d
+  timeout: 30
+  retries: 3
+
+prod:
+  <<: *d
+  host: prod.example.com
+";
+    let d = doc(yaml);
+    let root = d.as_mapping().unwrap();
+    let reg = d.build_anchor_registry();
+    let prod = root.get_mapping("prod").unwrap();
+    let m = prod.merged(&reg).unwrap();
+
+    assert_eq!(m.get("timeout").unwrap().to_i64(), Some(30));
+    assert_eq!(m.get("retries").unwrap().to_i64(), Some(3));
+    assert_eq!(
+        m.get("host").unwrap().as_scalar().unwrap().as_string(),
+        "prod.example.com"
+    );
+}
+
+#[test]
+fn merged_direct_key_wins() {
+    let yaml = "\
+defaults: &d
+  timeout: 30
+
+prod:
+  <<: *d
+  timeout: 60
+";
+    let d = doc(yaml);
+    let reg = d.build_anchor_registry();
+    let prod = d.as_mapping().unwrap().get_mapping("prod").unwrap();
+    let m = prod.merged(&reg).unwrap();
+
+    assert_eq!(m.get("timeout").unwrap().to_i64(), Some(60));
+}
+
+#[test]
+fn merged_merge_key_itself_is_hidden() {
+    let yaml = "\
+d: &d
+  a: 1
+m:
+  <<: *d
+";
+    let d = doc(yaml);
+    let reg = d.build_anchor_registry();
+    let inner = d.as_mapping().unwrap().get_mapping("m").unwrap();
+    let m = inner.merged(&reg).unwrap();
+
+    assert!(m.get("<<").is_none());
+    let keys: Vec<String> = m
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["a"]);
+}
+
+#[test]
+fn merged_sequence_of_aliases() {
+    // Per YAML 1.1: earlier aliases take precedence over later ones.
+    let yaml = "\
+a: &a
+  x: 1
+  y: 1
+b: &b
+  y: 2
+  z: 2
+m:
+  <<: [*a, *b]
+";
+    let d = doc(yaml);
+    let reg = d.build_anchor_registry();
+    let inner = d.as_mapping().unwrap().get_mapping("m").unwrap();
+    let m = inner.merged(&reg).unwrap();
+
+    // x only in a
+    assert_eq!(m.get("x").unwrap().to_i64(), Some(1));
+    // y in both - a wins (first listed)
+    assert_eq!(m.get("y").unwrap().to_i64(), Some(1));
+    // z only in b
+    assert_eq!(m.get("z").unwrap().to_i64(), Some(2));
+}
+
+#[test]
+fn tagged_merge_operands_are_mappings() {
+    for yaml in [
+        "a: &a !!map {k: 1}\nm: {<<: *a}\n",
+        "m: {<<: !!map {k: 1}}\n",
+        "a: &a !!map {k: 1}\nm: {<<: [*a]}\n",
+        "m: {<<: [!!map {k: 1}]}\n",
+    ] {
+        assert_eq!(resolved_pairs(yaml, "m"), pairs(&[("k", "1")]), "{yaml:?}");
+        assert_eq!(merged_pairs(yaml, "m"), pairs(&[("k", "1")]), "{yaml:?}");
+        assert_eq!(
+            doc(yaml).try_get_path("m.k").unwrap().to_string(),
+            "1",
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn merged_undefined_alias_value_is_error() {
+    let undefined = ResolveError::UndefinedAlias {
+        alias: "nope".to_string(),
+    };
+    for yaml in ["m: {a: *nope}\n", "s: &s {a: *nope}\nm: {<<: *s}\n"] {
+        let d = doc(yaml);
+        let reg = d.build_anchor_registry();
+        let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+        assert_eq!(m.merged(&reg).unwrap_err(), undefined, "{yaml:?}");
+    }
+    // A shadowed alias is never looked at.
+    let d = doc("s: &s {a: *nope}\nm: {<<: *s, a: 1}\n");
+    let reg = d.build_anchor_registry();
+    let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+    assert_eq!(m.merged(&reg).unwrap().get("a").unwrap().to_i64(), Some(1));
+}
+
+#[test]
+fn merged_invalid_merge_operand_is_error() {
+    let d = doc("a: &a 5\nm:\n  <<: *nope\n  a: 1\nn:\n  <<: [*a]\n");
+    let reg = d.build_anchor_registry();
+    let root = d.as_mapping().unwrap();
+    assert_eq!(
+        root.get_mapping("m").unwrap().merged(&reg).unwrap_err(),
+        ResolveError::UndefinedAlias {
+            alias: "nope".to_string()
+        }
+    );
+    assert_eq!(
+        root.get_mapping("n").unwrap().merged(&reg).unwrap_err(),
+        ResolveError::InvalidMergeOperand {
+            operand: "*a".to_string()
+        }
+    );
+    assert_eq!(
+        root.merged(&reg).unwrap().get_merged("m").unwrap_err(),
+        ResolveError::UndefinedAlias {
+            alias: "nope".to_string()
+        }
+    );
+    assert_eq!(
+        doc("<<: *nope\n").merged().unwrap_err(),
+        ResolveError::UndefinedAlias {
+            alias: "nope".to_string()
+        }
+    );
+}
+
+#[test]
+fn merged_iter_order_direct_then_merged() {
+    let yaml = "\
+d: &d
+  shared: from_d
+  only_in_d: 1
+m:
+  direct: hi
+  <<: *d
+";
+    let d = doc(yaml);
+    let reg = d.build_anchor_registry();
+    let inner = d.as_mapping().unwrap().get_mapping("m").unwrap();
+    let m = inner.merged(&reg).unwrap();
+
+    let keys: Vec<String> = m
+        .iter()
+        .map(|(k, _)| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(keys, vec!["direct", "shared", "only_in_d"]);
+}
+
+#[test]
+fn merged_len_and_empty() {
+    let yaml = "\
+d: &d
+  a: 1
+  b: 2
+m:
+  <<: *d
+  c: 3
+";
+    let d = doc(yaml);
+    let reg = d.build_anchor_registry();
+    let inner = d.as_mapping().unwrap().get_mapping("m").unwrap();
+    let m = inner.merged(&reg).unwrap();
+
+    assert_eq!(m.len(), 3);
+    assert!(!m.is_empty());
+}
+
+#[test]
+fn merged_alias_value_is_resolved() {
+    let yaml = "\
+target: &t
+  k: 42
+m:
+  ref: *t
+";
+    let d = doc(yaml);
+    let reg = d.build_anchor_registry();
+    let inner = d.as_mapping().unwrap().get_mapping("m").unwrap();
+    let m = inner.merged(&reg).unwrap();
+
+    let r = m.get("ref").unwrap();
+    let nested = r.as_mapping().unwrap();
+    assert_eq!(nested.get("k").unwrap().to_i64(), Some(42));
+}
+
+#[test]
+fn merged_get_merged_nested() {
+    let yaml = "\
+defaults: &d
+  port: 80
+prod:
+  <<: *d
+  inner:
+    a: 1
+";
+    let d = doc(yaml);
+    let reg = d.build_anchor_registry();
+    let prod = d.as_mapping().unwrap().get_mapping("prod").unwrap();
+    let m = prod.merged(&reg).unwrap();
+
+    let inner = m.get_merged("inner").unwrap().unwrap();
+    assert_eq!(inner.get("a").unwrap().to_i64(), Some(1));
+}
+
+#[test]
+fn document_merged_view() {
+    let yaml = "\
+defaults: &d
+  timeout: 30
+shared:
+  <<: *d
+  retries: 5
+";
+    let d = doc(yaml);
+    let view = d.merged().unwrap().unwrap();
+
+    // Top-level keys visible
+    assert!(view.contains_key("defaults"));
+    assert!(view.contains_key("shared"));
+
+    // Drill into merged child via as_mapping()
+    let m = view.as_mapping();
+    let shared = m.get_merged("shared").unwrap().unwrap();
+    assert_eq!(shared.get("timeout").unwrap().to_i64(), Some(30));
+    assert_eq!(shared.get("retries").unwrap().to_i64(), Some(5));
+}
+
+#[test]
+fn merged_does_not_mutate_underlying_cst() {
+    let yaml = "\
+d: &d
+  a: 1
+m:
+  <<: *d
+  b: 2
+";
+    let d = doc(yaml);
+    let reg = d.build_anchor_registry();
+    let inner = d.as_mapping().unwrap().get_mapping("m").unwrap();
+    let _ = inner.merged(&reg).unwrap().get("a");
+    // Original document text should round-trip unchanged.
+    assert_eq!(d.to_string(), yaml);
+}
+
+#[test]
+fn merged_alias_uses_preceding_anchor_definition() {
+    let d = doc("a: &x 1\nb: *x\nc: &x 2\nd: *x\n");
+    let view = d.merged().unwrap().unwrap();
+    assert_eq!(view.get("b").unwrap().to_i64(), Some(1));
+    assert_eq!(view.get("d").unwrap().to_i64(), Some(2));
+}
+
+#[test]
+fn merged_merge_key_uses_preceding_anchor_definition() {
+    let d = doc("a: &x {k: 1}\nm:\n  <<: *x\nc: &x {k: 2}\n");
+    let view = d.merged().unwrap().unwrap();
+    let m = view.as_mapping().get_merged("m").unwrap().unwrap();
+    assert_eq!(m.get("k").unwrap().to_i64(), Some(1));
+}
+
+#[test]
+fn merged_alias_ignores_later_anchor() {
+    assert_eq!(
+        doc("b: *x\na: &x 1\n").merged().unwrap_err(),
+        ResolveError::UndefinedAlias {
+            alias: "x".to_string()
+        }
+    );
+}
+
+#[test]
+fn registry_resolve_returns_last_definition() {
+    let d = doc("a: &x 1\nc: &x 2\n");
+    let reg = d.build_anchor_registry();
+    assert_eq!(reg.resolve("x").unwrap().text().to_string(), "2");
+}
+
+#[test]
+fn anchor_after_tag_covers_the_tag() {
+    // `!!str &x` and `&x !!str` are the same node properties.
+    for src in ["a: !!str &x 1\nb: *x\n", "a: &x !!str 1\nb: *x\n"] {
+        let d = doc(src);
+        assert_eq!(
+            d.get_resolved("b"),
+            doc("b: !!str 1\n").get_resolved("b"),
+            "{src:?}"
+        );
+    }
+}
+
+#[test]
+fn merge_key_alias_to_sequence() {
+    for src in [
+        "a: &a {x: 1}\nb: &b {x: 2, y: 2}\nl: &l [*a, *b]\nm:\n  <<: *l\n",
+        "a: &a {x: 1}\nb: &b {x: 2, y: 2}\nm:\n  <<: !!seq [*a, *b]\n",
+    ] {
+        let d = doc(src);
+        let view = d.merged().unwrap().unwrap();
+        let m = view.as_mapping().get_merged("m").unwrap().unwrap();
+        assert_eq!(m.get("x").unwrap().to_i64(), Some(1), "{src:?}");
+        assert_eq!(m.get("y").unwrap().to_i64(), Some(2), "{src:?}");
+        let value = yaml_edit::YamlValue::from_document(&d).unwrap();
+        let yaml_edit::YamlValue::Mapping(map) = value else {
+            panic!("expected a mapping");
+        };
+        assert_eq!(
+            map["m"],
+            yaml_edit::YamlValue::from_mapping(std::collections::BTreeMap::from([
+                ("x".to_string(), yaml_edit::YamlValue::from(1i64)),
+                ("y".to_string(), yaml_edit::YamlValue::from(2i64)),
+            ])),
+            "{src:?}"
+        );
+    }
+}
+
+#[test]
+fn merge_key_from_tagged_mapping() {
+    for src in [
+        "a: !!map &x\n  k: 1\nb:\n  <<: *x\n",
+        "a: &x !!map\n  k: 1\nb:\n  <<: *x\n",
+    ] {
+        let d = doc(src);
+        let view = d.merged().unwrap().unwrap();
+        let b = view.as_mapping().get_merged("b").unwrap().unwrap();
+        assert_eq!(b.get("k").unwrap().to_i64(), Some(1), "{src:?}");
+    }
+}
+
+#[test]
+fn get_resolved_key_collision_is_error() {
+    let cases = [
+        ("m: {1: int, '1': str}\n", "1", "'1'"),
+        ("m: {a: {'true': str, true: bool}}\n", "'true'", "true"),
+        (
+            "s: &s {1: from_src}\nm:\n  <<: *s\n  '1': base\n",
+            "'1'",
+            "1",
+        ),
+        (
+            "s: &s {1: a}\nt: &t {'1': b}\nm: {<<: [*s, *t]}\n",
+            "1",
+            "'1'",
+        ),
+        ("s: &s {1: a}\nm: [{<<: *s, '1': b}]\n", "'1'", "1"),
+    ];
+    for (yaml, first, second) in cases {
+        assert_eq!(
+            doc(yaml).get_resolved("m"),
+            Err(ResolveError::KeyCollision {
+                first: first.to_string(),
+                second: second.to_string(),
+            }),
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn get_resolved_duplicate_key_is_error() {
+    for (yaml, first, second) in [
+        ("m: {a: 1, a: 2}\n", "a", "a"),
+        ("m:\n  a: 1\n  b: 2\n  'a': 3\n", "a", "'a'"),
+        ("m: {16: a, 0x10: b}\n", "16", "0x10"),
+        ("m: {a: {~: 1, null: 2}}\n", "~", "null"),
+        ("x: &k a\nm: {a: 1, *k : 2}\n", "a", "*k"),
+        ("x: &k a\nm: {*k : 1, *k : 2}\n", "*k", "*k"),
+        // Within a merged mapping, too.
+        ("s: &s {a: 1, a: 2}\nm: {<<: *s, b: 3}\n", "a", "a"),
+        ("s: &s {a: 1, a: 2}\nm: {<<: *s, a: 3}\n", "a", "a"),
+        ("m: [{a: 1, a: 2}]\n", "a", "a"),
+    ] {
+        assert_eq!(
+            doc(yaml).get_resolved("m"),
+            Err(ResolveError::DuplicateKey {
+                first: first.to_string(),
+                second: second.to_string(),
+            }),
+            "{yaml:?}"
+        );
+    }
+    // A direct key shadowing a merged one is not a duplicate, nor are
+    // keys shared between merged mappings.
+    assert_eq!(
+        resolved_pairs(
+            "s: &s {a: 1, b: 1}\nt: &t {a: 2, c: 2}\nm: {b: 3, <<: [*s, *t], c: 3}\n",
+            "m"
+        ),
+        pairs(&[("a", "1"), ("b", "3"), ("c", "3")])
+    );
+    assert_eq!(
+        ResolveError::DuplicateKey {
+            first: "a".to_string(),
+            second: "'a'".to_string()
+        }
+        .to_string(),
+        "duplicate mapping key: \"'a'\" equals \"a\""
+    );
+}
+
+#[test]
+fn get_resolved_equal_keys_are_not_a_collision() {
+    // A key overriding an equal merged key, however it is spelled, is
+    // the normal merge semantics.
+    let yaml = "s: &s {1: a, 0x10: b, x: c}\nm: {<<: *s, 1: d, 16: e, 'x': f}\n";
+    assert_eq!(
+        resolved_pairs(yaml, "m"),
+        pairs(&[("1", "d"), ("16", "e"), ("x", "f")])
+    );
+}
+
+#[test]
+fn key_collision_display() {
+    let e = ResolveError::KeyCollision {
+        first: "1".to_string(),
+        second: "'1'".to_string(),
+    };
+    assert_eq!(
+        e.to_string(),
+        "distinct keys \"1\" and \"'1'\" have the same string form"
+    );
+}
+
+fn mapping(entries: Vec<(&str, YamlValue)>) -> YamlValue {
+    YamlValue::Mapping(
+        entries
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+    )
+}
+
+fn pair_list(entries: Vec<(&str, YamlValue)>) -> Vec<(String, YamlValue)> {
+    entries
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect()
+}
+
+#[test]
+fn get_resolved_tagged_collections() {
+    let k1 = || mapping(vec![("k", YamlValue::from(1))]);
+    for (yaml, expected) in [
+        (
+            "s: &s {k: 1}\nm: !!map {<<: *s, j: *s}\n",
+            YamlValue::tagged(
+                "!!map",
+                mapping(vec![("j", k1()), ("k", YamlValue::from(1))]),
+            ),
+        ),
+        (
+            "s: &s {k: 1}\nm: !!seq [*s, 2]\n",
+            YamlValue::tagged("!!seq", YamlValue::Sequence(vec![k1(), YamlValue::from(2)])),
+        ),
+        (
+            "s: &s {k: 1}\nm: {a: !local [*s]}\n",
+            mapping(vec![(
+                "a",
+                YamlValue::tagged("!local", YamlValue::Sequence(vec![k1()])),
+            )]),
+        ),
+        (
+            "s: &s {k: 1}\nt: &t !!map {a: *s}\nm: [*t]\n",
+            YamlValue::Sequence(vec![YamlValue::tagged("!!map", mapping(vec![("a", k1())]))]),
+        ),
+        (
+            "x: &x a\nm: !!set {? *x, ? b}\n",
+            YamlValue::Set(["a", "b"].map(String::from).into()),
+        ),
+        (
+            "s: &s {k: 1}\nm: !!omap [z: *s, a: 2]\n",
+            YamlValue::OrderedMapping(pair_list(vec![("z", k1()), ("a", YamlValue::from(2))])),
+        ),
+        (
+            "s: &s {k: 1}\nm: !!pairs [z: *s, z: 2]\n",
+            YamlValue::Pairs(pair_list(vec![("z", k1()), ("z", YamlValue::from(2))])),
+        ),
+        (
+            "e: &e {z: 1}\nm: !!omap [*e, a: 2]\n",
+            YamlValue::OrderedMapping(pair_list(vec![
+                ("z", YamlValue::from(1)),
+                ("a", YamlValue::from(2)),
+            ])),
+        ),
+    ] {
+        assert_eq!(doc(yaml).get_resolved("m"), Ok(Some(expected)), "{yaml:?}");
+    }
+}
+
+#[test]
+fn get_resolved_tagged_collection_errors() {
+    let undefined = Err(ResolveError::UndefinedAlias {
+        alias: "nope".to_string(),
+    });
+    for yaml in [
+        "m: !!map {a: *nope}\n",
+        "m: !!seq [*nope]\n",
+        "m: !!set {? *nope}\n",
+        "m: !!omap [a: *nope]\n",
+        "m: !!pairs [a: *nope]\n",
+        "m: !!map {<<: *nope}\n",
+    ] {
+        assert_eq!(doc(yaml).get_resolved("m"), undefined, "{yaml:?}");
+    }
+    assert_eq!(
+        doc("m: &a !!seq [*a]\n").get_resolved("m"),
+        Err(ResolveError::RecursiveAlias {
+            alias: "a".to_string()
+        })
+    );
+    assert_eq!(
+        doc("m: !!map {<<: 3}\n").get_resolved("m"),
+        Err(ResolveError::InvalidMergeOperand {
+            operand: "3".to_string()
+        })
+    );
+}
+
+#[test]
+fn get_resolved_invalid_set_member() {
+    for (yaml, member) in [
+        ("m: !!set {? [a], ? b}\n", "[a]"),
+        ("m: !!set {? {a: 1}}\n", "{a: 1}"),
+        ("x: &x [a]\nm: !!set {? *x}\n", "*x"),
+    ] {
+        assert_eq!(
+            doc(yaml).get_resolved("m"),
+            Err(ResolveError::InvalidSetMember {
+                member: member.to_string()
+            }),
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn get_resolved_set_content_must_be_mapping() {
+    for (yaml, content) in [
+        ("m: !!set [a, b]\n", "[a, b]"),
+        ("m: !!set &s [a]\n", "[a]"),
+        ("m: !!set\n- a\n", "- a\n"),
+        ("m: !!set\nn: 1\n", ""),
+    ] {
+        assert_eq!(
+            doc(yaml).get_resolved("m"),
+            Err(ResolveError::InvalidSetContent {
+                content: content.to_string()
+            }),
+            "{yaml:?}"
+        );
+    }
+    assert_eq!(
+        ResolveError::InvalidSetContent {
+            content: "[a]".to_string()
+        }
+        .to_string(),
+        "!!set content \"[a]\" is not a mapping"
+    );
+}
+
+#[test]
+fn get_resolved_set_value_must_be_null() {
+    for (yaml, member, value) in [
+        ("m: !!set {a: 1}\n", "a", "1"),
+        ("m: !!set\n  ? a\n  b: x\n", "b", "x"),
+        ("m: !!set\n  ? b\n  ? a\n  : x\n", "a", "x"),
+        ("m: !!set {a: ~, b: 'null'}\n", "b", "'null'"),
+        ("m: !!set {a: [~]}\n", "a", "[~]"),
+        ("x: &x 1\nm: !!set {a: *x}\n", "a", "*x"),
+    ] {
+        assert_eq!(
+            doc(yaml).get_resolved("m"),
+            Err(ResolveError::NonNullSetValue {
+                member: member.to_string(),
+                value: value.to_string()
+            }),
+            "{yaml:?}"
+        );
+    }
+    for yaml in [
+        "m: !!set {a: ~, b: null, c: , ? d, e: !!null ''}\n",
+        "m: !!set\n  ? a\n  b:\n  c: ~\n  ? d\n  e: !!null ''\n",
+        "n: &n ~\nm: !!set {a: *n, b: , c: *n, ? d, e: *n}\n",
+    ] {
+        assert_eq!(
+            doc(yaml).get_resolved("m"),
+            Ok(Some(YamlValue::Set(
+                ["a", "b", "c", "d", "e"].map(String::from).into()
+            ))),
+            "{yaml:?}"
+        );
+    }
+    assert_eq!(
+        ResolveError::NonNullSetValue {
+            member: "a".to_string(),
+            value: "1".to_string()
+        }
+        .to_string(),
+        "!!set member \"a\" has non-null value \"1\""
+    );
+}
+
+#[test]
+fn get_resolved_invalid_pairs_item() {
+    for (yaml, tag, item) in [
+        ("m: !!omap [a]\n", "!!omap", "a"),
+        ("m: !!omap [[a]]\n", "!!omap", "[a]"),
+        ("m: !!omap [{}]\n", "!!omap", "{}"),
+        ("m: !!pairs [{b: 1, c: 2}]\n", "!!pairs", "{b: 1, c: 2}"),
+        ("m: !!pairs [!local {a: 1}]\n", "!!pairs", "!local {a: 1}"),
+        ("e: &e {a: 1, b: 2}\nm: !!omap [*e]\n", "!!omap", "*e"),
+        (
+            "e: &e {a: 1}\nm: !!omap [{<<: *e, b: 2}]\n",
+            "!!omap",
+            "{<<: *e, b: 2}",
+        ),
+    ] {
+        assert_eq!(
+            doc(yaml).get_resolved("m"),
+            Err(ResolveError::InvalidPairsItem {
+                tag: tag.to_string(),
+                item: item.to_string()
+            }),
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn get_resolved_pairs_content_must_be_sequence() {
+    for (yaml, tag, content) in [
+        ("m: !!omap {a: 1}\n", "!!omap", "{a: 1}"),
+        ("m: !!pairs &p {a: 1}\n", "!!pairs", "{a: 1}"),
+        ("m: !!omap\n  a: 1\n", "!!omap", "a: 1\n"),
+        ("m: !!pairs\n  3\n", "!!pairs", "3"),
+    ] {
+        assert_eq!(
+            doc(yaml).get_resolved("m"),
+            Err(ResolveError::InvalidPairsContent {
+                tag: tag.to_string(),
+                content: content.to_string()
+            }),
+            "{yaml:?}"
+        );
+    }
+    assert_eq!(
+        ResolveError::InvalidPairsContent {
+            tag: "!!omap".to_string(),
+            content: "{a: 1}".to_string()
+        }
+        .to_string(),
+        "!!omap content \"{a: 1}\" is not a sequence"
+    );
+}
+
+#[test]
+fn get_resolved_repeated_set_member_or_omap_key() {
+    for (yaml, first, second) in [
+        ("m: !!set {? a, ? a}\n", "a", "a"),
+        ("m: !!set\n  ? a\n  ? b\n  ? 'a'\n", "a", "'a'"),
+        ("m: !!set {? 16, ? 0x10}\n", "16", "0x10"),
+        ("x: &k a\nm: !!set {? a, ? *k}\n", "a", "*k"),
+        ("m: !!omap [a: 1, a: 2]\n", "a", "a"),
+        ("m: !!omap\n  - a: 1\n  - b: 2\n  - 'a': 3\n", "a", "'a'"),
+        ("m: !!omap [16: a, 0x10: b]\n", "16", "0x10"),
+        ("x: &k a\nm: !!omap [a: 1, *k : 2]\n", "a", "*k"),
+        ("e: &e {a: 1}\nm: !!omap [*e, a: 2]\n", "a", "a"),
+        ("e: &e {a: 1}\nm: !!omap [{<<: *e}, a: 2]\n", "a", "a"),
+    ] {
+        assert_eq!(
+            doc(yaml).get_resolved("m"),
+            Err(ResolveError::DuplicateKey {
+                first: first.to_string(),
+                second: second.to_string()
+            }),
+            "{yaml:?}"
+        );
+    }
+    for (yaml, first, second) in [
+        ("m: !!set {? 1, ? '1'}\n", "1", "'1'"),
+        ("m: !!omap [1: a, '1': b]\n", "1", "'1'"),
+    ] {
+        assert_eq!(
+            doc(yaml).get_resolved("m"),
+            Err(ResolveError::KeyCollision {
+                first: first.to_string(),
+                second: second.to_string()
+            }),
+            "{yaml:?}"
+        );
+    }
+    // !!pairs allows a key to repeat.
+    assert_eq!(
+        doc("m: !!pairs [a: 1, a: 2]\n").get_resolved("m"),
+        Ok(Some(YamlValue::Pairs(pair_list(vec![
+            ("a", YamlValue::from(1)),
+            ("a", YamlValue::from(2))
+        ]))))
+    );
+}
+
+#[test]
+fn get_resolved_alias_key() {
+    for (yaml, expected) in [
+        ("x: &a k\nm: {*a : 1}\n", vec![("k", "1")]),
+        ("x: &a !!int 5\nm:\n  *a : 1\n", vec![("5", "1")]),
+        (
+            "x: &a k\nm: {*a : 1, j: &a i, *a : 3}\n",
+            vec![("i", "3"), ("j", "i"), ("k", "1")],
+        ),
+        (
+            "x: &a k\ns: &s {*a : 1}\nm: {<<: *s, j: 2}\n",
+            vec![("j", "2"), ("k", "1")],
+        ),
+        // An alias to a collection is a collection key.
+        ("x: &a [p,q]\nm: {*a : 1}\n", vec![("[p, q]", "1")]),
+    ] {
+        assert_eq!(resolved_pairs(yaml, "m"), pairs(&expected), "{yaml:?}");
+    }
+    assert_eq!(
+        doc("x: &a 1\nm: {*a : a, '1': b}\n").get_resolved("m"),
+        Err(ResolveError::KeyCollision {
+            first: "*a".to_string(),
+            second: "'1'".to_string()
+        })
+    );
+    assert_eq!(
+        doc("m: {*nope : 1}\n").get_resolved("m"),
+        Err(ResolveError::UndefinedAlias {
+            alias: "nope".to_string()
+        })
+    );
+}
+
+#[test]
+fn get_resolved_pairs_item_tagged_map() {
+    assert_eq!(
+        doc("m: !!omap [!!map {a: 1}]\n").get_resolved("m"),
+        Ok(Some(YamlValue::OrderedMapping(pair_list(vec![(
+            "a",
+            YamlValue::from(1)
+        )]))))
+    );
+}
+
+#[test]
+fn get_resolved_tagged_alias_errors() {
+    for (yaml, expected) in [
+        (
+            "a: !t *nope\n",
+            ResolveError::UndefinedAlias {
+                alias: "nope".to_string(),
+            },
+        ),
+        (
+            "a: &a [!t *a]\n",
+            ResolveError::RecursiveAlias {
+                alias: "a".to_string(),
+            },
+        ),
+        (
+            "x: &x 1\na: !!set *x\n",
+            ResolveError::InvalidSetContent {
+                content: "1".to_string(),
+            },
+        ),
+    ] {
+        assert_eq!(doc(yaml).get_resolved("a"), Err(expected), "{yaml:?}");
+    }
+}
+
+#[test]
+fn get_resolved_anchored_alias() {
+    // An anchor on an alias, which YAML does not allow, names the node
+    // the alias refers to.
+    for (yaml, key, expected) in [
+        ("x: &x 1\nb: &b *x\nc: *b\n", "c", "c: 1\n"),
+        ("x: &x 1\ns: [&b *x, *b]\n", "s", "s: [1, 1]\n"),
+        ("x: &x 1\nb: &b *x\nc: !t *b\n", "c", "c: !t 1\n"),
+        ("x: &x 1\nb: !t &b *x\nc: *b\n", "c", "c: !t 1\n"),
+        (
+            "x: &x {k: 1}\nb: &b *x\nm: {<<: *b, j: 2}\n",
+            "m",
+            "m: {k: 1, j: 2}\n",
+        ),
+    ] {
+        assert_eq!(
+            doc(yaml).get_resolved(key),
+            doc(expected).get_resolved(key),
+            "{yaml:?}"
+        );
+    }
+    assert_eq!(
+        doc("x: &x 1\nb: &b *x\nc: *b\n").get_resolved("c"),
+        Ok(Some(YamlValue::from(1)))
+    );
+    assert_eq!(
+        merged_pairs("x: &x {k: 1}\nb: &b *x\nm: {<<: *b, j: *b}\n", "m"),
+        pairs(&[("j", "{k: 1}"), ("k", "1")])
+    );
+}
+
+#[test]
+fn get_resolved_anchored_alias_errors() {
+    for (yaml, expected) in [
+        (
+            "c: &c *c\n",
+            ResolveError::RecursiveAlias {
+                alias: "c".to_string(),
+            },
+        ),
+        (
+            "b: &b *nope\nc: *b\n",
+            ResolveError::UndefinedAlias {
+                alias: "nope".to_string(),
+            },
+        ),
+    ] {
+        assert_eq!(doc(yaml).get_resolved("c"), Err(expected), "{yaml:?}");
+    }
+    let d = doc("b: &b *b\nm: {<<: *b}\n");
+    let registry = d.build_anchor_registry();
+    let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+    assert_eq!(
+        m.merged(&registry).err(),
+        Some(ResolveError::RecursiveAlias {
+            alias: "b".to_string()
+        })
+    );
+}
+
+#[test]
+fn resolve_error_display() {
+    assert_eq!(
+        ResolveError::InvalidSetMember {
+            member: "[a]".to_string()
+        }
+        .to_string(),
+        "!!set member \"[a]\" is not a scalar"
+    );
+    assert_eq!(
+        ResolveError::InvalidPairsItem {
+            tag: "!!omap".to_string(),
+            item: "a".to_string()
+        }
+        .to_string(),
+        "!!omap item \"a\" is not a mapping with a single entry"
+    );
+}
+
+#[test]
+fn resolve_error_display_all_variants() {
+    let s = |x: &str| x.to_string();
+    for (error, text) in [
+            (
+                ResolveError::UndefinedAlias { alias: s("a") },
+                "alias to undefined anchor \"a\"",
+            ),
+            (
+                ResolveError::RecursiveAlias { alias: s("a") },
+                "alias \"a\" refers to an anchor it is nested in",
+            ),
+            (
+                ResolveError::InvalidMergeOperand { operand: s("1") },
+                "merge key operand \"1\" is not a mapping",
+            ),
+            (
+                ResolveError::KeyCollision {
+                    first: s("1"),
+                    second: s("'1'"),
+                },
+                "distinct keys \"1\" and \"'1'\" have the same string form",
+            ),
+            (
+                ResolveError::DuplicateKey {
+                    first: s("a"),
+                    second: s("a"),
+                },
+                "duplicate mapping key: \"a\" equals \"a\"",
+            ),
+            (
+                ResolveError::InvalidSetContent { content: s("[a]") },
+                "!!set content \"[a]\" is not a mapping",
+            ),
+            (
+                ResolveError::InvalidSetMember { member: s("[a]") },
+                "!!set member \"[a]\" is not a scalar",
+            ),
+            (
+                ResolveError::NonNullSetValue {
+                    member: s("a"),
+                    value: s("1"),
+                },
+                "!!set member \"a\" has non-null value \"1\"",
+            ),
+            (
+                ResolveError::InvalidPairsItem {
+                    tag: s("!!omap"),
+                    item: s("a"),
+                },
+                "!!omap item \"a\" is not a mapping with a single entry",
+            ),
+            (
+                ResolveError::InvalidPairsContent {
+                    tag: s("!!pairs"),
+                    content: s("{}"),
+                },
+                "!!pairs content \"{}\" is not a sequence",
+            ),
+            (
+                ResolveError::UnresolvedAlias { alias: s("a") },
+                "alias \"a\" cannot be converted without resolving it; use get_resolved to resolve aliases",
+            ),
+            (
+                ResolveError::ExtraNode { node: s("x") },
+                "node \"x\" follows another in the same place",
+            ),
+        ] {
+            assert_eq!(error.to_string(), text);
+        }
+}
+
+#[test]
+fn registry_contains_and_names() {
+    let d = doc("a: &x 1\nb: &y [2]\nc: &x 3\n");
+    let registry = AnchorRegistry::from_document(&d);
+    assert!(registry.contains("x"));
+    assert!(registry.contains("y"));
+    assert!(!registry.contains("z"));
+    let mut names: Vec<_> = registry.anchor_names().collect();
+    names.sort_unstable();
+    assert_eq!(names, ["x", "y"]);
+    assert_eq!(AnchorRegistry::default().anchor_names().count(), 0);
+}
+
+#[test]
+fn merged_mapping_accessors() {
+    let d = doc("s: &s {x: 1, y: 2}\nm:\n  <<: *s\n  y: 3\ne: {}\n");
+    let registry = d.build_anchor_registry();
+    let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+    let merged = m.merged(&registry).unwrap();
+    assert_eq!(merged.base().to_string(), m.to_string());
+    assert!(merged.registry().contains("s"));
+    assert!(merged.contains_key("x"));
+    assert!(!merged.contains_key("<<"));
+    assert!(!merged.contains_key("z"));
+    assert_eq!(
+        merged.values().map(|v| v.to_string()).collect::<Vec<_>>(),
+        ["3", "1"]
+    );
+    assert!(!merged.is_empty());
+    assert_eq!(format!("{merged:?}"), "MergedMapping { len: 2 }");
+    let e = d.as_mapping().unwrap().get_mapping("e").unwrap();
+    assert!(e.merged(&registry).unwrap().is_empty());
+}
+
+#[test]
+fn merged_view_accessors() {
+    let d = doc("s: &s {x: 1}\n<<: *s\ny: 2\n");
+    let view = d.merged().unwrap().unwrap();
+    assert!(view.contains_key("x"));
+    assert!(view.contains_key("y"));
+    assert!(!view.contains_key("z"));
+    assert!(view.registry().contains("s"));
+    assert_eq!(format!("{view:?}"), "MergedView");
+    assert!(doc("- a\n").merged().unwrap().is_none());
+}
+
+/// A function generic over `impl MappingView` - proves the trait is
+/// usable as an abstraction over both `Mapping` and `MergedMapping`.
+fn collect_keys<M: MappingView + ?Sized>(view: &M) -> Vec<String> {
+    view.keys()
+        .map(|k| k.as_scalar().map(|s| s.as_string()).unwrap_or_default())
+        .collect()
+}
+
+#[test]
+fn generic_works_on_plain_mapping() {
+    let d = doc("a: 1\nb: 2\nc: 3\n");
+    let root = d.as_mapping().unwrap();
+    assert_eq!(collect_keys(&root), vec!["a", "b", "c"]);
+    assert_eq!(<yaml_edit::Mapping as MappingView>::len(&root), 3);
+}
+
+#[test]
+fn generic_works_on_merged_mapping() {
+    let yaml = "\
+d: &d
+  a: 1
+  b: 2
+m:
+  <<: *d
+  c: 3
+";
+    let d = doc(yaml);
+    let reg = d.build_anchor_registry();
+    let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+    let merged = m.merged(&reg).unwrap();
+
+    // Direct + merged keys, in insertion-then-merge-source order.
+    assert_eq!(collect_keys(&merged), vec!["c", "a", "b"]);
+    assert_eq!(<MergedMapping as MappingView>::len(&merged), 3);
+}
+
+#[test]
+fn trait_get_and_contains() {
+    let yaml = "\
+d: &d
+  x: 1
+m:
+  <<: *d
+  y: 2
+";
+    let d = doc(yaml);
+    let reg = d.build_anchor_registry();
+    let m = d.as_mapping().unwrap().get_mapping("m").unwrap();
+    let merged = m.merged(&reg).unwrap();
+
+    let view: &dyn MappingView = &merged;
+    assert!(view.contains_key(&"x"));
+    assert!(view.contains_key(&"y"));
+    assert!(!view.contains_key(&"z"));
+    assert_eq!(view.get(&"x").unwrap().to_i64(), Some(1));
+}
+
+#[test]
+fn trait_object_safety() {
+    // Compile-time check: building `&dyn MappingView` works.
+    let d = doc("a: 1\n");
+    let root = d.as_mapping().unwrap();
+    let view: &dyn MappingView = &root;
+    assert_eq!(view.len(), 1);
+}
+
+#[test]
+fn is_empty_via_trait() {
+    let d = doc("{}\n");
+    let root = d.as_mapping().unwrap();
+    let view: &dyn MappingView = &root;
+    assert!(view.is_empty());
+}
+
+#[test]
+fn values_iter_via_trait() {
+    let d = doc("a: 1\nb: 2\n");
+    let root = d.as_mapping().unwrap();
+    let view: &dyn MappingView = &root;
+    let nums: Vec<i64> = view.values().filter_map(|v| v.to_i64()).collect();
+    assert_eq!(nums, vec![1, 2]);
+}
+
+#[test]
+fn merged_view_via_document_extension() {
+    // Round-trip the new trait through the owned MergedView container.
+    let yaml = "\
+d: &d
+  k: 42
+m:
+  <<: *d
+";
+    let d = doc(yaml);
+    let owned = d.merged().unwrap().unwrap();
+    let m = owned.as_mapping().get_merged("m").unwrap().unwrap();
+    // Use the trait method so the `&dyn AsYaml` signature is exercised.
+    let view: &dyn MappingView = &m;
+    assert_eq!(view.get(&"k").unwrap().to_i64(), Some(42));
+}
+
+/// Aliases parsed as values of mappings and sequences and of a merge key.
+#[test]
+fn aliases_parse_in_documents() {
+    for (yaml, expected) in [
+        (
+            "\nanchor: &my_anchor value\nreference: *my_anchor\n",
+            "map{anchor: value, reference: *my_anchor}",
+        ),
+        (
+            "\ncolors:\n  - &red '#FF0000'\n  - &green '#00FF00'\n  - &blue '#0000FF'\n\ntheme:\n  - *red\n  - *blue\n",
+            "map{colors: seq[#FF0000, #00FF00, #0000FF], theme: seq[*red, *blue]}",
+        ),
+        (
+            "\ndefaults: &defaults\n  adapter: postgres\n  host: localhost\n\ndevelopment:\n  database: dev_db\n  <<: *defaults\n",
+            "map{defaults: map{adapter: postgres, host: localhost}, development: map{database: dev_db, <<: *defaults}}",
+        ),
+        (
+            "\nvalue: &shared 42\nfirst: *shared\nsecond: *shared\nthird: *shared\n",
+            "map{value: 42, first: *shared, second: *shared, third: *shared}",
+        ),
+        ("anchor: &test value\nreference: *test", "map{anchor: value, reference: *test}"),
+        (
+            "\ndata: &complex_anchor_name_123 some_value\nref: *complex_anchor_name_123\n",
+            "map{data: some_value, ref: *complex_anchor_name_123}",
+        ),
+        (
+            "\nbase: &base\n  x: 1\n  y: 2\n\nitems:\n  - name: first\n    config: *base\n  - name: second\n    config: *base\n",
+            "map{base: map{x: 1, y: 2}, items: seq[map{name: first, config: *base}, map{name: second, config: *base}]}",
+        ),
+        // Whitespace around an alias is kept.
+        ("reference:  *test  ", "map{reference: *test}"),
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        assert_eq!(doc.to_string(), yaml);
+        let root = doc
+            .syntax()
+            .children()
+            .find_map(YamlNode::from_syntax)
+            .unwrap();
+        assert_eq!(render(&root), expected, "{yaml:?}");
+    }
+}
+
+/// An alias's text is its name after a `*`.
+#[test]
+fn alias_value_is_its_text() {
+    let value = |yaml: &str, path: &str| {
+        let doc = Document::from_str(yaml).unwrap();
+        let node = doc.try_get_path(path).unwrap();
+        let alias = node.as_alias().unwrap();
+        (alias.name(), alias.value())
+    };
+    assert_eq!(
+        value(
+            "anchor: &my_anchor value\nreference: *my_anchor\n",
+            "reference"
+        ),
+        ("my_anchor".to_string(), "*my_anchor".to_string())
+    );
+    for (name, value) in [("shared", "*shared"), ("naïve_anchor_ĳ", "*naïve_anchor_ĳ")] {
+        let alias = Alias::new(name);
+        assert_eq!(alias.name(), name);
+        assert_eq!(alias.value(), value);
+        assert_eq!(alias.to_string(), value);
+    }
+}
+
+/// `Alias::new` writes an alias in place of a value, leaving the anchor
+/// it refers to as it is. Only the flow indicators and whitespace are
+/// excluded from its name.
+#[test]
+fn set_new_alias() {
+    check_edit(
+        "shared: &shared value\nservice_a: old\n",
+        |d| {
+            let mapping = d.as_mapping().unwrap();
+            mapping.set("service_a", Alias::new("shared"));
+            let alias = mapping.get("service_a").unwrap();
+            assert_eq!(alias.as_alias().unwrap().name(), "shared");
+            assert_eq!(alias.as_alias().unwrap().value(), "*shared");
+        },
+        "shared: &shared value\nservice_a: *shared\n",
+    );
+    check_edit(
+        "colors:\n  - &red '#FF0000'\n  - old\n",
+        |d| {
+            let colors = d.as_mapping().unwrap().get_sequence("colors").unwrap();
+            colors.set(1, Alias::new("red"));
+        },
+        "colors:\n  - &red '#FF0000'\n  - *red\n",
+    );
+    check_edit(
+        "a: &*x: 1\nb: 2\n",
+        |d| {
+            d.as_mapping().unwrap().set("b", Alias::new("*x:"));
+        },
+        "a: &*x: 1\nb: **x:\n",
+    );
+}
+
+#[test]
+#[should_panic(expected = "alias name must be a valid anchor name")]
+fn new_alias_rejects_empty_name() {
+    let _ = Alias::new("");
+}
+
+#[test]
+#[should_panic(expected = "alias name must be a valid anchor name")]
+fn new_alias_rejects_whitespace() {
+    let _ = Alias::new("bad name");
+}
+
+#[test]
+#[should_panic(expected = "alias name must be a valid anchor name")]
+fn new_alias_rejects_flow_indicator() {
+    let _ = Alias::new("bad,name");
 }

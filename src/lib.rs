@@ -532,15 +532,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_error_position_with_cr_line_endings() {
-        let err = YamlFile::from_str("a: 1\rb: [a, }\r").unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "Parse error at line 2, column 8: Unexpected token in flow sequence: \"}\""
-        );
-    }
-
-    #[test]
     fn test_byte_offset_to_line_column_bom() {
         // A BOM is a document prefix, not content, so it takes no column.
         let text = "\u{FEFF}a: 1\n\u{FEFF}b: 2";
@@ -557,96 +548,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_error_position_after_bom() {
-        let err = YamlFile::from_str("\u{FEFF}b: [a, }\n").unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "Parse error at line 1, column 8: Unexpected token in flow sequence: \"}\""
-        );
-    }
-
-    #[test]
     fn test_line_column_display() {
         let pos = LineColumn::new(42, 17);
         assert_eq!(format!("{}", pos), "42:17");
 
         let pos2 = LineColumn::new(1, 1);
         assert_eq!(format!("{}", pos2), "1:1");
-    }
-
-    #[test]
-    fn test_document_position() {
-        let text = "name: Alice\nage: 30";
-        let doc = Document::from_str(text).unwrap();
-
-        let start = doc.start_position(text);
-        assert_eq!(start.line, 1);
-        assert_eq!(start.column, 1);
-
-        let range = doc.byte_range();
-        assert_eq!(range.start, 0);
-        assert!(range.end > 0);
-    }
-
-    #[test]
-    fn test_mapping_position() {
-        let text = "server:\n  host: localhost\n  port: 8080";
-        let doc = Document::from_str(text).unwrap();
-        let mapping = doc.as_mapping().unwrap();
-
-        let start = mapping.start_position(text);
-        assert_eq!(start.line, 1);
-        assert_eq!(start.column, 1);
-
-        let server_mapping = mapping.get_mapping("server").unwrap();
-        let server_start = server_mapping.start_position(text);
-        assert_eq!(server_start.line, 2);
-    }
-
-    #[test]
-    fn test_scalar_position_via_nodes() {
-        let text = "name: Alice\nage: 30";
-        let doc = Document::from_str(text).unwrap();
-        let mapping = doc.as_mapping().unwrap();
-
-        let entries: Vec<_> = mapping.entries().collect();
-        assert!(entries.len() >= 2);
-
-        let first_entry = &entries[0];
-        let key_node = first_entry.key_node().unwrap();
-        assert_eq!(key_node.to_string().trim(), "name");
-
-        let value_node = first_entry.value_node().unwrap();
-        assert_eq!(value_node.to_string().trim(), "Alice");
-    }
-
-    #[test]
-    fn test_sequence_position() {
-        let text = "items:\n  - apple\n  - banana";
-        let doc = Document::from_str(text).unwrap();
-        let mapping = doc.as_mapping().unwrap();
-
-        let items_node = mapping.get("items").unwrap();
-        assert!(items_node.as_sequence().is_some());
-    }
-
-    #[test]
-    fn test_positioned_parse_error() {
-        let text = "invalid:\n  - [unclosed";
-        let parse = Parse::parse_yaml(text);
-
-        let errors = parse.positioned_errors();
-        if errors.is_empty() {
-            return;
-        }
-
-        let err = &errors[0];
-        let start = err.start_position(text);
-        assert_eq!(start.line, 2);
-        assert_eq!(err.kind, ParseErrorKind::UnclosedFlowSequence);
-        assert_eq!(start, LineColumn::new(2, 14));
-        assert_eq!(err.end_position(text), LineColumn::new(2, 14));
-        assert_eq!(err.to_string(), err.message);
     }
 
     #[test]
@@ -672,43 +579,6 @@ mod tests {
     }
 
     #[test]
-    fn test_multiline_document_byte_offsets() {
-        // The leading comment is part of the document; its mapping starts
-        // on the next line.
-        let text = "# Comment\nname: Alice\n\nage: 30";
-        let doc = YamlFile::from_str(text).unwrap().document().unwrap();
-
-        let range = doc.byte_range();
-        assert_eq!(range.start, 0);
-        assert_eq!(range.end, 30);
-
-        let start = doc.start_position(text);
-        assert_eq!(start.line, 1);
-        assert_eq!(start.column, 1);
-
-        let mapping = doc.as_mapping().unwrap();
-        assert_eq!(mapping.byte_range().start, 10);
-        let start = mapping.start_position(text);
-        assert_eq!(start.line, 2);
-        assert_eq!(start.column, 1);
-    }
-
-    #[test]
-    fn test_nested_mapping_byte_ranges() {
-        let text = "server:\n  database:\n    host: localhost";
-        let doc = Document::from_str(text).unwrap();
-        let mapping = doc.as_mapping().unwrap();
-
-        let server_mapping = mapping.get_mapping("server").unwrap();
-        let server_range = server_mapping.byte_range();
-
-        assert!(server_range.end > server_range.start);
-
-        let server_pos = server_mapping.start_position(text);
-        assert!(server_pos.line > 0);
-    }
-
-    #[test]
     fn test_text_position_len() {
         assert_eq!(TextPosition::new(3, 7).len(), 4);
         assert_eq!(TextPosition::new(3, 3).len(), 0);
@@ -721,40 +591,6 @@ mod tests {
     }
 
     #[test]
-    fn test_mapping_entry_byte_range() {
-        let text = "a: 1  # one\nbb: 2\n";
-        let doc = Document::from_str(text).unwrap();
-        let entries: Vec<_> = doc.as_mapping().unwrap().entries().collect();
-
-        let ranges: Vec<_> = entries.iter().map(|e| e.byte_range()).collect();
-        assert_eq!(
-            ranges,
-            vec![TextPosition::new(0, 12), TextPosition::new(12, 18)]
-        );
-        assert_eq!(entries[1].start_position(text), LineColumn::new(2, 1));
-    }
-
-    #[test]
-    fn test_yaml_node_byte_range() {
-        let text = "- foo  # c\n- &x [1, 2]\n- !t bar\n";
-        let doc = Document::from_str(text).unwrap();
-        let ranges: Vec<_> = doc
-            .as_sequence()
-            .unwrap()
-            .values()
-            .map(|v| v.byte_range())
-            .collect();
-        assert_eq!(
-            ranges,
-            vec![
-                TextPosition::new(2, 5),
-                TextPosition::new(16, 22),
-                TextPosition::new(25, 31)
-            ]
-        );
-    }
-
-    #[test]
     fn test_empty_lines_positions() {
         let text = "a: 1\n\n\nb: 2";
 
@@ -763,30 +599,5 @@ mod tests {
 
         let pos2 = byte_offset_to_line_column(text, 7);
         assert_eq!(pos2.line, 4);
-    }
-
-    #[test]
-    fn test_document_end_position() {
-        let text = "key: value";
-        let doc = Document::from_str(text).unwrap();
-
-        let start = doc.start_position(text);
-        let end = doc.end_position(text);
-
-        assert_eq!(start.line, 1);
-        assert!(end.column >= start.column);
-    }
-
-    #[test]
-    fn test_mapping_end_position() {
-        let text = "a: 1\nb: 2";
-        let doc = Document::from_str(text).unwrap();
-        let mapping = doc.as_mapping().unwrap();
-
-        let start = mapping.start_position(text);
-        let end = mapping.end_position(text);
-
-        assert_eq!(start.line, 1);
-        assert_eq!(end.line, 2);
     }
 }

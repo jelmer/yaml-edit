@@ -8,15 +8,16 @@
 
 mod common;
 use common::{
-    assert_cst_ok, assert_file_cst_ok, assert_file_edited, assert_parser_shaped, check_edit,
+    assert_cst_ok, assert_edited, assert_file_cst_ok, assert_file_edited, assert_file_edited_valid,
+    assert_parser_shaped, check_edit, edit_root, render_documents, value_of,
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::path::{PathError, YamlPath};
 use yaml_edit::validator::Validator;
 use yaml_edit::{
-    debug, AsYaml, Document, Mapping, MappingBuilder, ScalarValue, Sequence, SequenceBuilder,
-    YamlFile, YamlNode, YamlValue,
+    debug, AsYaml, Document, Entry, Mapping, MappingBuilder, ScalarValue, Sequence,
+    SequenceBuilder, YamlFile, YamlNode, YamlValue,
 };
 
 /// Parse `yaml` and return the file plus its root mapping.
@@ -51,11 +52,6 @@ fn map(pairs: &[(&str, &str)]) -> Mapping {
         b = b.pair(*k, *v);
     }
     b.build_document().as_mapping().unwrap()
-}
-
-/// The value of `key` in the root mapping of `src`.
-fn value_of(src: &str, key: &str) -> YamlNode {
-    parse(src).1.get(key).unwrap()
 }
 
 /// Set `key` in the mapping at `path` of `src` to `value` and check the
@@ -1325,5 +1321,766 @@ fn set_with_field_order_lintian_brush() {
             },
         ],
         "---\nName: blah\nBug-Database: https://github.com/example/blah/issues\nBug-Submit: https://github.com/example/blah/issues/new\nRepository: https://github.com/example/blah.git\nRepository-Browse: https://github.com/example/blah\nSecurity-Contact: https://github.com/example/blah/tree/HEAD/SECURITY.md\n",
+    );
+}
+
+#[test]
+fn set_reports_whether_the_key_was_set() {
+    let file = YamlFile::from_str("a: 1\n").unwrap();
+    assert!(file.set("b", 2));
+    assert_file_edited(&file, "a: 1\nb: 2\n");
+
+    for yaml in ["scalar\n", "- a\n"] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert!(!file.set("b", 2), "{yaml:?}");
+        assert_cst_ok(&file);
+        assert_eq!(file.to_string(), yaml);
+    }
+}
+
+#[test]
+fn editing_operations() {
+    let yaml = YamlFile::from_str("name: old-name\nversion: 1.0.0").unwrap();
+    let doc = yaml.document().unwrap();
+    doc.set("name", "new-name");
+    assert_cst_ok(&yaml);
+    doc.set("version", "2.0.0");
+    assert_file_edited(&yaml, "name: new-name\nversion: 2.0.0");
+    assert_eq!(doc.get_string("name"), Some("new-name".to_string()));
+    assert_eq!(doc.get_string("version"), Some("2.0.0".to_string()));
+}
+
+/// `Document::set` replaces a value where it is, adds an entry before a
+/// `...` line, and after leading blank lines.
+#[test]
+fn document_set() {
+    check_edit(
+        "Name: original\nVersion: 1.0\nAuthor: Someone\n",
+        |doc| assert!(doc.set("Version", 2.0)),
+        "Name: original\nVersion: 2.0\nAuthor: Someone\n",
+    );
+    check_edit("\na: 1\n", |doc| assert!(doc.set("b", 2)), "\na: 1\nb: 2\n");
+    check_edit("", |doc| assert!(doc.set("a", 1)), "a: 1\n");
+    // A comment before a document without `---` is part of it.
+    check_edit(
+        "# c\nkey: value\n",
+        |doc| assert!(doc.set("other", 1)),
+        "# c\nkey: value\nother: 1\n",
+    );
+    check_edit(
+        "a: 1\n... # c\n",
+        |doc| assert!(doc.set("b", 2)),
+        "a: 1\nb: 2\n... # c\n",
+    );
+}
+
+/// Setting a key on a document whose root is not a mapping does nothing.
+#[test]
+fn document_set_on_non_mapping_root() {
+    let doc = Document::from_str("- a\n- b\n").unwrap();
+    assert!(!doc.set("k", "v"));
+    assert_edited(&doc, "- a\n- b\n");
+    assert!(doc.get("k").is_none());
+    assert!(doc.as_sequence().is_some());
+    assert!(doc.as_mapping().is_none());
+
+    let doc = Document::from_str("- a\n").unwrap();
+    assert!(!doc.set_with_field_order("k", "v", ["k"]));
+    assert_edited(&doc, "- a\n");
+
+    let empty = Document::new();
+    assert!(empty.set("k", "v"));
+    assert_edited(&empty, "---\nk: v\n");
+    assert_eq!(empty.get_string("k"), Some("v".to_string()));
+}
+
+#[test]
+fn document_set_sequence() {
+    let doc = Document::new();
+    let array_value = SequenceBuilder::new()
+        .item(ScalarValue::string("https://github.com/user/repo.git"))
+        .item(ScalarValue::string("https://gitlab.com/user/repo.git"))
+        .build_document()
+        .as_sequence()
+        .unwrap();
+    doc.set("Repository", &array_value);
+    assert_edited(
+        &doc,
+        "---\nRepository:\n- https://github.com/user/repo.git\n- https://gitlab.com/user/repo.git\n",
+    );
+    assert!(doc.is_sequence("Repository"));
+    assert_eq!(doc.get_sequence("Repository").unwrap().len(), 2);
+}
+
+/// Replacing an item spanning lines takes the comment ending its last
+/// line along, but leaves white space without one.
+#[test]
+fn set_multi_line_item_keeps_trailing_space() {
+    for (src, expected) in [
+        ("- [a,\n  b]   \n- c\n", "- x   \n- c\n"),
+        ("- [a,\n  b]  # x\n- c\n", "- x\n- c\n"),
+        ("-\n  [a, b]   \n", "-\n  x   \n"),
+    ] {
+        let doc = YamlFile::from_str(src).unwrap().document().unwrap();
+        assert!(doc.as_sequence().unwrap().set(0, "x"));
+        assert_edited(&doc, expected);
+    }
+}
+
+/// A block mapping set as a bare `-` item starts on the dash's line,
+/// and a tab in the comment after a replaced item stays.
+#[test]
+fn set_item_after_bare_dash_and_before_comment() {
+    let src = YamlFile::from_str("k:\n  a: 1\n  b: [x,\n    y]\n").unwrap();
+    let block = src
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get("k")
+        .unwrap();
+    let doc = YamlFile::from_str("-\n- b\n").unwrap().document().unwrap();
+    assert!(doc.as_sequence().unwrap().set(0, &block));
+    assert_edited(&doc, "- a: 1\n  b: [x,\n    y]\n- b\n");
+
+    // A tab after the dash may separate a scalar from it, but cannot
+    // indent a block collection.
+    let doc = YamlFile::from_str("-\tx\n").unwrap().document().unwrap();
+    assert!(doc.as_sequence().unwrap().set(0, &block));
+    assert_edited(&doc, "- a: 1\n  b: [x,\n    y]\n");
+    let doc = YamlFile::from_str("-\tx\n").unwrap().document().unwrap();
+    assert!(doc.as_sequence().unwrap().set(0, "y"));
+    assert_edited(&doc, "-\ty\n");
+
+    let doc = YamlFile::from_str("- x  # a\tb\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    assert!(doc.as_sequence().unwrap().set(0, "y"));
+    assert_edited(&doc, "- y  # a\tb\n");
+}
+
+#[test]
+fn set_out_of_bounds() {
+    let doc = YamlFile::from_str("- a\n").unwrap().document().unwrap();
+    let seq = doc.as_sequence().unwrap();
+    assert!(!seq.set(1, "b"));
+    assert_edited(&doc, "- a\n");
+}
+
+/// `set_path` builds sequence intermediates as pending-block sequences,
+/// so an indexed path produces readable block YAML.
+#[test]
+fn set_path_builds_block_sequence_intermediates() {
+    let doc = Document::from_str("name: test\n").unwrap();
+    doc.try_set_path("a.b[0]", "v").unwrap();
+    assert_edited(&doc, "name: test\na:\n  b:\n    - v\n");
+}
+
+#[test]
+fn sequence_set_tagged_node() {
+    // Sequence::set() was missing TAGGED_NODE from its kind filter, so
+    // replacing a tagged-scalar item would leave the original tag+value in place
+    // and insert the new value alongside it.
+    let yaml = "- !custom foo\n- bar\n";
+    let parsed = YamlFile::from_str(yaml).unwrap();
+    let doc = parsed.document().unwrap();
+    let seq = doc.as_sequence().unwrap();
+
+    assert!(seq.set(0, "replaced"));
+    assert_file_edited(&parsed, "- replaced\n- bar\n");
+
+    let values: Vec<_> = seq.values().collect();
+    assert_eq!(values.len(), 2);
+    assert_eq!(
+        values[0].as_scalar().map(|s| s.as_string()),
+        Some("replaced".to_string())
+    );
+    assert_eq!(
+        values[1].as_scalar().map(|s| s.as_string()),
+        Some("bar".to_string())
+    );
+}
+
+#[test]
+fn sequence_set_scalar_over_commented_block() {
+    for (src, expected) in [
+        ("-  # c\n  x: 1\n- 2\n", "- 5  # c\n- 2\n"),
+        ("- # c\n  - 1\n", "- 5 # c\n"),
+    ] {
+        let doc = Document::from_str(src).unwrap();
+        assert!(doc.as_sequence().unwrap().set(0, 5));
+        assert_edited(&doc, expected);
+    }
+}
+
+#[test]
+fn sequence_set_block_mapping_adds_no_blank_line() {
+    let value = Document::from_str("k: 1\n").unwrap();
+    let value = value.as_mapping().unwrap();
+    for (src, index, expected) in [
+        ("- a\n- b\n", 1, "- a\n- k: 1\n"),
+        ("- a\n- b\n- c\n", 1, "- a\n- k: 1\n- c\n"),
+        ("- a\n- b  \n- c\n", 1, "- a\n- k: 1\n- c\n"),
+        ("- a\n- b", 1, "- a\n- k: 1\n"),
+        ("- j: 2\n- b\n", 0, "- k: 1\n- b\n"),
+        ("s:\n  - a\n  - b\nt: 1\n", 0, "s:\n  - k: 1\n  - b\nt: 1\n"),
+    ] {
+        let doc = Document::from_str(src).unwrap();
+        let seq = doc
+            .as_sequence()
+            .or_else(|| doc.as_mapping()?.get_sequence("s"))
+            .unwrap();
+        assert!(seq.set(index, value.clone()));
+        assert_edited(&doc, expected);
+    }
+}
+
+#[test]
+fn block_collection_values_take_the_entry_indent() {
+    let map_doc = Document::from_str("k: 1\nj: 2\n").unwrap();
+    let map = YamlNode::Mapping(map_doc.as_mapping().unwrap());
+    let nested_doc = Document::from_str("m:\n    k: 1\n    j: 2\n").unwrap();
+    let nested = YamlNode::Mapping(nested_doc.as_mapping().unwrap().get_mapping("m").unwrap());
+    let seq_doc = Document::from_str("- x\n- y\n").unwrap();
+    let seq = YamlNode::Sequence(seq_doc.as_sequence().unwrap());
+
+    let push = |s: &Sequence, v: &dyn AsYaml| s.push(v);
+    let insert0 = |s: &Sequence, v: &dyn AsYaml| s.insert(0, v);
+    let set0 = |s: &Sequence, v: &dyn AsYaml| assert!(s.set(0, v));
+    type Op<'a> = &'a dyn Fn(&Sequence, &dyn AsYaml);
+    let cases: Vec<(&str, Op, &dyn AsYaml, &str)> = vec![
+        (
+            "s:\n  - a\n",
+            &push,
+            &map,
+            "s:\n  - a\n  - k: 1\n    j: 2\n",
+        ),
+        ("- a\n", &push, &map, "- a\n- k: 1\n  j: 2\n"),
+        ("- a\n", &push, &nested, "- a\n- k: 1\n  j: 2\n"),
+        (
+            "a:\n  s:\n    - a\n",
+            &push,
+            &map,
+            "a:\n  s:\n    - a\n    - k: 1\n      j: 2\n",
+        ),
+        ("s: [a]\n", &push, &map, "s: [a, {k: 1, j: 2}]\n"),
+        ("s:\n  - a\n", &push, &seq, "s:\n  - a\n  - - x\n    - y\n"),
+        ("- a\n", &push, &seq, "- a\n- - x\n  - y\n"),
+        ("s: [a]\n", &push, &seq, "s: [a, [x, y]]\n"),
+        (
+            "s:\n  - a\n",
+            &insert0,
+            &map,
+            "s:\n  - k: 1\n    j: 2\n  - a\n",
+        ),
+        ("- a\n", &insert0, &map, "- k: 1\n  j: 2\n- a\n"),
+        ("s: [a]\n", &insert0, &map, "s: [{k: 1, j: 2}, a]\n"),
+        (
+            "s:\n  - a\n  - b\n",
+            &set0,
+            &map,
+            "s:\n  - k: 1\n    j: 2\n  - b\n",
+        ),
+        ("- a\n", &set0, &map, "- k: 1\n  j: 2\n"),
+        (
+            "a:\n  s:\n    - a\n",
+            &set0,
+            &map,
+            "a:\n  s:\n    - k: 1\n      j: 2\n",
+        ),
+        (
+            "s:\n  - &x\n    k: 0\n",
+            &set0,
+            &map,
+            "s:\n  - &x\n    k: 1\n    j: 2\n",
+        ),
+        ("s: [a, b]\n", &set0, &map, "s: [{k: 1, j: 2}, b]\n"),
+    ];
+    for (src, op, value, expected) in cases {
+        let doc = Document::from_str(src).unwrap();
+        let target = doc
+            .as_sequence()
+            .or_else(|| doc.as_mapping()?.get_sequence("s"))
+            .or_else(|| doc.as_mapping()?.get_mapping("a")?.get_sequence("s"))
+            .unwrap();
+        op(&target, value);
+        assert_edited(&doc, expected);
+    }
+}
+
+#[test]
+fn sequence_set_alias() {
+    let yaml = "colors:\n  - *red\n  - keep\n";
+    let parsed = YamlFile::from_str(yaml).unwrap();
+    let doc = parsed.document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let colors_node = mapping.get("colors").unwrap();
+    let seq = colors_node.as_sequence().unwrap();
+
+    assert!(seq.set(0, "blue"));
+    assert_file_edited(&parsed, "colors:\n  - blue\n  - keep\n");
+
+    let first = seq.get(0).unwrap();
+    assert_eq!(
+        first.as_scalar().map(|s| s.as_string()),
+        Some("blue".to_string())
+    );
+}
+
+#[test]
+fn sequence_set_with_nested_mapping() {
+    let yaml_str = "items:\n  - name: first\n    value: 1\n  - name: second\n    value: 2\n";
+    let doc = Document::from_str(yaml_str).unwrap();
+
+    let items_node = doc.try_get_path("items").unwrap();
+    let items = items_node.as_sequence().unwrap();
+
+    assert_eq!(items.len(), 2);
+    let first = items.get(0).unwrap();
+    assert!(first.is_mapping());
+
+    items.set(0, "replaced");
+    assert_edited(
+        &doc,
+        "items:\n  - replaced\n  - name: second\n    value: 2\n",
+    );
+}
+
+/// `set_path` builds nested intermediates as pending-block mappings, so a
+/// deep path produces readable block YAML rather than nested flow.
+#[test]
+fn set_path_builds_block_intermediates() {
+    let doc = Document::from_str("name: test\n").unwrap();
+    doc.try_set_path("server.database.host", "localhost")
+        .unwrap();
+    assert_edited(
+        &doc,
+        "name: test\nserver:\n  database:\n    host: localhost\n",
+    );
+}
+
+/// The line break ending an unterminated last entry goes where the parser
+/// puts it: in the innermost entry or block scalar on that line.
+#[test]
+fn set_after_unterminated_nested_value() {
+    for (source, expected) in [
+        ("a:\n  - 1", "a:\n  - 1\nb: 2"),
+        ("a:\n  x: 1", "a:\n  x: 1\nb: 2"),
+        ("a: |\n  x", "a: |\n  x\nb: 2"),
+    ] {
+        let yaml = YamlFile::from_str(source).unwrap();
+        yaml.document().unwrap().as_mapping().unwrap().set("b", 2);
+        assert_file_edited_valid(&yaml, expected);
+    }
+}
+
+#[test]
+fn set_after_bom_lines_up_with_first_key() {
+    // A BOM is not content, so the first key is at column 0.
+    let doc = yaml_edit::Document::from_str("\u{FEFF}a: 1\n").unwrap();
+    doc.as_mapping().unwrap().set("c", 3);
+    assert_edited(&doc, "\u{FEFF}a: 1\nc: 3\n");
+}
+
+#[test]
+fn set_nested_with_cr_line_breaks() {
+    let doc = yaml_edit::Document::from_str("x: 1\ra:\r  b: 1\r").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    mapping.get_mapping("a").unwrap().set("d", 4);
+    assert_eq!(doc.to_string(), "x: 1\ra:\r  b: 1\r  d: 4\r");
+}
+
+#[test]
+fn set_writes_crlf_line_breaks() {
+    let file = YamlFile::from_str("a: 1\r\n").unwrap();
+    let doc = file.document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    mapping.set("b", MappingBuilder::new().pair("c", 1).build_document());
+    mapping.set("d", ScalarValue::literal("x\ny\n"));
+    mapping.set("e", ScalarValue::single_quoted("x\ny"));
+    assert_file_edited_valid(
+        &file,
+        "a: 1\r\nb:\r\n  c: 1\r\nd: |\r\n  x\r\n  y\r\ne: 'x\r\n\r\n  y'\r\n",
+    );
+}
+
+#[test]
+fn set_without_line_breaks_writes_lf() {
+    let file = YamlFile::from_str("a: 1").unwrap();
+    file.document().unwrap().as_mapping().unwrap().set("b", 2);
+    // The input's last line stays unterminated.
+    assert_file_edited_valid(&file, "a: 1\nb: 2");
+}
+
+#[test]
+fn set_block_scalar_before_blank_line_with_cr_line_breaks() {
+    let file = YamlFile::from_str("a: 1\r    \rb: 2\r").unwrap();
+    let doc = file.document().unwrap();
+    doc.as_mapping()
+        .unwrap()
+        .set("a", ScalarValue::literal("x\n"));
+    assert_file_edited_valid(&file, "a: |\r  x\r\rb: 2\r");
+}
+
+#[test]
+fn modify_mapping_of_missing_or_scalar_value() {
+    let doc = YamlFile::from_str("a: 1\n").unwrap().document().unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(!mapping.modify_mapping("a", |_| panic!("a is no mapping")));
+    assert!(!mapping.modify_mapping("b", |_| panic!("b is missing")));
+    assert_eq!(doc.to_string(), "a: 1\n");
+}
+
+/// A new entry goes before the spaces of a last line that holds nothing
+/// else.
+#[test]
+fn set_new_key_before_trailing_space_line() {
+    for (src, expected) in [
+        ("a: 1\n  ", "a: 1\nb: 2\n  "),
+        ("a: 1\n# c\n  ", "a: 1\n# c\nb: 2\n  "),
+    ] {
+        let doc = YamlFile::from_str(src).unwrap().document().unwrap();
+        doc.as_mapping().unwrap().set("b", 2);
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), expected, "{src:?}");
+    }
+}
+
+/// An empty collection set as a value is written in flow form, so it reads
+/// back as a collection rather than as null (issue #37).
+#[test]
+fn set_empty_built_collection() {
+    let seq = SequenceBuilder::new()
+        .build_document()
+        .as_sequence()
+        .unwrap();
+    let text = edit_root("name: Alice", |m| m.set("foo", seq));
+    assert_eq!(text, "name: Alice\nfoo: []");
+    assert_eq!(render_documents(&text), ["map{name: Alice, foo: []}"]);
+
+    let map = MappingBuilder::new().build_document().as_mapping().unwrap();
+    let text = edit_root("name: Alice", |m| m.set("foo", map));
+    assert_eq!(text, "name: Alice\nfoo: {}");
+    assert_eq!(render_documents(&text), ["map{name: Alice, foo: {}}"]);
+}
+
+/// Setting a key in a mapping updates it where it is, or adds it at the
+/// end.
+#[test]
+fn set_on_root_mapping() {
+    assert_eq!(
+        edit_root("existing: value", |m| m.set("new_key", "new_value")),
+        "existing: value\nnew_key: new_value"
+    );
+    assert_eq!(
+        edit_root("key1: value1", |m| m.set("key2", "value2")),
+        "key1: value1\nkey2: value2"
+    );
+    assert_eq!(
+        edit_root("name: Alice", |m| m.set("age", 30)),
+        "name: Alice\nage: 30"
+    );
+    assert_eq!(
+        edit_root("name: Alice\nage: 30", |m| m.set("age", 31)),
+        "name: Alice\nage: 31"
+    );
+    assert_eq!(
+        edit_root("key1: value1\nkey2: value2\n", |m| m
+            .set("key1", "new_value")),
+        "key1: new_value\nkey2: value2\n"
+    );
+    assert_eq!(
+        edit_root(
+            "Name: original_name\nContact: original_contact\nRepository: https://github.com/example/repo.git\n",
+            |m| m.set("Contact", "updated_contact")
+        ),
+        "Name: original_name\nContact: updated_contact\nRepository: https://github.com/example/repo.git\n"
+    );
+    assert_eq!(
+        edit_root(
+            "Name: tsne\nContact: Justin Donaldson <jdonaldson@gmail.com>\nArchive: CRAN\nRepository: https://github.com/jdonaldson/rtsne.git\n",
+            |m| {
+                m.set("Contact", "New Contact <new@example.com>");
+                assert_cst_ok(m);
+                m.set("Archive", "PyPI");
+            }
+        ),
+        "Name: tsne\nContact: New Contact <new@example.com>\nArchive: PyPI\nRepository: https://github.com/jdonaldson/rtsne.git\n"
+    );
+    assert_eq!(
+        edit_root("key: value", |m| {
+            m.set("number", 123);
+            assert_cst_ok(m);
+            m.set("bool", false);
+            assert_cst_ok(m);
+            m.set("text", "hello");
+        }),
+        "key: value\nnumber: 123\nbool: false\ntext: hello"
+    );
+    assert_eq!(
+        edit_root("name: Alice", |m| {
+            assert_eq!(m.len(), 1);
+            m.set("age", 30);
+            assert_eq!(m.len(), 2);
+            m.set("city", "NYC");
+            assert_eq!(m.len(), 3);
+        }),
+        "name: Alice\nage: 30\ncity: NYC"
+    );
+}
+
+#[test]
+fn set_remove_and_rename_together() {
+    let original = r#"name: my-app
+version: 1.0
+author: Alice
+year: 2023
+
+features:
+  - logging
+  - auth"#;
+    let text = edit_root(original, |m| {
+        m.set("license", "MIT");
+        assert_cst_ok(m);
+        m.set("published", true);
+        assert_cst_ok(m);
+        m.set("downloads", 1000);
+        assert_cst_ok(m);
+        assert!(m.remove("author").is_some());
+        assert_cst_ok(m);
+        assert!(m.rename_key("version", "app_version"));
+        assert_cst_ok(m);
+        m.set("year", 2024);
+    });
+    assert_eq!(
+        text,
+        r#"name: my-app
+app_version: 1.0
+year: 2024
+
+features:
+  - logging
+  - auth
+license: MIT
+published: true
+downloads: 1000"#
+    );
+}
+
+/// `Mapping::entry`: the `or_insert*` methods leave an existing value
+/// alone and add a missing one at the end, returning the value.
+#[test]
+fn entry_or_insert() {
+    let root = |d: &Document| d.as_mapping().unwrap();
+    check_edit(
+        "name: Alice\n",
+        |d| assert_eq!(root(d).entry("age").or_insert(30).to_string(), "30"),
+        "name: Alice\nage: 30\n",
+    );
+    check_edit(
+        "name: Alice\n",
+        |d| assert_eq!(root(d).entry("name").or_insert("Bob").to_string(), "Alice"),
+        "name: Alice\n",
+    );
+    check_edit(
+        "count: 5\n",
+        |d| {
+            let mut called = false;
+            let _ = root(d).entry("count").or_insert_with(|| {
+                called = true;
+                99_i64
+            });
+            assert!(!called);
+            let _ = root(d).entry("other").or_insert_with(|| {
+                called = true;
+                123_i64
+            });
+            assert!(called);
+        },
+        "count: 5\nother: 123\n",
+    );
+    check_edit(
+        "a: 1\n",
+        |d| {
+            let _ = root(d).entry("s").or_insert_with(|| "hello");
+            let _ = root(d).entry("n").or_insert_with(|| 42_i64);
+            let _ = root(d).entry("b").or_insert_with(|| true);
+        },
+        "a: 1\ns: hello\nn: 42\nb: true\n",
+    );
+    // Comments on the keys left alone stay.
+    check_edit(
+        "keep: this  # inline\nother: value\n",
+        |d| {
+            root(d).entry("added").or_insert(1_i64);
+        },
+        "keep: this  # inline\nother: value\nadded: 1\n",
+    );
+}
+
+/// `or_insert_mapping` and `or_insert_sequence` return the existing
+/// collection, or replace a value of another kind with an empty one.
+#[test]
+fn entry_or_insert_collection() {
+    let root = |d: &Document| d.as_mapping().unwrap();
+    check_edit(
+        "existing: value\n",
+        |d| {
+            let nested = root(d).entry("nested").or_insert_mapping();
+            assert_cst_ok(d);
+            nested.set("inner", "value");
+        },
+        "existing: value\nnested:\n  inner: value\n",
+    );
+    check_edit(
+        "root:\n  a: 1\n",
+        |d| {
+            let nested = root(d).entry("root").or_insert_mapping();
+            assert_cst_ok(d);
+            nested.set("b", 2);
+        },
+        "root:\n  a: 1\n  b: 2\n",
+    );
+    check_edit(
+        "k: scalar\n",
+        |d| {
+            let nested = root(d).entry("k").or_insert_mapping();
+            assert_cst_ok(d);
+            nested.set("inner", "v");
+        },
+        "k:\n  inner: v\n",
+    );
+    check_edit(
+        "existing: value\n",
+        |d| {
+            let list = root(d).entry("items").or_insert_sequence();
+            assert_cst_ok(d);
+            list.push("apple");
+            assert_cst_ok(d);
+            list.push("banana");
+        },
+        "existing: value\nitems:\n  - apple\n  - banana\n",
+    );
+    check_edit(
+        "items:\n  - apple\n",
+        |d| {
+            let list = root(d).entry("items").or_insert_sequence();
+            assert_cst_ok(d);
+            list.push("banana");
+        },
+        "items:\n  - apple\n  - banana\n",
+    );
+    check_edit(
+        "a: 1\nb: [x]\n",
+        |d| {
+            let mapping = root(d);
+            assert_eq!(mapping.entry("a").or_insert_sequence().to_string(), "[]");
+            assert_cst_ok(d);
+            assert_eq!(d.to_string(), "a: []\nb: [x]\n");
+            assert_eq!(mapping.entry("b").or_insert_sequence().len(), 1);
+            match mapping.entry("zz") {
+                Entry::Vacant(v) => assert_eq!(v.into_key(), "zz"),
+                Entry::Occupied(_) => panic!("zz is not in the mapping"),
+            }
+        },
+        "a: []\nb: [x]\n",
+    );
+}
+
+#[test]
+fn entry_and_modify() {
+    let root = |d: &Document| d.as_mapping().unwrap();
+    check_edit(
+        "count: 1\n",
+        |d| {
+            root(d).entry("count").and_modify(|e| e.set_value(42));
+        },
+        "count: 42\n",
+    );
+    check_edit(
+        "count: 1\n",
+        |d| {
+            let mut called = false;
+            root(d).entry("missing").and_modify(|_| called = true);
+            assert!(!called);
+        },
+        "count: 1\n",
+    );
+    check_edit(
+        "count: 1\n",
+        |d| {
+            let mapping = root(d);
+            mapping
+                .entry("count")
+                .and_modify(|e| e.set_value(2))
+                .or_insert(0);
+            assert_cst_ok(d);
+            assert_eq!(mapping.get("count").unwrap().to_string(), "2");
+            mapping
+                .entry("new")
+                .and_modify(|e| e.set_value("never"))
+                .or_insert("first");
+            assert_eq!(mapping.get("new").unwrap().to_string(), "first");
+        },
+        "count: 2\nnew: first\n",
+    );
+}
+
+#[test]
+fn entry_variants() {
+    let doc = Document::from_str("k: v\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    match mapping.entry("k") {
+        Entry::Occupied(o) => {
+            assert_eq!(o.key().unwrap().to_string(), "k");
+            assert_eq!(o.get().unwrap().to_string(), "v");
+        }
+        Entry::Vacant(_) => panic!("expected occupied"),
+    }
+    match mapping.entry("missing") {
+        Entry::Vacant(v) => assert_eq!(*v.key(), "missing"),
+        Entry::Occupied(_) => panic!("expected vacant"),
+    }
+    assert_eq!(mapping.entry("k").key().unwrap().to_string(), "k");
+    assert_eq!(
+        mapping.entry("missing").key().unwrap().to_string(),
+        "missing"
+    );
+
+    // Keys match by value, not by spelling.
+    let doc = Document::from_str("\"name\": Alice\n").unwrap();
+    assert!(matches!(
+        doc.as_mapping().unwrap().entry("name"),
+        Entry::Occupied(_)
+    ));
+}
+
+#[test]
+fn entry_insert_and_remove() {
+    let root = |d: &Document| d.as_mapping().unwrap();
+    check_edit(
+        "a: 1\n",
+        |d| {
+            let mapping = root(d);
+            let Entry::Vacant(v) = mapping.entry("b") else {
+                panic!("expected vacant");
+            };
+            assert_eq!(v.insert(2_i64).to_string(), "2");
+        },
+        "a: 1\nb: 2\n",
+    );
+    check_edit(
+        "a: 1\nb: 2\n",
+        |d| {
+            let mapping = root(d);
+            let Entry::Occupied(o) = mapping.entry("a") else {
+                panic!("expected occupied");
+            };
+            let removed = o.remove_entry();
+            assert_eq!(removed.key_node().unwrap().to_string(), "a");
+            assert!(!mapping.contains_key("a"));
+        },
+        "b: 2\n",
     );
 }

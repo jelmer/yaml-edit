@@ -18,12 +18,18 @@
 //! entry goes after them.
 
 mod common;
-use common::{assert_file_cst_ok, assert_file_edited, parse_clean};
+use common::{
+    assert_edited, assert_file_cst_ok, assert_file_edited, assert_file_edited_valid,
+    assert_parser_shaped, parse_clean, render_documents,
+};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::path::YamlPath;
 use yaml_edit::validator::Validator;
-use yaml_edit::{debug, Document, ScalarValue, Sequence, SyntaxKind, YamlFile, YamlNode};
+use yaml_edit::{
+    debug, yaml_eq, Document, Scalar, ScalarStyle, ScalarType, ScalarValue, Sequence, SyntaxKind,
+    YamlFile, YamlNode,
+};
 
 /// Every scalar under `node`, with its path of mapping keys and sequence
 /// indexes joined by `.`.
@@ -1918,5 +1924,898 @@ fn block_scalar_ends_at_a_dedent_with_any_line_ending() {
         for source in [lf.clone(), lf.replace('\n', "\r\n")] {
             assert_clean_leaves(&source, expected);
         }
+    }
+}
+
+/// Literal and folded scalars with their chomping and indentation
+/// indicators, among other nodes, round trip and read as expected.
+#[test]
+fn block_scalar_values() {
+    let cases: &[(&str, Leaves)] = &[
+        (
+            r#"literal: |
+  Line 1
+  Line 2
+  Line 3
+"#,
+            &[("literal", "Line 1\nLine 2\nLine 3\n")],
+        ),
+        (
+            r#"folded: >
+  This is a very long line that will be folded
+  into a single line in the output
+  but preserves paragraph breaks.
+
+  This is a new paragraph.
+"#,
+            &[("folded", "This is a very long line that will be folded into a single line in the output but preserves paragraph breaks.\nThis is a new paragraph.\n")],
+        ),
+        (
+            r#"strip: |-
+  Line 1
+  Line 2
+
+"#,
+            &[("strip", "Line 1\nLine 2")],
+        ),
+        (
+            r#"keep: |+
+  Line 1
+  Line 2
+
+"#,
+            &[("keep", "Line 1\nLine 2\n\n")],
+        ),
+        (
+            r#"strip: >-
+  Folded content that should
+  be stripped of final newlines
+"#,
+            &[("strip", "Folded content that should be stripped of final newlines")],
+        ),
+        (
+            r#"keep: >+
+  Folded content that should
+  keep all final newlines
+
+"#,
+            &[("keep", "Folded content that should keep all final newlines\n\n")],
+        ),
+        // `|2` puts the content at column 2, so the two further spaces on each
+        // line are part of the value, as saphyr and PyYAML both read it.
+        (
+            r#"explicit: |2
+    Two space indent
+    Another line
+"#,
+            &[("explicit", "  Two space indent\n  Another line\n")],
+        ),
+        // `>3` puts the content at column 3, so the three further spaces are
+        // part of the value, and a more-indented line in a folded scalar keeps
+        // its break rather than folding.
+        (
+            r#"folded_explicit: >3
+      Three space indent
+      Another folded line
+"#,
+            &[("folded_explicit", "   Three space indent\n   Another folded line\n")],
+        ),
+        (
+            r#"description: |
+  This is a multi-line
+  description that should
+  preserve line breaks.
+
+  It can have multiple paragraphs too.
+
+summary: >
+  This is a summary that
+  should be folded into
+  a single line.
+
+version: "1.0"
+"#,
+            &[("description", "This is a multi-line\ndescription that should\npreserve line breaks.\n\nIt can have multiple paragraphs too.\n"), ("summary", "This is a summary that should be folded into a single line.\n"), ("version", "1.0")],
+        ),
+        (
+            r#"config:
+  name: "My App"
+  description: |
+    This application does many things:
+    - Feature 1
+    - Feature 2
+    - Feature 3
+  summary: >
+    A brief summary that spans
+    multiple lines but should
+    be folded together.
+  version: 1.0
+  enabled: true
+"#,
+            &[("config.name", "My App"), ("config.description", "This application does many things:\n- Feature 1\n- Feature 2\n- Feature 3\n"), ("config.summary", "A brief summary that spans multiple lines but should be folded together.\n"), ("config.version", "1.0"), ("config.enabled", "true")],
+        ),
+        // A block scalar with no indented content is empty, and the next line
+        // at the key's own column is a sibling entry rather than its content,
+        // as saphyr and PyYAML read it.
+        (
+            r#"empty_literal: |
+empty_folded: >
+"#,
+            &[("empty_literal", ""), ("empty_folded", "")],
+        ),
+        (
+            r#"whitespace: |
+
+
+"#,
+            &[("whitespace", "")],
+        ),
+        (
+            r#"first: |
+  Content
+second: value
+"#,
+            &[("first", "Content\n"), ("second", "value")],
+        ),
+        (
+            r#"poem: |
+  Roses are red,
+  Violets are blue,
+  YAML is great,
+  And so are you!
+
+  This is another stanza
+  with different content.
+    And this line has extra indentation.
+  Back to normal indentation.
+
+  Final stanza.
+"#,
+            &[("poem", "Roses are red,\nViolets are blue,\nYAML is great,\nAnd so are you!\n\nThis is another stanza\nwith different content.\n  And this line has extra indentation.\nBack to normal indentation.\n\nFinal stanza.\n")],
+        ),
+        (
+            r#"description: >
+  This is the first paragraph that should
+  be folded into a single line when processed
+  by a YAML parser.
+
+  This is a second paragraph that should
+  also be folded but kept separate from
+  the first paragraph.
+
+
+  This is a third paragraph after
+  multiple blank lines.
+
+  Final paragraph.
+"#,
+            &[("description", "This is the first paragraph that should be folded into a single line when processed by a YAML parser.\nThis is a second paragraph that should also be folded but kept separate from the first paragraph.\n\nThis is a third paragraph after multiple blank lines.\nFinal paragraph.\n")],
+        ),
+        (
+            r#"special_chars: |
+  Line with colons: key: value
+  Line with dashes - and more - dashes
+  Line with quotes "double" and 'single'
+  Line with brackets [array] and braces {object}
+  Line with pipes | and greater than >
+  Line with at @ and hash # symbols
+  Line with percent % and exclamation !
+
+backslash_test: >
+  This line has a backslash \ in it
+  And this line has multiple \\ backslashes
+
+unicode_test: |
+  This line has unicode: 你好世界
+  And emojis: 🚀 🎉 ✨
+"#,
+            &[("special_chars", "Line with colons: key: value\nLine with dashes - and more - dashes\nLine with quotes \"double\" and 'single'\nLine with brackets [array] and braces {object}\nLine with pipes | and greater than >\nLine with at @ and hash # symbols\nLine with percent % and exclamation !\n"), ("backslash_test", "This line has a backslash \\ in it And this line has multiple \\\\ backslashes\n"), ("unicode_test", "This line has unicode: 你好世界\nAnd emojis: 🚀 🎉 ✨\n")],
+        ),
+        (
+            r#"clip: |
+  Line 1
+  Line 2
+
+"#,
+            &[("clip", "Line 1\nLine 2\n")],
+        ),
+        (
+            r#"strip: |-
+  Line 1
+  Line 2
+
+
+
+"#,
+            &[("strip", "Line 1\nLine 2")],
+        ),
+        (
+            r#"keep: |+
+  Line 1
+  Line 2
+
+
+
+"#,
+            &[("keep", "Line 1\nLine 2\n\n\n\n")],
+        ),
+        (
+            r#"indent1: |1
+ Single space indent
+"#,
+            &[("indent1", "Single space indent\n")],
+        ),
+        (
+            r#"indent2: |2
+  Two space indent
+"#,
+            &[("indent2", "Two space indent\n")],
+        ),
+        (
+            r#"folded_indent: >2
+  Two space folded
+  content spans lines
+"#,
+            &[("folded_indent", "Two space folded content spans lines\n")],
+        ),
+        (
+            r#"strip_with_indent: |2-
+  Content with explicit indent
+  and strip chomping
+
+
+keep_with_indent: >3+
+   Content with explicit indent
+   and keep chomping
+
+
+
+folded_strip: >-
+  Folded content
+  with strip indicator
+
+literal_keep: |+
+  Literal content
+  with keep indicator
+
+
+"#,
+            &[("strip_with_indent", "Content with explicit indent\nand strip chomping"), ("keep_with_indent", "Content with explicit indent and keep chomping\n\n\n\n"), ("folded_strip", "Folded content with strip indicator"), ("literal_keep", "Literal content\nwith keep indicator\n\n\n")],
+        ),
+        (
+            r#"whitespace_only: |
+
+
+
+"#,
+            &[("whitespace_only", "")],
+        ),
+        (
+            r#"mixed_indent: |
+  Normal line
+    Indented line
+  Back to normal
+      More indented
+  Normal again
+"#,
+            &[("mixed_indent", "Normal line\n  Indented line\nBack to normal\n    More indented\nNormal again\n")],
+        ),
+        (
+            r#"first: |
+  Content
+immediate: value
+another: |
+  More content
+final: end
+"#,
+            &[("first", "Content\n"), ("immediate", "value"), ("another", "More content\n"), ("final", "end")],
+        ),
+        // The config block scalar ends at the less-indented "# Outside comment",
+        // and a `#` inside a body is content.
+        (
+            r#"# Main configuration
+config: |  # This is a literal block
+  # This comment is inside the block
+  line1: value1
+  # Another internal comment
+  line2: value2
+
+# Outside comment
+other: >  # Folded block comment
+  This content spans
+  # This hash is part of the content, not a comment
+  multiple lines
+"#,
+            &[("config", "# This comment is inside the block\nline1: value1\n# Another internal comment\nline2: value2\n"), ("other", "This content spans # This hash is part of the content, not a comment multiple lines\n")],
+        ),
+        (
+            r#"empty_literal: |
+
+empty_folded: >
+
+minimal_literal: |
+  x
+
+minimal_folded: >
+  y
+
+just_newlines: |
+
+
+
+just_spaces: |
+
+
+
+"#,
+            &[("empty_literal", ""), ("empty_folded", ""), ("minimal_literal", "x\n"), ("minimal_folded", "y\n"), ("just_newlines", ""), ("just_spaces", "")],
+        ),
+        // Only the first document's values are listed.
+        (
+            r#"---
+doc1: |
+  This is the first document
+  with a literal block scalar.
+
+next_key: value
+---
+doc2: >
+  This is the second document
+  with a folded block scalar.
+
+another_key: another_value
+...
+"#,
+            &[("doc1", "This is the first document\nwith a literal block scalar.\n"), ("next_key", "value")],
+        ),
+        (
+            "preserve_me: |\n  Line with    multiple    spaces\n  Line with\ttabs\there\n  Line with trailing spaces\n\n  Empty line above and below\n\n  Final line\n",
+            &[("preserve_me", "Line with    multiple    spaces\nLine with\ttabs\there\nLine with trailing spaces\n\nEmpty line above and below\n\nFinal line\n")],
+        ),
+        (
+            r#"yaml_content: |
+  # This block contains YAML-like content
+  nested:
+    - item: value
+    - item: another
+
+  mapping:
+    key1: |
+      Even more nested literal content
+    key2: value
+
+  anchors: &anchor
+    anchor_content: data
+
+  reference: *anchor
+
+quoted_yaml: >
+  This folded block contains
+  YAML structures: {key: value, array: [1, 2, 3]}
+  that should be treated as plain text.
+"#,
+            &[("yaml_content", "# This block contains YAML-like content\nnested:\n  - item: value\n  - item: another\n\nmapping:\n  key1: |\n    Even more nested literal content\n  key2: value\n\nanchors: &anchor\n  anchor_content: data\n\nreference: *anchor\n"), ("quoted_yaml", "This folded block contains YAML structures: {key: value, array: [1, 2, 3]} that should be treated as plain text.\n")],
+        ),
+        (
+            r#"mixed_styles: |
+  This literal block contains:
+  - A flow sequence: [1, 2, 3]
+  - A flow mapping: {key: value, other: data}
+  - Mixed content: [a, {nested: true}, c]
+
+flow_then_block:
+  flow_seq: [item1, item2]
+  block_literal: |
+    This comes after flow style
+    and should work fine.
+  flow_map: {after: block}
+"#,
+            &[("mixed_styles", "This literal block contains:\n- A flow sequence: [1, 2, 3]\n- A flow mapping: {key: value, other: data}\n- Mixed content: [a, {nested: true}, c]\n"), ("flow_then_block.flow_seq.0", "item1"), ("flow_then_block.flow_seq.1", "item2"), ("flow_then_block.block_literal", "This comes after flow style\nand should work fine.\n"), ("flow_then_block.flow_map.after", "block")],
+        ),
+        (
+            r#"empty: |
+next: value"#,
+            &[("empty", ""), ("next", "value")],
+        ),
+        (
+            "inconsistent: |\n  normal indent\n    more indent  \n  back to normal\n      even more\n  normal\n",
+            &[("inconsistent", "normal indent\n  more indent  \nback to normal\n    even more\nnormal\n")],
+        ),
+        (
+            "tabs: |\n\tTab indented line\n\tAnother tab line\n",
+            &[("tabs", "\tTab indented line\n\tAnother tab line\n")],
+        ),
+        // A tab is not indentation, so the body is indented two and its first
+        // line holds the tab.
+        (
+            "k: |-\n  \ta\n  b\nz: 1\n",
+            &[("k", "\ta\nb"), ("z", "1")],
+        ),
+        // The body's column is two, not three, so `]"` is body text rather than
+        // a dedent followed by an unterminated quoted scalar.
+        (
+            "- |-\n  \t[\n  ]\"\n- b\n",
+            &[("0", "\t[\n]\""), ("1", "b")],
+        ),
+        (
+            r#"unix: |
+  Line 1
+  Line 2
+"#,
+            &[("unix", "Line 1\nLine 2\n")],
+        ),
+        (
+            "windows: |\r\n  Line 1\r\n  Line 2\r\n",
+            &[("windows", "Line 1\nLine 2\n")],
+        ),
+        (
+            r#"config:
+  description: |
+    This is a configuration
+    with multiple lines.
+
+  name: "MyApp"
+  version: 1.0
+
+  settings: >
+    These are settings that
+    span multiple lines too.
+
+  debug: true
+"#,
+            &[("config.description", "This is a configuration\nwith multiple lines.\n"), ("config.name", "MyApp"), ("config.version", "1.0"), ("config.settings", "These are settings that span multiple lines too.\n"), ("config.debug", "true")],
+        ),
+        (
+            r#"numbers_as_text: |
+  123
+  45.67
+  -89
+  +100
+  0xFF
+  1e5
+  true
+  false
+  null
+
+calculations: >
+  The result is: 2 + 2 = 4
+  And 10 * 5 = 50
+  Also: 100% complete
+"#,
+            &[("numbers_as_text", "123\n45.67\n-89\n+100\n0xFF\n1e5\ntrue\nfalse\nnull\n"), ("calculations", "The result is: 2 + 2 = 4 And 10 * 5 = 50 Also: 100% complete\n")],
+        ),
+        (
+            r#"strip: |-
+  Content
+"#,
+            &[("strip", "Content")],
+        ),
+        (
+            r#"keep: |+
+  Content
+
+"#,
+            &[("keep", "Content\n\n")],
+        ),
+        (
+            r#"folded: >-
+  Content
+"#,
+            &[("folded", "Content")],
+        ),
+        (
+            r#"indent1: |1
+ Single space
+"#,
+            &[("indent1", "Single space\n")],
+        ),
+        (
+            r#"indent2: |2
+  Two spaces
+"#,
+            &[("indent2", "Two spaces\n")],
+        ),
+        (
+            r#"combined: |3+
+   Content with keep
+
+"#,
+            &[("combined", "Content with keep\n\n")],
+        ),
+        (
+            r#"description: |
+  Line 1
+  Line 2
+
+summary: >
+  Folded content
+
+version: "1.0"
+"#,
+            &[("description", "Line 1\nLine 2\n"), ("summary", "Folded content\n"), ("version", "1.0")],
+        ),
+        (
+            "items:\n  - |\n    First item content\n    with multiple lines\n  \n  - >\n    Second item folded\n    content\n  \n  - regular_item\n",
+            &[("items.0", "First item content\nwith multiple lines\n"), ("items.1", "Second item folded content\n"), ("items.2", "regular_item")],
+        ),
+        (
+            r#"empty: |
+
+"#,
+            &[("empty", "")],
+        ),
+        (
+            r#"empty_folded: >
+
+"#,
+            &[("empty_folded", "")],
+        ),
+        (
+            r#"simple: |
+  Hello World
+"#,
+            &[("simple", "Hello World\n")],
+        ),
+        (
+            r#"folded: >
+  Hello World
+"#,
+            &[("folded", "Hello World\n")],
+        ),
+        (
+            r#"strip: |-
+  Content
+
+keep: |+
+  Content
+
+"#,
+            &[("strip", "Content"), ("keep", "Content\n\n")],
+        ),
+        (
+            r#"explicit: |2
+  Two space indent
+"#,
+            &[("explicit", "Two space indent\n")],
+        ),
+        (
+            r#"config:
+  script: |
+    #!/bin/bash
+    echo "Starting deployment"
+
+    for service in api web worker; do
+        echo "Deploying $service"
+        kubectl apply -f $service.yaml
+    done
+
+  description: >
+    This configuration defines a deployment
+    script that will be executed during
+    the CI/CD pipeline.
+"#,
+            &[("config.script", "#!/bin/bash\necho \"Starting deployment\"\n\nfor service in api web worker; do\n    echo \"Deploying $service\"\n    kubectl apply -f $service.yaml\ndone\n"), ("config.description", "This configuration defines a deployment script that will be executed during the CI/CD pipeline.\n")],
+        ),
+    ];
+    for (yaml, expected) in cases {
+        assert_leaves(yaml, expected);
+    }
+}
+
+#[test]
+fn block_scalar_performance_large_content() {
+    // Test with a reasonably large block scalar
+    let mut large_content = String::new();
+    for i in 1..=100 {
+        large_content.push_str(&format!(
+            "  Line number {} with some content that makes it longer\n",
+            i
+        ));
+    }
+
+    let yaml = format!(
+        "large_literal: |\n{}\nlarge_folded: >\n{}\n",
+        large_content, large_content
+    );
+
+    let parsed =
+        YamlFile::from_str(&yaml).expect("Should parse large block scalars without errors");
+
+    let doc = parsed.document().expect("Should have document");
+    let mapping = doc.as_mapping().expect("Should be a mapping");
+
+    let literal_value = mapping
+        .get("large_literal")
+        .expect("Should have large_literal key")
+        .as_scalar()
+        .expect("Should be scalar")
+        .as_string();
+
+    // Build expected literal content (literal preserves newlines exactly)
+    let mut expected_literal = String::new();
+    for i in 1..=100 {
+        expected_literal.push_str(&format!(
+            "Line number {} with some content that makes it longer\n",
+            i
+        ));
+    }
+    assert_eq!(literal_value, expected_literal);
+
+    let folded_value = mapping
+        .get("large_folded")
+        .expect("Should have large_folded key")
+        .as_scalar()
+        .expect("Should be scalar")
+        .as_string();
+
+    // Build expected folded content (folded folds lines into spaces, preserves double newlines)
+    let mut expected_folded = String::new();
+    for i in 1..=100 {
+        if i > 1 {
+            expected_folded.push(' ');
+        }
+        expected_folded.push_str(&format!(
+            "Line number {} with some content that makes it longer",
+            i
+        ));
+    }
+    expected_folded.push('\n');
+    assert_eq!(folded_value, expected_folded);
+
+    let output = parsed.to_string();
+    assert_eq!(output, yaml);
+}
+
+/// A block scalar can be anchored and aliased; `<<:` and `*template` in
+/// a body are text, not a merge key and an alias.
+#[test]
+fn block_scalar_with_anchors_and_aliases() {
+    let yaml = r#"template: &template |
+  This is a template
+  with multiple lines
+  that can be referenced.
+
+instance1: *template
+
+instance2:
+  content: *template
+  other: value
+
+modified: |
+  <<: *template
+  Additional content here
+"#;
+    assert_eq!(
+        render_documents(yaml),
+        [
+            "map{template: This is a template\nwith multiple lines\nthat can be referenced.\n, \
+          instance1: *template, instance2: map{content: *template, other: value}, \
+          modified: <<: *template\nAdditional content here\n}"
+        ]
+    );
+}
+
+/// A block scalar can sit under a tag (`k: !!str >\n  ...`).
+#[test]
+fn block_scalar_under_tagged_node() {
+    assert_eq!(
+        render_documents("k: !!str >\n  wrapped\n  paragraph\n"),
+        ["map{k: !!str wrapped paragraph\n}"]
+    );
+}
+
+/// Write `value` into a mapping and a sequence, at the top level and
+/// nested, both as a new entry and over an existing one. Each result
+/// must have the tree the parser gives its text, and read `value` back.
+fn check_block_scalar_edits(value: impl yaml_edit::AsYaml + Clone) {
+    type Edit<V> = fn(&Document, V) -> Option<yaml_edit::YamlNode>;
+    let cases: [(&str, Edit<_>); 7] = [
+        ("a: 1\n", |d, v| {
+            d.set("b", v);
+            d.get("b")
+        }),
+        ("a: 1\nc: 2\n", |d, v| {
+            d.set("a", v);
+            d.get("a")
+        }),
+        ("a:\n  k: 1\n", |d, v| {
+            let m = d.get_mapping("a").unwrap();
+            m.set("j", v);
+            m.get("j")
+        }),
+        ("a:\n  k: 1\nb: 2\n", |d, v| {
+            let m = d.get_mapping("a").unwrap();
+            m.set("k", v);
+            m.get("k")
+        }),
+        ("- 1\n", |d, v| {
+            let s = d.as_sequence().unwrap();
+            s.push(v);
+            s.get(1)
+        }),
+        ("s:\n  - a\nb: 2\n", |d, v| {
+            let s = d.get_sequence("s").unwrap();
+            s.push(v);
+            s.get(1)
+        }),
+        ("- 1\n- 2\n", |d, v| {
+            let s = d.as_sequence().unwrap();
+            assert!(s.set(0, v));
+            s.get(0)
+        }),
+    ];
+    for (src, edit) in cases {
+        let doc = Document::from_str(src).unwrap();
+        let written = edit(&doc, value.clone()).unwrap();
+        assert!(
+            yaml_eq(&written, &value),
+            "{src:?} -> {:?}",
+            doc.to_string()
+        );
+        assert_parser_shaped(&doc);
+    }
+}
+
+#[test]
+fn block_scalars_are_parser_shaped() {
+    for value in [
+        ScalarValue::literal("x\ny\n"),
+        ScalarValue::literal("x\ny"),
+        ScalarValue::literal("x\ny\n\n"),
+        ScalarValue::folded("x\ny"),
+        ScalarValue::folded("x\n\n"),
+        ScalarValue::literal("  x\ny\n"),
+        ScalarValue::literal("x: 1 # no comment\n  [a, b]\n"),
+        ScalarValue::literal("x\n\ny\n").with_tag("!t"),
+        ScalarValue::folded("  x\n").with_tag("!!str"),
+    ] {
+        check_block_scalar_edits(value);
+    }
+    check_block_scalar_edits("x\ny\n");
+    check_block_scalar_edits("  x\ny".to_string());
+}
+
+#[test]
+fn block_scalar_text() {
+    let doc = Document::from_str("a:\n  k: 1\n").unwrap();
+    let m = doc.get_mapping("a").unwrap();
+    m.set("j", ScalarValue::literal("x\n  y\n"));
+    m.set("k", ScalarValue::literal("  x\n").with_tag("!t"));
+    assert_edited(&doc, "a:\n  k: !t |2\n      x\n  j: |\n    x\n      y\n");
+}
+
+#[test]
+fn block_scalar_items_clear_the_dash() {
+    let literal = ScalarValue::literal("x\ny\n");
+    for (src, set, expected) in [
+        ("- a\n", false, "- a\n- |\n  x\n  y\n"),
+        ("s:\n  - a\n", false, "s:\n  - a\n  - |\n    x\n    y\n"),
+        ("s:\n  - a\n", true, "s:\n  - |\n    x\n    y\n"),
+        (
+            "s:\n  - a  # c\n  - b\n",
+            true,
+            "s:\n  - |  # c\n    x\n    y\n  - b\n",
+        ),
+        ("- a # c\n", true, "- | # c\n  x\n  y\n"),
+    ] {
+        let doc = Document::from_str(src).unwrap();
+        let seq = doc
+            .as_sequence()
+            .or_else(|| doc.as_mapping()?.get_sequence("s"))
+            .unwrap();
+        if set {
+            assert!(seq.set(0, literal.clone()));
+        } else {
+            seq.push(literal.clone());
+        }
+        assert_edited(&doc, expected);
+    }
+}
+
+/// A block scalar is always a string, even when empty or when its content
+/// spells a null keyword.
+#[test]
+fn block_scalar_is_not_null() {
+    for yaml in [
+        "a: |\n",
+        "a: >-\n",
+        "a: |+\n",
+        "a: |-\n  null\n",
+        "a: >-\n  ~\n",
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        let node = doc.as_mapping().unwrap().get("a").unwrap();
+        let scalar = node.as_scalar().unwrap();
+        assert!(!scalar.is_null(), "{yaml:?}");
+        assert_eq!(
+            ScalarValue::from_scalar(scalar).scalar_type(),
+            ScalarType::String,
+            "{yaml:?}"
+        );
+        assert!(!yaml_eq(scalar, &ScalarValue::null()), "{yaml:?}");
+    }
+}
+
+/// Folding, blank lines and chomping in block scalar bodies, and lone
+/// carriage returns as line breaks.
+#[test]
+fn block_scalar_body_values() {
+    for (yaml, key, expected) in [
+        ("k: >\n  a\n\n\n  b\n", "k", "a\n\nb\n"),
+        ("k: >\n\n  a\n", "k", "\na\n"),
+        ("k: >-\n  x\n  \ty\n", "k", "x\n\ty"),
+        ("k: >\n  a\n   b\n  c\n", "k", "a\n b\nc\n"),
+        ("k: >\n  a\n\n   b\n\n  c\n", "k", "a\n\n b\n\nc\n"),
+        ("k: |\n  a\n    \n \n  b\n", "k", "a\n  \n\nb\n"),
+        ("k: >\n\nj: 1\n", "k", ""),
+        ("k: |+\n\nj: 1\n", "k", "\n"),
+        ("k: |-\n\nj: 1\n", "k", ""),
+        ("k: |+\n   \n", "k", "\n"),
+        ("a: |\r  x\r  y\rb: 2\r", "a", "x\ny\n"),
+        ("a: |\r  x\r  y\rb: 2\r", "b", "2"),
+        ("a: b\r  c\rd: e\r", "a", "b c"),
+        ("a: b\r\r  c\rd: e\r", "a", "b\nc"),
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        let node = doc.as_mapping().unwrap().get(key).unwrap();
+        assert_eq!(node.as_scalar().unwrap().as_string(), expected, "{yaml:?}");
+    }
+}
+
+/// Replacing a block scalar leaves the line break ending its last line
+/// and the blank lines after it where the parser puts them after any
+/// other scalar.
+#[test]
+fn set_value_of_block_scalar() {
+    for (input, expected) in [
+        ("a: |\n  hello\nb: 2\n", "a: y\nb: 2\n"),
+        ("a: |\n  hello\n  \n\nb: 2\n", "a: y\n  \n\nb: 2\n"),
+        ("a: |\nb: 1\n", "a: y\nb: 1\n"),
+        ("a: | # c\n  x\nb: 1\n", "a: y\nb: 1\n"),
+        ("a: |\n  x", "a: y"),
+        ("a:\n  b: |\n    x\n\nc: 1\n", "a:\n  b: y\n\nc: 1\n"),
+        ("a:\n  b: >\n    x\n\n  c: 1\n", "a:\n  b: y\n\n  c: 1\n"),
+        ("- |\n  x\n\n- 1\n", "- y\n\n- 1\n"),
+        ("a:\n  - |\n    x\n\n  - 2\n", "a:\n  - y\n\n  - 2\n"),
+        ("? |\n  x\n: v\n", "? y\n: v\n"),
+        ("a: !t |\n  x\n\nb: 1\n", "a: !t y\n\nb: 1\n"),
+        ("!t |\n  x\n\n", "!t y\n\n"),
+        ("|\n  x\n\n...\n", "y\n\n...\n"),
+    ] {
+        let yaml = YamlFile::from_str(input).unwrap();
+        let scalar = yaml
+            .syntax()
+            .descendants()
+            .filter_map(Scalar::cast)
+            .find(Scalar::is_block)
+            .unwrap();
+        scalar.set_value("y");
+        assert_file_edited_valid(&yaml, expected);
+    }
+}
+
+/// A `|` or `>` that starts a plain scalar, which the parser accepts in a
+/// flow collection though the validator does not, is its text rather than
+/// an empty block scalar.
+#[test]
+fn plain_scalar_starting_with_block_indicator() {
+    for (input, text) in [
+        ("[|, x]\n", "|"),
+        ("[>, x]\n", ">"),
+        ("{a: |, b: 1}\n", "|"),
+        ("[|x]\n", "|x"),
+    ] {
+        let doc = Document::from_str(input).unwrap();
+        let scalar = doc
+            .syntax()
+            .descendants()
+            .filter_map(Scalar::cast)
+            .find(|s| s.value() == text)
+            .unwrap();
+        assert!(!scalar.is_block(), "{input:?}");
+        assert_eq!(scalar.as_string(), text, "{input:?}");
+        let value = ScalarValue::from_scalar(&scalar);
+        assert_eq!(value.value(), text, "{input:?}");
+        assert_eq!(value.style(), ScalarStyle::Plain, "{input:?}");
     }
 }

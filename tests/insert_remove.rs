@@ -3448,3 +3448,13 @@ fn clear_mapping() {
     });
     assert_eq!(text, "new_key: new_value\n");
 }
+
+/// The `>` opening the second line of a plain scalar is not a block scalar
+/// header, so the line break added before a new entry goes after the
+/// scalar.
+#[test]
+fn append_after_plain_scalar_with_indicator_line() {
+    let yaml = YamlFile::from_str("a: b\n  > c").unwrap();
+    yaml.document().unwrap().as_mapping().unwrap().set("d", 1);
+    assert_file_edited_valid(&yaml, "a: b\n  > c\nd: 1");
+}

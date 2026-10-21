@@ -18,12 +18,15 @@
 //! entry goes after them.
 
 mod common;
-use common::{assert_file_cst_ok, assert_file_edited, parse_clean, render_documents};
+use common::{
+    assert_edited, assert_file_cst_ok, assert_file_edited, assert_parser_shaped, parse_clean,
+    render_documents,
+};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::path::YamlPath;
 use yaml_edit::validator::Validator;
-use yaml_edit::{debug, Document, ScalarValue, Sequence, SyntaxKind, YamlFile, YamlNode};
+use yaml_edit::{debug, yaml_eq, Document, ScalarValue, Sequence, SyntaxKind, YamlFile, YamlNode};
 
 /// Every scalar under `node`, with its path of mapping keys and sequence
 /// indexes joined by `.`.
@@ -2596,4 +2599,84 @@ fn block_scalar_under_tagged_node() {
         render_documents("k: !!str >\n  wrapped\n  paragraph\n"),
         ["map{k: !!str wrapped paragraph\n}"]
     );
+}
+
+/// Write `value` into a mapping and a sequence, at the top level and
+/// nested, both as a new entry and over an existing one. Each result
+/// must have the tree the parser gives its text, and read `value` back.
+fn check_block_scalar_edits(value: impl yaml_edit::AsYaml + Clone) {
+    type Edit<V> = fn(&Document, V) -> Option<yaml_edit::YamlNode>;
+    let cases: [(&str, Edit<_>); 7] = [
+        ("a: 1\n", |d, v| {
+            d.set("b", v);
+            d.get("b")
+        }),
+        ("a: 1\nc: 2\n", |d, v| {
+            d.set("a", v);
+            d.get("a")
+        }),
+        ("a:\n  k: 1\n", |d, v| {
+            let m = d.get_mapping("a").unwrap();
+            m.set("j", v);
+            m.get("j")
+        }),
+        ("a:\n  k: 1\nb: 2\n", |d, v| {
+            let m = d.get_mapping("a").unwrap();
+            m.set("k", v);
+            m.get("k")
+        }),
+        ("- 1\n", |d, v| {
+            let s = d.as_sequence().unwrap();
+            s.push(v);
+            s.get(1)
+        }),
+        ("s:\n  - a\nb: 2\n", |d, v| {
+            let s = d.get_sequence("s").unwrap();
+            s.push(v);
+            s.get(1)
+        }),
+        ("- 1\n- 2\n", |d, v| {
+            let s = d.as_sequence().unwrap();
+            assert!(s.set(0, v));
+            s.get(0)
+        }),
+    ];
+    for (src, edit) in cases {
+        let doc = Document::from_str(src).unwrap();
+        let written = edit(&doc, value.clone()).unwrap();
+        assert!(
+            yaml_eq(&written, &value),
+            "{src:?} -> {:?}",
+            doc.to_string()
+        );
+        assert_parser_shaped(&doc);
+    }
+}
+
+#[test]
+fn block_scalars_are_parser_shaped() {
+    for value in [
+        ScalarValue::literal("x\ny\n"),
+        ScalarValue::literal("x\ny"),
+        ScalarValue::literal("x\ny\n\n"),
+        ScalarValue::folded("x\ny"),
+        ScalarValue::folded("x\n\n"),
+        ScalarValue::literal("  x\ny\n"),
+        ScalarValue::literal("x: 1 # no comment\n  [a, b]\n"),
+        ScalarValue::literal("x\n\ny\n").with_tag("!t"),
+        ScalarValue::folded("  x\n").with_tag("!!str"),
+    ] {
+        check_block_scalar_edits(value);
+    }
+    check_block_scalar_edits("x\ny\n");
+    check_block_scalar_edits("  x\ny".to_string());
+}
+
+#[test]
+fn block_scalar_text() {
+    let doc = Document::from_str("a:\n  k: 1\n").unwrap();
+    let m = doc.get_mapping("a").unwrap();
+    m.set("j", ScalarValue::literal("x\n  y\n"));
+    m.set("k", ScalarValue::literal("  x\n").with_tag("!t"));
+    assert_edited(&doc, "a:\n  k: !t |2\n      x\n  j: |\n    x\n      y\n");
 }

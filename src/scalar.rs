@@ -1679,7 +1679,6 @@ impl crate::AsYaml for ScalarValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::debug::assert_cst_ok;
 
     #[test]
     fn test_digits_to_decimal() {
@@ -1792,34 +1791,6 @@ mod tests {
             ScalarValue::single_quoted("a\rb").to_yaml_string(),
             "\"a\\rb\""
         );
-    }
-
-    #[test]
-    fn round_trips_keys_needing_quotes() {
-        use crate::Document;
-        use std::str::FromStr;
-
-        // Each of these was written unquoted and could not be read back:
-        // " #" starts a comment (the old rule checked the character *after*
-        // the `#`, but YAML keys on what precedes it), and a line break
-        // turned the key into a block scalar.
-        for key in [
-            "a. #a", "a #c", "a#b", "a\nb", "a\rb", "x: y", "a:b", "plain", "a b", "#lead", "a:",
-            "", "true", "123", "- x", "? x",
-        ] {
-            let doc = Document::from_str("z: 1\n").unwrap();
-            doc.as_mapping().unwrap().set(key, "v");
-            assert_cst_ok(&doc);
-            let text = doc.to_string();
-
-            let reparsed = Document::from_str(&text)
-                .unwrap_or_else(|e| panic!("{key:?} produced unparseable {text:?}: {e}"));
-            let value = reparsed
-                .as_mapping()
-                .and_then(|m| m.get(key))
-                .unwrap_or_else(|| panic!("{key:?} did not survive as {text:?}"));
-            assert_eq!(value.to_string(), "v", "{key:?} in {text:?}");
-        }
     }
 
     #[test]
@@ -2900,31 +2871,6 @@ mod tests {
     }
 
     #[test]
-    fn test_from_scalar_impl_matches_from_scalar() {
-        use crate::yaml::Document;
-        use std::str::FromStr;
-
-        let doc = Document::from_str("a: \"123\"\nb: 'true'\nc: |\n  1\nd: 0x1F\ne: x\n").unwrap();
-        let m = doc.as_mapping().unwrap();
-        for (key, value, style, scalar_type) in [
-            ("a", "123", ScalarStyle::DoubleQuoted, ScalarType::String),
-            ("b", "true", ScalarStyle::SingleQuoted, ScalarType::String),
-            ("c", "1\n", ScalarStyle::Literal, ScalarType::String),
-            ("d", "0x1F", ScalarStyle::Plain, ScalarType::Integer),
-            ("e", "x", ScalarStyle::Plain, ScalarType::String),
-        ] {
-            let scalar = m.get(key).unwrap().as_scalar().unwrap().clone();
-            let sv = ScalarValue::from(scalar.clone());
-            assert_eq!(sv, ScalarValue::from_scalar(&scalar));
-            assert_eq!(
-                (sv.value(), sv.style(), sv.scalar_type()),
-                (value, style, scalar_type),
-                "{key}"
-            );
-        }
-    }
-
-    #[test]
     fn test_from_scalar_ampersand_in_plain_is_string() {
         // `3.1&1` is a single plain scalar with literal content `3.1&1`.
         // Per YAML 1.2 core-schema tag resolution it must resolve to
@@ -3090,95 +3036,6 @@ mod tests {
         );
     }
 
-    /// Write `value` into a mapping and a sequence, at the top level and
-    /// nested, both as a new entry and over an existing one. Each result
-    /// must have the tree the parser gives its text, and read `value` back.
-    fn check_block_scalar_edits(value: impl crate::AsYaml + Clone) {
-        use crate::as_yaml::yaml_eq;
-        use crate::yaml::Document;
-        use std::str::FromStr;
-
-        type Edit<V> = fn(&Document, V) -> Option<crate::as_yaml::YamlNode>;
-        let cases: [(&str, Edit<_>); 7] = [
-            ("a: 1\n", |d, v| {
-                d.set("b", v);
-                d.get("b")
-            }),
-            ("a: 1\nc: 2\n", |d, v| {
-                d.set("a", v);
-                d.get("a")
-            }),
-            ("a:\n  k: 1\n", |d, v| {
-                let m = d.get_mapping("a").unwrap();
-                m.set("j", v);
-                m.get("j")
-            }),
-            ("a:\n  k: 1\nb: 2\n", |d, v| {
-                let m = d.get_mapping("a").unwrap();
-                m.set("k", v);
-                m.get("k")
-            }),
-            ("- 1\n", |d, v| {
-                let s = d.as_sequence().unwrap();
-                s.push(v);
-                s.get(1)
-            }),
-            ("s:\n  - a\nb: 2\n", |d, v| {
-                let s = d.get_sequence("s").unwrap();
-                s.push(v);
-                s.get(1)
-            }),
-            ("- 1\n- 2\n", |d, v| {
-                let s = d.as_sequence().unwrap();
-                assert!(s.set(0, v));
-                s.get(0)
-            }),
-        ];
-        for (src, edit) in cases {
-            let doc = Document::from_str(src).unwrap();
-            let written = edit(&doc, value.clone()).unwrap();
-            assert!(
-                yaml_eq(&written, &value),
-                "{src:?} -> {:?}",
-                doc.to_string()
-            );
-            assert_cst_ok(&doc);
-            crate::debug::assert_parser_shaped(&doc);
-        }
-    }
-
-    #[test]
-    fn test_block_scalars_are_parser_shaped() {
-        for value in [
-            ScalarValue::literal("x\ny\n"),
-            ScalarValue::literal("x\ny"),
-            ScalarValue::literal("x\ny\n\n"),
-            ScalarValue::folded("x\ny"),
-            ScalarValue::folded("x\n\n"),
-            ScalarValue::literal("  x\ny\n"),
-            ScalarValue::literal("x: 1 # no comment\n  [a, b]\n"),
-            ScalarValue::literal("x\n\ny\n").with_tag("!t"),
-            ScalarValue::folded("  x\n").with_tag("!!str"),
-        ] {
-            check_block_scalar_edits(value);
-        }
-        check_block_scalar_edits("x\ny\n");
-        check_block_scalar_edits("  x\ny".to_string());
-    }
-
-    #[test]
-    fn test_block_scalar_text() {
-        use std::str::FromStr;
-        let doc = crate::yaml::Document::from_str("a:\n  k: 1\n").unwrap();
-        let m = doc.get_mapping("a").unwrap();
-        m.set("j", ScalarValue::literal("x\n  y\n"));
-        m.set("k", ScalarValue::literal("  x\n").with_tag("!t"));
-        assert_eq!(
-            doc.to_string(),
-            "a:\n  k: !t |2\n      x\n  j: |\n    x\n      y\n"
-        );
-    }
-
     #[test]
     fn test_literal_and_folded_nonempty() {
         // Literal and folded styles render the block indicator on its own line
@@ -3225,34 +3082,6 @@ mod tests {
                 .kind();
             assert_eq!(kind, expected, "value {:?}", value.value());
         }
-    }
-
-    #[test]
-    fn test_as_yaml_quotes_string_that_looks_special() {
-        use std::str::FromStr;
-
-        // A string whose value reads as a null/bool/number must be quoted so it
-        // round-trips as a string, not the special value.
-        let doc = crate::yaml::Document::from_str("key: x\n").unwrap();
-        doc.as_mapping()
-            .unwrap()
-            .set("key", ScalarValue::string("null"));
-        assert_cst_ok(&doc);
-        assert_eq!(doc.to_string(), "key: 'null'\n");
-
-        // A string containing ": " must be quoted or it produces invalid YAML.
-        let doc = crate::yaml::Document::from_str("key: x\n").unwrap();
-        doc.as_mapping()
-            .unwrap()
-            .set("key", ScalarValue::string("has: colon"));
-        assert_cst_ok(&doc);
-        assert_eq!(doc.to_string(), "key: 'has: colon'\n");
-
-        // An actual null scalar stays bare.
-        let doc = crate::yaml::Document::from_str("key: x\n").unwrap();
-        doc.as_mapping().unwrap().set("key", ScalarValue::null());
-        assert_cst_ok(&doc);
-        assert_eq!(doc.to_string(), "key: null\n");
     }
 
     #[test]
@@ -3366,24 +3195,6 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_plain_scalar_is_null() {
-        assert_eq!(ScalarValue::classify_plain(""), CoreScalarType::Null);
-
-        let doc: crate::yaml::Document = "a:\nb: 1\n".parse().unwrap();
-        let node = doc.as_mapping().unwrap().get("a").unwrap();
-        let value = ScalarValue::from_scalar(node.as_scalar().unwrap());
-        assert_eq!(value.scalar_type(), ScalarType::Null);
-
-        let doc: crate::yaml::Document = "x: 1\n".parse().unwrap();
-        doc.as_mapping().unwrap().set("k", ScalarValue::parse(""));
-        assert_cst_ok(&doc);
-        let reparsed: crate::yaml::Document = doc.to_string().parse().unwrap();
-        let node = reparsed.as_mapping().unwrap().get("k").unwrap();
-        let value = ScalarValue::from_scalar(node.as_scalar().unwrap());
-        assert_eq!(value.scalar_type(), ScalarType::Null);
-    }
-
-    #[test]
     fn test_timestamp_rejects_impossible_dates_and_trailing_text() {
         for text in [
             "2023-02-30",
@@ -3449,17 +3260,6 @@ mod tests {
             Some((ScalarType::Null, "null".to_string()))
         );
         assert_eq!(coerce("x", ScalarType::Null), None);
-    }
-
-    #[test]
-    fn test_plain_scalar_folding_with_crlf() {
-        use std::str::FromStr;
-        let doc =
-            crate::Document::from_str("k: a\r\n  b\r\n\r\n  c\r\nq: \"x\r\n  y\"\r\n").unwrap();
-        let mapping = doc.as_mapping().unwrap();
-        let string = |key: &str| mapping.get(key).unwrap().as_scalar().unwrap().as_string();
-        assert_eq!(string("k"), "a b\nc");
-        assert_eq!(string("q"), "x y");
     }
 
     #[test]

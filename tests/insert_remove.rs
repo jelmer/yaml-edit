@@ -2236,3 +2236,93 @@ fn insert_empty_collections() {
         "map{name: project, empty_set: !!set {}}",
     );
 }
+
+#[test]
+fn document_insert_built_collections() {
+    let doc = Document::new();
+    doc.set("name", "project");
+    assert_cst_ok(&doc);
+    let features = SequenceBuilder::new()
+        .item("auth")
+        .item("api")
+        .item("web")
+        .build_document()
+        .as_sequence()
+        .unwrap();
+    assert!(doc.insert_after("name", "features", features));
+    assert_edited(
+        &doc,
+        "---\nname: project\nfeatures:\n- auth\n- api\n- web\n",
+    );
+
+    let doc = Document::new();
+    doc.set("name", "project");
+    assert_cst_ok(&doc);
+    doc.set("version", "1.0.0");
+    assert_cst_ok(&doc);
+    let database = MappingBuilder::new()
+        .pair("host", "localhost")
+        .pair("port", 5432)
+        .build_document()
+        .as_mapping()
+        .unwrap();
+    assert!(doc.insert_before("version", "database", database));
+    assert_edited(
+        &doc,
+        "---\nname: project\ndatabase:\n  host: localhost\n  port: 5432\nversion: 1.0.0\n",
+    );
+
+    let doc = Document::new();
+    doc.set("name", "project");
+    assert_cst_ok(&doc);
+    let tag_set = std::collections::BTreeSet::from(["production", "database"]);
+    doc.insert_at_index(1, "tags", tag_set);
+    assert_edited(
+        &doc,
+        "---\nname: project\ntags: !!set\n  database: null\n  production: null\n",
+    );
+}
+
+/// An entry inserted after the last one keeps the line break, or its
+/// absence, at the end of the input.
+#[test]
+fn document_insert_after_last_entry() {
+    for (src, expected) in [
+        (
+            "---\nBug-Database: https://github.com/example/example/issues\nBug-Submit: https://github.com/example/example/issues/new\n",
+            "---\nBug-Database: https://github.com/example/example/issues\nBug-Submit: https://github.com/example/example/issues/new\nRepository: https://github.com/example/example.git\n",
+        ),
+        (
+            "---\nBug-Database: https://github.com/example/example/issues\nBug-Submit: https://github.com/example/example/issues/new",
+            "---\nBug-Database: https://github.com/example/example/issues\nBug-Submit: https://github.com/example/example/issues/new\nRepository: https://github.com/example/example.git",
+        ),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        let doc = file.document().unwrap();
+        assert!(doc.insert_after(
+            "Bug-Submit",
+            "Repository",
+            "https://github.com/example/example.git",
+        ));
+        assert_file_edited(&file, expected);
+    }
+}
+
+/// Inserting into a document whose root is not a mapping does nothing.
+#[test]
+fn document_insert_at_index_leaves_sequence_root() {
+    let doc = Document::from_str("- a\n- b\n").unwrap();
+    assert!(!doc.set("k", "v"));
+    assert_edited(&doc, "- a\n- b\n");
+    assert!(!doc.insert_at_index(0, "k", "v"));
+    assert_edited(&doc, "- a\n- b\n");
+    assert!(!doc.reorder_fields(["k"]));
+    assert_edited(&doc, "- a\n- b\n");
+    assert!(doc.as_sequence().is_some());
+
+    let doc = Document::from_str("b: 1\na: 2\n").unwrap();
+    assert!(doc.insert_at_index(0, "k", "v"));
+    assert_cst_ok(&doc);
+    assert!(doc.reorder_fields(["a"]));
+    assert_edited(&doc, "a: 2\nk: v\nb: 1\n");
+}

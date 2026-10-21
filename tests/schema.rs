@@ -1188,3 +1188,188 @@ message: world
     assert_eq!(validator.validate(&string_document), Ok(()));
     assert_eq!(strict_validator.validate(&string_document), Ok(()));
 }
+
+/// A type the schema does not allow, at `path`.
+fn not_allowed(path: &str, schema: &str, found_type: ScalarType) -> ValidationError {
+    let allowed = match schema {
+        "failsafe" => vec![ScalarType::String],
+        _ => json_types(),
+    };
+    ValidationError::type_not_allowed(path, schema, found_type, allowed)
+}
+
+/// What each schema reports through `Document::validate_schema`, with the
+/// path of every value it does not allow.
+#[test]
+fn document_validate_schema() {
+    use ScalarType::*;
+    let json_compatible = r#"
+name: "John"
+age: 30
+active: true
+items:
+  - "apple"
+  - 42
+  - true
+"#;
+    let yaml_specific = r#"
+name: "Test"
+created: 2023-12-25T10:30:45Z
+pattern: !!regex '\d+'
+data: !!binary "SGVsbG8="
+"#;
+    let string_only = r#"
+name: hello
+message: world
+items:
+  - apple
+  - banana
+nested:
+  key: value
+"#;
+    let nested = r#"
+users:
+  - name: "Alice"
+    age: 25
+    metadata:
+      created: !!timestamp "2023-01-01"
+      active: true
+  - name: "Bob"
+    score: 95.5
+"#;
+    let scalars = r#"
+name: "HelloWorld"
+count: 42
+active: true
+"#;
+    let validators = [
+        ("json", SchemaValidator::json()),
+        ("core", SchemaValidator::core()),
+        ("failsafe", SchemaValidator::failsafe()),
+        ("strict failsafe", SchemaValidator::failsafe().strict()),
+        ("strict json", SchemaValidator::json().strict()),
+    ];
+    for (yaml, expected) in [
+        (
+            json_compatible,
+            [
+                vec![],
+                vec![],
+                vec![],
+                vec![
+                    not_allowed("root.age", "failsafe", Integer),
+                    not_allowed("root.active", "failsafe", Boolean),
+                    not_allowed("root.items[1]", "failsafe", Integer),
+                    not_allowed("root.items[2]", "failsafe", Boolean),
+                ],
+                vec![],
+            ],
+        ),
+        (
+            yaml_specific,
+            [
+                vec![
+                    not_allowed("root.pattern", "json", Regex),
+                    not_allowed("root.data", "json", Binary),
+                ],
+                vec![],
+                vec![
+                    not_allowed("root.pattern", "failsafe", Regex),
+                    not_allowed("root.data", "failsafe", Binary),
+                ],
+                vec![
+                    not_allowed("root.pattern", "failsafe", Regex),
+                    not_allowed("root.data", "failsafe", Binary),
+                ],
+                vec![
+                    not_allowed("root.pattern", "json", Regex),
+                    not_allowed("root.data", "json", Binary),
+                ],
+            ],
+        ),
+        (string_only, [vec![], vec![], vec![], vec![], vec![]]),
+        (
+            nested,
+            [
+                vec![not_allowed(
+                    "root.users[0].metadata.created",
+                    "json",
+                    Timestamp,
+                )],
+                vec![],
+                vec![not_allowed(
+                    "root.users[0].metadata.created",
+                    "failsafe",
+                    Timestamp,
+                )],
+                vec![
+                    not_allowed("root.users[0].age", "failsafe", Integer),
+                    not_allowed("root.users[0].metadata.created", "failsafe", Timestamp),
+                    not_allowed("root.users[0].metadata.active", "failsafe", Boolean),
+                    not_allowed("root.users[1].score", "failsafe", Float),
+                ],
+                vec![not_allowed(
+                    "root.users[0].metadata.created",
+                    "json",
+                    Timestamp,
+                )],
+            ],
+        ),
+        (
+            scalars,
+            [
+                vec![],
+                vec![],
+                vec![],
+                vec![
+                    not_allowed("root.count", "failsafe", Integer),
+                    not_allowed("root.active", "failsafe", Boolean),
+                ],
+                vec![],
+            ],
+        ),
+    ] {
+        let doc = create_test_document(yaml);
+        for ((name, validator), errors) in validators.iter().zip(expected) {
+            let expected = if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors)
+            };
+            assert_eq!(validator.validate(&doc), expected, "{name} on {yaml:?}");
+            assert_eq!(
+                doc.validate_schema(validator),
+                expected,
+                "{name} on {yaml:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn document_can_coerce() {
+    let coercible = r#"
+count: "42"
+enabled: "true"
+rate: "3.14"
+items:
+  - "100"
+  - "false"
+"#;
+    let non_coercible = r#"
+timestamp: !!timestamp "2023-01-01"
+pattern: !!regex '\d+'
+"#;
+    let json_validator = SchemaValidator::json();
+    assert_eq!(
+        json_validator.can_coerce(&create_test_document(coercible)),
+        Ok(())
+    );
+    assert_eq!(
+        json_validator.can_coerce(&create_test_document(non_coercible)),
+        Err(vec![
+            not_allowed("root.timestamp", "json", ScalarType::Timestamp),
+            not_allowed("root.pattern", "json", ScalarType::Regex),
+        ])
+    );
+}

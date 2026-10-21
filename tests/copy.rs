@@ -10,16 +10,15 @@
 //! removed, can still be edited: the edit happens on the detached tree,
 //! and the document is left as it is.
 
+mod common;
+use common::{assert_file_edited, assert_file_edited_valid, assert_parser_shaped, value_of};
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::validator::Validator;
 use yaml_edit::{
     debug, AsYaml, Document, Mapping, MappingBuilder, MappingEntry, ScalarValue, Sequence,
-    YamlFile, YamlNode, YamlValue,
+    SequenceBuilder, YamlFile, YamlNode, YamlValue,
 };
-
-mod common;
-use common::{assert_file_edited, assert_parser_shaped, value_of};
 
 fn root(src: &str) -> Document {
     Document::from_str(src).unwrap()
@@ -709,4 +708,90 @@ fn refill_removed_explicit_key() {
     inner.set("n", 3);
     assert_eq!(file.to_string(), "z: 1\n");
     assert_eq!(detached_text(inner.syntax()), "? n: 3\n");
+}
+
+/// A document passed as a value stands for its root node, with its tag or
+/// anchor; the comments outside the root are left out.
+#[test]
+fn document_as_value_is_its_root() {
+    let built = || {
+        MappingBuilder::new()
+            .pair("b", 2)
+            .pair("c", 3)
+            .build_document()
+    };
+    type Edit<'a> = &'a dyn Fn(&YamlFile);
+    let cases: [(&str, Edit, &str); 8] = [
+        (
+            "- a\n",
+            &|f| f.document().unwrap().as_sequence().unwrap().push(built()),
+            "- a\n- b: 2\n  c: 3\n",
+        ),
+        (
+            "x: 1\n",
+            &|f| {
+                f.document().unwrap().set("k", built());
+            },
+            "x: 1\nk:\n  b: 2\n  c: 3\n",
+        ),
+        (
+            "x: [1]\n",
+            &|f| {
+                let doc = f.document().unwrap();
+                doc.get("x").unwrap().as_sequence().unwrap().push(built());
+            },
+            "x: [1, {b: 2, c: 3}]\n",
+        ),
+        (
+            "- a\n",
+            &|f| {
+                let seq = f.document().unwrap().as_sequence().unwrap();
+                seq.push(SequenceBuilder::new().item("p").item("q").build_document());
+            },
+            "- a\n- - p\n  - q\n",
+        ),
+        (
+            "- a\n",
+            &|f| {
+                let seq = f.document().unwrap().as_sequence().unwrap();
+                seq.push(Document::from_str("--- |\n  text\n").unwrap());
+            },
+            "- a\n- |\n  text\n",
+        ),
+        (
+            "k: 1\n",
+            &|f| {
+                let doc = f.document().unwrap();
+                doc.set("k", Document::from_str("!t\nb: 2\n").unwrap());
+            },
+            "k: !t\n  b: 2\n",
+        ),
+        (
+            "k: 1\n",
+            &|f| {
+                let doc = f.document().unwrap();
+                doc.set("k", Document::from_str("&x\nb: 2\n").unwrap());
+            },
+            "k: &x\n  b: 2\n",
+        ),
+        (
+            "- a\n",
+            &|f| {
+                let seq = f.document().unwrap().as_sequence().unwrap();
+                seq.push(Document::new());
+            },
+            "- a\n- null\n",
+        ),
+    ];
+    for (input, edit, expected) in cases {
+        let file = YamlFile::from_str(input).unwrap();
+        edit(&file);
+        assert_file_edited_valid(&file, expected);
+    }
+    for source in ["--- # c\nv # after\n# trail\n", "# lead\nv\n"] {
+        let file = YamlFile::from_str("x: 1\n").unwrap();
+        let doc = file.document().unwrap();
+        doc.set("k", Document::from_str(source).unwrap());
+        assert_file_edited_valid(&file, "x: 1\nk: v\n");
+    }
 }

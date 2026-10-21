@@ -7,13 +7,25 @@ use common::{
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
-use yaml_edit::{debug, Document, MappingBuilder, SyntaxKind, YamlFile, YamlNode, YamlValue};
+use yaml_edit::{
+    debug, Document, Mapping, MappingBuilder, SyntaxKind, YamlError, YamlFile, YamlNode, YamlValue,
+};
 
 #[test]
 fn document_streams() {
     for (yaml, documents) in [
         ("---\na: 1\n", &["map{a: 1}"][..]),
         ("--- a\n", &["a"]),
+        (
+            "---\ndoc1: first\n---\ndoc2: second\n...\n",
+            &["map{doc1: first}", "map{doc2: second}"],
+        ),
+        ("---\nkey: value\n...\n", &["map{key: value}"]),
+        ("key: value\n...\n", &["map{key: value}"]),
+        (
+            "%YAML 1.2\n%TAG ! tag:example.com,2000:app/\n---\nfirst: doc\n...\n%YAML 1.2\n---\nsecond: doc\n...\n",
+            &["map{first: doc}", "map{second: doc}"],
+        ),
         (
             "---\nkey1: value1\nkey2: value2",
             &["map{key1: value1, key2: value2}"],
@@ -718,4 +730,450 @@ fn edits_write_cr_line_breaks() {
     file.add_directive("%YAML 1.2");
     file.push_document(Document::from_str("d: 4\n").unwrap());
     assert_file_edited_valid(&file, "%YAML 1.2\r---\ra:\r- 1\r- b\r---\rd: 4\r");
+}
+
+/// What `Document::from_str` refuses: content that belongs to the stream
+/// rather than to one document, which it would have to drop. A scalar
+/// cannot follow the document's own node, which PyYAML rejects too, so
+/// there is nothing to attach it to; the parser sweeps it into a
+/// stream-level ERROR node that used to vanish from the output.
+#[test]
+fn document_from_str_refuses_stream_level_content() {
+    let parse = |message: &str| YamlError::Parse {
+        message: message.to_string(),
+        line: Some(2),
+        column: Some(1),
+    };
+    let refused = |reason: &str| YamlError::InvalidOperation {
+        operation: "Document::from_str".to_string(),
+        reason: reason.to_string(),
+    };
+    let comments = "Input contains stream-level comments outside the document. \
+        Use YamlFile::from_str() to preserve them.";
+    for (yaml, expected) in [
+        (
+            "- a\nx\n",
+            parse("Content after the document could not be parsed: \"x\""),
+        ),
+        (
+            "[a]\n[b]\n",
+            parse("Content after the document could not be parsed: \"[\""),
+        ),
+        // A comment before `---` is part of the stream, not the document.
+        ("# leading comment\n---\nkey: value\n", refused(comments)),
+        ("\n# c\n---\na: 1\n", refused(comments)),
+        ("\n# c\n", refused(comments)),
+        // So is a comment after the `...` end marker.
+        ("key: value\n...\n# trailing\n", refused(comments)),
+        (
+            "%YAML 1.2\n---\nkey: value\n",
+            refused(
+                "Input contains YAML directives outside the document. \
+                 Use YamlFile::from_str() to preserve them.",
+            ),
+        ),
+        (
+            "---\nkey: value\n---\nother: data",
+            refused(
+                "Input contains multiple YAML documents. \
+                 Use YamlFile::from_str() for multi-document YAML.",
+            ),
+        ),
+        // A stream holding no document but a `...` cannot be a Document
+        // without dropping the marker.
+        (
+            "...\n",
+            refused(
+                "Input contains stream-level content outside a document: \"...\". \
+                 Use YamlFile::from_str() to preserve it.",
+            ),
+        ),
+    ] {
+        assert_eq!(
+            format!("{:?}", Document::from_str(yaml).unwrap_err()),
+            format!("{expected:?}"),
+            "{yaml:?}"
+        );
+    }
+}
+
+/// Everything `Document::from_str` accepts round trips: the lines before
+/// the root node, those after it up to the end of the document, and the
+/// rest of a `...` line. Comments before a document without `---` are part
+/// of it.
+#[test]
+fn document_from_str_round_trips() {
+    for yaml in [
+        "a: 1\n",
+        "a\nJ",
+        "- a\n- b\n",
+        "key: value",
+        // An anchor annotates the node on the following line, so
+        // `&b\nx: 1\n` is the mapping `{x: 1}`, as saphyr and PyYAML both
+        // read it.
+        "&b\nJ",
+        "&b\nx: 1\n",
+        "&b\n- a\n",
+        // A mapping after a scalar or sequence is a second node of the
+        // document, which the validator reports.
+        "a\nx: 1\n",
+        "- a\nx: 1\n",
+        "\nfoo\n",
+        "\n\na: 1\n",
+        "  \na: 1\n",
+        "  a: 1\n",
+        "\n  a: 1\n  b: 2\n",
+        "\n---\na: 1\n",
+        "\n[1]\n",
+        "\u{feff}a: 1\n",
+        "\u{feff}\n--- a\n",
+        "",
+        "\n",
+        "\u{feff}",
+        "# leading comment\nkey: value\n",
+        "\n# c\na: 1\n",
+        "\u{feff}# c\n\n- 1\n",
+        "# c\nfoo\n",
+        "{a: 1, b: 2}\n",
+        "[1, 2]\n",
+        "foo\n",
+        "\"foo\"\n",
+        "'foo'\n",
+        "&x {a: 1}\n",
+        "- 1\n",
+        "|\n  x\n",
+        "{a: 1}\n\n",
+        "foo # c\n",
+        "[1]\n# c\n",
+        "--- foo\n",
+        "{a: 1}",
+        "a: 1\n...\n",
+        "a: 1\n... # c\n",
+        "a: 1\n...  \n",
+        "- 1\n...\n",
+        "---\na: 1\n...\n",
+        "key: value # trailing\n",
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), yaml, "{yaml:?}");
+    }
+}
+
+#[test]
+fn document_from_str_values() {
+    for (yaml, expected) in [
+        (
+            "key: value\nport: 8080",
+            &["map{key: value, port: 8080}"][..],
+        ),
+        ("", &[]),
+        (
+            "name: test\nversion: 1.0",
+            &["map{name: test, version: 1.0}"],
+        ),
+        ("---\nkey: value", &["map{key: value}"]),
+        (
+            r#"
+database:
+  host: localhost
+  port: 5432
+  credentials:
+    username: admin
+    password: secret
+features:
+  - auth
+  - logging
+  - metrics
+"#,
+            &["map{database: map{host: localhost, port: 5432, \
+               credentials: map{username: admin, password: secret}}, \
+               features: seq[auth, logging, metrics]}"],
+        ),
+    ] {
+        assert_eq!(Document::from_str(yaml).unwrap().to_string(), yaml);
+        assert_eq!(render_documents(yaml), expected, "{yaml:?}");
+    }
+    assert!(Document::from_str("").unwrap().is_empty());
+}
+
+#[test]
+fn document_from_str_ignoring_comments() {
+    let yaml = "# leading\n%YAML 1.2\n---\nkey: value\n";
+    let doc = Document::from_str_ignoring_comments(yaml).unwrap();
+    assert_eq!(doc.get_string("key"), Some("value".to_string()));
+    // Stream-level content is dropped, so the document round-trips to
+    // just its own body.
+    assert_eq!(doc.to_string(), "---\nkey: value\n");
+
+    for yaml in ["---\na: 1\n---\nb: 2\n", "a\n---\nb\n"] {
+        assert_eq!(
+            format!(
+                "{:?}",
+                Document::from_str_ignoring_comments(yaml).unwrap_err()
+            ),
+            format!(
+                "{:?}",
+                YamlError::InvalidOperation {
+                    operation: "Document::from_str_ignoring_comments".to_string(),
+                    reason: "Input contains multiple YAML documents. \
+                         Use YamlFile::from_str() for multi-document YAML."
+                        .to_string(),
+                }
+            ),
+            "{yaml:?}"
+        );
+    }
+    assert_eq!(
+        format!(
+            "{:?}",
+            Document::from_str_ignoring_comments("a: [\n").unwrap_err()
+        ),
+        format!(
+            "{:?}",
+            YamlError::Parse {
+                message: "Unclosed flow sequence. Expected: ']' to close sequence. Found: end of \
+                      input. Context: in flow sequence. Suggestion: Add ']' to close the \
+                      array, or check for missing commas between elements"
+                    .to_string(),
+                line: Some(2),
+                column: Some(1),
+            }
+        )
+    );
+}
+
+/// Unlike `from_str`, `from_str_relaxed` takes input with errors or several
+/// documents, and gives the first document.
+#[test]
+fn document_from_str_relaxed() {
+    for (yaml, text, errors, rendered) in [
+        (
+            "key: value\n",
+            "key: value\n",
+            vec![],
+            Some("map{key: value}"),
+        ),
+        (
+            "key: [unclosed",
+            "key: [unclosed",
+            vec![
+                "1:15: Unclosed flow sequence. Expected: ']' to close sequence. Found: end of \
+                 input. Context: in flow sequence. Suggestion: Add ']' to close the array, or \
+                 check for missing commas between elements",
+            ],
+            Some("map{key: [unclosed]}"),
+        ),
+        ("a: 1\n---\nb: 2\n", "a: 1\n", vec![], Some("map{a: 1}")),
+        // A default document when nothing is parsed.
+        ("", "---\n", vec![], None),
+    ] {
+        let (doc, found) = Document::from_str_relaxed(yaml);
+        assert_eq!(found, errors, "{yaml:?}");
+        assert_eq!(doc.to_string(), text, "{yaml:?}");
+        let root = doc.syntax().children().find_map(YamlNode::from_syntax);
+        assert_eq!(root.map(|r| render(&r)).as_deref(), rendered, "{yaml:?}");
+    }
+}
+
+#[test]
+fn document_accessors() {
+    let doc = Document::from_str("# c\na: 1  # d\nb: [1, # e\n  2]\n").unwrap();
+    assert_eq!(doc.len(), 2);
+    assert_eq!(
+        doc.comments()
+            .map(|c| c.text().to_string())
+            .collect::<Vec<_>>(),
+        ["# c", "# d", "# e"]
+    );
+    assert_eq!(Document::from_str("- a\n").unwrap().len(), 0);
+
+    for (yaml, key, string) in [
+        ("key: hello", "key", Some("hello")),
+        (r#"key: "hello \"world\"""#, "key", Some(r#"hello "world""#)),
+        ("key: 'it''s fine'", "key", Some("it's fine")),
+        ("other: value", "key", None),
+        ("key:\n  - a\n  - b", "key", None),
+        ("key:\n  nested: value", "key", None),
+        ("a: !!str 1\nb: !t [x]\n", "a", Some("1")),
+        ("a: !!str 1\nb: !t [x]\n", "b", None),
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        assert_eq!(doc.get_string(key).as_deref(), string, "{yaml:?}");
+    }
+
+    // The first item is read from the tree, so a comma inside a quoted
+    // item does not split it.
+    for (yaml, is_sequence, items) in [
+        (
+            "tags:\n  - alpha\n  - beta\n  - gamma",
+            true,
+            Some(&["alpha", "beta", "gamma"][..]),
+        ),
+        (
+            "tags: [alpha, beta, gamma]",
+            true,
+            Some(&["alpha", "beta", "gamma"]),
+        ),
+        (
+            "tags: [\"hello, world\", beta]",
+            true,
+            Some(&["hello, world", "beta"]),
+        ),
+        ("tags: []", true, Some(&[])),
+        ("name: test", false, None),
+        ("tags: test", false, None),
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        assert_eq!(doc.is_sequence("tags"), is_sequence, "{yaml:?}");
+        let found: Option<Vec<String>> = doc.get_sequence("tags").map(|s| {
+            s.values()
+                .map(|v| v.as_scalar().unwrap().as_string())
+                .collect()
+        });
+        assert_eq!(
+            found,
+            items.map(|i| i.iter().map(|s| s.to_string()).collect()),
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn document_api_usage() {
+    let doc = Document::new();
+    assert!(!doc.contains_key("Repository"));
+    doc.set("Repository", "https://github.com/user/repo.git");
+    assert_cst_ok(&doc);
+    assert!(doc.contains_key("Repository"));
+    assert_eq!(
+        doc.get_string("Repository"),
+        Some("https://github.com/user/repo.git".to_string())
+    );
+    assert!(!doc.is_empty());
+    let keys: Vec<_> = doc.keys().map(|k| k.to_string()).collect();
+    assert_eq!(keys, ["Repository"]);
+
+    assert_eq!(
+        doc.remove("Repository").unwrap().to_string(),
+        "Repository: https://github.com/user/repo.git\n"
+    );
+    assert_cst_ok(&doc);
+    assert!(!doc.contains_key("Repository"));
+    assert!(doc.is_empty());
+}
+
+#[test]
+fn document_file_io() {
+    let path = std::env::temp_dir().join(format!("test_yaml_edit-{}.yaml", std::process::id()));
+    let doc = Document::new();
+    doc.set("Name", "TestProject");
+    assert_cst_ok(&doc);
+    doc.set("Repository", "https://example.com/repo.git");
+    assert_cst_ok(&doc);
+    doc.to_file(&path).unwrap();
+
+    let loaded_doc = Document::from_file(&path).unwrap();
+    assert_eq!(
+        loaded_doc.to_string(),
+        "---\nName: TestProject\nRepository: https://example.com/repo.git\n"
+    );
+    assert_eq!(
+        loaded_doc.get_string("Name"),
+        Some("TestProject".to_string())
+    );
+    assert_eq!(
+        loaded_doc.get_string("Repository"),
+        Some("https://example.com/repo.git".to_string())
+    );
+    std::fs::remove_file(&path).unwrap();
+
+    let dir = std::env::temp_dir().join(format!("yaml-edit-doc-{}", std::process::id()));
+    let path = dir.join("sub").join("doc.yaml");
+    // to_file creates the directory and ends the file with a newline.
+    let doc = Document::from_str("a: 1").unwrap();
+    doc.to_file(&path).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "a: 1\n");
+
+    std::fs::write(&path, "a: [\n").unwrap();
+    let (doc, errors) = Document::from_file_relaxed(&path).unwrap();
+    assert_eq!(doc.to_string(), "a: [\n");
+    assert_eq!(
+        errors,
+        [
+            "2:1: Unclosed flow sequence. Expected: ']' to close sequence. Found: end of input. \
+          Context: in flow sequence. Suggestion: Add ']' to close the array, or check for \
+          missing commas between elements"
+        ]
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(
+        Document::from_file_relaxed(&path).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+}
+
+/// A built document has the same CST as the parser gives its text, and a
+/// mapping keeps the lines after its last entry in a document made from
+/// it.
+#[test]
+fn built_documents_are_parser_shaped() {
+    let mapping = Mapping::new();
+    mapping.set("a", 1);
+    assert_cst_ok(&mapping);
+    for doc in [Document::new(), Document::from_mapping(mapping)] {
+        let text = doc.to_string();
+        let parsed = YamlFile::from_str(&text).unwrap().document().unwrap();
+        assert_eq!(
+            debug::shape_to_string(doc.syntax()),
+            debug::shape_to_string(parsed.syntax()),
+            "{text:?}"
+        );
+    }
+
+    for (src, expected) in [
+        ("a: 1\n# c\n", "---\na: 1\n# c\n"),
+        ("a: 1\n\n", "---\na: 1\n\n"),
+        ("a: 1", "---\na: 1"),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        let mapping = file.document().unwrap().as_mapping().unwrap();
+        let doc = Document::from_mapping(mapping);
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), expected);
+        let parsed = YamlFile::from_str(expected).unwrap().document().unwrap();
+        assert_eq!(
+            debug::shape_to_string(doc.syntax()),
+            debug::shape_to_string(parsed.syntax())
+        );
+    }
+}
+
+/// Adding the first key to a document without a root keeps the tokens it
+/// has, and puts the new mapping where the parser would read it.
+#[test]
+fn add_root_to_rootless_document() {
+    for (src, expected) in [
+        ("---\n", "---\nk: v\n"),
+        ("---", "---\nk: v\n"),
+        ("--- \n", "--- \nk: v\n"),
+        ("--- # c\n", "--- # c\nk: v\n"),
+        ("--- # c", "--- # c\nk: v\n"),
+        ("---\n# c\n", "---\n# c\nk: v\n"),
+        ("%YAML 1.2\n---\n# c\n", "%YAML 1.2\n---\n# c\nk: v\n"),
+        ("\u{feff}---\n", "\u{feff}---\nk: v\n"),
+        ("---\n...\n", "---\nk: v\n...\n"),
+        ("--- # c\n...\n", "--- # c\nk: v\n...\n"),
+        ("---\n...", "---\nk: v\n..."),
+    ] {
+        let insert = |doc: &Document| doc.insert_at_index(0, "k", "v");
+        let set = |doc: &Document| doc.set("k", "v");
+        let set_ordered = |doc: &Document| doc.set_with_field_order("k", "v", ["k"]);
+        for add in [&insert as &dyn Fn(&Document) -> bool, &set, &set_ordered] {
+            let file = YamlFile::from_str(src).unwrap();
+            let doc = file.document().unwrap();
+            assert!(add(&doc), "{src:?}");
+            assert_file_edited(&file, expected);
+        }
+    }
 }

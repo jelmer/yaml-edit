@@ -8,8 +8,8 @@
 
 mod common;
 use common::{
-    assert_cst_ok, assert_file_cst_ok, assert_file_edited, assert_parser_shaped, check_edit,
-    value_of,
+    assert_cst_ok, assert_edited, assert_file_cst_ok, assert_file_edited, assert_parser_shaped,
+    check_edit, value_of,
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
@@ -1348,4 +1348,66 @@ fn editing_operations() {
     assert_file_edited(&yaml, "name: new-name\nversion: 2.0.0");
     assert_eq!(doc.get_string("name"), Some("new-name".to_string()));
     assert_eq!(doc.get_string("version"), Some("2.0.0".to_string()));
+}
+
+/// `Document::set` replaces a value where it is, adds an entry before a
+/// `...` line, and after leading blank lines.
+#[test]
+fn document_set() {
+    check_edit(
+        "Name: original\nVersion: 1.0\nAuthor: Someone\n",
+        |doc| assert!(doc.set("Version", 2.0)),
+        "Name: original\nVersion: 2.0\nAuthor: Someone\n",
+    );
+    check_edit("\na: 1\n", |doc| assert!(doc.set("b", 2)), "\na: 1\nb: 2\n");
+    check_edit("", |doc| assert!(doc.set("a", 1)), "a: 1\n");
+    // A comment before a document without `---` is part of it.
+    check_edit(
+        "# c\nkey: value\n",
+        |doc| assert!(doc.set("other", 1)),
+        "# c\nkey: value\nother: 1\n",
+    );
+    check_edit(
+        "a: 1\n... # c\n",
+        |doc| assert!(doc.set("b", 2)),
+        "a: 1\nb: 2\n... # c\n",
+    );
+}
+
+/// Setting a key on a document whose root is not a mapping does nothing.
+#[test]
+fn document_set_on_non_mapping_root() {
+    let doc = Document::from_str("- a\n- b\n").unwrap();
+    assert!(!doc.set("k", "v"));
+    assert_edited(&doc, "- a\n- b\n");
+    assert!(doc.get("k").is_none());
+    assert!(doc.as_sequence().is_some());
+    assert!(doc.as_mapping().is_none());
+
+    let doc = Document::from_str("- a\n").unwrap();
+    assert!(!doc.set_with_field_order("k", "v", ["k"]));
+    assert_edited(&doc, "- a\n");
+
+    let empty = Document::new();
+    assert!(empty.set("k", "v"));
+    assert_edited(&empty, "---\nk: v\n");
+    assert_eq!(empty.get_string("k"), Some("v".to_string()));
+}
+
+#[test]
+fn document_set_sequence() {
+    let doc = Document::new();
+    let array_value = SequenceBuilder::new()
+        .item(ScalarValue::string("https://github.com/user/repo.git"))
+        .item(ScalarValue::string("https://gitlab.com/user/repo.git"))
+        .build_document()
+        .as_sequence()
+        .unwrap();
+    doc.set("Repository", &array_value);
+    assert_edited(
+        &doc,
+        "---\nRepository:\n- https://github.com/user/repo.git\n- https://gitlab.com/user/repo.git\n",
+    );
+    assert!(doc.is_sequence("Repository"));
+    assert_eq!(doc.get_sequence("Repository").unwrap().len(), 2);
 }

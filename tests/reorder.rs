@@ -3,7 +3,7 @@
 //! flow mapping and the line break ending the last entry, or its absence.
 
 mod common;
-use common::{assert_edited, assert_file_edited};
+use common::{assert_cst_ok, assert_edited, assert_file_edited};
 use std::str::FromStr;
 use yaml_edit::{Document, Mapping, YamlFile};
 
@@ -406,4 +406,32 @@ fn move_before_in_file() {
     assert!(!file.move_before("z", "c", 5));
     assert_eq!(file.to_string(), "c: 4\na: 1\nb: 2\n");
     assert!(!YamlFile::new().move_before("a", "c", 4));
+}
+
+#[test]
+fn document_reorder_fields() {
+    let doc = Document::new();
+    for (key, value) in [
+        ("Repository-Browse", "https://github.com/user/repo"),
+        ("Name", "MyProject"),
+        ("Bug-Database", "https://github.com/user/repo/issues"),
+        ("Repository", "https://github.com/user/repo.git"),
+    ] {
+        doc.set(key, value);
+        assert_cst_ok(&doc);
+    }
+    doc.reorder_fields(["Name", "Bug-Database", "Repository", "Repository-Browse"]);
+    assert_edited(
+        &doc,
+        "---\nName: MyProject\nBug-Database: https://github.com/user/repo/issues\n\
+         Repository: https://github.com/user/repo.git\nRepository-Browse: https://github.com/user/repo\n",
+    );
+    let keys: Vec<_> = doc
+        .keys()
+        .map(|k| k.as_scalar().unwrap().as_string())
+        .collect();
+    assert_eq!(
+        keys,
+        ["Name", "Bug-Database", "Repository", "Repository-Browse"]
+    );
 }

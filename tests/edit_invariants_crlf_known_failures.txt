@@ -1,0 +1,3 @@
+# Known failures of tests/edit_invariants.rs, as
+# <case> <document> <collection> <operation> <check>.
+# Regenerate with UPDATE_KNOWN_FAILURES=1 cargo test --test edit_invariants

@@ -2444,7 +2444,7 @@ scores:
     #[test]
     fn test_edits_write_document_line_breaks() {
         type Edit = fn(&crate::Sequence);
-        let edits: [(&str, Edit, &str); 10] = [
+        let edits: [(&str, Edit, &str); 11] = [
             ("- a\n", |s| s.push("b"), "- a\n- b\n"),
             ("- a  # c\n", |s| s.push("b"), "- a  # c\n- b\n"),
             ("- a\n", |s| s.insert(0, "b"), "- b\n- a\n"),
@@ -2459,6 +2459,11 @@ scores:
                 "- a: 1\n  b: 2\n- c\n",
                 |s| assert!(s.set(0, 5)),
                 "- 5\n- c\n",
+            ),
+            (
+                "-\n  name: A\n  hr: 65\n-\n  name: B\n",
+                |s| assert!(s.set(0, "xval")),
+                "-\n  xval\n-\n  name: B\n",
             ),
             (
                 "- a\n- c\n",

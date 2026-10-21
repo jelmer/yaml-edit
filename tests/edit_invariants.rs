@@ -14,14 +14,19 @@
 //!   see `semantic_paths` and `expected_value`);
 //! - `panic`: the operation does not panic.
 //!
-//! Failures are listed in `tests/edit_invariants_known_failures.txt`. A
+//! `edit_invariants_crlf` runs the same checks on the inputs with CRLF line
+//! breaks, which the edits must keep.
+//!
+//! Failures are listed in `tests/edit_invariants_known_failures.txt`, and
+//! for the CRLF run in `tests/edit_invariants_crlf_known_failures.txt`. A
 //! failure that is not listed fails the test. Listed failures that no longer
 //! happen are printed so they can be pruned, but do not fail the test, so
 //! that fixes landing in parallel do not conflict over the list. Run with
-//! `UPDATE_KNOWN_FAILURES=1` to rewrite it, and with
+//! `UPDATE_KNOWN_FAILURES=1` to rewrite the lists, and with
 //! `EDIT_INVARIANTS_DETAILS=<path>` to write the input, output and message
 //! of each failure to `<path>`. `EDIT_INVARIANTS_INPUT=<file>` runs the
-//! checks on `<file>` instead and prints every failure.
+//! checks on `<file>` instead and prints every failure. Name one of the two
+//! tests when using these.
 
 use rowan::ast::AstNode;
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,6 +41,7 @@ mod common;
 use common::edit_checks::*;
 
 const KNOWN_FAILURES: &str = "tests/edit_invariants_known_failures.txt";
+const KNOWN_FAILURES_CRLF: &str = "tests/edit_invariants_crlf_known_failures.txt";
 
 /// Valid test suite inputs as `(id, text)`, sorted by id.
 fn valid_cases() -> Vec<(String, String)> {
@@ -424,10 +430,24 @@ fn run_case(id: &str, input: &str, failures: &mut Vec<Failure>) {
 
 #[test]
 fn edit_invariants() {
-    let cases = match std::env::var("EDIT_INVARIANTS_INPUT") {
+    check_cases(KNOWN_FAILURES, str::to_string);
+}
+
+/// The same checks with CRLF line breaks, which edits must keep using.
+#[test]
+fn edit_invariants_crlf() {
+    check_cases(KNOWN_FAILURES_CRLF, |text| text.replace('\n', "\r\n"));
+}
+
+/// Run the checks on the inputs, each passed through `convert` first.
+fn check_cases(known_failures: &str, convert: fn(&str) -> String) {
+    let cases: Vec<(String, String)> = match std::env::var("EDIT_INVARIANTS_INPUT") {
         Ok(path) => vec![(path.clone(), fs::read_to_string(&path).unwrap())],
         Err(_) => valid_cases(),
-    };
+    }
+    .into_iter()
+    .map(|(id, text)| (id, convert(&text)))
+    .collect();
     assert!(!cases.is_empty(), "no test suite cases found");
 
     // Panics are caught and reported; keep the default hook from printing
@@ -465,11 +485,11 @@ fn edit_invariants() {
         for id in &actual {
             writeln!(out, "{id}").unwrap();
         }
-        fs::write(KNOWN_FAILURES, out).unwrap();
+        fs::write(known_failures, out).unwrap();
         return;
     }
-    let known_text = fs::read_to_string(KNOWN_FAILURES)
-        .unwrap_or_else(|e| panic!("cannot read {KNOWN_FAILURES}: {e}"));
+    let known_text = fs::read_to_string(known_failures)
+        .unwrap_or_else(|e| panic!("cannot read {known_failures}: {e}"));
     let known: BTreeSet<String> = known_text
         .lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -482,7 +502,7 @@ fn edit_invariants() {
     let new: Vec<&String> = actual.difference(&known).collect();
     let fixed: Vec<&String> = known.difference(&actual).collect();
     if !fixed.is_empty() {
-        println!("No longer failing, can be removed from {KNOWN_FAILURES}:");
+        println!("No longer failing, can be removed from {known_failures}:");
         for id in &fixed {
             println!("{id}");
         }

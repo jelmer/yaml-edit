@@ -915,3 +915,230 @@ fn copy_multi_line_scalars() {
         );
     }
 }
+
+/// A TaggedNode copied as a value: a block collection after an anchor
+/// on the tag's line moves by the column of its own lines, a flow
+/// collection from a nested line keeps its continuation lines' offset,
+/// and a block collection inside a flow one is written in flow style.
+#[test]
+fn copy_tagged_node() {
+    let src = YamlFile::from_str("t: !t &x\n  a: 1\nm:\n  f: !t [1,\n     2]\n").unwrap();
+    let src = src.document().unwrap().as_mapping().unwrap();
+    let block = src.get("t").unwrap().as_tagged().unwrap().clone();
+    let flow = src
+        .get_mapping("m")
+        .unwrap()
+        .get("f")
+        .unwrap()
+        .as_tagged()
+        .unwrap()
+        .clone();
+    for (value, set, pushed) in [
+        (
+            &block,
+            "top:\n  k: !t &x\n    a: 1\n",
+            "- 0\n- !t &x\n  a: 1\n",
+        ),
+        (
+            &flow,
+            "top:\n  k: !t [1,\n     2]\n",
+            "- 0\n- !t [1,\n   2]\n",
+        ),
+    ] {
+        let doc = YamlFile::from_str("top:\n  k: 0\n")
+            .unwrap()
+            .document()
+            .unwrap();
+        let top = doc.as_mapping().unwrap().get_mapping("top").unwrap();
+        top.set("k", value);
+        assert_edited(&doc, set);
+
+        let doc = YamlFile::from_str("- 0\n").unwrap().document().unwrap();
+        doc.as_sequence().unwrap().push(value);
+        assert_edited(&doc, pushed);
+    }
+
+    let doc = YamlFile::from_str("f: {a: 1}\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    let f = doc.as_mapping().unwrap().get_mapping("f").unwrap();
+    f.set("b", &block);
+    assert_edited(&doc, "f: {a: 1, b: !t &x {a: 1}}\n");
+}
+
+/// A tagged collection copied to another column moves with it, whether
+/// it starts on the tag's line or the next.
+#[test]
+fn copy_tagged_collection() {
+    let src = YamlFile::from_str("s: !t\n  a: 1\n  b: 2\nf: !t [1,\n     2]\n").unwrap();
+    let src = src.document().unwrap();
+    let src = src.as_mapping().unwrap();
+    for (key, set, pushed) in [
+        (
+            "s",
+            "top:\n  k: !t\n    a: 1\n    b: 2\n",
+            "- 0\n- !t\n  a: 1\n  b: 2\n",
+        ),
+        (
+            "f",
+            "top:\n  k: !t [1,\n       2]\n",
+            "- 0\n- !t [1,\n     2]\n",
+        ),
+    ] {
+        let value = src.get(key).unwrap();
+        let doc = YamlFile::from_str("top:\n  k: 0\n")
+            .unwrap()
+            .document()
+            .unwrap();
+        let top = doc.as_mapping().unwrap().get_mapping("top").unwrap();
+        top.set("k", value.clone());
+        assert_edited(&doc, set);
+
+        let doc = YamlFile::from_str("- 0\n").unwrap().document().unwrap();
+        doc.as_sequence().unwrap().push(value);
+        assert_edited(&doc, pushed);
+    }
+}
+
+#[test]
+fn tagged_block_value_is_reindented() {
+    let src = Document::from_str(
+        "a: !!map\n  k: 1\n  j: 2\nx:\n  b: !!seq\n      - 1\n      - 2\nc: !!str foo\n",
+    )
+    .unwrap();
+    let root = src.as_mapping().unwrap();
+    let map = root.get("a").unwrap();
+    let seq = root.get_mapping("x").unwrap().get("b").unwrap();
+    let scalar = root.get("c").unwrap();
+
+    let target = |doc: &Document| -> Sequence {
+        doc.as_sequence()
+            .or_else(|| doc.as_mapping()?.get_sequence("s"))
+            .unwrap()
+    };
+    type Op<'a> = Box<dyn Fn(&Document) + 'a>;
+    let cases: Vec<(&str, Op, &str)> = vec![
+        (
+            "s:\n  - a\n",
+            Box::new(|d: &Document| target(d).push(&map)),
+            "s:\n  - a\n  - !!map\n    k: 1\n    j: 2\n",
+        ),
+        (
+            "- a\n",
+            Box::new(|d: &Document| target(d).push(&map)),
+            "- a\n- !!map\n  k: 1\n  j: 2\n",
+        ),
+        (
+            "s:\n  - a\n",
+            Box::new(|d: &Document| target(d).insert(0, &map)),
+            "s:\n  - !!map\n    k: 1\n    j: 2\n  - a\n",
+        ),
+        (
+            "s:\n  - a\n  - b\n",
+            Box::new(|d: &Document| assert!(target(d).set(0, &map))),
+            "s:\n  - !!map\n    k: 1\n    j: 2\n  - b\n",
+        ),
+        (
+            "- a\n",
+            Box::new(|d: &Document| target(d).push(&seq)),
+            "- a\n- !!seq\n  - 1\n  - 2\n",
+        ),
+        (
+            "- a\n",
+            Box::new(|d: &Document| target(d).push(&scalar)),
+            "- a\n- !!str foo\n",
+        ),
+    ];
+    for (input, op, expected) in cases {
+        let doc = Document::from_str(input).unwrap();
+        op(&doc);
+        assert_edited(&doc, expected);
+    }
+
+    let doc = Document::from_str("o:\n  b: 1\n").unwrap();
+    let inner = doc.as_mapping().unwrap().get_mapping("o").unwrap();
+    inner.set("b", &map);
+    inner.set("c", &map);
+    assert_edited(
+        &doc,
+        "o:\n  b: !!map\n    k: 1\n    j: 2\n  c: !!map\n    k: 1\n    j: 2\n",
+    );
+}
+
+/// Copied into a flow collection, tagged plain content holding a flow
+/// indicator is double quoted, as an untagged plain scalar is, so that
+/// it stays one value.
+#[test]
+fn copy_tagged_plain_scalar_into_flow() {
+    for (src, flow) in [
+        ("v: !t a, b\n", "!t \"a, b\""),
+        ("v: !t a]b\n", "!t \"a]b\""),
+        ("v: !t a{b}\n", "!t \"a{b}\""),
+        ("v: !t &x a, b\n", "!t &x \"a, b\""),
+        ("v: !t\n  a, b\n", "!t \"a, b\""),
+        ("v: !t a:b\n", "!t a:b"),
+        ("v: !t 'a, b'\n", "!t 'a, b'"),
+    ] {
+        let src_doc = YamlFile::from_str(src).unwrap().document().unwrap();
+        let value = src_doc.as_mapping().unwrap().get("v").unwrap();
+        for (target, edit, expected) in [
+            ("[x]\n", "set", format!("[{flow}]\n")),
+            ("[x]\n", "push", format!("[x, {flow}]\n")),
+            ("{k: x}\n", "set", format!("{{k: {flow}}}\n")),
+            ("a: {k: [x]}\n", "nested", format!("a: {{k: [{flow}]}}\n")),
+        ] {
+            let doc = YamlFile::from_str(target).unwrap().document().unwrap();
+            match edit {
+                "set" if target.starts_with('[') => {
+                    doc.as_sequence().unwrap().set(0, &value);
+                }
+                "set" => doc.as_mapping().unwrap().set("k", &value),
+                "push" => doc.as_sequence().unwrap().push(&value),
+                _ => {
+                    let inner = doc.as_mapping().unwrap().get_mapping("a").unwrap();
+                    inner.get_sequence("k").unwrap().set(0, &value);
+                }
+            }
+            assert_eq!(doc.to_string(), expected, "{src:?} {edit} {target:?}");
+            assert_parser_shaped(&doc);
+            let read = YamlFile::from_str(&doc.to_string())
+                .unwrap()
+                .document()
+                .unwrap();
+            let item = match edit {
+                "set" if target.starts_with('[') => read.as_sequence().unwrap().get(0),
+                "set" => read.as_mapping().unwrap().get("k"),
+                "push" => read.as_sequence().unwrap().get(1),
+                _ => read
+                    .as_mapping()
+                    .unwrap()
+                    .get_mapping("a")
+                    .unwrap()
+                    .get_sequence("k")
+                    .unwrap()
+                    .get(0),
+            };
+            assert!(
+                yaml_edit::yaml_eq(&item.unwrap(), &value),
+                "{src:?} {edit} {target:?}"
+            );
+        }
+    }
+}
+
+/// Outside a flow collection the content is copied as is.
+#[test]
+fn copy_tagged_plain_scalar_into_block() {
+    let src_doc = YamlFile::from_str("v: !t a, b\n")
+        .unwrap()
+        .document()
+        .unwrap();
+    let value = src_doc.as_mapping().unwrap().get("v").unwrap();
+    let doc = YamlFile::from_str("k: x\n").unwrap().document().unwrap();
+    doc.as_mapping().unwrap().set("k", &value);
+    assert_edited(&doc, "k: !t a, b\n");
+    let doc = YamlFile::from_str("- x\n").unwrap().document().unwrap();
+    doc.as_sequence().unwrap().set(0, &value);
+    assert_edited(&doc, "- !t a, b\n");
+}

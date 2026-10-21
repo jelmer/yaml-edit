@@ -22,8 +22,8 @@ use yaml_edit::custom_tags::{
 };
 use yaml_edit::validator::Validator;
 use yaml_edit::{
-    debug, CustomTagParser, Document, Entry, Mapping, OccupiedEntry, ScalarValue, SyntaxKind,
-    YamlFile, YamlNode, YamlValue,
+    debug, CustomTagParser, Document, Entry, Mapping, MappingEntry, OccupiedEntry, ScalarValue,
+    SyntaxKind, TaggedNode, YamlFile, YamlNode, YamlValue,
 };
 
 /// Parse `yaml` as [`parse_clean`] does and render its root node.
@@ -2387,4 +2387,126 @@ fn json_handler_spaces_and_false() {
         handler.deserialize("false"),
         Ok(YamlValue::Scalar(ScalarValue::from(false)))
     );
+}
+
+#[test]
+fn verbatim_collection_tags() {
+    let tagged = |yaml: &str| {
+        YamlFile::from_str(yaml)
+            .unwrap()
+            .document()
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get("a")
+            .unwrap()
+            .as_tagged()
+            .unwrap()
+            .clone()
+    };
+    let set = tagged("a: !<tag:yaml.org,2002:set> {x, y}\n");
+    let members: Vec<String> = set
+        .as_set()
+        .unwrap()
+        .members()
+        .map(|m| m.to_string())
+        .collect();
+    assert_eq!(members, vec!["x", "y"]);
+    let omap = tagged("a: !<tag:yaml.org,2002:omap> [b: 1, c: 2]\n");
+    assert_eq!(omap.as_ordered_mapping().map(|e| e.len()), Some(2));
+    let pairs = tagged("a: !<tag:yaml.org,2002:pairs> [b: 1, b: 2]\n");
+    assert_eq!(pairs.as_pairs().map(|e| e.len()), Some(2));
+}
+
+/// The tagged node under `key` in `yaml`.
+fn tagged_value(yaml: &str, key: &str) -> TaggedNode {
+    YamlFile::from_str(yaml)
+        .unwrap()
+        .document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .get(key)
+        .unwrap()
+        .as_tagged()
+        .unwrap()
+        .clone()
+}
+
+/// A tagged scalar's string value is unquoted; a tagged collection has
+/// none, as its first item or key is not one.
+#[test]
+fn tagged_node_as_string() {
+    for (yaml, key, expected) in [
+        ("key: !custom hello", "key", Some("hello")),
+        (r#"key: !custom "hello world""#, "key", Some("hello world")),
+        ("a: !t [x, y]\nb: !t {\"q\": 1}\nc: !t\n  - x\n", "a", None),
+        ("a: !t [x, y]\nb: !t {\"q\": 1}\nc: !t\n  - x\n", "b", None),
+        ("a: !t [x, y]\nb: !t {\"q\": 1}\nc: !t\n  - x\n", "c", None),
+    ] {
+        assert_eq!(
+            tagged_value(yaml, key).as_string(),
+            expected.map(str::to_string),
+            "{yaml:?} {key}"
+        );
+    }
+}
+
+/// `as_set` needs a mapping, and `as_ordered_mapping` and `as_pairs` a
+/// sequence, each under its own tag.
+#[test]
+fn special_collection_accessors() {
+    let members = |yaml: &str| {
+        tagged_value(yaml, "key")
+            .as_set()
+            .map(|set| set.members().map(|m| m.to_string()).collect::<Vec<_>>())
+    };
+    assert_eq!(
+        members("key: !!set {? a, ? b}\n"),
+        Some(vec!["a".to_string(), "b".to_string()])
+    );
+    assert_eq!(members("key: !!set &s {}\n"), Some(vec![]));
+    assert_eq!(members("key: !!set [a, b]\n"), None);
+    assert_eq!(members("key: !!set\n- a\n"), None);
+    assert_eq!(members("key: !!set\n"), None);
+
+    let keys = |entries: Option<Vec<MappingEntry>>| {
+        entries.map(|entries| {
+            entries
+                .iter()
+                .map(|e| e.key_node().unwrap().to_string())
+                .collect::<Vec<_>>()
+        })
+    };
+    let ab = Some(vec!["a".to_string(), "b".to_string()]);
+    let a = Some(vec!["a".to_string()]);
+    assert_eq!(
+        keys(tagged_value("key: !!omap [a: 1, b: 2]\n", "key").as_ordered_mapping()),
+        ab
+    );
+    assert_eq!(
+        keys(tagged_value("key: !!pairs [a: 1]\n", "key").as_pairs()),
+        a
+    );
+    assert_eq!(
+        keys(tagged_value("key: !!omap {a: 1}\n", "key").as_ordered_mapping()),
+        None
+    );
+    assert_eq!(
+        keys(tagged_value("key: !!pairs {a: 1}\n", "key").as_pairs()),
+        None
+    );
+    assert_eq!(
+        keys(tagged_value("key: !!omap\n  a: 1\n", "key").as_ordered_mapping()),
+        None
+    );
+
+    let yaml = "o: !!omap [{a: 1}]\np: !!pairs [{a: 1}, {a: 2}]\n";
+    assert_eq!(keys(tagged_value(yaml, "o").as_ordered_mapping()), a);
+    assert_eq!(keys(tagged_value(yaml, "o").as_pairs()), None);
+    assert_eq!(
+        keys(tagged_value(yaml, "p").as_pairs()),
+        Some(vec!["a".to_string(), "a".to_string()])
+    );
+    assert_eq!(keys(tagged_value(yaml, "p").as_ordered_mapping()), None);
 }

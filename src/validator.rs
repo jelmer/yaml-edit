@@ -22,6 +22,7 @@
 //! }
 //! ```
 
+use crate::anchor_resolution::{document_scope, is_merge_key, AnchorRegistry, MergedMapping};
 use crate::as_yaml::SharedIdentities;
 use crate::column::{space_indent, ColumnIndex};
 use crate::nodes::{
@@ -2162,12 +2163,13 @@ fn check_set_values(node: &SyntaxNode, violations: &mut Vec<Violation>) {
 }
 
 /// Check that each item of a `!!omap` or `!!pairs` is a mapping,
-/// untagged or tagged `!!map`, with a single entry.
+/// untagged or tagged `!!map`, with a single entry once its merge keys
+/// are resolved.
 ///
 /// Like other content that does not suit a YAML 1.1 type, a bad item is
-/// only a warning. An alias is not resolved here; the conversion to
-/// `YamlValue` checks the node it refers to.
-// TODO: resolve merge keys, which can change the number of entries.
+/// only a warning. An alias item, or a merge key that cannot be resolved,
+/// is left to the conversion to `YamlValue`, which checks the node it
+/// refers to.
 fn check_pairs_items(node: &SyntaxNode, violations: &mut Vec<Violation>) {
     use crate::as_yaml::YamlNode;
 
@@ -2186,19 +2188,16 @@ fn check_pairs_items(node: &SyntaxNode, violations: &mut Vec<Violation>) {
     let Some(sequence) = tagged.as_sequence() else {
         return;
     };
+    let registry = std::cell::OnceCell::new();
     for item in sequence.values() {
-        let mapping = match &item {
-            YamlNode::Alias(_) => continue,
-            YamlNode::Mapping(mapping) => Some(mapping.clone()),
-            YamlNode::TaggedNode(tagged)
-                if tagged.normalized_tag().as_deref() == Some(tag::MAP) =>
-            {
-                tagged.as_mapping()
-            }
-            _ => None,
-        };
-        if mapping.is_some_and(|mapping| mapping.entries().count() == 1) {
+        if matches!(item, YamlNode::Alias(_)) {
             continue;
+        }
+        if let Some(mapping) = pairs_item_mapping(&item) {
+            match pairs_item_keys(&mapping, &registry) {
+                Some(keys) if keys.len() != 1 => {}
+                _ => continue,
+            }
         }
         violations.push(Violation::warning_at(
             Rule::InvalidTag,
@@ -2216,14 +2215,12 @@ fn check_pairs_items(node: &SyntaxNode, violations: &mut Vec<Violation>) {
 ///
 /// Like other content that does not suit a YAML 1.1 type, a repeated
 /// key is only a warning. Keys compare as in
-/// [`Self::check_duplicate_keys`].
+/// [`Self::check_duplicate_keys`], after merge keys are resolved.
 fn check_omap_keys(
     node: &SyntaxNode,
     identities: &mut SharedIdentities,
     violations: &mut Vec<Violation>,
 ) {
-    use crate::SyntaxKind;
-
     let Some(tagged) = crate::yaml::TaggedNode::cast(node.clone()) else {
         return;
     };
@@ -2233,22 +2230,11 @@ fn check_omap_keys(
     let Some(sequence) = tagged.as_sequence() else {
         return;
     };
-    // The key of each item that is a mapping, `!!map` or untagged, and
-    // the range of its entry.
-    let keys = sequence.items().filter_map(|item| {
-        let mapping = match crate::yaml::TaggedNode::cast(item.clone()) {
-            Some(tagged) if tagged.normalized_tag().as_deref() == Some(tag::MAP) => {
-                tagged.as_mapping()?
-            }
-            Some(_) => return None,
-            None => crate::yaml::Mapping::cast(item)?,
-        };
-        let entry = mapping
-            .syntax()
-            .children()
-            .find(|n| n.kind() == SyntaxKind::MAPPING_ENTRY)?;
-        let key = entry.children().find(|n| n.kind() == SyntaxKind::KEY)?;
-        Some((key, entry.text_range()))
+    let registry = std::cell::OnceCell::new();
+    let keys = sequence.values().filter_map(|item| {
+        let mapping = pairs_item_mapping(&item)?;
+        let key = pairs_item_keys(&mapping, &registry)?.into_iter().next()?;
+        Some((key, item.syntax().text_range()))
     });
     let mut seen: Vec<(usize, SyntaxNode)> = Vec::new();
     for (key, range) in keys {
@@ -2268,6 +2254,41 @@ fn check_omap_keys(
         }
         seen.push((identity, key));
     }
+}
+
+/// The mapping that `item`, an item of a `!!omap` or `!!pairs`, is, if
+/// it is one, untagged or tagged `!!map`.
+fn pairs_item_mapping(item: &crate::as_yaml::YamlNode) -> Option<crate::yaml::Mapping> {
+    use crate::as_yaml::YamlNode;
+
+    match item {
+        YamlNode::Mapping(mapping) => Some(mapping.clone()),
+        YamlNode::TaggedNode(tagged) if tagged.normalized_tag().as_deref() == Some(tag::MAP) => {
+            tagged.as_mapping()
+        }
+        _ => None,
+    }
+}
+
+/// The KEY nodes of `mapping` with its merge keys resolved, or `None` if
+/// one cannot be resolved. `registry` is built for the document the first
+/// time a merge key needs it.
+fn pairs_item_keys(
+    mapping: &crate::yaml::Mapping,
+    registry: &std::cell::OnceCell<AnchorRegistry>,
+) -> Option<Vec<SyntaxNode>> {
+    let key_node = |key: crate::as_yaml::YamlNode| {
+        key.syntax()
+            .ancestors()
+            .find(|n| n.kind() == crate::SyntaxKind::KEY)
+    };
+    if !mapping.keys().any(|key| is_merge_key(&key)) {
+        return Some(mapping.keys().filter_map(key_node).collect());
+    }
+    let registry =
+        registry.get_or_init(|| AnchorRegistry::from_tree(&document_scope(mapping.syntax())));
+    let merged = MergedMapping::build(mapping.clone(), registry).ok()?;
+    Some(merged.keys().filter_map(key_node).collect())
 }
 
 /// Check that implicit keys don't span multiple lines
@@ -4655,6 +4676,76 @@ mod tests {
                 Rule::DuplicateKeys
             )]
         );
+    }
+
+    #[test]
+    fn test_pairs_items_resolve_merge_keys() {
+        let violations = |yaml: &str| -> Vec<_> {
+            let file = crate::YamlFile::from_str(yaml).unwrap();
+            Validator::new()
+                .validate_syntax(file.syntax())
+                .into_iter()
+                .map(|v| (v.message, v.location, v.rule))
+                .collect()
+        };
+        for (yaml, message, location) in [
+            (
+                "o: !!omap [{<<: {a: 1, b: 2}}]\n",
+                "!!omap item \"{<<: {a: 1, b: 2}}\" is not a mapping with a single entry",
+                "1:12",
+            ),
+            (
+                "m: &m {a: 1, b: 2}\no: !!pairs\n- <<: *m\n",
+                "!!pairs item \"<<: *m\\n\" is not a mapping with a single entry",
+                "3:3",
+            ),
+            (
+                "m: &m {a: 1}\no: !!omap [{c: 1, <<: *m}]\n",
+                "!!omap item \"{c: 1, <<: *m}\" is not a mapping with a single entry",
+                "2:12",
+            ),
+        ] {
+            assert_eq!(
+                violations(yaml),
+                vec![(
+                    message.to_string(),
+                    Some(location.to_string()),
+                    Rule::InvalidTag
+                )],
+                "{yaml:?}"
+            );
+        }
+        for (yaml, message, location) in [
+            (
+                "m: &m {a: 1}\no: !!omap [{<<: *m}, a: 2]\n",
+                "Duplicate !!omap key: \"a\" (semantically equal to \"a\")",
+                "2:22",
+            ),
+            (
+                "o: !!omap [a: 1, {<<: {a: 2}}]\n",
+                "Duplicate !!omap key: \"a\" (semantically equal to \"a\")",
+                "1:18",
+            ),
+        ] {
+            assert_eq!(
+                violations(yaml),
+                vec![(
+                    message.to_string(),
+                    Some(location.to_string()),
+                    Rule::DuplicateKeys
+                )],
+                "{yaml:?}"
+            );
+        }
+        for yaml in [
+            "o: !!omap [{a: 1, <<: {a: 2}}]\n",
+            "m: &m {a: 1}\no: !!omap [{a: 2, <<: *m}]\n",
+            "m: &m {a: 1}\no: !!pairs [{<<: *m}, a: 2]\n",
+            "o: !!omap [{<<: {a: 1}}, {<<: {b: 1}}]\n",
+            "o: !!omap [{<<: [{a: 1}, {a: 2}]}]\n",
+        ] {
+            assert_eq!(violations(yaml), vec![], "{yaml:?}");
+        }
     }
 
     #[test]

@@ -8,7 +8,8 @@ use common::{
 use rowan::ast::AstNode;
 use std::str::FromStr;
 use yaml_edit::{
-    debug, Document, Mapping, MappingBuilder, SyntaxKind, YamlError, YamlFile, YamlNode, YamlValue,
+    debug, Directive, Document, Mapping, MappingBuilder, SyntaxKind, YamlError, YamlFile, YamlNode,
+    YamlValue,
 };
 
 #[test]
@@ -1176,4 +1177,122 @@ fn add_root_to_rootless_document() {
             assert_file_edited(&file, expected);
         }
     }
+}
+
+/// The directives of a parsed stream, as (name, value, text, is a %YAML
+/// directive, is a %TAG directive).
+#[test]
+fn parsed_directives() {
+    type Parts = (Option<String>, Option<String>, String, bool, bool);
+    let parts = |yaml: &str| -> Vec<Parts> {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(file.to_string(), yaml);
+        file.directives()
+            .map(|d| {
+                (
+                    d.name(),
+                    d.value(),
+                    d.text(),
+                    d.is_yaml_version(),
+                    d.is_tag(),
+                )
+            })
+            .collect()
+    };
+    let yaml = |value: &str| {
+        (
+            Some("YAML".to_string()),
+            Some(value.to_string()),
+            format!("%YAML {value}"),
+            true,
+            false,
+        )
+    };
+    let tag = (
+        Some("TAG".to_string()),
+        Some("! tag:example.com,2000:app/".to_string()),
+        "%TAG ! tag:example.com,2000:app/".to_string(),
+        false,
+        true,
+    );
+    assert_eq!(parts("%YAML 1.2\n---\nkey: value"), [yaml("1.2")]);
+    assert_eq!(
+        parts("%TAG ! tag:example.com,2000:app/\n---\nkey: value"),
+        std::slice::from_ref(&tag)
+    );
+    assert_eq!(
+        parts("%YAML 1.2\n%TAG ! tag:example.com,2000:app/\n---\nkey: value"),
+        [yaml("1.2"), tag.clone()]
+    );
+    assert_eq!(
+        parts("%YAML 1.2\n%TAG ! tag:example.com,2000:app/\n---\nkey: value\n"),
+        [yaml("1.2"), tag]
+    );
+    assert_eq!(
+        parts("%FOO\n%\n---\na\n"),
+        [
+            (
+                Some("FOO".to_string()),
+                None,
+                "%FOO".to_string(),
+                false,
+                false
+            ),
+            (None, None, "%".to_string(), false, false),
+        ]
+    );
+}
+
+#[test]
+fn new_directive() {
+    let directive = Directive::new_yaml_version("1.2");
+    assert!(directive.is_yaml_version());
+    assert_eq!(directive.value(), Some("1.2".to_string()));
+    assert_eq!(directive.text(), "%YAML 1.2");
+
+    let directive = Directive::new_tag("!", "tag:example.com,2000:app/");
+    assert!(directive.is_tag());
+    assert_eq!(directive.text(), "%TAG ! tag:example.com,2000:app/");
+}
+
+/// A directive added to a stream goes first, and the document after it
+/// gets a `---` if it had none.
+#[test]
+fn add_directive() {
+    let file = YamlFile::new();
+    file.add_directive("%YAML 1.2");
+    assert_file_edited(&file, "%YAML 1.2\n");
+    assert_eq!(file.directives().count(), 1);
+
+    for (src, directive, expected) in [
+        ("a: 1\n", "%YAML 1.2", "%YAML 1.2\n---\na: 1\n"),
+        ("---\na: 1\n", "%YAML 1.2", "%YAML 1.2\n---\na: 1\n"),
+        ("a: 1", "%YAML 1.2", "%YAML 1.2\n---\na: 1"),
+        (
+            "%YAML 1.2\n---\na: 1\n",
+            "%TAG ! tag:example.com,2000:app/",
+            "%TAG ! tag:example.com,2000:app/\n%YAML 1.2\n---\na: 1\n",
+        ),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        file.add_directive(directive);
+        assert_file_edited(&file, expected);
+    }
+
+    let reparsed = YamlFile::from_str("%YAML 1.2\n---\na: 1\n").unwrap();
+    assert_eq!(reparsed.directives().count(), 1);
+    let docs: Vec<_> = reparsed.documents().collect();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].get("a").and_then(|v| v.to_i64()), Some(1));
+
+    let file = YamlFile::new();
+    file.add_directive("%YAML 1.2");
+    assert_file_cst_ok(&file);
+    let doc = Document::new_mapping();
+    doc.set("name", "test");
+    assert_cst_ok(&doc);
+    file.push_document(doc);
+    assert_file_edited(&file, "%YAML 1.2\n---\nname: test\n");
+    assert_eq!(file.directives().count(), 1);
+    assert_eq!(file.documents().count(), 1);
 }

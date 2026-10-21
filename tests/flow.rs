@@ -669,14 +669,11 @@ fn block_header_in_flow_context_is_content() {
         ("k: [|, x]\n", &["k", "|", "x"]),
     ] {
         let file = parse_clean(yaml);
-        // TODO: Scalar::as_string and YamlValue read a plain `|` or `>` as
-        // an empty block scalar, as Scalar::is_block only looks at the first
-        // character. Compare the scalars' text until that is fixed.
         let texts: Vec<String> = file
             .syntax()
             .descendants()
             .filter_map(Scalar::cast)
-            .map(|s| s.value())
+            .map(|s| s.as_string())
             .collect();
         assert_eq!(texts, scalars, "{yaml:?}");
     }

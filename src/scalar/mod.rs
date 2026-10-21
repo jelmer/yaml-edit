@@ -1,5 +1,7 @@
 //! Scalar value wrapper with proper escaping and style support.
 
+#[cfg(feature = "base64")]
+mod binary;
 mod decimal;
 
 pub(crate) use decimal::{digits_to_decimal, places_to_decimal, signed_digits_to_decimal};
@@ -8,21 +10,7 @@ use crate::as_yaml::FlowQuoting;
 use std::fmt;
 
 #[cfg(feature = "base64")]
-use base64::{engine::general_purpose, Engine as _};
-
-/// Base64 encode bytes for binary data
-#[cfg(feature = "base64")]
-fn base64_encode(input: &[u8]) -> String {
-    general_purpose::STANDARD.encode(input)
-}
-
-/// Base64 decode string back to bytes
-#[cfg(feature = "base64")]
-fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
-    general_purpose::STANDARD
-        .decode(input.trim())
-        .map_err(|e| format!("Base64 decode error: {e}"))
-}
+use binary::base64_decode;
 
 /// Style of scalar representation in YAML
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,18 +364,6 @@ impl ScalarValue {
         }
     }
 
-    /// Create a binary scalar from raw bytes
-    #[cfg(feature = "base64")]
-    pub fn binary(data: &[u8]) -> Self {
-        let encoded = base64_encode(data);
-        Self {
-            value: encoded,
-            style: ScalarStyle::Plain,
-            scalar_type: ScalarType::Binary,
-            tag: None,
-        }
-    }
-
     /// Create a timestamp scalar
     pub fn timestamp(value: impl Into<String>) -> Self {
         Self {
@@ -487,21 +463,6 @@ impl ScalarValue {
         } else {
             None
         }
-    }
-
-    /// Extract binary data if this is a binary scalar
-    #[cfg(feature = "base64")]
-    pub fn as_binary(&self) -> Option<Result<Vec<u8>, String>> {
-        match self.scalar_type {
-            ScalarType::Binary => Some(base64_decode(&self.value)),
-            _ => None,
-        }
-    }
-
-    /// Check if this is a binary scalar
-    #[cfg(feature = "base64")]
-    pub fn is_binary(&self) -> bool {
-        self.scalar_type == ScalarType::Binary
     }
 
     /// Check if this is a timestamp scalar
@@ -2140,50 +2101,6 @@ mod tests {
 
         // But the internal value should remain unchanged
         assert_eq!(scalar.value(), "Hello 世界 🌍");
-    }
-
-    #[test]
-    #[cfg(feature = "base64")]
-    fn test_binary_data_encoding() {
-        // Test creating binary scalar from raw bytes
-        let data = b"Hello, World!";
-        let scalar = ScalarValue::binary(data);
-
-        assert!(scalar.is_binary());
-        assert_eq!(scalar.scalar_type(), ScalarType::Binary);
-
-        // Should produce valid base64
-        let yaml_output = scalar.to_yaml_string();
-        assert!(yaml_output.starts_with("!!binary "));
-
-        // Should be able to decode back to original data
-        if let Some(decoded_result) = scalar.as_binary() {
-            let decoded = decoded_result.expect("Should decode successfully");
-            assert_eq!(decoded, data);
-        } else {
-            panic!("Should be able to extract binary data");
-        }
-    }
-
-    #[test]
-    #[cfg(feature = "base64")]
-    fn test_base64_encoding_decoding() {
-        // Test various byte sequences
-        let test_cases = [
-            b"".as_slice(),
-            b"A",
-            b"AB",
-            b"ABC",
-            b"ABCD",
-            b"Hello, World!",
-            &[0, 1, 2, 3, 255, 254, 253],
-        ];
-
-        for data in test_cases {
-            let encoded = base64_encode(data);
-            let decoded = base64_decode(&encoded).expect("Should decode successfully");
-            assert_eq!(decoded, data, "Failed for data: {:?}", data);
-        }
     }
 
     #[test]

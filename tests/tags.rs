@@ -15,14 +15,15 @@ use common::{
 use proptest::prelude::*;
 use rowan::ast::AstNode;
 use std::str::FromStr;
+use std::sync::Arc;
 use yaml_edit::custom_tags::{
     CompressedBinaryHandler, CustomTagError, CustomTagHandler, CustomTagRegistry, EnvVarHandler,
     JsonHandler, TimestampHandler,
 };
 use yaml_edit::validator::Validator;
 use yaml_edit::{
-    debug, Document, Entry, Mapping, OccupiedEntry, ScalarValue, SyntaxKind, YamlFile, YamlNode,
-    YamlValue,
+    debug, CustomTagParser, Document, Entry, Mapping, OccupiedEntry, ScalarValue, SyntaxKind,
+    YamlFile, YamlNode, YamlValue,
 };
 
 /// Parse `yaml` as [`parse_clean`] does and render its root node.
@@ -139,18 +140,6 @@ fn registry_validates_tagged_content() {
             "{tag} {content:?}"
         );
     }
-}
-
-#[test]
-fn registry_rejects_invalid_tag_name() {
-    let mut registry = CustomTagRegistry::new();
-    let err = registry
-        .register("timestamp", TimestampHandler::new("%Y-%m-%d"))
-        .unwrap_err();
-    assert_eq!(
-        err.message,
-        "Invalid tag name: must be a YAML tag such as '!name', '!!name' or '!<uri>'"
-    );
 }
 
 struct Upper;
@@ -1494,4 +1483,908 @@ fn set_is_empty() {
     assert_eq!(set("a").len(), 0);
     assert!(!set("b").is_empty());
     assert_eq!(set("b").len(), 1);
+}
+
+#[test]
+fn tag_registry_basic() {
+    let mut registry = CustomTagRegistry::new();
+
+    // Register a handler
+    let handler = JsonHandler;
+    assert!(registry.register("!json", handler).is_ok());
+
+    // Check if registered
+    assert!(registry.has_tag("!json"));
+    assert_eq!(registry.registered_tags(), vec!["!json"]);
+
+    // Unregister
+    assert!(registry.unregister("!json"));
+    assert!(!registry.has_tag("!json"));
+}
+
+#[test]
+fn json_handler() {
+    let handler = JsonHandler;
+    assert_eq!(
+        handler.serialize(&YamlValue::scalar("test")),
+        Ok("\"test\"".to_string())
+    );
+    assert_eq!(
+        handler.serialize(&YamlValue::sequence()),
+        Ok("[]".to_string())
+    );
+    assert_eq!(
+        handler.deserialize("\"hello\""),
+        Ok(YamlValue::scalar("hello"))
+    );
+    assert_eq!(handler.deserialize("plain"), Ok(YamlValue::scalar("plain")));
+    assert_eq!(handler.validate("\"valid\""), Ok(()));
+}
+
+#[test]
+fn json_handler_deserialize_collections() {
+    let handler = JsonHandler;
+    let num = |s: &str| YamlValue::Scalar(ScalarValue::parse(s));
+    let map = |pairs: Vec<(&str, YamlValue)>| {
+        YamlValue::Mapping(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    };
+
+    assert_eq!(
+        handler.deserialize("[1,2]"),
+        Ok(YamlValue::Sequence(vec![num("1"), num("2")]))
+    );
+    assert_eq!(handler.deserialize("[]"), Ok(YamlValue::Sequence(vec![])));
+    assert_eq!(handler.deserialize(" { } "), Ok(map(vec![])));
+    assert_eq!(
+        handler
+            .deserialize(r#"{"a": [1, "x", true, null], "b":{"c":-1.5e2, "d\n\u00e9": "\"y\""}}"#),
+        Ok(map(vec![
+            (
+                "a",
+                YamlValue::Sequence(vec![
+                    num("1"),
+                    YamlValue::scalar("x"),
+                    YamlValue::scalar(true),
+                    YamlValue::Scalar(ScalarValue::null()),
+                ])
+            ),
+            (
+                "b",
+                map(vec![
+                    ("c", num("-1.5e2")),
+                    ("d\n\u{e9}", YamlValue::scalar("\"y\"")),
+                ])
+            ),
+        ]))
+    );
+    assert_eq!(
+        handler.deserialize("{\r\n\t\"a\" : [\n  1 ,\n  [ ]\n ]\n}\n"),
+        Ok(map(vec![(
+            "a",
+            YamlValue::Sequence(vec![num("1"), YamlValue::Sequence(vec![])])
+        )]))
+    );
+    assert_eq!(handler.validate(r#"{"a": [{"b": []}]}"#), Ok(()));
+}
+
+#[test]
+fn json_handler_rejects_yaml_only_syntax() {
+    let handler = JsonHandler;
+    for (content, message) in [
+        ("{a: 1}", "Object keys must be strings"),
+        ("{1: 2}", "Object keys must be strings"),
+        (r#"{"a": x}"#, "Invalid JSON value"),
+        ("['a']", "Invalid JSON value"),
+        ("[1, , 2]", "Invalid JSON value"),
+        (r#"{"a"}"#, "Invalid JSON value"),
+        (r#"["a": 1]"#, "Invalid JSON value"),
+        ("- 1", "Invalid JSON value"),
+        ("a: 1", "Invalid JSON value"),
+        ("--- [1]", "Invalid JSON value"),
+        (
+            "[1] [2]",
+            "Invalid JSON: 1:5: Content after the document could not be parsed: \"[\"",
+        ),
+        ("[1, 2,]", "Trailing comma"),
+        (r#"{"a": 1,}"#, "Trailing comma"),
+        (r#"{"a": 1, "a": 2}"#, "Duplicate key"),
+        ("[1, # c\n 2]", "Comments are not allowed in JSON"),
+        ("[!t 1]", "Tags are not allowed in JSON"),
+        ("!t [1]", "Tags are not allowed in JSON"),
+        ("[&a 1]", "Anchors are not allowed in JSON"),
+        ("[*a]", "Aliases are not allowed in JSON"),
+        (r#"["a\x41"]"#, "Invalid escape sequence"),
+        ("[\"a\n b\"]", "Unescaped control character in string"),
+    ] {
+        assert_eq!(
+            handler.validate(content),
+            Err(CustomTagError::with_content("!json", message, content)),
+            "{}",
+            content
+        );
+        // Lenient deserialization reads it as the raw string.
+        assert_eq!(
+            handler.deserialize(content),
+            Ok(YamlValue::scalar(content)),
+            "{}",
+            content
+        );
+    }
+}
+
+#[test]
+fn json_handler_reports_parse_errors() {
+    let handler = JsonHandler;
+    let err = handler.validate("[1, 2").unwrap_err();
+    assert_eq!(
+        err,
+        CustomTagError::with_content(
+            "!json",
+            concat!(
+                "Invalid JSON: 1:6: Unclosed flow sequence. Expected: ']' to close sequence. ",
+                "Found: end of input. Context: in flow sequence. Suggestion: Add ']' to close ",
+                "the array, or check for missing commas between elements"
+            ),
+            "[1, 2"
+        )
+    );
+    assert_eq!(handler.deserialize("[1, 2"), Ok(YamlValue::scalar("[1, 2")));
+}
+
+#[test]
+fn json_handler_deserialize_returns_err_not_panic() {
+    let handler = JsonHandler;
+    let quote = handler.deserialize("\"").unwrap_err();
+    assert_eq!(quote.tag, "!json");
+    assert_eq!(quote.message, "Unterminated quoted string");
+    assert_eq!(
+        handler
+            .deserialize("\"hello\"")
+            .unwrap()
+            .as_scalar()
+            .unwrap()
+            .value(),
+        "hello"
+    );
+}
+
+#[test]
+fn json_handler_serialize_escapes_strings() {
+    let handler = JsonHandler;
+    assert_eq!(
+        handler.serialize(&YamlValue::scalar("a\"b\\c")).unwrap(),
+        r#""a\"b\\c""#
+    );
+    assert_eq!(
+        handler
+            .serialize(&YamlValue::scalar("l1\nl2\t\u{1}"))
+            .unwrap(),
+        r#""l1\nl2\t\u0001""#
+    );
+    assert_eq!(
+        handler.serialize(&YamlValue::scalar("42")).unwrap(),
+        "\"42\""
+    );
+
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("k\"".to_string(), YamlValue::scalar("v"));
+    assert_eq!(
+        handler.serialize(&YamlValue::Mapping(map)).unwrap(),
+        r#"{"k\"":"v"}"#
+    );
+}
+
+#[test]
+fn json_handler_serialize_non_strings() {
+    let handler = JsonHandler;
+    assert_eq!(handler.serialize(&YamlValue::scalar(42i64)).unwrap(), "42");
+    assert_eq!(handler.serialize(&YamlValue::scalar(-7i32)).unwrap(), "-7");
+    assert_eq!(
+        handler.serialize(&YamlValue::scalar(1.5f64)).unwrap(),
+        "1.5"
+    );
+    assert_eq!(handler.serialize(&YamlValue::scalar(true)).unwrap(), "true");
+    assert_eq!(
+        handler
+            .serialize(&YamlValue::Scalar(ScalarValue::null()))
+            .unwrap(),
+        "null"
+    );
+    assert_eq!(
+        handler
+            .serialize(&YamlValue::Scalar(ScalarValue::parse("0x1F")))
+            .unwrap(),
+        "31"
+    );
+    let err = handler
+        .serialize(&YamlValue::scalar(f64::INFINITY))
+        .unwrap_err();
+    assert_eq!(err.message, "Value cannot be represented in JSON");
+}
+
+#[test]
+fn json_handler_serialize_floats_as_written() {
+    let handler = JsonHandler;
+    let json = |text: &str| handler.serialize(&YamlValue::Scalar(ScalarValue::parse(text)));
+    // JSON numbers have no range limit, so a float beyond f64 is kept.
+    assert_eq!(json("1e400").unwrap(), "1e400");
+    assert_eq!(json("-1.5E+400").unwrap(), "-1.5E+400");
+    assert_eq!(json("1.0").unwrap(), "1.0");
+    assert_eq!(
+        json("0.10000000000000000000001").unwrap(),
+        "0.10000000000000000000001"
+    );
+    // YAML spellings that JSON lacks.
+    assert_eq!(json("+1.5").unwrap(), "1.5");
+    assert_eq!(json(".5").unwrap(), "0.5");
+    assert_eq!(json("-.5e3").unwrap(), "-0.5e3");
+    assert_eq!(json("1.").unwrap(), "1.0");
+    assert_eq!(json("1.e3").unwrap(), "1.0e3");
+    assert_eq!(json("007.5").unwrap(), "7.5");
+    assert_eq!(json("00.5").unwrap(), "0.5");
+    assert_eq!(json("1e3").unwrap(), "1e3");
+
+    for text in [".inf", "-.inf", "+.INF", ".nan", ".NaN"] {
+        let err = json(text).unwrap_err();
+        assert_eq!(err.message, "Value cannot be represented in JSON", "{text}");
+    }
+    let err = handler.serialize(&YamlValue::scalar(f64::NAN)).unwrap_err();
+    assert_eq!(err.message, "Value cannot be represented in JSON");
+
+    for text in ["1e400", "-2.5e-400", "1.0", "0.1"] {
+        let value = handler.deserialize(text).unwrap();
+        assert_eq!(handler.serialize(&value).unwrap(), text);
+    }
+}
+
+#[test]
+fn json_handler_serialize_integers_of_any_size() {
+    let handler = JsonHandler;
+    let json = |text: &str| {
+        handler
+            .serialize(&YamlValue::Scalar(ScalarValue::parse(text)))
+            .unwrap()
+    };
+    assert_eq!(
+        json("123456789012345678901234567890"),
+        "123456789012345678901234567890"
+    );
+    assert_eq!(
+        json("-123456789012345678901234567890"),
+        "-123456789012345678901234567890"
+    );
+    assert_eq!(
+        json("+00123456789012345678901234567890"),
+        "123456789012345678901234567890"
+    );
+    assert_eq!(
+        json("0x100000000000000000000000000000000"),
+        "340282366920938463463374607431768211456"
+    );
+    assert_eq!(json("0o2000000000000000000000"), "18446744073709551616");
+
+    // A JSON integer outside i64 comes back as it went in.
+    let big = "-98765432109876543210987654321";
+    let value = handler.deserialize(big).unwrap();
+    assert_eq!(handler.serialize(&value).unwrap(), big);
+}
+
+#[test]
+fn json_handler_deserialize_unescapes_strings() {
+    let handler = JsonHandler;
+    let value = |s: &str| handler.deserialize(s).unwrap().as_scalar().unwrap().clone();
+    assert_eq!(value(r#""a\"b\u0041""#).value(), "a\"bA");
+    assert_eq!(value(r#""\\\/\b\f\n\r\t""#).value(), "\\/\u{8}\u{c}\n\r\t");
+    assert_eq!(value(r#""\ud83d\ude00""#).value(), "\u{1F600}");
+    assert_eq!(
+        value(r#""42""#).scalar_type(),
+        yaml_edit::ScalarType::String
+    );
+
+    for bad in [
+        r#""a"b""#,
+        r#""a\x""#,
+        r#""\u12""#,
+        r#""\ud83d""#,
+        "\"a\u{1}\"",
+        r#""a\""#,
+    ] {
+        // Invalid JSON is read as the raw string, but does not validate.
+        assert_eq!(value(bad).value(), &bad[1..bad.len() - 1], "{}", bad);
+        let err = handler.validate(bad).unwrap_err();
+        assert_eq!(err.tag, "!json", "{}", bad);
+        assert_eq!(err.content.as_deref(), Some(bad), "{}", bad);
+    }
+}
+
+#[test]
+fn json_handler_deserialize_non_strings() {
+    let handler = JsonHandler;
+    let value = |s: &str| handler.deserialize(s).unwrap().as_scalar().unwrap().clone();
+    assert_eq!(value("42").to_i64(), Some(42));
+    assert_eq!(value("-0").to_i64(), Some(0));
+    assert_eq!(value("1.5e3").to_f64(), Some(1500.0));
+    assert_eq!(value("true").to_bool(), Some(true));
+    assert_eq!(value("null").scalar_type(), yaml_edit::ScalarType::Null);
+
+    for bad in ["plain", "0x1F", "01", "1.", ".5", "+1", "True", "~"] {
+        assert_eq!(value(bad).value(), bad);
+        let err = handler.validate(bad).unwrap_err();
+        assert_eq!(err.message, "Invalid JSON value", "{}", bad);
+    }
+    assert_eq!(handler.validate("42"), Ok(()));
+    assert_eq!(handler.validate(r#""a\"b""#), Ok(()));
+}
+
+#[test]
+fn timestamp_handler() {
+    let handler = TimestampHandler::new("YYYY-MM-DD");
+    assert_eq!(
+        handler.serialize(&YamlValue::scalar("2023-12-25")),
+        Ok("2023-12-25".to_string())
+    );
+    assert_eq!(
+        handler.deserialize("2023-12-25"),
+        Ok(YamlValue::scalar(ScalarValue::timestamp("2023-12-25")))
+    );
+    assert_eq!(handler.validate("2023-12-25"), Ok(()));
+    assert_eq!(
+        handler.validate(""),
+        Err(CustomTagError::with_content(
+            "!timestamp",
+            "Timestamp cannot be empty",
+            ""
+        ))
+    );
+}
+
+#[test]
+fn env_var_handler() {
+    let handler = EnvVarHandler;
+    std::env::set_var("TEST_VAR", "test_value");
+    assert_eq!(
+        handler.deserialize("TEST_VAR"),
+        Ok(YamlValue::scalar("test_value"))
+    );
+    std::env::remove_var("TEST_VAR");
+
+    assert_eq!(handler.validate("VALID_VAR_NAME"), Ok(()));
+    assert_eq!(
+        handler.validate(""),
+        Err(CustomTagError::with_content(
+            "!env",
+            "Environment variable name cannot be empty",
+            ""
+        ))
+    );
+    assert_eq!(
+        handler.validate("invalid var name"),
+        Err(CustomTagError::with_content(
+            "!env",
+            "Invalid environment variable name",
+            "invalid var name"
+        ))
+    );
+}
+
+#[test]
+fn compressed_binary_handler() {
+    let handler = CompressedBinaryHandler::new(6);
+    // "Hello World" in base64.
+    let base64 = "SGVsbG8gV29ybGQ=";
+    assert_eq!(
+        handler.serialize(&YamlValue::scalar(base64)),
+        Ok("COMPRESSED[6]:SGVsbG8gV29ybGQ=".to_string())
+    );
+    assert_eq!(handler.deserialize(base64), Ok(YamlValue::scalar(base64)));
+    assert_eq!(handler.validate(base64), Ok(()));
+    assert_eq!(
+        handler.validate("invalid@base64"),
+        Err(CustomTagError::with_content(
+            "!compressed",
+            "Invalid base64 content",
+            "invalid@base64"
+        ))
+    );
+}
+
+#[test]
+fn registry_serialize_deserialize() {
+    let mut registry = CustomTagRegistry::new();
+    registry.register("!json", JsonHandler).unwrap();
+
+    let scalar_value = YamlValue::scalar("test");
+    assert_eq!(
+        registry.serialize("!json", &scalar_value),
+        Ok("\"test\"".to_string())
+    );
+    assert_eq!(
+        registry.deserialize("!json", "\"hello\""),
+        Ok(YamlValue::scalar("hello"))
+    );
+
+    let unregistered = Err(CustomTagError::new("!unknown", "Tag not registered"));
+    assert_eq!(registry.serialize("!unknown", &scalar_value), unregistered);
+    assert_eq!(
+        registry.deserialize("!unknown", "content").map(|_| ()),
+        unregistered.map(|_: String| ())
+    );
+}
+
+/// Records the content of every node it is given and rejects "bad".
+struct RecordingHandler(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl CustomTagHandler for RecordingHandler {
+    fn serialize(&self, _value: &YamlValue) -> Result<String, CustomTagError> {
+        Err(CustomTagError::new("!rec", "not used"))
+    }
+
+    fn deserialize(&self, content: &str) -> Result<YamlValue, CustomTagError> {
+        self.0.lock().unwrap().push(content.to_string());
+        if content == "bad" {
+            return Err(CustomTagError::with_content("!rec", "rejected", content));
+        }
+        Ok(YamlValue::scalar(content))
+    }
+
+    fn description(&self) -> &str {
+        "records its input"
+    }
+}
+
+fn recording_parser() -> (CustomTagParser, Arc<std::sync::Mutex<Vec<String>>>) {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut registry = CustomTagRegistry::new();
+    registry
+        .register("!rec", RecordingHandler(Arc::clone(&seen)))
+        .unwrap();
+    (CustomTagParser::new(registry), seen)
+}
+
+/// A handler's default `validate` deserializes the content and reports
+/// what that rejects.
+#[test]
+fn default_validate_deserializes() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut registry = CustomTagRegistry::new();
+    registry
+        .register("!rec", RecordingHandler(Arc::clone(&seen)))
+        .unwrap();
+    assert_eq!(
+        registry.validate("!rec", "bad"),
+        Err(CustomTagError::with_content("!rec", "rejected", "bad"))
+    );
+    assert_eq!(registry.validate("!rec", "good"), Ok(()));
+    assert_eq!(*seen.lock().unwrap(), vec!["bad", "good"]);
+}
+
+fn doc(text: &str) -> Document {
+    Document::from_str(text).unwrap()
+}
+
+#[test]
+fn parse_with_custom_tags_visits_every_tagged_node() {
+    let (parser, seen) = recording_parser();
+    let document = doc(concat!(
+        "a: !rec one\n",
+        "? !rec two\n",
+        ": [!rec three, {!rec four: !rec '5'}]\n",
+        "c: !rec {\"x\": !rec six}\n",
+        "d:\n",
+        "  - !rec \"seven\"\n",
+    ));
+    assert_eq!(parser.parse_with_custom_tags(&document), Ok(()));
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            "one",
+            "two",
+            "three",
+            "four",
+            "5",
+            "{\"x\": !rec six}",
+            "six",
+            "seven"
+        ]
+    );
+}
+
+#[test]
+fn parse_with_custom_tags_returns_first_error() {
+    let (parser, seen) = recording_parser();
+    let document = doc("[!rec ok, !rec bad, !rec bad]\n");
+    assert_eq!(
+        parser.parse_with_custom_tags(&document),
+        Err(CustomTagError::with_content("!rec", "rejected", "bad"))
+    );
+    assert_eq!(*seen.lock().unwrap(), vec!["ok", "bad"]);
+}
+
+#[test]
+fn parse_with_custom_tags_unregistered_tag() {
+    let (parser, _) = recording_parser();
+    let document = doc("a: !rec x\nb: !other y\n");
+    assert_eq!(
+        parser.parse_with_custom_tags(&document),
+        Err(CustomTagError::new("!other", "Tag not registered"))
+    );
+}
+
+#[test]
+fn parse_with_custom_tags_block_collection() {
+    // A handler sees a block collection as it would read at the top
+    // level, without the indentation it has in the document.
+    let (parser, seen) = recording_parser();
+    let document = doc(concat!(
+        "a: !rec\n",
+        "  b: !rec x\n",
+        "  c:\n",
+        "    - 1\n",
+        "d:\n",
+        "  - !rec\n",
+        "    -  y\n",
+        "    - z\n",
+    ));
+    assert_eq!(parser.parse_with_custom_tags(&document), Ok(()));
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec!["b: !rec x\nc:\n  - 1\n", "x", "-  y\n- z\n"]
+    );
+
+    let (parser, seen) = recording_parser();
+    let document = doc("--- !rec\na: 1\nb:\n  - 2\n");
+    assert_eq!(parser.parse_with_custom_tags(&document), Ok(()));
+    assert_eq!(*seen.lock().unwrap(), vec!["a: 1\nb:\n  - 2\n"]);
+}
+
+#[test]
+fn parse_with_custom_tags_block_collection_keeps_relative_indent() {
+    // Blank lines, comments and block scalar bodies keep their
+    // indentation relative to the collection.
+    let (parser, seen) = recording_parser();
+    let document = doc(concat!(
+        "items:\n",
+        "  - !rec\n",
+        "    k: |\n",
+        "      line\n",
+        "        more\n",
+        "\n",
+        "    # note\n",
+        "    j: \"a\n",
+        "   b\"\n",
+    ));
+    assert_eq!(parser.parse_with_custom_tags(&document), Ok(()));
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec!["k: |\n  line\n    more\n\n# note\nj: \"a\nb\"\n"]
+    );
+}
+
+#[test]
+fn process_tagged_block_mapping() {
+    let (parser, _) = recording_parser();
+    let document = doc("a: !rec\n  b: 1\n");
+    let tagged = document.as_mapping().unwrap().get("a").unwrap();
+    assert_eq!(
+        parser.process_tagged_node(tagged.as_tagged().unwrap()),
+        Ok(YamlValue::scalar("b: 1\n"))
+    );
+}
+
+#[test]
+fn process_tagged_json_object() {
+    let mut registry = CustomTagRegistry::new();
+    registry.register("!json", JsonHandler).unwrap();
+    let parser = CustomTagParser::new(registry);
+    let document = doc("data: !json {\"status\": \"active\"}\n");
+    let mapping = document.as_mapping().unwrap();
+    let data = mapping.get("data").unwrap();
+    let tagged = data.as_tagged().unwrap();
+    let mut expected = std::collections::BTreeMap::new();
+    expected.insert("status".to_string(), YamlValue::scalar("active"));
+    assert_eq!(
+        parser.process_tagged_node(tagged),
+        Ok(YamlValue::Mapping(expected))
+    );
+    assert_eq!(parser.parse_with_custom_tags(&document), Ok(()));
+}
+
+#[test]
+fn parse_with_custom_tags_untagged_document() {
+    let (parser, seen) = recording_parser();
+    assert_eq!(
+        parser.parse_with_custom_tags(&doc("a: [1, {b: c}]\n")),
+        Ok(())
+    );
+    assert_eq!(*seen.lock().unwrap(), Vec::<String>::new());
+}
+
+#[test]
+fn custom_tag_error() {
+    let error = CustomTagError::new("!test", "Test error message");
+    assert_eq!(error.tag, "!test");
+    assert_eq!(error.message, "Test error message");
+    assert!(error.content.is_none());
+
+    let error_with_content = CustomTagError::with_content("!test", "Test error", "bad content");
+    assert_eq!(error_with_content.content, Some("bad content".to_string()));
+
+    assert_eq!(
+        format!("{}", error_with_content),
+        "Custom tag '!test' error: Test error (content: bad content)"
+    );
+}
+
+#[test]
+fn timestamp_validate_checks_format() {
+    let handler = TimestampHandler::new("%Y-%m-%d");
+    let expected = Err(CustomTagError::with_content(
+        "!timestamp",
+        "Expected format: %Y-%m-%d",
+        "invalid-date",
+    ));
+    assert_eq!(handler.deserialize("invalid-date").map(|_| ()), expected);
+    assert_eq!(handler.validate("invalid-date"), expected);
+    assert_eq!(handler.validate("2024-01-15"), Ok(()));
+}
+
+#[test]
+fn compressed_binary_validates_own_output() {
+    let handler = CompressedBinaryHandler::new(6);
+    let serialized = handler.serialize(&YamlValue::scalar("SGk=")).unwrap();
+    assert_eq!(serialized, "COMPRESSED[6]:SGk=");
+    assert_eq!(handler.validate(&serialized), Ok(()));
+    assert_eq!(
+        handler.validate("COMPRESSED[6]:no base64"),
+        Err(CustomTagError::with_content(
+            "!compressed",
+            "Invalid base64 content",
+            "COMPRESSED[6]:no base64",
+        ))
+    );
+}
+
+#[test]
+fn registry_errors_name_registered_tag() {
+    let mut registry = CustomTagRegistry::new();
+    registry
+        .register("!date", TimestampHandler::new("%Y-%m-%d"))
+        .unwrap();
+    let expected = CustomTagError::with_content("!date", "Timestamp cannot be empty", "");
+    assert_eq!(registry.validate("!date", ""), Err(expected));
+    assert_eq!(
+        registry.deserialize("!date", "x"),
+        Err(CustomTagError::with_content(
+            "!date",
+            "Expected format: %Y-%m-%d",
+            "x"
+        ))
+    );
+    assert_eq!(
+        registry.serialize("!date", &YamlValue::sequence()),
+        Err(CustomTagError::new("!date", "Value must be a scalar"))
+    );
+}
+
+#[test]
+fn json_handler_validate_messages() {
+    let handler = JsonHandler;
+    for (content, message) in [
+        (r#"{"a" 1}"#, "Invalid JSON value"),
+        (r#"{"a": 1, "b"}"#, "Invalid JSON value"),
+        (r#"{"a": }"#, "Invalid JSON value"),
+        (r#"{? "a": 1}"#, "Invalid JSON value"),
+        (r#"["a": 1]"#, "Invalid JSON value"),
+        ("{1: 2}", "Object keys must be strings"),
+        ("{[1]: 2}", "Object keys must be strings"),
+        ("[1,,2]", "Invalid JSON value"),
+        ("[1 2]", "Invalid JSON value"),
+        ("- 1", "Invalid JSON value"),
+        ("a: 1", "Invalid JSON value"),
+        ("--- 1", "Invalid JSON value"),
+        ("1\n--- 2", "Invalid JSON value"),
+        ("%YAML 1.2\n--- 1", "Invalid JSON value"),
+        (r#"{"a":1}x"#, "Invalid JSON value"),
+        ("", "Invalid JSON value"),
+        ("-", "Invalid JSON value"),
+        ("1e+", "Invalid JSON value"),
+        (r#"{"a": 1, "a": 2}"#, "Duplicate key"),
+        ("[1,]", "Trailing comma"),
+        ("{,}", "Trailing comma"),
+        ("[&x 1]", "Anchors are not allowed in JSON"),
+        ("[*x]", "Aliases are not allowed in JSON"),
+        ("[1] # c", "Comments are not allowed in JSON"),
+        ("[!!int 1]", "Tags are not allowed in JSON"),
+        (r#""\ud800A""#, "Unpaired surrogate in \\u escape"),
+        (r#""\udc00""#, "Unpaired surrogate in \\u escape"),
+        ("\"", "Unterminated quoted string"),
+    ] {
+        assert_eq!(
+            handler.validate(content),
+            Err(CustomTagError::with_content(
+                "!json",
+                message,
+                content.trim()
+            )),
+            "{content}"
+        );
+    }
+    assert_eq!(
+        handler.deserialize("'"),
+        Err(CustomTagError::with_content(
+            "!json",
+            "Unterminated quoted string",
+            "'"
+        ))
+    );
+}
+
+#[test]
+fn json_handler_nested_and_numbers() {
+    let handler = JsonHandler;
+    let value = handler
+        .deserialize(r#"[1, [2.5e-3, {"a": [true, null], "b": "é"}]]"#)
+        .unwrap();
+    assert_eq!(handler.validate(r#"{"a":1,"b":2}"#), Ok(()));
+    assert_eq!(
+        handler.serialize(&value).unwrap(),
+        r#"[1,[2.5e-3,{"a":[true,null],"b":"é"}]]"#
+    );
+    assert_eq!(handler.validate("1e5"), Ok(()));
+    assert_eq!(handler.validate("-1.5E+3"), Ok(()));
+}
+
+#[test]
+fn json_handler_serialize_escapes_and_unsupported() {
+    let handler = JsonHandler;
+    assert_eq!(
+        handler.serialize(&YamlValue::scalar("a\r\u{8}\u{c}\u{1}\"\\\n\t")),
+        Ok(r#""a\r\b\f\u0001\"\\\n\t""#.to_string())
+    );
+    assert_eq!(
+        handler.serialize(&YamlValue::set()),
+        Err(CustomTagError::new(
+            "!json",
+            "Unsupported value type for JSON serialization"
+        ))
+    );
+    assert_eq!(handler.description(), "JSON data embedded in YAML");
+}
+
+#[test]
+fn timestamp_handler_errors() {
+    let handler = TimestampHandler::new("%Y-%m-%d");
+    assert_eq!(
+        handler.serialize(&YamlValue::scalar("2024-01-15")),
+        Ok("2024-01-15".to_string())
+    );
+    assert_eq!(
+        handler.serialize(&YamlValue::scalar("today")),
+        Err(CustomTagError::with_content(
+            "!timestamp",
+            "Timestamp should contain year digits",
+            "today"
+        ))
+    );
+    assert_eq!(
+        handler.serialize(&YamlValue::sequence()),
+        Err(CustomTagError::new("!timestamp", "Value must be a scalar"))
+    );
+    assert_eq!(
+        handler.deserialize("2024-01-15"),
+        Ok(YamlValue::scalar(ScalarValue::timestamp("2024-01-15")))
+    );
+    assert_eq!(handler.description(), "Custom timestamp format handler");
+    // A format without `%Y` does not check for digits.
+    let handler = TimestampHandler::new("%H:%M");
+    assert_eq!(
+        handler.serialize(&YamlValue::scalar("noon")),
+        Ok("noon".to_string())
+    );
+    assert_eq!(handler.validate("noon"), Ok(()));
+}
+
+#[test]
+fn compressed_binary_handler_round_trip() {
+    let handler = CompressedBinaryHandler::new(0);
+    assert_eq!(
+        handler.serialize(&YamlValue::scalar("SGk=")),
+        Ok("SGk=".to_string())
+    );
+    assert_eq!(
+        handler.serialize(&YamlValue::sequence()),
+        Err(CustomTagError::new("!compressed", "Value must be a scalar"))
+    );
+    assert_eq!(
+        handler.deserialize("COMPRESSED[3]:SGk="),
+        Ok(YamlValue::scalar("SGk="))
+    );
+    assert_eq!(
+        handler.deserialize("COMPRESSED[3"),
+        Ok(YamlValue::scalar("COMPRESSED[3"))
+    );
+    assert_eq!(handler.deserialize("SGk="), Ok(YamlValue::scalar("SGk=")));
+    assert_eq!(handler.validate("a+b/"), Ok(()));
+    assert_eq!(handler.description(), "Compressed binary data");
+}
+
+#[test]
+fn env_var_handler_errors() {
+    let handler = EnvVarHandler;
+    assert_eq!(
+        handler.serialize(&YamlValue::scalar("HOME")),
+        Ok("HOME".to_string())
+    );
+    assert_eq!(
+        handler.serialize(&YamlValue::sequence()),
+        Err(CustomTagError::new(
+            "!env",
+            "Environment variable must be a scalar"
+        ))
+    );
+    assert_eq!(
+        handler.deserialize("YAML_EDIT_SURELY_UNSET_VARIABLE"),
+        Err(CustomTagError::with_content(
+            "!env",
+            "Environment variable not found",
+            "YAML_EDIT_SURELY_UNSET_VARIABLE"
+        ))
+    );
+    assert_eq!(handler.description(), "Environment variable substitution");
+}
+
+#[test]
+fn registry_debug_clone_unregister() {
+    let mut registry = CustomTagRegistry::new();
+    registry.register("!json", JsonHandler).unwrap();
+    registry.register("!env", EnvVarHandler).unwrap();
+    assert_eq!(
+        format!("{registry:?}"),
+        r#"CustomTagRegistry { tags: ["!env", "!json"] }"#
+    );
+    // Clones share their handlers.
+    let mut clone = registry.clone();
+    assert!(clone.unregister("!env"));
+    assert!(!clone.unregister("!env"));
+    assert!(!registry.has_tag("!env"));
+    assert_eq!(registry.registered_tags(), vec!["!json".to_string()]);
+}
+
+#[test]
+fn custom_tag_error_display_without_content() {
+    assert_eq!(
+        CustomTagError::new("!t", "broken").to_string(),
+        "Custom tag '!t' error: broken"
+    );
+}
+
+#[test]
+fn tag_name_with_invalid_named_handle() {
+    let mut registry = CustomTagRegistry::new();
+    for tag in ["timestamp", "!a_b!c", "!a.b!c", "!!", "!e!"] {
+        assert_eq!(
+            registry.register(tag, JsonHandler),
+            Err(CustomTagError::new(
+                tag,
+                "Invalid tag name: must be a YAML tag such as '!name', '!!name' or '!<uri>'"
+            )),
+            "{tag}"
+        );
+    }
+    assert_eq!(registry.register("!a-1!c", JsonHandler), Ok(()));
+}
+
+#[test]
+fn json_handler_spaces_and_false() {
+    let handler = JsonHandler;
+    assert_eq!(
+        handler.serialize(&YamlValue::scalar("a b")),
+        Ok("\"a b\"".to_string())
+    );
+    assert_eq!(handler.validate("\"a b\""), Ok(()));
+    assert_eq!(handler.validate("false"), Ok(()));
+    assert_eq!(
+        handler.deserialize("false"),
+        Ok(YamlValue::Scalar(ScalarValue::from(false)))
+    );
 }

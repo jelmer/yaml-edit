@@ -242,17 +242,32 @@ impl Document {
     /// root. Returns `false`, leaving the document unchanged, if the root is
     /// another node.
     fn edit_root_mapping(&self, edit: impl FnOnce(&Mapping)) -> bool {
+        self.try_edit_root_mapping(|mapping| {
+            edit(mapping);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .is_some()
+    }
+
+    /// Like [`edit_root_mapping`](Self::edit_root_mapping), but `edit` can
+    /// fail. A root mapping created for it is only attached if it succeeds.
+    /// Returns `None` if the root is another node.
+    pub(crate) fn try_edit_root_mapping<T, E>(
+        &self,
+        edit: impl FnOnce(&Mapping) -> Result<T, E>,
+    ) -> Option<Result<T, E>> {
         if let Some(mapping) = self.as_mapping() {
-            edit(&mapping);
-            return true;
+            return Some(edit(&mapping));
         }
         if self.root_node().is_some() {
-            return false;
+            return None;
         }
         let mapping = Mapping::new();
-        edit(&mapping);
-        self.attach_root(mapping.0);
-        true
+        let result = edit(&mapping);
+        if result.is_ok() {
+            self.attach_root(mapping.0);
+        }
+        Some(result)
     }
 
     /// Set a key-value pair with field ordering support.

@@ -145,8 +145,9 @@ pub trait YamlPath {
     ///
     /// - [`PathError::Parse`] for a malformed path.
     /// - [`PathError::EmptyPath`] when the path is empty.
-    /// - [`PathError::NoRoot`] when the receiver has no root mapping to
-    ///   write into (Document with no root, or with a scalar/sequence root).
+    /// - [`PathError::NoRoot`] when the receiver's root is not a mapping
+    ///   (Document with a scalar or sequence root). A Document with no root
+    ///   gets a root mapping, as with [`Document::set`](crate::Document::set).
     /// - [`PathError::TypeMismatch`] when an intermediate segment lands on
     ///   a scalar that cannot be turned into a container.
     fn try_set_path(&self, path: &str, value: impl crate::AsYaml) -> Result<(), PathError> {
@@ -497,9 +498,8 @@ impl YamlPath for crate::yaml::Document {
 
         // Only a root mapping can hold new-key insertions; a scalar or
         // sequence root has no place to graft `foo.bar` under.
-        let mapping = self.as_mapping().ok_or(PathError::NoRoot)?;
-
-        set_path_on_mapping(&mapping, &segments, value, policy)
+        self.try_edit_root_mapping(|mapping| set_path_on_mapping(mapping, &segments, value, policy))
+            .ok_or(PathError::NoRoot)?
     }
 
     fn try_remove_path_with(

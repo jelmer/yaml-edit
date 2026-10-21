@@ -1163,6 +1163,42 @@ fn document_root_sequence_and_scalar() {
 }
 
 #[test]
+fn set_path_creates_root_mapping_in_empty_document() {
+    // Like Document::set, a write into a document without a root creates
+    // the root mapping.
+    for src in ["", "---\n", "---\n# just a comment\n"] {
+        let doc = Document::from_str(src).unwrap();
+        doc.try_set_path("a.b.c", 1).unwrap();
+        assert_edited(&doc, &format!("{src}a:\n  b:\n    c: 1\n"));
+    }
+
+    let doc = Document::new();
+    doc.try_set_path("a", 1).unwrap();
+    assert_edited(&doc, "---\na: 1\n");
+
+    let doc = Document::new();
+    doc.try_set_path("s[0]", "x").unwrap();
+    assert_edited(&doc, "---\ns:\n  - x\n");
+
+    let doc = Document::new();
+    #[allow(deprecated)]
+    doc.set_path("a.b", 1);
+    assert_edited(&doc, "---\na:\n  b: 1\n");
+}
+
+#[test]
+fn set_path_failure_leaves_empty_document_unchanged() {
+    let doc = Document::new();
+    assert!(matches!(
+        doc.try_set_path("a[0", 1),
+        Err(PathError::Parse(_))
+    ));
+    assert_eq!(doc.try_set_path("", 1), Err(PathError::EmptyPath));
+    assert_eq!(doc.to_string(), "---\n");
+    assert_cst_ok(&doc);
+}
+
+#[test]
 fn set_path_creates_sequences_and_mappings_in_sequences() {
     let refuse = AliasPolicy::Refuse;
     for (src, path, expected) in [

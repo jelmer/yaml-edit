@@ -104,15 +104,25 @@ impl YamlValue {
     /// Input without a document, such as an empty string, is null.
     ///
     /// Fails with [`YamlError::Parse`](crate::YamlError::Parse) if
-    /// `yaml_str` does not parse, and with
+    /// `yaml_str` does not parse, with
+    /// [`YamlError::InvalidOperation`](crate::YamlError::InvalidOperation)
+    /// if it holds more than one document, and with
     /// [`YamlError::Resolve`](crate::YamlError::Resolve) where
-    /// [`YamlValue::from_document`] fails.
+    /// [`YamlValue::from_document`] fails. Convert each document of a
+    /// multi-document stream with [`YamlValue::from_document`] instead.
     pub fn parse_raw(yaml_str: &str) -> crate::YamlResult<Self> {
         use std::str::FromStr;
 
-        // TODO: only the first document is converted; any later ones are
-        // ignored.
-        match crate::YamlFile::from_str(yaml_str)?.document() {
+        let file = crate::YamlFile::from_str(yaml_str)?;
+        let mut docs = file.documents();
+        let first = docs.next();
+        if docs.next().is_some() {
+            return Err(crate::YamlError::InvalidOperation {
+                operation: "YamlValue::parse_raw".to_string(),
+                reason: "Input contains multiple YAML documents. Use YamlFile::from_str() and convert each with YamlValue::from_document().".to_string(),
+            });
+        }
+        match first {
             Some(doc) => Ok(Self::from_document(&doc)?),
             None => Ok(YamlValue::Scalar(ScalarValue::null())),
         }

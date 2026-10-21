@@ -269,6 +269,39 @@ fn from_document_empty_is_null() {
     );
 }
 
+/// A YamlValue holds one document, so later documents would be lost.
+#[test]
+fn parse_raw_rejects_multiple_documents() {
+    for yaml in [
+        "a\n---\nb\n",
+        "---\na: 1\n---\nb: 2\n",
+        "a\n...\n---\n",
+        "a\n---\n",
+    ] {
+        assert!(
+            YamlFile::from_str(yaml).unwrap().documents().count() > 1,
+            "{yaml:?}"
+        );
+        match YamlValue::parse_raw(yaml) {
+            Err(yaml_edit::YamlError::InvalidOperation { operation, reason }) => {
+                assert_eq!(operation, "YamlValue::parse_raw");
+                assert_eq!(
+                    reason,
+                    "Input contains multiple YAML documents. Use YamlFile::from_str() and convert each with YamlValue::from_document()."
+                );
+            }
+            other => panic!("{yaml:?}: {other:?}"),
+        }
+    }
+    for yaml in ["---\na\n...\n", "a\n...\n", "%YAML 1.2\n---\na\n"] {
+        assert_eq!(
+            YamlValue::parse_raw(yaml).unwrap(),
+            YamlValue::from("a"),
+            "{yaml:?}"
+        );
+    }
+}
+
 #[test]
 fn from_document_keeps_tagged_alias() {
     let doc = Document::from_str("x: &x 1\na: !t *x\n").unwrap();

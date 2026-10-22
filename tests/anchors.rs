@@ -3118,3 +3118,43 @@ fn new_alias_rejects_whitespace() {
 fn new_alias_rejects_flow_indicator() {
     let _ = Alias::new("bad,name");
 }
+
+/// The alias at `index` of the root sequence of `doc`.
+fn alias_at(doc: &Document, index: usize) -> Alias {
+    doc.as_sequence()
+        .unwrap()
+        .get(index)
+        .unwrap()
+        .as_alias()
+        .unwrap()
+        .clone()
+}
+
+#[test]
+fn resolve_alias_sees_the_definition_before_it() {
+    let doc = Document::from_str("- &x 1\n- *x\n- &x 2\n- *x\n").unwrap();
+    let registry = AnchorRegistry::from_document(&doc);
+    let resolve = |i| registry.resolve_alias(&alias_at(&doc, i)).unwrap().to_i64();
+    assert_eq!(resolve(1), Some(1));
+    assert_eq!(resolve(3), Some(2));
+}
+
+#[test]
+fn resolve_alias_follows_anchored_aliases() {
+    let doc = Document::from_str("- &a [1]\n- &b *a\n- *b\n").unwrap();
+    let registry = AnchorRegistry::from_document(&doc);
+    let target = registry.resolve_alias(&alias_at(&doc, 2)).unwrap();
+    assert_eq!(target.to_string(), "[1]");
+}
+
+#[test]
+fn resolve_alias_undefined() {
+    let doc = Document::from_str("- *x\n- &x 1\n").unwrap();
+    let registry = AnchorRegistry::from_document(&doc);
+    assert_eq!(
+        registry.resolve_alias(&alias_at(&doc, 0)),
+        Err(ResolveError::UndefinedAlias {
+            alias: "x".to_string()
+        })
+    );
+}

@@ -343,7 +343,7 @@ impl AnchorRegistry {
     /// precedes it in the document, so a redefined anchor only affects the
     /// aliases that follow the redefinition. `alias` must belong to the same
     /// tree this registry was built from.
-    pub(crate) fn resolve_alias(&self, name: &str, alias: &SyntaxNode) -> Option<&SyntaxNode> {
+    pub(crate) fn resolve_alias_at(&self, name: &str, alias: &SyntaxNode) -> Option<&SyntaxNode> {
         let position = alias.text_range().start();
         self.anchors
             .get(name)?
@@ -354,7 +354,7 @@ impl AnchorRegistry {
     }
 
     /// Look up the node that `alias` refers to like
-    /// [`resolve_alias`](Self::resolve_alias), following anchors that are
+    /// [`resolve_alias_at`](Self::resolve_alias_at), following anchors that are
     /// on aliases themselves, as in `&b *a`, to the node they end at.
     pub(crate) fn resolve_alias_through(
         &self,
@@ -364,11 +364,11 @@ impl AnchorRegistry {
         let mut seen = Vec::new();
         loop {
             let name = alias.name();
-            let target =
-                self.resolve_alias(&name, alias.syntax())
-                    .ok_or_else(|| AliasError::Undefined {
-                        alias: name.clone(),
-                    })?;
+            let target = self
+                .resolve_alias_at(&name, alias.syntax())
+                .ok_or_else(|| AliasError::Undefined {
+                    alias: name.clone(),
+                })?;
             let content = if target.kind() == SyntaxKind::VALUE {
                 target.children().next()
             } else {
@@ -383,6 +383,43 @@ impl AnchorRegistry {
             seen.push(target.clone());
             alias = next;
         }
+    }
+
+    /// The node `alias` refers to: the last definition of its anchor before
+    /// the alias, following an anchored alias such as `&b *a` to the node it
+    /// ends at.
+    ///
+    /// Unlike [`resolve`](Self::resolve), which looks an anchor up by name
+    /// and returns its last definition anywhere, this sees an anchor
+    /// redefined later in the document only from the aliases after the
+    /// redefinition. `alias` must belong to the tree this registry was built
+    /// from.
+    ///
+    /// Fails if the anchor is not defined before the alias, or if a chain of
+    /// anchored aliases loops back on itself.
+    ///
+    /// ```
+    /// use std::str::FromStr;
+    /// use yaml_edit::{AnchorRegistry, Document};
+    ///
+    /// let doc = Document::from_str("- &x 1\n- *x\n- &x 2\n- *x\n").unwrap();
+    /// let registry = AnchorRegistry::from_document(&doc);
+    /// let seq = doc.as_sequence().unwrap();
+    /// let resolve = |i| {
+    ///     let alias = seq.get(i).unwrap().as_alias().unwrap().clone();
+    ///     registry.resolve_alias(&alias).unwrap().to_i64()
+    /// };
+    /// assert_eq!(resolve(1), Some(1));
+    /// assert_eq!(resolve(3), Some(2));
+    /// ```
+    pub fn resolve_alias(
+        &self,
+        alias: &crate::yaml::Alias,
+    ) -> Result<crate::as_yaml::YamlNode, ResolveError> {
+        Ok(resolve_alias_node(
+            crate::as_yaml::YamlNode::Alias(alias.clone()),
+            self,
+        )?)
     }
 
     /// Check if an anchor is defined

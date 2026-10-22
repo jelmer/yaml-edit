@@ -18,8 +18,9 @@ fn core_tag_type(tag: &str) -> Option<CoreScalarType> {
 fn core_tag_accepts(t: CoreScalarType, value: &str) -> bool {
     match (t, ScalarValue::classify_plain(value)) {
         (CoreScalarType::Null, _) if value.is_empty() => true,
-        // The core schema's float pattern also matches integers.
-        (CoreScalarType::Float, CoreScalarType::Integer) => true,
+        // The core schema's float pattern also matches decimal integers,
+        // but not hex or octal ones.
+        (CoreScalarType::Float, CoreScalarType::Integer) => ScalarValue::is_core_float(value),
         (t, c) => t == c,
     }
 }

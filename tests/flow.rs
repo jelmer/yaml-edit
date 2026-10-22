@@ -1147,6 +1147,26 @@ fn set_into_flow_mapping_inserts_inside_braces() {
     }
 }
 
+/// An entry of a flow mapping writes its new value in flow style even when
+/// the caller asks for block context, as block syntax cannot go there.
+#[test]
+fn entry_set_value_in_flow_mapping() {
+    for (value, expected) in [
+        (YamlValue::from(vec![1, 2]), "{a: [1, 2], b: 2}\n"),
+        (YamlValue::from("x\ny"), "{a: \"x\\ny\", b: 2}\n"),
+        (YamlValue::parse_raw("k: x").unwrap(), "{a: {k: x}, b: 2}\n"),
+    ] {
+        check_edit(
+            "{a: 1, b: 2}\n",
+            |d| {
+                let entry = d.as_mapping().unwrap().find_entry_by_key("a").unwrap();
+                entry.set_value(&value, false);
+            },
+            expected,
+        );
+    }
+}
+
 /// Quoted strings in flow sequences do not take the line break and
 /// indentation after them into their SCALAR node.
 #[test]

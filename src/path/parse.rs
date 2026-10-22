@@ -50,6 +50,7 @@ impl std::error::Error for PathParseError {}
 /// - Array indices with dots: `"items.0.name"` → `[Key("items"), Index(0), Key("name")]`
 /// - Escaped dots: `"key\\.with\\.dots"` → `[Key("key.with.dots")]`
 /// - Escaped digits are keys: `"items.\\0"` -> `[Key("items"), Key("0")]`
+/// - Digits with leading zeros are keys: `"zip.01"` -> `[Key("zip"), Key("01")]`
 ///
 /// An index is ASCII digits only, so `"items.+1"` is the key `"+1"` and
 /// `"items[+1]"` is an error. A `[...]` index may start the path and may
@@ -172,11 +173,16 @@ fn parse_index(text: &str) -> Option<usize> {
     text.parse().ok()
 }
 
-/// A dot-separated segment is an index when it is a bare number
-/// (`items.0`), and a key otherwise.
+/// A dot-separated segment is an index when it is a bare number written
+/// without leading zeros (`items.0`, `items.10`), and a key otherwise.
+///
+/// An index on a mapping looks up the number written out again, so a
+/// segment like `01` has to stay a key to reach the key spelled `01`.
 fn dotted_segment(text: &str, has_escape: bool) -> PathSegment {
     match parse_index(text) {
-        Some(index) if !has_escape => PathSegment::Index(index),
+        Some(index) if !has_escape && (text == "0" || !text.starts_with('0')) => {
+            PathSegment::Index(index)
+        }
         _ => PathSegment::Key(text.to_string()),
     }
 }

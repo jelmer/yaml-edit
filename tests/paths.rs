@@ -1591,3 +1591,29 @@ fn expand_keeps_aliases_in_the_copy_resolving() {
         "y: &y 1\na: &x\n  j: *y\nb:\n  j: *y\n  n: new\n"
     );
 }
+
+/// A number with leading zeros is a key as written, so `a.01` reaches the
+/// key `01` rather than the key `1`.
+#[test]
+fn leading_zero_segment_is_a_key() {
+    let doc = Document::from_str("a:\n  '01': x\n  1: y\n").unwrap();
+    assert_eq!(doc.try_get_path("a.01").unwrap().to_string(), "x");
+    assert_eq!(doc.try_get_path("a.1").unwrap().to_string(), "y");
+
+    doc.try_set_path("a.01", "v").unwrap();
+    assert_eq!(doc.to_string(), "a:\n  '01': v\n  1: y\n");
+
+    doc.try_remove_path("a.01").unwrap();
+    assert_eq!(doc.to_string(), "a:\n  1: y\n");
+
+    doc.try_set_path("b.007", "z").unwrap();
+    assert_eq!(doc.to_string(), "a:\n  1: y\nb:\n  '007': z\n");
+
+    assert_eq!(
+        yaml_edit::path::try_parse_path("a.01").unwrap(),
+        vec![
+            PathSegment::Key("a".to_string()),
+            PathSegment::Key("01".to_string())
+        ]
+    );
+}

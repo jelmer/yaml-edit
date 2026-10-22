@@ -1699,6 +1699,15 @@ fn is_yaml_special_except(ch: char, exclude: &str) -> bool {
     YAML_SPECIAL_CHARS.contains(ch) && !exclude.contains(ch)
 }
 
+/// Whether YAML allows `c` in a stream (c-printable). A BOM is not, except
+/// at the start of a document, where the lexer gives it a token of its own.
+pub(crate) fn is_printable(c: char) -> bool {
+    matches!(c,
+        '\t' | '\n' | '\r' | '\u{20}'..='\u{7e}' | '\u{85}' | '\u{a0}'..='\u{d7ff}'
+        | '\u{e000}'..='\u{fffd}' | '\u{10000}'..)
+        && c != '\u{feff}'
+}
+
 /// Check whether `name` is a well-formed anchor/alias name (`ns-anchor-name`).
 ///
 /// Per YAML 1.2 that is one or more `ns-anchor-char`s: printable characters

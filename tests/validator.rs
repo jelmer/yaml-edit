@@ -2130,3 +2130,51 @@ fn flags_undeclared_tag_handles() {
         );
     }
 }
+
+#[test]
+fn flags_non_printable_characters() {
+    // A YAML stream may hold only printable characters (c-printable); a
+    // control character has to be written as an escape in a double-quoted
+    // scalar, and a BOM may only start a document.
+    for (src, character, location) in [
+        ("a: b\u{0}c\n", "U+0000", "1:5"),
+        ("a: \"\u{1b}[31m\"\n", "U+001B", "1:5"),
+        ("# \u{0}\na: 1\n", "U+0000", "1:3"),
+        ("a: \u{fffe}\n", "U+FFFE", "1:4"),
+        ("a: b\u{feff}c\n", "U+FEFF", "1:5"),
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        let found: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .filter(|v| v.rule == Rule::InvalidCharacter)
+            .map(|v| (v.message, v.location.unwrap()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![(
+                format!("Non-printable character {character}"),
+                location.to_string()
+            )],
+            "{src:?}"
+        );
+    }
+}
+
+#[test]
+fn accepts_printable_characters() {
+    for src in [
+        "\u{feff}a: 1\n",
+        "a: \"\\x01\"\n",
+        "a: caf\u{e9} \u{1f600}\t# \u{a0}\r\n",
+        "a: \u{85}\n",
+    ] {
+        let file = YamlFile::from_str(src).unwrap();
+        let found: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .filter(|v| v.rule == Rule::InvalidCharacter)
+            .collect();
+        assert_eq!(found, vec![], "{src:?}");
+    }
+}

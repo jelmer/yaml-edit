@@ -115,6 +115,9 @@ pub enum Rule {
     InvalidAnchor,
     /// Invalid tag
     InvalidTag,
+    /// A character YAML does not allow in a stream, such as a control
+    /// character
+    InvalidCharacter,
     /// A construct that YAML 1.1 read differently from YAML 1.2
     LegacyYaml11,
     /// Other spec violations
@@ -183,6 +186,29 @@ impl Default for ValidatorConfig {
             check_tabs: true,
             check_document_markers: true,
             check_anchors: true,
+        }
+    }
+}
+
+/// Check for characters YAML does not allow, reporting the first in each
+/// token.
+fn check_printable(node: &SyntaxNode, violations: &mut Vec<Violation>) {
+    for token in node
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+        .filter(|token| token.kind() != crate::SyntaxKind::BOM)
+    {
+        let text = token.text();
+        if let Some((offset, c)) = text
+            .char_indices()
+            .find(|&(_, c)| !crate::lex::is_printable(c))
+        {
+            let start = token.text_range().start() + rowan::TextSize::new(offset as u32);
+            violations.push(Violation::error_at(
+                Rule::InvalidCharacter,
+                rowan::TextRange::at(start, rowan::TextSize::of(c)),
+                format!("Non-printable character U+{:04X}", c as u32),
+            ));
         }
     }
 }
@@ -377,6 +403,7 @@ impl Validator {
     ///
     /// The walk is iterative, so deep nesting cannot overflow the stack.
     fn validate_node(&self, node: &SyntaxNode, violations: &mut Vec<Violation>) {
+        check_printable(node, violations);
         let columns = ColumnIndex::new(node);
         let mut identities = SharedIdentities::default();
         let mut registry = DocumentRegistry::default();

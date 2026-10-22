@@ -71,7 +71,7 @@ impl Comment {
         if text.contains(['\n', '\r']) {
             return Err(CommentTextError::LineBreak);
         }
-        if let Some(c) = text.chars().find(|&c| !is_printable(c)) {
+        if let Some(c) = text.chars().find(|&c| !crate::lex::is_printable(c)) {
             return Err(CommentTextError::NonPrintable(c));
         }
         let parent = self
@@ -119,15 +119,6 @@ impl Comment {
     pub fn syntax(&self) -> &SyntaxToken {
         &self.0
     }
-}
-
-/// Whether YAML allows `c` in a comment (c-printable, without the BOM,
-/// which may only start a document).
-fn is_printable(c: char) -> bool {
-    matches!(c,
-        '\t' | '\n' | '\r' | '\u{20}'..='\u{7e}' | '\u{85}' | '\u{a0}'..='\u{d7ff}'
-        | '\u{e000}'..='\u{fffd}' | '\u{10000}'..)
-        && c != '\u{feff}'
 }
 
 /// Why [`Comment::set_text`] or [`Comment::set_content`] refused new text.

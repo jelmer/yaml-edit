@@ -204,7 +204,7 @@ fn resolved_tagged(
 ) -> Result<Option<YamlValue>, ResolveError> {
     check_single_node(tagged.syntax())?;
     let content = tagged.syntax().children().find_map(YamlNode::from_syntax);
-    let (Some(tag), Some(content)) = (tagged.tag(), content) else {
+    let (Some(tag), Some(content)) = (Tag::of(tagged), content) else {
         return Ok(crate::scalar::ScalarValue::from_tagged(tagged).map(YamlValue::Scalar));
     };
     match content {
@@ -213,10 +213,26 @@ fn resolved_tagged(
     }
 }
 
+/// A tag as written, which values keep, and as the `%TAG` directives where
+/// it was written resolve it, which decides what it means.
+struct Tag {
+    written: String,
+    resolved: String,
+}
+
+impl Tag {
+    fn of(tagged: &crate::yaml::TaggedNode) -> Option<Self> {
+        Some(Tag {
+            written: tagged.tag()?,
+            resolved: tagged.resolved_tag()?,
+        })
+    }
+}
+
 /// Resolve `alias`, which has tag `tag`, to the node it refers to under
 /// that tag.
 fn resolved_tagged_alias(
-    tag: &str,
+    tag: &Tag,
     alias: &crate::yaml::Alias,
     registry: Option<&AnchorRegistry>,
     expanding: &mut Vec<SyntaxNode>,
@@ -232,8 +248,9 @@ fn resolved_tagged_alias(
                     resolved_tagged_alias(tag, &inner, Some(registry), expanding)
                 }
                 Some(content) => resolved_with_tag(tag, content, Some(registry), expanding),
-                None => Ok(crate::scalar::ScalarValue::from_tagged(&tagged)
-                    .map(|s| YamlValue::Scalar(s.with_resolved_tag(tag.to_string())))),
+                None => Ok(crate::scalar::ScalarValue::from_tagged(&tagged).map(|s| {
+                    YamlValue::Scalar(s.with_tag_resolved_as(tag.written.clone(), &tag.resolved))
+                })),
             }
         }
         content => resolved_with_tag(tag, content, Some(registry), expanding),
@@ -245,12 +262,12 @@ fn resolved_tagged_alias(
 /// Resolve `content`, an untagged scalar, mapping or sequence, as if it
 /// had tag `tag`.
 fn resolved_with_tag(
-    tag: &str,
+    tag: &Tag,
     content: YamlNode,
     registry: Option<&AnchorRegistry>,
     expanding: &mut Vec<SyntaxNode>,
 ) -> Result<Option<YamlValue>, ResolveError> {
-    match (crate::tag::normalize(tag).as_ref(), content) {
+    match (tag.resolved.as_str(), content) {
         (crate::tag::SET, YamlNode::Mapping(mapping)) => {
             resolved_set(&mapping, registry, expanding).map(|set| Some(YamlValue::Set(set)))
         }
@@ -264,14 +281,15 @@ fn resolved_with_tag(
             tag, &seq, registry, expanding,
         )?))),
         (crate::tag::OMAP | crate::tag::PAIRS, content) => Err(ResolveError::InvalidPairsContent {
-            tag: tag.to_string(),
+            tag: tag.written.clone(),
             content: content.syntax().text().to_string(),
         }),
         (_, YamlNode::Scalar(scalar)) => Ok(Some(YamlValue::Scalar(
-            crate::scalar::ScalarValue::from_scalar(&scalar).with_resolved_tag(tag.to_string()),
+            crate::scalar::ScalarValue::from_scalar(&scalar)
+                .with_tag_resolved_as(tag.written.clone(), &tag.resolved),
         ))),
         (_, content) => Ok(resolved_value(content, registry, expanding)?
-            .map(|value| YamlValue::Tagged(tag.to_string(), Box::new(value)))),
+            .map(|value| YamlValue::Tagged(tag.written.clone(), Box::new(value)))),
     }
 }
 
@@ -318,7 +336,7 @@ fn resolved_set(
 /// Each item has to be a mapping, untagged or tagged `!!map`, with a single
 /// entry.
 fn resolved_pairs(
-    tag: &str,
+    tag: &Tag,
     seq: &crate::yaml::Sequence,
     registry: Option<&AnchorRegistry>,
     expanding: &mut Vec<SyntaxNode>,
@@ -326,9 +344,17 @@ fn resolved_pairs(
     let mut pairs = Vec::new();
     let mut seen = SeenKeys::default();
     for item in seq.values() {
+        // A value keeps its tag as written, so a `!!map` item is told by
+        // what the tag on its node resolves to.
+        let item_is_map = matches!(
+            &item,
+            YamlNode::TaggedNode(t) if t.resolved_tag().as_deref() == Some(crate::tag::MAP)
+        );
         let entries = match resolved_value(item.clone(), registry, expanding)? {
             Some(YamlValue::Mapping(entries)) => Some(entries),
-            Some(YamlValue::Tagged(t, inner)) if crate::tag::normalize(&t) == crate::tag::MAP => {
+            Some(YamlValue::Tagged(t, inner))
+                if item_is_map || crate::tag::normalize(&t) == crate::tag::MAP =>
+            {
                 match *inner {
                     YamlValue::Mapping(entries) => Some(entries),
                     _ => None,
@@ -338,11 +364,11 @@ fn resolved_pairs(
         }
         .filter(|entries| entries.len() == 1)
         .ok_or_else(|| ResolveError::InvalidPairsItem {
-            tag: tag.to_string(),
+            tag: tag.written.clone(),
             item: item.to_string(),
         })?;
-        if crate::tag::normalize(tag) == crate::tag::OMAP {
-            let key = pair_key(tag, &item, registry)?;
+        if tag.resolved == crate::tag::OMAP {
+            let key = pair_key(&tag.written, &item, registry)?;
             seen.record(key_identity(&key, registry)?, key)?;
         }
         pairs.extend(entries);

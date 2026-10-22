@@ -485,7 +485,7 @@ impl SchemaValidator {
                 // A core schema tag names the type even where the content is
                 // not a valid spelling of it.
                 let value = match tagged_node
-                    .tag()
+                    .resolved_tag()
                     .as_deref()
                     .and_then(ScalarValue::core_tag_scalar_type)
                 {

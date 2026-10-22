@@ -173,7 +173,7 @@ pub(super) fn check_collection_tag_content(node: &SyntaxNode, violations: &mut V
     {
         return;
     }
-    let message = match tagged.normalized_tag().as_deref() {
+    let message = match tagged.resolved_tag().as_deref() {
         Some(tag::SET) if tagged.as_set().is_none() => "!!set content is not a mapping",
         Some(tag::OMAP) if tagged.as_sequence().is_none() => "!!omap content is not a sequence",
         Some(tag::PAIRS) if tagged.as_sequence().is_none() => "!!pairs content is not a sequence",

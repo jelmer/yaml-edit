@@ -229,12 +229,13 @@ impl ScalarValue {
     /// The core schema tags `!!int`, `!!float`, `!!bool` and `!!null` set
     /// the type when the content is a valid spelling of it, and
     /// `!!timestamp`, `!!regex` and `!!binary` set theirs; any other tag, or
-    /// content a core schema tag cannot resolve, gives a string.
+    /// content a core schema tag cannot resolve, gives a string. The tag
+    /// is resolved through the `%TAG` directives of the node's document.
     pub(crate) fn from_tagged(tagged: &crate::yaml::TaggedNode) -> Option<Self> {
         let scalar = Self::from_scalar(&tagged.value()?);
-        Some(match tagged.tag() {
-            Some(tag) => scalar.with_resolved_tag(tag),
-            None => Self {
+        Some(match (tagged.tag(), tagged.resolved_tag()) {
+            (Some(tag), Some(resolved)) => scalar.with_tag_resolved_as(tag, &resolved),
+            _ => Self {
                 scalar_type: ScalarType::String,
                 ..scalar
             },
@@ -245,10 +246,17 @@ impl ScalarValue {
     /// names when the content is a valid spelling of it and a string
     /// otherwise.
     pub(crate) fn with_resolved_tag(self, tag: String) -> Self {
-        let scalar_type = match core_tag_type(&tag) {
+        let resolved = crate::tag::normalize(&tag).into_owned();
+        self.with_tag_resolved_as(tag, &resolved)
+    }
+
+    /// Attach `tag`, typing the scalar by `resolved`, what `tag` resolves to
+    /// through the `%TAG` directives where it was written.
+    pub(crate) fn with_tag_resolved_as(self, tag: String, resolved: &str) -> Self {
+        let scalar_type = match core_tag_type(resolved) {
             Some(t) if core_tag_accepts(t, &self.value) => t.into(),
             Some(_) => ScalarType::String,
-            None => match crate::tag::normalize(&tag).as_ref() {
+            None => match resolved {
                 crate::tag::TIMESTAMP => ScalarType::Timestamp,
                 crate::tag::REGEX => ScalarType::Regex,
                 #[cfg(feature = "base64")]

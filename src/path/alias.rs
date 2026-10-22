@@ -53,24 +53,42 @@ pub(super) fn resolve_alias(
         });
     }
     let registry = registry_for(alias.syntax());
-    crate::anchor_resolution::resolve_alias_with(alias, &registry, |target| {
-        if policy == AliasPolicy::Expand {
-            expanded_copy(target)
-        } else {
-            target.clone()
-        }
-    })
-    .map_err(|e| undefined_alias(e, segment))
+    if policy != AliasPolicy::Expand {
+        return crate::anchor_resolution::resolve_alias_with(alias, &registry, |t| t.clone())
+            .map_err(|e| undefined_alias(e, segment));
+    }
+    let undefined = || crate::anchor_resolution::AliasError::Undefined {
+        alias: alias.name(),
+    };
+    registry
+        .resolve_alias_through(alias)
+        .and_then(|target| expanded_copy(target, alias.syntax(), &registry, &mut Vec::new()))
+        .and_then(|copy| crate::as_yaml::YamlNode::from_syntax_peeled(copy).ok_or_else(undefined))
+        .map_err(|e| undefined_alias(e, segment))
 }
 
-/// Build a detached copy of an anchored node to substitute for an alias.
+/// Build a detached copy of an anchored node to substitute for the alias
+/// `outer`.
 ///
 /// The copy is dedented to column 0, as a detached root has no context to
 /// measure its indentation from. It carries no anchors: the `&anchor` beside
 /// the original stays behind in its parent VALUE, and anchors nested inside
 /// are dropped so that later aliases keep referring to the original nodes.
-fn expanded_copy(target: &crate::yaml::SyntaxNode) -> crate::yaml::SyntaxNode {
+///
+/// An alias inside the copy that would refer to another node in the place
+/// of `outer`, because the anchor it referred to was dropped from the copy
+/// or is defined again before `outer`, is replaced with a copy of the node
+/// it referred to, made the same way. `open` holds the nodes being copied,
+/// to stop at an alias that refers to a node containing it.
+fn expanded_copy(
+    target: &crate::yaml::SyntaxNode,
+    outer: &crate::yaml::SyntaxNode,
+    registry: &crate::anchor_resolution::AnchorRegistry,
+    open: &mut Vec<crate::yaml::SyntaxNode>,
+) -> Result<crate::yaml::SyntaxNode, crate::anchor_resolution::AliasError> {
+    use crate::anchor_resolution::AliasError;
     use crate::lex::SyntaxKind;
+    use rowan::ast::AstNode;
 
     let mut builder = rowan::GreenNodeBuilder::new();
     builder.start_node(target.kind().into());
@@ -87,7 +105,47 @@ fn expanded_copy(target: &crate::yaml::SyntaxNode) -> crate::yaml::SyntaxNode {
     for anchor in anchors {
         crate::nodes::detach_anchor(&anchor);
     }
-    copy
+
+    let aliases = |node: &crate::yaml::SyntaxNode| -> Vec<crate::yaml::SyntaxNode> {
+        node.descendants()
+            .filter(|n| n.kind() == SyntaxKind::ALIAS)
+            .collect()
+    };
+    let (originals, copies) = (aliases(target), aliases(&copy));
+    assert_eq!(
+        originals.len(),
+        copies.len(),
+        "a copy has the aliases of its original"
+    );
+    open.push(target.clone());
+    for (original, copied) in originals.into_iter().zip(copies) {
+        let original = crate::yaml::Alias::cast(original).expect("an ALIAS node is an alias");
+        let name = original.name();
+        let Some(referred) = registry.resolve_alias_at(&name, original.syntax()) else {
+            // Already undefined where it was.
+            continue;
+        };
+        if registry.resolve_alias_at(&name, outer) == Some(referred) {
+            continue;
+        }
+        let node = registry.resolve_alias_through(&original)?;
+        let node = match node.kind() {
+            SyntaxKind::VALUE => node
+                .children()
+                .next()
+                .ok_or_else(|| AliasError::Undefined {
+                    alias: name.clone(),
+                })?,
+            _ => node.clone(),
+        };
+        if open.contains(&node) {
+            return Err(AliasError::Recursive { alias: name });
+        }
+        let replacement = expanded_copy(&node, outer, registry, open)?;
+        crate::nodes::replace_alias_with_copy(&copied, &replacement);
+    }
+    open.pop();
+    Ok(copy)
 }
 
 #[cfg(test)]

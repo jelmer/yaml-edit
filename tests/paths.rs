@@ -1544,3 +1544,50 @@ fn remove_path_missing() {
     assert_cst_ok(&doc);
     assert_eq!(doc.to_string(), "name: Alice\n");
 }
+
+/// Aliases inside a copy made by [`AliasPolicy::Expand`] keep referring to
+/// the nodes they did, although the anchors inside the copy are dropped and
+/// the copy sits after other definitions of their anchors.
+#[test]
+fn expand_keeps_aliases_in_the_copy_resolving() {
+    let doc = Document::from_str("a: &x\n  k: &y {v: 1}\n  j: *y\nc: &y {v: 5}\nb: *x\n").unwrap();
+    assert_eq!(doc.try_get_path("b.j.v").unwrap().to_string(), "1");
+    doc.try_set_path_with("b.n", "new", AliasPolicy::Expand)
+        .unwrap();
+    assert_cst_ok(&doc);
+    assert_eq!(doc.try_get_path("b.j.v").unwrap().to_string(), "1");
+    assert_eq!(doc.try_get_path("a.j.v").unwrap().to_string(), "1");
+    let reparsed = Document::from_str(&doc.to_string()).unwrap();
+    assert_eq!(reparsed.try_get_path("b.j.v").unwrap().to_string(), "1");
+    assert_eq!(reparsed.try_get_path("b.n").unwrap().to_string(), "new");
+
+    // An anchor from outside the copy, defined again before the copy.
+    let doc = Document::from_str("y0: &y 1\na: &x\n  j: *y\nc: &y 2\nb: *x\n").unwrap();
+    doc.try_set_path_with("b.n", "new", AliasPolicy::Expand)
+        .unwrap();
+    assert_eq!(
+        doc.to_string(),
+        "y0: &y 1\na: &x\n  j: *y\nc: &y 2\nb:\n  j: 1\n  n: new\n"
+    );
+
+    // A tagged alias keeps its tag on the copy.
+    let doc =
+        Document::from_str("a: &x\n  k: &y\n    v: 1\n  j: !t *y\n  l: [*y]\nc: &y 5\nb: *x\n")
+            .unwrap();
+    doc.try_set_path_with("b.n", "new", AliasPolicy::Expand)
+        .unwrap();
+    assert_cst_ok(&doc);
+    assert_eq!(
+        doc.to_string(),
+        "a: &x\n  k: &y\n    v: 1\n  j: !t *y\n  l: [*y]\nc: &y 5\nb:\n  k:\n    v: 1\n  j: !t\n    v: 1\n  l: [{v: 1}]\n  n: new\n"
+    );
+
+    // Aliases that still resolve to the same node stay aliases.
+    let doc = Document::from_str("y: &y 1\na: &x\n  j: *y\nb: *x\n").unwrap();
+    doc.try_set_path_with("b.n", "new", AliasPolicy::Expand)
+        .unwrap();
+    assert_eq!(
+        doc.to_string(),
+        "y: &y 1\na: &x\n  j: *y\nb:\n  j: *y\n  n: new\n"
+    );
+}

@@ -463,10 +463,18 @@ impl DocumentResolvedExt for crate::yaml::Document {
     }
 }
 
-/// Whether `key` is the merge key. Only a plain `<<` is one; a quoted
-/// `'<<'` is an ordinary string.
+/// Whether `key` is the merge key: a plain `<<`, or `<<` with the merge tag
+/// written out, as in `!!merge <<`. A quoted `'<<'` is an ordinary string.
 pub(crate) fn is_merge_key(key: &crate::as_yaml::YamlNode) -> bool {
-    key.as_scalar().is_some_and(|s| s.value() == "<<")
+    use crate::as_yaml::YamlNode;
+    match key {
+        YamlNode::Scalar(s) => s.value() == "<<",
+        YamlNode::TaggedNode(t) => {
+            t.tag().as_deref().and_then(crate::tag::yaml_org_name) == Some("merge")
+                && t.value().is_some_and(|s| s.value() == "<<")
+        }
+        _ => false,
+    }
 }
 
 /// A view over a [`Mapping`](crate::yaml::Mapping) that transparently expands

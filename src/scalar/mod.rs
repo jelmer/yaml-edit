@@ -104,6 +104,12 @@ pub struct ScalarValue {
     tag: Option<String>,
 }
 
+/// `s` without leading and trailing YAML white space, which is only spaces
+/// and tabs: other Unicode white space, such as a no-break space, is content.
+pub(crate) fn trim_white(s: &str) -> &str {
+    s.trim_matches([' ', '\t'])
+}
+
 impl ScalarValue {
     /// Create a scalar value explicitly treating it as a string (no type auto-detection)
     ///
@@ -256,7 +262,7 @@ impl ScalarValue {
     /// `0o755` is octal.
     pub fn to_i64(&self) -> Option<i64> {
         if self.scalar_type == ScalarType::Integer {
-            Self::parse_integer(self.value.trim())
+            Self::parse_integer(trim_white(&self.value))
         } else {
             None
         }
@@ -273,7 +279,7 @@ impl ScalarValue {
     /// Returns `None` if the scalar type is not `Float`.
     pub fn to_f64(&self) -> Option<f64> {
         if self.scalar_type == ScalarType::Float {
-            Self::parse_float(self.value.trim())
+            Self::parse_float(trim_white(&self.value))
         } else {
             None
         }
@@ -286,7 +292,7 @@ impl ScalarValue {
     /// `TRUE`, `false`, `False` and `FALSE`.
     pub fn to_bool(&self) -> Option<bool> {
         if self.scalar_type == ScalarType::Boolean {
-            Self::parse_bool(self.value.trim())
+            Self::parse_bool(trim_white(&self.value))
         } else {
             None
         }
@@ -362,8 +368,10 @@ impl ScalarValue {
                 scalar_type: ScalarType::String,
                 tag: None,
             }),
-            ScalarType::Integer => Self::parse_integer(self.value.trim()).map(ScalarValue::from),
-            ScalarType::Float => Self::parse_float(self.value.trim()).map(ScalarValue::from),
+            ScalarType::Integer => {
+                Self::parse_integer(trim_white(&self.value)).map(ScalarValue::from)
+            }
+            ScalarType::Float => Self::parse_float(trim_white(&self.value)).map(ScalarValue::from),
             ScalarType::Boolean => match self.value.to_lowercase().as_str() {
                 "true" | "yes" | "on" | "1" => Some(ScalarValue::from(true)),
                 "false" | "no" | "off" | "0" => Some(ScalarValue::from(false)),
@@ -476,13 +484,13 @@ impl ScalarValue {
         // classifier, which stays correct even when the plain-scalar
         // text spans multiple lexer tokens (e.g. multi-line plain
         // scalars, which yield STRING + NEWLINE + INDENT + STRING).
-        // `trim_end` because the lexer may absorb trailing whitespace
-        // into the scalar text; leading whitespace can't appear because
+        // Trailing white space is trimmed because the lexer may absorb it
+        // into the scalar text; leading white space can't appear because
         // it would have been emitted as INDENT.
         let scalar_type = if style != ScalarStyle::Plain {
             ScalarType::String
         } else {
-            Self::classify_plain(raw_text.trim_end()).into()
+            Self::classify_plain(raw_text.trim_end_matches([' ', '\t'])).into()
         };
 
         Self {

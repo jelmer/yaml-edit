@@ -1532,6 +1532,31 @@ fn plain_scalar_folding_with_crlf() {
     assert_eq!(string("q"), "x y");
 }
 
+/// Only spaces and tabs are white space in YAML; other Unicode white space,
+/// such as a no-break space, is content.
+#[test]
+fn unicode_white_space_is_content() {
+    let doc = Document::from_str("a: 1\u{a0}\nb: true\u{3000}\nc: 1 \n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let value =
+        |key: &str| ScalarValue::from_scalar(mapping.get(key).unwrap().as_scalar().unwrap());
+    assert_eq!(value("a").scalar_type(), ScalarType::String);
+    assert_eq!(mapping.get("a").unwrap().to_i64(), None);
+    assert_eq!(value("b").scalar_type(), ScalarType::String);
+    assert_eq!(mapping.get("b").unwrap().to_bool(), None);
+    assert_eq!(value("c").scalar_type(), ScalarType::Integer);
+    assert_eq!(mapping.get("c").unwrap().to_i64(), Some(1));
+}
+
+#[test]
+fn plain_scalar_folding_keeps_unicode_white_space() {
+    let doc = Document::from_str("k: foo\u{3000}\n  bar\nj: foo\n  \u{a0}bar\n").unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let string = |key: &str| mapping.get(key).unwrap().as_scalar().unwrap().as_string();
+    assert_eq!(string("k"), "foo\u{3000} bar");
+    assert_eq!(string("j"), "foo \u{a0}bar");
+}
+
 /// `unquoted_value` strips the quotes but leaves escapes as written.
 #[test]
 fn unquoted_value_keeps_escapes() {

@@ -166,7 +166,7 @@ impl Scalar {
                 let mut result = String::new();
                 let mut pending_breaks = 0usize;
                 for line in normalize_line_breaks(&text).lines() {
-                    let trimmed = line.trim();
+                    let trimmed = crate::scalar::trim_white(line);
                     if trimmed.is_empty() {
                         // Only counts once content has started; leading blank
                         // lines are stripped along with the indentation.

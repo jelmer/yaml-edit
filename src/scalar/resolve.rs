@@ -217,6 +217,12 @@ impl ScalarValue {
         }
     }
 
+    /// The type a core schema tag such as `!!int` names, whatever the
+    /// content it is on.
+    pub(crate) fn core_tag_scalar_type(tag: &str) -> Option<ScalarType> {
+        core_tag_type(tag).map(Into::into)
+    }
+
     /// Create a ScalarValue from a tagged scalar node, keeping its tag and
     /// style.
     ///

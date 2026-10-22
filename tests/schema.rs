@@ -1094,6 +1094,30 @@ fn failsafe_strict_rejects_tagged_integer() {
     );
 }
 
+/// An explicit core tag gives the scalar its type even where the content
+/// is not a valid spelling of it.
+#[test]
+fn failsafe_strict_rejects_tagged_scalar_with_other_content() {
+    for (src, scalar_type) in [
+        ("k: !!int abc\n", ScalarType::Integer),
+        ("k: !!float abc\n", ScalarType::Float),
+        ("k: !!bool maybe\n", ScalarType::Boolean),
+        ("k: !!null x\n", ScalarType::Null),
+    ] {
+        let document = create_test_document(src);
+        assert_eq!(
+            SchemaValidator::failsafe().strict().validate(&document),
+            Err(vec![ValidationError::type_not_allowed(
+                "root.k",
+                "failsafe",
+                scalar_type,
+                vec![ScalarType::String],
+            )]),
+            "{src:?}"
+        );
+    }
+}
+
 #[test]
 fn tagged_collection_contents_are_validated() {
     let validator = SchemaValidator::failsafe().strict();

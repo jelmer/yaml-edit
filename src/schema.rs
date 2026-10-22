@@ -482,6 +482,16 @@ impl SchemaValidator {
             {
                 self.check_node(&content, path, coerce_only, errors);
             } else if let Some(value) = ScalarValue::from_tagged(&tagged_node) {
+                // A core schema tag names the type even where the content is
+                // not a valid spelling of it.
+                let value = match tagged_node
+                    .tag()
+                    .as_deref()
+                    .and_then(ScalarValue::core_tag_scalar_type)
+                {
+                    Some(scalar_type) => value.with_type(scalar_type),
+                    None => value,
+                };
                 self.check_scalar(&value, true, path, coerce_only, errors);
             }
         } else if let Some(sequence) = extract::<Sequence>(node) {

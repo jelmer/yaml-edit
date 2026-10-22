@@ -382,9 +382,11 @@ impl Mapping {
     pub fn is_flow_style(&self) -> bool {
         // Flow-style mappings start with LEFT_BRACE token. A block
         // placeholder is `{}` in the text but is destined to become block, so
-        // it does not count as flow.
-        (starts_a_flow_collection(&self.0) && !empty_collection::is_block_placeholder(&self.0))
-            || is_flow_pair(&self.0)
+        // it does not count as flow, unless a flow collection around it
+        // keeps it flow.
+        let becomes_block = empty_collection::is_block_placeholder(&self.0)
+            && !crate::nodes::sequence::must_render_flow(&self.0);
+        (starts_a_flow_collection(&self.0) && !becomes_block) || is_flow_pair(&self.0)
     }
 
     /// Find the [`MappingEntry`] whose key matches `key`, or `None` if not found.

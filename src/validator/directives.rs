@@ -1,6 +1,7 @@
 //! Checks on directives and the documents they introduce.
 
 use super::{directive_groups, find_root, Rule, Violation};
+use crate::nodes::SyntaxToken;
 use crate::nodes::{has_child_token, is_block_scalar, is_quoted_scalar};
 use crate::yaml::SyntaxNode;
 
@@ -29,8 +30,39 @@ fn has_content(node: &SyntaxNode) -> bool {
     })
 }
 
-/// Check that a `%TAG` shorthand is only used in the document that
-/// declares it.
+/// The named handle of a tag such as `!e!x`, or `None` for `!x`, `!!x`
+/// and verbatim tags, which need no `%TAG` directive.
+fn named_handle(tag: &str) -> Option<&str> {
+    let rest = tag.strip_prefix('!')?;
+    if rest.starts_with('<') {
+        return None;
+    }
+    let end = rest.find('!').filter(|&i| i > 0)?;
+    Some(&tag[..end + 2])
+}
+
+/// The tags in `document` that use a named handle, with that handle.
+fn named_tags(document: &SyntaxNode) -> impl Iterator<Item = (SyntaxToken, String)> {
+    document
+        .descendants_with_tokens()
+        .filter_map(|c| c.into_token())
+        .filter(|t| t.kind() == crate::SyntaxKind::TAG)
+        .filter_map(|tag| {
+            let handle = named_handle(tag.text())?.to_string();
+            Some((tag, handle))
+        })
+}
+
+fn undeclared_handle(tag: &SyntaxToken, handle: &str) -> Violation {
+    Violation::error_at(
+        Rule::Other,
+        tag.text_range(),
+        format!("Tag handle {handle} is not declared by a %TAG directive"),
+    )
+}
+
+/// Check that each named tag handle (`!e!`) used in a document is declared
+/// by a `%TAG` directive of that document.
 ///
 /// A directive applies to the document it introduces, not to the whole
 /// stream, so `!prefix!` declared before the first `---` is undefined in
@@ -43,37 +75,39 @@ pub(super) fn check_tag_shorthand_scope(node: &SyntaxNode, violations: &mut Vec<
     for (directives, document) in directive_groups(&find_root(node)) {
         let own: Vec<String> = directives.iter().filter_map(tag_handle).collect();
         if let Some(document) = document {
-            for tag in document
-                .descendants_with_tokens()
-                .filter_map(|c| c.into_token())
-                .filter(|t| t.kind() == crate::SyntaxKind::TAG)
-            {
-                // Only a named handle (`!prefix!A`) can be undefined;
-                // `!` and `!!` fall back to their defaults.
-                let text = tag.text();
-                let Some(named) = text
-                    .strip_prefix('!')
-                    .and_then(|rest| rest.find('!'))
-                    .filter(|&i| i > 0)
-                    .map(|i| &text[..i + 2])
-                else {
+            for (tag, handle) in named_tags(&document) {
+                if own.contains(&handle) {
                     continue;
-                };
-                if let Some(handle) = declared_earlier
-                    .iter()
-                    .find(|h| h.as_str() == named && !own.contains(h))
-                {
-                    violations.push(Violation::error_at(
+                }
+                violations.push(if declared_earlier.contains(&handle) {
+                    Violation::error_at(
                         Rule::Other,
                         tag.text_range(),
                         format!(
                             "Tag shorthand {handle} is only defined in the document that declares it"
                         ),
-                    ));
-                }
+                    )
+                } else {
+                    undeclared_handle(&tag, &handle)
+                });
             }
         }
         declared_earlier.extend(own);
+    }
+}
+
+/// Check that each named tag handle used in `document` is declared by one
+/// of `directives`, those that introduce it.
+pub(super) fn check_tag_handles_declared(
+    directives: &[SyntaxNode],
+    document: &SyntaxNode,
+    violations: &mut Vec<Violation>,
+) {
+    let own: Vec<String> = directives.iter().filter_map(tag_handle).collect();
+    for (tag, handle) in named_tags(document) {
+        if !own.contains(&handle) {
+            violations.push(undeclared_handle(&tag, &handle));
+        }
     }
 }
 

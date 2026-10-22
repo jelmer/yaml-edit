@@ -1203,15 +1203,20 @@ impl<'a, 'c> LexState<'a, 'c> {
             // `r % {` is the single scalar `r % {`.
             self.push_plain_scalar(start_idx, start_idx + 1, true);
         } else {
-            // At the start of a line in block context, % starts a directive
-            let mut end_idx = start_idx + 1;
-            while let Some((idx, ch)) = self.chars.peek() {
-                if *ch == '\n' || *ch == '\r' {
-                    break;
-                }
-                end_idx = *idx + ch.len_utf8();
-                self.chars.next();
-            }
+            // At the start of a line in block context, % starts a directive,
+            // which runs to the end of the line or to a comment: a `#` after
+            // white space. The white space and comment are lexed as usual.
+            let line_end = self.input[start_idx..]
+                .find(['\n', '\r'])
+                .map_or(self.input.len(), |i| start_idx + i);
+            let end_idx = self.input[start_idx..line_end]
+                .match_indices('#')
+                .map(|(i, _)| start_idx + i)
+                .find(|&i| is_hash_a_comment_start(self.input, i))
+                .map_or(line_end, |i| {
+                    start_idx + self.input[start_idx..i].trim_end_matches([' ', '\t']).len()
+                });
+            while self.chars.next_if(|(idx, _)| *idx < end_idx).is_some() {}
             self.push(DIRECTIVE, start_idx, end_idx);
         }
     }

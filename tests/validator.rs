@@ -2088,3 +2088,45 @@ fn merge_key_operands() {
         );
     }
 }
+
+#[test]
+fn flags_undeclared_tag_handles() {
+    // A named handle has to be declared by a `%TAG` directive of its own
+    // document; only `!` and `!!` are predefined.
+    for (yaml, handle) in [
+        ("a: !e!x 1\n", "!e!"),
+        ("--- !e!x\na: 1\n", "!e!"),
+        ("%TAG !e! tag:x,2000:\n---\na: !f!x 1\n", "!f!"),
+    ] {
+        let expected = format!("Tag handle {handle} is not declared by a %TAG directive");
+        let file = YamlFile::from_str(yaml).unwrap();
+        let found: Vec<_> = Validator::new()
+            .validate_syntax(file.syntax())
+            .into_iter()
+            .map(|v| v.message)
+            .collect();
+        assert_eq!(found, vec![expected.clone()], "{yaml:?}");
+        let found: Vec<_> = Validator::new()
+            .validate(&file.document().unwrap())
+            .into_iter()
+            .map(|v| v.message)
+            .collect();
+        assert_eq!(found, vec![expected], "{yaml:?}");
+    }
+    for yaml in [
+        "%TAG !e! tag:x,2000:\n---\na: !e!x 1\n",
+        "a: !x 1\nb: !!str 2\nc: !<tag:x,2000:y> 3\nd: !<!x> 4\n",
+    ] {
+        let file = YamlFile::from_str(yaml).unwrap();
+        assert_eq!(
+            Validator::new().validate_syntax(file.syntax()),
+            vec![],
+            "{yaml:?}"
+        );
+        assert_eq!(
+            Validator::new().validate(&file.document().unwrap()),
+            vec![],
+            "{yaml:?}"
+        );
+    }
+}

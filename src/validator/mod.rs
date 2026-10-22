@@ -39,7 +39,7 @@ use std::fmt;
 
 use directives::{
     check_directive_after_document, check_directive_in_content, check_directives,
-    check_tag_shorthand_scope,
+    check_tag_handles_declared, check_tag_shorthand_scope,
 };
 use documents::{
     check_doc_start_token_content, check_document_level_anchors, check_document_marker_placement,
@@ -336,6 +336,7 @@ impl Validator {
             .collect();
         directives.reverse();
         check_directives(&directives, Some(&doc), &mut violations);
+        check_tag_handles_declared(&directives, &doc, &mut violations);
 
         // Walk the syntax tree and check for violations
         // This will catch ERROR nodes created by parser (including content after doc end)

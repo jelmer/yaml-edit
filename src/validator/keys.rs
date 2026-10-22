@@ -129,7 +129,7 @@ pub(super) fn check_pairs_items(node: &SyntaxNode, violations: &mut Vec<Violatio
         return;
     };
     if !matches!(
-        tagged.normalized_tag().as_deref(),
+        tagged.resolved_tag().as_deref(),
         Some(tag::OMAP | tag::PAIRS)
     ) {
         return;
@@ -176,7 +176,7 @@ pub(super) fn check_omap_keys(
     let Some(tagged) = crate::yaml::TaggedNode::cast(node.clone()) else {
         return;
     };
-    if tagged.normalized_tag().as_deref() != Some(tag::OMAP) {
+    if tagged.resolved_tag().as_deref() != Some(tag::OMAP) {
         return;
     }
     let Some(sequence) = tagged.as_sequence() else {
@@ -215,7 +215,7 @@ fn pairs_item_mapping(item: &crate::as_yaml::YamlNode) -> Option<crate::yaml::Ma
 
     match item {
         YamlNode::Mapping(mapping) => Some(mapping.clone()),
-        YamlNode::TaggedNode(tagged) if tagged.normalized_tag().as_deref() == Some(tag::MAP) => {
+        YamlNode::TaggedNode(tagged) if tagged.resolved_tag().as_deref() == Some(tag::MAP) => {
             tagged.as_mapping()
         }
         _ => None,

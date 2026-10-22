@@ -23,10 +23,16 @@ impl TaggedNode {
         None
     }
 
-    /// The tag, in its `!!` shorthand if it is in the `tag:yaml.org,2002:`
-    /// namespace.
-    pub(crate) fn normalized_tag(&self) -> Option<String> {
-        self.tag().map(|t| crate::tag::normalize(&t).into_owned())
+    /// The tag as the `%TAG` directives of its document resolve it: in the
+    /// `!!` shorthand for a tag in the `tag:yaml.org,2002:` namespace however
+    /// it is written, verbatim (`!<uri>`) for another tag a declared handle
+    /// expands, and as written otherwise.
+    ///
+    /// With `%TAG !y! tag:yaml.org,2002:` in effect, `!y!int` resolves to
+    /// `!!int`; [`tag`](Self::tag) still gives `!y!int`.
+    pub fn resolved_tag(&self) -> Option<String> {
+        let tag = self.tag()?;
+        Some(crate::tag::resolve(&tag, &crate::tag::declared_handles(&self.0)).into_owned())
     }
 
     /// Get the value part of this tagged scalar (without the tag)
@@ -72,7 +78,7 @@ impl TaggedNode {
     /// Returns the entries of the inner sequence as `MappingEntry` values, each
     /// holding a single key-value pair with full CST fidelity.
     pub fn as_ordered_mapping(&self) -> Option<Vec<MappingEntry>> {
-        if self.normalized_tag().as_deref() != Some(crate::tag::OMAP) {
+        if self.resolved_tag().as_deref() != Some(crate::tag::OMAP) {
             return None;
         }
         self.extract_mapping_entries()
@@ -84,7 +90,7 @@ impl TaggedNode {
     /// Returns the entries of the inner sequence as `MappingEntry` values.
     /// Unlike `!!omap`, duplicate keys are allowed.
     pub fn as_pairs(&self) -> Option<Vec<MappingEntry>> {
-        if self.normalized_tag().as_deref() != Some(crate::tag::PAIRS) {
+        if self.resolved_tag().as_deref() != Some(crate::tag::PAIRS) {
             return None;
         }
         self.extract_mapping_entries()

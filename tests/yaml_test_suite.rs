@@ -348,9 +348,6 @@ const KNOWN_VALUE_FAILURES: &[(&str, &str)] = &[("3GZX", "redefined anchor")];
 /// Converts parsed documents to the JSON that `in.json` holds.
 struct JsonConverter {
     anchors: AnchorRegistry,
-    /// Whether `!!` still means the core schema tags, i.e. no `%TAG !!`
-    /// directive redefines it.
-    core_tags: bool,
 }
 
 impl JsonConverter {
@@ -379,7 +376,7 @@ impl JsonConverter {
                 .map(Value::Array),
             YamlNode::Alias(alias) => self.node(&self.resolve_alias(&alias.name())?),
             YamlNode::TaggedNode(tagged) => {
-                let tag = tagged.tag();
+                let tag = tagged.resolved_tag();
                 if let Some(mapping) = tagged.as_mapping() {
                     self.node(&YamlNode::Mapping(mapping))
                 } else if let Some(sequence) = tagged.as_sequence() {
@@ -423,8 +420,7 @@ impl JsonConverter {
     /// Resolve a scalar per the YAML 1.2 core schema, honouring its tags.
     fn scalar(&self, scalar: &Scalar, tag: Option<&str>) -> Result<Value, String> {
         let value = ScalarValue::from_scalar(scalar);
-        let core_tag = tag.filter(|_| self.core_tags);
-        let scalar_type = match core_tag {
+        let scalar_type = match tag {
             Some("!!str") => ScalarType::String,
             Some("!!int") => ScalarType::Integer,
             Some("!!float") => ScalarType::Float,
@@ -473,14 +469,10 @@ fn json_eq(a: &Value, b: &Value) -> bool {
 /// hold several concatenated JSON values, one per document.
 fn check_values(input: &str, expected: &[Value]) -> Result<(), String> {
     let file = YamlFile::from_str(input).map_err(|err| format!("parse error: {}", err))?;
-    let core_tags = !file
-        .directives()
-        .any(|d| d.is_tag() && d.value().is_some_and(|v| v.starts_with("!! ")));
     let mut actual = Vec::new();
     for doc in file.documents() {
         let converter = JsonConverter {
             anchors: AnchorRegistry::from_document(&doc),
-            core_tags,
         };
         actual.push(
             match doc.syntax().children().find_map(YamlNode::from_syntax) {

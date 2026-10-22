@@ -2510,3 +2510,121 @@ fn special_collection_accessors() {
     );
     assert_eq!(keys(tagged_value(yaml, "p").as_ordered_mapping()), None);
 }
+
+/// The value of `key` in the `index`-th document of `src`.
+fn document_value(src: &str, index: usize, key: &str) -> yaml_edit::YamlValue {
+    let file = YamlFile::from_str(src).unwrap();
+    let doc = file.documents().nth(index).unwrap();
+    let value = yaml_edit::YamlValue::from_document(&doc).unwrap();
+    value.as_mapping().unwrap()[key].clone()
+}
+
+#[test]
+fn tag_handles_resolve_through_tag_directives() {
+    let src = "%TAG !y! tag:yaml.org,2002:\n---\ni: !y!int 3\ns: !y!set {a, b}\n";
+    let i = document_value(src, 0, "i");
+    let i = i.as_scalar().unwrap();
+    assert_eq!(i.scalar_type(), yaml_edit::ScalarType::Integer);
+    // The tag is kept as written.
+    assert_eq!(i.tag(), Some("!y!int"));
+    assert!(document_value(src, 0, "s").is_set());
+}
+
+#[test]
+fn redefined_secondary_handle_is_not_core() {
+    let src = "%TAG !! tag:example.com,2000:\n---\na: !!int 12\n";
+    let a = document_value(src, 0, "a");
+    assert_eq!(
+        a.as_scalar().unwrap().scalar_type(),
+        yaml_edit::ScalarType::String
+    );
+}
+
+#[test]
+fn redefined_primary_handle() {
+    let src = "%TAG ! tag:yaml.org,2002:\n---\na: !int 12\n";
+    let a = document_value(src, 0, "a");
+    assert_eq!(
+        a.as_scalar().unwrap().scalar_type(),
+        yaml_edit::ScalarType::Integer
+    );
+}
+
+#[test]
+fn tag_directives_apply_to_their_own_document() {
+    let src = "%TAG !y! tag:yaml.org,2002:\n---\ni: !y!int 3\n---\ni: !y!int 3\n";
+    let types: Vec<_> = (0..2)
+        .map(|n| {
+            document_value(src, n, "i")
+                .as_scalar()
+                .unwrap()
+                .scalar_type()
+        })
+        .collect();
+    assert_eq!(
+        types,
+        [
+            yaml_edit::ScalarType::Integer,
+            yaml_edit::ScalarType::String
+        ]
+    );
+}
+
+#[test]
+fn resolved_tag() {
+    let file = YamlFile::from_str(
+        "%TAG !y! tag:yaml.org,2002:\n%TAG !e! tag:example.com,2000:\n---\n\
+         - !y!int 1\n- !e!thing 2\n- !<tag:yaml.org,2002:str> 3\n- !local 4\n- !u!x 5\n",
+    )
+    .unwrap();
+    let doc = file.document().unwrap();
+    let seq = doc.as_sequence().unwrap();
+    let tags: Vec<_> = seq
+        .values()
+        .map(|item| item.as_tagged().unwrap().resolved_tag().unwrap())
+        .collect();
+    assert_eq!(
+        tags,
+        [
+            "!!int",
+            "!<tag:example.com,2000:thing>",
+            "!!str",
+            "!local",
+            "!u!x"
+        ]
+    );
+}
+
+#[test]
+fn tags_compare_by_what_they_resolve_to() {
+    let with_handle = YamlFile::from_str("%TAG !y! tag:yaml.org,2002:\n---\n!y!str 3\n").unwrap();
+    let shorthand = Document::from_str("!!str 3\n").unwrap();
+    assert!(yaml_edit::yaml_eq(
+        &with_handle.document().unwrap(),
+        &shorthand
+    ));
+}
+
+#[test]
+fn merge_key_tagged_through_a_handle() {
+    let src = "%TAG !y! tag:yaml.org,2002:\n---\nx: &x {p: 1}\ny:\n  !y!merge <<: *x\n";
+    let y = document_value(src, 0, "y");
+    assert_eq!(y.as_mapping().unwrap().keys().collect::<Vec<_>>(), ["p"]);
+}
+
+#[test]
+fn schema_types_tags_through_handles() {
+    let file = YamlFile::from_str("%TAG !y! tag:yaml.org,2002:\n---\nk: !y!int 3\n").unwrap();
+    let doc = file.document().unwrap();
+    assert!(yaml_edit::SchemaValidator::failsafe()
+        .strict()
+        .validate(&doc)
+        .is_err());
+}
+
+#[test]
+fn omap_items_tagged_through_a_handle() {
+    let src = "%TAG !y! tag:yaml.org,2002:\n---\no: !y!omap [!y!map {a: 1}, {b: 2}]\n";
+    let o = document_value(src, 0, "o");
+    assert!(o.is_ordered_mapping(), "{o:?}");
+}

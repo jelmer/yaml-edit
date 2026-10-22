@@ -505,7 +505,7 @@ fn build_identity<B: IdentityBuilder>(
             };
             // A tag passed in is that of an alias to this node, which takes
             // the place of the node's own.
-            let tag = tag.or_else(|| tagged.tag());
+            let tag = tag.or_else(|| tagged.resolved_tag());
             match node.first_child() {
                 Some(content) => identity_with_tag(&content, tag, aliases, expanding, builder),
                 None => Ok(ScalarValue::from_tagged(&tagged).map(|s| scalar(builder, s, tag))),

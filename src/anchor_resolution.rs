@@ -507,7 +507,7 @@ pub(crate) fn is_merge_key(key: &crate::as_yaml::YamlNode) -> bool {
     match key {
         YamlNode::Scalar(s) => s.value() == "<<",
         YamlNode::TaggedNode(t) => {
-            t.tag().as_deref().and_then(crate::tag::yaml_org_name) == Some("merge")
+            t.resolved_tag().as_deref() == Some("!!merge")
                 && t.value().is_some_and(|s| s.value() == "<<")
         }
         _ => false,

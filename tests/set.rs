@@ -1919,6 +1919,38 @@ fn entry_or_insert() {
     );
 }
 
+/// A new mapping put inside a flow collection stays flow when it gets its
+/// first entry, as a new sequence does.
+#[test]
+fn new_mapping_in_flow_collection_stays_flow() {
+    check_edit(
+        "{a: 1}\n",
+        |d| {
+            let nested = d.as_mapping().unwrap().entry("b").or_insert_mapping();
+            nested.set("c", 3);
+        },
+        "{a: 1, b: {c: 3}}\n",
+    );
+    check_edit(
+        "x: {a: 1}\n",
+        |d| {
+            let x = d.as_mapping().unwrap().get_mapping("x").unwrap();
+            x.set("b", Mapping::new());
+            x.get_mapping("b").unwrap().set("c", 3);
+        },
+        "x: {a: 1, b: {c: 3}}\n",
+    );
+    check_edit(
+        "[1]\n",
+        |d| {
+            let seq = d.as_sequence().unwrap();
+            seq.push(Mapping::new());
+            seq.get(1).unwrap().as_mapping().unwrap().set("c", 3);
+        },
+        "[1, {c: 3}]\n",
+    );
+}
+
 /// `or_insert_mapping` and `or_insert_sequence` return the existing
 /// collection, or replace a value of another kind with an empty one.
 #[test]

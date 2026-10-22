@@ -724,6 +724,14 @@ fn cast_core_tagged_scalars() {
     let s = tagged_value("k: !!int abc");
     assert_eq!(s, ScalarValue::plain("abc").with_tag("!!int"));
     assert_eq!(s.to_yaml_string(), "!!int abc");
+
+    // The core float pattern is decimal only, so hex and octal integers
+    // are not floats.
+    for src in ["k: !!float 0x10", "k: !!float 0o7"] {
+        let s = tagged_value(src);
+        assert_eq!(s.scalar_type(), ScalarType::String, "{src}");
+        assert_eq!(s.to_f64(), None, "{src}");
+    }
 }
 
 #[test]

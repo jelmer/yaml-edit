@@ -713,6 +713,26 @@ fn tagged(tag: &str, node: &SyntaxNode) -> SyntaxNode {
     SyntaxNode::new_root_mut(GreenNode::new(SyntaxKind::TAGGED_NODE.into(), children))
 }
 
+/// Replace `alias`, which has no anchor of its own, with a copy of `node`,
+/// keeping the tag the alias has in place of any tag of the node. Returns
+/// the node that now holds the copy.
+///
+/// Panics if `alias` is not a value, sequence item or key.
+pub(crate) fn replace_alias_with_copy(alias: &SyntaxNode, node: &SyntaxNode) -> SyntaxNode {
+    check_copyable(alias);
+    let (tag, _) = properties(alias);
+    let node = match node {
+        n if tag.is_some() && n.kind() == SyntaxKind::TAGGED_NODE => untagged(n),
+        n => n.clone(),
+    };
+    let tag = tag.map(|t| t.text().to_string());
+    strip_properties(alias);
+    match &tag {
+        Some(tag) => replace_alias(alias, &tagged(tag, &node), None),
+        None => replace_alias(alias, &node, None),
+    }
+}
+
 /// Replace `alias` with a copy of `node` under `anchor`, and return the
 /// node that now holds the copy.
 fn replace_alias(alias: &SyntaxNode, node: &SyntaxNode, anchor: Option<&str>) -> SyntaxNode {

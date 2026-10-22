@@ -815,6 +815,7 @@ pub mod document;
 mod empty_collection;
 pub mod entry;
 mod kept_aliases;
+pub(crate) use kept_aliases::replace_alias_with_copy;
 pub mod mapping;
 mod predicates;
 mod replaced_value;

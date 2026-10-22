@@ -1505,5 +1505,24 @@ fn set_comment_text_rejects_invalid_text() {
         comment.set_content("a\nb"),
         Err(CommentTextError::LineBreak)
     );
+    assert_eq!(
+        comment.set_text("# x\u{1}y"),
+        Err(CommentTextError::NonPrintable('\u{1}'))
+    );
+    assert_eq!(
+        comment.set_content("\u{feff}x"),
+        Err(CommentTextError::NonPrintable('\u{feff}'))
+    );
+    assert_eq!(
+        comment.set_content("x\u{fffe}"),
+        Err(CommentTextError::NonPrintable('\u{fffe}'))
+    );
     assert_eq!(file.to_string(), text);
+
+    // Tabs and other printable characters are fine.
+    comment.set_content("caf\u{e9}\t\u{1f600} \u{85}").unwrap();
+    assert_eq!(
+        file.to_string(),
+        "key: value # caf\u{e9}\t\u{1f600} \u{85}\n"
+    );
 }

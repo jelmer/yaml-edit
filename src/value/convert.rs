@@ -39,7 +39,7 @@ fn alias_target<'r>(
         return Err(ResolveError::UnresolvedAlias { alias: name });
     };
     let target = registry
-        .resolve_alias(&name, alias.syntax())
+        .resolve_alias_at(&name, alias.syntax())
         .ok_or_else(|| AliasError::Undefined {
             alias: name.clone(),
         })?;

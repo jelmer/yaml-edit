@@ -693,15 +693,22 @@ impl FlowSeparator {
         else {
             return;
         };
-        let after_entry =
+        let is_space = |t: &SyntaxToken| {
+            matches!(
+                t.kind(),
+                SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
+            )
+        };
+        let after_entry: Vec<_> =
             std::iter::successors(entry.next_sibling_or_token(), |c| c.next_sibling_or_token())
                 .map_while(|c| c.into_token())
-                .take_while(|t| {
-                    matches!(
-                        t.kind(),
-                        SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
-                    )
-                });
+                .take_while(is_space)
+                .collect();
+        // A comment line after the entry needs the line break before it.
+        let comment_follows = after_entry
+            .last()
+            .map_or(entry.next_sibling_or_token(), |t| t.next_sibling_or_token())
+            .is_some_and(|c| c.kind() == SyntaxKind::COMMENT);
         let mut tail = vec![comma.clone()];
         let mut next = comma.next_sibling_or_token();
         while let Some(c) = next {
@@ -710,13 +717,7 @@ impl FlowSeparator {
             tail.push(t);
         }
         tail.extend(after_entry);
-        let only_whitespace = tail[1..].iter().all(|t| {
-            matches!(
-                t.kind(),
-                SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE | SyntaxKind::INDENT
-            )
-        });
-        if !only_whitespace {
+        if comment_follows || !tail[1..].iter().all(is_space) {
             tail.truncate(1);
         }
         for t in tail {

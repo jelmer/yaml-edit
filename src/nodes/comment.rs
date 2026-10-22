@@ -48,8 +48,9 @@ impl Comment {
     /// # Errors
     ///
     /// Returns a [`CommentTextError`], leaving the tree unchanged, if `text`
-    /// does not start with `#` or contains a line break: either would turn
-    /// the token into something other than a single comment.
+    /// does not start with `#` or contains a line break, either of which
+    /// would turn the token into something other than a single comment, or
+    /// a character YAML does not allow in a stream.
     ///
     /// Afterwards this handle refers to the new comment token.
     ///
@@ -69,6 +70,9 @@ impl Comment {
         }
         if text.contains(['\n', '\r']) {
             return Err(CommentTextError::LineBreak);
+        }
+        if let Some(c) = text.chars().find(|&c| !is_printable(c)) {
+            return Err(CommentTextError::NonPrintable(c));
         }
         let parent = self
             .0
@@ -94,7 +98,8 @@ impl Comment {
     /// # Errors
     ///
     /// Returns [`CommentTextError::LineBreak`] if `content` contains a line
-    /// break.
+    /// break, and [`CommentTextError::NonPrintable`] if it contains a
+    /// character YAML does not allow.
     ///
     /// # Example
     /// ```
@@ -116,6 +121,15 @@ impl Comment {
     }
 }
 
+/// Whether YAML allows `c` in a comment (c-printable, without the BOM,
+/// which may only start a document).
+fn is_printable(c: char) -> bool {
+    matches!(c,
+        '\t' | '\n' | '\r' | '\u{20}'..='\u{7e}' | '\u{85}' | '\u{a0}'..='\u{d7ff}'
+        | '\u{e000}'..='\u{fffd}' | '\u{10000}'..)
+        && c != '\u{feff}'
+}
+
 /// Why [`Comment::set_text`] or [`Comment::set_content`] refused new text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommentTextError {
@@ -123,6 +137,9 @@ pub enum CommentTextError {
     MissingHash,
     /// The text contains a line break.
     LineBreak,
+    /// The text contains a character YAML does not allow, such as a control
+    /// character or a byte order mark.
+    NonPrintable(char),
 }
 
 impl std::fmt::Display for CommentTextError {
@@ -130,6 +147,11 @@ impl std::fmt::Display for CommentTextError {
         match self {
             CommentTextError::MissingHash => write!(f, "comment text must start with '#'"),
             CommentTextError::LineBreak => write!(f, "comment text must not contain a line break"),
+            CommentTextError::NonPrintable(c) => write!(
+                f,
+                "comment text must not contain the non-printable character U+{:04X}",
+                *c as u32
+            ),
         }
     }
 }

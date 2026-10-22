@@ -244,6 +244,37 @@ ordered: !!omap [first: *list]
 }
 
 #[test]
+fn from_document_types_timestamps_and_regexes() {
+    let doc = Document::from_str("t: !!timestamp 2001-12-14\nr: !!regex '^a+$'\n").unwrap();
+    let value = YamlValue::from_document(&doc).unwrap();
+    let mapping = value.as_mapping().unwrap();
+    assert_eq!(
+        mapping["t"].as_scalar().unwrap().scalar_type(),
+        ScalarType::Timestamp
+    );
+    assert_eq!(
+        mapping["r"].as_scalar().unwrap().scalar_type(),
+        ScalarType::Regex
+    );
+}
+
+#[cfg(feature = "base64")]
+#[test]
+fn from_document_types_binary() {
+    let doc =
+        Document::from_str("b: !!binary aGVsbG8=\nv: !<tag:yaml.org,2002:binary> aGk=\n").unwrap();
+    let value = YamlValue::from_document(&doc).unwrap();
+    let mapping = value.as_mapping().unwrap();
+    let b = mapping["b"].as_scalar().unwrap();
+    assert_eq!(b.scalar_type(), ScalarType::Binary);
+    assert_eq!(b.as_binary(), Some(Ok(b"hello".to_vec())));
+    assert_eq!(
+        mapping["v"].as_scalar().unwrap().as_binary(),
+        Some(Ok(b"hi".to_vec()))
+    );
+}
+
+#[test]
 fn from_document_empty_is_null() {
     for yaml in ["---\n", "--- # c\n", "---\n...\n", "--- \n"] {
         let file = YamlFile::from_str(yaml).unwrap();

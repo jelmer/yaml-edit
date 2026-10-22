@@ -1576,6 +1576,27 @@ fn nested_merge_keys_are_followed() {
     assert_eq!(d.try_get_path("top.y").unwrap().to_string(), "2");
 }
 
+/// `<<` is the plain spelling of the `tag:yaml.org,2002:merge` key, so an
+/// explicitly tagged `<<` merges too; a quoted `'<<'` stays a string.
+#[test]
+fn tagged_merge_key_is_followed() {
+    for tag in ["!!merge", "!<tag:yaml.org,2002:merge>"] {
+        let yaml = format!("x: &x {{p: 1}}\ny:\n  {tag} <<: *x\n  q: 2\n");
+        assert_eq!(
+            resolved_pairs(&yaml, "y"),
+            pairs(&[("p", "1"), ("q", "2")]),
+            "{yaml:?}"
+        );
+        assert_eq!(
+            merged_pairs(&yaml, "y"),
+            pairs(&[("q", "2"), ("p", "1")]),
+            "{yaml:?}"
+        );
+    }
+    let yaml = "x: &x {p: 1}\ny:\n  '<<': *x\n";
+    assert_eq!(merged_pairs(yaml, "y"), pairs(&[("'<<'", "{p: 1}")]));
+}
+
 #[test]
 fn self_referencing_merge_terminates() {
     let yaml = "a: &a\n  k: 1\n  <<: *a\n";

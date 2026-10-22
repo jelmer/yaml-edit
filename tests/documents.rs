@@ -7,6 +7,7 @@ use common::{
 };
 use rowan::ast::AstNode;
 use std::str::FromStr;
+use yaml_edit::validator::Validator;
 use yaml_edit::{
     debug, Directive, Document, Mapping, MappingBuilder, SyntaxKind, YamlError, YamlFile, YamlNode,
     YamlValue,
@@ -1240,6 +1241,35 @@ fn parsed_directives() {
             ),
             (None, None, "%".to_string(), false, false),
         ]
+    );
+}
+
+/// A comment after a directive is a comment, not part of the directive; a
+/// `#` with no white space before it is part of the directive, as in a tag
+/// prefix.
+#[test]
+fn directive_comments() {
+    let file = parse_clean("%YAML 1.2 # d\n%TAG !e! tag:e.com,2000:\t# t\n---\na: 1\n");
+    let comments: Vec<_> = file.comments().map(|c| c.text().to_string()).collect();
+    assert_eq!(comments, ["# d", "# t"]);
+    let directives: Vec<_> = file.directives().map(|d| (d.text(), d.value())).collect();
+    assert_eq!(
+        directives,
+        [
+            ("%YAML 1.2".to_string(), Some("1.2".to_string())),
+            (
+                "%TAG !e! tag:e.com,2000:".to_string(),
+                Some("!e! tag:e.com,2000:".to_string())
+            ),
+        ]
+    );
+    assert_eq!(Validator::new().validate_syntax(file.syntax()), []);
+
+    let file = parse_clean("%TAG !e! tag:e.com,2000:app#x\n---\na: 1\n");
+    assert_eq!(file.comments().count(), 0);
+    assert_eq!(
+        file.directives().next().unwrap().value(),
+        Some("!e! tag:e.com,2000:app#x".to_string())
     );
 }
 

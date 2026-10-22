@@ -321,6 +321,54 @@ fn remove_last_flow_item_on_closing_bracket_line() {
     assert_eq!(file.to_string(), "- [a]\n");
 }
 
+/// A comment line before the removed last entry stays on its own line,
+/// rather than joining the new last entry's line and becoming part of it.
+#[test]
+fn remove_last_flow_entry_after_comment_line() {
+    let remove_last = |d: &Document| {
+        d.as_sequence().unwrap().pop();
+    };
+    check_edit("[1,\n# c\n2]\n", remove_last, "[1\n# c\n]\n");
+    check_edit("[1,\n\n# c\n2]\n", remove_last, "[1\n\n# c\n]\n");
+    check_edit("[1,\n  # c\n  2]\n", remove_last, "[1\n  # c\n  ]\n");
+    check_edit("['x',\n# c\n2]\n", remove_last, "['x'\n# c\n]\n");
+    check_edit(
+        "{a: 1,\n# c\nb: 2}\n",
+        |d| {
+            d.as_mapping().unwrap().remove("b");
+        },
+        "{a: 1\n# c\n}\n",
+    );
+    check_edit(
+        "{a,\n# c\nb}\n",
+        |d| {
+            d.as_mapping().unwrap().remove("b");
+        },
+        "{a\n# c\n}\n",
+    );
+    check_edit(
+        "x: {a: 1,\n  # c\n  b: 2}\n",
+        |d| {
+            d.as_mapping()
+                .unwrap()
+                .get_mapping("x")
+                .unwrap()
+                .remove("b");
+        },
+        "x: {a: 1\n  # c\n  }\n",
+    );
+    check_edit(
+        "x: [[1,\n# c\n2]]\n",
+        |d| {
+            let outer = d.as_mapping().unwrap().get_sequence("x").unwrap();
+            outer.get(0).unwrap().as_sequence().unwrap().pop();
+        },
+        "x: [[1\n# c\n]]\n",
+    );
+    // A comment on the line of the comma stays where it is.
+    check_edit("[1, # c\n2]\n", remove_last, "[1 # c\n]\n");
+}
+
 /// The mapping at `path` in `file`: the root one, or the one under the
 /// root key `path`.
 fn mapping_at(file: &YamlFile, path: &str) -> Mapping {

@@ -513,7 +513,17 @@ impl MappingEntry {
     ///
     /// Aliases elsewhere to anchors deeper in the old value are kept
     /// resolving: the first of each becomes a copy of the anchored node.
+    ///
+    /// With `flow_context`, the value is written in flow style. An entry of
+    /// a flow mapping always writes it so, since block syntax cannot go
+    /// there.
     pub fn set_value(&self, new_value: impl crate::AsYaml, flow_context: bool) {
+        let flow_context = flow_context
+            || self
+                .0
+                .parent()
+                .and_then(<super::Mapping as rowan::ast::AstNode>::cast)
+                .is_some_and(|mapping| mapping.is_flow_style());
         // An alias cannot carry an anchor; the first alias to the old one
         // gets a copy of the old value instead.
         let old = self.value();

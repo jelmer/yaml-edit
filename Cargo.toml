@@ -37,5 +37,5 @@ name = "scaling"
 harness = false
 
 [workspace]
-members = [".", "yaml-merge3"]
+members = [".", "yaml-merge3", "yaml-lsp"]
 exclude = ["fuzz"]

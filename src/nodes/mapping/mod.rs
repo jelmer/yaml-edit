@@ -15,11 +15,11 @@ use super::{
     entry_key, entry_value, fresh_token, has_child_token, held_node, insert_children,
     replace_children, starts_a_flow_collection, Lang, Sequence, SyntaxNode,
 };
-use crate::as_yaml::{AsYaml, YamlKind};
+use crate::as_yaml::{AsYaml, YamlKind, YamlNode};
 use crate::lex::SyntaxKind;
 use crate::yaml::{dump_cst_to_string, ValueNode};
 use rowan::ast::AstNode;
-use rowan::GreenNodeBuilder;
+use rowan::{GreenNodeBuilder, TextSize};
 
 ast_node!(
     MappingEntry,
@@ -447,6 +447,44 @@ impl Mapping {
     /// [`iter`](Self::iter); for raw CST nodes, use `pairs()`.
     pub fn entries(&self) -> impl Iterator<Item = MappingEntry> {
         self.0.children().filter_map(MappingEntry::cast)
+    }
+
+    /// Return the entry whose block value logically contains `offset`.
+    ///
+    /// Trailing indented blank lines past an entry's reported range are
+    /// attributed to that entry: anything indented past the key column
+    /// continues the value. Returns `None` for a cursor before the first
+    /// entry or on an un-indented line between entries.
+    ///
+    /// ```
+    /// use std::str::FromStr;
+    /// use yaml_edit::Document;
+    ///
+    /// let text = "Reference:\n  - Type: Book\n    \n";
+    /// let doc = Document::from_str(text).unwrap();
+    /// let mapping = doc.as_mapping().unwrap();
+    /// let entry = mapping.find_entry_by_offset(text, 30).unwrap();
+    /// assert!(entry.key_matches("Reference"));
+    /// ```
+    pub fn find_entry_by_offset(&self, source_text: &str, offset: usize) -> Option<MappingEntry> {
+        let offset = TextSize::try_from(offset).ok()?;
+        if let Some(e) = self.entries().find(|e| {
+            let r = e.syntax().text_range();
+            offset >= r.start() && offset < r.end()
+        }) {
+            return Some(e);
+        }
+        let cursor_col = crate::byte_offset_to_line_column(source_text, offset.into()).column;
+        self.entries()
+            .filter(|e| offset >= e.syntax().text_range().end())
+            .filter(|e| {
+                let key_col = match e.key_node() {
+                    Some(YamlNode::Scalar(s)) => s.start_position(source_text).column,
+                    _ => return false,
+                };
+                cursor_col > key_col
+            })
+            .last()
     }
 
     /// Return an [`Entry`](crate::Entry) view into the entry for `key`.

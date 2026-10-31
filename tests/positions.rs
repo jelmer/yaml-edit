@@ -149,3 +149,49 @@ fn mapping_end_position() {
     assert_eq!(start.line, 1);
     assert_eq!(end.line, 2);
 }
+
+#[test]
+fn find_entry_by_offset_inside_entry_range() {
+    let text = "Reference:\n  - Type: Book\n";
+    let doc = Document::from_str(text).unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let entry = mapping.find_entry_by_offset(text, 15).unwrap();
+    assert!(entry.key_matches("Reference"));
+}
+
+#[test]
+fn find_entry_by_offset_indented_trailing_blank_line() {
+    let text = "Reference:\n  - Type: Book\n    \n";
+    let doc = Document::from_str(text).unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let entry = mapping.find_entry_by_offset(text, 30).unwrap();
+    assert!(entry.key_matches("Reference"));
+}
+
+#[test]
+fn find_entry_by_offset_unindented_blank_line_is_outside() {
+    let text = "Reference:\n  - Type: Book\n\n";
+    let doc = Document::from_str(text).unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    assert!(mapping.find_entry_by_offset(text, 26).is_none());
+}
+
+#[test]
+fn find_entry_by_offset_hole_between_entries_attributed_to_preceding() {
+    // Offset 29 sits in the indented "    \n" between Reference's end
+    // and Name's start; column 4 is past Reference's key column.
+    let text = "Reference:\n  - Type: Book\n    \nName: foo\n";
+    let doc = Document::from_str(text).unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let entry = mapping.find_entry_by_offset(text, 29).unwrap();
+    assert!(entry.key_matches("Reference"));
+}
+
+#[test]
+fn find_entry_by_offset_at_start_of_first_entry() {
+    let text = "Reference:\n";
+    let doc = Document::from_str(text).unwrap();
+    let mapping = doc.as_mapping().unwrap();
+    let entry = mapping.find_entry_by_offset(text, 0).unwrap();
+    assert!(entry.key_matches("Reference"));
+}

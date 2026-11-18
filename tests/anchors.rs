@@ -726,6 +726,36 @@ fn rename_key_keeps_anchors() {
 }
 
 #[test]
+fn rename_key_to_anchored_node() {
+    // The old key's anchor wins over the new key's, wherever either sits.
+    for (source, new_key, expected) in [
+        (
+            "&a foo: bar\nc: *a\n",
+            "!!int &b 1",
+            "&a !!int 1: bar\nc: *a\n",
+        ),
+        (
+            "!!str &a foo: bar\nc: *a\n",
+            "!!int &b 1",
+            "&a !!int 1: bar\nc: *a\n",
+        ),
+        (
+            "&a foo: bar\nc: *a\n",
+            "&b !!int 1",
+            "&a !!int 1: bar\nc: *a\n",
+        ),
+        ("foo: bar\n", "!!int &b 1", "!!int &b 1: bar\n"),
+        ("foo: bar\n", "&b !!int 1", "&b !!int 1: bar\n"),
+    ] {
+        let new_key = Document::from_str(&format!("{new_key}: x\n")).unwrap();
+        let new_key = new_key.as_mapping().unwrap().keys().next().unwrap();
+        let doc = Document::from_str(source).unwrap();
+        assert!(doc.as_mapping().unwrap().rename_key("foo", &new_key));
+        assert_edited(&doc, expected);
+    }
+}
+
+#[test]
 fn tagged_alias_to_block_mapping_with_flow_key() {
     // The mapping starts with its key's `{` or `[`, but is still a block
     // mapping, which goes on the line after the tag.

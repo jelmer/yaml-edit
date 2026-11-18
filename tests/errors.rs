@@ -365,6 +365,30 @@ key2: value2"#,
             "- !a\n  !b\n  - x\n",
             &[("Multiple tags on the same node", "1:3")],
         ),
+        // Likewise for an anchor after the tag.
+        (
+            "&a !t &b x\n",
+            &[("Multiple anchors on the same node", "1:1")],
+        ),
+        (
+            "k: &a !t &b x\n",
+            &[("Multiple anchors on the same node", "1:4")],
+        ),
+        (
+            "k: &a &b x\n",
+            &[("Multiple anchors on the same node", "1:4")],
+        ),
+        ("&a &b x\n", &[("Multiple anchors on the same node", "1:1")]),
+        (
+            "!t &a &b x\n",
+            &[("Multiple anchors on the same node", "1:1")],
+        ),
+        (
+            "k: !a &a !b &b x\n",
+            &[("Multiple tags on the same node", "1:4")],
+        ),
+        ("k: !t &a x\n", &[]),
+        ("k: &a !t x\n", &[]),
         (
             "%INVALID directive\nkey: value",
             &[("Directive without document start marker (---)", "1:1")],

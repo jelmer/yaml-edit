@@ -96,6 +96,21 @@ pub(crate) fn block_parent_column(scalar: &SyntaxNode) -> usize {
         .map_or(0, |entry| crate::column::node_column(&entry))
 }
 
+/// Whether `scalar` is the zero-width `SCALAR { NULL "" }` the parser
+/// emits for every omitted value (`key:`, `- `, `{a:}`, ...). Any other
+/// scalar shape, including a programmatically-written `SCALAR { NULL "null" }`,
+/// has content.
+fn is_implicit_null(scalar: &SyntaxNode) -> bool {
+    let mut tokens = scalar.children_with_tokens();
+    let Some(first) = tokens.next() else {
+        return false;
+    };
+    let Some(token) = first.into_token() else {
+        return false;
+    };
+    tokens.next().is_none() && token.kind() == SyntaxKind::NULL && token.text().is_empty()
+}
+
 /// Replace `\r\n` and lone `\r` line breaks with `\n`, which
 /// `str::lines` does not split on.
 fn normalize_line_breaks(text: &str) -> Cow<'_, str> {
@@ -334,6 +349,9 @@ impl Scalar {
     /// If token-kind accuracy matters, build a replacement scalar node via the
     /// higher-level API instead.
     pub fn set_value(&self, value: &str) {
+        if !value.is_empty() && is_implicit_null(&self.0) {
+            self.space_omitted_slot();
+        }
         let children: Vec<_> = self.0.children_with_tokens().collect();
         // A block scalar holds the line break ending its last line and the
         // blank lines after that, which stay but must move out of it.
@@ -362,6 +380,52 @@ impl Scalar {
         );
         if let Some((line_break, blank_lines)) = tail.split_first() {
             crate::nodes::trivia::end_former_block_scalar(&self.0, line_break, blank_lines);
+        }
+    }
+
+    /// Give this omitted value, about to be filled in, the space it lacks
+    /// after an indicator or property, and move a comment it follows to
+    /// after it: `a:` becomes `a: x` and `a: # c` becomes `a: x # c`.
+    fn space_omitted_slot(&self) {
+        let Some(parent) = self.0.parent() else {
+            return;
+        };
+        if let Some(comment) = self
+            .0
+            .prev_sibling_or_token()
+            .and_then(|c| c.into_token())
+            .filter(|t| t.kind() == SyntaxKind::COMMENT)
+        {
+            // For a tagged omitted value the comment sits inside the
+            // TAGGED_NODE, as a sibling of this scalar; move it out so it
+            // ends up after the filled-in value.
+            let node = if parent.kind() == SyntaxKind::TAGGED_NODE {
+                parent
+            } else {
+                self.0.clone()
+            };
+            comment.detach();
+            crate::nodes::insert_children(
+                &node.parent().expect("an omitted value has a parent"),
+                node.index() + 1,
+                vec![
+                    fresh_token(SyntaxKind::WHITESPACE, " ").into(),
+                    fresh_token(SyntaxKind::COMMENT, comment.text()).into(),
+                ],
+            );
+            return;
+        }
+        if let Some(first) = self.0.first_token() {
+            crate::nodes::trivia::separate_from_preceding(
+                &first,
+                &[
+                    SyntaxKind::COLON,
+                    SyntaxKind::DASH,
+                    SyntaxKind::QUESTION,
+                    SyntaxKind::TAG,
+                    SyntaxKind::ANCHOR,
+                ],
+            );
         }
     }
 

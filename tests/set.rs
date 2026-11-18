@@ -180,6 +180,54 @@ fn scalar_set_value_replaces_multiline_scalar() {
     check_edit("a: |\n  hello\nb: 2\n", set_a, "a: x\nb: 2\n");
 }
 
+/// Filling in an omitted value keeps it apart from the indicator or
+/// property before it and from a comment on its line.
+#[test]
+fn scalar_set_value_fills_omitted_value() {
+    for (input, expected) in [
+        ("b: 1\na:", "b: 1\na: x"),
+        ("a:\nb: 1\n", "a: x\nb: 1\n"),
+        ("x:\n  a:\n", "x:\n  a: x\n"),
+        ("- a\n-", "- a\n- x"),
+        ("- a\n-\n", "- a\n- x\n"),
+        ("a: # c\n", "a: x # c\n"),
+        ("a: # c\n  # d\nb: 1\n", "a: x # c\n  # d\nb: 1\n"),
+        ("- # c\n", "- x # c\n"),
+        ("a:   \n", "a:   x\n"),
+        ("a:\r\nb: 1\r\n", "a: x\r\nb: 1\r\n"),
+        ("a: # c\r\n", "a: x # c\r\n"),
+        ("? k\n:", "? k\n: x"),
+        ("? k\n: # c\n", "? k\n: x # c\n"),
+        ("a: &y\n", "a: &y x\n"),
+        ("a: !t\n", "a: !t x\n"),
+        ("a: !t # c\n", "a: !t x # c\n"),
+        ("a: &y !t # c\n", "a: &y !t x # c\n"),
+        ("- !t # c\n", "- !t x # c\n"),
+        ("- &y # c\n", "- &y x # c\n"),
+        ("{a:}", "{a: x}"),
+        ("{a: }", "{a: x}"),
+    ] {
+        let yaml = YamlFile::from_str(input).unwrap();
+        let scalar = yaml
+            .syntax()
+            .descendants()
+            .filter_map(yaml_edit::Scalar::cast)
+            .find(|s| s.value().is_empty())
+            .unwrap();
+        scalar.set_value("x");
+        assert_file_edited_valid(&yaml, expected);
+        let range = scalar.syntax().text_range();
+        let reparsed = YamlFile::from_str(expected).unwrap();
+        let value = reparsed
+            .syntax()
+            .descendants()
+            .filter_map(yaml_edit::Scalar::cast)
+            .find(|s| s.syntax().text_range() == range)
+            .map(|s| s.as_string());
+        assert_eq!(value.as_deref(), Some("x"), "{input:?}");
+    }
+}
+
 /// Changing an anchored value leaves the aliases to it pointing at it.
 #[test]
 fn set_anchored_value_keeps_aliases() {

@@ -3187,6 +3187,44 @@ fn insert_at_index_preserving_new_key_matches_mapping_style() {
     }
 }
 
+/// An existing key keeps its place, key text, comments and separators; only
+/// its value changes, as with `insert_at_index`.
+#[test]
+fn insert_at_index_preserving_existing_key_updates_value_in_place() {
+    for (yaml, key, expected) in [
+        ("m: {a: 1, b: 2}\n", "a", "m: {a: v, b: 2}\n"),
+        ("m: {a: 1, b: 2}\n", "b", "m: {a: 1, b: v}\n"),
+        ("m: {'a': 1}\n", "a", "m: {'a': v}\n"),
+        ("m: {? a : 1}\n", "a", "m: {? a : v}\n"),
+        (
+            "a: 1 # one\n# mid\nb: 2\n",
+            "a",
+            "a: v # one\n# mid\nb: 2\n",
+        ),
+        ("a: 1 # one\r\nb: 2\r\n", "a", "a: v # one\r\nb: 2\r\n"),
+        ("\"a\": 1\nb: 2\n", "a", "\"a\": v\nb: 2\n"),
+        ("'a': 1\nb: 2\n", "a", "'a': v\nb: 2\n"),
+        ("a :  1\nb: 2\n", "a", "a :  v\nb: 2\n"),
+        ("&k a: 1\nb: *k\n", "a", "&k a: v\nb: *k\n"),
+        ("!!str a: 1\nb: 2\n", "a", "!!str a: v\nb: 2\n"),
+        ("? a # k\n: 1 # v\nb: 2\n", "a", "? a # k\n: v # v\nb: 2\n"),
+        ("m:\n  a: 1\n  b: 2 # c\n", "b", "m:\n  a: 1\n  b: v # c\n"),
+    ] {
+        let doc = Document::from_str(yaml).unwrap();
+        let root = doc.as_mapping().unwrap();
+        let m = root.get_mapping("m").unwrap_or(root);
+        m.insert_at_index_preserving(5, key, "v");
+        assert_cst_ok(&doc);
+        assert_eq!(doc.to_string(), expected, "{yaml:?} key {key}");
+
+        let doc = Document::from_str(yaml).unwrap();
+        let root = doc.as_mapping().unwrap();
+        let m = root.get_mapping("m").unwrap_or(root);
+        m.insert_at_index(5, key, "v");
+        assert_eq!(doc.to_string(), expected, "{yaml:?} key {key}");
+    }
+}
+
 /// A new entry after one whose value ends in a comment on its last line
 /// goes after that comment's line, where a re-parse keeps the comment.
 #[test]

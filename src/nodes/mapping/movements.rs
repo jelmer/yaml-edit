@@ -258,7 +258,7 @@ impl Mapping {
             let old = if own_value {
                 existing.0
             } else {
-                self.replace_entry(&existing.0, new_key, new_value, false)
+                self.replace_entry(&existing.0, new_key, new_value)
             };
             let mut order: Vec<SyntaxNode> =
                 self.entries().map(|e| e.0).filter(|e| *e != old).collect();

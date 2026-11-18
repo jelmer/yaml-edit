@@ -709,71 +709,47 @@ impl Mapping {
 
     /// Insert a key-value pair at a specific index (0-based), preserving formatting.
     ///
-    /// If `new_key` already exists in the mapping, the existing entry is replaced
-    /// with a newly built entry at the **same position** (the `index` argument is
-    /// ignored). Surrounding whitespace in the file is preserved, but the entry
-    /// node itself is rebuilt (comments attached to the old entry may be lost).
-    /// An anchor on the old value stays on the new one, as with
-    /// [`set`](Self::set).
+    /// If `new_key` already exists in the mapping, only its value is replaced,
+    /// as with [`set`](Self::set): the entry stays at its current position
+    /// (the `index` argument is ignored) and keeps its key text, comments and
+    /// separators, and an anchor on the old value stays on the new one.
     /// If `index` is out of bounds, the entry is appended at the end.
+    ///
+    /// This behaves the same as [`insert_at_index`](Self::insert_at_index).
     pub fn insert_at_index_preserving(
         &self,
         index: usize,
         new_key: impl crate::AsYaml,
         new_value: impl crate::AsYaml,
     ) {
-        match self.find_entry_by_key(&new_key) {
-            Some(old) => {
-                self.replace_entry(&old.0, new_key, new_value, true);
-            }
-            None => self.insert_new_entry_at(index, new_key, new_value),
-        }
+        self.insert_at_index(index, new_key, new_value);
     }
 
     /// Replace `old`, an entry of this mapping, with a new entry built the
-    /// way `set` builds one, in the same place, and return it. If
-    /// `keep_anchor` is set, an anchor on the old value goes on the new one
-    /// unless that is an alias, as with `set`; otherwise the old value goes
-    /// as with `remove`.
+    /// way `set` builds one, in the same place, and return it. The old value
+    /// goes as with `remove`.
     pub(super) fn replace_entry(
         &self,
         old: &SyntaxNode,
         key: impl crate::AsYaml,
         value: impl crate::AsYaml,
-        keep_anchor: bool,
     ) -> SyntaxNode {
-        let kept = MappingEntry::cast(old.clone())
-            .map(|e| e.value())
-            .filter(|_| keep_anchor)
-            .and_then(|v| kept_anchor_token(&v, &value));
-        let anchor = kept.as_ref().map(|t| t.text().to_string());
         let mut new = None;
-        crate::nodes::kept_aliases::keeping_aliases(old, kept, || {
+        crate::nodes::kept_aliases::keeping_aliases(old, None, || {
             // The entry is built without the value's anchor; putting the
             // value in again settles which anchor it gets, as in set_value.
             let entry = MappingEntry(self.splice_in_entry(old, key, &value));
-            self.put_value(&entry, &value, anchor.as_deref());
+            self.styled_value(&value, |v, flow_context| {
+                entry.replace_value_under(v, flow_context, None)
+            });
             new = Some(entry.0.clone());
             Some(entry.value())
         });
         new.expect("the edit ran")
     }
 
-    /// Replace the value of `entry`, an entry of this mapping, with `value`
-    /// under `anchor`, as `set` does.
-    pub(super) fn put_value(
-        &self,
-        entry: &MappingEntry,
-        value: impl crate::AsYaml,
-        anchor: Option<&str>,
-    ) {
-        self.styled_value(&value, |v, flow_context| {
-            entry.replace_value_under(v, flow_context, anchor)
-        });
-    }
-
     /// The edit of [`replace_entry`](Self::replace_entry), without the
-    /// kept anchor. Returns the new entry.
+    /// alias repair. Returns the new entry.
     fn splice_in_entry(
         &self,
         old: &SyntaxNode,

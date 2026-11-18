@@ -815,13 +815,19 @@ fn separate_comma_from_indicator(entry: &SyntaxNode) {
 /// comes right after: a `?` only opens an explicit key when white space
 /// follows it.
 pub(crate) fn separate_from_question(token: &SyntaxToken) {
-    let question = std::iter::successors(token.prev_token(), |t| t.prev_token())
+    separate_from_preceding(token, &[SyntaxKind::QUESTION]);
+}
+
+/// Put a space after the token with text before `token` if it is one of
+/// `kinds`.
+pub(crate) fn separate_from_preceding(token: &SyntaxToken, kinds: &[SyntaxKind]) {
+    let preceding = std::iter::successors(token.prev_token(), |t| t.prev_token())
         .find(|t| !t.text().is_empty())
-        .filter(|t| t.kind() == SyntaxKind::QUESTION);
-    if let Some(question) = question {
+        .filter(|t| kinds.contains(&t.kind()));
+    if let Some(preceding) = preceding {
         insert_children(
-            &question.parent().expect("a token has a parent"),
-            question.index() + 1,
+            &preceding.parent().expect("a token has a parent"),
+            preceding.index() + 1,
             vec![fresh_token(SyntaxKind::WHITESPACE, " ").into()],
         );
     }

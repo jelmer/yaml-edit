@@ -334,6 +334,9 @@ impl Scalar {
     /// If token-kind accuracy matters, build a replacement scalar node via the
     /// higher-level API instead.
     pub fn set_value(&self, value: &str) {
+        if self.0.text().is_empty() && !value.is_empty() {
+            self.separate_omitted();
+        }
         let children: Vec<_> = self.0.children_with_tokens().collect();
         // A block scalar holds the line break ending its last line and the
         // blank lines after that, which stay but must move out of it.
@@ -362,6 +365,48 @@ impl Scalar {
         );
         if let Some((line_break, blank_lines)) = tail.split_first() {
             crate::nodes::trivia::end_former_block_scalar(&self.0, line_break, blank_lines);
+        }
+    }
+
+    /// Give this omitted value, about to be filled in, the space it lacks
+    /// after an indicator or property, and move a comment it follows to
+    /// after it: `a:` becomes `a: x` and `a: # c` becomes `a: x # c`.
+    fn separate_omitted(&self) {
+        let Some(parent) = self.0.parent() else {
+            return;
+        };
+        if let Some(comment) = self
+            .0
+            .prev_sibling_or_token()
+            .and_then(|c| c.into_token())
+            .filter(|t| t.kind() == SyntaxKind::COMMENT)
+        {
+            // The parser puts a comment after a tagged scalar outside it.
+            let node = Some(parent)
+                .filter(|p| p.kind() == SyntaxKind::TAGGED_NODE)
+                .unwrap_or_else(|| self.0.clone());
+            comment.detach();
+            crate::nodes::insert_children(
+                &node.parent().expect("an omitted value has a parent"),
+                node.index() + 1,
+                vec![
+                    fresh_token(SyntaxKind::WHITESPACE, " ").into(),
+                    fresh_token(SyntaxKind::COMMENT, comment.text()).into(),
+                ],
+            );
+            return;
+        }
+        if let Some(first) = self.0.first_token() {
+            crate::nodes::trivia::separate_from_preceding(
+                &first,
+                &[
+                    SyntaxKind::COLON,
+                    SyntaxKind::DASH,
+                    SyntaxKind::QUESTION,
+                    SyntaxKind::TAG,
+                    SyntaxKind::ANCHOR,
+                ],
+            );
         }
     }
 

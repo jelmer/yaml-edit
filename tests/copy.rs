@@ -401,7 +401,7 @@ fn copy_multiline_scalar_into_collections() {
         "m:\n  o:\n    k: 1\n",
         |m| {
             let o = nested(m).get_mapping("o").unwrap();
-            o.insert_at_index_preserving(0, "k", value_of("v: \"a\n b\"\n", "v"));
+            o.insert_at_index(0, "k", value_of("v: \"a\n b\"\n", "v"));
         },
         "m:\n  o:\n    k: \"a\n     b\"\n",
     );

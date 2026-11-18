@@ -3141,6 +3141,7 @@ fn pop_until_empty() {
 /// as `set`: a pending-block placeholder becomes block, a `{}` from the
 /// source or from `new_flow` stays flow.
 #[test]
+#[allow(deprecated)]
 fn insert_at_index_into_empty_mapping() {
     for preserving in [false, true] {
         let insert = |m: &Mapping| {
@@ -3170,6 +3171,7 @@ fn insert_at_index_into_empty_mapping() {
 
 /// A new key goes in with the mapping's own style and indentation.
 #[test]
+#[allow(deprecated)]
 fn insert_at_index_preserving_new_key_matches_mapping_style() {
     for (yaml, index, expected) in [
         ("m: {a: 1}\n", 0, "m: {k: v, a: 1}\n"),
@@ -3190,6 +3192,7 @@ fn insert_at_index_preserving_new_key_matches_mapping_style() {
 /// An existing key keeps its place, key text, comments and separators; only
 /// its value changes, as with `insert_at_index`.
 #[test]
+#[allow(deprecated)]
 fn insert_at_index_preserving_existing_key_updates_value_in_place() {
     for (yaml, key, expected) in [
         ("m: {a: 1, b: 2}\n", "a", "m: {a: v, b: 2}\n"),

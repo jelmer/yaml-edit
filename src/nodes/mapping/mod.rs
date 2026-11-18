@@ -716,6 +716,7 @@ impl Mapping {
     /// If `index` is out of bounds, the entry is appended at the end.
     ///
     /// This behaves the same as [`insert_at_index`](Self::insert_at_index).
+    #[deprecated(since = "0.3.7", note = "use insert_at_index, which behaves the same")]
     pub fn insert_at_index_preserving(
         &self,
         index: usize,

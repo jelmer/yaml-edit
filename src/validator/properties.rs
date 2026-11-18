@@ -12,16 +12,30 @@ pub(super) fn check_multiple_anchors(node: &SyntaxNode, violations: &mut Vec<Vio
     // anchor that annotates a complex key now sits inside that KEY, so
     // 6BFJ's `&mapping\n&key [ ... ]: v` leaves one here while 4JVG's
     // two anchors on a single value still leave both.
-    let adjacent_anchors = node
-        .children_with_tokens()
-        .filter(|child| {
-            child
-                .as_token()
-                .is_some_and(|t| t.kind() == crate::SyntaxKind::ANCHOR)
-        })
-        .count();
+    let anchors = |n: &SyntaxNode| {
+        n.children_with_tokens()
+            .filter(|child| {
+                child
+                    .as_token()
+                    .is_some_and(|t| t.kind() == crate::SyntaxKind::ANCHOR)
+            })
+            .count()
+    };
+    // An anchor after a tag sits inside the TAGGED_NODE, but annotates
+    // the same node as one before the tag, as in `&a !t &b x`. A nested
+    // TAGGED_NODE is a second tag, which check_multiple_tags reports, and
+    // two anchors after the tag are reported on the TAGGED_NODE itself.
+    let after_tag = node
+        .children()
+        .find(|c| c.kind() == crate::SyntaxKind::TAGGED_NODE)
+        .filter(|_| node.kind() != crate::SyntaxKind::TAGGED_NODE)
+        .map_or(0, |tagged| anchors(&tagged));
 
-    if adjacent_anchors > 1 {
+    // `own > 0` leaves two anchors inside a TAGGED_NODE child to the
+    // check on that node itself, which reports them at its position
+    // rather than the wrapper's.
+    let own = anchors(node);
+    if own > 0 && own + after_tag > 1 {
         violations.push(Violation::error_at(
             Rule::InvalidAnchor,
             node.text_range(),

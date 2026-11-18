@@ -983,7 +983,7 @@ impl Mapping {
         let flow = self
             .is_flow_style()
             .then(|| crate::nodes::flow_quoting(&self.0));
-        Self::rebuild_key(&mut builder, &old_key, &new_key, anchor, flow);
+        let anchored = Self::rebuild_key(&mut builder, &old_key, &new_key, anchor, flow);
         if make_explicit {
             builder.token(SyntaxKind::NEWLINE.into(), "\n");
             if indent > 0 {
@@ -996,7 +996,7 @@ impl Mapping {
             .children()
             .find(|n| n.kind() == SyntaxKind::KEY)
             .expect("a KEY was just built");
-        if anchor.is_some() {
+        if anchored {
             drop_tagged_anchor(&new_key);
         }
 
@@ -1146,13 +1146,14 @@ impl Mapping {
     ///
     /// The old key's anchor stays; failing that the key takes `anchor`, or
     /// the anchor before a `new_key` node where it was copied from.
+    /// Returns whether one of those anchors went before the key's content.
     fn rebuild_key(
         builder: &mut GreenNodeBuilder,
         old: &SyntaxNode,
         new_key: &impl crate::AsYaml,
         anchor: Option<&str>,
         flow: Option<crate::as_yaml::FlowQuoting>,
-    ) {
+    ) -> bool {
         builder.start_node(SyntaxKind::KEY.into());
         let indent = old
             .parent()
@@ -1192,8 +1193,8 @@ impl Mapping {
         let anchor = old_anchor
             .or_else(|| anchor.map(str::to_string))
             .or_else(|| new_key.value_node().and_then(|n| source_anchor_text(&n)));
-        if let Some(anchor) = anchor {
-            builder.token(SyntaxKind::ANCHOR.into(), &anchor);
+        if let Some(anchor) = &anchor {
+            builder.token(SyntaxKind::ANCHOR.into(), anchor);
             builder.token(SyntaxKind::WHITESPACE.into(), " ");
         }
         // On a line of its own, only a block sequence may start at the
@@ -1249,6 +1250,7 @@ impl Mapping {
                 builder.token(t.kind().into(), t.text());
             }
         }
+        anchor.is_some()
     }
 
     /// Insert a key-value pair immediately after an existing key.

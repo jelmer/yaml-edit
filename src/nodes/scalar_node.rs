@@ -113,7 +113,7 @@ fn is_implicit_null(scalar: &SyntaxNode) -> bool {
 
 /// Replace `\r\n` and lone `\r` line breaks with `\n`, which
 /// `str::lines` does not split on.
-fn normalize_line_breaks(text: &str) -> Cow<'_, str> {
+pub(crate) fn normalize_line_breaks(text: &str) -> Cow<'_, str> {
     if text.contains('\r') {
         Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
     } else {

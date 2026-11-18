@@ -19,7 +19,7 @@ use std::str::FromStr;
 use yaml_edit::validator::Validator;
 use yaml_edit::{
     debug, AsYaml, Document, Mapping, MappingBuilder, MappingEntry, ScalarValue, Sequence,
-    SequenceBuilder, YamlFile, YamlNode, YamlValue,
+    SequenceBuilder, YamlBuilder, YamlFile, YamlNode, YamlValue,
 };
 
 fn root(src: &str) -> Document {
@@ -338,7 +338,12 @@ fn copy_multiline_scalar_to_nested_key() {
         (
             "v: \"a\r\n b\"\r\nw: x\r\n y\r\n",
             "m:\n  k: 1\n",
-            "m:\n  k: 1\n  n: \"a\r\n   b\"\n",
+            "m:\n  k: 1\n  n: \"a\n   b\"\n",
+        ),
+        (
+            "v: \"a\r\n b\"\r\nw: x\r\n y\r\n",
+            "m:\r\n  k: 1\r\n",
+            "m:\r\n  k: 1\r\n  n: \"a\r\n   b\"\r\n",
         ),
     ] {
         assert_scalar_copied_to_nested_key(src, target, expected);
@@ -891,6 +896,138 @@ fn set_copied_flow_sequence_with_cr_line_breaks() {
     let a = doc.as_mapping().unwrap().get_mapping("a").unwrap();
     a.get_mapping("b").unwrap().set("c", &value);
     assert_file_edited_valid(&file, "a:\r  b:\r    c: [a,\r     b]\r");
+}
+
+#[test]
+fn set_copied_crlf_mapping_into_lf_document() {
+    let source = root("p: 1\r\nq: 2\r\n");
+    let value = source.as_mapping().unwrap();
+    let file = YamlFile::from_str("a: 1\nb: 2\n").unwrap();
+    file.document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .set("a", &value);
+    assert_file_edited_valid(&file, "a:\n  p: 1\n  q: 2\nb: 2\n");
+}
+
+#[test]
+fn set_copied_lf_mapping_into_crlf_document() {
+    let source = root("p: 1\nq:\n  r: 2\n");
+    let value = source.as_mapping().unwrap();
+    let file = YamlFile::from_str("a: 1\r\nb: 2\r\n").unwrap();
+    file.document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .set("a", &value);
+    assert_file_edited_valid(&file, "a:\r\n  p: 1\r\n  q:\r\n    r: 2\r\nb: 2\r\n");
+}
+
+#[test]
+fn copied_crlf_sequence_into_lf_document() {
+    let source = root("- x\r\n- - y\r\n  - z\r\n");
+    let value = source.as_sequence().unwrap();
+    let file = YamlFile::from_str("a: 1\nk:\n  - 1\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    mapping.set("a", &value);
+    mapping.get_sequence("k").unwrap().push(&value);
+    assert_file_edited_valid(
+        &file,
+        "a:\n  - x\n  - - y\n    - z\nk:\n  - 1\n  - - x\n    - - y\n      - z\n",
+    );
+}
+
+#[test]
+fn copied_crlf_entry_into_cr_document() {
+    let source = root("m:\r\n  p: 1\r\n");
+    let value = source.as_mapping().unwrap().get("m").unwrap();
+    let file = YamlFile::from_str("k:\r  - 1\r").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    mapping.get_sequence("k").unwrap().insert(0, &value);
+    mapping.set("b", &value);
+    assert_file_edited_valid(&file, "k:\r  - p: 1\r  - 1\rb:\r  p: 1\r");
+}
+
+#[test]
+fn builder_with_copied_crlf_nodes_into_lf_document() {
+    let source = root("p: 1\r\nq: 2\r\n");
+    let value = source.as_mapping().unwrap();
+    let file = YamlFile::from_str("a: 1\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    mapping.set(
+        "b",
+        MappingBuilder::new()
+            .pair("c", &value)
+            .pair("d", 1)
+            .build_document(),
+    );
+    mapping.set(
+        "e",
+        SequenceBuilder::new().item(&value).item(1).build_document(),
+    );
+    assert_file_edited_valid(
+        &file,
+        "a: 1\nb:\n  c:\n    p: 1\n    q: 2\n  d: 1\ne:\n- p: 1\n  q: 2\n- 1\n",
+    );
+}
+
+#[test]
+fn builders_write_lf_around_copied_crlf_nodes() {
+    let source = root("p: 1\r\nq: |\r\n  x\r\n\r\n  y\r\nr: 'x\r\n  y'\r\n");
+    let mapping = source.as_mapping().unwrap();
+    let built = MappingBuilder::new()
+        .pair("c", &mapping)
+        .pair("d", mapping.get("r").unwrap())
+        .build_document();
+    assert_eq!(
+        built.to_string(),
+        "c:\n  p: 1\n  q: |\n    x\n\n    y\n  r: 'x\n    y'\nd: 'x\n  y'\n"
+    );
+    let built = SequenceBuilder::new()
+        .item(&mapping)
+        .item(mapping.get("q").unwrap())
+        .build_document();
+    assert_eq!(
+        built.to_string(),
+        "- p: 1\n  q: |\n    x\n\n    y\n  r: 'x\n    y'\n- |\n  x\n\n  y\n"
+    );
+    let built = YamlBuilder::scalar(mapping.get("r").unwrap()).build();
+    assert_eq!(built.to_string(), "'x\n  y'\n");
+}
+
+#[test]
+fn set_copied_scalars_across_line_breaks() {
+    let source = root("l: |\r\n  x\r\n\r\n  y\r\nf: >-\r\n  x\r\n  y\r\nq: 'x\r\n  y'\r\n");
+    let source = source.as_mapping().unwrap();
+    let file = YamlFile::from_str("a: 1\nb: 2\nc: 3\n").unwrap();
+    let mapping = file.document().unwrap().as_mapping().unwrap();
+    mapping.set("a", source.get("l").unwrap());
+    mapping.set("b", source.get("f").unwrap());
+    mapping.set("c", source.get("q").unwrap());
+    assert_file_edited_valid(&file, "a: |\n  x\n\n  y\nb: >-\n  x\n  y\nc: 'x\n  y'\n");
+
+    let source = root("l: |\n  x\n\n  y\n");
+    let file = YamlFile::from_str("a: 1\r\n").unwrap();
+    file.document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .set("a", source.as_mapping().unwrap().get("l").unwrap());
+    assert_file_edited_valid(&file, "a: |\r\n  x\r\n\r\n  y\r\n");
+}
+
+#[test]
+fn set_copied_crlf_mapping_into_document_without_line_break() {
+    let source = root("p: 1\r\nq: 2\r\n");
+    let value = source.as_mapping().unwrap();
+    let file = YamlFile::from_str("a: 1").unwrap();
+    file.document()
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .set("b", &value);
+    assert_file_edited_valid(&file, "a: 1\nb:\n  p: 1\n  q: 2");
 }
 
 /// A multi-line plain scalar set at another indentation moves its

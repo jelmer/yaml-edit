@@ -439,57 +439,75 @@ pub(crate) fn append_children(
     insert_children(parent, parent.children_with_tokens().count(), children);
 }
 
-/// Rewrite the `\n` line breaks in `elements`, about to go into the tree
-/// `node` is in, to the document's own line break.
+/// Rewrite the line breaks in `elements`, about to go into the tree `node`
+/// is in, to the document's own line break.
 ///
-/// Builders and fresh tokens always write `\n`; in a document using `\r\n`
-/// or `\r` they would mix line endings. The document's line break is its
-/// first one, as for the lexer's mixed line ending check. A document
-/// without one keeps `\n`.
+/// Builders and fresh tokens always write `\n`, and nodes copied from
+/// another document keep its line breaks; either would mix line endings.
+/// The document's line break is its first one, as for the lexer's mixed
+/// line ending check. A document without one adopts the first line break
+/// found in `elements`.
 fn match_line_breaks(
     node: &SyntaxNode,
     elements: &mut [rowan::NodeOrToken<SyntaxNode, SyntaxToken>],
 ) {
-    let tokens = |e: &rowan::NodeOrToken<SyntaxNode, SyntaxToken>| {
-        let tokens: Vec<_> = match e {
-            rowan::NodeOrToken::Node(n) => n
-                .descendants_with_tokens()
-                .filter_map(|c| c.into_token())
-                .collect(),
-            rowan::NodeOrToken::Token(t) => vec![t.clone()],
-        };
-        tokens
-            .into_iter()
-            .filter(|t| t.text().contains('\n') && !t.text().contains('\r'))
-            .collect::<Vec<_>>()
+    let has_line_break = |e: &rowan::NodeOrToken<SyntaxNode, SyntaxToken>| match e {
+        rowan::NodeOrToken::Node(n) => n.text().contains_char('\n') || n.text().contains_char('\r'),
+        rowan::NodeOrToken::Token(t) => t.text().contains(['\n', '\r']),
     };
-    let to_rewrite: Vec<_> = elements.iter().map(tokens).collect();
-    if to_rewrite.iter().all(Vec::is_empty) {
+    if !elements.iter().any(has_line_break) {
         return;
     }
-    let root = node.ancestors().last().expect("a node is its own ancestor");
-    let Some(line_break) = root
-        .descendants_with_tokens()
-        .filter_map(|c| c.into_token())
-        .find(|t| t.kind() == SyntaxKind::NEWLINE)
-        .map(|t| t.text().to_string())
-        .filter(|b| b != "\n")
-    else {
-        return;
+    let first_line_break = |e: &rowan::NodeOrToken<SyntaxNode, SyntaxToken>| match e {
+        rowan::NodeOrToken::Node(n) => n
+            .descendants_with_tokens()
+            .filter_map(|c| c.into_token())
+            .find(|t| t.kind() == SyntaxKind::NEWLINE),
+        rowan::NodeOrToken::Token(t) => Some(t.clone()).filter(|t| t.kind() == SyntaxKind::NEWLINE),
     };
-    for (element, tokens) in elements.iter_mut().zip(to_rewrite) {
-        for token in tokens {
-            let fresh = fresh_token(token.kind(), &token.text().replace('\n', &line_break));
-            match element {
-                rowan::NodeOrToken::Token(_) => *element = fresh.into(),
-                rowan::NodeOrToken::Node(_) => {
-                    let parent = token.parent().expect("a token in a node has a parent");
-                    let i = token.index();
-                    parent.splice_children(i..i + 1, vec![fresh.into()]);
+    let root = node.ancestors().last().expect("a node is its own ancestor");
+    let line_break = first_line_break(&root.into())
+        .or_else(|| elements.iter().find_map(first_line_break))
+        .map_or_else(|| "\n".to_string(), |t| t.text().to_string());
+    for element in elements.iter_mut() {
+        match element {
+            rowan::NodeOrToken::Node(n) => set_line_breaks(n, &line_break),
+            rowan::NodeOrToken::Token(t) => {
+                if let Some(fresh) = with_line_break(t, &line_break) {
+                    *element = fresh.into();
                 }
             }
         }
     }
+}
+
+/// Rewrite the line breaks in the tokens under `node` to `line_break`.
+pub(crate) fn set_line_breaks(node: &SyntaxNode, line_break: &str) {
+    // Only `\r` needs rewriting to `\n`; a tree without it is already there.
+    if line_break == "\n" && !node.text().contains_char('\r') {
+        return;
+    }
+    let tokens: Vec<_> = node
+        .descendants_with_tokens()
+        .filter_map(|c| c.into_token())
+        .collect();
+    for token in tokens {
+        if let Some(fresh) = with_line_break(&token, line_break) {
+            let parent = token.parent().expect("a token in a node has a parent");
+            let i = token.index();
+            parent.splice_children(i..i + 1, vec![fresh.into()]);
+        }
+    }
+}
+
+/// `token` with its line breaks rewritten to `line_break`, if that changes
+/// it.
+fn with_line_break(token: &SyntaxToken, line_break: &str) -> Option<SyntaxToken> {
+    if !token.text().contains(['\n', '\r']) {
+        return None;
+    }
+    let text = scalar_node::normalize_line_breaks(token.text()).replace('\n', line_break);
+    (text != token.text()).then(|| fresh_token(token.kind(), &text))
 }
 
 /// Lay out the lines after `entry`, a block collection entry just

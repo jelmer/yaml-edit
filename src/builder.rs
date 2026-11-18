@@ -23,9 +23,16 @@ impl YamlBuilder {
         }
         builder.finish_node();
         builder.finish_node();
-        let green = builder.finish();
+        YamlBuilder::finish(builder)
+    }
+
+    /// Finish `builder` and wrap it in a `YamlBuilder`, rewriting line
+    /// breaks copied in from parsed nodes to the builder's `\n`.
+    fn finish(builder: GreenNodeBuilder<'static>) -> Self {
+        let root = rowan::SyntaxNode::new_root_mut(builder.finish());
+        crate::nodes::set_line_breaks(&root, "\n");
         YamlBuilder {
-            file: YamlFile(rowan::SyntaxNode::new_root_mut(green)),
+            file: YamlFile(root),
         }
     }
 
@@ -179,9 +186,7 @@ fn finish_top_level(
     }
     builder.finish_node(); // DOCUMENT
     builder.finish_node(); // ROOT
-    YamlBuilder {
-        file: YamlFile(rowan::SyntaxNode::new_root_mut(builder.finish())),
-    }
+    YamlBuilder::finish(builder)
 }
 
 /// The collection a builder's [`build`](MappingBuilder::build) produced.

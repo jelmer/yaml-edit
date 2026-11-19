@@ -918,12 +918,12 @@ fn explicit_key_entry_inserted_and_moved() {
         ),
         (
             "? a\n: 1\n? b\n: 2\n",
-            |m| m.insert_at_index_preserving(0, "a", 5),
+            |m| m.insert_at_index(0, "a", 5),
             "? a\n: 5\n? b\n: 2\n",
         ),
         (
             "? a\n: 1\n? b\n: 2\n",
-            |m| m.insert_at_index_preserving(0, "b", 5),
+            |m| m.insert_at_index(0, "b", 5),
             "? a\n: 1\n? b\n: 5\n",
         ),
     ];
@@ -931,8 +931,7 @@ fn explicit_key_entry_inserted_and_moved() {
         assert_eq!(edit_root(source, edit), expected, "{source:?}");
     }
     assert_eq!(
-        edit_root("? a\n: 1\n? b\n: 2", |m| m
-            .insert_at_index_preserving(0, "b", 5)),
+        edit_root("? a\n: 1\n? b\n: 2", |m| m.insert_at_index(0, "b", 5)),
         "? a\n: 1\n? b\n: 5"
     );
 }
@@ -982,7 +981,7 @@ fn entry_replaced_at_index_keeps_mapping_layout() {
         let file = YamlFile::from_str(source).unwrap();
         let root = root_mapping(&file);
         let m = root.get_mapping("m").unwrap_or(root);
-        m.insert_at_index_preserving(1, key, 5);
+        m.insert_at_index(1, key, 5);
         assert_file_parser_shaped(&file);
         assert_eq!(file.to_string(), expected, "{source:?}");
     }

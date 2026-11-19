@@ -191,7 +191,16 @@ fn count_nodes(
 /// - Every MAPPING_ENTRY has exactly one KEY
 /// - Every MAPPING_ENTRY has exactly one COLON (zero allowed for
 ///   explicit-key entries with implicit-null values)
-/// - Every MAPPING_ENTRY has at most one VALUE
+/// - Every MAPPING_ENTRY has exactly one VALUE
+/// - Apart from trivia, a MAPPING_ENTRY is `QUESTION? KEY COLON? VALUE
+///   COMMA?`, COMMA only in flow; a flow MAPPING or SEQUENCE is its
+///   entries between its own delimiters
+/// - A KEY, VALUE, SEQUENCE_ENTRY or TAGGED_NODE holds content nodes
+///   (SCALAR, MAPPING, SEQUENCE, ALIAS, TAGGED_NODE), preceded only by
+///   ANCHORs and its indicator: the DASH of a block SEQUENCE_ENTRY, the
+///   TAG of a TAGGED_NODE, the QUESTION of a flow KEY; a flow
+///   SEQUENCE_ENTRY may end with a COMMA
+/// - An ALIAS holds just its REFERENCE
 /// - Block-style MAPPING_ENTRY and SEQUENCE_ENTRY nodes are terminated
 ///   by a NEWLINE -- either as their own last token, or via a trailing
 ///   comment/newline pair at the parent level, or (for MAPPING_ENTRYs)
@@ -466,7 +475,126 @@ fn validate_node(node: &SyntaxNode, in_flow: bool) -> Result<(), String> {
         _ => {}
     }
 
-    Ok(())
+    validate_arrangement(node, in_flow)
+}
+
+/// How often an item of an arrangement may occur.
+#[derive(Clone, Copy)]
+enum Repeat {
+    One,
+    Optional,
+    Any,
+    AtLeastOne,
+}
+
+type Arrangement = &'static [(&'static [SyntaxKind], Repeat)];
+
+const CONTENT: &[SyntaxKind] = &[
+    SyntaxKind::SCALAR,
+    SyntaxKind::MAPPING,
+    SyntaxKind::SEQUENCE,
+    SyntaxKind::ALIAS,
+    SyntaxKind::TAGGED_NODE,
+];
+
+/// The arrangement of the children other than trivia that the parser gives
+/// a node of this kind, if it is checked.
+///
+/// The lenient parser keeps the rest of an invalid node's text, as in
+/// `{a: b}c` or `> x`, in further content nodes after the first.
+fn arrangement(node: &SyntaxNode, in_flow: bool) -> Option<Arrangement> {
+    use Repeat::*;
+    use SyntaxKind::*;
+    let arrangement: Arrangement = match (node.kind(), in_flow) {
+        (MAPPING, _) if crate::nodes::starts_a_flow_collection(node) => &[
+            (&[LEFT_BRACE], One),
+            (&[MAPPING_ENTRY, ERROR], Any),
+            (&[RIGHT_BRACE], One),
+        ],
+        (SEQUENCE, _) if crate::nodes::starts_a_flow_collection(node) => &[
+            (&[LEFT_BRACKET], One),
+            (&[SEQUENCE_ENTRY, ERROR], Any),
+            (&[RIGHT_BRACKET], One),
+        ],
+        (MAPPING_ENTRY, false) => &[
+            (&[QUESTION], Optional),
+            (&[KEY], One),
+            (&[COLON], Optional),
+            (&[VALUE], One),
+        ],
+        (MAPPING_ENTRY, true) => &[
+            (&[QUESTION], Optional),
+            (&[KEY], One),
+            (&[COLON], Optional),
+            (&[VALUE], One),
+            (&[COMMA], Optional),
+        ],
+        // A flow mapping keeps an explicit key's `?` in the KEY.
+        (KEY, true) => &[
+            (&[QUESTION], Optional),
+            (&[ANCHOR], Any),
+            (CONTENT, AtLeastOne),
+        ],
+        (KEY, false) | (VALUE, _) => &[(&[ANCHOR], Any), (CONTENT, AtLeastOne)],
+        (SEQUENCE_ENTRY, false) => &[(&[DASH], One), (&[ANCHOR], Any), (CONTENT, AtLeastOne)],
+        (SEQUENCE_ENTRY, true) => &[
+            (&[ANCHOR], Any),
+            (CONTENT, AtLeastOne),
+            (&[COMMA], Optional),
+        ],
+        (TAGGED_NODE, _) => &[(&[TAG], One), (&[ANCHOR], Any), (CONTENT, AtLeastOne)],
+        (ALIAS, _) => &[(&[REFERENCE], One)],
+        _ => return None,
+    };
+    Some(arrangement)
+}
+
+/// Check that the children of `node`, which is in a flow collection if
+/// `in_flow`, are arranged as the parser arranges them. Trivia may go
+/// anywhere except in an ALIAS.
+fn validate_arrangement(node: &SyntaxNode, in_flow: bool) -> Result<(), String> {
+    let Some(arrangement) = arrangement(node, in_flow) else {
+        return Ok(());
+    };
+    let is_alias = node.kind() == SyntaxKind::ALIAS;
+    let mut kinds = node
+        .children_with_tokens()
+        .map(|c| c.kind())
+        .filter(|k| {
+            is_alias
+                || !matches!(
+                    k,
+                    SyntaxKind::WHITESPACE
+                        | SyntaxKind::NEWLINE
+                        | SyntaxKind::INDENT
+                        | SyntaxKind::COMMENT
+                )
+        })
+        .peekable();
+    for &(allowed, repeat) in arrangement {
+        let mut found = 0;
+        while kinds.next_if(|k| allowed.contains(k)).is_some() {
+            found += 1;
+            if matches!(repeat, Repeat::One | Repeat::Optional) {
+                break;
+            }
+        }
+        if found == 0 && matches!(repeat, Repeat::One | Repeat::AtLeastOne) {
+            let wanted = allowed
+                .iter()
+                .map(|k| format!("{k:?}"))
+                .collect::<Vec<_>>()
+                .join(" or ");
+            return Err(match kinds.peek() {
+                Some(k) => format!("{:?} holds {k:?} where a {wanted} should be", node.kind()),
+                None => format!("{:?} lacks a {wanted}", node.kind()),
+            });
+        }
+    }
+    match kinds.next() {
+        Some(k) => Err(format!("{:?} holds {k:?} out of place", node.kind())),
+        None => Ok(()),
+    }
 }
 
 /// Every KEY, VALUE and SEQUENCE_ENTRY holds a node, an omitted one being
@@ -1035,6 +1163,121 @@ mod tests {
                     .to_string()
             )
         );
+    }
+
+    /// Trees whose children are not arranged as the parser arranges them.
+    #[test]
+    fn test_validate_tree_misarranged_children() {
+        use SyntaxKind::*;
+        let scalar = |text| [(SCALAR, None), (STRING, Some(text)), END];
+        let mut value_with_token = entry("a", "1");
+        value_with_token.insert(12, (STRING, Some("x")));
+        value_with_token.extend([(NEWLINE, Some("\n")), END]);
+        let mut value_with_anchor_after = entry("a", "1");
+        value_with_anchor_after.insert(12, (ANCHOR, Some("&x")));
+        value_with_anchor_after.extend([(NEWLINE, Some("\n")), END]);
+        let mut block_comma = entry("a", "1");
+        block_comma.extend([(COMMA, Some(",")), (NEWLINE, Some("\n")), END]);
+        let mut value_before_key = vec![(MAPPING_ENTRY, None), (VALUE, None)];
+        value_before_key.extend(scalar("1"));
+        value_before_key.extend([END, (COLON, Some(":")), (KEY, None)]);
+        value_before_key.extend(scalar("a"));
+        value_before_key.extend([END, (NEWLINE, Some("\n")), END]);
+        let mut entry_in_value = entry("a", "1");
+        entry_in_value.splice(9..12, entry("b", "2").into_iter().chain([END]));
+        entry_in_value.extend([(NEWLINE, Some("\n")), END]);
+        let mut block_key_question = entry("a", "1");
+        block_key_question.insert(2, (QUESTION, Some("?")));
+        block_key_question.extend([(NEWLINE, Some("\n")), END]);
+        let mut wrong_brace = vec![(LEFT_BRACE, Some("{"))];
+        wrong_brace.extend(entry("a", "1"));
+        wrong_brace.extend([END, (RIGHT_BRACKET, Some("]"))]);
+        let mut no_dash = vec![(SEQUENCE_ENTRY, None)];
+        no_dash.extend(scalar("a"));
+        no_dash.extend([(NEWLINE, Some("\n")), END]);
+        let mut untagged = vec![
+            (SEQUENCE_ENTRY, None),
+            (DASH, Some("-")),
+            (TAGGED_NODE, None),
+        ];
+        untagged.extend(scalar("a"));
+        untagged.extend([END, (NEWLINE, Some("\n")), END]);
+        let alias_with_space = [
+            (SEQUENCE_ENTRY, None),
+            (DASH, Some("-")),
+            (WHITESPACE, Some(" ")),
+            (ALIAS, None),
+            (REFERENCE, Some("*a")),
+            (WHITESPACE, Some(" ")),
+            END,
+            (NEWLINE, Some("\n")),
+            END,
+        ];
+        let cases: [(SyntaxKind, &[_], &str); 10] = [
+            (MAPPING, &value_with_token, "VALUE holds STRING out of place"),
+            (MAPPING, &value_with_anchor_after, "VALUE holds ANCHOR out of place"),
+            (MAPPING, &block_comma, "MAPPING_ENTRY holds COMMA out of place"),
+            (
+                MAPPING,
+                &value_before_key,
+                "MAPPING_ENTRY holds VALUE where a KEY should be",
+            ),
+            (
+                MAPPING,
+                &entry_in_value,
+                "VALUE holds MAPPING_ENTRY where a SCALAR or MAPPING or SEQUENCE or ALIAS or TAGGED_NODE should be",
+            ),
+            (
+                MAPPING,
+                &block_key_question,
+                "KEY holds QUESTION where a SCALAR or MAPPING or SEQUENCE or ALIAS or TAGGED_NODE should be",
+            ),
+            (
+                MAPPING,
+                &wrong_brace,
+                "MAPPING holds RIGHT_BRACKET where a RIGHT_BRACE should be",
+            ),
+            (
+                SEQUENCE,
+                &no_dash,
+                "SEQUENCE_ENTRY holds SCALAR where a DASH should be",
+            ),
+            (
+                SEQUENCE,
+                &untagged,
+                "TAGGED_NODE holds SCALAR where a TAG should be",
+            ),
+            (SEQUENCE, &alias_with_space, "ALIAS holds WHITESPACE out of place"),
+        ];
+        for (kind, children, expected) in cases {
+            let tree = build(kind, children);
+            assert_eq!(validate_tree(&tree), Err(expected.to_string()), "{tree}");
+        }
+    }
+
+    /// Every arrangement the parser gives passes, including the further
+    /// content nodes it leaves in nodes of invalid input.
+    #[test]
+    fn test_validate_tree_parsed_arrangements() {
+        for yaml in [
+            "? a\n",
+            "? a\n: b\n",
+            "? &k a\n: &v b\n",
+            "{? a: b, ? c, d}\n",
+            "[a, &x b, *x, !t c, ? d, e: f]\n",
+            "- &a !t b\n- *a\n-\n",
+            "--- &a !t\nx: !u &b [y]\n",
+            "!t !u x\n",
+            "folded: > first line\n  second line\n",
+            "x: { y: z }in: valid\n",
+            "- { y: z }- invalid\n",
+            "!invalid{}tag scalar\n",
+            "[]:\n]:",
+            "{a: b]\n",
+        ] {
+            let file = YamlFile::parse(yaml).tree();
+            assert_eq!(validate_tree(file.syntax()), Ok(()), "{yaml:?}");
+        }
     }
 
     #[test]

@@ -427,7 +427,7 @@ because they would change every other alias of the same anchor;
 replaces the alias with an independent copy, built as CST.
 
 Replacing a value (`Mapping::set`, `Sequence::set`, `set_path`,
-`insert_at_index_preserving`) keeps the old value's anchor on the new one,
+`insert_at_index`) keeps the old value's anchor on the new one,
 so aliases to it still resolve. A new value that is a node with an anchor
 of its own keeps it only if the old value had none: the document's aliases
 refer to the old anchor, and the node the value was copied from keeps its

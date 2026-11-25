@@ -565,9 +565,7 @@ fn other_mapping_removals_keep_anchors() {
     assert_edited(&doc, "b: &x 1\n");
 
     let doc = Document::from_str("a: {c: &x 1}\nb: *x\n").unwrap();
-    doc.as_mapping()
-        .unwrap()
-        .insert_at_index_preserving(0, "a", 6);
+    doc.as_mapping().unwrap().insert_at_index(0, "a", 6);
     assert_edited(&doc, "a: 6\nb: &x 1\n");
 
     let doc = Document::from_str("a: &x 1\nb: 2\nc: *x\n").unwrap();
@@ -1409,6 +1407,7 @@ fn new_tagged_key_keeps_anchor() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn insert_at_index_preserving_keeps_anchor_like_set() {
     let cases: [(&str, YamlNode, &str); 6] = [
         (

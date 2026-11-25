@@ -239,9 +239,7 @@ fn strings_in_double_quoted_flow_mapping() {
 fn replaced_entry_in_double_quoted_flow_mapping() {
     let source = "{\"a\": \"x\", \"b\": \"y\"}\n";
     let doc = Document::from_str(source).unwrap();
-    doc.as_mapping()
-        .unwrap()
-        .insert_at_index_preserving(0, "b", "z");
+    doc.as_mapping().unwrap().insert_at_index(0, "b", "z");
     assert_eq!(doc.to_string(), "{\"a\": \"x\", \"b\": \"z\"}\n");
     assert_eq!(reparsed_scalars(&doc), ["a", "x", "b", "z"]);
 

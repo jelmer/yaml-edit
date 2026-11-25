@@ -264,11 +264,7 @@ impl ScalarValue {
         }
 
         // Leading/trailing whitespace needs quotes
-        if value != value.trim() {
-            return true;
-        }
-
-        false
+        value != value.trim()
     }
 
     /// Convert to single-quoted string, indenting continuation lines by
